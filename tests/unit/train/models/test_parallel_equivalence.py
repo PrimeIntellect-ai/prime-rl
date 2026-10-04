@@ -26,7 +26,6 @@ from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig, CompileConfig, ModelConfig
 from prime_rl.trainer.model import apply_ac, apply_compile, forward, setup_fsdp
-from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
 from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention
 from prime_rl.trainer.models.layers.attn import FlashAttention
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, cross_entropy_sum
@@ -139,7 +138,6 @@ def reset_global_state():
     compiled graphs, so one case's recompiles never push another past dynamo's recompile limit."""
     patched = [
         (FlashAttention, "_compute_attention"),
-        (AfmoeFlashAttention, "_compute_attention"),
         (GptOssAttention, "compute_attention"),
     ]
     originals = [(cls, name, cls.__dict__[name]) for cls, name in patched]

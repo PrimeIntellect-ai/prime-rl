@@ -10,7 +10,7 @@ from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputL
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, apply_rotary_pos_emb
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -53,35 +53,8 @@ class LagunaFlashAttention(FlashAttention):
         max_seqlen: int,
     ) -> tuple[Tensor, None]:
         input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states, key_states, value_states = self.project_qkv(hidden_states)
-
-        if self.use_qk_norm and self.qk_norm_type == "per_layer":
-            query_states = self.q_norm(query_states)
-            key_states = self.k_norm(key_states)
-
-        query_states = query_states.view(hidden_shape)
-        key_states = key_states.view(hidden_shape)
-        value_states = value_states.view(hidden_shape)
-
-        if self.use_qk_norm and self.qk_norm_type == "per_head":
-            query_states = self.q_norm(query_states)
-            key_states = self.k_norm(key_states)
-
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
-
-        cos, sin = position_embeddings
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        query_states = query_states.transpose(1, 2)
-        key_states = key_states.transpose(1, 2)
-        value_states = value_states.transpose(1, 2)
-
-        attn_output = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        attn_output = attn_output.contiguous().view(*input_shape, self.num_heads, self.head_dim)
+        attn_output = self.attend(hidden_states, position_embeddings, cu_seqlens, max_seqlen)
+        attn_output = attn_output.view(*input_shape, self.num_heads, self.head_dim)
         if self.gating:
             gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
             # per-head gates broadcast across head_dim; per-element gates are already
