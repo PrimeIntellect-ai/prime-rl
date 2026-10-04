@@ -203,14 +203,14 @@ def test_dynamo_nccl_lifecycle_initializes_and_updates_weights(tmp_path):
         patch("prime_rl.inference.dynamo._admin_post", new=AsyncMock()) as post,
     ):
         with pytest.raises(ValueError, match="exactly one inference rank"):
-            asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=2))
+            asyncio.run(admin.init_broadcaster(host="trainer", port=29501, timeout=10, inference_world_size=2))
         collective_rpc.assert_not_awaited()
         assert admin._nccl_initialization_state == "uninitialized"
 
         with pytest.raises(RuntimeError, match="ready NCCL initialization"):
             asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
 
-        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
+        asyncio.run(admin.init_broadcaster(host="trainer", port=29501, timeout=10, inference_world_size=1))
         asyncio.run(admin.update_weights(tmp_path / "step_1", transport="nccl", step=1))
 
     assert collective_rpc.await_args_list[0].kwargs["args"] == ["trainer", 29501, 0, 1, 10, "default"]
@@ -242,7 +242,7 @@ def test_dynamo_nccl_initialization_failure_is_terminal():
         patch.object(admin, "_collective_rpc", new=AsyncMock(side_effect=ValueError("unexpected"))),
         pytest.raises(RuntimeError, match="must restart"),
     ):
-        asyncio.run(admin.initialize_nccl(host="trainer", port=29501, timeout=10, inference_world_size=1))
+        asyncio.run(admin.init_broadcaster(host="trainer", port=29501, timeout=10, inference_world_size=1))
 
     assert admin._nccl_initialization_state == "terminal"
     asyncio.run(admin.aclose())

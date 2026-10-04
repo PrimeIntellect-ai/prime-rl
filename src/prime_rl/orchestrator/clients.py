@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -11,7 +12,7 @@ import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
-from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
 from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.eval import PRIME_INFERENCE_URL
@@ -46,30 +47,6 @@ def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
     return headers
 
 
-class PrefillScorer:
-    """Prefill-scores token ids against a pool's endpoint, lazily resolving
-    a single OpenAI client from the pool's train client config."""
-
-    def __init__(self) -> None:
-        self._client: AsyncOpenAI | None = None
-
-    async def score(self, config: vf.ClientConfig, model: str, token_ids: list[int]) -> list[float]:
-        if self._client is None:
-            # Build the OpenAI client straight from the config fields — works for any
-            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
-            # for these chat-completions teacher configs.
-            self._client = AsyncOpenAI(
-                base_url=config.base_url,
-                api_key=resolve_api_key(config.api_key_var),
-                default_headers=config.headers or None,
-            )
-        return await prefill_logprobs(self._client, model, token_ids)
-
-    async def aclose(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-
-
 class InferenceClient:
     """Data-plane clients for one inference endpoint (the router of the policy
     deployment, or an external API for frozen models)."""
@@ -90,7 +67,7 @@ class InferenceClient:
             renderer_model_name=renderer_model_name,
         )
         self.eval_client = setup_client(client_config, client_type=eval_client_type)
-        self._scorer = PrefillScorer()
+        self._openai: AsyncOpenAI | None = None
         # Managed routed deployments set admin_base_url so engine admin traffic
         # bypasses the client-facing router. External and frozen clients do not.
         self._session_client = (
@@ -103,10 +80,19 @@ class InferenceClient:
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this endpoint's model (one logprob
         per token, 0.0 for the leading token)."""
-        return await self._scorer.score(self.train_client, self.model_name, token_ids)
+        if self._openai is None:
+            # Built from the config fields: resolve_client would return an EvalClient
+            # (no `.openai`) for chat-completions teacher configs.
+            self._openai = AsyncOpenAI(
+                base_url=self.train_client.base_url,
+                api_key=resolve_api_key(self.train_client.api_key_var),
+                default_headers=self.train_client.headers or None,
+            )
+        return await prefill_logprobs(self._openai, self.model_name, token_ids)
 
     async def aclose(self) -> None:
-        await self._scorer.aclose()
+        if self._openai is not None:
+            await self._openai.close()
         if self._session_client is not None:
             await self._session_client.aclose()
 
@@ -162,43 +148,37 @@ class AdminPlane:
         )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
 
-    async def initialize_nccl(
+    async def init_broadcaster(
         self,
         *,
         host: str,
         port: int,
         timeout: int,
         inference_world_size: int,
+        session_id: str = "default",
     ) -> None:
+        """Join every engine to the trainer's weight broadcast (NCCL or NIXL)."""
         gpus_per_server = inference_world_size // len(self.clients)
         get_logger().info(
-            f"Initializing NCCL broadcast: {len(self.clients)} servers, "
+            f"Initializing weight broadcast: {len(self.clients)} servers, "
             f"inference_world_size={inference_world_size}, gpus_per_server={gpus_per_server}"
         )
-
-        async def initialize_client(admin_client: AsyncClient, rank_offset: int) -> None:
-            try:
-                response = await admin_client.post(
+        await asyncio.gather(
+            *(
+                _admin_post(
+                    admin_client,
                     "/init_broadcaster",
+                    timeout_s=max(ADMIN_TIMEOUT_S, timeout),
                     json={
                         "host": host,
                         "port": port,
-                        "rank_offset": rank_offset,
+                        "rank_offset": index * gpus_per_server,
                         "inference_world_size": inference_world_size,
                         "timeout": timeout,
+                        "session_id": session_id,
                     },
                 )
-                response.raise_for_status()
-            except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
-                    get_logger().warning(
-                        "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
-                    )
-
-        await asyncio.gather(
-            *(
-                initialize_client(admin_client, client_num * gpus_per_server)
-                for client_num, admin_client in enumerate(self.clients)
+                for index, admin_client in enumerate(self.clients)
             )
         )
 
@@ -230,6 +210,27 @@ class AdminPlane:
             )
         finally:
             await _resume_engines(self.clients)
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path) -> None:
+        """Load a LoRA adapter on every engine via our ``/load_lora_adapter`` wrapper.
+
+        The prefix cache is not reset here; the orchestrator salts it per weight
+        version (see ``orchestrator/envs.py``) so KV computed under old weights is
+        never reused. vLLM answers 404 while the adapter files are not yet visible
+        (NFS propagation), so 404 is retried too.
+        """
+        await asyncio.gather(
+            *(
+                _admin_post(
+                    admin_client,
+                    "/load_lora_adapter",
+                    timeout_s=LORA_LOAD_TIMEOUT_S,
+                    retry_not_found=True,
+                    json={"lora_name": lora_name, "lora_path": lora_path.as_posix()},
+                )
+                for admin_client in self.clients
+            )
+        )
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -367,18 +368,17 @@ async def check_health(
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
 
 
-def _is_retryable_admin_error(exception: BaseException) -> bool:
-    """Check if an exception should trigger a retry for an admin op (pause/resume/update_weights)."""
+def _is_retryable_admin_error(exception: BaseException, *, retry_not_found: bool = False) -> bool:
+    """Check if an exception should trigger a retry for an admin op."""
     if isinstance(exception, httpx.HTTPStatusError):
         # Retry on transient server errors (5xx, e.g. engine briefly unresponsive);
-        # client errors (4xx) won't fix themselves on retry.
-        return exception.response.status_code >= 500
+        # client errors (4xx) won't fix themselves on retry, except an opted-in 404.
+        status = exception.response.status_code
+        return status >= 500 or (retry_not_found and status == 404)
     # Retry on transport-level failures (timeouts, connection resets, etc.) so the
     # per-attempt read timeout below turns a stuck server into a bounded retry loop
     # instead of hanging forever on the global timeout=None admin client.
-    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
-        return True
-    return False
+    return isinstance(exception, httpx.TransportError)
 
 
 # Per-attempt read timeout for admin ops, overridable per call. The admin
@@ -390,15 +390,24 @@ ADMIN_TIMEOUT_S = 300.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
 # can take longer than the other admin ops.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
+# A LoRA load is a small adapter file plus a KV cache reset: seconds in practice.
+LORA_LOAD_TIMEOUT_S = 60.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient,
+    path: str,
+    *,
+    timeout_s: float = ADMIN_TIMEOUT_S,
+    retry_not_found: bool = False,
+    **kwargs,
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
     async for attempt in AsyncRetrying(
-        retry=retry_if_exception(_is_retryable_admin_error),
+        retry=retry_if_exception(partial(_is_retryable_admin_error, retry_not_found=retry_not_found)),
         stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
@@ -431,93 +440,6 @@ async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
     logger = get_logger()
     await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
     logger.debug("All inference engines resumed")
-
-
-def _is_retryable_lora_error(exception: BaseException) -> bool:
-    """Check if an exception should trigger a retry for LoRA loading."""
-    if isinstance(exception, httpx.HTTPStatusError):
-        # Retry on 404 (adapter not found) or 500 (server error during loading)
-        return exception.response.status_code in (404, 500)
-    # Retry on transport-level failures (timeouts, connection resets, etc.) so
-    # the per-call read timeout below turns a stuck server into a bounded retry
-    # loop instead of propagating as a hard failure on the first hiccup.
-    if isinstance(exception, (httpx.TimeoutException, httpx.TransportError)):
-        return True
-    return False
-
-
-# Per-attempt and total bounds for `/load_lora_adapter`. A LoRA load is fast
-# (small adapter file + KV cache reset, single-digit seconds in practice) but
-# the global admin AsyncClient uses `timeout=None`, so a stuck server would
-# hang the orchestrator forever.
-# `_PER_ATTEMPT` converts a hang into a TimeoutException so tenacity retries;
-# `_TOTAL` is the wall-clock budget across all retries — pick whichever
-# stop condition fires first.
-LORA_LOAD_READ_TIMEOUT_S = 30.0
-LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
-
-
-async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
-    """Make a HTTP post request to the vLLM server to load a LoRA adapter.
-
-    Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
-    here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``) so
-    KV computed under old weights is never reused.
-
-    Retries with exponential backoff if the adapter files are not found,
-    which can happen due to NFS propagation delays.
-    """
-    logger = get_logger()
-    lora_path_posix = lora_path.as_posix()
-
-    @retry(
-        retry=retry_if_exception(_is_retryable_lora_error),
-        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
-    async def _load_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        response = await admin_client.post(
-            "/load_lora_adapter",
-            json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
-
-    await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
-
-
-async def init_nixl_broadcast(
-    admin_plane: AdminPlane,
-    host: str,
-    port: int,
-    timeout: int,
-    inference_world_size: int,
-    session_id: str,
-) -> None:
-    """Configure every vLLM worker for NIXL + ModelExpress pulls."""
-    admin_clients = admin_plane.clients
-    workers_per_server = inference_world_size // len(admin_clients)
-
-    async def initialize(admin_client: AsyncClient, rank_offset: int) -> None:
-        await _admin_post(
-            admin_client,
-            "/init_broadcaster",
-            timeout_s=max(ADMIN_TIMEOUT_S, timeout),
-            json={
-                "host": host,
-                "port": port,
-                "rank_offset": rank_offset,
-                "inference_world_size": inference_world_size,
-                "timeout": timeout,
-                "session_id": session_id,
-            },
-        )
-
-    await asyncio.gather(
-        *[initialize(admin_client, index * workers_per_server) for index, admin_client in enumerate(admin_clients)]
-    )
 
 
 async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]) -> list[float]:

@@ -206,7 +206,7 @@ class NCCLWeightReceiver(WeightReceiver):
     marker."""
 
     async def initialize(self) -> None:
-        await self.admin_plane.initialize_nccl(
+        await self.admin_plane.init_broadcaster(
             host=self.config.host,
             port=self.config.port,
             timeout=self.config.timeout,

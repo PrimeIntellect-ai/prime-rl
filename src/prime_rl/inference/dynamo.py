@@ -384,13 +384,14 @@ class DynamoAdminPlane(AdminPlane):
             self._nccl_initialization_state = "ready"
             get_logger().info(f"Applied NCCL weights for policy v{step} to the Dynamo worker")
 
-    async def initialize_nccl(
+    async def init_broadcaster(
         self,
         *,
         host: str,
         port: int,
         timeout: int,
         inference_world_size: int,
+        session_id: str = "default",
     ) -> None:
         async with self._mutation_lock:
             self._require_uninitialized_nccl()
@@ -410,7 +411,7 @@ class DynamoAdminPlane(AdminPlane):
                         0,
                         1,
                         timeout,
-                        "default",
+                        session_id,
                     ],
                 )
             except asyncio.CancelledError:
