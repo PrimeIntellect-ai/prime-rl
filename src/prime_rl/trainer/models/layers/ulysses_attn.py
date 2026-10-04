@@ -219,10 +219,6 @@ def substitute_ulysses_attn(
 
     FlashAttention._compute_attention = _ulysses_compute_attention
 
-    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
-
-    AfmoeFlashAttention._compute_attention = _ulysses_compute_attention
-
     from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ulysses_attention
 
     substitute_gpt_oss_ulysses_attention(process_group)

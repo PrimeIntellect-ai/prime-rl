@@ -1,150 +1,60 @@
-import functools
-from dataclasses import dataclass
-
 import torch
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.afmoe.configuration_afmoe import AfmoeConfig
 from prime_rl.trainer.models.afmoe.converting_afmoe import conversion_chain
 from prime_rl.trainer.models.base import PrimeModel
-from prime_rl.trainer.models.layers.attn import (
-    flash_attn_3_varlen_func,
-    flash_attn_4_varlen_func,
-    flash_attn_varlen_func,
-)
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, apply_rotary_pos_emb
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
-@dataclass
-class AfmoeAttentionConfig:
-    """Configuration for AFMoE attention layers."""
+class AfmoeFlashAttention(FlashAttention):
+    """``FlashAttention`` with a sigmoid output gate. Rotary embeddings and the sliding window apply to local layers only."""
 
-    hidden_size: int
-    head_dim: int
-    num_attention_heads: int
-    num_key_value_heads: int
-    rms_norm_eps: float
-    is_local_attention: bool
-    sliding_window: int | None = None
-
-
-class AfmoeAttentionBase(nn.Module):
-    def __init__(self, config: AfmoeAttentionConfig):
-        super().__init__()
-        self.head_dim = config.head_dim
-        self.num_heads = config.num_attention_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-        self.scaling = self.head_dim**-0.5
-        self.is_local_attention = config.is_local_attention
-        self.sliding_window = config.sliding_window if config.is_local_attention else None
-
-        # Projections
-        self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.v_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, config.hidden_size, bias=False)
-
-        # Output gating
-        self.gate_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=False)
-
-        # QK normalization
-        self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-        self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-
-
-class AfmoeFlashAttention(AfmoeAttentionBase):
-    """AFMoE attention using Flash Attention varlen functions."""
-
-    _funcs = {
-        2: flash_attn_varlen_func,
-        3: flash_attn_3_varlen_func,
-        4: flash_attn_4_varlen_func,
-    }
-
-    def __init__(self, config: AfmoeAttentionConfig, flash_attn_version: int = 4):
-        super().__init__(config)
-        self._flash_attn_version = flash_attn_version
-        self.func = self._funcs[flash_attn_version]
-        self._flash_attn_call = self.func
-        if self._flash_attn_version == 4:
-            self._flash_attn_call = torch._dynamo.disable(self.func)
-
-    def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
-        """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
-        args = [q, k, v, cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
-        kwargs: dict = {"causal": True}
-        if self.sliding_window is not None:
-            kwargs["window_size"] = (self.sliding_window - 1, 0)
-        out = self._flash_attn_call(*args, **kwargs)
-        if isinstance(out, tuple):
-            out = out[0]
-        return out
+    def __init__(self, config: AfmoeConfig, layer_idx: int, flash_attn_version: int):
+        attn_config = AttentionConfig(
+            hidden_size=config.hidden_size,
+            head_dim=config.head_dim,
+            num_attention_heads=config.num_attention_heads,
+            num_key_value_heads=config.num_key_value_heads,
+            is_causal=True,
+            attention_bias=False,
+            use_qk_norm=True,
+            rms_norm_eps=config.rms_norm_eps,
+        )
+        super().__init__(attn_config, flash_attn_version=flash_attn_version)
+        self.is_local_attention = config.layer_types[layer_idx] == "sliding_attention"
+        self.sliding_window = config.sliding_window if self.is_local_attention else None
+        self.gate_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=False)
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.Tensor,
+        hidden_states: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+        cu_seqlens: Tensor,
         max_seqlen: int,
-    ) -> tuple[torch.Tensor, None]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
-        key_states = self.k_proj(hidden_states).view(hidden_shape)
-        value_states = self.v_proj(hidden_states).view(hidden_shape)
-        gate_states = self.gate_proj(hidden_states)
-
-        query_states = self.q_norm(query_states)
-        key_states = self.k_norm(key_states)
-
-        if self.is_local_attention:
-            query_states = query_states.transpose(1, 2)
-            key_states = key_states.transpose(1, 2)
-            cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-            query_states = query_states.transpose(1, 2)
-            key_states = key_states.transpose(1, 2)
-
-        attn_output = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        attn_output = attn_output.contiguous().view(*input_shape, -1)
-        attn_output = attn_output * torch.sigmoid(gate_states)
+    ) -> tuple[Tensor, None]:
+        if not self.is_local_attention:
+            position_embeddings = None
+        attn_output = self.attend(hidden_states, position_embeddings, cu_seqlens, max_seqlen)
+        attn_output = attn_output * torch.sigmoid(self.gate_proj(hidden_states))
         return self.o_proj(attn_output), None
 
 
-AFMOE_ATTN_IMPL2CLASS = {
-    "flash_attention_2": functools.partial(AfmoeFlashAttention, flash_attn_version=2),
-    "flash_attention_3": functools.partial(AfmoeFlashAttention, flash_attn_version=3),
-    "flash_attention_4": functools.partial(AfmoeFlashAttention, flash_attn_version=4),
-}
-
-
-def _get_afmoe_attention(config: AfmoeConfig, layer_idx: int) -> nn.Module:
-    is_local = config.layer_types[layer_idx] == "sliding_attention"
-    attn_config = AfmoeAttentionConfig(
-        hidden_size=config.hidden_size,
-        head_dim=config.head_dim,
-        num_attention_heads=config.num_attention_heads,
-        num_key_value_heads=config.num_key_value_heads,
-        rms_norm_eps=config.rms_norm_eps,
-        is_local_attention=is_local,
-        sliding_window=config.sliding_window if is_local else None,
-    )
-    return AFMOE_ATTN_IMPL2CLASS[config.attn_implementation](attn_config)
+_FLASH_ATTN_VERSIONS = {"flash_attention_2": 2, "flash_attention_3": 3, "flash_attention_4": 4}
 
 
 class AfmoeDecoderLayer(nn.Module):
     def __init__(self, config: AfmoeConfig, layer_idx: int):
         super().__init__()
-        self.self_attn = _get_afmoe_attention(config, layer_idx)
+        self.self_attn = AfmoeFlashAttention(
+            config, layer_idx, flash_attn_version=_FLASH_ATTN_VERSIONS[config.attn_implementation]
+        )
 
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))

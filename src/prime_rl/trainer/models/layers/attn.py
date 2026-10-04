@@ -219,13 +219,14 @@ class FlashAttention(nn.Module):
             out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         return out
 
-    def forward(
+    def attend(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
+        cu_seqlens: torch.LongTensor | None,
+        max_seqlen: int | None,
+    ) -> torch.Tensor:
+        """Attention output before ``o_proj``, shaped ``[1, tokens, heads * head_dim]``."""
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -257,9 +258,16 @@ class FlashAttention(nn.Module):
         value_states = value_states.transpose(1, 2)
 
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        attn_output = out.contiguous().view(1, out.shape[0], -1)
-        attn_output = self.o_proj(attn_output)
-        return attn_output, None
+        return out.contiguous().view(1, out.shape[0], -1)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+        cu_seqlens: torch.LongTensor | None = None,
+        max_seqlen: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        return self.o_proj(self.attend(hidden_states, position_embeddings, cu_seqlens, max_seqlen)), None
 
 
 ATTN_IMPL2CLASS = {
@@ -303,10 +311,6 @@ def substitute_ring_attn(
         return out
 
     FlashAttention._compute_attention = _ring_compute_attention
-
-    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
-
-    AfmoeFlashAttention._compute_attention = _ring_compute_attention
 
     from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ring_attention
 

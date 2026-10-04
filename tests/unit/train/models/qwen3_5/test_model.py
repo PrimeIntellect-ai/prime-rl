@@ -108,16 +108,13 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
 
 
 def test_ring_patches_flash_attention():
-    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
-
-    originals = {cls: cls._compute_attention for cls in (FlashAttention, AfmoeFlashAttention)}
+    original = FlashAttention._compute_attention
     try:
         substitute_ring_attn(process_group=MagicMock(), heads_k_stride=1)
         assert Qwen3_5Attention._compute_attention is FlashAttention._compute_attention
-        assert Qwen3_5Attention._compute_attention is not originals[FlashAttention]
+        assert Qwen3_5Attention._compute_attention is not original
     finally:
-        for cls, method in originals.items():
-            cls._compute_attention = method
+        FlashAttention._compute_attention = original
 
 
 @pytest.mark.gpu
