@@ -2,7 +2,7 @@ import json
 import re
 import warnings
 from pathlib import Path
-from typing import Callable, cast
+from typing import TYPE_CHECKING, Callable, cast
 
 import torch
 import torch.distributed as dist
@@ -20,6 +20,10 @@ from transformers.utils import (
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    # `prime_rl.trainer.models` imports this package, so the model base is only imported for type checking.
+    from prime_rl.trainer.models.base import PrimeModel
 
 
 def load_state_dict_keys(save_dir: Path) -> list[str]:
@@ -91,25 +95,17 @@ def save_state_dict(
         save_file(state_dict, save_dir / weights_name, metadata={"format": "pt"})
 
 
-def convert_state_dict_to_hf(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+def convert_state_dict_to_hf(model: "PrimeModel", state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
     """Convert a (possibly rank-partial) training-format state dict to HF hub format.
 
     Format detection uses the model's full key set, so a partial dict (one rank's
     slice) converts the same way as the full state dict would.
     """
-    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-
     full_keys = dict.fromkeys(resolve_fqn(model, key) for key in model.state_dict().keys())
-    if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(full_keys):
-        # PrimeRL custom model holding weights in prime format: apply the model's
-        # declarative prime->HF conversion chain (renames, expert stack/unstack).
+    if model.is_prime_state_dict(full_keys):
+        # Apply the model's declarative prime->HF conversion chain (renames, expert stack/unstack).
         return model.convert_to_hf(state_dict)
-    else:
-        # Plain transformers model: undo the key renames transformers applied when
-        # it loaded the HF checkpoint.
-        from transformers.core_model_loading import revert_weight_conversion
-
-        return revert_weight_conversion(model, state_dict)
+    return state_dict
 
 
 def resolve_fqn(model: nn.Module, key: str) -> str:
@@ -151,15 +147,15 @@ def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: tor
     return {key: unit_owner[unit] for key, unit in key_to_unit.items()}
 
 
-def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, default: torch.dtype) -> torch.dtype:
+def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool], key: str, default: torch.dtype) -> torch.dtype:
     """The dtype a tensor must travel to the inference engine in.
 
     TODO: NIXL keeps its own inline copy of this rule; unify the handling.
     """
-    return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
+    return torch.float32 if keep_in_fp32(key) else default
 
 
-def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+def gather_weights_parallel(model: "PrimeModel", dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
     Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
@@ -175,7 +171,6 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     back up rather than failing, so a downcast here shows up as lost mantissa in a
     Sinkhorn normalization rather than as an error.
     """
-    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
     owners = partition_weights(model.state_dict(), world.world_size, dtype)
     partial: dict[str, Tensor] = {}
@@ -186,7 +181,7 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
         for key, value in model.state_dict().items():
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
-                target_dtype = resolve_wire_dtype(keep_in_fp32, key, dtype)
+                target_dtype = resolve_wire_dtype(model.keep_in_fp32_for_weight_transfer, key, dtype)
                 value = cast(DTensor, value.to(target_dtype)).full_tensor()
             if owners[key] != world.rank:
                 continue

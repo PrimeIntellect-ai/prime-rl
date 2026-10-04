@@ -6,29 +6,25 @@ from prime_rl.trainer.models.config import PrimeModelConfig
 from prime_rl.trainer.models.layers.rotary_emb import RopeParameters, standardize_rope_parameters
 
 
-class Qwen3MoeConfig(PrimeModelConfig):
-    model_type: ClassVar[str] = "qwen3_moe"
+class LlamaConfig(PrimeModelConfig):
+    model_type: ClassVar[str] = "llama"
 
-    vocab_size: int = 151936
-    hidden_size: int = 2048
-    intermediate_size: int = 6144
-    num_hidden_layers: int = 24
+    vocab_size: int = 32000
+    hidden_size: int = 4096
+    intermediate_size: int = 11008
+    num_hidden_layers: int = 32
     num_attention_heads: int = 32
-    num_key_value_heads: int = 4
+    num_key_value_heads: int | None = None
+    """Defaults to ``num_attention_heads``."""
     head_dim: int | None = None
     """Defaults to ``hidden_size // num_attention_heads``."""
     hidden_act: str = "silu"
-    max_position_embeddings: int = 32768
+    max_position_embeddings: int = 2048
     rms_norm_eps: float = 1e-6
     rope_parameters: RopeParameters
     attention_bias: bool = False
-    decoder_sparse_step: int = 1
-    moe_intermediate_size: int = 768
-    num_experts_per_tok: int = 8
-    num_experts: int = 128
-    norm_topk_prob: bool = False
-    mlp_only_layers: list[int] = []
-    load_balance_coeff: float | None = None
+    mlp_bias: bool = False
+    eos_token_id: int | list[int] | None = 2
 
     @model_validator(mode="before")
     @classmethod
@@ -36,7 +32,9 @@ class Qwen3MoeConfig(PrimeModelConfig):
         return standardize_rope_parameters(data, default_rope_theta=10_000.0)
 
     @model_validator(mode="after")
-    def _resolve_defaults(self) -> "Qwen3MoeConfig":
+    def _resolve_defaults(self) -> "LlamaConfig":
+        if self.num_key_value_heads is None:
+            self.num_key_value_heads = self.num_attention_heads
         if self.head_dim is None:
             self.head_dim = self.hidden_size // self.num_attention_heads
         return self

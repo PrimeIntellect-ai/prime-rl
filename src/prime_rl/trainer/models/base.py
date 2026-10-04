@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from torch import Tensor
-from transformers.modeling_utils import PreTrainedModel
+from torch import Tensor, nn
 
+from prime_rl.trainer.models.config import PrimeModelConfig
 from prime_rl.utils.cp import CPContext
 
 CPStyle = Literal["ring", "ulysses"]
@@ -18,19 +18,28 @@ class CPSupport:
     reason: str = ""
 
 
-class PreTrainedModelPrimeRL(PreTrainedModel):
-    """
-    Base class for all PrimeRL models that extends HuggingFace PreTrainedModel.
+class PrimeModel(nn.Module):
+    """Base class for PrimeRL causal LMs.
 
-    Provides a unified interface for state dict conversion between different formats
-    (e.g., HuggingFace format vs. training-optimized format) and buffer initialization
-    after loading with meta device.
+    A subclass builds its modules from its ``PrimeModelConfig`` and implements a ``forward`` that takes the
+    packed batch (``input_ids``, ``position_ids``, ``seq_lens``, optional ``labels``/``temperature``/
+    ``sampling_mask``) and returns the LM head's ``PrimeLmOutput``. It also declares how its state dict
+    converts between the HuggingFace checkpoint format and its own training format.
     """
 
     cp_context: CPContext = CPContext()
 
+    def __init__(self, config: PrimeModelConfig):
+        super().__init__()
+        if config.tie_word_embeddings:
+            raise ValueError(
+                f"{config.model_type!r} checkpoint ties its LM head to the input embeddings "
+                "(tie_word_embeddings=true), which PrimeRL does not support."
+            )
+        self.config = config
+
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
+    def cp_support(cls, config: PrimeModelConfig) -> CPSupport:
         """CP styles this architecture supports, given its config.
 
         Softmax attention runs through the shared ``FlashAttention._compute_attention``, which both
@@ -46,36 +55,6 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         Runtime upcasts for training or inference do not change the wire dtype.
         """
         return False
-
-    @classmethod
-    def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
-        """Public from_config that mirrors the Auto class API."""
-        return cls._from_config(config, **kwargs)
-
-    @classmethod
-    def _can_set_experts_implementation(cls) -> bool:
-        """PrimeRL models use custom MoE implementations and don't support dynamic experts implementation."""
-        return False
-
-    def _check_and_adjust_attn_implementation(
-        self, attn_implementation: str | None, is_init_check: bool = False, allow_all_kernels: bool = False
-    ) -> str:
-        """Bypass transformers' flash attention availability checks.
-
-        PrimeRL custom models dispatch attention through their own ``ATTN_IMPL2CLASS``
-        dictionaries, not through transformers' ``ALL_ATTENTION_FUNCTIONS``.  The default
-        ``_check_and_adjust_attn_implementation`` validates that the requested flash
-        attention package is installed and the device is supported, which fails on
-        CPU-only machines and is unnecessary because we never call transformers'
-        attention dispatch for custom models.
-        """
-        if attn_implementation is None:
-            attn_implementation = "flash_attention_3"
-        return attn_implementation
-
-    def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
-        """PrimeRL models always use eager experts implementation."""
-        return "eager"
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
@@ -104,7 +83,7 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"is_prime_state_dict is not implemented for {cls.__name__}")
 
     @classmethod
-    def conversion_chain(cls, config) -> list:
+    def conversion_chain(cls, config: PrimeModelConfig) -> list:
         """Declarative operations converting between HF and PrimeRL state dicts."""
         return []
 
@@ -156,4 +135,4 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
 
 
-__all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]
+__all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PrimeModel"]

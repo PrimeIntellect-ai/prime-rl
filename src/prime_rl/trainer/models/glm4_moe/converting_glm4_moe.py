@@ -7,7 +7,7 @@ GLM-4 MoE specifics:
   ``mlp.router.selection_bias``.
 * Routed experts: HF per-expert ``mlp.experts.{e}.{gate,down,up}_proj.weight``
   stack into prime ``mlp.experts.{gate,down,up}_proj`` along dim 0; the fused
-  transformers-v5 ``mlp.experts.gate_up_proj`` / ``down_proj`` layout is also
+  HF v5 ``mlp.experts.gate_up_proj`` / ``down_proj`` layout is also
   accepted on the way in (split along dim 1).
 * Shared experts: HF ``mlp.shared_experts.{gate,down,up}_proj.weight`` map to
   prime ``mlp.shared_expert.{gate,down,up}_proj.weight``. On the way back to HF,

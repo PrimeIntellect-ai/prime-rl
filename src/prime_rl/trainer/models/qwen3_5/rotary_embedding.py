@@ -1,32 +1,19 @@
 import itertools
 
 import torch
-from torch import nn
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
 
-from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding
+from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5RopeParameters
 
 
-class Qwen3_5RotaryEmbedding(nn.Module):
-    inv_freq: torch.Tensor
+class Qwen3_5RotaryEmbedding(RotaryEmbedding):
+    """Interleaved multimodal RoPE: rotary pairs cycle through the (temporal, height, width) position axes."""
 
-    def __init__(self, config: Qwen3_5TextConfig, device=None) -> None:
-        super().__init__()
-        self.config = config
-        self.max_seq_len_cached = config.max_position_embeddings
-        self.original_max_seq_len = config.max_position_embeddings
-        self.rope_type = config.rope_parameters["rope_type"]
-        self.rope_init_fn = self.compute_default_rope_parameters
-        if self.rope_type != "default":
-            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
-
-        inv_freq, self.attention_scaling = self.rope_init_fn(config, device)
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
-
-        self.mrope_section = config.rope_parameters.get("mrope_section")
+    def __init__(self, rope: Qwen3_5RopeParameters, head_dim: int, max_position_embeddings: int) -> None:
+        super().__init__(rope, head_dim, max_position_embeddings)
+        self.mrope_section = rope.mrope_section
         if self.mrope_section is None:
-            self.mrope_section = self.scaled_mrope_section(inv_freq.numel())
+            self.mrope_section = self.scaled_mrope_section(self.inv_freq.numel())
 
     @staticmethod
     def scaled_mrope_section(num_rotary_pairs: int) -> list[int]:
@@ -42,24 +29,7 @@ class Qwen3_5RotaryEmbedding(nn.Module):
             section[index] += 1
         return section
 
-    @staticmethod
-    def compute_default_rope_parameters(
-        config: Qwen3_5TextConfig,
-        device: torch.device | None = None,
-        seq_len: int | None = None,
-    ) -> tuple[torch.Tensor, float]:
-        rope_parameters = config.rope_parameters
-        rotary_dim = int(config.head_dim * rope_parameters.get("partial_rotary_factor", 1.0))
-        positions = torch.arange(0, rotary_dim, 2, dtype=torch.int64, device=device).float()
-        return 1.0 / (rope_parameters["rope_theta"] ** (positions / rotary_dim)), 1.0
-
-    def reset_parameters(self) -> None:
-        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, self.inv_freq.device)
-        self.inv_freq.copy_(inv_freq)
-        self.original_inv_freq.copy_(inv_freq)
-
     @torch.no_grad()
-    @dynamic_rope_update
     def forward(self, hidden_states: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         if position_ids.ndim == 2:
             position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)

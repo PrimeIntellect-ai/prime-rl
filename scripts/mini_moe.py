@@ -16,19 +16,18 @@ from pathlib import Path
 
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import Glm4MoeConfig as HFGlm4MoeConfig
 from transformers import Glm4MoeForCausalLM as HFGlm4MoeForCausalLM
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import (
     Qwen3_5MoeForConditionalGeneration as HFQwen3_5MoeVLM,
 )
 
-from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4MoeForCausalLM
-from prime_rl.trainer.models.laguna import LagunaConfig
 from prime_rl.trainer.models.laguna import LagunaForCausalLM as PrimeRLLagunaForCausalLM
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
-from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeVLM
+from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM as PrimeRLQwen3_5MoeVLM
+from prime_rl.trainer.models.registry import build_model_config
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
 
@@ -75,9 +74,86 @@ def _qwen3_5_moe_vlm_config():
     return config
 
 
+def _minimax_m2_config():
+    """Build a tiny MiniMax M2 config with MiniMax's remote config class (the HF reference model is remote code)."""
+    config_cls = get_class_from_dynamic_module("configuration_minimax_m2.MiniMaxM2Config", "MiniMaxAI/MiniMax-M2.1")
+    return config_cls(
+        vocab_size=200064,
+        hidden_size=512,
+        intermediate_size=256,
+        num_hidden_layers=12,
+        num_attention_heads=8,
+        num_key_value_heads=4,
+        head_dim=64,
+        hidden_act="silu",
+        max_position_embeddings=4096,
+        rms_norm_eps=1e-6,
+        rope_theta=5000000,
+        rotary_dim=32,
+        num_local_experts=8,
+        num_experts_per_tok=4,
+        scoring_func="sigmoid",
+        use_routing_bias=True,
+        use_qk_norm=True,
+        qk_norm_type="per_layer",
+        auto_map={"AutoModelForCausalLM": "MiniMaxAI/MiniMax-M2.1--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
+    )
+
+
+def _laguna_config():
+    """Build a tiny Laguna config with Poolside's remote config class (the HF reference model is remote code)."""
+    config_cls = get_class_from_dynamic_module("configuration_laguna.LagunaConfig", "poolside/Laguna-XS.2")
+    return config_cls(
+        vocab_size=100352,
+        hidden_size=512,
+        intermediate_size=2048,
+        num_hidden_layers=12,
+        num_attention_heads=8,
+        num_attention_heads_per_layer=[8] * 12,
+        num_key_value_heads=4,
+        head_dim=64,
+        hidden_act="silu",
+        max_position_embeddings=4096,
+        rms_norm_eps=1e-6,
+        rope_parameters={
+            "full_attention": {
+                "rope_type": "yarn",
+                "rope_theta": 500000.0,
+                "factor": 4.0,
+                "original_max_position_embeddings": 1024,
+                "beta_slow": 1.0,
+                "beta_fast": 64.0,
+                "attention_factor": 1.0,
+                "partial_rotary_factor": 0.5,
+            },
+            "sliding_attention": {
+                "rope_type": "default",
+                "rope_theta": 10000.0,
+                "partial_rotary_factor": 1.0,
+            },
+        },
+        layer_types=["full_attention", "sliding_attention", "sliding_attention", "sliding_attention"] * 3,
+        sliding_window=512,
+        moe_intermediate_size=128,
+        shared_expert_intermediate_size=128,
+        num_experts=8,
+        num_experts_per_tok=4,
+        mlp_layer_types=["dense"] + ["sparse"] * 11,
+        moe_routed_scaling_factor=2.5,
+        pad_token_id=9,
+        bos_token_id=2,
+        eos_token_id=[2, 24],
+        auto_map={
+            "AutoConfig": "poolside/Laguna-XS.2--configuration_laguna.LagunaConfig",
+            "AutoModel": "poolside/Laguna-XS.2--modeling_laguna.LagunaModel",
+            "AutoModelForCausalLM": "poolside/Laguna-XS.2--modeling_laguna.LagunaForCausalLM",
+        },
+    )
+
+
 ARCH_PRESETS = {
     "glm4_moe": {
-        "config_class": Glm4MoeConfig,
+        "config_class": HFGlm4MoeConfig,
         "config_kwargs": dict(
             vocab_size=151552,
             hidden_size=1024,
@@ -106,80 +182,13 @@ ARCH_PRESETS = {
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
     },
     "minimax_m2": {
-        "config_class": MiniMaxM2Config,
-        "config_kwargs": dict(
-            vocab_size=200064,
-            hidden_size=512,
-            intermediate_size=256,
-            num_hidden_layers=12,
-            num_attention_heads=8,
-            num_key_value_heads=4,
-            head_dim=64,
-            hidden_act="silu",
-            max_position_embeddings=4096,
-            rms_norm_eps=1e-6,
-            rope_theta=5000000,
-            rotary_dim=32,
-            num_local_experts=8,
-            num_experts_per_tok=4,
-            scoring_func="sigmoid",
-            use_routing_bias=True,
-            use_qk_norm=True,
-            qk_norm_type="per_layer",
-            auto_map={"AutoModelForCausalLM": "MiniMaxAI/MiniMax-M2.1--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
-        ),
+        "config_fn": _minimax_m2_config,
         "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
         "prime_model_class": PrimeRLMiniMaxM2ForCausalLM,
         "tokenizer_source": "MiniMaxAI/MiniMax-M2.1",
     },
     "laguna": {
-        "config_class": LagunaConfig,
-        "config_kwargs": dict(
-            vocab_size=100352,
-            hidden_size=512,
-            intermediate_size=2048,
-            num_hidden_layers=12,
-            num_attention_heads=8,
-            num_attention_heads_per_layer=[8] * 12,
-            num_key_value_heads=4,
-            head_dim=64,
-            hidden_act="silu",
-            max_position_embeddings=4096,
-            rms_norm_eps=1e-6,
-            rope_parameters={
-                "full_attention": {
-                    "rope_type": "yarn",
-                    "rope_theta": 500000.0,
-                    "factor": 4.0,
-                    "original_max_position_embeddings": 1024,
-                    "beta_slow": 1.0,
-                    "beta_fast": 64.0,
-                    "attention_factor": 1.0,
-                    "partial_rotary_factor": 0.5,
-                },
-                "sliding_attention": {
-                    "rope_type": "default",
-                    "rope_theta": 10000.0,
-                    "partial_rotary_factor": 1.0,
-                },
-            },
-            layer_types=["full_attention", "sliding_attention", "sliding_attention", "sliding_attention"] * 3,
-            sliding_window=512,
-            moe_intermediate_size=128,
-            shared_expert_intermediate_size=128,
-            num_experts=8,
-            num_experts_per_tok=4,
-            mlp_layer_types=["dense"] + ["sparse"] * 11,
-            moe_routed_scaling_factor=2.5,
-            pad_token_id=9,
-            bos_token_id=2,
-            eos_token_id=[2, 24],
-            auto_map={
-                "AutoConfig": "poolside/Laguna-XS.2--configuration_laguna.LagunaConfig",
-                "AutoModel": "poolside/Laguna-XS.2--modeling_laguna.LagunaModel",
-                "AutoModelForCausalLM": "poolside/Laguna-XS.2--modeling_laguna.LagunaForCausalLM",
-            },
-        ),
+        "config_fn": _laguna_config,
         "hf_model_class": None,  # uses Poolside remote modeling code
         "prime_model_class": PrimeRLLagunaForCausalLM,
         "tokenizer_source": "poolside/Laguna-XS.2",
@@ -265,14 +274,12 @@ def verify(arch: str, model_dir: Path) -> None:
 
     hf_model = _load_hf_model(preset, model_dir, config).to(device="cuda", dtype=torch.float32)
     with torch.device("cuda"), default_dtype(torch.float32):
-        prime_model = preset["prime_model_class"]._from_config(config)
+        prime_model = preset["prime_model_class"](build_model_config(config.to_dict()))
 
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
-
-    inject_prime_lm_head(prime_model, chunk_size=None)
 
     # Use tokens in safe range (avoid special VLM token IDs)
     max_token = min(vocab_size, 200) if is_vlm else vocab_size
@@ -281,7 +288,7 @@ def verify(arch: str, model_dir: Path) -> None:
         position_ids = torch.arange(1, 65).unsqueeze(0)
 
     hf_output = hf_model(input_ids=input_ids, position_ids=position_ids)
-    prime_output = prime_model(input_ids, position_ids)
+    prime_output = prime_model(input_ids, position_ids, seq_lens=torch.tensor([input_ids.shape[1]]))
 
     if is_vlm:
         # HF GatedDeltaNet has a dtype bug in float32 mode; just verify non-NaN output

@@ -26,9 +26,11 @@ class FileSystemWeightSender(WeightSender):
         self,
         output_dir: Path,
         config: FileSystemWeightBroadcastConfig,
+        base_model_name: str,
         lora_config: LoRAConfig | None = None,
     ):
         super().__init__(output_dir, config.timeout)
+        self.base_model_name = base_model_name
         self.lora_config = lora_config
         self.logger.debug("Initialized filesystem weight broadcast")
 
@@ -47,6 +49,7 @@ class FileSystemWeightSender(WeightSender):
                 save_lora_config(
                     model,
                     step_dir,
+                    base_model_name=self.base_model_name,
                     rank=self.lora_config.rank,
                     alpha=self.lora_config.alpha,
                     dropout=self.lora_config.dropout,
