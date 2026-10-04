@@ -35,10 +35,14 @@ def _ensure_weight_staging_state(state: State) -> None:
         state.staged_versions = {}
     if not hasattr(state, "stage_uploads"):
         state.stage_uploads = {}
+    if not hasattr(state, "finalized_stage_uploads"):
+        state.finalized_stage_uploads = {}
     if not hasattr(state, "active_version"):
         state.active_version = "base"
     if not hasattr(state, "weight_update_lock"):
         state.weight_update_lock = asyncio.Lock()
+    if not hasattr(state, "stage_upload_lock"):
+        state.stage_upload_lock = asyncio.Lock()
     if not hasattr(state, "weights_dirty"):
         state.weights_dirty = False
     if not hasattr(state, "staging_dir"):
@@ -519,6 +523,13 @@ def _stage_stream_upload_key(upload_id: str) -> str:
     return f"stream:{upload_id}"
 
 
+def _parse_upload_id(fields: dict[str, Any]) -> str | JSONResponse:
+    upload_id = str(fields.get("upload_id") or uuid4().hex)
+    if len(upload_id) > 128 or _safe_path_component(upload_id) != upload_id:
+        return _error_response(400, "upload_id must contain only letters, numbers, '.', '_', or '-'")
+    return upload_id
+
+
 def _parse_non_negative_int(fields: dict[str, Any], name: str) -> int | JSONResponse:
     value = fields.get(name)
     if value is None:
@@ -680,39 +691,62 @@ async def stage_stream_init(request: Request):
         return _error_response(400, "filename is required")
     filename = _safe_path_component(Path(str(filename)).name)
 
-    upload_id = uuid4().hex
-    suffix = "delta" if mode == "delta" else "full"
-    temp_path = request.app.state.staging_dir / f"{upload_id}_{suffix}_{filename}.stream.part"
-    staged_path = request.app.state.staging_dir / f"{upload_id}_{suffix}_{filename}"
-    temp_path.parent.mkdir(parents=True, exist_ok=True)
-    with temp_path.open("wb"):
-        pass
+    upload_id = _parse_upload_id(fields)
+    if isinstance(upload_id, JSONResponse):
+        return upload_id
+    upload_key = _stage_stream_upload_key(upload_id)
 
-    relay_uploads, relay_stats = await _fan_out_stream_init(
-        request.app.state,
-        fields=fields,
-        filename=filename,
-        relay=relay_requested,
-    )
-    failure_response = _relay_failure_response(request.app.state, "stage_stream_init", relay_stats)
-    if failure_response is not None:
-        _cleanup_stage_upload(request.app.state, {"path": temp_path})
-        return failure_response
+    async with request.app.state.stage_upload_lock:
+        existing = request.app.state.stage_uploads.get(upload_key)
+        if existing is not None:
+            if (
+                existing["filename"] != filename
+                or existing["mode"] != mode
+                or existing["version"] != version
+                or existing["base_version"] != base_version
+            ):
+                return _error_response(409, "upload_id is already in use with different metadata")
+            return {
+                "status": "ok",
+                "upload_id": upload_id,
+                "version": version,
+                "mode": mode,
+                "relay": existing["init_relay"],
+            }
 
-    request.app.state.stage_uploads[_stage_stream_upload_key(upload_id)] = {
-        "path": temp_path,
-        "staged_path": staged_path,
-        "filename": filename,
-        "mode": mode,
-        "version": version,
-        "base_version": base_version,
-        "ranges": [],
-        "chunks": 0,
-        "start_time": time.perf_counter(),
-        "streaming": True,
-        "relay_requested": relay_requested,
-        "relay_uploads": relay_uploads,
-    }
+        suffix = "delta" if mode == "delta" else "full"
+        temp_path = request.app.state.staging_dir / f"{upload_id}_{suffix}_{filename}.stream.part"
+        staged_path = request.app.state.staging_dir / f"{upload_id}_{suffix}_{filename}"
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        with temp_path.open("wb"):
+            pass
+
+        relay_uploads, relay_stats = await _fan_out_stream_init(
+            request.app.state,
+            fields=fields,
+            filename=filename,
+            relay=relay_requested,
+        )
+        failure_response = _relay_failure_response(request.app.state, "stage_stream_init", relay_stats)
+        if failure_response is not None:
+            _cleanup_stage_upload(request.app.state, {"path": temp_path})
+            return failure_response
+
+        request.app.state.stage_uploads[upload_key] = {
+            "path": temp_path,
+            "staged_path": staged_path,
+            "filename": filename,
+            "mode": mode,
+            "version": version,
+            "base_version": base_version,
+            "ranges": [],
+            "chunks": 0,
+            "start_time": time.perf_counter(),
+            "streaming": True,
+            "relay_requested": relay_requested,
+            "relay_uploads": relay_uploads,
+            "init_relay": relay_stats,
+        }
     logger.info(
         "Initialized streaming stage for %s weights version %s (base_version=%s active_version=%s upload_id=%s)",
         mode,
@@ -785,62 +819,91 @@ async def stage_stream_finalize(request: Request):
     final_size = _parse_non_negative_int(fields, "final_size")
     if isinstance(final_size, JSONResponse):
         return final_size
-
-    upload_key = _stage_stream_upload_key(str(upload_id))
-    upload = request.app.state.stage_uploads.get(upload_key)
-    if upload is None:
-        return _error_response(404, f"streaming upload {upload_id} not found")
-
-    metadata = _validate_stage_metadata(request.app.state, upload)
-    if isinstance(metadata, JSONResponse):
-        return metadata
-
-    ranges = upload["ranges"]
-    if not _upload_complete(ranges, final_size):
-        return _error_response(409, f"upload incomplete: received={_received_bytes(ranges)} total={final_size}")
-
-    temp_path = Path(upload["path"])
-    if not temp_path.exists():
-        return _error_response(404, f"streaming upload file for {upload_id} not found")
-    actual_size = temp_path.stat().st_size
-    if actual_size != final_size:
-        return _error_response(409, f"final_size mismatch: expected={final_size}, got={actual_size}")
-
     expected_sha256 = fields.get("sha256")
     if expected_sha256 is not None:
         expected_sha256 = str(expected_sha256)
-        actual_sha256 = _file_sha256(temp_path)
-        if actual_sha256 != expected_sha256:
-            _cleanup_stage_upload(request.app.state, upload)
+
+    upload_key = _stage_stream_upload_key(str(upload_id))
+    async with request.app.state.stage_upload_lock:
+        finalized = request.app.state.finalized_stage_uploads.get(upload_key)
+        if finalized is not None:
+            if finalized["final_size"] != final_size or finalized["sha256"] != expected_sha256:
+                return _error_response(409, "finalize metadata does not match completed upload")
+            upload = finalized["upload"]
+            response = finalized["response"]
+        else:
+            upload = request.app.state.stage_uploads.get(upload_key)
+            if upload is None:
+                return _error_response(404, f"streaming upload {upload_id} not found")
+
+            metadata = _validate_stage_metadata(request.app.state, upload)
+            if isinstance(metadata, JSONResponse):
+                return metadata
+
+            ranges = upload["ranges"]
+            if not _upload_complete(ranges, final_size):
+                return _error_response(409, f"upload incomplete: received={_received_bytes(ranges)} total={final_size}")
+
+            temp_path = Path(upload["path"])
+            if not temp_path.exists():
+                return _error_response(404, f"streaming upload file for {upload_id} not found")
+            actual_size = temp_path.stat().st_size
+            if actual_size != final_size:
+                return _error_response(409, f"final_size mismatch: expected={final_size}, got={actual_size}")
+
+            if expected_sha256 is not None:
+                actual_sha256 = _file_sha256(temp_path)
+                if actual_sha256 != expected_sha256:
+                    _cleanup_stage_upload(request.app.state, upload)
+                    request.app.state.stage_uploads.pop(upload_key, None)
+                    return _error_response(409, f"sha256 mismatch: expected={expected_sha256}, got={actual_sha256}")
+
+            staged_path = Path(upload["staged_path"])
+            if staged_path.exists():
+                staged_path.unlink()
+            temp_path.replace(staged_path)
+
+            version = str(upload["version"])
+            error = await _register_staged_version(
+                request.app.state,
+                version,
+                {
+                    "path": staged_path,
+                    "mode": upload["mode"],
+                    "base_version": upload["base_version"],
+                    "owned": True,
+                },
+            )
+            if error is not None:
+                return error
             request.app.state.stage_uploads.pop(upload_key, None)
-            return _error_response(409, f"sha256 mismatch: expected={expected_sha256}, got={actual_sha256}")
+            ingest_ms = (time.perf_counter() - upload["start_time"]) * 1000
+            logger.info(
+                "Staged %s weights version %s from %s via streaming upload "
+                "(base_version=%s active_version=%s owned=True chunks=%s ingest_ms=%.2f)",
+                upload["mode"],
+                version,
+                staged_path.as_posix(),
+                upload["base_version"],
+                request.app.state.active_version,
+                upload["chunks"],
+                ingest_ms,
+            )
+            response = {
+                "status": "ok",
+                "version": version,
+                "mode": upload["mode"],
+                "path": staged_path.as_posix(),
+                "ingest_ms": ingest_ms,
+            }
+            request.app.state.finalized_stage_uploads[upload_key] = {
+                "version": version,
+                "final_size": final_size,
+                "sha256": expected_sha256,
+                "upload": upload,
+                "response": response,
+            }
 
-    staged_path = Path(upload["staged_path"])
-    if staged_path.exists():
-        staged_path.unlink()
-    temp_path.replace(staged_path)
-
-    version = str(upload["version"])
-    request.app.state.stage_uploads.pop(upload_key, None)
-    error = await _register_staged_version(
-        request.app.state,
-        version,
-        {"path": staged_path, "mode": upload["mode"], "base_version": upload["base_version"], "owned": True},
-    )
-    if error is not None:
-        return error
-    ingest_ms = (time.perf_counter() - upload["start_time"]) * 1000
-    logger.info(
-        "Staged %s weights version %s from %s via streaming upload "
-        "(base_version=%s active_version=%s owned=True chunks=%s ingest_ms=%.2f)",
-        upload["mode"],
-        version,
-        staged_path.as_posix(),
-        upload["base_version"],
-        request.app.state.active_version,
-        upload["chunks"],
-        ingest_ms,
-    )
     fanout_start = time.perf_counter()
     relay_stats = await _fan_out_stream_finalize(request.app.state, upload=upload, fields=fields)
     fanout_ms = (time.perf_counter() - fanout_start) * 1000
@@ -848,15 +911,7 @@ async def stage_stream_finalize(request: Request):
     if failure_response is not None:
         return failure_response
 
-    return {
-        "status": "ok",
-        "version": version,
-        "mode": upload["mode"],
-        "path": staged_path.as_posix(),
-        "ingest_ms": ingest_ms,
-        "relay": relay_stats,
-        "fanout_ms": fanout_ms,
-    }
+    return {**response, "relay": relay_stats, "fanout_ms": fanout_ms}
 
 
 @router.post("/stage_chunk")
@@ -964,54 +1019,83 @@ async def stage_finalize(request: Request):
 
     filename = _safe_path_component(Path(str(fields.get("filename") or "weights")).name)
     key = _stage_upload_key(version, mode)
-    upload = request.app.state.stage_uploads.get(key)
-    if upload is None:
-        return _error_response(404, f"upload for version {version} not found")
-    if (
-        upload["filename"] != filename
-        or upload["total_size"] != total_size
-        or upload["sha256"] != expected_sha256
-        or upload["base_version"] != base_version
-    ):
-        return _error_response(409, "finalize metadata does not match active upload")
+    finalized_key = f"chunk:{key}"
+    async with request.app.state.stage_upload_lock:
+        finalized = request.app.state.finalized_stage_uploads.get(finalized_key)
+        if finalized is not None:
+            if (
+                finalized["filename"] != filename
+                or finalized["total_size"] != total_size
+                or finalized["sha256"] != expected_sha256
+                or finalized["base_version"] != base_version
+            ):
+                return _error_response(409, "finalize metadata does not match completed upload")
+            response = finalized["response"]
+        else:
+            upload = request.app.state.stage_uploads.get(key)
+            if upload is None:
+                return _error_response(404, f"upload for version {version} not found")
+            if (
+                upload["filename"] != filename
+                or upload["total_size"] != total_size
+                or upload["sha256"] != expected_sha256
+                or upload["base_version"] != base_version
+            ):
+                return _error_response(409, "finalize metadata does not match active upload")
 
-    ranges = upload["ranges"]
-    if not _upload_complete(ranges, total_size):
-        return _error_response(409, f"upload incomplete: received={_received_bytes(ranges)} total={total_size}")
+            ranges = upload["ranges"]
+            if not _upload_complete(ranges, total_size):
+                return _error_response(409, f"upload incomplete: received={_received_bytes(ranges)} total={total_size}")
 
-    temp_path = Path(upload["path"])
-    actual_sha256 = _file_sha256(temp_path)
-    if actual_sha256 != expected_sha256:
-        _cleanup_stage_upload(request.app.state, upload)
-        request.app.state.stage_uploads.pop(key, None)
-        return _error_response(409, f"sha256 mismatch: expected={expected_sha256}, got={actual_sha256}")
+            temp_path = Path(upload["path"])
+            actual_sha256 = _file_sha256(temp_path)
+            if actual_sha256 != expected_sha256:
+                _cleanup_stage_upload(request.app.state, upload)
+                request.app.state.stage_uploads.pop(key, None)
+                return _error_response(409, f"sha256 mismatch: expected={expected_sha256}, got={actual_sha256}")
 
-    suffix = "delta" if mode == "delta" else "full"
-    staged_path = request.app.state.staging_dir / f"{uuid4().hex}_{suffix}_{filename}"
-    if staged_path.exists():
-        staged_path.unlink()
-    temp_path.replace(staged_path)
+            suffix = "delta" if mode == "delta" else "full"
+            staged_path = request.app.state.staging_dir / f"{uuid4().hex}_{suffix}_{filename}"
+            if staged_path.exists():
+                staged_path.unlink()
+            temp_path.replace(staged_path)
 
-    request.app.state.stage_uploads.pop(key, None)
-    error = await _register_staged_version(
-        request.app.state,
-        version,
-        {"path": staged_path, "mode": mode, "base_version": base_version, "owned": True},
-    )
-    if error is not None:
-        return error
-    ingest_ms = (time.perf_counter() - upload["start_time"]) * 1000
-    logger.info(
-        "Staged %s weights version %s from %s via chunked upload "
-        "(base_version=%s active_version=%s owned=True chunks=%s ingest_ms=%.2f)",
-        mode,
-        version,
-        staged_path.as_posix(),
-        base_version,
-        active_version,
-        upload["chunks"],
-        ingest_ms,
-    )
+            error = await _register_staged_version(
+                request.app.state,
+                version,
+                {"path": staged_path, "mode": mode, "base_version": base_version, "owned": True},
+            )
+            if error is not None:
+                return error
+            request.app.state.stage_uploads.pop(key, None)
+            ingest_ms = (time.perf_counter() - upload["start_time"]) * 1000
+            logger.info(
+                "Staged %s weights version %s from %s via chunked upload "
+                "(base_version=%s active_version=%s owned=True chunks=%s ingest_ms=%.2f)",
+                mode,
+                version,
+                staged_path.as_posix(),
+                base_version,
+                active_version,
+                upload["chunks"],
+                ingest_ms,
+            )
+            response = {
+                "status": "ok",
+                "version": version,
+                "mode": mode,
+                "path": staged_path.as_posix(),
+                "ingest_ms": ingest_ms,
+            }
+            request.app.state.finalized_stage_uploads[finalized_key] = {
+                "version": version,
+                "filename": filename,
+                "total_size": total_size,
+                "sha256": expected_sha256,
+                "base_version": base_version,
+                "response": response,
+            }
+
     fanout_start = time.perf_counter()
     relay_stats = await _fan_out_stage_finalize(request.app.state, fields=fields, relay=relay_requested)
     fanout_ms = (time.perf_counter() - fanout_start) * 1000
@@ -1019,15 +1103,7 @@ async def stage_finalize(request: Request):
     if failure_response is not None:
         return failure_response
 
-    return {
-        "status": "ok",
-        "version": version,
-        "mode": mode,
-        "path": staged_path.as_posix(),
-        "ingest_ms": ingest_ms,
-        "relay": relay_stats,
-        "fanout_ms": fanout_ms,
-    }
+    return {**response, "relay": relay_stats, "fanout_ms": fanout_ms}
 
 
 @router.post("/commit")
@@ -1086,6 +1162,9 @@ async def _commit_weights(request: Request):
     failure_response = _relay_failure_response(request.app.state, "commit", relay_stats)
     if failure_response is not None:
         return failure_response
+    for upload_key, upload in list(state.finalized_stage_uploads.items()):
+        if upload["version"] == version:
+            state.finalized_stage_uploads.pop(upload_key, None)
 
     logger.info("Committed %s weights version %s from %s", mode, version, path.as_posix())
     return {"status": "ok", "active_version": version, "mode": mode, "relay": relay_stats, "fanout_ms": fanout_ms}
@@ -1112,6 +1191,7 @@ async def _reload_weights(request: Request):
     request.app.state.weights_dirty = False
     request.app.state.staged_versions.clear()
     request.app.state.stage_uploads.clear()
+    request.app.state.finalized_stage_uploads.clear()
     fanout_start = time.perf_counter()
     relay_stats = await _fan_out_reload(request.app.state, relay=relay_requested)
     fanout_ms = (time.perf_counter() - fanout_start) * 1000
@@ -1126,9 +1206,11 @@ def initialize_delta_sync_state(state: State, args: Namespace) -> None:
     state.staging_dir = Path(getattr(args, "staging_dir", "staging"))
     state.staged_versions = {}
     state.stage_uploads = {}
+    state.finalized_stage_uploads = {}
     state.active_version = "base"
     state.weights_dirty = False
     state.weight_update_lock = asyncio.Lock()
+    state.stage_upload_lock = asyncio.Lock()
     state.api_server_count = int(getattr(args, "api_server_count", 1))
     state.staging_dir.mkdir(parents=True, exist_ok=True)
     state.relay_enabled = bool(getattr(args, "relay_enabled", False))

@@ -136,6 +136,7 @@ def test_sparse_delta_weight_broadcast_propagates_to_components():
                 "background_stage": True,
                 "stage_num_streams": 4,
                 "stage_chunk_size_mb": 8,
+                "stage_chunk_retries": 2,
                 "retain_all_deltas": True,
                 "delta_stream_group_size": 8,
             },
@@ -152,6 +153,7 @@ def test_sparse_delta_weight_broadcast_propagates_to_components():
     assert config.orchestrator.weight_broadcast.background_stage is True
     assert config.orchestrator.weight_broadcast.stage_num_streams == 4
     assert config.orchestrator.weight_broadcast.stage_chunk_size_mb == 8
+    assert config.orchestrator.weight_broadcast.stage_chunk_retries == 2
 
 
 def test_sparse_delta_rejects_unsupported_runtime_combinations():

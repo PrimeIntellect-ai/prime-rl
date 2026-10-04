@@ -437,6 +437,59 @@ def test_client_stage_upload_uses_multiple_streams(tmp_path, upload_method, file
     assert app.state.staged_versions["1"]["path"].read_bytes() == content
 
 
+@pytest.mark.parametrize(
+    ("upload_method", "filename", "retry_paths"),
+    [
+        ("chunked", "delta.safetensors", {"/stage_chunk", "/stage_finalize"}),
+        (
+            "streaming",
+            "delta.stream",
+            {"/stage_stream_init", "/stage_stream_chunk", "/stage_stream_finalize"},
+        ),
+    ],
+)
+def test_client_stage_upload_retries_lost_success_responses(tmp_path, upload_method, filename, retry_paths) -> None:
+    delta_dir = tmp_path / "step_1"
+    delta_dir.mkdir()
+    content = b"retry-safe-delta"
+    (delta_dir / filename).write_bytes(content)
+    app = make_app(tmp_path)
+    app_transport = httpx.ASGITransport(app=app)
+    attempts: dict[str, int] = {}
+
+    async def drop_first_success(request: httpx.Request) -> httpx.Response:
+        response = await app_transport.handle_async_request(request)
+        await response.aread()
+        path = request.url.path
+        attempts[path] = attempts.get(path, 0) + 1
+        if path in retry_paths and attempts[path] == 1:
+            return httpx.Response(503, request=request)
+        return response
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(drop_first_success), base_url="http://test"
+        ) as client:
+            await stage_weights(
+                [client],
+                delta_dir,
+                version="1",
+                mode="delta",
+                base_version="base",
+                upload=True,
+                upload_method=upload_method,
+                chunk_size_bytes=len(content),
+                chunk_retries=1,
+                retry_base_delay_s=0,
+            )
+
+    asyncio.run(run())
+
+    assert {path: attempts[path] for path in retry_paths} == dict.fromkeys(retry_paths, 2)
+    assert app.state.stage_uploads == {}
+    assert app.state.staged_versions["1"]["path"].read_bytes() == content
+
+
 def test_relay_stage_multipart_uploads_delta_to_peer(tmp_path) -> None:
     delta_dir = tmp_path / "step_1"
     delta_dir.mkdir()

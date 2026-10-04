@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+from uuid import uuid4
 
+import httpx
 from httpx import AsyncClient
 
 STAGE_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
@@ -113,6 +116,8 @@ async def stage_weights(
     upload_method: Literal["multipart", "chunked", "streaming"] = "multipart",
     chunk_size_bytes: int = STAGE_UPLOAD_CHUNK_BYTES,
     num_streams: int = 1,
+    chunk_retries: int = 3,
+    retry_base_delay_s: float = 0.25,
     done_path: Path | None = None,
     poll_interval_s: float = 0.1,
 ) -> list[EndpointOperationResult]:
@@ -132,12 +137,40 @@ async def stage_weights(
         raise ValueError("chunk_size_bytes must be positive")
     if num_streams <= 0:
         raise ValueError("num_streams must be positive")
+    if chunk_retries < 0:
+        raise ValueError("chunk_retries must be non-negative")
+    if retry_base_delay_s < 0:
+        raise ValueError("retry_base_delay_s must be non-negative")
     if poll_interval_s <= 0:
         raise ValueError("poll_interval_s must be positive")
 
     data = {"version": version, "mode": mode}
     if base_version is not None:
         data["base_version"] = base_version
+
+    async def _post_with_retries(
+        admin_client: AsyncClient,
+        route: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        for attempt in range(chunk_retries + 1):
+            try:
+                response = await admin_client.post(route, **kwargs)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as error:
+                retryable = error.response.status_code in {408, 425, 429} or error.response.status_code >= 500
+                if not retryable or attempt == chunk_retries:
+                    raise
+            except httpx.RequestError:
+                if attempt == chunk_retries:
+                    raise
+
+            delay = retry_base_delay_s * 2**attempt
+            if delay:
+                await asyncio.sleep(delay + random.uniform(0, delay))
+
+        raise AssertionError("retry loop exited unexpectedly")
 
     def _upload_path() -> Path:
         upload_path = weight_path
@@ -202,17 +235,16 @@ async def stage_weights(
                 if len(chunk) != size:
                     raise RuntimeError(f"short read at offset {offset}: expected {size} bytes, got {len(chunk)}")
                 files = {"file": (upload_path.name, chunk, "application/octet-stream")}
-                response = await admin_client.post(
+                await _post_with_retries(
+                    admin_client,
                     "/stage_chunk",
                     data={**chunk_data, "offset": str(offset)},
                     files=files,
                 )
-                response.raise_for_status()
 
         await asyncio.gather(*(_upload_chunks() for _ in range(worker_count)))
 
-        response = await admin_client.post("/stage_finalize", data=chunk_data)
-        response.raise_for_status()
+        await _post_with_retries(admin_client, "/stage_finalize", data=chunk_data)
 
     async def _stage_streaming_upload(
         admin_client: AsyncClient,
@@ -227,9 +259,9 @@ async def stage_weights(
         init_data = {
             **data,
             "filename": upload_path.name,
+            "upload_id": uuid4().hex,
         }
-        response = await admin_client.post("/stage_stream_init", json=init_data)
-        response.raise_for_status()
+        response = await _post_with_retries(admin_client, "/stage_stream_init", json=init_data)
         upload_id = response.json().get("upload_id")
         if not upload_id:
             raise RuntimeError("stage_stream_init response did not include upload_id")
@@ -270,12 +302,12 @@ async def stage_weights(
                     chunk = f.read(size)
                 if len(chunk) != size:
                     raise RuntimeError(f"short read at offset {offset}: expected {size} bytes, got {len(chunk)}")
-                response = await admin_client.post(
+                await _post_with_retries(
+                    admin_client,
                     "/stage_stream_chunk",
                     params={"upload_id": upload_id, "chunk_index": chunk_index, "offset": offset},
                     content=chunk,
                 )
-                response.raise_for_status()
 
         async with asyncio.TaskGroup() as group:
             group.create_task(_produce_chunks())
@@ -290,8 +322,7 @@ async def stage_weights(
             "final_size": str(final_size),
             "sha256": _sha256_file(upload_path),
         }
-        response = await admin_client.post("/stage_stream_finalize", data=finalize_data)
-        response.raise_for_status()
+        await _post_with_retries(admin_client, "/stage_stream_finalize", data=finalize_data)
 
     if upload:
         upload_path = _upload_path()
@@ -369,6 +400,7 @@ class DeltaEndpointPool:
         health_timeout_s: float,
         stage_num_streams: int = 1,
         stage_chunk_size_bytes: int = STAGE_UPLOAD_CHUNK_BYTES,
+        stage_chunk_retries: int = 3,
     ) -> None:
         self.clients = clients
         self.lease_enabled = lease_enabled
@@ -377,6 +409,7 @@ class DeltaEndpointPool:
         self.health_timeout_s = health_timeout_s
         self.stage_num_streams = stage_num_streams
         self.stage_chunk_size_bytes = stage_chunk_size_bytes
+        self.stage_chunk_retries = stage_chunk_retries
         self.runtime = {_endpoint_key(client): EndpointLeaseRuntime() for client in clients}
         self.replay_entries: dict[str, DeltaReplayEntry] = {}
         self.staged_endpoints: dict[str, set[str]] = {}
@@ -407,6 +440,7 @@ class DeltaEndpointPool:
                     upload_method=upload_method,
                     chunk_size_bytes=self.stage_chunk_size_bytes,
                     num_streams=self.stage_num_streams,
+                    chunk_retries=self.stage_chunk_retries,
                     done_path=done_path,
                 ),
                 allow_partial=self.lease_enabled,
@@ -439,6 +473,7 @@ class DeltaEndpointPool:
                         upload_method=entry.upload_method,
                         chunk_size_bytes=self.stage_chunk_size_bytes,
                         num_streams=self.stage_num_streams,
+                        chunk_retries=self.stage_chunk_retries,
                         done_path=entry.done_path,
                     ),
                     allow_partial=self.lease_enabled,
@@ -543,6 +578,7 @@ class DeltaEndpointPool:
                     upload_method=entry.upload_method,
                     chunk_size_bytes=self.stage_chunk_size_bytes,
                     num_streams=self.stage_num_streams,
+                    chunk_retries=self.stage_chunk_retries,
                     done_path=entry.done_path,
                 )
                 await commit_weights([client], version=entry.version, mode="delta")

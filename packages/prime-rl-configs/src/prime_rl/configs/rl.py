@@ -183,6 +183,9 @@ class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     stage_chunk_size_mb: int = Field(16, ge=1)
     """Chunk size in MiB for chunked and streaming HTTP uploads."""
 
+    stage_chunk_retries: int = Field(3, ge=0, le=10)
+    """Retries per upload request after transient transport or server failures."""
+
     retain_all_deltas: bool = False
     """Keep the complete delta chain for endpoint recovery."""
 
@@ -536,6 +539,7 @@ class RLConfig(BaseConfig):
                 background_stage=self.weight_broadcast.background_stage,
                 stage_num_streams=self.weight_broadcast.stage_num_streams,
                 stage_chunk_size_mb=self.weight_broadcast.stage_chunk_size_mb,
+                stage_chunk_retries=self.weight_broadcast.stage_chunk_retries,
             )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
