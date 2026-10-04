@@ -435,15 +435,8 @@ class RLConfig(BaseConfig):
             )
         if "inference_world_size" in self.weight_broadcast.model_fields_set:
             raise ValueError("weight_broadcast.inference_world_size is set automatically by rl; remove it.")
-        update = {}
-        if self.weight_broadcast.type != "filesystem":
-            update["inference_world_size"] = (
-                self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
-                if self.inference
-                else 1
-            )
-        self.trainer.weight_broadcast = self.weight_broadcast.model_copy(update=update)
-        self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy(update=update)
+        self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
+        self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
         return self
@@ -659,6 +652,11 @@ class RLConfig(BaseConfig):
                 dp = self.inference.vllm.data_parallel_size
                 if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
                     self.inference.vllm.api_server_count = dp
+                if self.weight_broadcast.type != "filesystem":
+                    # Every inference GPU joins the in-memory transfer group, so size it after the DP fill.
+                    world_size = dp * self.inference.vllm.tensor_parallel_size
+                    self.trainer.weight_broadcast.inference_world_size = world_size
+                    self.orchestrator.weight_broadcast.inference_world_size = world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = (
