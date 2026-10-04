@@ -61,6 +61,7 @@ def make_rollout(
         task=trace.task,
         group=vf.GroupInfo(id=str(uuid.uuid4())),
         traces=[trace],
+        ok=True,
     )
     return [episode]
 
@@ -111,7 +112,10 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     source = TrainSource([env])
 
     sampled = source.next_task(step=1).task
-    assert source.on_result(make_rollout(sampled, reward=0.25, advantages=[0.0])) is False
+    group = make_rollout(sampled, reward=0.25, advantages=[0.0])
+    failed = make_rollout(sampled, reward=1.0, advantages=[1.0])
+    failed[0].ok = False
+    assert source.on_result(group + failed) is False
     assert source.metrics() == {
         "curriculum/test/admission_rate": 0.0,
         "curriculum/test/sampler/pool/unseen": 2.0,

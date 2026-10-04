@@ -121,25 +121,16 @@ class Env:
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
     ) -> vf.WireEpisode:
-        """Run and return one typed episode. A failed multi-trace episode marks
-        its otherwise-clean traces failed so partial episodes never train.
+        """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
         change of one of the episode's traces — as it lands."""
-        episode = await self.env_client.run(
+        return await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
             on_delta=on_delta,
         )
-        for trace in episode.traces:
-            if not episode.ok and trace.ok:
-                error = episode.last_error or vf.Error(
-                    type="EpisodeFailed", message="A sibling trace in this episode failed"
-                )
-                trace.errors = [*trace.errors, error]
-                trace.ok = False
-        return episode
 
 
 class TrainEnv(Env):

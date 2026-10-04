@@ -36,7 +36,7 @@ def iter_trainable_traces(episodes: list[vf.Episode]):
     """Yield clean trainable traces that contain sampled tokens."""
     for episode in episodes:
         for trace in episode.traces:
-            if trace.has_error or not trace.agent.trainable:
+            if not episode.ok or trace.has_error or not trace.agent.trainable:
                 continue
             if any(any(node.mask) for node in trace.nodes):
                 yield episode, trace
