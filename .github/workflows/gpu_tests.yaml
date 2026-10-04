@@ -13,7 +13,7 @@ concurrency:
 jobs:
   unit-tests:
     name: Unit tests
-    runs-on: vm
+    runs-on: prime-rl-2xh200
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
@@ -76,7 +76,7 @@ jobs:
             runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text_rl_sft.py"
           - test: alphabet_sort
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_alphabet_sort.py"
           - test: reverse_text_lora
             runner: prime-rl-2xh200
@@ -88,7 +88,7 @@ jobs:
             runner: 4xa6000
             pytest_args: "tests/integration/test_benchmark_regression.py"
           - test: gsm8k_eval
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_gsm8k_eval.py"
     steps:
       - name: Install Git
