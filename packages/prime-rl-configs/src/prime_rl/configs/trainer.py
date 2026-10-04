@@ -325,6 +325,9 @@ class ModelConfig(BaseModelConfig):
 
     quantization: QuantizationConfig | None = None
 
+    sparse_mla_backward: Literal["auto", "cudnn", "tilelang"] = "auto"
+    """Kernel for the DSA sparse MLA attention backward (``glm_moe_dsa``, e.g. GLM-5). ``cudnn`` uses the cuDNN frontend CuTe-DSL DSA backward (Hopper/SM90, single KV head only). ``tilelang`` uses the vendored TileLang kernel. ``auto`` picks ``cudnn`` where supported and ``tilelang`` otherwise."""
+
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 

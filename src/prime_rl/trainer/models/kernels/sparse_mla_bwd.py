@@ -352,6 +352,7 @@ def sparse_mla_backward(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None = None,
+    backend: str = "auto",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert q.is_contiguous()
     assert kv.is_contiguous()
@@ -365,8 +366,13 @@ def sparse_mla_backward(
     assert indices.shape == (B, S, kv_group, topk)
     assert lse.shape == (B, S, H)
 
-    if torch.cuda.get_device_capability(q.device)[0] == 9 and kv_group == 1:
+    cudnn_supported = torch.cuda.get_device_capability(q.device)[0] == 9 and kv_group == 1
+    if backend == "auto":
+        backend = "cudnn" if cudnn_supported else "tilelang"
+    if backend == "cudnn":
+        assert cudnn_supported, "cuDNN sparse MLA backward requires an SM90 GPU and a single KV head"
         return cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
+    assert backend == "tilelang", f"Unknown sparse MLA backward backend: {backend}"
     return tilelang_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
 
 
@@ -379,5 +385,6 @@ def _sparse_mla_backward_fake(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None = None,
+    backend: str = "auto",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv)
