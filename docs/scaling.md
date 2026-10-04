@@ -94,7 +94,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 
 EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput.
 
-`ep` defaults to `"auto"`, which resolves at startup to the largest valid EP degree up to 8. It loads the model config to read `num_experts`, then picks the biggest divisor of `num_experts` that also divides the FSDP island size (`world_size // dp_replicate`), is a multiple of `cp`, and is at most 8. For non-MoE models, resolves to 1 (no-op). Set `ep` to an explicit integer to override:
+`ep` defaults to `"auto"`. At startup it loads the model config to check whether the model is MoE. For MoE models it resolves to `min(world_size // dp_replicate, 8)`: the FSDP island size, capped at 8. For non-MoE models it resolves to 1 (no-op). `"auto"` does not look at `num_experts` or `cp`; the resolved degree must still be a multiple of `cp` and divide `num_experts`, so set it explicitly when it does not. Set `ep` to an explicit integer to override:
 
 ```toml
 [trainer.model]
@@ -241,7 +241,7 @@ Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transf
 
 ```bash
 bash scripts/install_nixl_from_source.sh
-uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
+uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
 bash scripts/install_modelexpress.sh
 ```
 
