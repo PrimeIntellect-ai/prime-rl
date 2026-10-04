@@ -17,7 +17,7 @@ from prime_rl.trainer.models.layers.activations import ActivationDispatch, Activ
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, ExpertCompute
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
-ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
+ScoreFuncType = Literal["softmax", "sigmoid"]
 
 
 @torch.library.custom_op(
@@ -77,7 +77,6 @@ class GroupedExperts(nn.Module):
         *,
         expert_type: ExpertType = "gated",
         activation: ActivationType = "silu",
-        bias: bool = False,
         compute: ExpertCompute | None = None,
     ):
         super().__init__()
@@ -87,11 +86,6 @@ class GroupedExperts(nn.Module):
         self.up_proj = nn.Parameter(torch.empty(num_experts, hidden_dim, dim))
         self.register_parameter("gate_up_proj", None)
         self.down_proj = nn.Parameter(torch.empty(num_experts, dim, hidden_dim))
-        self.gate_proj_bias = (
-            nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias and self.gate_proj is not None else None
-        )
-        self.up_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias else None
-        self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
         self.activation = ActivationDispatch[activation]
         if expert_type == "non_gated":
@@ -124,9 +118,6 @@ class GroupedExperts(nn.Module):
             remaining = (up_proj, self.down_proj)
         for weight in remaining:
             nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
-        for bias in (self.gate_proj_bias, self.up_proj_bias, self.down_proj_bias):
-            if bias is not None:
-                nn.init.zeros_(bias)
 
 
 class TokenChoiceTopKRouter(nn.Module):
@@ -136,11 +127,9 @@ class TokenChoiceTopKRouter(nn.Module):
         dim (int): Dimension of input tokens.
         num_experts (int): Number of experts in each moe layer.
         top_k (int): Number of experts each token will be routed to in token-choice routing.
-        score_func (Literal["softmax", "sigmoid", "topk_softmax"]): Score transform. ``topk_softmax``
-            selects experts from the logits and normalizes only the selected logits.
+        score_func (Literal["softmax", "sigmoid"]): Score transform.
         route_norm (bool): Whether to normalize the routing scores when using sigmoid.
         route_scale (float): Scaling factor applied to the routing scores.
-        gate_bias (bool): Whether the gate has a trainable logit bias.
         selection_bias (bool): Whether to keep a persistent selection-only bias. The bias affects
             expert selection but not routing weights.
         topk_sorted (bool): Whether selected experts are returned in descending score order.
@@ -151,16 +140,15 @@ class TokenChoiceTopKRouter(nn.Module):
         dim: int,
         num_experts: int,
         top_k: int,
-        score_func: Literal["softmax", "sigmoid", "topk_softmax"],
+        score_func: ScoreFuncType,
         route_norm: bool,
         route_scale: float,
         *,
-        gate_bias: bool = False,
         selection_bias: bool = False,
         topk_sorted: bool = True,
     ):
         super().__init__()
-        self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
+        self.gate = nn.Linear(dim, num_experts, bias=False)
         self.register_buffer(
             "selection_bias",
             torch.zeros(num_experts, dtype=torch.float32) if selection_bias else None,
@@ -202,8 +190,7 @@ class TokenChoiceTopKRouter(nn.Module):
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
         )
         if self.fp32_gate:
-            gate_bias = self.gate.bias.float() if self.gate.bias is not None else None
-            logits = F.linear(x.float(), self.gate.weight.float(), gate_bias)
+            logits = F.linear(x.float(), self.gate.weight.float())
         else:
             logits = self.gate(x)
 
@@ -212,8 +199,6 @@ class TokenChoiceTopKRouter(nn.Module):
             scores = torch.sigmoid(logits.float())
         elif self.score_func == "softmax":
             scores = F.softmax(logits.float(), dim=1)
-        elif self.score_func == "topk_softmax":
-            scores = logits
         else:
             raise NotImplementedError(f"Unknown score function {self.score_func}")
 
@@ -241,11 +226,8 @@ class TokenChoiceTopKRouter(nn.Module):
             )
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
-        if self.score_func == "topk_softmax":
-            top_scores = F.softmax(top_scores, dim=-1, dtype=top_scores.dtype)
-
         with torch.no_grad():
-            if self.score_func in ("softmax", "topk_softmax"):
+            if self.score_func == "softmax":
                 routing_confidence_sum = top_scores.sum()
             else:
                 selected_probability_mass = top_scores / (scores.sum(dim=-1, keepdim=True) + 1e-20)
@@ -268,8 +250,6 @@ class TokenChoiceTopKRouter(nn.Module):
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
-        if self.gate.bias is not None:
-            nn.init.zeros_(self.gate.bias)
 
 
 class MoE(nn.Module):

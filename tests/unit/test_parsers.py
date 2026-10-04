@@ -41,9 +41,6 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
     ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2_append_think"),
-    # gpt-oss (reasoning handled natively by vLLM's harmony path)
-    ("openai/gpt-oss-20b", "openai", None),
-    ("openai/gpt-oss-120b", "openai", None),
     # Poolside Laguna
     ("poolside/Laguna-S-2.1", "poolside_v1", "poolside_v1"),
     ("poolside/Laguna-S-2.1-FP8", "poolside_v1", "poolside_v1"),

@@ -9,15 +9,6 @@ class Activation(Protocol):
     def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor: ...
 
 
-class ClampedSwiglu(Activation):
-    @staticmethod
-    def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
-        assert gate is not None
-        gate = gate.clamp(max=7.0)
-        up = up.clamp(min=-7.0, max=7.0)
-        return (up + 1) * gate * torch.sigmoid(gate * 1.702)
-
-
 class Relu2(Activation):
     @staticmethod
     def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
@@ -34,10 +25,9 @@ class Silu(Activation):
         return F.silu(gate) * up
 
 
-ActivationType = Literal["silu", "relu2", "clamped_swiglu"]
+ActivationType = Literal["silu", "relu2"]
 
 ActivationDispatch: dict[ActivationType, type[Activation]] = {
-    "clamped_swiglu": ClampedSwiglu,
     "silu": Silu,
     "relu2": Relu2,
 }

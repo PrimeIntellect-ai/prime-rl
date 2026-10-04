@@ -20,11 +20,7 @@ class SonicMoEExpertCompute:
                 "SonicMoE requires gated experts with fused gate/up projections. Enable the gate_up fusion."
             )
         if experts.activation is not Silu:
-            raise ValueError(
-                "SonicMoE requires standard SwiGLU (silu); custom or clamped activations are not supported."
-            )
-        if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
-            raise ValueError("SonicMoE requires bias-free experts.")
+            raise ValueError("SonicMoE requires standard SwiGLU (silu).")
 
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         gate_up = experts.gate_up_proj

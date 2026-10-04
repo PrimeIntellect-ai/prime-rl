@@ -14,7 +14,6 @@ from prime_rl.trainer.models.layers.lora import (
     set_multilora_scaling,
 )
 from prime_rl.trainer.models.layers.lora.multi_moe import (
-    MultiLoRAGptOssGroupedExperts,
     MultiLoRAGroupedExperts,
     MultiLoRANonGatedGroupedExperts,
 )
@@ -224,9 +223,6 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
     lora_state = setup_lora_state(config, torch.device("cuda", get_world().local_rank))
     if isinstance(model, PreTrainedModelPrimeRL):
         lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
-    uses_gpt_oss_moe_adapter = (
-        isinstance(model, PreTrainedModelPrimeRL) and getattr(model.config, "model_type", None) == "gpt_oss"
-    )
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -259,9 +255,7 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
             )
         # Handle GroupedExperts (MoE)
         elif isinstance(base_module, GroupedExperts):
-            if uses_gpt_oss_moe_adapter:
-                wrapper = MultiLoRAGptOssGroupedExperts
-            elif base_module.gate_proj is not None:
+            if base_module.gate_proj is not None:
                 wrapper = MultiLoRAGroupedExperts
             else:
                 wrapper = MultiLoRANonGatedGroupedExperts

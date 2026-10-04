@@ -9,10 +9,8 @@ def apply_shared_vllm_patches():
     vLLM swallows plugin load failures (``load_plugins_by_group`` logs and continues), so a broken
     entry-point target silently skips ALL of these patches.
     """
-    from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
     from prime_rl.inference.vllm.qwen38_weight_loading import patch_qwen38_weight_loading
 
-    patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()

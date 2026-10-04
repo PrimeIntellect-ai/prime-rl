@@ -67,8 +67,6 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
         pytest.param(GroupedExperts, {}, False, "fused gate/up", id="unfused"),
         pytest.param(GroupedExperts, {"expert_type": "non_gated"}, False, "gated experts", id="non-gated"),
         pytest.param(GroupedExperts, {"activation": "relu2"}, True, "standard SwiGLU", id="relu2"),
-        pytest.param(GroupedExperts, {"activation": "clamped_swiglu"}, True, "standard SwiGLU", id="clamped-swiglu"),
-        pytest.param(GroupedExperts, {"bias": True}, True, "bias-free", id="bias"),
         pytest.param(DeepseekV4Experts, {"swiglu_limit": 10.0}, True, "standard SwiGLU", id="deepseek-v4"),
     ],
 )
@@ -175,7 +173,6 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
         num_experts=2,
         expert_type=expert_type,
         activation=activation,
-        bias=True,
     )
     experts.set_compute(GroupedGemmExpertCompute(_grouped_mm_reference, token_group_alignment=1))
     assert experts.token_group_alignment == 1
@@ -183,7 +180,6 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
 
     has_gate = expert_type == "gated"
     assert (experts.gate_proj is not None) == has_gate
-    assert (experts.gate_proj_bias is not None) == has_gate
     assert ("gate_proj" in experts.state_dict()) == has_gate
 
     x = torch.randn(3, 4)
@@ -194,20 +190,14 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
     start = 0
     for expert, count in enumerate(counts.tolist()):
         expert_input = x[start : start + count].bfloat16()
-        up = F.linear(expert_input, experts.up_proj[expert].bfloat16(), experts.up_proj_bias[expert].bfloat16())
+        up = F.linear(expert_input, experts.up_proj[expert].bfloat16())
         activation_input = up
         if has_gate:
-            activation_input = F.linear(
-                expert_input,
-                experts.gate_proj[expert].bfloat16(),
-                experts.gate_proj_bias[expert].bfloat16(),
-            )
+            activation_input = F.linear(expert_input, experts.gate_proj[expert].bfloat16())
         hidden = F.silu(activation_input) if activation == "silu" else F.relu(activation_input).square()
         if has_gate:
             hidden = hidden * up
-        expected.append(
-            F.linear(hidden, experts.down_proj[expert].bfloat16(), experts.down_proj_bias[expert].bfloat16())
-        )
+        expected.append(F.linear(hidden, experts.down_proj[expert].bfloat16()))
         start += count
 
     torch.testing.assert_close(actual, torch.cat(expected).float())
