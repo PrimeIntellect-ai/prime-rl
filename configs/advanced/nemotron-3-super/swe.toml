@@ -9,8 +9,8 @@ PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 [slurm]
 job_name = "nemotron-3-super-swe"
 partition = "prod"
-# Nemotron-H needs the mamba-ssm kernels; sync that group, then clear this run's orphaned sandboxes.
-pre_run_command = 'uv sync --all-extras --all-packages --group mamba-ssm ; timeout 120 prime sandbox delete --label "nemotron-3-super-swe" -y || true'
+# Sync the env (the gpu extra brings Nemotron-H's mamba-ssm kernels), then clear this run's orphaned sandboxes.
+pre_run_command = 'uv sync --all-extras --all-packages ; timeout 120 prime sandbox delete --label "nemotron-3-super-swe" -y || true'
 
 [deployment]
 type = "multi_node"

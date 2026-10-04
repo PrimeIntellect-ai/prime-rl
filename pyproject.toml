@@ -11,7 +11,6 @@ dependencies = [
     "datasets>=4.0.0",
     "jaxtyping>=0.3.2",
     "loguru>=0.7.3",
-    "pyarrow>=21.0.0",
     "numpy>=2.2.6",
     "transformers==5.6.2",
     "wandb>=0.26.1",
@@ -32,8 +31,6 @@ dependencies = [
     "verifiers[harbor]>=0.3.2.dev158",
     "renderers[multimodal]>=0.1.12.dev2",
     "pybase64>=1.4.2",
-    "orjson>=3.10",
-    "pandas>=2.0",
     "msgspec>=0.18",
 ]
 
@@ -91,7 +88,6 @@ disagg = [
     "deep-ep ; sys_platform == 'linux'",
     "deep-gemm ; sys_platform == 'linux'",
     "nixl ; sys_platform == 'linux'",
-    "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
     "vllm-router ; sys_platform == 'linux'",
 ]
 quack = [
@@ -114,9 +110,6 @@ all = [
 ]
 
 [dependency-groups]
-mamba-ssm = [
-    "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
-]
 dev = [
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.7",
