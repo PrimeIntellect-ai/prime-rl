@@ -3,8 +3,10 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
@@ -15,11 +17,9 @@ from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next im
     is_hf_state_dict,
     is_prime_state_dict,
 )
-from prime_rl.trainer.models.qwen3_8_flash_next.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
-from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -38,6 +38,8 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
                 value_head_dim=config.linear_value_head_dim,
                 conv_kernel_size=config.linear_conv_kernel_dim,
                 norm_eps=config.rms_norm_eps,
+                activation="silu",
+                output_gate_activation="sigmoid",
             )
         else:
             self.self_attn = IndexedGatedAttention(
@@ -166,7 +168,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         self.gradient_checkpointing = False
         self.post_init()
         for module in self.modules():
-            if isinstance(module, (RMSNorm, ExpandedRMSNorm)):
+            if isinstance(module, (ZeroCenteredRMSNorm, ExpandedRMSNorm)):
                 module.reset_parameters()
             elif isinstance(module, PositionLearningEnhancement):
                 module.reset_parameters()

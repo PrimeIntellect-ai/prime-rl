@@ -1,8 +1,8 @@
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
-from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import apply_rotary_embedding
 from prime_rl.utils.cp import CPContext, gather_for_cp
 
@@ -33,8 +33,8 @@ class IndexedGatedAttention(nn.Module):
         self.k_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(num_attention_heads * head_dim, hidden_size, bias=False)
-        self.q_norm = RMSNorm(head_dim, norm_eps)
-        self.k_norm = RMSNorm(head_dim, norm_eps)
+        self.q_norm = ZeroCenteredRMSNorm(head_dim, norm_eps)
+        self.k_norm = ZeroCenteredRMSNorm(head_dim, norm_eps)
         self.indexer = SparseAttentionIndexer(
             hidden_size=hidden_size,
             num_query_heads=indexer_num_heads,
