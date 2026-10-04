@@ -12,8 +12,7 @@ import torch
 import torch.distributed as dist
 from rich import print as rich_print
 from rich.text import Text
-from torch import Tensor, nn
-from torch.distributed.tensor import DTensor
+from torch import Tensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
@@ -22,7 +21,6 @@ from prime_rl.utils.pathing import get_ckpt_dir
 
 if TYPE_CHECKING:
     from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
-    from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
 
@@ -52,61 +50,6 @@ class GarbageCollection:
         begin = time.monotonic()
         gc.collect(generation)
         get_logger().debug(f"Collected garbage in {format_time(time.monotonic() - begin)}")
-
-
-def prepare_gradient_offload(
-    manager: "GradientOffloadManager | None",
-    gradient_scale: float,
-    *,
-    overlap_optimizer: bool,
-) -> None:
-    if manager is not None:
-        manager.begin_step(gradient_scale, overlap_optimizer=overlap_optimizer)
-
-
-def begin_backward(manager: "GradientOffloadManager | None", *, final_backward: bool) -> None:
-    if manager is not None:
-        manager.begin_backward(final_backward=final_backward)
-
-
-def finish_backward(manager: "GradientOffloadManager | None", *, wait_for_copies: bool = False) -> None:
-    if manager is not None:
-        manager.finish_backward(wait_for_copies=wait_for_copies)
-
-
-@torch.no_grad()
-def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module, factor: float) -> None:
-    if manager is not None:
-        manager.scale_(factor)
-        return
-    for param in model.parameters():
-        if param.grad is not None:
-            param.grad.mul_(factor)
-
-
-def clip_grad_norm_(
-    manager: "GradientOffloadManager | None",
-    model: nn.Module,
-    max_norm: float,
-) -> Tensor:
-    if manager is not None:
-        grad_norm = manager.clip_grad_norm_(max_norm)
-    else:
-        # Norm reductions must complete on each parameter mesh before combining
-        # dense, expert-parallel, and other model-parallel gradients.
-        mesh_parameters = defaultdict(list)
-        for param in model.parameters():
-            if param.grad is not None:
-                mesh = param.grad.device_mesh if isinstance(param.grad, DTensor) else None
-                mesh_parameters[mesh].append(param)
-        norms = []
-        for parameters in mesh_parameters.values():
-            norm = torch.nn.utils.get_total_norm([param.grad for param in parameters])
-            norms.append(norm.full_tensor() if isinstance(norm, DTensor) else norm)
-        grad_norm = torch.linalg.vector_norm(torch.stack(norms)) if norms else torch.tensor(0.0)
-        for parameters in mesh_parameters.values():
-            torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
-    return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
 
 
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:

@@ -7,8 +7,8 @@ from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
+from prime_rl.trainer.optim.base import GPUGradientManager, OptimizerLike
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
-from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -51,11 +51,11 @@ def setup_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
+    model: nn.Module,
     cpu_offload: bool = False,
     full_offload_config: OptimizerInBackwardOffloadConfig | None = None,
-    model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
-) -> tuple[OptimizerLike, GradientOffloadManager | None]:
+) -> tuple[OptimizerLike, GPUGradientManager | GradientOffloadManager]:
     if cpu_offload and full_offload_config is not None:
         raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
     if full_offload_config is not None and config.type not in ("adamw", "sign_sgd"):
@@ -66,8 +66,6 @@ def setup_optimizer(
     optimizer_named_params = named_params
     master_weights = None
     if full_offload_config is not None:
-        if model is None:
-            raise ValueError("CPU optimizer offload requires the model")
         if full_offload_dtype_policy is None:
             raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
@@ -95,9 +93,9 @@ def setup_optimizer(
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        return CPUOffloadOptimizer(optimizer), None
+        return CPUOffloadOptimizer(optimizer), GPUGradientManager(model)
 
-    return optimizer, None
+    return optimizer, GPUGradientManager(model)
 
 
 def _create_optimizer(

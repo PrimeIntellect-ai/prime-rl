@@ -54,13 +54,8 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
     Tensors,
-    begin_backward,
-    clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
-    finish_backward,
     get_ckpt_disk_metrics,
-    prepare_gradient_offload,
-    scale_gradients_,
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
@@ -335,11 +330,9 @@ def train(config: TrainerConfig):
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
         rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
-        prepare_gradient_offload(
-            gradient_manager,
-            parallel_dims.fsdp_gradient_divide_factor,
-            overlap_optimizer=True,
-        )
+        # compute_loss already divides by the global token count. Undo FSDP's per-rank averaging
+        # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        gradient_manager.begin_step(parallel_dims.fsdp_gradient_divide_factor, overlap_optimizer=True)
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -514,9 +507,9 @@ def train(config: TrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
+                gradient_manager.begin_backward(final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
-                finish_backward(gradient_manager)
+                gradient_manager.finish_backward()
 
             mm_kwargs = None
 
@@ -581,15 +574,10 @@ def train(config: TrainerConfig):
 
         annotation_writer.flush()
 
-        # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
-        # across dp_cp so the final gradient is the true per-token mean over the global batch.
-        if gradient_manager is None:
-            scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
-
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            grad_norm = gradient_manager.clip_grad_norm_(config.optim.max_norm)
 
         # Update the model parameters
         optimizer.step()
@@ -757,8 +745,7 @@ def train(config: TrainerConfig):
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
 
-    if gradient_manager is not None:
-        gradient_manager.close()
+    gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")

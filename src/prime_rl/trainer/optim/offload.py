@@ -565,7 +565,7 @@ class GradientOffloadManager:
             raise TypeError(f"Expected parameter in post-accumulate hook, got {type(param)}")
         self._offload_params([param])
 
-    def finish_backward(self, *, wait_for_copies: bool = True) -> None:
+    def finish_backward(self) -> None:
         remaining = [param for chunk in self._chunks for param in chunk if param.grad is not None]
         self._offload_params(remaining)
         with self._condition:
@@ -584,8 +584,6 @@ class GradientOffloadManager:
             )
             self._backward_open = False
         self._transfer_requests.put(boundary)
-        if wait_for_copies:
-            self.wait()
 
     def wait(self) -> None:
         self._wait_for(
@@ -604,11 +602,6 @@ class GradientOffloadManager:
     @property
     def gradient_scale(self) -> float:
         return self._gradient_scale
-
-    @torch.no_grad()
-    def scale_(self, factor: float) -> None:
-        self.wait()
-        self._gradient_scale *= factor
 
     @torch.no_grad()
     def clip_grad_norm_(self, max_norm: float) -> torch.Tensor:
