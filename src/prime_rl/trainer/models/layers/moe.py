@@ -343,6 +343,12 @@ class MoE(nn.Module):
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
 
+    def reset_buffers(self) -> None:
+        self.tokens_per_expert.zero_()
+        self.routing_confidence_sum.zero_()
+        if self.router.selection_bias is not None:
+            self.router.selection_bias.zero_()
+
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
 

@@ -24,7 +24,6 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
-from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext
 
@@ -236,19 +235,6 @@ class DeepseekV4ForCausalLM(PrimeModel):
     ) -> PrimeLmOutput:
         hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
-
-    def init_buffers_post_meta(self) -> None:
-        # `to_empty()` leaves every buffer uninitialized and this runs before `dcp_load`, so a
-        # buffer is restored either here or by the checkpoint. Rebuilt here are the ones no
-        # checkpoint carries: the rotary tables (non-persistent, and the one rotary every attention
-        # layer shares) and `tokens_per_expert`. The router's persistent buffers, `selection_bias` and a
-        # hash layer's `tid2eid`, are in the checkpoint that `dcp_load` applies next, so they are
-        # left to it.
-        for module in self.modules():
-            if isinstance(module, DeepseekV4RotaryEmbedding):
-                module.init_buffers_post_meta()
-            elif isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
-                module.tokens_per_expert.zero_()
 
 
 __all__ = [

@@ -19,9 +19,9 @@ class Qwen3_5VisionRotaryEmbedding(nn.Module):
         self.dim = dim
         self.theta = theta
         self.register_buffer("inv_freq", torch.empty(dim // 2), persistent=False)
-        self.reset_parameters()
+        self.reset_buffers()
 
-    def reset_parameters(self) -> None:
+    def reset_buffers(self) -> None:
         positions = torch.arange(0, self.dim, 2, dtype=torch.float32, device=self.inv_freq.device)
         self.inv_freq.copy_(1.0 / (self.theta ** (positions / self.dim)))
 

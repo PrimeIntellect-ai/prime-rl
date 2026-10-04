@@ -27,9 +27,9 @@ class RotaryEmbedding(nn.Module):
         self.theta = rope.rope_theta
         self.mrope_section = rope.mrope_section
         self.register_buffer("inv_freq", torch.empty(self.rotary_dim // 2), persistent=False)
-        self.reset_parameters()
+        self.reset_buffers()
 
-    def reset_parameters(self) -> None:
+    def reset_buffers(self) -> None:
         dimensions = torch.arange(0, self.rotary_dim, 2, dtype=torch.float32, device=self.inv_freq.device)
         self.inv_freq.copy_(1.0 / (self.theta ** (dimensions / self.rotary_dim)))
 

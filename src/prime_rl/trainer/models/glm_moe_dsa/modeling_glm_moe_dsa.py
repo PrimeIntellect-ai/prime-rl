@@ -212,6 +212,3 @@ class GlmMoeDsaForCausalLM(PrimeModel):
         # Sparse MLA derives document boundaries from position_ids, so seq_lens is unused.
         hidden_states = self.model(input_ids, position_ids, routed_experts)
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
-
-    def init_buffers_post_meta(self) -> None:
-        self.model.rotary_emb.reset_parameters()

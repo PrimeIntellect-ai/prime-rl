@@ -132,7 +132,7 @@ class NGramEmbedding(nn.Module):
 
         self.cp_context = CPContext()
 
-    def reset_parameters(self) -> None:
+    def reset_buffers(self) -> None:
         multipliers, sizes, offsets = build_hash_layout(
             ngram_size=self.ngram_size,
             heads_per_ngram=self.heads_per_ngram,

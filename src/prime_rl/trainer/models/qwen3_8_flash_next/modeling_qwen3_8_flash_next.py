@@ -3,7 +3,6 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.models.base import CPSupport, PrimeModel
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
-from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
@@ -17,7 +16,6 @@ from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next im
 from prime_rl.trainer.models.qwen3_8_flash_next.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
-from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -221,18 +219,6 @@ class Qwen3_8FlashNextForCausalLM(PrimeModel):
     ) -> PrimeLmOutput:
         hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
-
-    def init_buffers_post_meta(self) -> None:
-        language_model = getattr(self.model, "language_model", self.model)
-        language_model.rotary_emb.reset_parameters()
-        for module in self.modules():
-            if isinstance(module, NGramEmbedding):
-                module.reset_parameters()
-            elif isinstance(module, MoE):
-                module.tokens_per_expert.zero_()
-                module.routing_confidence_sum.zero_()
-                if module.router.selection_bias is not None:
-                    module.router.selection_bias.zero_()
 
 
 __all__ = [

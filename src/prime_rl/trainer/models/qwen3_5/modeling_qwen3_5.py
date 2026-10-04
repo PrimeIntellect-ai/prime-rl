@@ -331,18 +331,6 @@ class Qwen3_5ForCausalLM(PrimeModel):
             )
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
-    def init_buffers_post_meta(self) -> None:
-        language_model = self.model.language_model if self.is_vlm else self.model
-        language_model.rotary_emb.reset_parameters()
-        if self.is_vlm:
-            self.model.visual.rotary_pos_emb.reset_parameters()
-        for module in self.modules():
-            if isinstance(module, MoE):
-                module.tokens_per_expert.zero_()
-                module.routing_confidence_sum.zero_()
-                if module.router.selection_bias is not None:
-                    module.router.selection_bias.zero_()
-
 
 __all__ = [
     "Qwen3_5Attention",

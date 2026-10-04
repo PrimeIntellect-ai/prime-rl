@@ -787,13 +787,6 @@ def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
             buffer.data = buffer.data.to("cuda")
 
 
-def _reset_runtime_moe_buffers(model: nn.Module) -> None:
-    for module in model.modules():
-        if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
-            module.tokens_per_expert.zero_()
-            module.routing_confidence_sum.zero_()
-
-
 def _validate_flash_attn_4_installed() -> None:
     """Validate that flash-attn-cute is installed and not overwritten by flash-attn.
 
@@ -915,7 +908,6 @@ def setup_model(
     else:
         load_dcp_from_hf(model, config, parallel_dims)
 
-    _reset_runtime_moe_buffers(model)
     return model
 
 

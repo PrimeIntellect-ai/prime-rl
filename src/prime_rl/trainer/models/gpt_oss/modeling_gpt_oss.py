@@ -149,13 +149,6 @@ class GptOssForCausalLM(PrimeModel):
         hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
-    def init_buffers_post_meta(self) -> None:
-        self.model.rotary_emb.reset_parameters()
-        for module in self.modules():
-            if isinstance(module, MoE):
-                module.tokens_per_expert.zero_()
-                module.routing_confidence_sum.zero_()
-
 
 __all__ = [
     "GptOssDecoderLayer",

@@ -246,15 +246,5 @@ class LagunaForCausalLM(PrimeModel):
         hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
-    def init_buffers_post_meta(self) -> None:
-        for rotary_emb in self.model.rotary_emb.values():
-            rotary_emb.reset_parameters()
-
-        for module in self.modules():
-            if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
-                module.tokens_per_expert.zero_()
-                if module.router.selection_bias is not None:
-                    module.router.selection_bias.zero_()
-
 
 __all__ = ["LagunaForCausalLM", "LagunaModel"]

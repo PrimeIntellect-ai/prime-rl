@@ -123,16 +123,14 @@ class PrimeModel(nn.Module):
         return state_dict
 
     def init_buffers_post_meta(self) -> None:
-        """
-        Initialize buffers that are not in the state dict after loading with meta device.
+        """Rebuild the buffers ``to_empty`` leaves uninitialized: rotary tables and MoE routing stats.
 
-        Some models have buffers (non-trainable tensors) that are not saved in the state dict
-        but need to be properly initialized after loading the model on meta device and then
-        moving to the actual device. This method should initialize such buffers.
-
-        This is called after loading the model from a checkpoint with meta device.
+        Runs before weight loading, so checkpoint-carried buffers such as ``selection_bias`` are
+        zeroed here and then overwritten by the load. Modules owning such buffers implement ``reset_buffers``.
         """
-        raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
+        for module in self.modules():
+            if hasattr(module, "reset_buffers"):
+                module.reset_buffers()
 
 
 __all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PrimeModel"]

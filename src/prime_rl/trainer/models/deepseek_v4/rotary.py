@@ -44,7 +44,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             device,
         )
 
-    def init_buffers_post_meta(self) -> None:
+    def reset_buffers(self) -> None:
         """Re-derive the per-rope-type inverse frequencies and cos/sin caches in place.
 
         The tables are computed eagerly in `__init__` and registered non-persistently, so they

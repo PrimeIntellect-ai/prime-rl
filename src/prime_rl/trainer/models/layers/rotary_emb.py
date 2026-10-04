@@ -147,7 +147,7 @@ class RotaryEmbedding(nn.Module):
         inv_freq, self.attention_scaling = compute_rope_inv_freq(rope, head_dim, max_position_embeddings)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-    def reset_parameters(self) -> None:
+    def reset_buffers(self) -> None:
         """Recompute ``inv_freq``, which is not in the state dict, after materializing from the meta device."""
         inv_freq, self.attention_scaling = compute_rope_inv_freq(
             self.rope, self.head_dim, self.max_position_embeddings, self.inv_freq.device
