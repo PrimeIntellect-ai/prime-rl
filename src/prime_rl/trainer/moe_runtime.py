@@ -27,8 +27,8 @@ from prime_rl.trainer.models.layers.expert_compute import (
 )
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.vlm import get_language_model
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.vlm import get_language_model
 
 
 def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
@@ -68,9 +68,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
     selected_moes = set(moe_layers)
     if config.moe.compute.apply_to != "all":
-        language_model = get_language_model(
-            model, override=config.vlm.language_model_attr if config.vlm is not None else None
-        )
+        language_model = get_language_model(model)
         selected_layers = config.moe.compute.resolve_layers(len(language_model.layers))
         selected_moes = {
             module

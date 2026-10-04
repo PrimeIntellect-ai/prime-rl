@@ -35,7 +35,6 @@ from prime_rl.configs.trainer import (
     MXFP8Config,
     TokenizerConfig,
 )
-from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
@@ -62,10 +61,10 @@ from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIn
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
@@ -113,9 +112,9 @@ torch._dynamo.config.recompile_limit = 16  # default: 8
 torch._dynamo.config.cache_size_limit = 64  # default: 8
 
 
-def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) -> None:
+def freeze_vision_encoder(model: nn.Module) -> None:
     logger = get_logger()
-    vision_encoder = get_vision_encoder(model, override=override_attr)
+    vision_encoder = get_vision_encoder(model)
     if vision_encoder is None:
         raise ValueError("Could not find vision encoder to freeze")
     num_frozen = 0
@@ -356,7 +355,6 @@ def get_model(
         ),
     )
     model_config.use_cache = False
-    is_vlm_arch = is_vlm_architecture(model_config)
 
     if is_vlm_training:
         logger.info(f"Detected vision-language model: {config.name}")
@@ -422,7 +420,7 @@ def get_model(
         )
         target_config.num_hidden_layers = num_hidden_layers
 
-    custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch else None
+    custom_vlm_cls = get_custom_vlm_cls(model_config)
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
             f"{model_config.model_type!r} has no PrimeRL model implementation. "
@@ -485,23 +483,6 @@ def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     return tokenizer
 
 
-def setup_processor(config: ModelConfig):
-    """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
-    from transformers import AutoProcessor
-
-    logger = get_logger()
-    try:
-        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
-    except (ValueError, OSError, KeyError) as e:
-        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
-        return None
-    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
-        logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
-        return None
-    logger.info(f"Loaded multimodal processor: {type(processor).__name__}")
-    return processor
-
-
 def _expert_shard_placement_fn(
     experts: nn.Module,
     expert_mesh_info: FSDPMeshInfo,
@@ -553,14 +534,14 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     is_vlm_training = config.vlm is not None
     if is_vlm_training:
-        vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
+        vision_encoder = get_vision_encoder(model)
         if vision_encoder is None:
             raise ValueError(f"VLM model {config.name} has no recognized vision encoder")
 
         fully_shard(vision_encoder, mesh=hsdp_mesh, **fsdp_config)
         get_logger().info(f"Applied FSDP to vision encoder (frozen={config.vlm.freeze_vision_encoder})")
 
-    language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
+    language_model = get_language_model(model)
     transformer_layers = language_model.layers
 
     fullgraph = config.compile is not None and config.compile.fullgraph
@@ -863,7 +844,7 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     """Apply LoRA and identify any vision encoder that must remain frozen."""
     frozen_vision_encoder = None
     if config.vlm is not None and config.vlm.freeze_vision_encoder:
-        frozen_vision_encoder = get_vision_encoder(model, override=config.vlm.vision_encoder_attr)
+        frozen_vision_encoder = get_vision_encoder(model)
     elif config.vlm is None:
         frozen_vision_encoder = get_vision_encoder(model)
         if frozen_vision_encoder is not None:
@@ -989,10 +970,7 @@ def setup_model(
             freeze_all_except_lora_and_specified(model, config.lora)
 
     if frozen_vision_encoder is not None:
-        freeze_vision_encoder(
-            model,
-            override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
-        )
+        freeze_vision_encoder(model)
 
     # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
@@ -1029,7 +1007,6 @@ def forward(
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
-    mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
@@ -1037,6 +1014,7 @@ def forward(
 ) -> PrimeLmOutput:
     kwargs = {
         "input_ids": input_ids,
+        "position_ids": position_ids,
         "labels": labels,
         "temperature": temperature,
         "sampling_mask": sampling_mask,
@@ -1046,15 +1024,6 @@ def forward(
         kwargs.update(mm_kwargs)
         if mm_token_type_ids is not None:
             kwargs["mm_token_type_ids"] = mm_token_type_ids
-        # SFT still uses its existing eager processor path and does not provide
-        # an adapter policy yet, so preserve its current kwargs-based behavior.
-        policy = mm_forward_policy or ForwardPolicy(pass_position_ids="image_grid_thw" not in mm_kwargs)
-        if policy.requires_mm_token_type_ids and mm_token_type_ids is None:
-            raise ValueError("Multimodal forward policy requires mm_token_type_ids")
-        if policy.pass_position_ids:
-            kwargs["position_ids"] = position_ids
-    else:
-        kwargs["position_ids"] = position_ids
 
     kwargs["seq_lens"] = seq_lens
     kwargs["seq_lens_are_pre_shard"] = seq_lens_are_pre_shard

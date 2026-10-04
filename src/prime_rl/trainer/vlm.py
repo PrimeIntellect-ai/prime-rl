@@ -1,0 +1,106 @@
+"""Trainer-side VLM support.
+
+A model trains as a VLM when its ``model_type`` is in ``_CUSTOM_VLM_MAPPING``
+(``prime_rl.trainer.models``). Composite models keep the vision encoder at
+``model.model.visual`` and the text decoder at ``model.model.language_model``;
+text-only models keep the decoder at ``model.model``.
+"""
+
+import base64
+from io import BytesIO
+from typing import Any
+
+import torch
+import torch.nn as nn
+from PIL import Image
+
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.transports.batch import MMRefs
+from prime_rl.utils.logger import get_logger
+
+
+def get_vision_encoder(model: nn.Module) -> nn.Module | None:
+    return getattr(model.model, "visual", None)
+
+
+def get_language_model(model: nn.Module) -> nn.Module:
+    return getattr(model.model, "language_model", model.model)
+
+
+def get_layer_prefix(model: nn.Module) -> str:
+    """Weight key prefix of the decoder layers."""
+    return "model.language_model.layers." if hasattr(model.model, "language_model") else "model.layers."
+
+
+def setup_processor(config: ModelConfig):
+    """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
+    from transformers import AutoProcessor
+
+    logger = get_logger()
+    try:
+        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    except (ValueError, OSError, KeyError) as e:
+        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
+        return None
+    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
+        logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
+        return None
+    logger.info(f"Loaded multimodal processor: {type(processor).__name__}")
+    return processor
+
+
+def _load_image(data_url: str) -> Image.Image:
+    header, separator, payload = data_url.partition(",")
+    if not separator or not header.startswith("data:image/") or ";base64" not in header:
+        raise ValueError("Multimodal training requires base64 data image URLs")
+    with Image.open(BytesIO(base64.b64decode(payload, validate=True))) as image:
+        return image.convert("RGB")
+
+
+def _required_tensors(values: Any, keys: tuple[str, ...]) -> dict[str, torch.Tensor]:
+    data = dict(values)
+    missing = [key for key in keys if key not in data]
+    if missing:
+        raise ValueError(f"Image processor did not return {', '.join(missing)}")
+    return {key: torch.as_tensor(data[key]).contiguous() for key in keys}
+
+
+def _qwen_vl_images(image_processor: Any, images: list[Image.Image]) -> tuple[dict[str, torch.Tensor], list[int]]:
+    kwargs = _required_tensors(image_processor(images=images, return_tensors="pt"), ("pixel_values", "image_grid_thw"))
+    merge_size = int(image_processor.merge_size)
+    # HF Qwen-VL / renderer pad count: T*H*W / merge_size^2.
+    lengths = [int(grid.prod()) // (merge_size * merge_size) for grid in kwargs["image_grid_thw"].reshape(-1, 3)]
+    return kwargs, lengths
+
+
+def _kimi_k25_images(image_processor: Any, images: list[Image.Image]) -> tuple[dict[str, torch.Tensor], list[int]]:
+    preprocess = getattr(image_processor, "preprocess", None)
+    if preprocess is None:
+        raise ValueError("Kimi image processor is missing preprocess")
+    media = [{"type": "image", "image": image} for image in images]
+    kwargs = _required_tensors(preprocess(media, return_tensors="pt"), ("pixel_values", "grid_thws"))
+    return kwargs, [1] * len(kwargs["grid_thws"].reshape(-1, 3))
+
+
+_IMAGE_INPUTS = {
+    "qwen3_vl": _qwen_vl_images,
+    "qwen3_vl_moe": _qwen_vl_images,
+    "qwen3_5": _qwen_vl_images,
+    "qwen3_5_moe": _qwen_vl_images,
+    "kimi_k25": _kimi_k25_images,
+}
+
+
+def materialize_images(refs: MMRefs, processor: Any, model_type: str) -> dict[str, torch.Tensor]:
+    """Decode the image refs of a micro batch into the model's vision forward kwargs."""
+    image_inputs = _IMAGE_INPUTS.get(model_type)
+    if image_inputs is None:
+        raise NotImplementedError(f"Raw image training is not implemented for model type {model_type!r}")
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        raise ValueError("Multimodal samples require a model image processor")
+    kwargs, lengths = image_inputs(image_processor, [_load_image(ref.url) for ref in refs.images])
+    expected = [ref.length for ref in refs.images]
+    if lengths != expected:
+        raise ValueError(f"Image placeholder lengths differ from vLLM: expected {expected}, got {lengths}")
+    return kwargs

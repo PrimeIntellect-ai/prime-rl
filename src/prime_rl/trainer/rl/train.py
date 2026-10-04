@@ -36,8 +36,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.multimodal import get_multimodal_adapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -46,9 +44,9 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
-    setup_processor,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
+from prime_rl.trainer.vlm import materialize_images, setup_processor
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -154,12 +152,10 @@ def train(config: TrainerConfig):
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     processor = None
-    mm_adapter = None
     if config.model.vlm is not None:
         processor = setup_processor(config.model)
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
-        mm_adapter = get_multimodal_adapter(model.config.model_type)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -379,16 +375,16 @@ def train(config: TrainerConfig):
             )
 
             mm_kwargs = None
-            mm_forward_policy = None
             mm_refs = micro_batch.get("mm_refs")
             if mm_refs is not None:
-                if processor is None or mm_adapter is None:
+                if processor is None:
                     raise ValueError("Received multimodal samples but [model.vlm] is not set")
-                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
-                mm_forward_policy = materialized.forward_policy
+                mm_kwargs = {
+                    key: value.to("cuda")
+                    for key, value in materialize_images(mm_refs, processor, model.config.model_type).items()
+                }
                 micro_batch["mm_refs"] = None
-                del materialized, mm_refs
+                del mm_refs
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -406,9 +402,8 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                defer_vlm_cp_to_model = bool(
-                    mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
-                )
+                # The VLM shards image inputs itself, after building their positions.
+                defer_vlm_cp_to_model = mm_kwargs is not None
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(
                         input_ids,
@@ -461,7 +456,6 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
-                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
