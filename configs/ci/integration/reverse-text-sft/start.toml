@@ -3,7 +3,7 @@ max_steps = 5
 [ckpt]
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "Qwen/Qwen3.5-0.8B"
 
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"

@@ -90,6 +90,8 @@ class BenchmarkConfig(BaseConfig):
 
     cp: Annotated[int, Field(ge=1, description="Context parallelism size (1 = no CP)")] = 1
 
+    cp_style: Annotated[Literal["ring", "ulysses"], Field(description="Context parallelism style")] = "ring"
+
     fused_lm_head_token_chunk_size: Annotated[
         int | None,
         Field(description="Fused LM head token chunk size (None uses trainer default)"),
@@ -170,7 +172,7 @@ def build_command(config: BenchmarkConfig, output_dir: Path) -> list[str]:
 
     # Add context parallelism if enabled
     if config.cp > 1:
-        cmd.extend(["--model.cp", str(config.cp)])
+        cmd.extend(["--model.cp", str(config.cp), "--model.cp-style", config.cp_style])
 
     # Fused LM head chunk size
     if config.fused_lm_head_token_chunk_size is not None:

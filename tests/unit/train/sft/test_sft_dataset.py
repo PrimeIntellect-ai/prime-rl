@@ -59,7 +59,7 @@ def test_init_sft_dataset(build_dummy_dataset, dummy_renderer):
 def test_raise_error_if_no_prompt_and_completion(build_dummy_dataset):
     """Tests that an error is raised if no supported SFT message fields are provided."""
     dataset = Dataset.from_list([{"text": "a0"}])
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
     sft_dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer))
     with pytest.raises(ValueError):
         next(iter(sft_dataset))
@@ -235,7 +235,7 @@ def test_multiturn_loss_mask():
             },
         ]
     )
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
     dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
@@ -298,7 +298,7 @@ def test_multiturn_loss_mask_with_tools():
     }
 
     dataset = Dataset.from_list([tool_example])
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")  # Properly handles multi-turn think
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
     dataset = SFTDataset(dataset, lambda _: create_renderer(tokenizer), max_examples=1)
     sample = next(iter(dataset))
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
@@ -323,7 +323,7 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
         {"role": "assistant", "content": "It is 65F and sunny in San Francisco."},
     ]
 
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
     messages_dataset = SFTDataset(
         Dataset.from_list([{"messages": messages}]),
         lambda _: create_renderer(tokenizer),
@@ -339,7 +339,7 @@ def test_messages_rows_are_equivalent_to_empty_prompt_completion():
 
 
 def test_messages_take_precedence_over_prompt_and_completion():
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
     row = {
         "messages": [
             {"role": "system", "content": "System from messages"},
@@ -367,7 +367,7 @@ def test_messages_take_precedence_over_prompt_and_completion():
 def test_null_messages_falls_back_to_prompt_and_completion():
     # Arrow schema union adds `messages: None` to prompt/completion rows when
     # other rows in the file have a `messages` column
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-0.8B")
     prompt = [{"role": "user", "content": "What is 2+2?"}]
     completion = [{"role": "assistant", "content": "4"}]
 

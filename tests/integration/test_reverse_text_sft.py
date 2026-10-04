@@ -19,7 +19,7 @@ def run_dir(output_dir: Path) -> Path:
     return output_dir / RUN_NAME
 
 
-TIMEOUT = 300  # 5 minutes
+TIMEOUT = 600  # 10 minutes (Qwen3.5 compiles its FLA kernels on the first step)
 
 
 @pytest.fixture(scope="module")
