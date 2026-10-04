@@ -2,9 +2,9 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
-from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNorm
 
 
 class Qwen3_5Attention(FlashAttention):
@@ -34,8 +34,8 @@ class Qwen3_5Attention(FlashAttention):
         q_output_size = self.num_heads * self.head_dim * (2 if self.attn_output_gate else 1)
         self.qkv_sizes = (q_output_size, self.qkv_sizes[1], self.qkv_sizes[2])
         self.q_proj = nn.Linear(config.hidden_size, q_output_size, bias=config.attention_bias)
-        self.q_norm = Qwen3_5RMSNorm(self.head_dim, config.rms_norm_eps)
-        self.k_norm = Qwen3_5RMSNorm(self.head_dim, config.rms_norm_eps)
+        self.q_norm = ZeroCenteredRMSNorm(self.head_dim, config.rms_norm_eps)
+        self.k_norm = ZeroCenteredRMSNorm(self.head_dim, config.rms_norm_eps)
 
     def forward(
         self,
