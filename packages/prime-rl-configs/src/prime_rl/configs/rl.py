@@ -186,6 +186,9 @@ class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     stage_chunk_retries: int = Field(3, ge=0, le=10)
     """Retries per upload request after transient transport or server failures."""
 
+    stage_retries: int = Field(1, ge=0, le=10)
+    """Retries for the complete stage operation after request retries are exhausted."""
+
     retain_all_deltas: bool = False
     """Keep the complete delta chain for endpoint recovery."""
 
@@ -540,6 +543,7 @@ class RLConfig(BaseConfig):
                 stage_num_streams=self.weight_broadcast.stage_num_streams,
                 stage_chunk_size_mb=self.weight_broadcast.stage_chunk_size_mb,
                 stage_chunk_retries=self.weight_broadcast.stage_chunk_retries,
+                stage_retries=self.weight_broadcast.stage_retries,
             )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)

@@ -508,6 +508,9 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     stage_chunk_retries: int = Field(3, ge=0, le=10)
     """Retries per upload request after transient transport or server failures."""
 
+    stage_retries: int = Field(1, ge=0, le=10)
+    """Retries for the complete stage operation after request retries are exhausted."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"

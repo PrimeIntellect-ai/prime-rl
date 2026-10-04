@@ -13,6 +13,7 @@ background_stage = true
 stage_num_streams = 4
 stage_chunk_size_mb = 16
 stage_chunk_retries = 3
+stage_retries = 1
 retain_all_deltas = true
 delta_stream_group_size = 4
 

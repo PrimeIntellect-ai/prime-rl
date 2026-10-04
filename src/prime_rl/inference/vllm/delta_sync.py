@@ -697,6 +697,25 @@ async def stage_stream_init(request: Request):
     upload_key = _stage_stream_upload_key(upload_id)
 
     async with request.app.state.stage_upload_lock:
+        finalized = request.app.state.finalized_stage_uploads.get(upload_key)
+        if finalized is not None:
+            upload = finalized["upload"]
+            if (
+                upload["filename"] != filename
+                or upload["mode"] != mode
+                or upload["version"] != version
+                or upload["base_version"] != base_version
+            ):
+                return _error_response(409, "upload_id is already finalized with different metadata")
+            return {
+                "status": "ok",
+                "upload_id": upload_id,
+                "version": version,
+                "mode": mode,
+                "finalized": True,
+                "relay": {},
+            }
+
         existing = request.app.state.stage_uploads.get(upload_key)
         if existing is not None:
             if (
@@ -948,6 +967,25 @@ async def stage_chunk(request: Request):
 
     suffix = "delta" if mode == "delta" else "full"
     key = _stage_upload_key(version, mode)
+    finalized = request.app.state.finalized_stage_uploads.get(f"chunk:{key}")
+    if finalized is not None:
+        if (
+            finalized["filename"] != filename
+            or finalized["total_size"] != total_size
+            or finalized["sha256"] != expected_sha256
+            or finalized["base_version"] != base_version
+        ):
+            return _error_response(409, "chunk metadata does not match completed upload")
+        return {
+            "status": "ok",
+            "version": version,
+            "mode": mode,
+            "received_bytes": total_size,
+            "total_size": total_size,
+            "finalized": True,
+            "relay": {},
+        }
+
     upload = request.app.state.stage_uploads.get(key)
     if upload is None:
         temp_path = request.app.state.staging_dir / f"{_safe_path_component(version)}_{suffix}_{filename}.part"
