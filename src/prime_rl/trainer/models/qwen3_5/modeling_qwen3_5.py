@@ -263,17 +263,13 @@ class Qwen3_5ForCausalLM(PrimeModel):
         self.is_vlm = isinstance(config, Qwen3_5Config)
         if self.is_vlm:
             self.model = Qwen3_5VLMModel(config)
-            language_model = self.model.language_model
             text_config = config.text_config
         else:
             self.model = Qwen3_5Model(config)
-            language_model = self.model
             text_config = config
 
         self.supports_packed_multimodal_training = self.is_vlm
         self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
-        if config.tie_word_embeddings:
-            self.lm_head.weight = language_model.embed_tokens.weight
 
     @classmethod
     def cp_support(cls, config: Qwen3_5TextConfig | Qwen3_5Config) -> CPSupport:

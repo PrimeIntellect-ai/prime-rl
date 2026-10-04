@@ -183,14 +183,10 @@ class Qwen3_8FlashNextForCausalLM(PrimeModel):
         if isinstance(config, Qwen3_8FlashNextConfig):
             text_config = config.text_config
             self.model = Qwen3_8FlashNextModel(config)
-            embed_tokens = self.model.language_model.embed_tokens
         else:
             text_config = config
             self.model = Qwen3_8FlashNextTextModel(config)
-            embed_tokens = self.model.embed_tokens
         self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
-        if config.tie_word_embeddings:
-            self.lm_head.weight = embed_tokens.weight
 
     @classmethod
     def cp_support(cls, config: Qwen3_8FlashNextConfig | Qwen3_8FlashNextTextConfig) -> CPSupport:

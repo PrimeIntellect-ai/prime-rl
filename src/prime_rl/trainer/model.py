@@ -536,31 +536,26 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             # data-parallel size. That is already the dense parameters' default divisor.
             transformer_block.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
 
-    shard_norm_and_lm_head = not model.config.tie_word_embeddings
     final_module = (
         getattr(language_model, "norm", None)
         or getattr(language_model, "norm_f", None)
         or getattr(language_model, "hyper_connection_mixer", None)
     )
 
-    if shard_norm_and_lm_head:
-        # This optimization breaks weight tying
-        embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        fully_shard(
-            embed_module,
-            mesh=hsdp_mesh,
-            **fsdp_config,
-        )
-        fully_shard(
-            [model.lm_head, final_module],
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=False,
-            shard_placement_fn=shard_placement_fn,
-        )
-    else:
-        get_logger().warning("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
+    embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+    fully_shard(
+        embed_module,
+        mesh=hsdp_mesh,
+        **fsdp_config,
+    )
+    fully_shard(
+        [model.lm_head, final_module],
+        mesh=hsdp_mesh,
+        mp_policy=mp_policy,
+        offload_policy=offload_policy,
+        reshard_after_forward=False,
+        shard_placement_fn=shard_placement_fn,
+    )
 
     fully_shard(
         model,
@@ -580,10 +575,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     transformer_blocks = list(language_model.layers)
     next_transformer_blocks = transformer_blocks[1:] + [None]
 
-    embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
     if embed_module is not None and len(language_model.layers) > 0:
-        if shard_norm_and_lm_head:
-            embed_module.set_modules_to_forward_prefetch([transformer_blocks[0]])
+        embed_module.set_modules_to_forward_prefetch([transformer_blocks[0]])
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
@@ -593,8 +586,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 prefetch_modules.append(next_mlp.router)
             transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
         elif final_module is not None and model.lm_head is not None:
-            if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_forward_prefetch([final_module, model.lm_head])
+            transformer_block.set_modules_to_forward_prefetch([final_module, model.lm_head])
 
     # backward
     reversed_transformer_blocks = list(reversed(language_model.layers))
@@ -607,10 +599,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         if isinstance(last_mlp, MoE) and isinstance(last_mlp.router, FSDPModule):
             prefetch_modules.append(last_mlp.router)
 
-        if shard_norm_and_lm_head:
-            model.lm_head.set_modules_to_backward_prefetch(prefetch_modules)
-        else:
-            model.set_modules_to_backward_prefetch(prefetch_modules)
+        model.lm_head.set_modules_to_backward_prefetch(prefetch_modules)
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
@@ -620,8 +609,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 prefetch_modules.append(prev_mlp.router)
             transformer_block.set_modules_to_backward_prefetch(prefetch_modules)
         elif embed_module is not None:
-            if shard_norm_and_lm_head:
-                transformer_block.set_modules_to_backward_prefetch([embed_module])
+            transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
@@ -698,8 +686,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     load_dcp_start_time = time.perf_counter()
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
-    if model.config.tie_word_embeddings:
-        state_dict.pop("lm_head.weight")
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),

@@ -28,7 +28,8 @@ def attn(request) -> AttnImplementation:
 
 @pytest.fixture
 def model(attn):
-    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn)
+    # Qwen3 <= 4B ties its LM head to the embeddings, which PrimeRL does not support.
+    config = ModelConfig(name="Qwen/Qwen3-8B", attn=attn, debug={"num_layers": 2})
     return get_model(config)
 
 
@@ -118,9 +119,9 @@ def test_moe_custom_impl():
 
 
 @pytest.mark.skip(reason="need special token for meta stuff in ci")
-@pytest.mark.parametrize("model_name", ["meta-llama/Llama-3.2-1B-Instruct"])
+@pytest.mark.parametrize("model_name", ["meta-llama/Llama-3.1-8B-Instruct"])
 def test_model_forward_custom_impl(model_name):
-    config = ModelConfig(name=model_name, attn="flash_attention_2")
+    config = ModelConfig(name=model_name, attn="flash_attention_2", debug={"num_layers": 2})
     model = get_model(config)
     model = model.to("cuda")
     with torch.autocast("cuda", dtype=torch.bfloat16):
