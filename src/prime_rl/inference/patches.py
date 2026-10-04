@@ -229,7 +229,7 @@ def _patch_qwen35_moe_lora_format():
     (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
     rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
     per-expert layout (``{expert_id}.gate_proj.lora_A.weight`` ...) from
-    ``MultiLoRAGroupedExperts.state_dict_for_adapter`` -- vLLM only consults that layout
+    ``LoRAGroupedExperts.adapter_state_dict`` -- vLLM only consults that layout
     when ``is_3d_moe_weight`` is False (or ``enable_mixed_moe_lora_format=True``).
     Without this override the adapters fail to load with key/shape mismatches.
 
