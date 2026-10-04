@@ -518,6 +518,9 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    async_save: bool = True
+    """Write checkpoints in a background thread. The save copies each rank's model and optimizer shards into CPU memory (host RAM for one extra copy until the write finishes) and training continues while the copy is written. The next save and the end of training wait for it."""
+
     skip_progress: bool = False
     """Skip loading the progress from checkpoint."""
 

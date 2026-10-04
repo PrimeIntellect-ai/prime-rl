@@ -755,6 +755,7 @@ def train(config: TrainerConfig):
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
+        ckpt_manager.wait()
         ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:

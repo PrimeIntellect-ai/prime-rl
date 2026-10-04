@@ -2,14 +2,18 @@ import bisect
 import gc
 import shutil
 import time
+from concurrent.futures import Future
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
+import torch.distributed as dist
 from torch import nn
+from torch.distributed.checkpoint.staging import BlockingAsyncStager
 from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict, set_state_dict
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
+from torch.distributed.checkpoint.state_dict_saver import async_save as dcp_async_save
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.nn import Module
@@ -176,6 +180,11 @@ class CheckpointManager:
         else:
             self.ckpt_steps = all_steps
 
+        # Async saves write in a background thread whose collectives must not share the
+        # training process group, so they run on a dedicated gloo group (created lazily).
+        self.async_pg: dist.ProcessGroup | None = None
+        self.pending_save: tuple[int, Future] | None = None
+
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
@@ -188,8 +197,9 @@ class CheckpointManager:
         scheduler: LRScheduler,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
-    ):
-        """Save the trainer checkpoint to a given path."""
+    ) -> Future | None:
+        """Save the trainer checkpoint to a given path. With ``async_save`` this returns the
+        future of the background write."""
         self.logger.debug(f"Saving training checkpoint to {path}")
         start_time = time.perf_counter()
 
@@ -208,8 +218,19 @@ class CheckpointManager:
             torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self.world.rank}.pt")
 
         # Save sharded state
-        dcp_save(state_dict, checkpoint_id=path)
+        if self.config.async_save:
+            if self.async_pg is None:
+                self.async_pg = dist.new_group(backend="gloo")
+            # Copies the state dict tensor by tensor into CPU memory before returning, so
+            # training can keep updating the live state while the background thread writes
+            # the copy. (The default storage-level stager fails on fused/view parameters.)
+            future = dcp_async_save(
+                state_dict, checkpoint_id=path, process_group=self.async_pg, async_stager=BlockingAsyncStager()
+            )
+            self.logger.debug(f"Staged training checkpoint in {format_time(time.perf_counter() - start_time)}")
+            return future
 
+        dcp_save(state_dict, checkpoint_id=path)
         self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
 
     def load_from_path(
@@ -276,7 +297,9 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
-        """Save the full checkpoint state for a specified step."""
+        """Save the full checkpoint state for a specified step. An async save returns once the
+        state is staged; it is only listed in ``ckpt_steps`` after ``wait``."""
+        self.wait()
         ckpt_path = self.get_ckpt_path(step)
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
@@ -284,8 +307,24 @@ class CheckpointManager:
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier()
 
-        self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        future = self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
+        if future is None:
+            bisect.insort(self.ckpt_steps, step)
+        else:
+            self.pending_save = (step, future)
+
+    def wait(self) -> None:
+        """Block until the in-flight async save (if any) is fully written."""
+        if self.pending_save is None:
+            return
+        step, future = self.pending_save
+        start_time = time.perf_counter()
+        future.result()
+        self.pending_save = None
         bisect.insort(self.ckpt_steps, step)
+        self.logger.debug(
+            f"Waited {format_time(time.perf_counter() - start_time)} for the step {step} checkpoint write"
+        )
 
     def maybe_clean(self) -> None:
         """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
