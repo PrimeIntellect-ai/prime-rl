@@ -15,7 +15,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.payload import read_field
+from prime_rl.transports.payload import PAYLOAD_FIELDS, read_field
 
 
 class TensorMicroBatch(TypedDict):
@@ -48,8 +48,9 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # True when routed_experts and sampling_mask were read by handle for this rank's CP
-    # window: already sharded, and the mask already shifted onto label positions.
+    # True when the by-handle fields were read for this rank's CP chunk (see
+    # PayloadField.window): routing already sharded, the mask already sharded and
+    # shifted onto label positions.
     payload_cp_window: bool
 
     # Materialized immediately before this microbatch's forward pass.
@@ -231,10 +232,8 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
-        payload_cp_window = False
-        if micro_batch.payload:
-            routed_experts, sampling_mask, payload_cp_window = self._read_payload(micro_batch)
-        return TensorMicroBatch(
+        payload, payload_cp_window = self._read_payload(micro_batch) if micro_batch.payload else ({}, False)
+        tensors = TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
             advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
@@ -268,25 +267,25 @@ class DataLoader:
             if micro_batch.ref_kl_weights is not None
             else None,
         )
+        # By-handle fields replace their inline twins of the same name.
+        tensors.update(payload)
+        return tensors
 
-    def _read_payload(self, micro_batch: MicroBatch) -> tuple[Tensor | None, Tensor | None, bool]:
-        """Read the by-handle rows. Text micro batches read only this rank's CP chunk, with
-        the sampling mask taken one position ahead so it lands on the labels; multimodal
-        ones read the full sequence because the model may defer CP sharding."""
-        segments = micro_batch.payload
-        lo, hi, shift = 0, len(micro_batch.input_ids), 0
+    def _read_payload(self, micro_batch: MicroBatch) -> tuple[dict[str, Tensor], bool]:
+        """Read every by-handle field over its window (``PayloadField.window``) and whether the
+        windows were this rank's CP chunk (text) rather than the whole sequence (multimodal)."""
+        n = len(micro_batch.input_ids)
         cp_window = micro_batch.mm_refs is None
+        windows = {"inputs": (0, n), "labels": (0, n), "sequence": (0, n)}
         if cp_window:
-            chunk = hi // self.cp_size
-            lo, hi, shift = chunk * self.cp_rank, chunk * (self.cp_rank + 1), 1
-        routed_experts = read_field(segments, "routed_experts", lo, hi, 0)
-        sampling_mask = read_field(segments, "sampling_mask", lo + shift, hi + shift, -1)
-        if routed_experts is not None:
-            routed_experts = torch.from_numpy(routed_experts).unsqueeze(0)
-        if sampling_mask is not None:
-            width = max(int((sampling_mask >= 0).sum(-1).max(initial=0)), 1)
-            sampling_mask = torch.from_numpy(np.ascontiguousarray(sampling_mask[:, :width])).unsqueeze(0)
-        return routed_experts, sampling_mask, cp_window
+            lo = n // self.cp_size * self.cp_rank
+            hi = lo + n // self.cp_size
+            windows.update(inputs=(lo, hi), labels=(lo + 1, hi + 1))
+        fields = {}
+        for field in {segment.field for segment in micro_batch.payload}:
+            lo, hi = windows[PAYLOAD_FIELDS[field].window]
+            fields[field] = torch.from_numpy(read_field(micro_batch.payload, field, lo, hi)).unsqueeze(0)
+        return fields, cp_window
 
 
 def _torch_dtype(name: str) -> torch.dtype:

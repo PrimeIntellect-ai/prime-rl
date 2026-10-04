@@ -550,9 +550,15 @@ def _write_rows(path, rows: np.ndarray) -> int:
     return offset
 
 
+def _mask_logprobs(mask_rows: np.ndarray) -> np.ndarray:
+    return np.where(mask_rows >= 0, -(mask_rows + 1) / 1024, -np.inf).astype(np.float32)
+
+
 def test_payload_by_handle_matches_inline(tmp_path):
-    """Router-replay ids and sampling masks read by handle give the trainer the same
-    tensors as the inline path, through truncation, packing, padding and CP windows."""
+    """Every payload field read by handle gives the trainer the same tensors as the inline
+    path, through truncation, packing, padding and CP windows. Routing weights are checked
+    against Total Router Recall's inline int32 [ids | weight bits] layout, and sampler mask
+    logprobs (a function of their ids here) against the inline mask."""
     import torch
 
     from prime_rl.trainer.rl.data import DataLoader
@@ -569,6 +575,7 @@ def test_payload_by_handle_matches_inline(tmp_path):
         if i == 0:  # truncated to seq_len before its first masked position
             n, mask = 40, np.arange(40) >= 36
         experts = rng.integers(0, 64, size=(n, 3, 2), dtype=np.uint8)
+        weights = rng.random((n, 3, 2), dtype=np.float32)
         counts = np.where(mask, rng.integers(1, 5, size=n), 0).astype(np.int32)
         mask_rows = np.full((n, 4), -1, dtype=np.int32)
         for t in range(n):
@@ -584,7 +591,9 @@ def test_payload_by_handle_matches_inline(tmp_path):
         inline.append(
             TrainingSample(
                 **sample,
-                routed_experts=_routed_experts(experts),
+                routed_experts=_routed_experts(
+                    np.concatenate([experts.astype(np.int32), weights.view(np.int32)], -1), np.int32
+                ),
                 sampling_mask=SamplingMask(ids=mask_rows[mask_rows >= 0].tobytes(), counts=counts.tobytes()),
             )
         )
@@ -594,12 +603,15 @@ def test_payload_by_handle_matches_inline(tmp_path):
         segments = []
         for lo, hi in ((0, cut), (cut, n)):
             path = str(tmp_path / f"{i}-{lo}.bin")
-            offset = _write_rows(path, experts[lo:hi])
-            segments.append(PayloadSegment("routed_experts", path, offset, lo, hi - lo, "uint8", [3, 2]))
+            for field, rows in (("routed_experts", experts), ("routed_expert_weights", weights)):
+                offset = _write_rows(path, rows[lo:hi])
+                segments.append(PayloadSegment(field, path, offset, lo, hi - lo, rows.dtype.name, [3, 2]))
         for t in np.nonzero(mask)[0]:
             path = str(tmp_path / f"{i}-mask.bin")
-            offset = _write_rows(path, mask_rows[t, : counts[t]][None])
-            segments.append(PayloadSegment("sampling_mask", path, offset, int(t), 1, "int32", [int(counts[t])]))
+            row = mask_rows[t, : counts[t]][None]
+            for field, rows in (("sampling_mask", row), ("sampling_mask_logprobs", _mask_logprobs(row))):
+                offset = _write_rows(path, rows)
+                segments.append(PayloadSegment(field, path, offset, int(t), 1, rows.dtype.name, [int(counts[t])]))
         by_handle.append(TrainingSample(**sample, payload=segments))
 
     bin_cost = build_bin_cost(None)
@@ -615,17 +627,15 @@ def test_payload_by_handle_matches_inline(tmp_path):
                 expected = loader._micro_batch_to_tensor(expected_mb)
                 actual = loader._micro_batch_to_tensor(actual_mb)
                 assert actual["payload_cp_window"]
-                routed = shard_for_cp(expected["routed_experts"], cp_rank, cp_size)
-                sampling = expected["sampling_mask"]
-                if sampling is not None:
-                    sampling = shard_for_cp(shift_tensor_left(sampling, pad_value=-1), cp_rank, cp_size)
-                    width = actual["sampling_mask"].shape[-1]
-                    assert (sampling[..., width:] == -1).all()
-                    sampling = sampling[..., :width]
-                    if cp_size == 1:
-                        assert width == expected["sampling_mask"].shape[-1]
-                torch.testing.assert_close(actual["routed_experts"], routed, rtol=0, atol=0)
-                if sampling is None:
-                    assert actual["sampling_mask"] is None
-                else:
-                    torch.testing.assert_close(actual["sampling_mask"], sampling, rtol=0, atol=0)
+                routed = torch.cat([actual["routed_experts"], actual["routed_expert_weights"].view(torch.int32)], -1)
+                torch.testing.assert_close(
+                    routed, shard_for_cp(expected["routed_experts"], cp_rank, cp_size), rtol=0, atol=0
+                )
+                mask = expected["sampling_mask"]
+                if mask is None:
+                    assert actual["sampling_mask"] is None and "sampling_mask_logprobs" not in actual
+                    continue
+                labels_mask = shard_for_cp(shift_tensor_left(mask, pad_value=-1), cp_rank, cp_size)
+                torch.testing.assert_close(actual["sampling_mask"], labels_mask, rtol=0, atol=0)
+                logprobs = torch.from_numpy(_mask_logprobs(mask.numpy()))
+                torch.testing.assert_close(actual["sampling_mask_logprobs"], logprobs, rtol=0, atol=0)

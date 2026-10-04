@@ -8,7 +8,7 @@ import msgspec
 import numpy as np
 
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
-from prime_rl.transports.payload import PayloadSegment, clip_segments
+from prime_rl.transports.payload import PAYLOAD_FIELDS, PayloadSegment, clip_segments
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -406,10 +406,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
         if payload is not None:
             clipped = clip_segments(payload, 0, cut)
-            # A mask cut out entirely stays present as a zero-row segment, so the trainer
-            # gets the same all -1 width-1 mask as for an inline mask cut to zero rows.
-            if "sampling_mask" not in {s.field for s in clipped} and any(s.field == "sampling_mask" for s in payload):
-                clipped.append(PayloadSegment("sampling_mask", "", 0, cut, 0, "int32", [1]))
+            # A mask field cut out entirely stays present as a zero-row segment, so the trainer
+            # gets the same width-1 fill tensor as for an inline mask cut to zero rows.
+            for field in sorted({s.field for s in payload} - {s.field for s in clipped}):
+                if PAYLOAD_FIELDS[field].window != "inputs":
+                    dtype = "float32" if isinstance(PAYLOAD_FIELDS[field].fill, float) else "int32"
+                    clipped.append(PayloadSegment(field, "", 0, cut, 0, dtype, [1]))
             payload = clipped
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
@@ -820,10 +822,10 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
-    # Fully loss-masked, so replaying sampling masks would be pure wasted work.
+    # Fully loss-masked, so only routing, which the forward pass replays, is worth reading.
     dummy.sampling_mask = None
     if dummy.payload is not None:
-        dummy.payload = [segment for segment in dummy.payload if segment.field != "sampling_mask"] or None
+        dummy.payload = [s for s in dummy.payload if PAYLOAD_FIELDS[s.field].window == "inputs"] or None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None
