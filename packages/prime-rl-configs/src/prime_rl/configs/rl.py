@@ -25,15 +25,7 @@ from prime_rl.configs.trainer import (
     TrainerConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-from prime_rl.utils.validation import (
-    propagate_shared_fields,
-    validate_shared_ckpt_config,
-    validate_shared_max_steps,
-    validate_shared_model_name,
-    validate_shared_seq_len,
-    validate_shared_tokenizer,
-    validate_shared_wandb_config,
-)
+from prime_rl.utils.validation import propagate_shared_fields
 
 
 class SharedLogConfig(BaseConfig):
@@ -334,15 +326,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_resume(self):
-        """Propagate the top-level resume onto the sub-configs."""
-        if self.resume is None:
-            return self
-        self.trainer.resume = self.resume.model_copy()
-        self.orchestrator.resume = self.resume.model_copy()
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Default the W&B and Prime platform run names to ``run.name``.
 
@@ -365,13 +348,70 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_shared_configs(self):
-        """Validate consistency of shared configs across trainer, orchestrator, and inference."""
-        validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
-        validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
-        validate_shared_max_steps(self.trainer, self.orchestrator)
-        validate_shared_seq_len(self.trainer, self.orchestrator)
-        validate_shared_ckpt_config(self.trainer, self.orchestrator)
-        validate_shared_wandb_config(self.trainer, self.orchestrator)
+        """Cross-component constraints for values set per sub-config rather than through the
+        shared fields (``propagate_shared_fields`` already rejects shared vs sub-config conflicts)."""
+        trainer, orchestrator, inference = self.trainer, self.orchestrator, self.inference
+
+        def require_equal(name: str, values: dict[str, Any]) -> None:
+            if len({repr(v) for v in values.values()}) > 1:
+                found = ", ".join(f"{path}={value!r}" for path, value in values.items())
+                raise ValueError(f"{name} must match across components ({found}). Set the shared [{name}] instead.")
+
+        # The orchestrator queries the inference server it is paired with; without one, it
+        # must match the trainer whose weights the external server receives.
+        if inference is not None:
+            require_equal(
+                "model.name",
+                {"inference.vllm.model": inference.vllm.model, "orchestrator.model.name": orchestrator.model.name},
+            )
+        else:
+            require_equal(
+                "model.name",
+                {"trainer.model.name": trainer.model.name, "orchestrator.model.name": orchestrator.model.name},
+            )
+        # ``tokenizer.name`` / ``trust_remote_code`` may differ (e.g. FP8-quantized inference variants).
+        chat_templates = {
+            "trainer.tokenizer.chat_template": trainer.tokenizer.chat_template,
+            "orchestrator.tokenizer.chat_template": orchestrator.tokenizer.chat_template,
+        }
+        if inference is not None:
+            chat_templates["inference.vllm.chat_template"] = inference.vllm.chat_template
+        require_equal("tokenizer.chat_template", chat_templates)
+        require_equal(
+            "max_steps", {"trainer.max_steps": trainer.max_steps, "orchestrator.max_steps": orchestrator.max_steps}
+        )
+        require_equal("resume", {"trainer.resume": trainer.resume, "orchestrator.resume": orchestrator.resume})
+        if trainer.model.seq_len < orchestrator.seq_len:
+            raise ValueError(
+                f"trainer.model.seq_len ({trainer.model.seq_len}) must be >= orchestrator.seq_len "
+                f"({orchestrator.seq_len}) so the trainer can handle every sequence the orchestrator produces."
+            )
+        if (trainer.ckpt is None) != (orchestrator.ckpt is None):
+            raise ValueError(
+                "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
+            )
+        if trainer.ckpt and orchestrator.ckpt:
+            require_equal(
+                "ckpt.interval",
+                {
+                    "trainer.ckpt.interval": trainer.ckpt.interval,
+                    "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
+                },
+            )
+        trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
+        if (trainer_wandb is None) != (orchestrator_wandb is None):
+            raise ValueError(
+                "W&B must be configured on both trainer and orchestrator, otherwise only one side's "
+                "metrics are logged. Use the shared [monitors.wandb]."
+            )
+        if trainer_wandb and orchestrator_wandb:
+            require_equal(
+                "monitors.wandb.project",
+                {
+                    "trainer.monitors.wandb.project": trainer_wandb.project,
+                    "orchestrator.monitors.wandb.project": orchestrator_wandb.project,
+                },
+            )
         return self
 
     @model_validator(mode="after")
