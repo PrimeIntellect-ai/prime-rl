@@ -1,6 +1,6 @@
 from typing import Any, ClassVar
 
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.trainer.models.config import PrimeModelConfig
 from prime_rl.trainer.models.layers.rotary_emb import RopeParameters, standardize_rope_parameters
@@ -25,7 +25,8 @@ class Qwen3MoeConfig(PrimeModelConfig):
     decoder_sparse_step: int = 1
     moe_intermediate_size: int = 768
     num_experts_per_tok: int = 8
-    num_experts: int = 128
+    # Older checkpoints write `num_experts`; transformers 5 writes `num_local_experts`.
+    num_experts: int = Field(128, validation_alias=AliasChoices("num_experts", "num_local_experts"))
     norm_topk_prob: bool = False
     mlp_only_layers: list[int] = []
     load_balance_coeff: float | None = None
