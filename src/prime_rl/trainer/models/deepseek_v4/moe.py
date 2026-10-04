@@ -11,7 +11,7 @@ from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.layers.mlp import FeedForward
-from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, ScoreFuncType, TokenChoiceTopKRouter
 
 
 class ClampedSwiglu:
@@ -32,70 +32,7 @@ class ClampedSwiglu:
         return F.silu(gate) * up
 
 
-class DeepseekV4Router(TokenChoiceTopKRouter):
-    """Token-choice router scored with `sqrt(softplus(.))`, V4's only scoring function.
-
-    `TokenChoiceTopKRouter.forward` picks its scoring function from an inline
-    `if/elif/else: raise` chain with no hook to extend, and `"sqrtsoftplus"` is outside
-    the `ScoreFuncType` it accepts, so the whole method is restated below. Only the
-    scoring line is new: the `routed_experts` bypass, the selection bias, the
-    normalization, the scaling and the per-expert token count are the base class's,
-    unchanged.
-    """
-
-    def forward(
-        self, x: torch.Tensor, routed_experts: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
-            f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
-        )
-        if self.fp32_gate:
-            gate_bias = self.gate.bias.float() if self.gate.bias is not None else None
-            logits = F.linear(x.float(), self.gate.weight.float(), gate_bias)
-        else:
-            logits = self.gate(x)
-
-        # Scoring runs in float32 to avoid loss explosion, as in the base class. HF scores
-        # in the input dtype instead, so bf16 activations drift from HF by ~1e-3 here.
-        scores = F.softplus(logits.float()).sqrt()
-
-        # NOTE: the selection bias only steers selection. The gating value top_scores is
-        #       still derived from the original scores.
-        if routed_experts is not None:
-            top_scores = scores.gather(dim=1, index=routed_experts)
-            selected_experts_indices = routed_experts
-        elif self.force_balanced:
-            num_tokens = scores.shape[0]
-            arange = torch.arange(num_tokens * self.top_k, device=scores.device)
-            selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
-            top_scores = scores.gather(dim=1, index=selected_experts_indices)
-        else:
-            selection_scores = scores
-            if self.selection_bias is not None:
-                selection_scores = selection_scores + self.selection_bias
-            _, selected_experts_indices = torch.topk(selection_scores, k=self.top_k, dim=1, sorted=self.topk_sorted)
-            top_scores = scores.gather(dim=1, index=selected_experts_indices)
-
-        with torch.no_grad():
-            selected_probability_mass = top_scores / (scores.sum(dim=-1, keepdim=True) + 1e-20)
-            routing_confidence_sum = selected_probability_mass.sum()
-
-        if self.route_norm:
-            denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
-            top_scores = top_scores / denominator
-        top_scores = top_scores * self.route_scale
-
-        num_tokens_per_expert = torch.histc(
-            selected_experts_indices.reshape(-1).float(),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
-        ).to(torch.int64)
-
-        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
-
-
-class DeepseekV4HashRouter(DeepseekV4Router):
+class DeepseekV4HashRouter(TokenChoiceTopKRouter):
     """A bootstrap layer's router: selection is a frozen token-id lookup, gating still learned.
 
     `tid2eid` replaces the top-k of the scores with `tid2eid[token_id]`, read from the checkpoint
@@ -110,7 +47,7 @@ class DeepseekV4HashRouter(DeepseekV4Router):
         dim: int,
         num_experts: int,
         top_k: int,
-        score_func: str,
+        score_func: ScoreFuncType,
         route_norm: bool,
         route_scale: float,
         vocab_size: int,
@@ -193,9 +130,7 @@ class DeepseekV4MoE(MoE):
             f"the routed experts hardcode SiLU; hidden_act={config.hidden_act!r} is not supported"
         )
         if config.scoring_func != "sqrtsoftplus":
-            raise ValueError(
-                f"the router hardcodes sqrt(softplus(.)); scoring_func={config.scoring_func!r} is not supported"
-            )
+            raise ValueError(f"V4 routes with sqrt(softplus(.)); scoring_func={config.scoring_func!r} is not supported")
 
         is_hash = layer_idx < config.num_hash_layers
 
@@ -212,7 +147,7 @@ class DeepseekV4MoE(MoE):
         router = (
             DeepseekV4HashRouter(**router_kwargs, vocab_size=config.vocab_size)
             if is_hash
-            else DeepseekV4Router(**router_kwargs, selection_bias=True)
+            else TokenChoiceTopKRouter(**router_kwargs, selection_bias=True)
         )
         experts = DeepseekV4Experts(
             dim=config.hidden_size,
