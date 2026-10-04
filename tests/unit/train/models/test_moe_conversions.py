@@ -8,8 +8,6 @@ from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoePreTrainedModel
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain as laguna_conversion_chain
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaPreTrainedModel
-from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain as minimax_conversion_chain
-from prime_rl.trainer.models.minimax_m2.modeling_minimax_m2 import MiniMaxM2PreTrainedModel
 
 
 def _afmoe_state_dict() -> dict[str, torch.Tensor]:
@@ -44,29 +42,11 @@ def _laguna_state_dict() -> dict[str, torch.Tensor]:
     return state_dict
 
 
-def _minimax_state_dict() -> dict[str, torch.Tensor]:
-    prefix = "model.layers.0.block_sparse_moe"
-    state_dict = {
-        f"{prefix}.gate.weight": torch.randn(2, 4),
-        f"{prefix}.e_score_correction_bias": torch.randn(2),
-    }
-    for expert in range(2):
-        state_dict[f"{prefix}.experts.{expert}.w1.weight"] = torch.randn(3, 4)
-        state_dict[f"{prefix}.experts.{expert}.w3.weight"] = torch.randn(3, 4)
-        state_dict[f"{prefix}.experts.{expert}.w2.weight"] = torch.randn(4, 3)
-    return state_dict
-
-
 @pytest.mark.parametrize(
     ("model_cls", "operations", "hf_state_dict"),
     [
         (AfmoePreTrainedModel, afmoe_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _afmoe_state_dict()),
         (LagunaPreTrainedModel, laguna_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _laguna_state_dict()),
-        (
-            MiniMaxM2PreTrainedModel,
-            minimax_conversion_chain(SimpleNamespace(num_hidden_layers=1)),
-            _minimax_state_dict(),
-        ),
     ],
 )
 def test_current_hf_moe_conversion_roundtrip(model_cls, operations, hf_state_dict):

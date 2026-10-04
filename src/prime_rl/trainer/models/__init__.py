@@ -18,7 +18,6 @@ from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
 from prime_rl.trainer.models.laguna import LagunaConfig, LagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, cast_float_and_contiguous
 from prime_rl.trainer.models.llama import LlamaForCausalLM
-from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config, MiniMaxM2ForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.models.qwen3_5 import (
@@ -43,7 +42,6 @@ AutoConfig.register("glm4_moe", Glm4MoeConfig, exist_ok=True)
 AutoConfig.register("glm_moe_dsa", GlmMoeDsaConfig, exist_ok=True)
 AutoConfig.register("gpt_oss", GptOssConfig, exist_ok=True)
 AutoConfig.register("laguna", LagunaConfig, exist_ok=True)
-AutoConfig.register("minimax_m2", MiniMaxM2Config, exist_ok=True)
 AutoConfig.register("nemotron_h", NemotronHConfig, exist_ok=True)
 AutoConfig.register("qwen3_moe", Qwen3MoeConfig, exist_ok=True)
 AutoConfig.register("qwen3_5", Qwen3_5Config, exist_ok=True)
@@ -66,7 +64,6 @@ _CUSTOM_CAUSAL_LM_MODELS: tuple[
     (Glm4MoeConfig, Glm4MoeForCausalLM),
     (GlmMoeDsaConfig, GlmMoeDsaForCausalLM),
     (LagunaConfig, LagunaForCausalLM),
-    (MiniMaxM2Config, MiniMaxM2ForCausalLM),
     (NemotronHConfig, NemotronHForCausalLM),
     (Qwen3MoeConfig, Qwen3MoeForCausalLM),
     (Qwen3_5TextConfig, Qwen3_5ForCausalLM),

@@ -17,7 +17,6 @@ def apply_shared_vllm_patches():
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
-    monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
@@ -26,7 +25,6 @@ def apply_shared_vllm_patches():
     monkey_patch_tokenize_params_validation()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
-    monkey_patch_minimax_m2_for_lora()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -207,40 +205,6 @@ def monkey_patch_nano_v3_reasoning_parser():
             return reasoning_content, final_content
 
     ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
-
-
-def monkey_patch_minimax_m2_think_end_passthrough():
-    """Keep the literal ``</think>`` in MiniMax-M2 content on tool-calling turns.
-
-    prime-rl serves MiniMax-M2 with ``reasoning=minimax_m2_append_think``, which
-    returns content as ``<think>`` + the full completion so think tags round-trip
-    through multi-turn re-serialization. vLLM 0.24's minimax_m2 parser engine
-    added a ``(CONTENT, THINK_END) -> no-events`` transition that silently
-    swallows the ``</think>`` (0.23's regex tool parser passed it through
-    untouched), and it also ``.strip()``s content whenever tool calls are
-    present. Drop the transition — the engine emits unmatched terminals as plain
-    state content — and disable the content strip.
-    """
-    import dataclasses
-    import functools
-
-    from vllm.parser import minimax_m2
-    from vllm.parser.engine.parser_engine_config import ParserState
-
-    original_config = minimax_m2.minimax_m2_config
-
-    @functools.cache
-    def _patched_config():
-        config = original_config()
-        transitions = dict(config.transitions)
-        del transitions[(ParserState.CONTENT, "THINK_END")]
-        return dataclasses.replace(
-            config,
-            transitions=transitions,
-            strip_content_whitespace_with_tools=False,
-        )
-
-    minimax_m2.minimax_m2_config = _patched_config
 
 
 def monkey_patch_return_routed_experts_with_nixl_connector():
@@ -577,74 +541,6 @@ def monkey_patch_tokenize_params_validation():
     TokenizeParams._token_len_check = _patched_token_len_check
     TokenizeParams._text_len_check = _patched_text_len_check
     TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
-
-
-def monkey_patch_minimax_m2_for_lora():
-    """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
-
-    These patches are only needed when using LoRA with MiniMax M2 but are safe
-    to apply unconditionally (verified with non-LoRA runs). We apply them
-    unconditionally because the vLLM plugin runs before the vLLM config is
-    available, so we can't check if LoRA is enabled.
-
-    Problem 1 — Gate dtype mismatch:
-        vLLM's MiniMaxM2MoE creates the gate (router) with params_dtype=float32
-        and casts inputs to float32. When LoRA is enabled, vLLM wraps ALL
-        ReplicatedLinear layers (including the gate) with LoRA support. Even
-        though our adapter has no gate LoRA weights, the LoRA Triton kernel
-        still runs for all wrapped layers when any adapter is active — and it
-        asserts inputs are float16/bfloat16. Qwen3 MoE doesn't have this
-        problem because its gate uses the model dtype.
-        Fix: rebuild the gate as GateLinear with a bf16 weight (out_dtype=float32
-        keeps fp32 router logits). vLLM 0.24.0's own forward already drops the
-        float32 input cast. FusedMoE also has router_logits_dtype=float32, so
-        routing precision is preserved inside the expert dispatch.
-
-    Problem 2 — Adapter key naming mismatch:
-        PrimeRL saves adapter keys using its internal naming convention
-        (mlp.experts.{j}.gate_proj/down_proj/up_proj), which matches Qwen3 MoE
-        but not MiniMax M2. vLLM's MiniMax M2 model expects HF-style keys
-        (block_sparse_moe.experts.{j}.w1/w2/w3). For full model weights this
-        is handled by vLLM's load_weights(), but LoRA adapters are loaded
-        through a separate path (LoRAModel.from_local_checkpoint) that doesn't
-        have model-specific key translation.
-        Fix: set hf_to_vllm_mapper on the model class so vLLM remaps adapter
-        keys during LoRA loading. This attribute is only read by _load_adapter
-        in the LoRA worker manager — it has no effect without LoRA.
-    """
-    from vllm.model_executor.models.minimax_m2 import MiniMaxM2ForCausalLM, MiniMaxM2MoE
-    from vllm.model_executor.models.utils import WeightsMapper
-
-    # --- Gate dtype fix (only matters with LoRA, safe without) ---
-    _original_init = MiniMaxM2MoE.__init__
-
-    def _patched_init(self, config, quant_config=None, prefix=""):
-        _original_init(self, config, quant_config, prefix)
-        from vllm.model_executor.layers.fused_moe.router.gate_linear import GateLinear
-
-        # vLLM 0.24.0 builds the gate as GateLinear with a float32 weight; rebuild it
-        # with a bf16 weight (model dtype) so the LoRA Triton kernel's float16/bfloat16
-        # assertion passes, keeping out_dtype=float32 so router logits stay fp32 (the
-        # GateLinear bf16xbf16->fp32 path).
-        self.gate = GateLinear(
-            config.hidden_size,
-            config.num_local_experts,
-            bias=False,
-            out_dtype=torch.float32,
-            prefix=f"{prefix}.gate",
-        )
-
-    MiniMaxM2MoE.__init__ = _patched_init
-
-    # --- Adapter key remapping (only read by vLLM's LoRA adapter loader) ---
-    MiniMaxM2ForCausalLM.hf_to_vllm_mapper = WeightsMapper(
-        orig_to_new_substr={
-            ".mlp.experts.": ".block_sparse_moe.experts.",
-            ".gate_proj.": ".w1.",
-            ".down_proj.": ".w2.",
-            ".up_proj.": ".w3.",
-        },
-    )
 
 
 def monkey_patch_no_moe_lora():

@@ -26,8 +26,6 @@ from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM as PrimeRLGlm4Mo
 from prime_rl.trainer.models.laguna import LagunaConfig
 from prime_rl.trainer.models.laguna import LagunaForCausalLM as PrimeRLLagunaForCausalLM
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.minimax_m2 import MiniMaxM2Config
-from prime_rl.trainer.models.minimax_m2 import MiniMaxM2ForCausalLM as PrimeRLMiniMaxM2ForCausalLM
 from prime_rl.trainer.models.qwen3_5_moe import Qwen3_5MoeForCausalLM as PrimeRLQwen3_5MoeVLM
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.utils import default_dtype
@@ -104,33 +102,6 @@ ARCH_PRESETS = {
         "hf_model_class": HFGlm4MoeForCausalLM,
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
         "tokenizer_source": "THUDM/GLM-4-9B-0414",
-    },
-    "minimax_m2": {
-        "config_class": MiniMaxM2Config,
-        "config_kwargs": dict(
-            vocab_size=200064,
-            hidden_size=512,
-            intermediate_size=256,
-            num_hidden_layers=12,
-            num_attention_heads=8,
-            num_key_value_heads=4,
-            head_dim=64,
-            hidden_act="silu",
-            max_position_embeddings=4096,
-            rms_norm_eps=1e-6,
-            rope_theta=5000000,
-            rotary_dim=32,
-            num_local_experts=8,
-            num_experts_per_tok=4,
-            scoring_func="sigmoid",
-            use_routing_bias=True,
-            use_qk_norm=True,
-            qk_norm_type="per_layer",
-            auto_map={"AutoModelForCausalLM": "MiniMaxAI/MiniMax-M2.1--modeling_minimax_m2.MiniMaxM2ForCausalLM"},
-        ),
-        "hf_model_class": None,  # uses AutoModelForCausalLM with trust_remote_code
-        "prime_model_class": PrimeRLMiniMaxM2ForCausalLM,
-        "tokenizer_source": "MiniMaxAI/MiniMax-M2.1",
     },
     "laguna": {
         "config_class": LagunaConfig,

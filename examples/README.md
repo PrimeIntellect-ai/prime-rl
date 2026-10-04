@@ -34,4 +34,4 @@ Examples that don't follow the basic eval → SFT → RL walk-through pattern:
 
 ## Related config folders
 
-- Frontier-model configs without launch walkthroughs (`minimax-m2.5`, `nemotron-3-super`, `deepseek-v4-flash`) live in [`configs/advanced/`](../configs/advanced).
+- Frontier-model configs without launch walkthroughs (`nemotron-3-super`, `deepseek-v4-flash`) live in [`configs/advanced/`](../configs/advanced).

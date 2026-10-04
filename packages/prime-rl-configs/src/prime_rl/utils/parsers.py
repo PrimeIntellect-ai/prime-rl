@@ -11,7 +11,6 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^zai-org/GLM-4\.5"), "glm45"),
     (re.compile(r"^zai-org/GLM-4\.7"), "glm47"),
     (re.compile(r"^zai-org/GLM-5"), "glm47"),
-    (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2"),
     (re.compile(r"^openai/gpt-oss"), "openai"),
     (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "qwen3_coder"),
@@ -31,7 +30,6 @@ REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^deepseek-ai/DeepSeek-V4"), "deepseek_v4"),
     (re.compile(r"^deepseek-ai/DeepSeek-V3\.[12]"), "deepseek_r1"),
     (re.compile(r"^zai-org/GLM-"), "glm45"),
-    (re.compile(r"^MiniMaxAI/MiniMax-M2"), "minimax_m2_append_think"),
     # openai/gpt-oss has no entry here — vLLM's harmony serving path splits reasoning natively.
     (re.compile(r"^poolside/Laguna"), "poolside_v1"),
     (re.compile(r"^PrimeIntellect/INTELLECT-3"), "deepseek_r1"),

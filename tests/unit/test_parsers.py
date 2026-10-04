@@ -37,10 +37,6 @@ EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
     # GLM-5.1
     ("zai-org/GLM-5.1", "glm47", "glm45"),
     ("zai-org/GLM-5.1-FP8", "glm47", "glm45"),
-    # MiniMax M2
-    ("MiniMaxAI/MiniMax-M2", "minimax_m2", "minimax_m2_append_think"),
-    ("MiniMaxAI/MiniMax-M2.1", "minimax_m2", "minimax_m2_append_think"),
-    ("MiniMaxAI/MiniMax-M2.5", "minimax_m2", "minimax_m2_append_think"),
     # gpt-oss (reasoning handled natively by vLLM's harmony path)
     ("openai/gpt-oss-20b", "openai", None),
     ("openai/gpt-oss-120b", "openai", None),
