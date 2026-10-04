@@ -1,4 +1,7 @@
+import os
+
 import torch
+import torch.distributed as dist
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -23,7 +26,14 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     build_qwen3_5_mrope_position_ids,
 )
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
-from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
+from prime_rl.utils.cp import (
+    CPContext,
+    gather_for_cp,
+    setup_cp_attention_params,
+    shard_for_cp,
+    shard_position_ids_for_cp,
+)
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -198,6 +208,118 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
 
+# ---------------------------------------------------------------------------
+# Per-CP-rank vision encoding (opt-in). Default behaviour is unchanged: every CP
+# rank encodes every image. Set PRIME_RL_VLM_CP_PER_RANK_ENCODE=1 to partition
+# images across CP ranks and all-gather the embeddings instead. Set
+# PRIME_RL_VLM_TIME_VISION=1 to log vision-encoder wall time on rank 0.
+# ---------------------------------------------------------------------------
+_PER_RANK_ENCODE = os.environ.get("PRIME_RL_VLM_CP_PER_RANK_ENCODE", "0") == "1"
+_TIME_VISION = os.environ.get("PRIME_RL_VLM_TIME_VISION", "0") == "1"
+_TIME_VISION_EVERY = int(os.environ.get("PRIME_RL_VLM_TIME_VISION_EVERY", "20"))
+
+
+def _partition_images_for_cp(image_grid_thw: torch.LongTensor, cp_world_size: int) -> list[list[int]]:
+    """Greedy largest-first balance of images across CP ranks by patch count. Deterministic, no comm."""
+    patches = (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]).tolist()
+    order = sorted(range(len(patches)), key=lambda i: -patches[i])
+    buckets: list[list[int]] = [[] for _ in range(cp_world_size)]
+    load = [0] * cp_world_size
+    for i in order:
+        r = min(range(cp_world_size), key=lambda r: load[r])
+        buckets[r].append(i)
+        load[r] += patches[i]
+    return buckets
+
+
+@torch.compiler.disable
+def _encode_images_per_cp_rank(
+    visual: nn.Module,
+    pixel_values: torch.Tensor,
+    image_grid_thw: torch.LongTensor,
+    merge_size: int,
+    cp_context: CPContext,
+    requires_grad: bool,
+) -> torch.Tensor:
+    """Encode this rank's share of the images, all-gather, return embeddings in original image order.
+
+    Invariants: `visual` is called exactly once on every rank (FSDP symmetry); the partition is
+    computed identically on every rank from `image_grid_thw`; output rows follow image order so the
+    caller's masked_scatter is unchanged.
+    """
+    device = pixel_values.device
+    rank, world = cp_context.cp_rank, cp_context.cp_world_size
+    patches = image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]
+    tokens = patches // (merge_size**2)
+    patch_off = torch.cumsum(patches, 0) - patches
+    buckets = _partition_images_for_cp(image_grid_thw, world)
+    mine = buckets[rank]
+
+    if mine:
+        rows = torch.cat([torch.arange(int(patch_off[i]), int(patch_off[i] + patches[i]), device=device) for i in mine])
+        local = visual(pixel_values[rows], image_grid_thw[mine]).pooler_output
+    else:
+        dummy = torch.zeros(merge_size**2, pixel_values.shape[1], device=device, dtype=pixel_values.dtype)
+        dummy_grid = torch.tensor([[1, merge_size, merge_size]], device=device)
+        local = visual(dummy, dummy_grid).pooler_output[:0]
+
+    hidden = local.shape[-1]
+    per_rank_tokens = [int(tokens[b].sum()) if b else 0 for b in buckets]
+    max_tokens = max(per_rank_tokens)
+    padded = local.new_zeros(max_tokens, hidden)
+    if local.shape[0]:
+        padded[: local.shape[0]] = local
+
+    if requires_grad:
+        gathered = gather_for_cp(padded.unsqueeze(0), cp_context.cp_group).squeeze(0)
+        chunks = list(gathered.split(max_tokens, dim=0))
+    else:
+        chunks = [torch.empty_like(padded) for _ in range(world)]
+        dist.all_gather(chunks, padded.contiguous(), group=cp_context.cp_group)
+
+    per_image: list[torch.Tensor | None] = [None] * int(image_grid_thw.shape[0])
+    for r, b in enumerate(buckets):
+        off = 0
+        for i in b:
+            n = int(tokens[i])
+            per_image[i] = chunks[r][off : off + n]
+            off += n
+    return torch.cat(per_image, dim=0)
+
+
+class _VisionTimer:
+    """Accumulates CUDA-event wall time of the vision encoder; logs on rank 0 every N forwards."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.total_s = 0.0
+        self.window_s = 0.0
+
+    def __call__(self, fn, *args, **kwargs):
+        if not _TIME_VISION or not torch.cuda.is_available():
+            return fn(*args, **kwargs)
+        start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        start.record()
+        out = fn(*args, **kwargs)
+        end.record()
+        end.synchronize()
+        dt = start.elapsed_time(end) / 1000.0
+        self.calls += 1
+        self.total_s += dt
+        self.window_s += dt
+        if self.calls % _TIME_VISION_EVERY == 0 and (not dist.is_initialized() or dist.get_rank() == 0):
+            get_logger().info(
+                f"[vision-timer] last {_TIME_VISION_EVERY} fwd: {self.window_s:.3f}s "
+                f"({self.window_s / _TIME_VISION_EVERY * 1000:.1f} ms/fwd) | cumulative {self.total_s:.1f}s "
+                f"| per_rank_encode={_PER_RANK_ENCODE}"
+            )
+            self.window_s = 0.0
+        return out
+
+
+_vision_timer = _VisionTimer()
+
+
 class Qwen3_5VLMModel(nn.Module):
     def __init__(self, config) -> None:
         super().__init__()
@@ -242,7 +364,21 @@ class Qwen3_5VLMModel(nn.Module):
             )
             vision_grid = torch.tensor([[1, merge_size, merge_size]], device=inputs_embeds.device)
 
-        image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
+        use_per_rank = (
+            _PER_RANK_ENCODE and has_images and self.cp_context.cp_enabled and self.cp_context.cp_world_size > 1
+        )
+        if use_per_rank:
+            image_embeds = _vision_timer(
+                _encode_images_per_cp_rank,
+                self.visual,
+                pixel_values,
+                vision_grid,
+                self.config.vision_config.spatial_merge_size,
+                self.cp_context,
+                any(p.requires_grad for p in self.visual.parameters()),
+            ).to(inputs_embeds.dtype)
+        else:
+            image_embeds = _vision_timer(self.visual, pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
         if has_images:
             image_mask = (input_ids == self.config.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
