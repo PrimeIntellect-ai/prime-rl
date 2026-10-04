@@ -565,6 +565,8 @@ def test_single_node_auto_inference_ports_follow_server_port():
 
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size == 2
+    assert config.trainer.weight_broadcast.inference_world_size == 2
+    assert config.orchestrator.weight_broadcast.inference_world_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
 
