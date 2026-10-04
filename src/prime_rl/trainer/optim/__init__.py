@@ -1,6 +1,5 @@
 import torch
 import torch.distributed as dist
-from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
@@ -9,6 +8,7 @@ from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffload
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.muon import Muon, newton_schulz_symmetric
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -235,6 +235,7 @@ def _create_muon_optimizer(
         distributed_mesh=distributed_mesh,
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
+        newton_schulz_func=newton_schulz_symmetric,
     )
     # Keep both warm-ups after Muon construction and before its first step. The
     # main and expert groups establish independent NCCL peer connections.
