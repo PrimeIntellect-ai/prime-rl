@@ -100,6 +100,10 @@ mode = "delta"
 update_protocol = "stage_commit"
 stage_transport = "streaming_upload"
 background_stage = true
+stage_num_streams = 4
+stage_chunk_size_mb = 16
+stage_chunk_retries = 3
+stage_retries = 1
 retain_all_deltas = true
 delta_stream_group_size = 4
 ```
@@ -107,7 +111,9 @@ delta_stream_group_size = 4
 `streaming_upload` writes `delta.stream` and uploads complete records while
 later layers are scanned. `chunked_upload` waits for extraction and sends
 offset-based chunks; `http_upload` uses multipart; `shared_fs` sends only a
-path. Direct trainer/orchestrator entrypoints must set the corresponding
+path. Parallel streams and chunk size apply to chunked and streaming uploads;
+request retries are exhausted before a complete-stage retry. Direct
+trainer/orchestrator entrypoints must set the corresponding
 filesystem fields separately because only the shared RL config propagates
 them.
 

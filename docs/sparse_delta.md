@@ -20,6 +20,10 @@ mode = "delta"
 update_protocol = "stage_commit"
 stage_transport = "streaming_upload"
 background_stage = true
+stage_num_streams = 4
+stage_chunk_size_mb = 16
+stage_chunk_retries = 3
+stage_retries = 1
 retain_all_deltas = true
 delta_stream_group_size = 4
 
@@ -39,8 +43,14 @@ lease_recovery_poll_interval_s = 5.0
 
 - `shared_fs`: inference records the trainer-visible path.
 - `http_upload`: one multipart upload per endpoint.
-- `chunked_upload`: resumable offset-based chunks with final size and SHA-256 validation.
-- `streaming_upload`: uploads append-only records while later layers are still being scanned.
+- `chunked_upload`: transfers a completed artifact as offset-based chunks, then verifies its size and SHA-256 hash.
+- `streaming_upload`: starts transferring completed portions of a delta file while later layers are still being scanned.
+
+`stage_num_streams` controls parallel HTTP uploads to each endpoint, and
+`stage_chunk_size_mb` controls each request size for chunked and streaming
+transports. `stage_chunk_retries` retries transient failures for individual
+requests; `stage_retries` retries the complete stage operation after those
+request retries are exhausted.
 
 The streaming format flushes after `delta_stream_group_size` transformer
 layers. A value of zero flushes every record.
@@ -96,8 +106,8 @@ stage, commit, and reload operations to its peers. Keep
 `fail_on_peer_error = true` when peers serve rollouts so a partially updated
 region cannot silently continue.
 
-PrimeRL's default `sticky_least_loaded` vLLM router policy provides
-session-affine, load-aware rollout routing across replicas. Auto-launched
+Rollout routing remains unchanged. PrimeRL's default `sticky_least_loaded`
+vLLM router policy provides session-affine, load-aware routing across replicas. Auto-launched
 routers probe `/weight_health`, which removes a worker from rollout routing
 while a failed update has left its weights dirty. Lease state separately
 controls the admin endpoints used for synchronization and replay. External
