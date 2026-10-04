@@ -278,6 +278,33 @@ def bwd(
     return sparse_mla_bwd_kernel
 
 
+DSA_BACKENDS = ("tilelang", "cudnn_flashmla", "tilelang_legacy")
+
+_CUDNN_SM100_CAPABILITIES = ((10, 0), (10, 3))
+
+
+def cudnn_backward_arch(q: torch.Tensor, kv: torch.Tensor) -> str | None:
+    """The cuDNN DSA backward variant for this device ("sm90" / "sm100"), or None if unsupported."""
+    if kv.shape[2] != 1:
+        return None
+    capability = torch.cuda.get_device_capability(q.device)
+    if capability[0] == 9:
+        return "sm90"
+    if capability in _CUDNN_SM100_CAPABILITIES:
+        return "sm100"
+    return None
+
+
+def flat_kv_indices(indices: torch.Tensor, S_kv: int) -> torch.Tensor:
+    """Global indices into the batch-flattened KV, with sentinel / out-of-range indices as -1.
+
+    `indices` is [B, S, kv_group, topk]; valid entries live in [0, S_kv - 1) (see sparse_mla_fwd).
+    """
+    B = indices.shape[0]
+    batch_offset = torch.arange(B, device=indices.device, dtype=indices.dtype).view(B, 1, 1, 1) * S_kv
+    return torch.where(indices <= S_kv - 2, indices + batch_offset, -1)
+
+
 def tilelang_sparse_mla_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
@@ -287,6 +314,7 @@ def tilelang_sparse_mla_backward(
     lse: torch.Tensor,
     sm_scale: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """TileLang backward; takes a natural-log LSE."""
     grad_out = grad_out.contiguous()
     H, dim_plus_tail_dim = q.shape[2:]
     kv_group = kv.shape[2]
@@ -300,7 +328,7 @@ def tilelang_sparse_mla_backward(
 
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    dq = bwd_kernel(q, kv, grad_out, indices, lse, delta, dkv)
+    dq = bwd_kernel(q, kv, grad_out, indices, lse * math.log2(math.e), delta, dkv)
     dkv = postprocess_kernel(dkv)
     return dq, dkv
 
@@ -312,34 +340,35 @@ def cudnn_sparse_mla_backward(
     grad_out: torch.Tensor,
     indices: torch.Tensor,
     lse: torch.Tensor,
-    sm_scale: float | None = None,
+    sm_scale: float | None,
+    arch: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """cuDNN-frontend CuTe-DSL DSA backward (SM90, single KV head with K=V).
+    """cuDNN-frontend CuTe-DSL DSA backward (single KV head with K=V).
 
-    The cuDNN kernel takes flat (tokens, ...) tensors with global indices, skips
-    negative indices (no KV load, no dKV atomics) and expects a natural-log LSE.
+    The cuDNN kernels take flat (tokens, ...) tensors with global indices, skip
+    negative indices (no KV load, no dKV atomics) and expect a natural-log LSE.
     """
-    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
-
     B, S, H, D_qk = q.shape
     S_kv = kv.shape[1]
     topk = indices.shape[-1]
-    # Sentinel / out-of-range indices (see sparse_mla_fwd) become -1; valid ones are
-    # offset into the batch-flattened KV.
-    batch_offset = torch.arange(B, device=indices.device, dtype=indices.dtype).view(B, 1, 1, 1) * S_kv
-    flat_indices = torch.where(indices <= S_kv - 2, indices + batch_offset, -1).view(B * S, topk)
-    # The forward kernel returns a base-2 LSE.
-    lse_ln = lse * math.log(2.0)
-
-    dq, dkv = flash_attn_bwd_sm90(
+    args = (
         q.view(B * S, H, D_qk),
         kv.view(B * S_kv, D_qk),
         out.view(B * S, H, -1),
         grad_out.contiguous().view(B * S, H, -1),
-        lse_ln.view(B * S, H),
-        softmax_scale=sm_scale,
-        topk_idxs=flat_indices,
+        lse.view(B * S, H),
     )
+    flat_indices = flat_kv_indices(indices, S_kv).view(B * S, topk)
+    if arch == "sm90":
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+
+        dq, dkv = flash_attn_bwd_sm90(*args, softmax_scale=sm_scale, topk_idxs=flat_indices)
+    else:
+        # Untested: no SM100 hardware has run this path. A -inf sink leaves the softmax unchanged.
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
+
+        no_sink = torch.full((H,), float("-inf"), dtype=torch.float32, device=q.device)
+        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale)
     return dq.view_as(q), dkv.view_as(kv)
 
 
@@ -352,8 +381,9 @@ def sparse_mla_backward(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None = None,
-    backend: str = "auto",
+    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sparse MLA backward for the `backend` route (see `sparse_mla`); `lse` is natural-log."""
     assert q.is_contiguous()
     assert kv.is_contiguous()
     assert indices.is_contiguous()
@@ -365,14 +395,14 @@ def sparse_mla_backward(
     topk = indices.shape[-1]
     assert indices.shape == (B, S, kv_group, topk)
     assert lse.shape == (B, S, H)
+    assert backend in DSA_BACKENDS, f"Unknown DSA backend: {backend}"
 
-    cudnn_supported = torch.cuda.get_device_capability(q.device)[0] == 9 and kv_group == 1
-    if backend == "auto":
-        backend = "cudnn" if cudnn_supported else "tilelang"
-    if backend == "cudnn":
-        assert cudnn_supported, "cuDNN sparse MLA backward requires an SM90 GPU and a single KV head"
-        return cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
-    assert backend == "tilelang", f"Unknown sparse MLA backward backend: {backend}"
+    arch = cudnn_backward_arch(q, kv)
+    if backend == "cudnn_flashmla":
+        assert arch is not None, "dsa_backend='cudnn_flashmla' requires an SM90/SM100/SM103 GPU and a single KV head"
+        return cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, arch)
+    if backend == "tilelang" and arch == "sm90":
+        return cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, arch)
     return tilelang_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
 
 
@@ -385,6 +415,6 @@ def _sparse_mla_backward_fake(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None = None,
-    backend: str = "auto",
+    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv)

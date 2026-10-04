@@ -13,11 +13,19 @@ except Exception:
     # This is expected on CPU-only machines
     pass
 
+import importlib.util
+import math
+
 import tilelang
 import torch
 from tilelang import language as T
 
-from prime_rl.trainer.models.kernels.sparse_mla_bwd import sparse_mla_backward
+from prime_rl.trainer.models.kernels.sparse_mla_bwd import (
+    DSA_BACKENDS,
+    cudnn_backward_arch,
+    flat_kv_indices,
+    sparse_mla_backward,
+)
 
 
 @tilelang.jit(
@@ -186,6 +194,30 @@ def sparse_mla_fwd(
     return main
 
 
+def flashmla_sparse_mla_forward(
+    q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sm_scale: float, d_v: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """FlashMLA sparse prefill forward; returns a natural-log LSE."""
+    from flash_mla import flash_mla_sparse_fwd
+
+    B, S, H, D_qk = q.shape
+    S_kv, kv_group = kv.shape[1:3]
+    topk = indices.shape[-1]
+    # Shortest prefix holding every valid index, so the kernel skips the sentinel tail
+    # (the indexer sorts valid indices first); invalid entries inside it are -1.
+    positions = torch.arange(1, topk + 1, device=indices.device, dtype=torch.int32)
+    topk_length = torch.where(indices <= S_kv - 2, positions, 0).amax(-1).view(B * S)
+    out, _max_logits, lse = flash_mla_sparse_fwd(
+        q.view(B * S, H, D_qk),
+        kv.view(B * S_kv, kv_group, D_qk),
+        flat_kv_indices(indices, S_kv).view(B * S, kv_group, topk),
+        sm_scale,
+        d_v,
+        topk_length=topk_length,
+    )
+    return out.view(B, S, H, d_v), lse.view(B, S, H)
+
+
 @torch.library.custom_op("prime_rl::sparse_mla", mutates_args=())
 def sparse_mla(
     q: torch.Tensor,
@@ -196,9 +228,17 @@ def sparse_mla(
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
-    backward_backend: str = "auto",
+    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sparse MLA attention over the top-k `indices`; returns the output and its natural-log LSE.
+
+    `backend` picks the kernels for the forward and (via autograd) the backward:
+    ``tilelang`` is TileLang forward + cuDNN backward on SM90 with a single KV head, TileLang
+    backward otherwise; ``cudnn_flashmla`` is FlashMLA forward + cuDNN backward (SM90; SM100 /
+    SM103 untested); ``tilelang_legacy`` is TileLang for both.
+    """
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
+    assert backend in DSA_BACKENDS, f"Unknown DSA backend: {backend}"
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
     _, seq_len_kv, kv_group, _ = kv.shape
 
@@ -209,6 +249,17 @@ def sparse_mla(
     tail_dim = dim_plus_tail_dim - dim
     _, _, _, topk = indices.shape
     assert indices.shape == (batch, seq_len, kv_group, topk)
+
+    if backend == "cudnn_flashmla":
+        assert cudnn_backward_arch(q, kv) is not None, (
+            "dsa_backend='cudnn_flashmla' requires an SM90/SM100/SM103 GPU and a single KV head"
+        )
+        assert importlib.util.find_spec("flash_mla") is not None, (
+            "dsa_backend='cudnn_flashmla' requires FlashMLA; install it with `uv sync --extra flash-mla`"
+        )
+        if sm_scale is None:
+            sm_scale = dim_plus_tail_dim**-0.5
+        return flashmla_sparse_mla_forward(q, kv, indices, sm_scale, d_v)
 
     kernel = sparse_mla_fwd(
         heads,
@@ -223,7 +274,8 @@ def sparse_mla(
         threads=threads,
     )
     out, lse = kernel(q, kv, indices)
-    return out, lse
+    # The TileLang kernel returns a base-2 LSE.
+    return out, lse * math.log(2.0)
 
 
 @sparse_mla.register_fake
@@ -236,17 +288,17 @@ def _sparse_mla_fake(
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
-    backward_backend: str = "auto",
+    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return q.new_empty((*q.shape[:-1], d_v)), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
 
 def _sparse_mla_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sm_scale, _d_v, _block_I, _num_stages, _threads, backward_backend = inputs
+    q, kv, indices, sm_scale, _d_v, _block_I, _num_stages, _threads, backend = inputs
     out, lse = output
     ctx.save_for_backward(q, kv, out, indices, lse)
     ctx.sm_scale = sm_scale
-    ctx.backward_backend = backward_backend
+    ctx.backend = backend
     ctx.mark_non_differentiable(lse)
 
 
@@ -260,7 +312,7 @@ def _sparse_mla_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.
         indices,
         lse.detach(),
         ctx.sm_scale,
-        ctx.backward_backend,
+        ctx.backend,
     )
     return dq, dkv, None, None, None, None, None, None, None
 

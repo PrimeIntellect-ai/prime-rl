@@ -100,6 +100,9 @@ quack = [
     "quack-kernels>=0.4.1 ; sys_platform == 'linux'",
 ]
 sonic-moe = ["sonic-moe ; sys_platform == 'linux'"]
+# FlashMLA sparse prefill forward for `model.dsa_backend = "cudnn_flashmla"` (sm_90a + sm_100f).
+# FlashMLA is not on PyPI and only an x86_64 wheel is published.
+flash-mla = ["flash-mla ; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 # Prebuilt `prime-kernels` wheels from a release (see the `kernels` skill). Compiled for
 # sm_100a; on other GPUs the package installs fine and reports its kernels unavailable.
 kernels = [
@@ -113,6 +116,7 @@ all = [
     "prime-rl[sonic-moe]",
     "prime-rl[flash-attn-3]",
     "prime-rl[flash-attn-cute]",
+    "prime-rl[flash-mla]",
 ]
 
 [dependency-groups]
@@ -255,6 +259,7 @@ deep-gemm = false
 nixl-cu13 = false
 torchao = false
 prime-kernels = false
+flash-mla = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
@@ -295,6 +300,8 @@ prime-kernels = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
+# FlashMLA nv_dev @ b7643bd built against torch 2.13.0+cu130 (see the release notes for the recipe).
+flash-mla = { url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" }
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 mamba-ssm = { git = "https://github.com/state-spaces/mamba", rev = "f577286" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
