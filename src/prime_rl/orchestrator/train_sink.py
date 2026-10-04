@@ -281,7 +281,11 @@ class TrainSink:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
-                if env.requires_sampling_masks and sample.sampling_mask is None:
+                if (
+                    env.requires_sampling_masks
+                    and sample.sampling_mask is None
+                    and not any(segment.field == "sampling_mask" for segment in sample.payload or ())
+                ):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
