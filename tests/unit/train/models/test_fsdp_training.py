@@ -23,7 +23,6 @@ from torch.distributed.tensor import DTensor
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import forward, setup_model
-from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
 from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention
 from prime_rl.trainer.models.layers.attn import FlashAttention
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
@@ -326,7 +325,6 @@ def restore_cp_attention():
     """Context parallelism rebinds attention methods on the classes; undo it between cases."""
     patched = [
         (FlashAttention, "_compute_attention"),
-        (AfmoeFlashAttention, "_compute_attention"),
         (GptOssAttention, "compute_attention"),
     ]
     originals = [(cls, name, cls.__dict__[name]) for cls, name in patched]
