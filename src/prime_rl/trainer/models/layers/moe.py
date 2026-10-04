@@ -113,20 +113,12 @@ class GroupedExperts(nn.Module):
     ) -> torch.Tensor:
         return self.compute(self, x, num_tokens_per_expert)
 
-    def init_weights(self, init_std: float):
-        if self.gate_up_proj is None:
-            first_projection = self.gate_proj if self.gate_proj is not None else self.up_proj
-            nn.init.trunc_normal_(first_projection, mean=0.0, std=0.02)
-            remaining = (self.up_proj, self.down_proj) if self.gate_proj is not None else (self.down_proj,)
-        else:
-            gate_proj, up_proj = self.gate_up_proj.chunk(2, dim=1)
-            nn.init.trunc_normal_(gate_proj, mean=0.0, std=0.02)
-            remaining = (up_proj, self.down_proj)
-        for weight in remaining:
-            nn.init.trunc_normal_(weight, mean=0.0, std=init_std)
-        for bias in (self.gate_proj_bias, self.up_proj_bias, self.down_proj_bias):
-            if bias is not None:
-                nn.init.zeros_(bias)
+    def init_weights(self, init_std: float) -> None:
+        for name, param in self.named_parameters(recurse=False):
+            if name.endswith("_bias"):
+                nn.init.zeros_(param)
+            else:
+                nn.init.normal_(param, mean=0.0, std=init_std)
 
 
 class TokenChoiceTopKRouter(nn.Module):
@@ -266,10 +258,9 @@ class TokenChoiceTopKRouter(nn.Module):
 
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
-    def init_weights(self, init_std: float):
-        nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
-        if self.gate.bias is not None:
-            nn.init.zeros_(self.gate.bias)
+    def init_weights(self) -> None:
+        if self.selection_bias is not None:
+            nn.init.zeros_(self.selection_bias)
 
 
 class MoE(nn.Module):
@@ -412,19 +403,3 @@ class MoE(nn.Module):
             routed_output = routed_output + shared_output
 
         return routed_output.reshape(bs, slen, dim)
-
-    def init_weights(
-        self,
-        init_std: float,
-        buffer_device: torch.device,
-    ):
-        self.experts.init_weights(init_std)
-        self.router.init_weights(init_std)
-        if self.shared_expert is not None:
-            self.shared_expert.init_weights(init_std)
-
-        with torch.device(buffer_device):
-            self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
-            self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
-            if self.router.selection_bias is not None:
-                self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)

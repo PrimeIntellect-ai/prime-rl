@@ -256,6 +256,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
+| `model.init` | `pretrained` (default) loads the weights at `model.name`; `scratch` builds the model from the HF config at `model.name` only, with untied embeddings and fresh weights drawn with the config's `initializer_range` (set `tokenizer.name` if `model.name` has no tokenizer) |
 | `data.name` | HF dataset name or local path |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |

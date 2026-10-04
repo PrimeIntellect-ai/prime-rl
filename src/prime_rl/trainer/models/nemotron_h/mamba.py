@@ -92,6 +92,9 @@ class NemotronHMamba2(nn.Module):
         self.conv_size = self.intermediate_size + 2 * self.group_state_size
         self.chunk_size = config.chunk_size
         self.time_step_limit = config.time_step_limit
+        self.time_step_min = config.time_step_min
+        self.time_step_max = config.time_step_max
+        self.time_step_floor = config.time_step_floor
         self.activation = config.mamba_hidden_act
 
         projection_size = self.intermediate_size + self.conv_size + self.num_heads
@@ -105,8 +108,8 @@ class NemotronHMamba2(nn.Module):
             bias=config.use_conv_bias,
         )
         self.dt_bias = nn.Parameter(torch.empty(self.num_heads))
-        self.A_log = nn.Parameter(torch.arange(1, self.num_heads + 1, dtype=torch.get_default_dtype()).log())
-        self.D = nn.Parameter(torch.ones(self.num_heads))
+        self.A_log = nn.Parameter(torch.empty(self.num_heads))
+        self.D = nn.Parameter(torch.empty(self.num_heads))
         self.norm = GatedRMSNorm(
             self.intermediate_size,
             group_size=self.intermediate_size // self.num_groups,
@@ -116,16 +119,18 @@ class NemotronHMamba2(nn.Module):
         self.causal_conv1d = causal_conv1d
         self.prepare_sequence_ids = prepare_sequence_ids
         self.scan = mamba_chunk_scan_combined
-
-        time_steps = torch.exp(
-            torch.rand(self.num_heads, dtype=torch.float32)
-            * (math.log(config.time_step_max) - math.log(config.time_step_min))
-            + math.log(config.time_step_min)
-        ).clamp(min=config.time_step_floor)
-        with torch.no_grad():
-            self.dt_bias.copy_((time_steps + torch.log(-torch.expm1(-time_steps))).to(self.dt_bias.dtype))
+        self.init_weights()
 
         self.cp_context = CPContext()
+
+    @torch.no_grad()
+    def init_weights(self) -> None:
+        # Mamba-2 defaults: A ~ U(1, 16), D = 1, and dt_bias = softplus^-1(dt) for a log-uniform dt.
+        self.A_log.uniform_(1, 16).log_()
+        self.D.fill_(1.0)
+        dt = self.dt_bias.uniform_(math.log(self.time_step_min), math.log(self.time_step_max))
+        dt.exp_().clamp_(min=self.time_step_floor)
+        dt.add_(torch.log(-torch.expm1(-dt)))
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape

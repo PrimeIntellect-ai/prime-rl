@@ -121,7 +121,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         if isinstance(module, (DeepseekV4Attention, DeepseekV4HyperConnection, DeepseekV4HyperHead)):
             module.init_weights(init_std)
         elif isinstance(module, DeepseekV4MoE):
-            module.init_weights(init_std, module.tokens_per_expert.device)
+            module.init_weights()
         elif isinstance(module, DeepseekV4RotaryEmbedding):
             module.init_buffers_post_meta()
 

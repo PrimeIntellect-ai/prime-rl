@@ -7,7 +7,6 @@ selection with a frozen token-id lookup but keeps the learned gating weights.
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -99,7 +98,7 @@ class DeepseekV4HashRouter(DeepseekV4Router):
     """A bootstrap layer's router: selection is a frozen token-id lookup, gating still learned.
 
     `tid2eid` replaces the top-k of the scores with `tid2eid[token_id]`, read from the checkpoint
-    and zeros until one fills it. A frozen selection cannot be steered, so a hash layer has no use
+    or drawn by `DeepseekV4MoE.init_weights`. A frozen selection cannot be steered, so a hash layer has no use
     for the aux-loss-free load-balancing bias, and HF's `DeepseekV4HashRouter` carries no
     `e_score_correction_bias` to load into it either; `selection_bias=False` leaves that buffer
     unbuilt, keeping the state dict aligned with HF's.
@@ -132,21 +131,12 @@ class DeepseekV4Experts(GroupedExperts):
 
     The shared `GroupedExperts` already stores the stacked `gate_proj`/`up_proj`/`down_proj`
     that the on-disk per-expert `w1`/`w2`/`w3` convert into, and its `forward` reaches the
-    activation through `self.activation`, so only that attribute and the initialization
-    spread differ from the base class.
+    activation through `self.activation`, so only that attribute differs from the base class.
     """
 
     def __init__(self, dim: int, hidden_dim: int, num_experts: int, swiglu_limit: float) -> None:
         super().__init__(dim, hidden_dim, num_experts, expert_type="gated")
         self.activation = ClampedSwiglu(swiglu_limit)
-
-    def init_weights(self, init_std: float) -> None:
-        # Both halves of HF's fused gate_up_proj are drawn from the same std=0.02
-        # distribution, so gate and up match that here despite being separate tensors.
-        # The base class scales up_proj by init_std instead.
-        nn.init.trunc_normal_(self.gate_proj, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.up_proj, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
 
 
 class DeepseekV4MLP(FeedForward):
@@ -234,6 +224,13 @@ class DeepseekV4MoE(MoE):
         )
         self.layer_idx = layer_idx
         self.is_hash = is_hash
+
+    def init_weights(self) -> None:
+        if self.is_hash:
+            # Seeded by layer so every rank builds the same token-to-expert table.
+            generator = torch.Generator().manual_seed(self.layer_idx)
+            scores = torch.rand(self.router.tid2eid.shape[0], self.router.num_experts, generator=generator)
+            self.router.tid2eid.copy_(scores.topk(self.router.top_k, dim=-1).indices)
 
     def forward(
         self,

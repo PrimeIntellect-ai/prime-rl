@@ -14,7 +14,7 @@ from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
-from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
+from prime_rl.trainer.models.nemotron_h.mamba import GatedRMSNorm, NemotronHMamba2
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -137,6 +137,13 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
             frozenset({"ulysses"}),
             "Mamba layers require Ulysses to reconstruct full sequences while sharding Mamba heads",
         )
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, GatedRMSNorm):
+            nn.init.ones_(module.weight)
+        elif isinstance(module, NemotronHMamba2):
+            module.init_weights()
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

@@ -93,6 +93,13 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     _supports_attention_backend = True
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, GptOssRMSNorm):
+            nn.init.ones_(module.weight)
+        elif isinstance(module, GptOssAttention):
+            nn.init.normal_(module.sinks, mean=0.0, std=self.config.initializer_range)
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_hf_state_dict(state_dict)

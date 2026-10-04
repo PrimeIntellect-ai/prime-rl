@@ -1,4 +1,5 @@
 import torch
+from fla.modules import FusedRMSNormGated
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -127,6 +128,13 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
             "DeltaNet, indexed attention, and PLE require contiguous sequence shards",
         )
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, (RMSNorm, ExpandedRMSNorm, FusedRMSNormGated, PositionLearningEnhancement)):
+            module.reset_parameters()
+        elif isinstance(module, GatedDeltaNet):
+            module.init_weights()
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_hf_state_dict(state_dict)
@@ -165,11 +173,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         )
         self.gradient_checkpointing = False
         self.post_init()
-        for module in self.modules():
-            if isinstance(module, (RMSNorm, ExpandedRMSNorm)):
-                module.reset_parameters()
-            elif isinstance(module, PositionLearningEnhancement):
-                module.reset_parameters()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens

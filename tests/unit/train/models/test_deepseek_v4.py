@@ -294,7 +294,7 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
     It is the one buffer no `init_weights` can reconstruct: an all-zero table is a valid tensor
     that routes every token to expert 0, so a rename anywhere along the loading path degrades the
     model in silence rather than raising. `test_deepseek_v4_weight_conversion_roundtrip` only ever
-    roundtrips the zeros the constructor leaves behind, and `VLLM_MAPPED_NAMES` pins the on-disk
+    roundtrips the table the constructor leaves behind, and `VLLM_MAPPED_NAMES` pins the on-disk
     name without saying where it lands, so this carries real values across the whole path.
 
     Three things in sequence, because they are three links in one chain. The conversion emits only

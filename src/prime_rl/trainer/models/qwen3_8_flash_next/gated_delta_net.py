@@ -47,14 +47,19 @@ class GatedDeltaNet(nn.Module):
             padding=conv_kernel_size - 1,
             bias=False,
         )
-        self.dt_bias = nn.Parameter(torch.ones(num_value_heads))
-        A = torch.empty(num_value_heads).uniform_(0, 16)
-        self.A_log = nn.Parameter(torch.log(A))
+        self.dt_bias = nn.Parameter(torch.empty(num_value_heads))
+        self.A_log = nn.Parameter(torch.empty(num_value_heads))
+        self.init_weights()
 
         self.norm = FusedRMSNormGated(value_head_dim, eps=norm_eps, activation="sigmoid")
         self.out_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.cp_context = CPContext()
+
+    @torch.no_grad()
+    def init_weights(self) -> None:
+        nn.init.ones_(self.dt_bias)
+        self.A_log.uniform_(0, 16).log_()
 
     def forward(
         self,

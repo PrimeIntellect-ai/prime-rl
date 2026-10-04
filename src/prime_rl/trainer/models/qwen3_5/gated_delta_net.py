@@ -36,8 +36,9 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             padding=self.conv_kernel_size - 1,
             bias=False,
         )
-        self.dt_bias = nn.Parameter(torch.ones(self.num_value_heads))
-        self.A_log = nn.Parameter(torch.empty(self.num_value_heads).uniform_(0, 16).log_())
+        self.dt_bias = nn.Parameter(torch.empty(self.num_value_heads))
+        self.A_log = nn.Parameter(torch.empty(self.num_value_heads))
+        self.init_weights()
         self.norm = FusedRMSNormGated(
             self.value_head_dim,
             eps=config.rms_norm_eps,
@@ -49,6 +50,11 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.in_proj_b = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
         self.in_proj_a = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
         self.cp_context = CPContext()
+
+    @torch.no_grad()
+    def init_weights(self) -> None:
+        nn.init.ones_(self.dt_bias)
+        self.A_log.uniform_(0, 16).log_()
 
     def forward(
         self,

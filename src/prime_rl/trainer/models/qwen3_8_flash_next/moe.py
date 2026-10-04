@@ -21,10 +21,6 @@ class SigmoidOutputGatedFeedForward(FeedForward):
     def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
         return torch.sigmoid(self.output_gate(x)) * super().forward(x, routed_experts)
 
-    def init_weights(self, init_std: float = 0.02) -> None:
-        super().init_weights(init_std)
-        nn.init.trunc_normal_(self.output_gate.weight, mean=0.0, std=init_std)
-
 
 class SigmoidOutputGatedMoE(MoE):
     """Top-k MoE with renormalized softmax scores and one sigmoid-gated shared expert."""

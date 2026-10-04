@@ -1,4 +1,5 @@
 import torch
+from fla.modules import FusedRMSNormGated
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -129,6 +130,13 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
                 "DeltaNet layers require Ulysses sequence sharding with FLA boundary-state exchange",
             )
         return CPSupport(ALL_CP_STYLES)
+
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        if isinstance(module, (Qwen3_5RMSNorm, FusedRMSNormGated)):
+            module.reset_parameters()
+        elif isinstance(module, Qwen3_5GatedDeltaNet):
+            module.init_weights()
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

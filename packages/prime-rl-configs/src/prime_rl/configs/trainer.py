@@ -135,9 +135,6 @@ class DebugModelConfig(BaseConfig):
     num_layers: int | None = None
     """Override the number of transformer layers (truncates the model)."""
 
-    random_init: bool = False
-    """Randomly initialize the model instead of loading weights."""
-
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
 
@@ -267,6 +264,9 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    init: Literal["pretrained", "scratch"] = "pretrained"
+    """How to initialize the weights. ``pretrained`` loads the checkpoint at ``name``. ``scratch`` reads only the HF config at ``name`` (hub id or local directory with a ``config.json``), unties the embeddings and initializes every weight with the architecture's init: linears, embeddings and experts from ``N(0, initializer_range)`` of that config, norms to identity, biases to zero. Set ``tokenizer.name`` when ``name`` has no tokenizer."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
@@ -340,6 +340,14 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def validate_scratch_init(self):
+        if self.init == "scratch" and (self.vlm is not None or self.lora is not None):
+            raise ValueError(
+                "model.init='scratch' supports full training of text models only; unset model.vlm and model.lora"
+            )
+        return self
 
     @model_validator(mode="after")
     def vlm_cp_requires_ulysses(self):

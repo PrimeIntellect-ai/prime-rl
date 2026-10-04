@@ -43,6 +43,9 @@ class RMSNorm(nn.Module):
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype)
 
+    def init_weights(self) -> None:
+        nn.init.ones_(self.weight)
+
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
@@ -54,6 +57,10 @@ class LayerNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.bias = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
+
+    def init_weights(self) -> None:
+        nn.init.ones_(self.weight)
+        nn.init.zeros_(self.bias)
 
     def forward(self, x: torch.Tensor):
         return F.layer_norm(x.float(), (self.dim,), self.weight.float(), self.bias.float(), self.eps).type_as(x)

@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from torch import Tensor
+from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
+from prime_rl.trainer.models.layers.moe import GroupedExperts, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm
 from prime_rl.utils.cp import CPContext
 
 CPStyle = Literal["ring", "ulysses"]
@@ -142,6 +144,23 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         use the returned value. Default implementation is a no-op.
         """
         return state_dict
+
+    def _init_weights(self, module: nn.Module) -> None:
+        """Initialize the parameters and persistent buffers that ``module`` owns directly.
+
+        ``initialize_weights()`` applies this to every module. Architectures extend it for their own layer types.
+        """
+        std = self.config.get_text_config().initializer_range
+        if isinstance(module, (nn.Linear, nn.Embedding)):
+            nn.init.normal_(module.weight, mean=0.0, std=std)
+            if getattr(module, "bias", None) is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Conv1d):
+            module.reset_parameters()
+        elif isinstance(module, GroupedExperts):
+            module.init_weights(std)
+        elif isinstance(module, (RMSNorm, LayerNorm, TokenChoiceTopKRouter)):
+            module.init_weights()
 
     def init_buffers_post_meta(self) -> None:
         """

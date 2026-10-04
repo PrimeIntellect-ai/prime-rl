@@ -76,14 +76,16 @@ from prime_rl.utils.weights import (
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
 
-    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
+    With ``skip_weights`` (``model.init = "scratch"``), only config and tokenizer files are fetched.
     """
     if Path(model_name).exists():
         get_logger().info(f"Model {model_name} found at local path, skipping download")
         return
     t0 = time.perf_counter()
     if skip_weights:
-        get_logger().info(f"Pre-downloading config and tokenizer for {model_name} (random init, skipping weights)")
+        get_logger().info(
+            f"Pre-downloading config and tokenizer for {model_name} (init from scratch, skipping weights)"
+        )
         path = snapshot_download(
             repo_id=model_name, repo_type="model", allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"]
         )
@@ -356,6 +358,8 @@ def get_model(
         ),
     )
     model_config.use_cache = False
+    if config.init == "scratch":
+        model_config.tie_word_embeddings = False
     is_vlm_arch = is_vlm_architecture(model_config)
 
     if is_vlm_training:
@@ -715,8 +719,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     model.init_buffers_post_meta()
 
     logger = get_logger()
-    if config.debug.random_init:
-        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+    if config.init == "scratch":
+        logger.info(f"Initializing model weights from scratch (config: {config.name})")
+        model.initialize_weights()
         _move_buffers_to_cuda(model, config)
         return
 
