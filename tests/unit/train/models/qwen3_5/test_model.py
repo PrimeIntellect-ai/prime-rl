@@ -100,7 +100,6 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     assert text_model.model.cp_context.cp_rank == 1
     assert text_model.model.cp_context.cp_world_size == 2
     assert text_model.model.cp_context.cp_style == "ulysses"
-    assert linear_layer.linear_attn.cp_context is text_cp_context
 
     vlm_model = get_model(get_vlm_config(text_config), device="meta")
 
@@ -112,7 +111,6 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     assert vlm_model.model.cp_context is vlm_cp_context
     assert vlm_model.model.language_model.cp_context is vlm_cp_context
     assert vlm_model.model.language_model.cp_context.cp_style == "ulysses"
-    assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is vlm_cp_context
 
 
 def test_ring_patches_flash_attention():

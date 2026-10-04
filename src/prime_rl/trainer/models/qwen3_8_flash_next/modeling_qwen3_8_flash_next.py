@@ -1,4 +1,5 @@
 import torch
+from fla.ops.cp import FLACPContext, build_cp_context
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -22,6 +23,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbe
 from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding
+from prime_rl.utils.cp import CPContext
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -97,13 +99,14 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
         routed_experts: torch.LongTensor | None = None,
+        linear_attn_cp_context: FLACPContext | None = None,
     ) -> torch.Tensor:
         if self.ple is not None:
             hidden_states = hidden_states + self.ple(hidden_states, input_ids, cu_seqlens)
 
         block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
-            block_output = self.linear_attn(block_input, cu_seqlens)
+            block_output = self.linear_attn(block_input, cu_seqlens, linear_attn_cp_context)
         else:
             block_output = self.self_attn(block_input, position_embeddings, cu_seqlens)
         hidden_states = self.attn_hyper_connection.combine(block_output, residual_state)
@@ -164,6 +167,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             mrope_section=config.mrope_section,
         )
         self.gradient_checkpointing = False
+        self.cp_context = CPContext()
         self.post_init()
         for module in self.modules():
             if isinstance(module, (RMSNorm, ExpandedRMSNorm)):
@@ -196,6 +200,15 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+        # Built once, outside the checkpointed and compiled layers: FLA derives this
+        # metadata on the host, which Dynamo cannot trace and AC recompute cannot replay.
+        linear_attn_cp_context = None
+        if self.cp_context.cp_enabled:
+            linear_attn_cp_context = build_cp_context(
+                cu_seqlens.to(dtype=torch.int32),
+                group=self.cp_context.cp_group,
+                conv1d_kernel_size=self.config.linear_conv_kernel_dim,
+            )
 
         hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
         for layer_index, decoder_layer in enumerate(self.layers):
@@ -206,6 +219,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
                 position_embeddings,
                 cu_seqlens,
                 routed_experts=layer_routed_experts,
+                linear_attn_cp_context=linear_attn_cp_context,
             )
         hidden_states, _ = self.hyper_connection_mixer(hidden_states)
         return BaseModelOutput(last_hidden_state=hidden_states)

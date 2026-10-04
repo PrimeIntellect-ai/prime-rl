@@ -2,11 +2,9 @@ import torch
 import torch.nn.functional as F
 from fla.modules import FusedRMSNormGated
 from fla.modules.conv import causal_conv1d
-from fla.ops.cp import build_cp_context
+from fla.ops.cp import FLACPContext
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
-
-from prime_rl.utils.cp import CPContext
 
 # FLA's context carries a process group that Dynamo cannot trace through the convolution.
 causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
@@ -54,12 +52,11 @@ class GatedDeltaNet(nn.Module):
         self.norm = FusedRMSNormGated(value_head_dim, eps=norm_eps, activation="sigmoid")
         self.out_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
-        self.cp_context = CPContext()
-
     def forward(
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        cp_context: FLACPContext | None = None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -73,24 +70,16 @@ class GatedDeltaNet(nn.Module):
         beta = self.in_proj_b(hidden_states).sigmoid()
         decay = -self.A_log.float().exp() * F.softplus(self.in_proj_a(hidden_states).float() + self.dt_bias)
 
-        context = None
-        if self.cp_context.cp_enabled:
-            context = build_cp_context(
-                cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
-                group=self.cp_context.cp_group,
-                conv1d_kernel_size=self.conv_kernel_size,
-            )
-
         convolution = {
             "x": mixed_qkv,
             "weight": self.conv1d.weight.squeeze(1),
             "bias": self.conv1d.bias,
             "activation": "silu",
         }
-        if context is None:
+        if cp_context is None:
             mixed_qkv, _ = causal_conv1d(**convolution, cu_seqlens=cu_seqlens)
         else:
-            mixed_qkv, _ = causal_conv1d_with_context_parallelism(**convolution, cp_context=context)
+            mixed_qkv, _ = causal_conv1d_with_context_parallelism(**convolution, cp_context=cp_context)
 
         query, key, value = mixed_qkv.split((self.key_dim, self.key_dim, self.value_dim), dim=-1)
         query = query.reshape(batch_size, sequence_length, self.num_key_heads, self.key_head_dim)
@@ -109,16 +98,16 @@ class GatedDeltaNet(nn.Module):
             "g": decay,
             "beta": beta,
             "use_qk_l2norm_in_kernel": True,
-            "cu_seqlens": context.cu_seqlens if context is not None else cu_seqlens,
+            "cu_seqlens": cp_context.cu_seqlens if cp_context is not None else cu_seqlens,
         }
-        if context is None:
+        if cp_context is None:
             core_output, _ = chunk_gated_delta_rule(
                 **delta_rule,
                 initial_state=None,
                 output_final_state=False,
             )
         else:
-            core_output, _ = chunk_gated_delta_rule(**delta_rule, cp_context=context)
+            core_output, _ = chunk_gated_delta_rule(**delta_rule, cp_context=cp_context)
 
         core_output = self.norm(
             core_output.reshape(-1, self.value_head_dim),

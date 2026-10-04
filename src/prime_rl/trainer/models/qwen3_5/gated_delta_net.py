@@ -2,12 +2,11 @@ import torch
 import torch.nn.functional as F
 from fla.modules import FusedRMSNormGated
 from fla.modules.conv import causal_conv1d
-from fla.ops.cp import build_cp_context
+from fla.ops.cp import FLACPContext
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
-from prime_rl.utils.cp import CPContext
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
 # FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
@@ -48,12 +47,12 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.in_proj_z = nn.Linear(config.hidden_size, self.value_dim, bias=False)
         self.in_proj_b = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
         self.in_proj_a = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
-        self.cp_context = CPContext()
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        cp_context: FLACPContext | None = None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         mixed_qkv = self.in_proj_qkv(hidden_states)
@@ -63,22 +62,14 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         beta = self.in_proj_b(hidden_states).sigmoid()
         decay = -self.A_log.float().exp() * F.softplus(self.in_proj_a(hidden_states).float() + self.dt_bias)
 
-        context = None
-        if self.cp_context.cp_enabled:
-            context = build_cp_context(
-                cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
-                group=self.cp_context.cp_group,
-                conv1d_kernel_size=self.conv_kernel_size,
-            )
-
-        convolution = causal_conv1d_with_context_parallelism if context is not None else causal_conv1d
+        convolution = causal_conv1d_with_context_parallelism if cp_context is not None else causal_conv1d
         mixed_qkv, _ = convolution(
             x=mixed_qkv,
             weight=self.conv1d.weight.squeeze(1),
             bias=self.conv1d.bias,
             activation=self.activation,
             cu_seqlens=cu_seqlens,
-            cp_context=context,
+            cp_context=cp_context,
         )
 
         query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
@@ -98,8 +89,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             g=decay,
             beta=beta,
             use_qk_l2norm_in_kernel=True,
-            cu_seqlens=context.cu_seqlens if context is not None else cu_seqlens,
-            cp_context=context,
+            cu_seqlens=cp_context.cu_seqlens if cp_context is not None else cu_seqlens,
+            cp_context=cp_context,
         )
 
         core_output = self.norm(
