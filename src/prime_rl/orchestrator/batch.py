@@ -8,7 +8,7 @@ import msgspec
 import numpy as np
 
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
-from prime_rl.transports.payload import clip_segments
+from prime_rl.transports.payload import PAYLOAD_FIELDS, clip_segments
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -815,10 +815,10 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.rl_weights = None
     dummy.ce_weights = None
     dummy.ref_kl_weights = None
-    # Fully loss-masked, so replaying sampling masks would be pure wasted work.
+    # Fully loss-masked, so only routing, which the forward pass replays, is worth reading.
     dummy.sampling_mask = None
     if dummy.payload is not None:
-        dummy.payload = [segment for segment in dummy.payload if segment.field != "sampling_mask"] or None
+        dummy.payload = [s for s in dummy.payload if PAYLOAD_FIELDS[s.field].window == "inputs"] or None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None

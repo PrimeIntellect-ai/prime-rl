@@ -13,6 +13,7 @@ deltas here:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import numpy as np
 import pybase64
@@ -99,17 +100,25 @@ def test_generate_response_post_process_preserves_prompt_metadata():
 
 def test_post_process_writes_payload_by_handle(tmp_path):
     routed_experts = np.arange(5 * 2 * 3).reshape(5, 2, 3)
-    capture = _PayloadCapture(_empty_request_outputs(), start=2, directory=tmp_path / "v3")
-    capture.prompt_len = 4
-    capture.routed_experts[0] = routed_experts
-    capture.sampling_masks[0] = [[7], [8, 9, 10]]
+    output = SimpleNamespace(
+        index=0, routed_experts=routed_experts, sampling_mask=SimpleNamespace(token_ids=[[7], [8, 9, 10]])
+    )
+
+    async def request_outputs():
+        yield SimpleNamespace(prompt_token_ids=[0] * 4, outputs=[output])
+
+    capture = _PayloadCapture(request_outputs(), start=2, directory=tmp_path / "v3")
     response = GenerateResponse(choices=[GenerateResponseChoice(index=0, token_ids=[1, 2, 3])])
 
-    processed = asyncio.run(capture.post_process(response))
+    async def run():
+        async for _ in capture:
+            pass
+        return await capture.post_process(response)
 
-    choice = processed.choices[0]
-    assert choice.routed_experts is None and choice.sampling_mask is None
-    routing, mask = choice.payload
+    processed = asyncio.run(run())
+
+    assert output.routed_experts is None and output.sampling_mask is None
+    routing, mask = processed.choices[0].payload
     assert (routing["field"], routing["pos"], routing["rows"], routing["shape"]) == ("routed_experts", 2, 5, [2, 3])
     assert (mask["field"], mask["pos"], mask["rows"], mask["shape"]) == ("sampling_mask", 4, 2, [3])
     data = open(routing["file"], "rb").read()
