@@ -151,7 +151,8 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         ``initialize_weights()`` applies this to every module. Architectures extend it for their own layer types.
         """
         std = self.config.get_text_config().initializer_range
-        if isinstance(module, (nn.Linear, nn.Embedding)):
+        # The qkv fusion leaves the q/k/v projections without parameters
+        if isinstance(module, (nn.Linear, nn.Embedding)) and module.weight is not None:
             nn.init.normal_(module.weight, mean=0.0, std=std)
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)

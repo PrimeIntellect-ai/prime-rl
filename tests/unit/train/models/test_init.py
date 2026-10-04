@@ -9,6 +9,7 @@ from transformers import LlamaConfig, Qwen3Config
 from prime_rl.trainer.models import get_custom_causal_lm_cls
 from prime_rl.trainer.models.afmoe import AfmoeConfig
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.fusions import apply_model_fusions
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig
 from prime_rl.trainer.models.gpt_oss import GptOssConfig
@@ -111,13 +112,14 @@ CONFIGS = {
 
 
 def build_from_scratch(arch: str, device: str) -> nn.Module:
-    """The trainer's `model.init = "scratch"` path without FSDP: meta -> empty -> initialized."""
+    """The trainer's `model.init = "scratch"` path without FSDP: meta -> fused -> empty -> initialized."""
     torch.manual_seed(0)
     config = CONFIGS[arch]()
     config._attn_implementation = "flash_attention_2"
     config.tie_word_embeddings = False
     with torch.device("meta"):
         model = get_custom_causal_lm_cls(config)._from_config(config)
+    apply_model_fusions(model, ["gate_up", "qkv"])
     model.to_empty(device=device)
     with torch.no_grad():
         for tensor in model.state_dict().values():
@@ -138,6 +140,7 @@ def test_scratch_init_fills_every_weight(arch):
             assert (tensor >= 0).all(), name
     for name, module in model.named_modules():
         if isinstance(module, (nn.Linear, nn.Embedding, GroupedExperts)):
+            # named_parameters skips the q/k/v projections emptied by the qkv fusion
             for param_name, param in module.named_parameters(recurse=False):
                 if "bias" in param_name:
                     assert (param == 0).all(), f"{name}.{param_name}"
