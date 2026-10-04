@@ -175,8 +175,8 @@ class ProcessGroup:
         sys.exit(1)
 
     def cleanup(self) -> None:
-        cleanup_threads(self.monitor_threads)
         cleanup_processes(self.processes)
+        cleanup_threads(self.monitor_threads)
 
     def start(self, name: str, cmd: list[str], env: dict[str, str], log_path: Path) -> None:
         get_logger().debug(f"{name[:1].upper() + name[1:]} command: {' '.join(cmd)}")

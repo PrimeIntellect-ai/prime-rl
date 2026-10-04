@@ -8,17 +8,16 @@ import asyncio
 import json
 import os
 import re
-import signal
 import sys
 import tomllib
 import uuid
+from collections.abc import Coroutine
 from pathlib import Path
-from subprocess import Popen
 from typing import Any
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.utils.config import cli, dump_resolved_config
-from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, cleanup_processes, set_proc_title
+from prime_rl.utils.process import DEFAULT_COMMON_ENV_VARS, ProcessGroup, set_proc_title
 
 USAGE = """\
 usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-s] [-r N] [-c N] [-m MODEL] [options]
@@ -107,6 +106,17 @@ def toml_defines_source(path: Path) -> bool:
         return "source" in tomllib.load(f)
 
 
+async def run_while_env_servers_live(eval_run: Coroutine, processes: ProcessGroup) -> None:
+    """Run the eval until it finishes or an env server exits, whichever comes first: the
+    eval would otherwise wait forever on a server that is gone."""
+    task = asyncio.create_task(eval_run)
+    while not task.done():
+        await asyncio.wait([task], timeout=1)
+        if not task.done() and any(event.is_set() for event in processes.stop_events.values()):
+            raise processes.error_queue[0] if processes.error_queue else RuntimeError("An env server exited")
+    task.result()
+
+
 def main():
     set_proc_title("Eval")
     argv = sys.argv[1:]
@@ -169,40 +179,25 @@ def main():
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
     from prime_rl.eval.eval import run_eval
 
-    processes: list[Popen] = []
-    for source in env_servers:
-        name = source.resolved_name
-        logger.info(f"Starting {name} server")
-        env_server_log = log_dir / "envs" / "eval" / f"{name}.log"
-        env_server_log.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_server_log, "w") as log_file_handle:
-            processes.append(
-                Popen(
-                    ["env-server", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
-                    env={**os.environ, **DEFAULT_COMMON_ENV_VARS},
-                    stdout=log_file_handle,
-                    stderr=log_file_handle,
-                )
+    with ProcessGroup() as processes:
+        for source in env_servers:
+            name = source.resolved_name
+            logger.info(f"Starting {name} server")
+            processes.start(
+                f"env/eval/{name}",
+                ["env-server", "@", (config_dir / "envs" / "eval" / f"{name}.json").as_posix()],
+                env={**os.environ, **DEFAULT_COMMON_ENV_VARS},
+                log_path=log_dir / "envs" / "eval" / f"{name}.log",
             )
 
-    logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
-    logger.info(format_log_message(log_dir, eval=True, env_names={"eval": env_names}))
+        logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
+        logger.info(format_log_message(log_dir, eval=True, env_names={"eval": env_names}))
+        log_dashboard_url(logger, dashboard_url)
 
-    def sigterm_handler(signum, frame):
-        logger.warning("Received SIGTERM, terminating all processes...")
-        cleanup_processes(processes)
-        sys.exit(1)
-
-    signal.signal(signal.SIGTERM, sigterm_handler)
-    log_dashboard_url(logger, dashboard_url)
-
-    # Like the rl/sft launchers, the console stays quiet while the eval runs: results
-    # live in the dashboard and the log file, only errors surface here.
-    setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
-    try:
-        asyncio.run(run_eval(config))
-    finally:
-        cleanup_processes(processes)
+        # Like the rl/sft launchers, the console stays quiet while the eval runs: results
+        # live in the dashboard and the log file, only errors surface here.
+        setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
+        asyncio.run(run_while_env_servers_live(run_eval(config), processes))
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file).success("Eval finished!")
 
 
