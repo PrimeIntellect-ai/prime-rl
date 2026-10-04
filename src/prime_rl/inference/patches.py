@@ -18,7 +18,7 @@ def apply_shared_vllm_patches():
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
-    monkey_patch_return_routed_experts_with_nixl_connector()
+    monkey_patch_return_routed_experts_with_kv_connectors()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
@@ -243,49 +243,57 @@ def monkey_patch_minimax_m2_think_end_passthrough():
     minimax_m2.minimax_m2_config = _patched_config
 
 
-def monkey_patch_return_routed_experts_with_nixl_connector():
+# KV connectors that keep vLLM's slot-indexed routed-experts buffer correct. NIXL: the decode
+# instance's prompt rows are stale, but the router replaces them with the prefill rows.
+ROUTED_EXPERTS_KV_CONNECTORS = frozenset({"NixlConnector"})
+
+
+def monkey_patch_return_routed_experts_with_kv_connectors():
     from vllm.config.vllm import VllmConfig
     from vllm.logger import init_logger
 
     logger = init_logger(__name__)
     original_post_init = VllmConfig.__post_init__
 
-    if getattr(original_post_init, "_prime_rl_allows_nixl_routed_experts", False):
+    if getattr(original_post_init, "_prime_rl_allows_routed_experts_with_kv_connectors", False):
         return
 
-    def _is_nixl_routed_experts_pd_config(config: VllmConfig) -> bool:
+    def _allows_kv_connectors(config: VllmConfig) -> bool:
         kv_transfer_config = config.kv_transfer_config
-        return (
+        if not (
             config.model_config is not None
             and config.model_config.enable_return_routed_experts
             and kv_transfer_config is not None
-            and kv_transfer_config.kv_connector == "NixlConnector"
             and kv_transfer_config.is_kv_transfer_instance
-        )
+        ):
+            return False
+        if kv_transfer_config.kv_connector == "MultiConnector":
+            children = kv_transfer_config.kv_connector_extra_config.get("connectors", [])
+            names = {child.get("kv_connector") for child in children}
+        else:
+            names = {kv_transfer_config.kv_connector}
+        return names <= ROUTED_EXPERTS_KV_CONNECTORS
 
     def _post_init(config: VllmConfig):
-        if not _is_nixl_routed_experts_pd_config(config):
+        if not _allows_kv_connectors(config):
             return original_post_init(config)
 
-        if config.parallel_config.pipeline_parallel_size > 1:
+        # vLLM rejects routed-expert capture with every KV connector. Clearing the flag skips that
+        # check and the PP/CP checks next to it, so those two are repeated here.
+        parallel_config = config.parallel_config
+        if parallel_config.pipeline_parallel_size > 1:
             raise ValueError("--enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).")
-        if config.use_v2_model_runner:
-            raise ValueError(
-                "Routed-expert capture with NIXL requires the V1 model runner. Set VLLM_USE_V2_MODEL_RUNNER=0."
-            )
-
-        # vLLM rejects every KV connector, but our P/D path uses NIXL and
-        # stitches prefill/decode routed experts in the router. CPU KV offload
-        # remains rejected by prime-rl config validation.
+        if parallel_config.decode_context_parallel_size > 1 or parallel_config.prefill_context_parallel_size > 1:
+            raise ValueError("--enable-return-routed-experts is incompatible with context parallelism (DCP/PCP > 1).")
         config.model_config.enable_return_routed_experts = False
         try:
             return original_post_init(config)
         finally:
             config.model_config.enable_return_routed_experts = True
 
-    _post_init._prime_rl_allows_nixl_routed_experts = True
+    _post_init._prime_rl_allows_routed_experts_with_kv_connectors = True
     VllmConfig.__post_init__ = _post_init
-    logger.warning("Enabled vLLM routed-experts capture with NIXL connector patch.")
+    logger.info("Allowed vLLM routed-experts capture with KV connectors %s.", sorted(ROUTED_EXPERTS_KV_CONNECTORS))
 
 
 def monkey_patch_strip_routed_experts_from_chat():

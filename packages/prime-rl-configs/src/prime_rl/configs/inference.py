@@ -509,20 +509,6 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_combined_replay(self):
-        """NIXL routed-expert capture uses the V1 runner, while sampling replay needs V2."""
-        if (
-            self.deployment.type == "disaggregated"
-            and self.enable_return_sampling_mask
-            and self.vllm.enable_return_routed_experts
-        ):
-            raise ValueError(
-                "Combined router and sampling replay is not supported with disaggregated P/D: "
-                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_router_deployment(self):
         """The llm-d router (EPP + Envoy) is launched by the SLURM templates only; multi-node deployments need a router to front the per-rank engines."""
         if self.router is not None and self.router.type == "llm-d" and self.deployment.type == "single_node":
