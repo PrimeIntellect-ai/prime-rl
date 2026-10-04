@@ -7,6 +7,7 @@ from transformers import PretrainedConfig
 from prime_rl.trainer.lora import has_lora_layers
 from prime_rl.trainer.models.layers.lora import MultiLoRAModule
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.flops import forward_flops
 from prime_rl.utils.logger import get_logger
 
 
@@ -108,98 +109,11 @@ class PerfCounter:
             self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
 
-    @staticmethod
-    def get_active_mm_params(config: PretrainedConfig) -> float:
-        """Get number of active parameters per token involved in matmuls"""
-        # Handle VLM models with nested text_config (e.g., Qwen3-VL)
-        if hasattr(config, "text_config"):
-            config = config.text_config
-
-        vocab_size = config.vocab_size
-        hidden_size = config.hidden_size
-        intermediate_size = getattr(config, "intermediate_size", getattr(config, "moe_intermediate_size", 0))
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        num_attention_heads = config.num_attention_heads
-        num_hidden_layers = config.num_hidden_layers
-
-        ## Attention
-        if hasattr(config, "q_lora_rank") and hasattr(config, "kv_lora_rank"):
-            # MLA
-            q_params = num_hidden_layers * (
-                hidden_size * config.q_lora_rank + config.q_lora_rank * num_attention_heads * config.qk_head_dim
-            )
-            kv_params = num_hidden_layers * (
-                hidden_size * (config.kv_lora_rank + config.qk_rope_head_dim)
-                + config.kv_lora_rank * num_attention_heads * (config.qk_nope_head_dim + config.v_head_dim)
-            )
-            o_params = num_hidden_layers * (num_attention_heads * config.v_head_dim * hidden_size)
-        else:
-            # GQA
-            num_key_value_heads = config.num_key_value_heads
-            q_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
-            kv_params = 2 * num_hidden_layers * hidden_size * num_key_value_heads * head_dim
-            o_params = num_hidden_layers * hidden_size * num_attention_heads * head_dim
-
-        ## MLP
-        if hasattr(config, "first_k_dense_replace"):
-            num_dense_layers = config.first_k_dense_replace
-            num_sparse_layers = config.num_hidden_layers - num_dense_layers
-        elif hasattr(config, "num_experts_per_tok"):
-            num_dense_layers = 0
-            num_sparse_layers = config.num_hidden_layers
-        else:
-            num_dense_layers = config.num_hidden_layers
-            num_sparse_layers = 0
-
-        dense_mlp_params = num_dense_layers * 3 * intermediate_size * hidden_size
-        sparse_mlp_params = 0
-
-        # Some MoE models (e.g. DeepSeek) use moe_intermediate_size, others (e.g. Granite) just use intermediate_size
-        moe_intermediate_size = getattr(config, "moe_intermediate_size", None) or intermediate_size
-        if hasattr(config, "num_shared_experts") and config.num_shared_experts:  # Shared experts
-            sparse_mlp_params += num_sparse_layers * config.num_shared_experts * 3 * moe_intermediate_size * hidden_size
-        if hasattr(config, "num_experts_per_tok") and config.num_experts_per_tok:  # Routed experts
-            sparse_mlp_params += (
-                num_sparse_layers * config.num_experts_per_tok * 3 * moe_intermediate_size * hidden_size
-            )
-        if hasattr(config, "n_routed_experts"):  # DeepSeek Router
-            sparse_mlp_params += num_sparse_layers * config.n_routed_experts * hidden_size
-        elif hasattr(config, "num_experts") and config.num_experts is not None:  # Qwen Router
-            sparse_mlp_params += num_sparse_layers * config.num_experts * hidden_size
-        else:
-            sparse_mlp_params = 0
-
-        ## LM Head
-        lm_head_params = vocab_size * hidden_size
-        ## Total
-        return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
-
     def _get_num_flop_per_token(self, model_config: PretrainedConfig, seq_len: int) -> int:
-        # Handle VLM models with nested text_config (e.g., Qwen3-VL)
-        if hasattr(model_config, "text_config"):
-            model_config = model_config.text_config
-
-        l, h, t = (  # noqa: E741
-            model_config.num_hidden_layers,
-            model_config.num_attention_heads,
-            seq_len,
-        )
-        # Head dims as torchtitan's quadratic_attention_flops_per_token: the real head_dim (e.g. 128 for
-        # Qwen3-235B, whose hidden_size / num_attention_heads is 64), or the MLA qk / v head dims.
-        if hasattr(model_config, "qk_head_dim") and hasattr(model_config, "v_head_dim"):
-            qk_head_dim, v_head_dim = model_config.qk_head_dim, model_config.v_head_dim
-        else:
-            qk_head_dim = v_head_dim = (
-                getattr(model_config, "head_dim", None) or model_config.hidden_size // model_config.num_attention_heads
-            )
-        # Reasoning behind the factor of 6 for the self-attention part of the formula:
-        # 1. each self-attention has 2 matmul in the forward and 4 in the backward (6)
-        #    (q @ K^T over qk_head_dim, then scores @ V over v_head_dim, per head and attended token)
-        # 2. the flash attention does 1 more matmul recomputation in the backward
-        #    but recomputation should not be counted in calculating MFU           (+0)
-        # 3. each matmul performs 1 multiplication and 1 addition                 (*2)
-        # 4. we follow the convention and do not account for sparsity in causal attention
-        attention_flops = 6 * l * h * (qk_head_dim + v_head_dim) * t
+        linear, quadratic = forward_flops(model_config)
+        # Attention: forward plus 2x for the backward, counted over the full seq_len x seq_len
+        # (by convention causal sparsity is not discounted, and flash-attention recompute is not counted).
+        attention_flops = 3 * quadratic * seq_len
 
         if has_lora_layers(self.model):
             # LoRA case:
@@ -207,18 +121,12 @@ class PerfCounter:
             # - Fully trainable non-LoRA params (modules_to_save) cost 6×
             # - LoRA adapter params cost 6×
             # Combined (to avoid double counting): 4*active_mm + 2*fully_trainable + 6*lora_adapters + attention
-            active_mm_params = self.get_active_mm_params(model_config)
             lora_adapter_params = self._count_lora_adapter_params()
             fully_trainable_params = self._count_fully_trainable_params_excluding_lora()
+            return 2 * linear + 2 * fully_trainable_params + 6 * lora_adapter_params + attention_flops
 
-            flop_per_token = (
-                4 * active_mm_params + 2 * fully_trainable_params + 6 * lora_adapter_params + attention_flops
-            )
-        else:
-            # standard case: full fine-tuning, all params participate in forward (2×) and backward (4×)
-            flop_per_token = 6 * self.get_active_mm_params(model_config) + attention_flops
-
-        return flop_per_token
+        # Full fine-tuning: all params participate in forward (2×) and backward (4×)
+        return 3 * linear + attention_flops
 
     def _count_lora_adapter_params(self) -> int:
         """Count LoRA adapter parameters (sum of lora_A and lora_B across all MultiLoRAModules)."""
