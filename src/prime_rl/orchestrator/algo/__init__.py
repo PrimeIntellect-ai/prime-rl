@@ -55,7 +55,6 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 
 def build_algorithm(config: AlgoConfig, clients: InferenceClient) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.type]
-    assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
     # The Algorithm is the runtime of the algorithm config's training signal
     # (its sibling GenerationSource interprets the sampling half). Every algorithm is
     # handed the live policy pool — opsd self-distills against it, others may

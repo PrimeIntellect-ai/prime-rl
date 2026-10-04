@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.algorithm import ActionLossType, AlgoConfig, FrozenModelConfig
+from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -50,9 +50,8 @@ class Algorithm:
     annotated traces into transport samples only after admission.
     """
 
-    action_loss_type: ClassVar[ActionLossType] = "rl"
-
     def __init__(self, config: AlgoConfig, clients: InferenceClient):
+        self.action_loss_type = config.action_loss_type
         self.clients = clients
         self.connected: InferenceClient | None = None
 
@@ -74,7 +73,3 @@ class Algorithm:
         """Run rollout-local scoring when the episode has trainable traces."""
         if any(True for _ in iter_trainable_traces([episode])):
             await self.score_episode(episode)
-
-    async def finalize_group(self, episodes: list[vf.Episode]) -> None:
-        """Run group-relative scoring over the native episodes."""
-        await self.score_group(episodes)

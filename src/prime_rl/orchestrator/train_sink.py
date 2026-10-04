@@ -242,7 +242,7 @@ class TrainSink:
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
         if survivors:
-            await env.algorithm.finalize_group(group)
+            await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:
             self.pending_episodes.extend(group, admitted=admitted)
