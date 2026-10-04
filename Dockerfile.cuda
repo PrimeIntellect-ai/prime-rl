@@ -1,21 +1,27 @@
 # syntax=docker/dockerfile:1
-# ^ `COPY --exclude` (used to split the venv into parallel-compressible layers) needs
-# Dockerfile syntax >= 1.19; `docker/dockerfile:1` resolves to the latest stable 1.x.
 
-#inspired from https://github.com/astral-sh/uv-docker-example/blob/main/multistage.Dockerfile
+ARG DEPENDENCY_IMAGE=dependencies
+
+FROM ghcr.io/astral-sh/uv:0.11.9@sha256:6b6fa841d71a48fbc9e2c55651c5ad570e01104d7a7d701f57b2b22c0f58e9b1 AS uv
+
+FROM ubuntu:24.04@sha256:a853f94d226358a79c740cfc7bce0c289748f3fe3488d921d038ccd752c61b60 AS python-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates python3.12 python3.12-venv \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=uv /uv /uvx /usr/local/bin/
+ENV UV_PYTHON_PREFERENCE=only-system UV_LINK_MODE=copy
 
 # Every pyproject.toml + uv.lock, so the dependency sync below caches
 # independently of source edits.
-FROM nvidia/cuda:13.0.1-base-ubuntu24.04 AS manifests
-# .git is ~735 MB, changes every commit, and would land in the registry cache.
-COPY --exclude=.git . /ctx
+FROM python-builder AS manifests
+COPY . /ctx
 RUN mkdir -p /manifests \
     && cd /ctx \
     && find . -name .git -prune -o -type f -name pyproject.toml -exec cp --parents {} /manifests/ \; \
     && cp uv.lock /manifests/
 
 # Build stage - multi-arch base (supports amd64 + arm64)
-FROM nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04 AS builder
+FROM nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04@sha256:8b2705ea7a8653ad3451b46ab835eced92d77b44e671b9cf3ad4f95fbb2efe5e AS builder
 LABEL maintainer="prime intellect"
 LABEL repository="prime-rl"
 
@@ -72,18 +78,12 @@ RUN git clone --depth 1 --branch v${UCX_VERSION} https://github.com/openucx/ucx.
     && make install \
     && rm -rf /tmp/ucx
 
-# Download the latest installer
-ADD https://astral.sh/uv/install.sh /uv-installer.sh
-
-# Set install dir to location accessible to non-root users
-RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
+COPY --from=uv /uv /uvx /usr/local/bin/
 ENV PATH="/usr/local/bin:$PATH"
 # Build .venv against the system CPython, so the venv's recorded interpreter
 # matches the runtime interpreter and no bin/python relink is needed at runtime.
 ENV UV_PYTHON_PREFERENCE=only-system
 ENV UV_CACHE_DIR="/usr/local/share/uv/cache"
-# Explicity set venv dir inside /app so to ensure it gets copied over during
-# the runtime stage's `COPY /app`
 ENV UV_PROJECT_ENVIRONMENT="/app/.venv"
 
 # Install Python dependencies
@@ -91,51 +91,11 @@ WORKDIR /app
 
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-# Third-party deps only — source edits don't bust this layer. First-party
-# editables install in the source-layer sync below. No build-context bind
-# mount here: .git would bust the cache every commit.
-# `--extra dashboard` (fastapi/uvicorn) is baked in so the fft chart's dashboard pod needs no runtime uv sync (see PR body).
+# The runtime dependency image contains no first-party source or editable installs.
 COPY --from=manifests /manifests /app
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
     uv sync --all-packages --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra quack --extra kernels --group mamba-ssm --locked --no-dev \
-        --no-install-workspace \
-        --no-install-package prime-rl-configs \
-        --no-install-package verifiers \
-        --no-install-package renderers \
-        --no-install-package prime-pydantic-config
-
-COPY pyproject.toml /app/pyproject.toml
-COPY uv.lock /app/uv.lock
-COPY README.md /app/README.md
-COPY src/ /app/src/
-COPY packages/ /app/packages/
-COPY deps/ /app/deps/
-COPY configs /app/configs
-COPY examples /app/examples
-COPY k8s /app/k8s
-COPY benchmarks/scripts /app/benchmarks/scripts
-COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
-
-# Use submodule git metadata from the build context when present. Docker copies
-# only the submodule .git pointer files into /app/deps, so we temporarily link
-# /app/.git/modules to the read-only context before resolving versions.
-ARG VERIFIERS_PRETEND_VERSION
-ARG RENDERERS_PRETEND_VERSION
-RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    --mount=type=bind,source=.,target=/build-context,readonly \
-    if [ -d /build-context/.git/modules ]; then mkdir -p /app/.git && ln -s /build-context/.git/modules /app/.git/modules; fi \
-    && \
-    eval "$(bash /app/scripts/docker-editable-pretend-versions.sh --shell /app)" \
-    && \
-    if [ -L /app/.git/modules ]; then rm /app/.git/modules && rmdir /app/.git 2>/dev/null || true; fi \
-    && \
-    sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${VERIFIERS_PRETEND_VERSION}\"/" /app/deps/verifiers/pyproject.toml \
-    && \
-    sed -i "s/fallback-version = \"0.0.0\"/fallback-version = \"${RENDERERS_PRETEND_VERSION}\"/" /app/deps/renderers/pyproject.toml \
-    && \
-    uv sync --all-packages --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra quack --extra kernels --group mamba-ssm --locked --no-dev \
-    && \
-    /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
+        --no-install-local
 
 # Build NIXL from source against the UCX 1.19 baked above. The PyPI nixl wheel
 # ships its own UCX which segfaults on prefill→decode KV transfer (#2883);
@@ -185,7 +145,7 @@ RUN find /usr/local/cuda-13.0/targets/*/lib \
     && find /usr/local/cuda-13.0 -name '*.a' ! -name 'libcudadevrt.a' ! -name 'libcudart_static.a' -delete
 
 # Runtime image
-FROM nvidia/cuda:13.0.1-base-ubuntu24.04
+FROM nvidia/cuda:13.0.1-base-ubuntu24.04@sha256:f8ef28f579ea42a44b415d2c5d46f788e6a9b395c6c83f2929416e1fc192c143 AS dependencies
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -263,19 +223,12 @@ RUN userdel -r ubuntu 2>/dev/null || true; \
     echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Install uv for development use
-ADD https://astral.sh/uv/install.sh /uv-installer.sh
-RUN INSTALLER_NO_MODIFY_PATH=1 UV_INSTALL_DIR="/usr/local/bin" sh /uv-installer.sh && rm /uv-installer.sh
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 USER appuser
 ENV PATH="/usr/local/bin:$PATH"
 WORKDIR /app
-# Copy the application from the builder, splitting the venv's largest trees into their
-# own layers. BuildKit compresses and pushes layers in parallel, so shipping the whole
-# ~20 GB venv as one layer serialized the export behind a single compressor. Splitting
-# also lets nodes pull the image in parallel. Keep the excludes below in sync with the
-# per-tree copies above, or the data lands in the image twice.
-# The volatile /app remainder goes last so a source edit re-pushes one layer,
-# not all of them.
+# Split the largest dependency trees so compression and pulls can run in parallel.
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/nvidia /app/.venv/lib/python3.12/site-packages/nvidia
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/torch /app/.venv/lib/python3.12/site-packages/torch
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/vllm /app/.venv/lib/python3.12/site-packages/vllm
@@ -283,17 +236,14 @@ COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packa
 COPY --from=builder --chown=appuser:appuser /app/.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so /app/.venv/lib/python3.12/site-packages/
 COPY --from=builder /opt/ucx /opt/ucx
 
-# Copy and set up entrypoint script
-COPY --chown=appuser:appuser scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
-
 COPY --from=builder --chown=appuser:appuser \
-    --exclude=.venv/lib/python3.12/site-packages/nvidia \
-    --exclude=.venv/lib/python3.12/site-packages/torch \
-    --exclude=.venv/lib/python3.12/site-packages/vllm \
-    --exclude=.venv/lib/python3.12/site-packages/flash_attn \
-    --exclude=.venv/lib/python3.12/site-packages/flash_attn_2_cuda*.so \
-    /app /app
+    --exclude=lib/python3.12/site-packages/nvidia \
+    --exclude=lib/python3.12/site-packages/torch \
+    --exclude=lib/python3.12/site-packages/vllm \
+    --exclude=lib/python3.12/site-packages/flash_attn \
+    --exclude=lib/python3.12/site-packages/flash_attn_2_cuda*.so \
+    /app/.venv /app/.venv
+RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
@@ -304,6 +254,31 @@ ENV LD_LIBRARY_PATH="/opt/ucx/lib:/opt/ucx/lib/ucx${LD_LIBRARY_PATH:+:${LD_LIBRA
 ENV HF_HUB_ETAG_TIMEOUT=500
 ENV HF_HUB_DOWNLOAD_TIMEOUT=300
 
-# Use entrypoint for setup (ulimit, etc) but default to sleep infinity for K8s
+FROM python-builder AS application-builder
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md /app/
+COPY src /app/src
+COPY packages /app/packages
+COPY deps /app/deps
+COPY configs /app/configs
+COPY examples /app/examples
+COPY k8s /app/k8s
+COPY benchmarks/scripts /app/benchmarks/scripts
+COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
+COPY scripts/docker_application.py /build/docker_application.py
+ARG VERIFIERS_PRETEND_VERSION
+ARG RENDERERS_PRETEND_VERSION
+ARG PYDANTIC_CONFIG_PRETEND_VERSION
+RUN --mount=type=cache,target=/root/.cache/uv \
+    eval "$(bash /app/scripts/docker-editable-pretend-versions.sh --shell /app)" \
+    && uv run --no-project --python /usr/bin/python3.12 /build/docker_application.py /app /out/app
+
+# COPY --link and numeric ownership let source builds reuse dependency blobs without unpacking them.
+FROM ${DEPENDENCY_IMAGE} AS runtime
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+COPY --link --from=application-builder --chown=${USER_ID}:${GROUP_ID} /out/app /app
+# Preserve the executable Git mode; --chmod disables BuildKit's linked-copy optimization.
+COPY --link --chown=${USER_ID}:${GROUP_ID} scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["sleep", "infinity"]
