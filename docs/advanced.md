@@ -27,7 +27,6 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
-| Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | ✅ |

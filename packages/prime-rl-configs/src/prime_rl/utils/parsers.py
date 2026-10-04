@@ -2,9 +2,6 @@ import re
 
 # (regex, parser_name) — first match wins.
 TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # Trinity-Large-Thinking uses the Qwen3-Coder tool format; the rest of the family is Hermes.
-    (re.compile(r"^arcee-ai/Trinity-Large-Thinking"), "qwen3_coder"),
-    (re.compile(r"^arcee-ai/Trinity-"), "hermes"),
     (re.compile(r"^deepseek-ai/DeepSeek-V4"), "deepseek_v4"),
     (re.compile(r"^deepseek-ai/DeepSeek-V3\.2"), "deepseek_v32"),
     (re.compile(r"^deepseek-ai/DeepSeek-V3\.1"), "deepseek_v31"),
@@ -24,8 +21,6 @@ TOOL_CALL_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 REASONING_PARSER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # Trinity-Large-Preview doesn't reason; the Thinking/Mini/Nano variants do.
-    (re.compile(r"^arcee-ai/Trinity-(Large-Thinking|Mini|Nano)"), "deepseek_r1"),
     # V4 reasons inside <think> blocks, but vLLM only splits them out into `reasoning_content`
     # when this parser is set; the checkpoint ships no chat template, so nothing else supplies it.
     (re.compile(r"^deepseek-ai/DeepSeek-V4"), "deepseek_v4"),

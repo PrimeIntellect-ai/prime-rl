@@ -5,11 +5,6 @@ from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_p
 
 # (model_name, expected_tool_call_parser, expected_reasoning_parser)
 EXPECTED_PARSERS: list[tuple[str, str | None, str | None]] = [
-    # Arcee Trinity
-    ("arcee-ai/Trinity-Large-Thinking", "qwen3_coder", "deepseek_r1"),
-    ("arcee-ai/Trinity-Large-Preview", "hermes", None),
-    ("arcee-ai/Trinity-Mini", "hermes", "deepseek_r1"),
-    ("arcee-ai/Trinity-Nano-Preview", "hermes", "deepseek_r1"),
     # DeepSeek
     ("deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek_v4", "deepseek_v4"),
     ("deepseek-ai/DeepSeek-V4-Flash", "deepseek_v4", "deepseek_v4"),
