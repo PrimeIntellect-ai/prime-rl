@@ -12,10 +12,9 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import State, UploadFile
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
+from vllm.logger import init_logger
 
-from prime_rl.utils.logger import get_logger
-
-logger = get_logger()
+logger = init_logger("vllm.inference.delta_sync")
 router = APIRouter()
 
 WEIGHT_UPDATE_MODES = {"full", "delta"}
