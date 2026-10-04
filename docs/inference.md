@@ -324,7 +324,7 @@ When launching the inference server standalone, set `inference.enable_return_rou
 
   The vLLM slot buffer is sized for the whole KV block pool of each engine; its real size is logged at startup.
 - Weights are captured from vLLM's `BaseRouter` routers (Qwen3-MoE, Qwen3.5-MoE, GLM-4.5/GLM-5, Nemotron-H, Laguna, ...) in the trainer's convention, including `routed_scaling_factor` for models where vLLM applies it to the MoE output. Monolithic MoE kernels (e.g. FP8/NVFP4 FlashInfer TRT-LLM MoE) and DeepSeek-V4 only capture ids and fail at startup.
-- Same constraints as router replay, and disaggregated P/D is not supported.
+- Same constraints as router replay. Disaggregated P/D needs a router that splices int32 payloads ([router#61](https://github.com/PrimeIntellect-ai/router/pull/61)).
 
 ### Sampling Replay
 
