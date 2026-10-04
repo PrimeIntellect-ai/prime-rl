@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from tests.conftest import ProcessResult
+if TYPE_CHECKING:
+    from tests.conftest import ProcessResult
 
 
 def strip_escape_codes(text: str) -> str:
