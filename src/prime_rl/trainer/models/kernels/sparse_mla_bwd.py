@@ -278,7 +278,7 @@ def bwd(
     return sparse_mla_bwd_kernel
 
 
-DSA_BACKENDS = ("tilelang", "cudnn_flashmla", "tilelang_legacy")
+DSA_BACKENDS = ("tilelang", "cudnn_flashmla")
 
 _CUDNN_SM100_CAPABILITIES = ((10, 0), (10, 3))
 
@@ -397,11 +397,9 @@ def sparse_mla_backward(
     assert lse.shape == (B, S, H)
     assert backend in DSA_BACKENDS, f"Unknown DSA backend: {backend}"
 
-    arch = cudnn_backward_arch(q, kv)
     if backend == "cudnn_flashmla":
+        arch = cudnn_backward_arch(q, kv)
         assert arch is not None, "dsa_backend='cudnn_flashmla' requires an SM90/SM100/SM103 GPU and a single KV head"
-        return cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, arch)
-    if backend == "tilelang" and arch == "sm90":
         return cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, arch)
     return tilelang_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
 

@@ -233,9 +233,8 @@ def sparse_mla(
     """Sparse MLA attention over the top-k `indices`; returns the output and its natural-log LSE.
 
     `backend` picks the kernels for the forward and (via autograd) the backward:
-    ``tilelang`` is TileLang forward + cuDNN backward on SM90 with a single KV head, TileLang
-    backward otherwise; ``cudnn_flashmla`` is FlashMLA forward + cuDNN backward (SM90; SM100 /
-    SM103 untested); ``tilelang_legacy`` is TileLang for both.
+    ``tilelang`` is TileLang for both; ``cudnn_flashmla`` is FlashMLA forward + cuDNN backward
+    (SM90; SM100 / SM103 untested).
     """
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     assert backend in DSA_BACKENDS, f"Unknown DSA backend: {backend}"
