@@ -1034,6 +1034,24 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
 
+@pytest.mark.parametrize(
+    ("pd_role", "connectors"),
+    [
+        ("prefill", ["NixlConnector", "MooncakeStoreConnector"]),
+        ("decode", ["NixlConnector", "HiSparseConnector"]),
+    ],
+)
+def test_pd_role_kv_connectors(pd_role, connectors):
+    config = InferenceConfig(
+        pd_role=pd_role,
+        use_pd_kv_transfer=True,
+        hisparse={"host_pool_gib": 160},
+        kv_cache_offload={"type": "mooncake", "cpu": {"num_bytes": 1}, "roles": ["prefill"]},
+    )
+    kv_transfer_config = config.build_kv_transfer_config()
+    assert [c["kv_connector"] for c in kv_transfer_config["kv_connector_extra_config"]["connectors"]] == connectors
+
+
 CUSTOM_RENDERER_SOURCE = """
 from typing import Literal
 

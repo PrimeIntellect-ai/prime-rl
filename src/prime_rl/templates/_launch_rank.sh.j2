@@ -12,9 +12,9 @@ rank_log() {
     fi
 }
 
-# launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file>
+# launch_inference_rank <port> <cuda_visible_devices> <dp> <rpc_port> <vllm_extra_json|""> <nixl_side_channel_port|""> <log_file> [pd_role]
 launch_inference_rank() {
-    local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7"
+    local port="$1" gpus="$2" dp="$3" rpc="$4" extra="$5" nixl="$6" log="$7" role="${8:-}"
     # Per-rank dir for the mooncake-store lookup ipc socket. It must be unique per process:
     # external-LB runs one engine per process, all with data_parallel_rank_local 0, so the
     # lookup socket name collides on bind if the dir is shared node-wide. $port is unique per
@@ -25,6 +25,7 @@ launch_inference_rank() {
         --server.host 0.0.0.0 --server.port "$port"
         --vllm.data-parallel-size "$dp" --vllm.data-parallel-size-local 1 --vllm.api-server-count 1)
     [ -n "$rpc" ] && cmd+=(--vllm.data-parallel-rpc-port "$rpc")
+    [ -n "$role" ] && cmd+=(--pd-role "$role")
     # Per-rank vLLM overrides go through a JSON file merged into [inference.vllm]
     # (dict-valued keys like compilation_config can't be inlined as CLI flags).
     if [ -n "$extra" ]; then
