@@ -119,7 +119,8 @@ def setup_single_process_env() -> None:
 def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
     model.config.save_pretrained(output_dir)
-    if model.generation_config:
+    # Models that skip `post_init()` (e.g. Qwen3.5) have no generation config.
+    if getattr(model, "generation_config", None):
         # training sets use_cache=False which can conflict with cache_implementation —
         # save with use_cache=True without mutating the model's config
         gen_config = deepcopy(model.generation_config)
@@ -166,7 +167,7 @@ def load_and_convert(ckpt_dir: Path):
     logger.info("Gathering and converting weights")
     state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
     if getattr(model.config, "tie_word_embeddings", False):
-        for key in getattr(model, "_tied_weights_keys", []):
+        for key in getattr(model, "_tied_weights_keys", None) or []:
             state_dict.pop(key, None)
     state_dict = convert_state_dict_to_hf(model, state_dict)
     return model, model_config, tokenizer_config, state_dict, step_dir
