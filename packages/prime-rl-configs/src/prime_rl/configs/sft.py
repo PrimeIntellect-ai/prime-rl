@@ -105,6 +105,28 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
+class GlobalPackingConfig(BaseConfig):
+    lookahead_samples: int = Field(0, ge=0)
+    """Additional processed samples inspected after the first unplaceable sample."""
+
+    max_pending_samples: int = Field(128, ge=1)
+    """Maximum number of deferred processed samples."""
+
+    max_pending_bytes: int = Field(256 * 1024**2, ge=1)
+    """Maximum deferred sample payload bytes."""
+
+    max_sample_bytes: int = Field(64 * 1024**2, ge=1)
+    """Maximum serialized processed sample size; larger samples fail explicitly."""
+
+    @model_validator(mode="after")
+    def validate_buffer_limits(self):
+        if self.lookahead_samples >= self.max_pending_samples:
+            raise ValueError("lookahead_samples must be smaller than max_pending_samples")
+        if self.max_sample_bytes > self.max_pending_bytes:
+            raise ValueError("max_pending_bytes must hold at least one max_sample_bytes sample")
+        return self
+
+
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
@@ -131,6 +153,9 @@ class SFTDataConfig(BaseDataConfig):
 
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    global_packing: GlobalPackingConfig | None = None
+    """Opt-in global pack-before-shard broker. An empty table enables online best fit."""
 
     columns: SFTColumnsConfig = SFTColumnsConfig()
     """Columns that carry per-sample renderer arguments."""
@@ -268,6 +293,17 @@ class SFTConfig(BaseConfig):
     def run_dir(self) -> Path:
         assert self.run.dir is not None  # resolved at construction
         return self.output_dir / self.run.dir
+
+    @model_validator(mode="after")
+    def validate_global_packing(self):
+        packing = self.data.global_packing if isinstance(self.data, SFTDataConfig) else None
+        if packing is not None and self.val is not None and self.val.data.global_packing is None:
+            self.val.data.global_packing = packing.model_copy(deep=True)
+        if self.model.vlm is not None and (
+            packing is not None or (self.val is not None and self.val.data.global_packing is not None)
+        ):
+            raise ValueError("Global SFT packing is currently text-only; multimodal distributed validation is pending")
+        return self
 
     @model_validator(mode="after")
     def resolve_moe_router_dtype_auto(self):

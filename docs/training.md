@@ -257,11 +257,55 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | Knob | What it controls |
 |---|---|
 | `data.name` | HF dataset name or local path |
-| `data.batch_size` | Tokens per trainer step (packed) |
+| `data.batch_size` | Global nominal sequences per optimizer step; token capacity is `batch_size * seq_len` |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
+
+### Global SFT Packing
+
+Text SFT can opt into a rank-0 broker that packs the globally shuffled sample
+stream before distributing rows to DP lanes:
+
+```toml
+[data.global_packing]
+lookahead_samples = 0
+```
+
+Omitting this block uses independent local packing. The broker uses deterministic
+online best fit. At zero lookahead, each optimizer step selects a contiguous
+prefix of valid processed samples. A sample that cannot fit begins the next
+step. Positive `lookahead_samples` permits that many additional samples to fill
+holes; deferred samples retain arrival order and are tried first in the next
+step. Text exceeding `micro_batch_size * seq_len` is truncated without splitting
+it into independent attention segments. Samples without trainable tokens in the
+renderer context window are counted and filtered.
+
+Each DP lane receives exactly `batch_size / (DP * micro_batch_size)` rows of
+`micro_batch_size * seq_len` positions. CP peers receive identical full rows
+before context sharding. Token-normalized loss and optimizer accumulation use
+the same schedule as local packing. Multimodal models reject this option at
+configuration time.
+
+`data.num_workers` controls ordered rendering threads inside the broker's CPU
+worker. One prepared optimizer step is prefetched. Deferred payloads are bounded
+by `max_pending_samples` (128) and `max_pending_bytes` (256 MiB);
+`max_sample_bytes` (64 MiB) caps each serialized processed sample. Oversized
+payloads fail explicitly. Rendering also holds up to `num_workers` results.
+
+Checkpoints capture the last consumed global step, source cursor, and pending
+samples. Prefetched work is replayed after restart. Resume requires the same data
+configuration and DP/CP topology. Checkpoints are taken after complete optimizer
+steps. Validation inherits global packing when training enables it; it consumes
+every valid validation sample once and pads the final step so all ranks stop
+together. Validation loss is weighted by actual trainable tokens.
+
+Use `packing/fill_ratio`, `packing/trainable_ratio`, and
+`perf/trainable_tokens_per_second` to compare useful work. `perf/throughput`
+counts nominal positions. Broker metrics report preprocessing, packing,
+materialization, wait and transport times, CPU time, peak resident memory,
+pending payload size, and samples moved across a step boundary.
 
 ### Important Metrics
 
