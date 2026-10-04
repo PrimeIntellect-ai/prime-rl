@@ -10,7 +10,7 @@ RL on [`zai-org/GLM-4.5-Air`](https://huggingface.co/zai-org/GLM-4.5-Air) — a 
 | [`swe-budget.toml`](swe-budget.toml) + [`swe-2-node.toml`](swe-2-node.toml) | `scaleswe` (`bash` harness) | `swebench-verified` | 1 train + 1 infer node |
 | [`terminal.toml`](terminal.toml) | `tmax` (per-task Docker image, `rlm` ipython harness) | `swebench-verified` + `terminal-bench-2` (avg@4) | 2 train + 4 infer nodes |
 
-Inference serves the bf16 checkpoint as-is (no quantization), with `tensor_parallel_size = 8` (plus expert parallelism on `swe.toml`). `search.toml`, `swe.toml`, and `terminal.toml` train with Muon on 2 trainer nodes. The budget variants instead fit the trainer on a single node with full optimizer offload and the stateless sign-SGD optimizer; `swe-2-node.toml` cuts the batch size to 64 (4 groups of 16) to match the throughput of its single inference replica. They don't parse standalone: compose them left-to-right over `swe-budget.toml` (`uv run rl @ swe-budget.toml @ swe-2-node.toml`). Search answers are scored by a reference judge (`Qwen/Qwen3-235B-A22B-Instruct-2507`).
+Inference serves the bf16 checkpoint as-is (no quantization), with `tensor_parallel_size = 8` (plus expert parallelism on `swe.toml`). `search.toml`, `swe.toml`, and `terminal.toml` train with Muon on 2 trainer nodes. The budget variants instead fit the trainer on a single node with full optimizer offload and the stateless sign-SGD optimizer; `swe-2-node.toml` cuts the batch size to 64 (4 groups of 16) to match the throughput of its single inference replica. They don't parse standalone: compose them left-to-right over `swe-budget.toml` (`uv run rl @ swe-budget.toml @ swe-2-node.toml`). Search answers are scored by a reference judge (`Qwen/Qwen3.5-122B-A10B`).
 
 ## Requirements
 

@@ -1,6 +1,6 @@
-# Qwen3-30B-A3B
+# Qwen3.5-35B-A3B
 
-RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The Thinking checkpoint trains math and SWE; the tool config trains the Instruct checkpoint with colocated tools on [Modal](https://modal.com). All configs use the custom MoE trainer implementation with expert parallelism (`ep = 8`), the AdamW optimizer, NCCL weight broadcast, and W&B logging. `swe.toml` adds `cp = 2` context parallelism for its 131k context; the other two run at 32k.
+RL on [`Qwen/Qwen3.5-35B-A3B`](https://huggingface.co/Qwen/Qwen3.5-35B-A3B) across three domains: math, SWE, and agentic tool use. The model is a hybrid MoE (256 experts, top-8 plus a shared expert) that mixes Gated DeltaNet linear attention with full attention, and one checkpoint covers both thinking and non-thinking modes. Math and SWE train with thinking on (the chat template default); the tool config turns it off with `[orchestrator.renderer] enable_thinking = false`, and the tools run colocated on [Modal](https://modal.com). The checkpoint is a vision-language model; these configs train text-only, so they leave `[model.vlm]` unset. All configs use the custom MoE trainer implementation, the AdamW optimizer, NCCL weight broadcast, and W&B logging; `math.toml` and `swe.toml` add expert parallelism (`ep = 8`). `swe.toml` adds `cp = 2` context parallelism for its 131k context; the other two run at 32k. Context parallelism uses `cp_style = "ulysses"`, the only style the DeltaNet layers support.
 
 | Config | Trains on | Evals on | Runtime | Topology |
 |---|---|---|---|---|
@@ -9,7 +9,7 @@ RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The
 | [`tool.toml`](tool.toml) | `general-agent` (colocated tools) | — | `modal` | 1 train + 1 infer node |
 | [`sft/h200/`](sft/h200) | SFT on `PrimeIntellect/INTELLECT-3-SFT-10K` (math) | — | — | 2 train nodes |
 
-`tool.toml` is the odd one out: 400 steps, `group_size = 16`, checkpoints every 50 steps with `keep_last = 1`, and inference at `dp = 2` / `tp = 4`. `math.toml` and `swe.toml` run 512-task batches with checkpoints every 100 steps.
+`tool.toml` is the odd one out: 400 steps, `group_size = 16`, checkpoints every 50 steps with `keep_last = 1`, and inference at `dp = 2` / `tp = 4`. It also trains on a single node: FP32 weights, gradients, and AdamW state come to about 16 bytes per parameter, roughly 70 GB per GPU for the ~35B parameters before activations, so plan for 141 GB (H200-class) GPUs. `math.toml` and `swe.toml` run 512-task batches with checkpoints every 100 steps.
 
 ## Requirements
 
@@ -31,7 +31,7 @@ uv run modal setup   # or export MODAL_TOKEN_ID / MODAL_TOKEN_SECRET
 - Environment variables, exported in the shell you launch from — the launcher passes its environment to every component:
 
   - `WANDB_API_KEY` — every config logs to W&B (`[monitors.wandb]`).
-  - `HF_TOKEN` — optional; the Qwen checkpoints are public, but a token avoids rate limits.
+  - `HF_TOKEN` — optional; the Qwen checkpoint is public, but a token avoids rate limits.
 
 `math.toml` needs none of the above beyond W&B: its agents run as local subprocesses on the env server.
 
@@ -57,9 +57,9 @@ uv sync --all-extras --all-packages
 The `rl` entrypoint submits an sbatch job whenever the config has a `[slurm]` table — there is no separate launcher. From the shared checkout:
 
 ```bash
-uv run rl @ examples/advanced/qwen3-30b-a3b/math.toml \
-  --output-dir /shared/outputs/qwen30b \
-  --run.name qwen30b-math
+uv run rl @ examples/advanced/qwen3.5-35b-a3b/math.toml \
+  --output-dir /shared/outputs/qwen35b \
+  --run.name qwen35b-math
 ```
 
 Swap `math.toml` for `swe.toml` or `tool.toml` to run the other domains. Pass `--run.name`: the run directory is `<output_dir>/<run_name>` and you need a stable name to resume later (unset, it auto-generates as `<envs>--<model>--<short-id>`).
@@ -69,7 +69,7 @@ Swap `math.toml` for `swe.toml` or `tool.toml` to run the other domains. Pass `-
 Start the local run dashboard on the head node — it only reads the run directories, so it is safe to point at a live run while the job is training:
 
 ```bash
-uv run dashboard /shared/outputs/qwen30b   # serves http://localhost:7788
+uv run dashboard /shared/outputs/qwen35b   # serves http://localhost:7788
 ```
 
 If the head node is remote, forward the port from your laptop and open `http://localhost:7788` in a browser:
@@ -93,16 +93,16 @@ Pass several output directories to track parallel experiments side by side (`uv 
 Checkpoints land in `<run_dir>/checkpoints/step_<N>` — every 100 steps for `math.toml`/`swe.toml`, every 50 steps (`keep_last = 1`) for `tool.toml`. To resume, re-run the same command with `--resume` (latest checkpoint) or `--resume.step <N>`, the same `--run.name` / `--output-dir`, and a `--max-steps` at least the target final step:
 
 ```bash
-uv run rl @ examples/advanced/qwen3-30b-a3b/math.toml \
-  --output-dir /shared/outputs/qwen30b \
-  --run.name qwen30b-math \
+uv run rl @ examples/advanced/qwen3.5-35b-a3b/math.toml \
+  --output-dir /shared/outputs/qwen35b \
+  --run.name qwen35b-math \
   --resume --max-steps 1000
 ```
 
 Trainer checkpoints are DCP-sharded; export HF-format weights with:
 
 ```bash
-uv run python tools/convert_dcp_to_bf16.py /shared/outputs/qwen30b/qwen30b-math/checkpoints/step_100
+uv run python tools/convert_dcp_to_bf16.py /shared/outputs/qwen35b/qwen35b-math/checkpoints/step_100
 ```
 
 See [Training](../../../docs/training.md) for the full knobs and metrics reference, and [Scaling](../../../docs/scaling.md) for SLURM and multi-node details.
@@ -112,14 +112,14 @@ See [Training](../../../docs/training.md) for the full knobs and metrics referen
 The SFT configs live under [`sft/h200/`](sft/h200). They are tuned for two 8-GPU H200 nodes and train only (no inference nodes). Combine the base config with a data overlay:
 
 ```bash
-uv run sft @ examples/advanced/qwen3-30b-a3b/sft/h200/base.toml @ examples/advanced/qwen3-30b-a3b/sft/h200/math-10k.toml \
-  --output-dir /shared/outputs/qwen30b \
-  --run.name qwen30b-sft-math
+uv run sft @ examples/advanced/qwen3.5-35b-a3b/sft/h200/base.toml @ examples/advanced/qwen3.5-35b-a3b/sft/h200/math-10k.toml \
+  --output-dir /shared/outputs/qwen35b \
+  --run.name qwen35b-sft-math
 ```
 
 This starts an SFT run with the following setup:
 
-- The model is `Qwen/Qwen3-30B-A3B-Instruct-2507`, trained with the custom MoE implementation, expert parallelism (`ep = 8`), full activation checkpointing with offloading, and AdamW.
+- The model is `Qwen/Qwen3.5-35B-A3B`, trained with the custom MoE implementation, expert parallelism (`ep = 8`), full activation checkpointing with offloading, and AdamW.
 - The data is `PrimeIntellect/INTELLECT-3-SFT-10K` (math split), at a 32k sequence length with a batch of 16 samples per step.
 
-For a fake-data dry run, add [`fake.toml`](sft/h200/fake.toml) instead of the data overlay. `base.toml` sets `[slurm] partition = "all"` and `HF_HOME = "/home/huggingface"`. Change both to match your cluster. For longer contexts, raise `data.seq_len` and set `model.cp` to split each sequence across GPUs. You can monitor the SFT run with the same dashboard.
+For a fake-data dry run, add [`fake.toml`](sft/h200/fake.toml) instead of the data overlay. `base.toml` sets `[slurm] partition = "all"` and `HF_HOME = "/home/huggingface"`. Change both to match your cluster. For longer contexts, raise `data.seq_len` and set `model.cp` (with `model.cp_style = "ulysses"`) to split each sequence across GPUs. You can monitor the SFT run with the same dashboard.

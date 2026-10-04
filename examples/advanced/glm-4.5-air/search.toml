@@ -106,7 +106,7 @@ env.taskset.id = "openseeker"
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
 name = "correct"
-model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+model = "Qwen/Qwen3.5-122B-A10B"
 question_field = "question"
 choices = ["A", "B"]
 
@@ -130,7 +130,7 @@ env.taskset.id = "redsearcher" # optional `difficulty` filter (easy/medium/hard)
 [[orchestrator.train.source.env.taskset.task.judges]]
 id = "reference"
 name = "correct"
-model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+model = "Qwen/Qwen3.5-122B-A10B"
 question_field = "question"
 choices = ["A", "B"]
 
@@ -157,7 +157,7 @@ env.agent.harness.compaction.summarize_at_tokens = 98304
 env.agent.runtime.labels = ["glm45air-search"]
 env.agent.timeout.rollout = 3600
 env.taskset.id = "browsecomp"
-env.taskset.task.judge.model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+env.taskset.task.judge.model = "Qwen/Qwen3.5-122B-A10B"
 
 # # Metric-only monitor (weight 0): rlm harness-mechanics rubric, judged by GLM-5.2.
 # [[orchestrator.eval.source.env.taskset.task.judges]]

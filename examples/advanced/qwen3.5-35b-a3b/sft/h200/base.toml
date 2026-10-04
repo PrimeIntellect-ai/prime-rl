@@ -5,7 +5,7 @@ HF_HOME = "/home/huggingface"
 TRITON_CACHE_DIR = "/tmp/.cache/triton_cache"
 
 [model]
-name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+name = "Qwen/Qwen3.5-35B-A3B"
 attn = "flash_attention_3"
 ep = 8
 
@@ -30,5 +30,5 @@ type = "multi_node"
 num_train_nodes = 2
 
 [slurm]
-job_name = "qwen30b-sft"
+job_name = "qwen35b-sft"
 partition = "all"

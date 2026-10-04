@@ -4,7 +4,7 @@ seq_len = 32768
 level = "debug"
 
 [model]
-name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+name = "Qwen/Qwen3.5-35B-A3B"
 
 [weight_broadcast]
 type = "nccl"
@@ -15,13 +15,13 @@ num_train_nodes = 2
 num_infer_nodes = 2
 
 [slurm]
-job_name = "math-qwen30b"
+job_name = "math-qwen35b"
 
 [ckpt]
 interval = 100
 
 [monitors.wandb]
-project = "qwen30b-math"
+project = "qwen35b-math"
 
 [trainer.model]
 attn = "flash_attention_3"
