@@ -555,19 +555,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_router_replay_without_kv_offload(self):
-        if (
-            self.trainer.enable_router_replay
-            and self.inference is not None
-            and self.inference.kv_cache_offload is not None
-        ):
-            raise ValueError(
-                "Router replay with inference.kv_cache_offload is not supported. "
-                "External KV cache hits do not carry routed-expert decisions."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_mooncake_offload_requires_slurm(self):
         if (
             self.slurm is None

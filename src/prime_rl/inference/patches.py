@@ -19,6 +19,7 @@ def apply_shared_vllm_patches():
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_return_routed_experts_with_kv_connectors()
+    monkey_patch_clamp_kv_offload_loads_for_routed_experts()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
@@ -244,8 +245,9 @@ def monkey_patch_minimax_m2_think_end_passthrough():
 
 
 # KV connectors that keep vLLM's slot-indexed routed-experts buffer correct. NIXL: the decode
-# instance's prompt rows are stale, but the router replaces them with the prefill rows.
-ROUTED_EXPERTS_KV_CONNECTORS = frozenset({"NixlConnector"})
+# instance's prompt rows are stale, but the router replaces them with the prefill rows. Offload
+# connectors: their loads are clamped by `monkey_patch_clamp_kv_offload_loads_for_routed_experts`.
+ROUTED_EXPERTS_KV_CONNECTORS = frozenset({"NixlConnector", "OffloadingConnector", "MooncakeStoreConnector"})
 
 
 def monkey_patch_return_routed_experts_with_kv_connectors():
@@ -294,6 +296,69 @@ def monkey_patch_return_routed_experts_with_kv_connectors():
     _post_init._prime_rl_allows_routed_experts_with_kv_connectors = True
     VllmConfig.__post_init__ = _post_init
     logger.info("Allowed vLLM routed-experts capture with KV connectors %s.", sorted(ROUTED_EXPERTS_KV_CONNECTORS))
+
+
+def _routed_experts_load_limit(request, num_computed_tokens: int, block_size: int) -> int | None:
+    """How many tokens past ``num_computed_tokens`` an external KV load may cover under routed-expert capture.
+
+    A load fills fresh blocks whose routing slots still hold rows of the block's previous owner.
+    vLLM returns routing only from ``routed_experts_prompt_start`` on (the client already holds the
+    rows before it), so loads that stop at that block boundary stay exact. Decode-side P/D requests
+    are not bounded: the router replaces their prompt rows with the prefill instance's rows.
+    """
+    params = request.kv_transfer_params or {}
+    if params.get("remote_engine_id") and not params.get("do_remote_decode"):
+        return None
+    prompt_start = request.sampling_params.routed_experts_prompt_start
+    return max(0, prompt_start // block_size * block_size - num_computed_tokens)
+
+
+def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
+    """Clamp native (``OffloadingConnector``) and Mooncake KV offload loads with `_routed_experts_load_limit`.
+
+    Needed because vLLM keys routed experts by physical KV slot and no connector moves routing with
+    the KV. Multi-turn reloads stay below the next turn's ``routed_experts_prompt_start`` and keep
+    their hits; offloaded prefixes past it (first turns, shared prompts) are recomputed.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import OffloadingConnector
+
+    if getattr(OffloadingConnector._max_loadable_tokens, "_prime_rl_routed_experts_clamp", False):
+        return
+
+    original_max_loadable_tokens = OffloadingConnector._max_loadable_tokens
+    original_get_num_new_matched_tokens = MooncakeStoreConnector.get_num_new_matched_tokens
+
+    def _max_loadable_tokens(self, request, num_computed_tokens):
+        bound = original_max_loadable_tokens(self, request, num_computed_tokens)
+        if not self._vllm_config.model_config.enable_return_routed_experts:
+            return bound
+        limit = _routed_experts_load_limit(request, num_computed_tokens, self._vllm_config.cache_config.block_size)
+        if limit is None or (bound is not None and bound <= limit):
+            return bound
+        return limit
+
+    def _get_num_new_matched_tokens(self, request, num_computed_tokens):
+        num_tokens, load_async = original_get_num_new_matched_tokens(self, request, num_computed_tokens)
+        if not num_tokens or not self._vllm_config.model_config.enable_return_routed_experts:
+            return num_tokens, load_async
+        scheduler = self.connector_scheduler
+        limit = _routed_experts_load_limit(request, num_computed_tokens, scheduler._block_size)
+        if limit is None or num_tokens <= limit:
+            return num_tokens, load_async
+        if limit == 0:
+            del scheduler.load_specs[request.request_id]
+            return 0, False
+        # The new end is a full block inside the hit, stored under its own hash, so the tail-key
+        # overrides for the old (possibly partial) end no longer apply.
+        load_spec = scheduler.load_specs[request.request_id]
+        load_spec.kvpool_cached_tokens = num_computed_tokens + limit
+        load_spec.tail_key_boundaries = ()
+        return limit, load_async
+
+    _max_loadable_tokens._prime_rl_routed_experts_clamp = True
+    OffloadingConnector._max_loadable_tokens = _max_loadable_tokens
+    MooncakeStoreConnector.get_num_new_matched_tokens = _get_num_new_matched_tokens
 
 
 def monkey_patch_strip_routed_experts_from_chat():
