@@ -194,6 +194,15 @@ def test_vlm_meta_device_and_buffer_reinit():
     assert vis_inv.abs().sum() > 0
 
 
+def test_vlm_ties_lm_head_to_embeddings():
+    """Tied checkpoints ship no lm_head weight, so it must share the embedding."""
+    config = get_vlm_config()
+    config.tie_word_embeddings = True
+    with torch.device("meta"):
+        model = AutoModelForCausalLMPrimeRL.from_config(config, attn_implementation="flash_attention_2")
+    assert model.lm_head.weight is model.model.language_model.embed_tokens.weight
+
+
 def test_qwen35_mrope_text_only_positions():
     input_ids = torch.tensor([[10, 11, 12, 13]])
     mm_token_type_ids = torch.zeros_like(input_ids)
