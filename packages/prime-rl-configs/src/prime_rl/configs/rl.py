@@ -558,16 +558,29 @@ class RLConfig(BaseConfig):
     def auto_setup_payload_root(self):
         """Multi-node runs pass router-replay ids and sampling masks by handle through
         ``<run dir>/payloads``, which the SLURM deployment shares with the trainer.
-        Disaggregated P/D stays inline: the PD router merges only inline routing."""
+        Disaggregated P/D stays inline: the PD router merges only inline routing, and so
+        does score centering until the by-handle writer stores sampling_mask_logprobs."""
         inference = self.inference
         if (
             inference is not None
             and self.orchestrator.payload_root is None
+            # getattr: score_centering comes with #3794; drop once #3836 + #3794's writer hook land.
+            and not getattr(self.trainer.loss, "score_centering", False)
             and (inference.vllm.enable_return_routed_experts or inference.enable_return_sampling_mask)
             and self.deployment.type == "multi_node"
             and inference.deployment.type != "disaggregated"
         ):
             self.orchestrator.payload_root = (self.run_dir / "payloads").absolute()
+        return self
+
+    @model_validator(mode="after")
+    def validate_payload_root_without_score_centering(self):
+        # getattr: score_centering comes with #3794; drop once #3836 + #3794's writer hook land.
+        if self.orchestrator.payload_root is not None and getattr(self.trainer.loss, "score_centering", False):
+            raise ValueError(
+                "trainer.loss.score_centering is not supported with by-handle payloads yet (the by-handle writer "
+                "does not store sampling_mask_logprobs): unset orchestrator.payload_root to keep payloads inline."
+            )
         return self
 
     @model_validator(mode="after")
