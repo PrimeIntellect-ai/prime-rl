@@ -20,6 +20,7 @@ def apply_shared_vllm_patches():
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_return_routed_experts_with_kv_connectors()
     monkey_patch_clamp_kv_offload_loads_for_routed_experts()
+    monkey_patch_routed_experts_skip_host_kv_groups()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
@@ -247,7 +248,11 @@ def monkey_patch_minimax_m2_think_end_passthrough():
 # KV connectors that keep vLLM's slot-indexed routed-experts buffer correct. NIXL: the decode
 # instance's prompt rows are stale, but the router replaces them with the prefill rows. Offload
 # connectors: their loads are clamped by `monkey_patch_clamp_kv_offload_loads_for_routed_experts`.
-ROUTED_EXPERTS_KV_CONNECTORS = frozenset({"NixlConnector", "OffloadingConnector", "MooncakeStoreConnector"})
+# HiSparse: never reports external hits; `monkey_patch_routed_experts_skip_host_kv_groups` keys
+# routing by a GPU cache group.
+ROUTED_EXPERTS_KV_CONNECTORS = frozenset(
+    {"NixlConnector", "OffloadingConnector", "MooncakeStoreConnector", "HiSparseConnector"}
+)
 
 
 def monkey_patch_return_routed_experts_with_kv_connectors():
@@ -359,6 +364,26 @@ def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
     _max_loadable_tokens._prime_rl_routed_experts_clamp = True
     OffloadingConnector._max_loadable_tokens = _max_loadable_tokens
     MooncakeStoreConnector.get_num_new_matched_tokens = _get_num_new_matched_tokens
+
+
+def monkey_patch_routed_experts_skip_host_kv_groups():
+    """Key vLLM's routed-experts slot buffer by a GPU KV cache group under HiSparse.
+
+    vLLM picks the first full-attention group, which under HiSparse is the host-resident sparse-MLA
+    source group. Its block ids index the host pool, which is larger than the GPU pool the buffer is
+    sized for, so routing is stored out of bounds or under the wrong slot. Skipping host-resident
+    groups selects the GPU indexer group (full-length and prefix-cacheable). Drop once vLLM has the fix.
+    """
+    from vllm.model_executor.layers.fused_moe import routed_experts_capturer
+    from vllm.v1.kv_cache_interface import KVCacheConfig, is_full_attention_spec
+
+    def get_routed_experts_attn_gid(kv_cache_config: KVCacheConfig) -> int:
+        for gid, group in enumerate(kv_cache_config.kv_cache_groups):
+            if not group.host_resident and is_full_attention_spec(group.kv_cache_spec):
+                return gid
+        raise ValueError("Routed-experts capture requires a GPU full-attention KV cache group.")
+
+    routed_experts_capturer.get_routed_experts_attn_gid = get_routed_experts_attn_gid
 
 
 def monkey_patch_strip_routed_experts_from_chat():

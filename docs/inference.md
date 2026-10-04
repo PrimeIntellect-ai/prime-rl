@@ -15,6 +15,7 @@ This page covers the inference configuration and the supported features/deployme
 - [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
+    - [HiSparse](#hisparse)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
     - [Router Replay](#router-replay)
@@ -246,6 +247,25 @@ path = "/scratch/kv"
 ```
 
 For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+
+Under disaggregated P/D, `roles` limits offload to some instance roles (default: both). Instances of the other role get no offload connector, and with `mooncake` their nodes run no store client, so they contribute no DRAM:
+
+```toml
+[inference.kv_cache_offload]
+type = "mooncake"
+roles = ["prefill"]   # decode nodes keep their RAM, e.g. for HiSparse host pools
+```
+
+### HiSparse
+
+HiSparse (vLLM, DSA sparse-MLA models such as GLM-5.x) keeps the sparse-MLA KV in a pinned host pool. Decode attention reads per-request GPU buffers that hold the indexer top-k rows. This frees GPU memory for many more concurrent decode sequences.
+
+```toml
+[inference.hisparse]
+host_pool_gib = 160   # pinned host RAM per engine rank
+```
+
+prime-rl adds vLLM's `HiSparseConnector` to the KV transfer config. Under disaggregated P/D it applies to decode instances only; pair it with `kv_cache_offload.roles = ["prefill"]` so decode RAM goes to the host pools (budget `ranks per node × host_pool_gib`). HiSparse needs the V2 model runner (vLLM selects it), no pipeline or decode context parallelism, and a model with `index_topk` (vLLM checks this at startup). Size decode `max_num_seqs` explicitly (e.g. 96 per rank): the GPU buffers scale with it. Router replay and sampling replay both work with HiSparse.
 
 
 ### Optimized P/D disaggregation deployment

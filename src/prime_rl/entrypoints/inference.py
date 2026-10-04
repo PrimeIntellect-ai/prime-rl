@@ -92,6 +92,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
         kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
         kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
         kv_offload_device_name=offload.device_name if is_mooncake else "",
+        kv_offload_roles=offload.roles if is_mooncake else [],
         inference_env_vars={**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars},
     )
 

@@ -238,6 +238,9 @@ class BaseKVCacheOffloadConfig(BaseConfig):
     disk: DiskOffloadTier | None = None
     """Optional disk tier, layered behind the CPU tier (GPU → DRAM → disk)."""
 
+    roles: list[Literal["prefill", "decode"]] = Field(["prefill", "decode"], min_length=1)
+    """Disaggregated P/D only: the instance roles that attach the offload connector. For ``mooncake``, nodes of the other role run no store client and contribute no DRAM, e.g. ``["prefill"]`` keeps decode RAM for HiSparse host pools."""
+
     @model_validator(mode="after")
     def valid_tiers(self):
         # Both backends support only two shapes: cpu-only or cpu+disk. Native disk
@@ -286,6 +289,13 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
 KVCacheOffloadConfig: TypeAlias = Annotated[
     NativeKVCacheOffloadConfig | MooncakeKVCacheOffloadConfig, Field(discriminator="type")
 ]
+
+
+class HiSparseConfig(BaseConfig):
+    """vLLM HiSparse for DSA sparse-MLA models (e.g. GLM-5.x): the sparse-MLA KV lives in a pinned host pool and decode attention reads per-request GPU buffers of the indexer top-k rows."""
+
+    host_pool_gib: float = Field(..., gt=0)
+    """Pinned host pool per engine rank, in GiB (``HiSparseConnector`` ``host_pool_gib``). Budget ``ranks per node × host_pool_gib``, plus any Mooncake segment, against node RAM."""
 
 
 # Known llm-d EPP scorer plugins (used to guard the ``scorers`` map against typos).
@@ -466,6 +476,12 @@ class InferenceConfig(BaseConfig):
     kv_cache_offload: KVCacheOffloadConfig | None = None
     """KV cache offload for inference workers, as composable CPU/disk tiers. Discriminated on ``type``: ``native`` (vLLM ``OffloadingConnector``/``TieringOffloadingSpec``, self-contained) or ``mooncake`` (per-node Mooncake distributed store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
 
+    hisparse: HiSparseConfig | None = None
+    """Enable vLLM HiSparse. Under disaggregated P/D it applies to decode instances only. Requires a DSA model (vLLM checks ``index_topk`` at startup), the V2 model runner, and no pipeline or decode context parallelism."""
+
+    pd_role: Literal["prefill", "decode"] | None = None
+    """Set per rank by the SLURM launcher on disaggregated deployments. Selects the role's KV connectors (``kv_cache_offload.roles``, HiSparse on decode). Not meant to be set by hand."""
+
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
@@ -506,6 +522,28 @@ class InferenceConfig(BaseConfig):
                 "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
                 "Use router type 'vllm-router' for routed-expert runs."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_kv_cache_offload_roles(self):
+        # Per-rank configs drop `deployment` but carry `pd_role`.
+        disaggregated = self.deployment.type == "disaggregated" or self.pd_role is not None
+        if self.kv_cache_offload is not None and len(self.kv_cache_offload.roles) < 2 and not disaggregated:
+            raise ValueError("inference.kv_cache_offload.roles only applies to disaggregated P/D deployments.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_hisparse(self):
+        if self.hisparse is None:
+            return self
+        extra = self.vllm.model_extra or {}
+        if extra.get("pipeline_parallel_size", 1) > 1 or extra.get("decode_context_parallel_size", 1) > 1:
+            raise ValueError("HiSparse does not support pipeline or decode context parallelism.")
+        env_vars = [self.env_vars]
+        if self.deployment.type == "disaggregated":
+            env_vars.append(self.deployment.decode_env_vars)
+        if any(env.get("VLLM_USE_V2_MODEL_RUNNER") == "0" for env in env_vars):
+            raise ValueError("HiSparse requires the V2 model runner; remove VLLM_USE_V2_MODEL_RUNNER=0.")
         return self
 
     @model_validator(mode="after")
@@ -562,11 +600,12 @@ class InferenceConfig(BaseConfig):
         return self
 
     def build_kv_transfer_config(self) -> dict[str, Any] | None:
-        """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.
+        """Build the single vLLM ``kv_transfer_config`` from the transfer, offload and HiSparse connectors.
 
         Disaggregated P/D always uses NIXL for prefill→decode transfer. KV cache offload (if
-        configured) contributes its own connector. When both are present they are composed via
-        ``MultiConnector``. Returns None when neither applies.
+        configured for this rank's ``pd_role``) contributes its own connector, and HiSparse adds
+        ``HiSparseConnector`` everywhere except on prefill ranks. Several connectors are composed
+        via ``MultiConnector``. Returns None when none applies.
         """
         connectors: list[dict[str, Any]] = []
         if self.use_pd_kv_transfer:
@@ -577,8 +616,16 @@ class InferenceConfig(BaseConfig):
                     "kv_connector_extra_config": {"num_threads": 1},
                 }
             )
-        if self.kv_cache_offload is not None:
+        if self.kv_cache_offload is not None and (self.pd_role is None or self.pd_role in self.kv_cache_offload.roles):
             connectors.append(self.kv_cache_offload.to_connector_dict())
+        if self.hisparse is not None and self.pd_role != "prefill":
+            connectors.append(
+                {
+                    "kv_connector": "HiSparseConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {"host_pool_gib": self.hisparse.host_pool_gib},
+                }
+            )
 
         if not connectors:
             return None

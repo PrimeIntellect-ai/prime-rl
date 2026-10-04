@@ -313,7 +313,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + k))
         RANK_GPUS=$(seq -s, $((k * TP)) $((k * TP + TP - 1)))
         RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
-        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")" "$ROLE"
     done
 {%- elif num_nodes > 1 %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
