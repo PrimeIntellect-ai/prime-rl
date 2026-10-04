@@ -590,46 +590,13 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference.vllm.data_parallel_size == 2
 
 
-def test_orchestrator_vlm_requires_renderer():
-    with pytest.raises(ValidationError, match="renderer"):
-        OrchestratorConfig.model_validate(
-            {
-                "model": {
-                    "name": "Qwen/Qwen3-VL-4B-Instruct",
-                    "vlm": {
-                        "vision_encoder_attr": "model.visual",
-                        "language_model_attr": "model.language_model",
-                    },
-                },
-                "renderer": None,
-            }
-        )
-
-    config = OrchestratorConfig.model_validate(
-        {
-            "model": {
-                "name": "Qwen/Qwen3-VL-4B-Instruct",
-                "vlm": {
-                    "vision_encoder_attr": "model.visual",
-                    "language_model_attr": "model.language_model",
-                },
-            },
-        }
-    )
-
-    assert config.renderer is not None
-
-
 def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {
             "cp": 2,
             "optimization_dtype": "bfloat16",
             "reduce_dtype": "bfloat16",
-            "vlm": {
-                "vision_encoder_attr": "model.visual",
-                "language_model_attr": "model.language_model",
-            },
+            "vlm": {},
         },
     }
 
