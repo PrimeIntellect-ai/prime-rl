@@ -345,11 +345,13 @@ class Orchestrator:
             get_inflight=lambda: self.dispatcher.current_inflight,
             on_overload=self.dispatcher.cancel_inflight,
         )
-        # The collector feeds the concurrency controller; metrics fan out to every registered monitor.
+        # The collector always polls — it feeds the concurrency controller;
+        # metrics fan out to every registered monitor when collection is on.
         self.inference_metrics = InferenceMetricsCollector(
             self.admin_plane.clients,
             roles=config.inference_metrics_roles,
             on_load=self.concurrency.observe,
+            log_metrics=config.collect_inference_metrics,
         )
         await self.inference_metrics.start()
         # One awaited scrape so the concurrency controller derives (and logs) its
