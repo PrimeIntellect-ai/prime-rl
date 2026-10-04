@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import time
 from collections.abc import Callable
@@ -316,18 +317,23 @@ def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
     """Per-layer expert-load balance from `[num_moe_layers, num_experts]` token counts, as mean and max over layers.
 
     `cv` is std/mean of the expert loads, `max_mean` the busiest expert's load over the mean load, and `cold_frac`
-    the fraction of experts receiving under 0.1x the mean load (the MiMo-V2.6 definition).
+    the fraction of experts receiving under 0.1x the mean load (the MiMo-V2.6 definition). `entropy` is the routing
+    entropy of the load distribution over log(num_experts), so 1 is uniform; it is also logged per layer.
     """
     mean_load = tokens_per_expert.mean(dim=1)
+    load_fraction = tokens_per_expert / tokens_per_expert.sum(dim=1, keepdim=True)
+    entropy = -torch.special.xlogy(load_fraction, load_fraction).sum(dim=1) / math.log(tokens_per_expert.shape[1])
     per_layer = {
         "cv": tokens_per_expert.std(dim=1, correction=0) / mean_load,
         "max_mean": tokens_per_expert.amax(dim=1) / mean_load,
         "cold_frac": (tokens_per_expert < 0.1 * mean_load[:, None]).float().mean(dim=1),
     }
-    stats = {}
+    stats = {"expert_load/entropy/mean": entropy.mean()}
     for name, values in per_layer.items():
         stats[f"expert_load/{name}/mean"] = values.mean()
         stats[f"expert_load/{name}/max"] = values.max()
+    for layer, value in enumerate(entropy):
+        stats[f"expert_load/entropy/layer_{layer}"] = value
     return stats
 
 
@@ -888,6 +894,8 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
         if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
             module.routing_confidence_sum.zero_()
+            if module.router.qb_hist is not None:
+                module.router.reset_quantile_balancing()
 
 
 def _validate_flash_attn_4_installed() -> None:

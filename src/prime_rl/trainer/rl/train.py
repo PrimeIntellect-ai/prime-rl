@@ -67,6 +67,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
+from prime_rl.trainer.models.layers.moe import update_quantile_balancing
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
@@ -580,6 +581,7 @@ def train(config: TrainerConfig):
             logger.debug(micro_step_message)
 
         annotation_writer.flush()
+        qb_stats = update_quantile_balancing(model, dp_cp_group)
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
@@ -643,6 +645,7 @@ def train(config: TrainerConfig):
         tensor_stats = tensors.compute_stats()
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
+        tensor_stats.update(qb_stats)
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size

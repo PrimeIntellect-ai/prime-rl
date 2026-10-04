@@ -265,6 +265,12 @@ class MoERuntimeConfig(BaseConfig):
     compute: MoEComputeConfig = BF16MoEComputeConfig()
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
+    load_balancing: Literal["frozen", "qb"] = "frozen"
+    """How the router selection bias evolves. ``frozen`` keeps it as loaded. ``qb`` (Quantile Balancing, Kimi K3) sets it after every step from the global histogram of each expert's routing margins so that every expert receives ``tokens * top_k / num_experts`` tokens; the new bias routes the next step."""
+
+    qb_num_bins: Annotated[int, Field(ge=2)] = 10_000
+    """Histogram bins per expert for the ``qb`` quantile estimate."""
+
 
 class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
@@ -701,6 +707,12 @@ class TrainerConfig(BaseConfig):
         """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = 0.0
+        return self
+
+    @model_validator(mode="after")
+    def qb_excludes_router_replay(self):
+        if self.enable_router_replay and self.model.moe.load_balancing == "qb":
+            raise ValueError("model.moe.load_balancing='qb' cannot be combined with router replay.")
         return self
 
     @model_validator(mode="after")

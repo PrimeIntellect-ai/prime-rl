@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
@@ -42,6 +43,71 @@ def _record_moe_routing_statistics_fake(
     confidence: torch.Tensor,
 ) -> None:
     return None
+
+
+@torch.library.custom_op("prime_rl::record_qb_margins", mutates_args=("hist", "margin_range"))
+def record_qb_margins(
+    hist: torch.Tensor, margin_range: torch.Tensor, grid: torch.Tensor, margins: torch.Tensor
+) -> None:
+    """Add per-expert margins ``(tokens, experts)`` to ``hist`` ``(experts, bins)`` binned over ``grid = [lo, hi]``.
+
+    Margins outside the grid land in the edge bins, so the count above any in-grid threshold stays exact.
+    ``margin_range`` tracks ``[-min, max]`` of the margins seen, the next step's grid.
+    """
+    num_experts, num_bins = hist.shape
+    bins = ((margins - grid[0]) * (num_bins / (grid[1] - grid[0]))).long().clamp_(0, num_bins - 1)
+    bins += torch.arange(num_experts, device=bins.device) * num_bins
+    hist.view(-1).index_add_(0, bins.view(-1), torch.ones(1, dtype=hist.dtype, device=hist.device).expand(bins.numel()))
+    margin_range.copy_(torch.maximum(margin_range, torch.stack([-margins.min(), margins.max()])))
+
+
+@record_qb_margins.register_fake
+def _record_qb_margins_fake(
+    hist: torch.Tensor, margin_range: torch.Tensor, grid: torch.Tensor, margins: torch.Tensor
+) -> None:
+    return None
+
+
+def qb_upper_quantile(hist: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor, top_k: int) -> torch.Tensor:
+    """Per-expert threshold ``beta`` with ``tokens * top_k / experts`` margins above it (Kimi K3 QB, Eq. 14).
+
+    ``hist`` holds ``(experts, bins)`` margin counts over ``[lo, hi]``; ``beta`` is interpolated linearly
+    within the bin where the count from the top crosses the target.
+    """
+    num_experts, num_bins = hist.shape
+    counts = hist.double()
+    target = counts[0].sum() * top_k / num_experts
+    above = counts.flip(-1).cumsum(-1).flip(-1)
+    crossing = ((above >= target).sum(-1, keepdim=True) - 1).clamp(0, num_bins - 1)
+    fraction = (above.gather(-1, crossing) - target) / counts.gather(-1, crossing).clamp(min=1)
+    return (lo + (hi - lo) / num_bins * (crossing + fraction).squeeze(-1)).float()
+
+
+@torch.no_grad()
+def update_quantile_balancing(model: nn.Module, group: dist.ProcessGroup) -> dict[str, float]:
+    """Set each QB router's selection bias from this step's margins, pooled over ``group``.
+
+    Called once per step after the last micro-batch, so the new bias routes the next step only.
+    """
+    routers = [m.router for m in model.modules() if isinstance(m, MoE) and m.router.qb_hist is not None]
+    if not routers:
+        return {}
+    hist = torch.cat([router.qb_hist.view(-1) for router in routers])
+    margin_range = torch.stack([router.qb_margin_range for router in routers])
+    dist.all_reduce(hist, group=group)
+    dist.all_reduce(margin_range, op=dist.ReduceOp.MAX, group=group)
+
+    for router, layer_hist, layer_range in zip(routers, hist.split([r.qb_hist.numel() for r in routers]), margin_range):
+        beta = qb_upper_quantile(layer_hist.view_as(router.qb_hist), *router.qb_grid, router.top_k)
+        router.selection_bias.copy_(beta.mean() - beta)
+        router.qb_grid.copy_(layer_range * torch.tensor([-1.0, 1.0], device=layer_range.device))
+        router.reset_quantile_balancing_stats()
+
+    bias = torch.stack([router.selection_bias for router in routers])
+    stats = torch.stack(
+        [-margin_range[:, 0].max(), margin_range[:, 1].max(), bias.min(), bias.max(), bias.std(dim=1).mean()]
+    ).tolist()
+    return dict(zip(["qb/margin_min", "qb/margin_max", "qb/bias_min", "qb/bias_max", "qb/bias_std"], stats))
 
 
 @dataclass
@@ -172,9 +238,28 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_scale = route_scale
         self.topk_sorted = topk_sorted
         self.force_balanced = False
+        self.register_buffer("qb_hist", None)
         # Set via model.moe_router_dtype='float32': the gate weight is kept in fp32
         # (exempt from FSDP bf16 casting) and the gate GEMM runs in fp32.
         self.fp32_gate = False
+
+    def enable_quantile_balancing(self, num_bins: int) -> None:
+        """Route with top-(k+1) and histogram each expert's margin ``score - cutoff`` for the QB bias update."""
+        device = self.selection_bias.device
+        self.register_buffer(
+            "qb_hist", torch.zeros(self.num_experts, num_bins, dtype=torch.int32, device=device), persistent=False
+        )
+        self.register_buffer("qb_margin_range", torch.zeros(2, device=device), persistent=False)
+        self.register_buffer("qb_grid", torch.zeros(2, device=device), persistent=False)
+
+    def reset_quantile_balancing(self) -> None:
+        # Margins of [0, 1] scores under a zero bias lie in [-1, 1]; later steps use the previous step's range.
+        self.qb_grid.copy_(torch.tensor([-1.0, 1.0]))
+        self.reset_quantile_balancing_stats()
+
+    def reset_quantile_balancing_stats(self) -> None:
+        self.qb_hist.zero_()
+        self.qb_margin_range.fill_(-float("inf"))
 
     def forward(
         self,
@@ -233,12 +318,19 @@ class TokenChoiceTopKRouter(nn.Module):
             selection_scores = scores
             if self.selection_bias is not None:
                 selection_scores = selection_scores + self.selection_bias
-            _, selected_experts_indices = torch.topk(
-                selection_scores,
-                k=self.top_k,
-                dim=1,
-                sorted=self.topk_sorted,
-            )
+            if self.qb_hist is not None and torch.is_grad_enabled():
+                # The (k+1)-th biased score is the cutoff an expert must beat to enter the token's top-k.
+                top_selection, selected_experts_indices = torch.topk(selection_scores, k=self.top_k + 1, dim=1)
+                selected_experts_indices = selected_experts_indices[:, :-1].contiguous()
+                margins = scores.detach().float() - top_selection[:, -1:].detach()
+                record_qb_margins(self.qb_hist, self.qb_margin_range, self.qb_grid, margins)
+            else:
+                _, selected_experts_indices = torch.topk(
+                    selection_scores,
+                    k=self.top_k,
+                    dim=1,
+                    sorted=self.topk_sorted,
+                )
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
         if self.score_func == "topk_softmax":

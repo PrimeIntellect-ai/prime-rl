@@ -35,6 +35,7 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
         "prime_rl::fp8_indexer",
         "prime_kernels::select_indexed_blocks",
         "prime_rl::record_moe_routing_statistics",
+        "prime_rl::record_qb_margins",
     }
 )
 

@@ -21,6 +21,7 @@ from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
+from prime_rl.trainer.models.layers.moe import update_quantile_balancing
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -487,6 +488,7 @@ def train(config: SFTConfig):
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        expert_load_stats.update(update_quantile_balancing(model, dp_cp_group))
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()

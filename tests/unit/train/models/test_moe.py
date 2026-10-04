@@ -14,6 +14,8 @@ from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
+    qb_upper_quantile,
+    record_qb_margins,
 )
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -248,7 +250,40 @@ def test_expert_load_stats():
         "expert_load/max_mean/max": 2.0,
         "expert_load/cold_frac/mean": 0.125,
         "expert_load/cold_frac/max": 0.25,
+        "expert_load/entropy/mean": 0.875,
+        "expert_load/entropy/layer_0": 1.0,
+        "expert_load/entropy/layer_1": 0.75,
     }
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_quantile_balancing_balances_paper_example():
+    # Kimi K3 Fig. 5: m=8 tokens, n=4 experts, k=1 with top-1 loads (4, 3, 1, 0); QB targets q = 2 tokens per expert.
+    scores = torch.tensor(
+        [
+            [0.525, 0.449, 0.999, 0.057],
+            [0.837, 0.859, 0.014, 0.799],
+            [0.976, 0.464, 0.136, 0.461],
+            [0.559, 0.317, 0.226, 0.427],
+            [0.733, 0.795, 0.081, 0.166],
+            [0.991, 0.229, 0.879, 0.171],
+            [0.087, 0.837, 0.390, 0.669],
+            [0.547, 0.426, 0.319, 0.007],
+        ]
+    )
+    assert torch.bincount(scores.argmax(dim=1), minlength=4).tolist() == [4, 3, 1, 0]
+
+    alpha = scores.topk(2, dim=1).values[:, -1:]
+    margins = scores - alpha
+    hist = torch.zeros(4, 10_000, dtype=torch.int32)
+    margin_range = torch.full((2,), -float("inf"))
+    grid = torch.tensor([margins.min().item(), margins.max().item()])
+    record_qb_margins(hist, margin_range, grid, margins)
+    assert margin_range.tolist() == pytest.approx([-margins.min().item(), margins.max().item()])
+
+    beta = qb_upper_quantile(hist, *grid, top_k=1)
+    assert (margins > beta).sum(dim=0).tolist() == [2, 2, 2, 2]
+    bias = beta.mean() - beta
+    assert torch.bincount((scores + bias).argmax(dim=1), minlength=4).tolist() == [2, 2, 2, 2]

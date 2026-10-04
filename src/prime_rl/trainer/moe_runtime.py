@@ -25,7 +25,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     MXFP8ExpertCompute,
 )
-from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
@@ -126,6 +126,14 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
         moe.set_token_dispatcher(token_dispatcher)
+
+        if config.moe.load_balancing == "qb":
+            if type(moe.router) is not TokenChoiceTopKRouter or moe.router.selection_bias is None:
+                raise ValueError(
+                    "model.moe.load_balancing='qb' needs TokenChoiceTopKRouter routers with a selection bias, "
+                    f"got {type(moe.router).__name__} (selection_bias={moe.router.selection_bias is not None})."
+                )
+            moe.router.enable_quantile_balancing(config.moe.qb_num_bins)
 
         if ep_mesh is not None:
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
