@@ -9,8 +9,8 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections import Counter, defaultdict
+from collections.abc import Iterable
 
 import verifiers.v1 as vf
 
@@ -19,6 +19,7 @@ from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import TrainEpisodes
+from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
@@ -65,14 +66,18 @@ class TrainSink:
         train_envs: TrainEnvs,
         progress: Progress,
         batch_size: int,
-        on_result: Callable[[list[vf.Episode]], bool] | None = None,
+        train_source: TrainSource,
     ) -> None:
         self.config = config
         self.tokenizer = tokenizer
         self.train_envs = train_envs
         self.progress = progress
         self.batch_size = batch_size
-        self.on_result = on_result
+        self.train_source = train_source
+        # Queued traces per accepted group, at insertion and still queued:
+        # groups, not traces / group_size, are the unit of the prompt share.
+        self.group_traces: dict[str, int] = {}
+        self.group_queued: Counter[str] = Counter()
 
         self.pending_episodes = TrainEpisodes()
         self.pending_failures: list[DispatchFailure] = []
@@ -158,8 +163,18 @@ class TrainSink:
         self._drop_stale()
         return self.process_batch() if len(self.pending_batch) >= self.batch_size else None
 
+    def _dequeue(self, trace_id: str) -> None:
+        """Release a queued trace from the mixer's per-env counts."""
+        episode = self.episode_by_trace[trace_id]
+        env_name, group_id = episode_env_name(episode), episode_group_id(episode)
+        self.train_source.pending[env_name] -= 1
+        self.group_queued[group_id] -= 1
+        if not self.group_queued[group_id]:
+            del self.group_queued[group_id], self.group_traces[group_id]
+            self.train_source.pending_groups[env_name] -= 1
+
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
-        """Void queued traces past ``max_off_policy_steps``. The batch being
+        """Void queued traces past their env's ``max_off_policy_steps``. The batch being
         collected is ``progress.step`` and trains policy v{step-1}, so a
         queued trace generated from v{k} would ship at staleness
         ``(step-1) - k``. This sweep is the hard guarantee on trained
@@ -177,23 +192,22 @@ class TrainSink:
                 return
             self._swept_step = self.progress.step
             trace_ids = list(self.pending_batch)
-        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
-        if min_version <= 0:
-            return
         dropped = 0
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
-            if policy is None or policy.start >= min_version:
+            max_off_policy_steps = self.train_envs.get(episode_env_name(episode)).config.max_off_policy_steps
+            if policy is None or policy.start >= min_fresh_version(self.progress.step, max_off_policy_steps):
                 continue
             del self.pending_batch[trace_id]
+            self._dequeue(trace_id)
             del self.episode_by_trace[trace_id]
             self.pending_episodes.cancelled.add(episode.id)
             dropped += 1
         if dropped:
             self.stale_drops += dropped
             get_logger().warning(
-                f"Dropped {dropped} queued traces past max_off_policy_steps={self.config.max_off_policy_steps}. "
+                f"Dropped {dropped} queued traces past their env's max_off_policy_steps. "
                 "Consider increasing it to avoid this."
             )
 
@@ -221,6 +235,7 @@ class TrainSink:
             + len(failures)
         )
         n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
+        cancel_reason = cancellation.reason if cancellation is not None else None
         self.pending_failures.extend(failures)
         if cancellation is not None:
             self.pending_cancelled_attempts += cancellation.count
@@ -234,6 +249,7 @@ class TrainSink:
         if cancellation is not None and cancellation.reason == "stale":
             self.pending_episodes.extend(group, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancellation.reason)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=cancelled (stale)"
@@ -247,6 +263,7 @@ class TrainSink:
         if not survivors or not admitted:
             self.pending_episodes.extend(group, admitted=admitted)
             self._record_zero_output(group, survivors, n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
             reason = "no trainable survivors" if not survivors else "rejected by curriculum"
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
@@ -278,9 +295,14 @@ class TrainSink:
         self.pending_episodes.extend(group, sampled_trace_ids=set(samples_by_trace), admitted=True)
         if not samples_by_trace:
             self._record_zero_output(group, survivors, n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
             return
 
         self.pending_batch.update(samples_by_trace)
+        self.train_source.pending[env_name] += len(samples_by_trace)
+        self.train_source.pending_groups[env_name] += 1
+        group_id = episode_group_id(group[0])
+        self.group_traces[group_id] = self.group_queued[group_id] = len(samples_by_trace)
         for episode in group:
             for trace in episode.traces:
                 if trace.id in samples_by_trace:
@@ -293,12 +315,14 @@ class TrainSink:
         # surfacing the warning.
         if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
             self._record_zero_output(group, [], n_owed)
+            self.train_source.on_group_finalized(env_name, accepted=False, cancel_reason=cancel_reason)
             return
+        self.train_source.on_group_finalized(env_name, accepted=True, cancel_reason=cancel_reason)
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
 
     def _admit(self, group: list[vf.Episode]) -> bool:
-        return self.on_result(group) if self.on_result is not None else True
+        return self.train_source.on_result(group)
 
     def _record_zero_output(self, group: list[vf.Episode], survivors: list[vf.Trace], n_owed: int) -> None:
         """``n_owed`` counts the group's full episode budget (arrived +
@@ -326,8 +350,12 @@ class TrainSink:
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
+        shipped_prompts: dict[str, float] = defaultdict(float)
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
+            episode = self.episode_by_trace[trace_id]
+            shipped_prompts[episode_env_name(episode)] += 1 / self.group_traces[episode_group_id(episode)]
+            self._dequeue(trace_id)
 
         if not self.config.constant_trainer_batch_size:
             selected_by_trace = {
@@ -369,4 +397,5 @@ class TrainSink:
             buffered_episode_ids=buffered_episode_ids,
             cancelled_attempts=cancelled_attempts,
             stale_attempts=stale_attempts,
+            shipped_prompts=dict(shipped_prompts),
         )

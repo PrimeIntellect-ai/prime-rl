@@ -33,7 +33,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
@@ -83,9 +83,14 @@ class DispatcherMetrics:
     errored_by_kind_env: dict[tuple[Literal["train", "eval"], str], int] = field(
         default_factory=lambda: defaultdict(int)
     )
+    cancelled_by_reason_env: dict[tuple[CancelReason, str], int] = field(default_factory=lambda: defaultdict(int))
 
-    def record_cancellation(self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1) -> None:
+    def record_cancellation(
+        self, *, kind: Literal["train", "eval"], env_name: str, n: int = 1, reason: CancelReason | None = None
+    ) -> None:
         self.cancelled_by_kind_env[(kind, env_name)] += n
+        if reason is not None:
+            self.cancelled_by_reason_env[(reason, env_name)] += n
 
     def record_error(self, *, kind: Literal["train", "eval"], env_name: str) -> None:
         self.errored_by_kind_env[(kind, env_name)] += 1
@@ -108,7 +113,10 @@ class DispatcherMetrics:
             out[f"dispatcher/errored/{env}"] = float(
                 self.errored_by_kind_env.get(("train", env), 0) + self.errored_by_kind_env.get(("eval", env), 0)
             )
+            for reason in get_args(CancelReason):
+                out[f"dispatcher/cancelled/{env}/{reason}"] = float(self.cancelled_by_reason_env.get((reason, env), 0))
         self.cancelled_by_kind_env.clear()
+        self.cancelled_by_reason_env.clear()
         self.errored_by_kind_env.clear()
         return out
 
@@ -140,7 +148,6 @@ class Dispatcher:
         initial_max_inflight: int,
         max_inflight_ceiling: int | None,
         tasks_per_minute: float | None,
-        max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[str, str, int, float], None] | None = None,
@@ -154,7 +161,6 @@ class Dispatcher:
         self.policy_clients = policy_clients
         self.train_source = train_source
         self.eval_source = eval_source
-        self.max_off_policy_steps = max_off_policy_steps
         self.run_id = run_id
         self.run_name = run_name
         # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
@@ -418,21 +424,21 @@ class Dispatcher:
 
         if self.train_envs is None or self.progress is None:
             return
-        min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
-        stale_groups = [
-            gid
-            for gid, group in self.groups.items()
-            if group.kind == "train"
-            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
-            and group.policy_version_at_start < min_version
-        ]
+        stale_groups = []
+        for gid, group in self.groups.items():
+            if group.kind != "train":
+                continue
+            env = self.train_envs.get(group.env_name)
+            min_version = min_fresh_version(self.progress.step, env.config.max_off_policy_steps)
+            if env.generation_source.uses_live_policy and group.policy_version_at_start < min_version:
+                stale_groups.append(gid)
         cancelled = 0
         for gid in stale_groups:
             cancelled += await self.drop_group(gid, reason="stale")
 
         if cancelled:
             get_logger().warning(
-                f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
+                f"Cancelled {cancelled} train episodes past their env's max_off_policy_steps. "
                 "Consider increasing it to avoid this."
             )
 
@@ -512,7 +518,11 @@ class Dispatcher:
             assert self.train_source is not None
             if self.progress is None:
                 raise RuntimeError("Train dispatch requires progress state")
-            request = self.train_source.next_task(step=self.progress.step)
+            request = self.train_source.next_task(
+                step=self.progress.step,
+                capacity=self.max_inflight - self.inflight_eval_count,
+                inflight={env: n for (kind, env), n in self.inflight_by_env.items() if kind == "train"},
+            )
         else:
             assert self.eval_source is not None
             request = self.eval_source.next_task()
@@ -637,6 +647,8 @@ class Dispatcher:
         self.retire(meta)
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
+        if meta.kind == "train" and self.train_source is not None and meta.started_at > 0:
+            self.train_source.on_episode_complete(meta.env_name, time.monotonic() - meta.started_at)
 
         try:
             episode: vf.WireEpisode = task.result()
@@ -765,7 +777,7 @@ class Dispatcher:
             # always resolve from the group or a claimed meta.
             kind = group.kind if group is not None else claimed[-1][1].kind
             env_name = group.env_name if group is not None else claimed[-1][1].env_name
-            self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled)
+            self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled, reason=reason)
             get_logger().debug(
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
@@ -846,7 +858,7 @@ class Dispatcher:
                 else self.eval_envs.get(request.env_name).config.group_size
             )
             cancelled += count
-            self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
+            self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count, reason="superseded")
             await self.out_q.put(
                 GroupCancellation(
                     kind="eval",

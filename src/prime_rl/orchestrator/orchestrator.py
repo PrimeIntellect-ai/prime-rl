@@ -278,7 +278,7 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
-        self.train_source = TrainSource(self.train_envs)
+        self.train_source = TrainSource(self.train_envs, batch_size=config.batch_size)
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
@@ -344,7 +344,6 @@ class Orchestrator:
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
             tasks_per_minute=config.tasks_per_minute,
-            max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
@@ -372,7 +371,7 @@ class Orchestrator:
             train_envs=self.train_envs,
             progress=self.progress,
             batch_size=config.batch_size,
-            on_result=self.train_source.on_result,
+            train_source=self.train_source,
         )
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
@@ -705,6 +704,11 @@ class Orchestrator:
         self.train_sink.stale_drops = 0
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
+        total_prompts = sum(batch.shipped_prompts.values())
+        for env_name in self.train_envs.names:
+            metrics[f"mixer/{env_name}/shipped_prompt_share"] = (
+                batch.shipped_prompts.get(env_name, 0.0) / total_prompts if total_prompts else 0.0
+            )
         metrics |= self.train_source.metrics()
         await monitors.log(metrics, step=step)
 

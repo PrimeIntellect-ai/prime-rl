@@ -145,12 +145,12 @@ Omit `type` to keep the default variant.
 
 ### Environments
 
-Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry sampling weights:
+Training and evaluation sources are arrays of tables. Set one source per environment; training sources can optionally carry batch shares:
 
 ```toml
 [[orchestrator.train.source]]
 name = "gsm8k"
-ratio = 3  # 75% of batches
+ratio = 3  # 75% of each batch's prompts
 env.taskset.id = "gsm8k"
 env.taskset.split = "train"
 env.agent.harness.id = "null"
@@ -158,7 +158,7 @@ env.agent.runtime.type = "subprocess"
 
 [[orchestrator.train.source]]
 name = "reverse-text"
-ratio = 1  # default — 25% of batches
+ratio = 1  # default — 25% of each batch's prompts
 env.taskset.id = "reverse-text"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
@@ -197,7 +197,15 @@ limit = 128
 
 The group `env` block holds only the knobs that every env and taskset has: `retries`, `timeout`, `max_concurrent_agents`, `interception`, and `taskset.task` and `taskset.system_prompt`. Ids and agents stay on each source. `select` picks which tasks of a source's taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit`, in that order.
 
-`ratio` is a training-source field: it defaults to `1` (equal weight per env), and values are relative weights normalized to probabilities across envs. Eval sources of a training run carry `interval` instead, the step interval at which they fire; a standalone eval has neither.
+`ratio` is a training-source field: each env's target share of the prompts (groups) in every training batch. It defaults to `1` (equal share per env), and values are relative weights normalized across envs. A batch holds `batch_size` samples (traces), so an env's share of the samples is its prompt share weighted by its `group_size`: with `ratio = 1` each and `group_size` 16 vs 4, both envs ship the same number of prompts and the first ships four times as many samples. On average the share holds regardless of how many of an env's groups are filtered out (no trainable signal, curriculum gates, staleness):
+
+- **Dispatch.** The orchestrator picks the env of each new group at random in proportion to its weight. An env's weight is its share divided by its measured acceptance rate (the fraction of its finished groups that queue samples for training), and it is raised while the env is behind on the batch being collected. The acceptance correction is at most 20× and tapers back to 1× for an env whose acceptance rate falls below 5%, so an env that yields nothing does not take the other envs' dispatch.
+- **In-flight caps.** Each env may hold at most 1.25× its share of the train slots, where the share is proportional to its demand times its mean episode duration (and at most the demand of `max_off_policy_steps + 1` steps, with the env's own bound). Envs at their cap are skipped unless every env is, so a slow or stalled env cannot take every slot and no slot is left idle.
+- **Batches.** A batch ships as soon as `batch_size` samples are queued, as with a single env; extra samples stay queued for the next batch. The share is held by dispatch, so it holds on average and a single batch can be off by a few groups.
+
+`mixer/<env>/shipped_prompt_share` tracks the prompt share each env actually got, against `mixer/<env>/target_prompt_share`; `mixer/<env>/acceptance_rate`, `mixer/<env>/weight` (share of the last dispatch decision, after the in-flight caps), `mixer/<env>/surplus_groups` (samples queued for the next batch, in groups), and `mixer/<env>/inflight` against `mixer/<env>/cap` show how it got there; `mixer/<env>/episode_duration` is the mean episode duration (seconds) the caps are sized from.
+
+Eval sources of a training run carry `interval` instead of `ratio`, the step interval at which they fire; a standalone eval has neither.
 
 Everything environment lives under the `env` block (verifiers' `[env]` shape): `env.taskset` configures the v1 taskset, and each agent is a field on the env — `env.agent.harness` selects how the single-agent env's tasks are run, and per-run caps are per-agent (`env.agent.max_turns`, `env.agent.timeout`, `env.agent.max_output_tokens`). A multi-agent env declares its own seats (`env.<role>.*`).
 

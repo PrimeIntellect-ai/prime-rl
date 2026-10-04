@@ -300,11 +300,15 @@ class TrainSourceConfig(EnvConfig):
     """Per-env sampling overrides. Unset fields inherit from the group-level train sampling config."""
 
     ratio: float = Field(1.0, gt=0)
-    """Sampling weight for this environment in the buffer. Relative weights are normalized to probabilities across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal weight per env."""
+    """Target share of this environment's prompts (groups) in each training batch. Relative weights are normalized across envs (e.g. [1, 1] and [0.5, 0.5] are equivalent). Defaults to 1, i.e. equal share per env. A batch of ``batch_size`` traces then holds ``ratio``-proportional numbers of prompts, each contributing ``group_size`` traces. The share counts shipped prompts, so on average it holds regardless of how many groups an env loses to filtering or staleness: envs are dispatched in proportion to their share divided by their measured acceptance rate. The share holds on average: a batch ships as soon as it is full, so one batch can be off by a few groups."""
 
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example for GRPO group-relative advantages. Overrides the
     train group's ``group_size`` for this env, so envs can use different sizes."""
+
+    max_off_policy_steps: int | None = Field(None, ge=0)
+    """Maximum staleness of this env's trained rollouts, e.g. higher for long agentic envs.
+    Defaults to the orchestrator's ``max_off_policy_steps``."""
 
     algo: AlgoConfig = GRPOAlgoConfig()
     """Training algorithm for this env: sampling plus the per-token training signal
@@ -592,7 +596,7 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise. Train sources can override it."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -742,8 +746,10 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_env_config(self):
-        """Set vLLM sampling defaults on each train env from top-level fields."""
+        """Set vLLM sampling defaults and the staleness bound on each train env from top-level fields."""
         for env in self.train.source:
+            if env.max_off_policy_steps is None:
+                env.max_off_policy_steps = self.max_off_policy_steps
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
             if env.algo.sampling.source == "policy":
