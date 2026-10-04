@@ -127,6 +127,7 @@ def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, update
     [
         None,
         ("model",),
+        ("source",),
         ("client", "skip_model_check"),
         ("source", 0, "sampling", "temperature"),
         ("source", 0, "group_size"),
@@ -150,9 +151,13 @@ def test_take_landed_requires_saved_experiment(tmp_path, missing) -> None:
 
 
 def test_take_landed_compares_effective_sources(tmp_path) -> None:
-    saved = EvalConfig(source=[{"env": {"id": "single_agent"}}])
+    saved = EvalConfig(
+        source=[{"env": {"id": "single_agent"}}, {"env": {"id": "single_agent"}, "name": "other", "group_size": 2}]
+    )
+    reordered = saved.model_dump(mode="json")
+    reordered["source"].reverse()
     current = EvalConfig.model_validate(
-        saved.model_dump(mode="json")
+        reordered
         | {
             "group_size": 2,
             "sampling": {"temperature": 0.3},
@@ -160,6 +165,6 @@ def test_take_landed_compares_effective_sources(tmp_path) -> None:
             "env": {"timeout": {"episode": 60}},
         }
     )
-    assert current.source == saved.source
+    assert current.source == list(reversed(saved.source))
     resume.stamp_config(tmp_path, saved.model_dump(mode="json"))
     assert resume.take_landed(tmp_path, current) == []

@@ -86,6 +86,8 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[dict]:
     if current.is_dir() or not directories:
         directories.append(current)
     expected = config.model_dump(mode="json", exclude=IGNORED_FIELDS)
+    # Sources are identified by unique names; their declaration order does not affect resume.
+    expected["source"].sort(key=lambda source: orjson.dumps(source, option=orjson.OPT_SORT_KEYS))
     snapshot = TypeAdapter(dict)
     landed: dict[str, dict] = {}
     for directory in directories:
@@ -94,6 +96,8 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[dict]:
             raise ValueError(f"--resume: no saved experiment config at {saved_path}")
         # Snapshots are resolved configs: re-validating would fill missing fields with new defaults.
         previous = snapshot.dump_python(snapshot.validate_json(saved_path.read_bytes()), exclude=IGNORED_FIELDS)
+        if "source" in previous:
+            previous["source"].sort(key=lambda source: orjson.dumps(source, option=orjson.OPT_SORT_KEYS))
         changed = sorted(
             key
             for key in expected.keys() | previous.keys()
