@@ -566,6 +566,8 @@ def test_payload_by_handle_matches_inline(tmp_path):
     for i in range(24):
         n = int(rng.integers(4, 40))
         mask = rng.random(n) < 0.5
+        if i == 0:  # truncated to seq_len before its first masked position
+            n, mask = 40, np.arange(40) >= 36
         experts = rng.integers(0, 64, size=(n, 3, 2), dtype=np.uint8)
         counts = np.where(mask, rng.integers(1, 5, size=n), 0).astype(np.int32)
         mask_rows = np.full((n, 4), -1, dtype=np.int32)

@@ -405,7 +405,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         if sampling_mask is not None:
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
         if payload is not None:
-            payload = clip_segments(payload, 0, cut)
+            clipped = clip_segments(payload, 0, cut)
+            # A field cut out entirely keeps a zero-row segment, so the trainer still
+            # sees it (all -1 sampling mask), like an inline mask cut to zero rows.
+            kept = {segment.field for segment in clipped}
+            cut_out = {s.field: msgspec.structs.replace(s, pos=cut, rows=0) for s in payload if s.field not in kept}
+            payload = clipped + list(cut_out.values())
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
