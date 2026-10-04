@@ -1,3 +1,4 @@
+import fla.utils
 import torch
 import torch.nn.functional as F
 from fla.modules import FusedRMSNormGated
@@ -7,6 +8,11 @@ from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
 from prime_rl.utils.cp import CPContext
+
+# FLA memoizes its varlen index helpers on argument identity in a process-global cache. Activation
+# checkpointing requires the recompute to replay the forward's exact op sequence, which a cache hit in one
+# pass but not the other breaks. The cache only saves recomputing tiny index tensors, so keep it off.
+fla.utils.FLA_DISABLE_TENSOR_CACHE = True
 
 # FLA's context carries a process group that Dynamo cannot trace through the convolution.
 causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)

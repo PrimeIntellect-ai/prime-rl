@@ -16,7 +16,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, Shard
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -46,13 +46,13 @@ from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
-from prime_rl.trainer.models.registry import get_model_cls, load_model_config
+from prime_rl.trainer.models.registry import get_model_cls, load_model_config, read_config_json
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import default_dtype, format_time
-from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
+from prime_rl.utils.vlm import VLM_REGISTRY, get_language_model, get_vision_encoder, is_vlm_architecture
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
@@ -388,7 +388,11 @@ def get_model(
 
 def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
     logger = get_logger()
-    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    # The tokenizer class comes from tokenizer_config.json. Passing a generic config stops transformers from
+    # parsing the model's config.json, which fails for architectures it doesn't ship (e.g. DeepSeek-V4, Laguna).
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.name, config=PretrainedConfig(), trust_remote_code=config.trust_remote_code
+    )
     if config.chat_template is not None:
         path = Path(config.chat_template)
         if path.is_file():
@@ -408,6 +412,10 @@ def setup_processor(config: ModelConfig):
     from transformers import AutoProcessor
 
     logger = get_logger()
+    # AutoProcessor parses the model's config.json, which transformers can't do for every architecture we
+    # support; only the VLM architectures have a processor to load.
+    if read_config_json(config.name)["model_type"] not in VLM_REGISTRY:
+        return None
     try:
         processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     except (ValueError, OSError, KeyError) as e:
