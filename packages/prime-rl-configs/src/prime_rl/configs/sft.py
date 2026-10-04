@@ -1,3 +1,4 @@
+import math
 import uuid
 import warnings
 from pathlib import Path
@@ -160,6 +161,71 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class TokenSourceConfig(BaseConfig):
+    path: Path
+    """Folder of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``. The files are read in name order as one token stream."""
+
+    max_tokens: int | None = Field(None, ge=1)
+    """Tokens available from this source: the first ``max_tokens`` of its stream. Defaults to all tokens in the shards."""
+
+
+class MixturePhaseConfig(BaseConfig):
+    start: float = Field(0.0, ge=0, lt=1)
+    """Fraction of ``max_steps`` at which this phase starts."""
+
+    weights: dict[str, float]
+    """Token share of each source in this phase. Shares are non-negative and sum to 1; unlisted sources get 0."""
+
+    @model_validator(mode="after")
+    def validate_weights(self):
+        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):
+            raise ValueError(f"Phase weights must be non-negative and sum to 1, got {self.weights}")
+        return self
+
+
+class MixtureConfig(BaseConfig):
+    """A data mixture over token sources. Keep it in its own versioned file and pass it with ``--data.mixture @ mixture.toml``."""
+
+    sources: dict[str, TokenSourceConfig]
+    """Token sources by name. The name labels the source's metrics."""
+
+    phases: list[MixturePhaseConfig]
+    """Mixture phases in order. The first starts at 0."""
+
+    max_epochs: float = Field(1.0, gt=0)
+    """Most passes over a source's available tokens that the planned run (``max_steps``) may make. Checked at startup."""
+
+    @model_validator(mode="after")
+    def validate_phases(self):
+        starts = [phase.start for phase in self.phases]
+        if not starts or starts[0] != 0 or starts != sorted(set(starts)):
+            raise ValueError(f"Phase starts must begin at 0 and increase, got {starts}")
+        for phase in self.phases:
+            if unknown := phase.weights.keys() - self.sources.keys():
+                raise ValueError(f"Phase weights name unknown sources {sorted(unknown)}")
+        return self
+
+
+class TokensDataConfig(BaseDataConfig):
+    """Pretraining data: ``seq_len`` windows of pre-tokenized datatrove shards, each drawn from one source of a weighted mixture. Position ids restart at every document."""
+
+    type: Literal["tokens"] = "tokens"
+
+    mixture: MixtureConfig
+
+    seed: int = 0
+    """Seed for choosing each window's source."""
+
+
+class TokensValDataConfig(BaseDataConfig):
+    """Held-out token shards, evaluated per source in one pass."""
+
+    type: Literal["tokens"] = "tokens"
+
+    sources: dict[str, TokenSourceConfig]
+    """Held-out sources by name. Each logs ``val/loss/<name>``; ``val/loss`` is the token-weighted mean."""
+
+
 class SFTValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -167,10 +233,10 @@ class SFTValConfig(BaseConfig):
     eval_on_start: bool = False
     """Run validation before the first training step."""
 
-    data: SFTDataConfig
+    data: Annotated[SFTDataConfig | TokensValDataConfig, Field(discriminator="type")]
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | TokensDataConfig, Field(discriminator="type")]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -535,7 +601,7 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
+        if self.data.type != "sft" and (self.val is None or self.val.data.type != "sft"):
             return self
 
         model_id = self.tokenizer.name or self.model.name
@@ -553,6 +619,12 @@ class SFTConfig(BaseConfig):
             "Implement and register the renderer in the renderers package, or explicitly select an existing "
             "typed renderer only when its template is verified to match."
         )
+
+    @model_validator(mode="after")
+    def validate_mixture_phases(self):
+        if self.data.type == "tokens" and len(self.data.mixture.phases) > 1 and self.max_steps is None:
+            raise ValueError("A mixture with several phases needs max_steps: phases start at fractions of it.")
+        return self
 
     @model_validator(mode="after")
     def validate_cp_seq_len(self):

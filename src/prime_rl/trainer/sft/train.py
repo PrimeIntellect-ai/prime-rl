@@ -44,6 +44,7 @@ from prime_rl.trainer.sft.data import (
     load_sft_dataset,
     setup_dataloader,
     setup_dataset,
+    setup_val_token_datasets,
 )
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -191,11 +192,12 @@ def train(config: SFTConfig):
         renderer_config=config.renderer,
         processor=processor,
         multimodal=multimodal,
+        max_steps=config.max_steps,
     )
     dataloader = setup_dataloader(dataset, config.data)
 
     val_raw_dataset = None
-    if config.val is not None:
+    if config.val is not None and config.val.data.type == "sft":
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
@@ -303,7 +305,7 @@ def train(config: SFTConfig):
     maybe_record_function = nullcontext
 
     def run_eval_loop(data_iter):
-        """Validation forward loop. Returns token-weighted global mean loss."""
+        """Validation forward loop. Returns the global loss sum, token count and NaN batch count."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
@@ -332,24 +334,38 @@ def train(config: SFTConfig):
         dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
-        mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        return total_loss_sum.item(), total_token_count.item(), nan_count.item()
 
     def run_validation(step: int) -> None:
-        val_dataset = setup_dataset(
-            tokenizer,
-            config.val.data,
-            config.model.cp,
-            max_epochs=1,
-            raw_dataset=val_raw_dataset,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data)
+        if config.val.data.type == "tokens":
+            val_datasets = setup_val_token_datasets(config.val.data, config.model.cp)
+        else:
+            val_datasets = {
+                None: setup_dataset(
+                    tokenizer,
+                    config.val.data,
+                    config.model.cp,
+                    max_epochs=1,
+                    raw_dataset=val_raw_dataset,
+                    renderer_config=config.renderer,
+                    processor=processor,
+                    multimodal=multimodal,
+                )
+            }
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        val_metrics = {}
+        loss_sum, token_count, nan_count = 0.0, 0, 0
+        for name, val_dataset in val_datasets.items():
+            source_loss_sum, source_token_count, source_nan_count = run_eval_loop(
+                setup_dataloader(val_dataset, config.val.data)
+            )
+            if name is not None and source_token_count > 0:
+                val_metrics[f"val/loss/{name}"] = source_loss_sum / source_token_count
+            loss_sum += source_loss_sum
+            token_count += source_token_count
+            nan_count += source_nan_count
+        mean_loss = loss_sum / token_count if token_count > 0 else float("nan")
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             get_load_balance_stats(model)
@@ -359,11 +375,8 @@ def train(config: SFTConfig):
             logger.warning(f"Validation at step {step} had no valid tokens")
         else:
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
-            )
-        )
+        val_metrics |= {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}
+        asyncio.run(monitors.log(val_metrics, step=step))
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
@@ -606,6 +619,9 @@ def train(config: SFTConfig):
                     for subset_or_split, num_tokens in tokens_by_source.items()
                 },
             )
+        # Token data counts the tokens read per source across all data ranks
+        for name, num_tokens in dataset_progress.get("tokens", {}).items():
+            progress_metrics[f"progress/{name}/num_tokens"] = num_tokens
         asyncio.run(monitors.log(progress_metrics, step=progress.step))
 
         # Log performance metrics
