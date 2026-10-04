@@ -32,7 +32,7 @@ class SparseMlaAttentionArgs:
     index_topk: int
     use_index_cache: bool = False
     skip_topk: bool = False
-    sparse_mla_backward: str = "auto"
+    dsa_backend: str = "tilelang"
 
 
 def apply_rope_interleave_single(
@@ -231,7 +231,7 @@ class GlmMoeDsaAttention(nn.Module):
             position_embeddings_full=position_embeddings,
         )
 
-        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling, backward_backend=self.args.sparse_mla_backward)
+        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling, backend=self.args.dsa_backend)
         out = torch.einsum("bshk,hdk->bshd", out, w_v)
         batch_size, total_tokens = out.shape[:2]
         out = out.reshape(batch_size, total_tokens, -1)

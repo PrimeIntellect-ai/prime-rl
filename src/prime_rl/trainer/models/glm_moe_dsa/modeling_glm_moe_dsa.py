@@ -41,7 +41,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
         index_topk=config.index_topk,
         use_index_cache=getattr(config, "use_index_cache", False),
         skip_topk=_index_cache_skip_topk(config, layer_idx),
-        sparse_mla_backward=getattr(config, "sparse_mla_backward", "auto"),
+        dsa_backend=getattr(config, "dsa_backend", "tilelang"),
     )
 
 

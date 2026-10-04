@@ -365,7 +365,7 @@ def get_model(
         subconfig = getattr(model_config, subconfig_key, None)
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
-    model_config.sparse_mla_backward = config.sparse_mla_backward
+    model_config.dsa_backend = config.dsa_backend
     if config.index_cache is not None:
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
