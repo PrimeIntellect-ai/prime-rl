@@ -101,7 +101,7 @@ ARCH_PRESETS = {
         ),
         "hf_model_class": HFGlm4MoeForCausalLM,
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
-        "tokenizer_source": "THUDM/GLM-4-9B-0414",
+        "tokenizer_source": "zai-org/GLM-4.5-Air",
     },
     "laguna": {
         "config_class": LagunaConfig,

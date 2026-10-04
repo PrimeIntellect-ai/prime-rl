@@ -81,7 +81,7 @@ ARCH_PRESETS = {
         "config_kwargs": dict(hidden_size=1024, num_hidden_layers=24, n_routed_experts=8, ...),
         "hf_model_class": HFGlm4MoeForCausalLM,
         "prime_model_class": PrimeRLGlm4MoeForCausalLM,
-        "tokenizer_source": "THUDM/GLM-4-9B-0414",
+        "tokenizer_source": "zai-org/GLM-4.5-Air",
     },
     # add your arch here
 }
@@ -89,7 +89,7 @@ ARCH_PRESETS = {
 
 ### Run the Smoke Test
 
-Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from the original GLM-4 model, and verifies the HF↔prime-rl roundtrip is lossless:
+Build the mini model. This creates a ~543M-parameter GLM-4 MoE (1024 hidden, 24 layers, 8 experts) with random weights, copies the tokenizer from `zai-org/GLM-4.5-Air`, and verifies the HF↔prime-rl roundtrip is lossless:
 
 ```bash
 uv run python scripts/mini_moe.py --arch glm4_moe --output-dir ./mini-glm-moe
