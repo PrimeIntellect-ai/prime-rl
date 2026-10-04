@@ -8,7 +8,7 @@ import msgspec
 import numpy as np
 
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
-from prime_rl.transports.payload import clip_segments
+from prime_rl.transports.payload import PayloadSegment, clip_segments
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -406,11 +406,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
         if payload is not None:
             clipped = clip_segments(payload, 0, cut)
-            # A field cut out entirely keeps a zero-row segment, so the trainer still
-            # sees it (all -1 sampling mask), like an inline mask cut to zero rows.
-            kept = {segment.field for segment in clipped}
-            cut_out = {s.field: msgspec.structs.replace(s, pos=cut, rows=0) for s in payload if s.field not in kept}
-            payload = clipped + list(cut_out.values())
+            # A mask cut out entirely stays present as a zero-row segment, so the trainer
+            # gets the same all -1 width-1 mask as for an inline mask cut to zero rows.
+            if "sampling_mask" not in {s.field for s in clipped} and any(s.field == "sampling_mask" for s in payload):
+                clipped.append(PayloadSegment("sampling_mask", "", 0, cut, 0, "int32", [1]))
+            payload = clipped
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
