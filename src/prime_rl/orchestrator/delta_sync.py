@@ -271,7 +271,9 @@ async def stage_weights(
                     files=files,
                 )
 
-        await asyncio.gather(*(_upload_chunks() for _ in range(worker_count)))
+        async with asyncio.TaskGroup() as group:
+            for _ in range(worker_count):
+                group.create_task(_upload_chunks())
 
         await _post_with_retries(admin_client, "/stage_finalize", data=chunk_data)
 

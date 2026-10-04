@@ -544,6 +544,71 @@ def test_client_retries_complete_stage_after_lost_finalize_response(
     assert app.state.staged_versions["1"]["path"].read_bytes() == content
 
 
+@pytest.mark.parametrize(
+    ("upload_method", "filename", "chunk_path"),
+    [
+        ("chunked", "delta.safetensors", "/stage_chunk"),
+        ("streaming", "delta.stream", "/stage_stream_chunk"),
+    ],
+)
+def test_complete_stage_retry_waits_for_failed_upload_workers(tmp_path, upload_method, filename, chunk_path) -> None:
+    delta_dir = tmp_path / "step_1"
+    delta_dir.mkdir()
+    content = b"abcdefgh"
+    (delta_dir / filename).write_bytes(content)
+    app = make_app(tmp_path)
+    app_transport = httpx.ASGITransport(app=app)
+    chunk_attempts = 0
+    cancelled = False
+
+    async def run() -> None:
+        slow_chunk_started = asyncio.Event()
+
+        async def fail_first_attempt(request: httpx.Request) -> httpx.Response:
+            nonlocal chunk_attempts, cancelled
+            if request.url.path == chunk_path:
+                chunk_attempts += 1
+                if chunk_attempts == 1:
+                    await slow_chunk_started.wait()
+                    return httpx.Response(503, request=request)
+                if chunk_attempts == 2:
+                    slow_chunk_started.set()
+                    try:
+                        await asyncio.Future()
+                    finally:
+                        cancelled = True
+                assert cancelled, "previous upload workers must finish before retrying the stage"
+            return await app_transport.handle_async_request(request)
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(fail_first_attempt), base_url="http://test"
+        ) as client:
+            await asyncio.wait_for(
+                stage_weights(
+                    [client],
+                    delta_dir,
+                    version="1",
+                    mode="delta",
+                    base_version="base",
+                    upload=True,
+                    upload_method=upload_method,
+                    chunk_size_bytes=4,
+                    num_streams=2,
+                    chunk_retries=0,
+                    stage_retries=1,
+                    stage_retry_base_delay_s=0,
+                ),
+                timeout=5,
+            )
+
+    asyncio.run(run())
+
+    assert cancelled
+    assert chunk_attempts == 4
+    assert app.state.stage_uploads == {}
+    assert app.state.staged_versions["1"]["path"].read_bytes() == content
+
+
 def test_relay_stage_multipart_uploads_delta_to_peer(tmp_path) -> None:
     delta_dir = tmp_path / "step_1"
     delta_dir.mkdir()
