@@ -129,9 +129,6 @@ class DeepseekV4MoE(MoE):
         assert config.hidden_act == "silu", (
             f"the routed experts hardcode SiLU; hidden_act={config.hidden_act!r} is not supported"
         )
-        if config.scoring_func != "sqrtsoftplus":
-            raise ValueError(f"V4 routes with sqrt(softplus(.)); scoring_func={config.scoring_func!r} is not supported")
-
         is_hash = layer_idx < config.num_hash_layers
 
         router_kwargs = dict(
