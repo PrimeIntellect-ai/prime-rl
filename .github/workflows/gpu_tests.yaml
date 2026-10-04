@@ -67,7 +67,7 @@ jobs:
             runner: vm
             pytest_args: "tests/integration/test_reverse_text_sft_lora.py"
           - test: reverse_text
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text.py"
           - test: reverse_text_rl_opd
             runner: vm
