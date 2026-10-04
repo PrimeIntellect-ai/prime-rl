@@ -27,7 +27,7 @@ class Eval:
         landed: list[dict] = []
         if config.resume:
             # read and set aside before the monitors start: the resumed attempt writes a fresh stream
-            landed = resume.take_landed(config.run_dir)
+            landed = resume.take_landed(config.run_dir, config)
         get_logger().info(f"Initializing monitors ({config.monitors})")
         await monitors.setup(
             producer="eval",
