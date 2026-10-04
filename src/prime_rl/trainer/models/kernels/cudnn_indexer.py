@@ -36,6 +36,8 @@ def _document_segments(ks: torch.Tensor, ke: torch.Tensor) -> tuple[torch.Tensor
 def _chunked_top_k(logits: torch.Tensor, lengths: torch.Tensor, topk: int) -> torch.Tensor:
     from cudnn.deepseek_sparse_attention import indexer_top_k_wrapper
 
+    # Radix select is ~5x faster than torch.topk on real indexer scores, but ~1.4x slower when the
+    # k-th value is tied across most of a row (e.g. the all-zero scores of a degenerate random init).
     num_rows, num_cols = logits.shape
     chunk_rows = max(256, TOPK_CHUNK_ELEMS // num_cols)
     return torch.cat(
