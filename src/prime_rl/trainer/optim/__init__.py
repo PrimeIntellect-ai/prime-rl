@@ -5,7 +5,8 @@ from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
+from prime_rl.configs.trainer import ModelConfig, OptimizerConfig
+from prime_rl.trainer.model import get_full_offload_dtype_policy
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
@@ -49,13 +50,12 @@ def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
 
 def setup_optimizer(
     config: OptimizerConfig,
-    named_params: list[tuple[str, nn.Parameter]],
+    model: nn.Module,
     parallel_dims: ParallelDims,
-    cpu_offload: bool = False,
-    full_offload_config: OptimizerInBackwardOffloadConfig | None = None,
-    model: nn.Module | None = None,
-    full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
+    model_config: ModelConfig,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
+    cpu_offload = model_config.optim_cpu_offload
+    full_offload_config = model_config.full_offload
     if cpu_offload and full_offload_config is not None:
         raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
     if full_offload_config is not None and config.type not in ("adamw", "sign_sgd"):
@@ -63,15 +63,12 @@ def setup_optimizer(
     if full_offload_config is not None and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
+    named_params = list(model.named_parameters())
     optimizer_named_params = named_params
     master_weights = None
     if full_offload_config is not None:
-        if model is None:
-            raise ValueError("CPU optimizer offload requires the model")
-        if full_offload_dtype_policy is None:
-            raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
-            model, named_params, dtype_policy=full_offload_dtype_policy
+            model, named_params, dtype_policy=get_full_offload_dtype_policy(model, model_config)
         )
 
     optimizer = _create_optimizer(

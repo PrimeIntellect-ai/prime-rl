@@ -3,7 +3,6 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 from contextlib import nullcontext
 import time
 import asyncio
-from datetime import timedelta
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -12,7 +11,7 @@ from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_se
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
-from torch.profiler import profile, ProfilerActivity, record_function
+from torch.profiler import record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -41,14 +40,12 @@ from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
-    get_full_offload_dtype_policy,
     get_expert_load_stats,
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
     setup_processor,
 )
-from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -58,11 +55,13 @@ from prime_rl.trainer.utils import (
     clip_grad_norm_,
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
-    get_ckpt_disk_metrics,
+    log_step_metrics,
     prepare_gradient_offload,
+    resolve_resume_step,
+    save_trace,
     scale_gradients_,
-    setup_full_cpu_optimizer_offload,
-    setup_torch_distributed,
+    setup_trainer,
+    start_trace,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
@@ -72,7 +71,7 @@ from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit
 
 
 @clean_exit
@@ -115,36 +114,11 @@ def train(config: TrainerConfig):
             health_server = HealthServer(config.metrics_server.port, config.metrics_server.host)
             health_server.start()
 
-    # Set precision
-    setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
-    )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
-    # Configurable to support ROCm/AMD GPUs where reduced precision
-    # matmul corrupts softmax over large vocabularies. Override via config
-    # (e.g. matmul_precision = "highest") on ROCm.
-    torch.set_float32_matmul_precision(config.matmul_precision)
+    parallel_dims = setup_trainer(config)
 
-    # Resolve ep="auto" to a concrete integer before creating parallel dims
-    resolve_ep(config.model)
-
-    # Initialize parallel dimensions
-    parallel_dims = get_parallel_dims(config.model)
-
-    # Check for checkpoint to resume from
-    checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
-
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")
@@ -171,17 +145,7 @@ def train(config: TrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     t0 = time.perf_counter()
-    optimizer, gradient_manager = setup_optimizer(
-        config.optim,
-        list(model.named_parameters()),
-        parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
-        model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
-        ),
-    )
+    optimizer, gradient_manager = setup_optimizer(config.optim, model, parallel_dims, config.model)
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 
     logger.info(f"Initializing scheduler ({config.scheduler})")
@@ -255,11 +219,8 @@ def train(config: TrainerConfig):
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
-    maybe_record_function = nullcontext
-    if config.trace_path:
-        logger.info(f"Tracing to {config.trace_path}")
-        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
-        maybe_record_function = record_function
+    prof = start_trace(config.trace_path)
+    maybe_record_function = record_function if prof is not None else nullcontext
     start_step = progress.step
     max_peak_memory = 0.0
     while True:
@@ -676,50 +637,30 @@ def train(config: TrainerConfig):
             step_message += f" | Routing Conf. {tensor_stats['routing_confidence/mean']:.4f}"
         logger.success(step_message)
 
-        # Log performance metrics
-        perf_metrics = {
-            "perf/throughput": throughput,
-            "perf/throughput_per_gpu": throughput / world.world_size,
-            "perf/mfu": mfu,
-            "perf/peak_memory": peak_memory,
-            "step": progress.step,
-        }
-        asyncio.run(monitors.log(perf_metrics, step=progress.step))
-
-        # Log optimizer metrics
-        optim_metrics = {
-            "optim/lr": current_lr,
-            "step": progress.step,
-        }
-        if grad_norm is not None:
-            optim_metrics["optim/grad_norm"] = grad_norm.item()
-        asyncio.run(monitors.log(optim_metrics, step=progress.step))
-
         # Compute derived metrics
         entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
         mismatch_kl_mean = tensor_stats.get("mismatch_kl/all/mean")
         if mismatch_kl_mean is not None and entropy_mean > 0:
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
-        tensor_stats["step"] = progress.step
-        asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
-
-        # Log time metrics
-        time_metrics = {
-            "time/step": step_time,
-            "time/wait_for_batch": wait_for_batch_time,
-            "time/load_data": load_data_time,
-            "time/broadcast_weights": broadcast_weights_time,
-            "time/save_ckpt": save_ckpt_time,
-            "time/forward_backward": forward_backward_time,
-            "step": progress.step,
-        }
-        asyncio.run(monitors.log(time_metrics, step=progress.step))
-
-        # Log disk metrics
-        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
-        disk_metrics["step"] = progress.step
-        asyncio.run(monitors.log(disk_metrics, step=progress.step))
+        log_step_metrics(
+            progress.step,
+            {
+                **filter_rl_trainer_tensor_stats_for_wandb(tensor_stats),
+                "time/step": step_time,
+                "time/wait_for_batch": wait_for_batch_time,
+                "time/load_data": load_data_time,
+                "time/broadcast_weights": broadcast_weights_time,
+                "time/save_ckpt": save_ckpt_time,
+                "time/forward_backward": forward_backward_time,
+            },
+            throughput=throughput,
+            mfu=mfu,
+            peak_memory=peak_memory,
+            lr=current_lr,
+            grad_norm=grad_norm,
+            output_dir=config.output_dir,
+        )
 
         # Update Prometheus metrics if configured
         if metrics_server is not None:
@@ -743,13 +684,8 @@ def train(config: TrainerConfig):
             break
         progress.step += 1
 
-    if config.trace_path:
-        prof.__exit__(None, None, None)
-        config.trace_path.mkdir(parents=True, exist_ok=True)
-        trace_file = str(config.trace_path / f"trace_{dist.get_rank()}.json.gz")
-        logger.info(f"Saving trace to {trace_file}")
-        prof.export_chrome_trace(trace_file)
-        logger.info(f"Saved trace to {trace_file}")
+    if prof is not None:
+        save_trace(prof, config.trace_path)
 
     # Write final checkpoint
     if config.ckpt is not None:

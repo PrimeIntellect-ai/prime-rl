@@ -1,3 +1,4 @@
+import asyncio
 import gc
 import os
 import pickle
@@ -6,7 +7,7 @@ import time
 from collections import defaultdict
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.distributed as dist
@@ -14,14 +15,19 @@ from rich import print as rich_print
 from rich.text import Text
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
+from torch.profiler import ProfilerActivity, profile
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl import monitors
+from prime_rl.trainer.parallel_dims import ParallelDims, get_parallel_dims, resolve_ep
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.pathing import get_ckpt_dir
+from prime_rl.utils.pathing import get_ckpt_dir, resolve_latest_ckpt_step
 
 if TYPE_CHECKING:
-    from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
+    from prime_rl.configs.sft import SFTConfig
+    from prime_rl.configs.shared import ResumeConfig
+    from prime_rl.configs.trainer import TrainerConfig
     from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
@@ -176,12 +182,6 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig") -> None:
-    if config.numa_bind:
-        bind_process_to_gpu_numa_node()
-    configure_cpu_optimizer_threads()
-
-
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
     get_logger().info(f"Initializing torch distributed (timeout={int(timeout.total_seconds())}s)")
     t0 = time.perf_counter()
@@ -203,6 +203,79 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
 
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
+
+
+def setup_trainer(config: "TrainerConfig | SFTConfig", seq_len: int | None = None) -> ParallelDims:
+    """Initialize torch distributed, the CPU optimizer threads and the matmul precision, then build the parallel dims."""
+    setup_torch_distributed(
+        timeout=timedelta(seconds=config.dist_timeout_seconds),
+        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+    )
+    if config.model.full_offload is not None:
+        if config.model.full_offload.numa_bind:
+            bind_process_to_gpu_numa_node()
+        configure_cpu_optimizer_threads()
+    # Configurable to support ROCm/AMD GPUs where reduced precision
+    # matmul corrupts softmax over large vocabularies. Override via config
+    # (e.g. matmul_precision = "highest") on ROCm.
+    torch.set_float32_matmul_precision(config.matmul_precision)
+
+    resolve_ep(config.model)
+    return get_parallel_dims(config.model, seq_len)
+
+
+def resolve_resume_step(resume: "ResumeConfig | None", ckpt_dir: Path) -> int | None:
+    """The checkpoint step to resume from, or None to start from scratch."""
+    if resume is None:
+        return None
+    if resume.dir is not None:
+        return resume.dir_step
+    if resume.step is not None:
+        return resume.step
+    return resolve_latest_ckpt_step(ckpt_dir)
+
+
+def start_trace(trace_path: Path | None) -> profile | None:
+    """Start the torch profiler when ``trace_path`` is set."""
+    if trace_path is None:
+        return None
+    get_logger().info(f"Tracing to {trace_path}")
+    return profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
+
+
+def save_trace(prof: profile, trace_path: Path) -> None:
+    prof.__exit__(None, None, None)
+    trace_path.mkdir(parents=True, exist_ok=True)
+    trace_file = str(trace_path / f"trace_{dist.get_rank()}.json.gz")
+    get_logger().info(f"Saving trace to {trace_file}")
+    prof.export_chrome_trace(trace_file)
+    get_logger().info(f"Saved trace to {trace_file}")
+
+
+def log_step_metrics(
+    step: int,
+    metrics: dict[str, Any],
+    *,
+    throughput: float,
+    mfu: float,
+    peak_memory: float,
+    lr: float,
+    grad_norm: Tensor | None,
+    output_dir: Path,
+) -> None:
+    """Log a step's metrics in one row, together with the perf, optimizer and checkpoint disk metrics."""
+    row = {
+        "perf/throughput": throughput,
+        "perf/throughput_per_gpu": throughput / get_world().world_size,
+        "perf/mfu": mfu,
+        "perf/peak_memory": peak_memory,
+        "optim/lr": lr,
+        **({"optim/grad_norm": grad_norm.item()} if grad_norm is not None else {}),
+        **metrics,
+        **get_ckpt_disk_metrics(output_dir),
+        "step": step,
+    }
+    asyncio.run(monitors.log(row, step=step))
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):

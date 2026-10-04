@@ -4,16 +4,14 @@ import math
 import time
 import asyncio
 from contextlib import nullcontext
-from datetime import timedelta
 
 # Import environment before any other imports
 # ruff: noqa: I001
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
-from torch.profiler import profile, ProfilerActivity, record_function
+from torch.profiler import record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
@@ -26,7 +24,6 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
-    get_full_offload_dtype_policy,
     get_expert_load_stats,
     get_global_moe_stats,
     get_load_balance_stats,
@@ -36,7 +33,6 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
 )
-from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import (
     get_dataset_progress,
@@ -51,12 +47,14 @@ from prime_rl.trainer.utils import (
     begin_backward,
     clip_grad_norm_,
     finish_backward,
-    get_ckpt_disk_metrics,
+    log_step_metrics,
     prepare_gradient_offload,
     print_sample,
+    resolve_resume_step,
+    save_trace,
     scale_gradients_,
-    setup_full_cpu_optimizer_offload,
-    setup_torch_distributed,
+    setup_trainer,
+    start_trace,
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.heartbeat import Heartbeat
@@ -97,23 +95,7 @@ def train(config: SFTConfig):
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat)
 
-    # Set precision
-    setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
-    )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
-    # Configurable to support ROCm/AMD GPUs where reduced precision
-    # matmul corrupts softmax over large vocabularies. Override via config
-    # (e.g. matmul_precision = "highest") on ROCm.
-    torch.set_float32_matmul_precision(config.matmul_precision)
-
-    # Resolve ep="auto" to a concrete integer before creating parallel dims
-    resolve_ep(config.model)
-
-    # Initialize parallel dimensions
-    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+    parallel_dims = setup_trainer(config, config.data.seq_len)
 
     total_micro_batches = config.data.batch_size * config.model.cp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size
@@ -129,15 +111,7 @@ def train(config: SFTConfig):
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
-
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -158,17 +132,7 @@ def train(config: SFTConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer, gradient_manager = setup_optimizer(
-        config.optim,
-        list(model.named_parameters()),
-        parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
-        model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
-        ),
-    )
+    optimizer, gradient_manager = setup_optimizer(config.optim, model, parallel_dims, config.model)
 
     # Set up the learning rate scheduler
     # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
@@ -300,8 +264,6 @@ def train(config: SFTConfig):
         del out
         return loss_sum, token_count
 
-    maybe_record_function = nullcontext
-
     def run_eval_loop(data_iter):
         """Validation forward loop. Returns token-weighted global mean loss."""
         total_loss_sum = torch.tensor(0.0, device="cuda")
@@ -396,10 +358,8 @@ def train(config: SFTConfig):
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
-    if config.trace_path:
-        logger.info(f"Tracing to {config.trace_path}")
-        prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
-        maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
+    prof = start_trace(config.trace_path)
+    maybe_record_function = record_function if prof is not None else nullcontext
     max_peak_memory = 0.0
     while True:
         # Reset peak memory stats
@@ -592,7 +552,6 @@ def train(config: SFTConfig):
             "progress/epoch": dataset_progress["epoch"],
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
-            "step": progress.step,
         }
         # At least two subsets/splits
         if len(samples_by_source) > 1:
@@ -606,54 +565,28 @@ def train(config: SFTConfig):
                     for subset_or_split, num_tokens in tokens_by_source.items()
                 },
             )
-        asyncio.run(monitors.log(progress_metrics, step=progress.step))
-
-        # Log performance metrics
-        perf_metrics = {
-            "perf/throughput": throughput,
-            "perf/throughput_per_gpu": throughput / world.world_size,
-            "perf/peak_memory": peak_memory,
-            "perf/mfu": mfu,
-            "step": progress.step,
-        }
-        asyncio.run(monitors.log(perf_metrics, step=progress.step))
-
-        # Log optimizer metrics
-        optim_metrics = {
-            "optim/lr": current_lr,
-            "step": progress.step,
-        }
-        if grad_norm is not None:
-            optim_metrics["optim/grad_norm"] = grad_norm.item()
-        asyncio.run(monitors.log(optim_metrics, step=progress.step))
-
-        loss_log_metrics = {
-            "loss/mean": batch_loss,
-            "loss/perplexity": math.exp(min(batch_loss, 20)),
-            "loss/nan_count": nan_loss_count,
-            "step": progress.step,
-        }
-        # Log tensor stats
-        asyncio.run(monitors.log(loss_log_metrics, step=progress.step))
-
-        # Log time metrics
-        time_metrics = {
-            "time/step": step_time,
-            "time/save_ckpt": save_ckpt_time,
-            "time/broadcast_weights": broadcast_weights_time,
-            "time/forward_backward": forward_backward_time,
-            "step": progress.step,
-        }
-        asyncio.run(monitors.log(time_metrics, step=progress.step))
-
-        # Log disk metrics
-        disk_metrics = get_ckpt_disk_metrics(config.run_dir)
-        disk_metrics["step"] = progress.step
-        asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
         moe_log_metrics = {name: value.item() for name, value in moe_stats.items()} | expert_load_stats
-        if moe_log_metrics:
-            asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
+        log_step_metrics(
+            progress.step,
+            {
+                **progress_metrics,
+                "loss/mean": batch_loss,
+                "loss/perplexity": math.exp(min(batch_loss, 20)),
+                "loss/nan_count": nan_loss_count,
+                "time/step": step_time,
+                "time/save_ckpt": save_ckpt_time,
+                "time/broadcast_weights": broadcast_weights_time,
+                "time/forward_backward": forward_backward_time,
+                **moe_log_metrics,
+            },
+            throughput=throughput,
+            mfu=mfu,
+            peak_memory=peak_memory,
+            lr=current_lr,
+            grad_norm=grad_norm,
+            output_dir=config.run_dir,
+        )
 
         is_first_step = False
 
@@ -665,13 +598,8 @@ def train(config: SFTConfig):
             break
         progress.step += 1
 
-    if config.trace_path:
-        prof.__exit__(None, None, None)
-        config.trace_path.mkdir(parents=True, exist_ok=True)
-        trace_file = str(config.trace_path / f"trace_{dist.get_rank()}.json.gz")
-        logger.info(f"Saving trace to {trace_file}")
-        prof.export_chrome_trace(trace_file)
-        logger.info(f"Saved trace to {trace_file}")
+    if prof is not None:
+        save_trace(prof, config.trace_path)
 
     # Write final checkpoint
     if config.ckpt is not None:
