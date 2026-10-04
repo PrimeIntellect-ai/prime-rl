@@ -32,6 +32,11 @@ class MiniMaxM2Config(PrimeModelConfig):
     attention_bias: bool = False
     eos_token_id: int | list[int] | None = 2
 
+    @property
+    def num_experts(self) -> int:
+        """Alias that MoE detection (`resolve_ep`, `is_tt_moe_model`) and `perf.py` read."""
+        return self.num_local_experts
+
     @model_validator(mode="before")
     @classmethod
     def _standardize_rope(cls, data: dict[str, Any]) -> dict[str, Any]:

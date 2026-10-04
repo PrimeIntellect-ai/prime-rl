@@ -37,8 +37,8 @@ class LagunaConfig(PrimeModelConfig):
     sliding_window: int | None = 512
     attention_bias: bool = False
     gating: bool | Literal["per-head", "per-element"] = True
-    """Attention output gating: one gate per (head, head_dim) channel (``True``/``"per-element"``), one gate per
-    head broadcast across head_dim (``"per-head"``), or none (``False``)."""
+    """Attention output gating: one gate per head broadcast across head_dim (``True``/``"per-head"``), one gate
+    per (head, head_dim) channel (``"per-element"``), or none (``False``)."""
     mlp_layer_types: list[Literal["dense", "sparse"]] | None = None
     """Defaults to a dense first layer followed by sparse layers."""
     moe_intermediate_size: int = 512
