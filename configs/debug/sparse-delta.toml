@@ -10,6 +10,8 @@ mode = "delta"
 update_protocol = "stage_commit"
 stage_transport = "streaming_upload"
 background_stage = true
+stage_num_streams = 4
+stage_chunk_size_mb = 16
 retain_all_deltas = true
 delta_stream_group_size = 4
 

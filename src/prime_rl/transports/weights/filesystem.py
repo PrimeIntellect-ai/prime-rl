@@ -154,6 +154,8 @@ class FileSystemWeightReceiver(WeightReceiver):
             recovery_enabled=client_config.lease_recovery_enabled,
             cooldown_s=client_config.lease_cooldown_s,
             health_timeout_s=client_config.lease_recovery_poll_interval_s,
+            stage_num_streams=self.config.stage_num_streams,
+            stage_chunk_size_bytes=self.config.stage_chunk_size_mb * 1024 * 1024,
         )
 
     async def receive(self, step: int) -> None:

@@ -134,6 +134,8 @@ def test_sparse_delta_weight_broadcast_propagates_to_components():
                 "update_protocol": "stage_commit",
                 "stage_transport": "streaming_upload",
                 "background_stage": True,
+                "stage_num_streams": 4,
+                "stage_chunk_size_mb": 8,
                 "retain_all_deltas": True,
                 "delta_stream_group_size": 8,
             },
@@ -148,6 +150,8 @@ def test_sparse_delta_weight_broadcast_propagates_to_components():
     assert config.orchestrator.weight_broadcast.update_protocol == "stage_commit"
     assert config.orchestrator.weight_broadcast.stage_transport == "streaming_upload"
     assert config.orchestrator.weight_broadcast.background_stage is True
+    assert config.orchestrator.weight_broadcast.stage_num_streams == 4
+    assert config.orchestrator.weight_broadcast.stage_chunk_size_mb == 8
 
 
 def test_sparse_delta_rejects_unsupported_runtime_combinations():

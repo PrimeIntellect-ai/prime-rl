@@ -499,6 +499,12 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     background_stage: bool = False
     """Allow staging to overlap artifact production before commit."""
 
+    stage_num_streams: int = Field(1, ge=1, le=16)
+    """Parallel HTTP upload streams per inference endpoint."""
+
+    stage_chunk_size_mb: int = Field(16, ge=1)
+    """Chunk size in MiB for chunked and streaming HTTP uploads."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"

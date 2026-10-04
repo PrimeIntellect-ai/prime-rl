@@ -112,6 +112,7 @@ async def stage_weights(
     upload: bool = False,
     upload_method: Literal["multipart", "chunked", "streaming"] = "multipart",
     chunk_size_bytes: int = STAGE_UPLOAD_CHUNK_BYTES,
+    num_streams: int = 1,
     done_path: Path | None = None,
     poll_interval_s: float = 0.1,
 ) -> list[EndpointOperationResult]:
@@ -129,6 +130,8 @@ async def stage_weights(
         raise ValueError(f"unsupported stage upload method: {upload_method}")
     if chunk_size_bytes <= 0:
         raise ValueError("chunk_size_bytes must be positive")
+    if num_streams <= 0:
+        raise ValueError("num_streams must be positive")
     if poll_interval_s <= 0:
         raise ValueError("poll_interval_s must be positive")
 
@@ -177,11 +180,27 @@ async def stage_weights(
             "total_size": str(total_size),
             "sha256": expected_sha256,
         }
-        with upload_path.open("rb") as f:
-            offset = 0
-            sent_chunk = False
-            while chunk := f.read(chunk_size_bytes):
-                sent_chunk = True
+        ranges = [
+            (offset, min(chunk_size_bytes, total_size - offset)) for offset in range(0, total_size, chunk_size_bytes)
+        ]
+        if not ranges:
+            ranges = [(0, 0)]
+
+        queue: asyncio.Queue[tuple[int, int] | None] = asyncio.Queue()
+        for item in ranges:
+            queue.put_nowait(item)
+        worker_count = min(num_streams, len(ranges))
+        for _ in range(worker_count):
+            queue.put_nowait(None)
+
+        async def _upload_chunks() -> None:
+            while item := await queue.get():
+                offset, size = item
+                with upload_path.open("rb") as f:
+                    f.seek(offset)
+                    chunk = f.read(size)
+                if len(chunk) != size:
+                    raise RuntimeError(f"short read at offset {offset}: expected {size} bytes, got {len(chunk)}")
                 files = {"file": (upload_path.name, chunk, "application/octet-stream")}
                 response = await admin_client.post(
                     "/stage_chunk",
@@ -189,12 +208,8 @@ async def stage_weights(
                     files=files,
                 )
                 response.raise_for_status()
-                offset += len(chunk)
 
-            if not sent_chunk:
-                files = {"file": (upload_path.name, b"", "application/octet-stream")}
-                response = await admin_client.post("/stage_chunk", data={**chunk_data, "offset": "0"}, files=files)
-                response.raise_for_status()
+        await asyncio.gather(*(_upload_chunks() for _ in range(worker_count)))
 
         response = await admin_client.post("/stage_finalize", data=chunk_data)
         response.raise_for_status()
@@ -219,36 +234,53 @@ async def stage_weights(
         if not upload_id:
             raise RuntimeError("stage_stream_init response did not include upload_id")
 
-        chunk_index = 0
-        offset = 0
-        while True:
-            if upload_path.exists():
-                size = upload_path.stat().st_size
-                if size > offset:
-                    to_read = min(chunk_size_bytes, size - offset)
-                    with upload_path.open("rb") as f:
-                        f.seek(offset)
-                        chunk = f.read(to_read)
-                    if chunk:
-                        response = await admin_client.post(
-                            "/stage_stream_chunk",
-                            params={"upload_id": upload_id, "chunk_index": chunk_index, "offset": offset},
-                            content=chunk,
-                        )
-                        response.raise_for_status()
-                        offset += len(chunk)
+        queue: asyncio.Queue[tuple[int, int, int] | None] = asyncio.Queue(maxsize=num_streams * 2)
+
+        async def _produce_chunks() -> None:
+            chunk_index = 0
+            offset = 0
+            while True:
+                if upload_path.exists():
+                    size = upload_path.stat().st_size
+                    if size > offset:
+                        to_read = min(chunk_size_bytes, size - offset)
+                        await queue.put((chunk_index, offset, to_read))
+                        offset += to_read
                         chunk_index += 1
                         continue
 
-            if done_path is None:
-                if upload_path.exists() and offset >= upload_path.stat().st_size:
-                    break
-            elif done_path.exists():
-                final_size = upload_path.stat().st_size if upload_path.exists() else 0
-                if offset >= final_size:
-                    break
+                if done_path is None:
+                    if upload_path.exists() and offset >= upload_path.stat().st_size:
+                        break
+                elif done_path.exists():
+                    final_size = upload_path.stat().st_size if upload_path.exists() else 0
+                    if offset >= final_size:
+                        break
 
-            await asyncio.sleep(poll_interval_s)
+                await asyncio.sleep(poll_interval_s)
+
+            for _ in range(num_streams):
+                await queue.put(None)
+
+        async def _upload_chunks() -> None:
+            while item := await queue.get():
+                chunk_index, offset, size = item
+                with upload_path.open("rb") as f:
+                    f.seek(offset)
+                    chunk = f.read(size)
+                if len(chunk) != size:
+                    raise RuntimeError(f"short read at offset {offset}: expected {size} bytes, got {len(chunk)}")
+                response = await admin_client.post(
+                    "/stage_stream_chunk",
+                    params={"upload_id": upload_id, "chunk_index": chunk_index, "offset": offset},
+                    content=chunk,
+                )
+                response.raise_for_status()
+
+        async with asyncio.TaskGroup() as group:
+            group.create_task(_produce_chunks())
+            for _ in range(num_streams):
+                group.create_task(_upload_chunks())
 
         if not upload_path.exists():
             raise FileNotFoundError(upload_path)
@@ -335,12 +367,16 @@ class DeltaEndpointPool:
         recovery_enabled: bool,
         cooldown_s: float,
         health_timeout_s: float,
+        stage_num_streams: int = 1,
+        stage_chunk_size_bytes: int = STAGE_UPLOAD_CHUNK_BYTES,
     ) -> None:
         self.clients = clients
         self.lease_enabled = lease_enabled
         self.recovery_enabled = recovery_enabled
         self.cooldown_s = cooldown_s
         self.health_timeout_s = health_timeout_s
+        self.stage_num_streams = stage_num_streams
+        self.stage_chunk_size_bytes = stage_chunk_size_bytes
         self.runtime = {_endpoint_key(client): EndpointLeaseRuntime() for client in clients}
         self.replay_entries: dict[str, DeltaReplayEntry] = {}
         self.staged_endpoints: dict[str, set[str]] = {}
@@ -369,6 +405,8 @@ class DeltaEndpointPool:
                     base_version=base_version,
                     upload=upload,
                     upload_method=upload_method,
+                    chunk_size_bytes=self.stage_chunk_size_bytes,
+                    num_streams=self.stage_num_streams,
                     done_path=done_path,
                 ),
                 allow_partial=self.lease_enabled,
@@ -399,6 +437,8 @@ class DeltaEndpointPool:
                         base_version=entry.base_version,
                         upload=entry.upload,
                         upload_method=entry.upload_method,
+                        chunk_size_bytes=self.stage_chunk_size_bytes,
+                        num_streams=self.stage_num_streams,
                         done_path=entry.done_path,
                     ),
                     allow_partial=self.lease_enabled,
@@ -501,6 +541,8 @@ class DeltaEndpointPool:
                     base_version=entry.base_version,
                     upload=entry.upload,
                     upload_method=entry.upload_method,
+                    chunk_size_bytes=self.stage_chunk_size_bytes,
+                    num_streams=self.stage_num_streams,
                     done_path=entry.done_path,
                 )
                 await commit_weights([client], version=entry.version, mode="delta")

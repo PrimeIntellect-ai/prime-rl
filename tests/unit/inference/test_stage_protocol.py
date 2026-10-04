@@ -41,6 +41,7 @@ def make_app(
     relay_peers: list[str] | None = None,
     relay_transports: dict[str, httpx.AsyncBaseTransport] | None = None,
     relay_fail_on_peer_error: bool = False,
+    stage_chunk_delay_s: float = 0,
 ):
     app = FastAPI()
     app.include_router(delta_sync_router)
@@ -69,6 +70,26 @@ def make_app(
     app.state.relay_stage_timeout_s = 30.0
     app.state.relay_commit_timeout_s = 30.0
     app.state.relay_reload_timeout_s = 30.0
+    app.state.active_stage_chunk_requests = 0
+    app.state.max_active_stage_chunk_requests = 0
+
+    if stage_chunk_delay_s:
+
+        @app.middleware("http")
+        async def delay_stage_chunks(request, call_next):
+            if request.url.path not in {"/stage_chunk", "/stage_stream_chunk"}:
+                return await call_next(request)
+            app.state.active_stage_chunk_requests += 1
+            app.state.max_active_stage_chunk_requests = max(
+                app.state.max_active_stage_chunk_requests,
+                app.state.active_stage_chunk_requests,
+            )
+            try:
+                await asyncio.sleep(stage_chunk_delay_s)
+                return await call_next(request)
+            finally:
+                app.state.active_stage_chunk_requests -= 1
+
     return app
 
 
@@ -383,6 +404,37 @@ def test_client_stage_chunk_uploads_delta_file_to_multiple_endpoints(tmp_path) -
         staged = app.state.staged_versions["1"]
         assert staged["owned"] is True
         assert staged["path"].read_bytes() == b"multi-endpoint-delta"
+
+
+@pytest.mark.parametrize(
+    ("upload_method", "filename"),
+    [("chunked", "delta.safetensors"), ("streaming", "delta.stream")],
+)
+def test_client_stage_upload_uses_multiple_streams(tmp_path, upload_method, filename) -> None:
+    delta_dir = tmp_path / "step_1"
+    delta_dir.mkdir()
+    content = b"four-concurrent-upload-chunks"
+    (delta_dir / filename).write_bytes(content)
+    app = make_app(tmp_path, stage_chunk_delay_s=0.01)
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            await stage_weights(
+                [client],
+                delta_dir,
+                version="1",
+                mode="delta",
+                base_version="base",
+                upload=True,
+                upload_method=upload_method,
+                chunk_size_bytes=4,
+                num_streams=4,
+            )
+
+    asyncio.run(run())
+
+    assert app.state.max_active_stage_chunk_requests == 4
+    assert app.state.staged_versions["1"]["path"].read_bytes() == content
 
 
 def test_relay_stage_multipart_uploads_delta_to_peer(tmp_path) -> None:
