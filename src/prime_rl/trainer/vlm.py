@@ -65,41 +65,16 @@ def _required_tensors(values: Any, keys: tuple[str, ...]) -> dict[str, torch.Ten
     return {key: torch.as_tensor(data[key]).contiguous() for key in keys}
 
 
-def _qwen_vl_images(image_processor: Any, images: list[Image.Image]) -> tuple[dict[str, torch.Tensor], list[int]]:
+def materialize_images(refs: MMRefs, processor: Any) -> dict[str, torch.Tensor]:
+    """Decode the image refs of a micro batch into the Qwen3.5 vision forward kwargs."""
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        raise ValueError("Multimodal samples require a model image processor")
+    images = [_load_image(ref.url) for ref in refs.images]
     kwargs = _required_tensors(image_processor(images=images, return_tensors="pt"), ("pixel_values", "image_grid_thw"))
     merge_size = int(image_processor.merge_size)
     # HF Qwen-VL / renderer pad count: T*H*W / merge_size^2.
     lengths = [int(grid.prod()) // (merge_size * merge_size) for grid in kwargs["image_grid_thw"].reshape(-1, 3)]
-    return kwargs, lengths
-
-
-def _kimi_k25_images(image_processor: Any, images: list[Image.Image]) -> tuple[dict[str, torch.Tensor], list[int]]:
-    preprocess = getattr(image_processor, "preprocess", None)
-    if preprocess is None:
-        raise ValueError("Kimi image processor is missing preprocess")
-    media = [{"type": "image", "image": image} for image in images]
-    kwargs = _required_tensors(preprocess(media, return_tensors="pt"), ("pixel_values", "grid_thws"))
-    return kwargs, [1] * len(kwargs["grid_thws"].reshape(-1, 3))
-
-
-_IMAGE_INPUTS = {
-    "qwen3_vl": _qwen_vl_images,
-    "qwen3_vl_moe": _qwen_vl_images,
-    "qwen3_5": _qwen_vl_images,
-    "qwen3_5_moe": _qwen_vl_images,
-    "kimi_k25": _kimi_k25_images,
-}
-
-
-def materialize_images(refs: MMRefs, processor: Any, model_type: str) -> dict[str, torch.Tensor]:
-    """Decode the image refs of a micro batch into the model's vision forward kwargs."""
-    image_inputs = _IMAGE_INPUTS.get(model_type)
-    if image_inputs is None:
-        raise NotImplementedError(f"Raw image training is not implemented for model type {model_type!r}")
-    image_processor = getattr(processor, "image_processor", None)
-    if image_processor is None:
-        raise ValueError("Multimodal samples require a model image processor")
-    kwargs, lengths = image_inputs(image_processor, [_load_image(ref.url) for ref in refs.images])
     expected = [ref.length for ref in refs.images]
     if lengths != expected:
         raise ValueError(f"Image placeholder lengths differ from vLLM: expected {expected}, got {lengths}")

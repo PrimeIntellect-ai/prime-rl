@@ -379,10 +379,7 @@ def train(config: TrainerConfig):
             if mm_refs is not None:
                 if processor is None:
                     raise ValueError("Received multimodal samples but [model.vlm] is not set")
-                mm_kwargs = {
-                    key: value.to("cuda")
-                    for key, value in materialize_images(mm_refs, processor, model.config.model_type).items()
-                }
+                mm_kwargs = {key: value.to("cuda") for key, value in materialize_images(mm_refs, processor).items()}
                 micro_batch["mm_refs"] = None
                 del mm_refs
             mm_token_type_ids = (

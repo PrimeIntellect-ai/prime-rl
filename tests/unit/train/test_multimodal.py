@@ -27,20 +27,6 @@ def test_qwen_images_materialize_and_validate_expansion():
             }
 
     processor = SimpleNamespace(image_processor=ImageProcessor())
-    assert set(materialize_images(_refs(2), processor, "qwen3_5")) == {"pixel_values", "image_grid_thw"}
+    assert set(materialize_images(_refs(2), processor)) == {"pixel_values", "image_grid_thw"}
     with pytest.raises(ValueError, match="placeholder lengths differ"):
-        materialize_images(_refs(1), processor, "qwen3_5")
-
-
-def test_kimi_images_materialize_sparse_image_position():
-    class ImageProcessor:
-        def preprocess(self, media, *, return_tensors):
-            assert len(media) == 1 and media[0]["type"] == "image"
-            assert media[0]["image"].mode == "RGB" and return_tensors == "pt"
-            return {
-                "pixel_values": torch.ones(4, 3),
-                "grid_thws": torch.tensor([[1, 2, 2]]),
-            }
-
-    processor = SimpleNamespace(image_processor=ImageProcessor())
-    assert set(materialize_images(_refs(1), processor, "kimi_k25")) == {"pixel_values", "grid_thws"}
+        materialize_images(_refs(1), processor)
