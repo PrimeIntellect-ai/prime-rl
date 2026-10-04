@@ -228,8 +228,10 @@ class DeepseekV4MoE(MoE):
     def init_weights(self) -> None:
         if self.is_hash:
             # Seeded by layer so every rank builds the same token-to-expert table.
-            generator = torch.Generator().manual_seed(self.layer_idx)
-            scores = torch.rand(self.router.tid2eid.shape[0], self.router.num_experts, generator=generator)
+            generator = torch.Generator(device="cpu").manual_seed(self.layer_idx)
+            scores = torch.rand(
+                self.router.tid2eid.shape[0], self.router.num_experts, generator=generator, device="cpu"
+            )
             self.router.tid2eid.copy_(scores.topk(self.router.top_k, dim=-1).indices)
 
     def forward(

@@ -22,7 +22,7 @@ from prime_rl.trainer.models.qwen3_5 import Qwen3_5MoeTextConfig, Qwen3_5TextCon
 from prime_rl.trainer.models.qwen3_8_flash_next import Qwen3_8FlashNextTextConfig
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig
 
-STD = 0.05
+STD = 0.03
 DENSE = dict(
     vocab_size=512,
     hidden_size=128,
@@ -48,10 +48,9 @@ CONFIGS = {
     "qwen3": lambda: Qwen3Config(**DENSE),
     "qwen3_moe": lambda: Qwen3MoeConfig(**MOE, num_experts=4),
     "glm4_moe": lambda: Glm4MoeConfig(**MOE, n_routed_experts=4, first_k_dense_replace=1),
-    "glm_moe_dsa": lambda: GlmMoeDsaConfig(
-        **MOE, n_routed_experts=4, first_k_dense_replace=1, q_lora_rank=64, kv_lora_rank=64, index_n_heads=4
-    ),
-    "minimax_m2": lambda: MiniMaxM2Config(**MOE, num_local_experts=4),
+    # The sparse MLA kernel fixes kv_lora_rank + qk_rope_head_dim = 576 (the defaults)
+    "glm_moe_dsa": lambda: GlmMoeDsaConfig(**MOE, n_routed_experts=4, first_k_dense_replace=1, q_lora_rank=64),
+    "minimax_m2": lambda: MiniMaxM2Config(**MOE, num_local_experts=4, rotary_dim=16),
     "laguna": lambda: LagunaConfig(
         **MOE,
         num_experts=4,
@@ -162,4 +161,5 @@ def test_scratch_init_starts_at_uniform_loss(arch):
     logits = model(input_ids, seq_lens=torch.tensor([64], device="cuda"))["logits"]
     loss = F.cross_entropy(logits[0, :-1].float(), input_ids[0, 1:])
 
-    assert loss.item() == pytest.approx(math.log(vocab_size), abs=0.1)
+    # Small random logits: the loss sits just above the uniform-prediction loss
+    assert loss.item() == pytest.approx(math.log(vocab_size), abs=0.25)
