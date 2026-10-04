@@ -1407,52 +1407,33 @@ async function fetchCompares() {
 }
 
 function buildSections(meta) {
-  // panel order: reward (effective, then all) -> turns/tokens/branches -> truncation/error
-  const trainSection = (name, scope, env) => ({
-    name,
-    kind: "train",
-    env,
-    panels: [
-      // one banded plot per agent, not a multi-color overlay
-      { regex: `${escRe(scope)}/effective/[^/]+/reward/mean`, split: true },
-      { regex: `${escRe(scope)}/all/[^/]+/reward/mean`, split: true },
-      ...PANELS.common_metrics.map((m) => ({ metric: `${scope}/${m}` })),
-      ...PANELS.common_regexes.map((r) => ({ regex: `${escRe(scope)}/${r}` })),
-    ],
-  });
-  const evalSection = (name, envPattern, configured = false, env = undefined) => ({
-    name,
-    kind: "eval",
-    env,
-    configured,
-    // avg@k is the mean reward over the same traces reward/mean averages, so it
-    // stands alone as the score
-    panels: [
-      { regex: `eval/${envPattern}/all/[^/]+/avg@.*`, split: true },
-      { regex: `eval/${envPattern}/effective/[^/]+/avg@.*`, split: true },
-      { regex: `eval/${envPattern}/all/cancelled/mean` },
-      ...[...PANELS.common_metrics, ...PANELS.common_regexes].map((r) => ({ regex: `eval/${envPattern}/${r}` })),
-    ],
-  });
+  const envs = { train: meta.train_envs || [], eval: meta.eval_envs || [] };
   const sections = [];
-  const evalEnvs = meta.eval_envs || [];
-  if (meta.type === "sft") {
-    // the val panes show once a validation value is logged, not on the config alone
-    sections.push({ name: "train", panels: PANELS.sft.train.map((p) => (p.metric.startsWith("val/") ? { regex: escRe(p.metric) } : p)) });
-    if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
-    else sections.push(evalSection("eval", ".*"));
-    // regex panels (max_vio, MoE only) stay away when nothing matches
-    sections.push({ name: "stability", panels: PANELS.sft.stability });
-    sections.push({ name: "performance", panels: PANELS.sft.performance });
-    return sections;
+  // runs without a known config get the rl overview
+  for (const decl of PANELS[meta.type] || PANELS.rl) {
+    if (!decl.per_env) {
+      // the val panes show once a validation value is logged, not on the config alone;
+      // regex panels (max_vio, MoE only) stay away when nothing matches
+      const panels = decl.panels.map((p) => (p.metric?.startsWith("val/") ? { regex: escRe(p.metric) } : p));
+      sections.push({ name: decl.name, panels });
+      continue;
+    }
+    // a per-env section's panels sit under "<name>/<env>/"
+    const scoped = (name, keyPrefix, regexPrefix, env) => ({
+      name,
+      kind: decl.name,
+      env,
+      // a configured eval env stays visible before its first eval fires
+      configured: decl.name === "eval" && env !== undefined,
+      panels: decl.panels.map((p) => (p.regex ? { ...p, regex: `${regexPrefix}/${p.regex}` } : { ...p, metric: `${keyPrefix}/${p.metric}` })),
+    });
+    const list = envs[decl.name];
+    // one section per env; the cross-env aggregate stays on the metrics tab. With env names
+    // unknown, train shows the aggregate and eval one section matching any env.
+    if (list.length) sections.push(...list.map((e) => scoped(`${decl.name}/${e}`, `${decl.name}/${e}`, `${decl.name}/${escRe(e)}`, e)));
+    else if (decl.name === "train") sections.push(scoped("train", "train/agg", "train/agg"));
+    else sections.push(scoped(decl.name, `${decl.name}/.*`, `${decl.name}/.*`));
   }
-  const trainEnvs = meta.train_envs || [];
-  // one section per env; the cross-env aggregate stays on the metrics tab
-  if (trainEnvs.length) sections.push(...trainEnvs.map((e) => trainSection(`train/${e}`, `train/${e}`, e)));
-  else sections.push(trainSection("train", "train/agg"));
-  if (evalEnvs.length) sections.push(...evalEnvs.map((e) => evalSection(`eval/${e}`, escRe(e), true, e)));
-  else sections.push(evalSection("eval", ".*"));
-  for (const [name, panels] of Object.entries(PANELS.rl)) sections.push({ name, panels });
   return sections;
 }
 

@@ -1,22 +1,33 @@
 {
-  "common_metrics": [
-    "effective/num_turns/mean",
-    "effective/num_total_tokens/mean",
-    "effective/num_branches/mean"
-  ],
-  "common_regexes": [
-    "effective/[^/]+/is_truncated/mean",
-    "all/[^/]+/is_timeout/mean",
-    "all/[^/]+/has_error/mean"
-  ],
-  "rl": {
-    "stability": [
+  "rl": [
+    {"name": "train", "per_env": true, "panels": [
+      {"regex": "effective/[^/]+/reward/mean", "split": true},
+      {"regex": "all/[^/]+/reward/mean", "split": true},
+      {"metric": "effective/num_turns/mean"},
+      {"metric": "effective/num_total_tokens/mean"},
+      {"metric": "effective/num_branches/mean"},
+      {"regex": "effective/[^/]+/is_truncated/mean"},
+      {"regex": "all/[^/]+/is_timeout/mean"},
+      {"regex": "all/[^/]+/has_error/mean"}
+    ]},
+    {"name": "eval", "per_env": true, "panels": [
+      {"regex": "all/[^/]+/avg@.*", "split": true},
+      {"regex": "effective/[^/]+/avg@.*", "split": true},
+      {"regex": "all/cancelled/mean"},
+      {"regex": "effective/num_turns/mean"},
+      {"regex": "effective/num_total_tokens/mean"},
+      {"regex": "effective/num_branches/mean"},
+      {"regex": "effective/[^/]+/is_truncated/mean"},
+      {"regex": "all/[^/]+/is_timeout/mean"},
+      {"regex": "all/[^/]+/has_error/mean"}
+    ]},
+    {"name": "stability", "panels": [
       {"metric": "optim/grad_norm"},
       {"metric": "entropy/all/mean"},
       {"metric": "mismatch_kl/all/mean"},
       {"metric": "kl_ent_ratio/mean"}
-    ],
-    "inference": [
+    ]},
+    {"name": "inference", "panels": [
       {"metrics": ["inference/agg/kv_cache_usage_perc/mean", "inference/agg/kv_cache_usage_perc/min", "inference/agg/kv_cache_usage_perc/max"]},
       {"metrics": ["inference/agg/num_preemptions_total:rate/sum", "inference/agg/num_preemptions_total:rate/max"]},
       {"metrics": ["inference/agg/num_requests_running/mean", "inference/agg/num_requests_running/min", "inference/agg/num_requests_running/max"]},
@@ -25,35 +36,59 @@
       {"metrics": ["inference/agg/generation_tokens_total:rate/sum"]},
       {"metrics": ["inference/agg/prompt_tokens_total:rate/sum"]},
       {"metrics": ["dispatcher/inflight/train", "dispatcher/inflight/eval", "concurrency/max_inflight"]}
-    ],
-    "performance": [
+    ]},
+    {"name": "performance", "panels": [
       {"metric": "perf/mfu"},
       {"metric": "time/step"},
       {"metric": "time/wait_for_batch"},
       {"metric": "time/wait_for_policy"}
-    ]
-  },
-  "sft": {
-    "train": [
+    ]}
+  ],
+  "sft": [
+    {"name": "train", "panels": [
       {"metric": "loss/mean"},
       {"metric": "loss/perplexity"},
       {"metric": "val/loss"},
       {"metric": "val/perplexity"},
       {"metric": "progress/epoch"}
-    ],
-    "stability": [
+    ]},
+    {"name": "eval", "per_env": true, "panels": [
+      {"regex": "all/[^/]+/avg@.*", "split": true},
+      {"regex": "effective/[^/]+/avg@.*", "split": true},
+      {"regex": "all/cancelled/mean"},
+      {"regex": "effective/num_turns/mean"},
+      {"regex": "effective/num_total_tokens/mean"},
+      {"regex": "effective/num_branches/mean"},
+      {"regex": "effective/[^/]+/is_truncated/mean"},
+      {"regex": "all/[^/]+/is_timeout/mean"},
+      {"regex": "all/[^/]+/has_error/mean"}
+    ]},
+    {"name": "stability", "panels": [
       {"metric": "optim/grad_norm"},
       {"metric": "optim/lr"},
       {"metric": "loss/nan_count"},
       {"regex": "max_vio/(mean|max)"}
-    ],
-    "performance": [
+    ]},
+    {"name": "performance", "panels": [
       {"metric": "perf/mfu"},
       {"metric": "perf/throughput"},
       {"metric": "perf/peak_memory"},
       {"metric": "time/step"},
       {"metric": "time/forward_backward"},
       {"metric": "time/save_ckpt"}
-    ]
-  }
+    ]}
+  ],
+  "eval": [
+    {"name": "eval", "per_env": true, "panels": [
+      {"regex": "all/[^/]+/avg@.*", "split": true},
+      {"regex": "effective/[^/]+/avg@.*", "split": true},
+      {"regex": "all/cancelled/mean"},
+      {"regex": "effective/num_turns/mean"},
+      {"regex": "effective/num_total_tokens/mean"},
+      {"regex": "effective/num_branches/mean"},
+      {"regex": "effective/[^/]+/is_truncated/mean"},
+      {"regex": "all/[^/]+/is_timeout/mean"},
+      {"regex": "all/[^/]+/has_error/mean"}
+    ]}
+  ]
 }

@@ -6,7 +6,8 @@ new project gets a usable overview without hand-picking panels. Panels are untit
 its raw metric name.
 
 The panels live in `prime_rl/monitors/panels.json`, which the dashboard's overview tab reads too.
-A panel is `{"metric": key}`, `{"metrics": [keys]}` (one multi-series plot) or `{"regex": pattern}`.
+A panel is `{"metric": key}`, `{"metrics": [keys]}` (one multi-series plot) or `{"regex": pattern}`;
+`split` (one card per matched key) only matters to the dashboard.
 """
 
 from __future__ import annotations
@@ -26,15 +27,15 @@ from prime_rl.utils.logger import get_logger
 
 OVERVIEW_NAME = "overview"
 
-# Rollout metrics (common_metrics / common_regexes, under "<scope>/") are shown for BOTH train and
-# eval. Quality metrics read the effective subset — the all subset includes errored rollouts, whose
-# zero values skew the distributions. has_error only exists on all (effective drops errors by
+# Each training mode (rl, sft, eval) declares its own full list of sections. Rollout sections are
+# per env. Quality metrics read the effective subset — the all subset includes errored rollouts,
+# whose zero values skew the distributions. has_error only exists on all (effective drops errors by
 # construction). The count metrics are episode-level exact keys; the trace-level metrics (reward,
 # truncation, errors) live under the per-agent subtree, whose names are data-dependent — matched by
-# regex, one panel per agent. Only the score metric differs — train scores with "reward/mean", eval
-# with "avg@k" (its k dynamic, so also a regex) — and each section builder prepends its own.
-# Inference panels pair the fleet aggregate (mean/sum) with the cross-engine tail (max for pressure
-# metrics, min for health metrics): one saturated engine hides inside fleet means.
+# regex, one panel per agent. Train scores with "reward/mean", eval with "avg@k" (its k dynamic, so a
+# regex); eval panels are all regexes so one section can also serve any env. Inference panels pair
+# the fleet aggregate (mean/sum) with the cross-engine tail (max for pressure metrics, min for health
+# metrics): one saturated engine hides inside fleet means.
 PANELS = json.loads((Path(__file__).parents[1] / "panels.json").read_text())
 
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.
@@ -63,64 +64,38 @@ def section(name: str, panels: Sequence[dict]) -> ws.Section:
     )
 
 
-def train_section(name: str, scope: str) -> ws.Section:
-    # Env names may carry regex metacharacters (e.g. "+"), so the scope is escaped in the
-    # regex-matched per-agent panels.
-    pattern = re.escape(scope)
-    return section(
-        name,
-        [{"regex": f"{pattern}/effective/[^/]+/reward/mean"}, {"regex": f"{pattern}/all/[^/]+/reward/mean"}]
-        + [{"metric": f"{scope}/{m}"} for m in PANELS["common_metrics"]]
-        + [{"regex": f"{pattern}/{r}"} for r in PANELS["common_regexes"]],
-    )
+def env_sections(name: str, panels: Sequence[dict], envs: Sequence[str]) -> list[ws.Section]:
+    # A per-env section's panels sit under "<name>/<env>/". Env names may carry regex metacharacters
+    # (e.g. "+"), so the env is escaped in the regex panels.
+    def scoped(title: str, key_prefix: str, regex_prefix: str) -> ws.Section:
+        return section(
+            title,
+            [
+                {"regex": f"{regex_prefix}/{p['regex']}"} if "regex" in p else {"metric": f"{key_prefix}/{p['metric']}"}
+                for p in panels
+            ],
+        )
 
-
-def eval_section(name: str, env_pattern: str) -> ws.Section:
-    # Same metrics as train, but eval's reward is the per-agent "avg@k" (dynamic k → regex).
-    # Everything is a regex so one section can also serve any env (env_pattern=".*").
-    regexes = [
-        f"eval/{env_pattern}/all/[^/]+/avg@.*",
-        f"eval/{env_pattern}/effective/[^/]+/avg@.*",
-        f"eval/{env_pattern}/all/cancelled/mean",
-    ] + [f"eval/{env_pattern}/{m}" for m in PANELS["common_metrics"] + PANELS["common_regexes"]]
-    return section(name, [{"regex": r} for r in regexes])
+    if not envs:
+        # Env names unknown: train shows the cross-env aggregate, eval one section matching any env.
+        fallback = f"{name}/agg" if name == "train" else f"{name}/.*"
+        return [scoped(name, fallback, fallback)]
+    # With one train env the aggregate == that env, so show only its section. With several, put the
+    # cross-env aggregate on top.
+    sections = [scoped(f"{name}/agg", f"{name}/agg", f"{name}/agg")] if name == "train" and len(envs) > 1 else []
+    return sections + [scoped(f"{name}/{env}", f"{name}/{env}", f"{name}/{re.escape(env)}") for env in envs]
 
 
 def build_sections(
     train_envs: Sequence[str] = (), eval_envs: Sequence[str] = (), flavor: Literal["rl", "sft", "eval"] = "rl"
 ) -> list[ws.Section]:
-    # A standalone eval run has no training signal: one section per eval env.
-    if flavor == "eval":
-        if eval_envs:
-            return [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
-        return [eval_section("eval", ".*")]
-    # SFT trains on a dataset, not rollouts: the train section is the loss/perplexity
-    # curves, eval sections are the same rollout-based ones as RL.
-    if flavor == "sft":
-        sections = [section("train", PANELS["sft"]["train"])]
-        if eval_envs:
-            sections += [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
+    envs = {"train": train_envs, "eval": eval_envs}
+    sections = []
+    for decl in PANELS[flavor]:
+        if decl.get("per_env"):
+            sections += env_sections(decl["name"], decl["panels"], envs[decl["name"]])
         else:
-            sections.append(eval_section("eval", ".*"))
-        sections.append(section("stability", PANELS["sft"]["stability"]))
-        sections.append(section("performance", PANELS["sft"]["performance"]))
-        return sections
-    # With one env the aggregate == that env, so show only its section. With several, put the
-    # cross-env aggregate on top followed by a section per env.
-    if len(train_envs) == 1:
-        sections = [train_section(f"train/{train_envs[0]}", f"train/{train_envs[0]}")]
-    elif len(train_envs) > 1:
-        sections = [train_section("train/agg", "train/agg")]
-        sections += [train_section(f"train/{env}", f"train/{env}") for env in train_envs]
-    else:
-        # Env names unknown (e.g. SFT): fall back to the aggregate.
-        sections = [train_section("train", "train/agg")]
-    if eval_envs:
-        sections += [eval_section(f"eval/{env}", re.escape(env)) for env in eval_envs]
-    else:
-        # Env names unknown (e.g. SFT): one regex section matching any eval env.
-        sections.append(eval_section("eval", ".*"))
-    sections += [section(name, panels) for name, panels in PANELS["rl"].items()]
+            sections.append(section(decl["name"], decl["panels"]))
     return sections
 
 
