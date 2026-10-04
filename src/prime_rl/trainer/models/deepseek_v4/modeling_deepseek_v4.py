@@ -178,8 +178,6 @@ class DeepseekV4ForCausalLM(PrimeModel):
         super().__init__(config)
         self.model = DeepseekV4Model(config)
         self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
-        if config.tie_word_embeddings:
-            self.lm_head.weight = self.model.embed_tokens.weight
 
     @classmethod
     def cp_support(cls, config: DeepseekV4Config) -> CPSupport:

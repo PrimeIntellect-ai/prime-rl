@@ -177,8 +177,6 @@ class GlmMoeDsaForCausalLM(PrimeModel):
         super().__init__(config)
         self.model = GlmMoeDsaModel(config)
         self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
-        if config.tie_word_embeddings:
-            self.lm_head.weight = self.model.embed_tokens.weight
 
         warnings.warn("GlmMoeDsaForCausalLM is experimental, higher trainer<->inference KL mismatch may be observed.")
         warnings.warn("`model.attn` is ignored, GlmMoeDsa uses only sparse attention.")

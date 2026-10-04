@@ -28,7 +28,8 @@ def attn(request) -> AttnImplementation:
 
 @pytest.fixture
 def model(attn):
-    config = ModelConfig(name="Qwen/Qwen3-0.6B", attn=attn)
+    # Qwen3 <= 4B ties its LM head to the embeddings, which PrimeRL does not support.
+    config = ModelConfig(name="Qwen/Qwen3-8B", attn=attn, debug={"num_layers": 2})
     return get_model(config)
 
 

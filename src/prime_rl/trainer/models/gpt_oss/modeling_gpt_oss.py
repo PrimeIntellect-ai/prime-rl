@@ -121,8 +121,6 @@ class GptOssForCausalLM(PrimeModel):
         super().__init__(config)
         self.model = GptOssModel(config)
         self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
-        if config.tie_word_embeddings:
-            self.lm_head.weight = self.model.embed_tokens.weight
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

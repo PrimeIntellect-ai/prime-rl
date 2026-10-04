@@ -90,8 +90,6 @@ class LlamaForCausalLM(PrimeModel):
         super().__init__(config)
         self.model = LlamaModel(config)
         self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
-        if config.tie_word_embeddings:
-            self.lm_head.weight = self.model.embed_tokens.weight
 
     # Dense models use the HF key names for training too, so there is no separate PrimeRL format.
     @classmethod
