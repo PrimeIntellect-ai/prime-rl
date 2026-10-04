@@ -1,4 +1,5 @@
 import torch
+from fla.ops.cp import FLACPContext, build_cp_context
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
@@ -94,14 +95,12 @@ class Qwen3_5DecoderLayer(nn.Module):
         cu_seqlens: torch.LongTensor,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
+        linear_attn_cp_context: FLACPContext | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(
-                hidden_states,
-                cu_seqlens,
-            )
+            hidden_states = self.linear_attn(hidden_states, cu_seqlens, linear_attn_cp_context)
         else:
             hidden_states, _ = self.self_attn(
                 hidden_states,
@@ -156,6 +155,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         )
         self.norm = Qwen3_5RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.rotary_emb = Qwen3_5RotaryEmbedding(config)
+        self.cp_context = CPContext()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens
@@ -184,6 +184,15 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+        # Built once, outside the checkpointed and compiled layers: FLA derives this
+        # metadata on the host, which Dynamo cannot trace and AC recompute cannot replay.
+        linear_attn_cp_context = None
+        if self.cp_context.cp_enabled:
+            linear_attn_cp_context = build_cp_context(
+                cu_seqlens.to(dtype=torch.int32),
+                group=self.cp_context.cp_group,
+                conv1d_kernel_size=self.config.linear_conv_kernel_dim,
+            )
 
         hidden_states = inputs_embeds
         for layer_index, decoder_layer in enumerate(self.layers):
@@ -194,6 +203,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 cu_seqlens,
                 max_seqlen,
                 routed_experts=layer_routed_experts,
+                linear_attn_cp_context=linear_attn_cp_context,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
