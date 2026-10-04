@@ -59,6 +59,27 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     return has_rl or has_ce or has_ref_kl
 
 
+def release_trace_payload(trace: vf.Trace) -> None:
+    """Release discarded node payloads while preserving graph statistics for metrics."""
+    for node in trace.nodes:
+        message = node.message
+        kwargs = {"role": message.role, "content": ""}
+        if message.role == "tool":
+            kwargs.update(tool_call_id=message.tool_call_id, name=message.name)
+        node.message = type(message)(**kwargs)
+        node.token_ids = []
+        node.renderer_token_ids = None
+        node.mask = []
+        node.is_content = []
+        node.logprobs = []
+        node.reference_logprobs = None
+        node.trainer_logprobs = None
+        node.entropies = None
+        node.loss_weights = None
+        node.routed_experts = None
+        node.sampling_mask = None
+
+
 class TrainSink:
     """Score native episodes, admit groups, then compile trainer payloads."""
 
@@ -345,23 +366,7 @@ class TrainSink:
         # Retain graph/call statistics for metrics, but release discarded training payloads.
         for episode in group:
             for trace in episode.traces:
-                for node in trace.nodes:
-                    message = node.message
-                    kwargs = {"role": message.role, "content": ""}
-                    if message.role == "tool":
-                        kwargs.update(tool_call_id=message.tool_call_id, name=message.name)
-                    node.message = type(message)(**kwargs)
-                    node.token_ids = []
-                    node.renderer_token_ids = None
-                    node.mask = []
-                    node.is_content = []
-                    node.logprobs = []
-                    node.reference_logprobs = None
-                    node.trainer_logprobs = None
-                    node.entropies = None
-                    node.loss_weights = None
-                    node.routed_experts = None
-                    node.sampling_mask = None
+                release_trace_payload(trace)
 
     def _warn_zero_output(self) -> None:
         """Warn once per batch-equivalent of finalized units that shipped no
@@ -420,23 +425,7 @@ class TrainSink:
                 for trace in episode.traces:
                     if trace.id != trace_id:
                         continue
-                    for node in trace.nodes:
-                        message = node.message
-                        kwargs = {"role": message.role, "content": ""}
-                        if message.role == "tool":
-                            kwargs.update(tool_call_id=message.tool_call_id, name=message.name)
-                        node.message = type(message)(**kwargs)
-                        node.token_ids = []
-                        node.renderer_token_ids = None
-                        node.mask = []
-                        node.is_content = []
-                        node.logprobs = []
-                        node.reference_logprobs = None
-                        node.trainer_logprobs = None
-                        node.entropies = None
-                        node.loss_weights = None
-                        node.routed_experts = None
-                        node.sampling_mask = None
+                    release_trace_payload(trace)
         cohort_episodes = [
             episode.model_copy(update={"traces": traces_by_episode[id(episode)]})
             for episode in selected_episodes.values()
