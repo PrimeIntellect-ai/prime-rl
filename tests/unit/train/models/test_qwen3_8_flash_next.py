@@ -39,6 +39,13 @@ def config(request):
     return Qwen3_8FlashNextConfig(text_config=text) if request.param else text
 
 
+def test_ties_lm_head_to_embeddings(config):
+    config.tie_word_embeddings = True
+    with torch.device("meta"):
+        model = Qwen3_8FlashNextForCausalLM(config)
+    assert model.lm_head.weight is get_language_model(model).embed_tokens.weight
+
+
 @pytest.mark.parametrize("shard_count", [3, 128])
 def test_config_and_checkpoint_roundtrip(config, shard_count):
     getattr(config, "text_config", config).split_ngram_parts = shard_count

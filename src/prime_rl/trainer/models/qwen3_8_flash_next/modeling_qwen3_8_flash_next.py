@@ -254,6 +254,9 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         self.num_experts = text_config.num_experts
         self.num_experts_per_tok = text_config.num_experts_per_tok
         self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
+        # Tied checkpoints ship no lm_head weight; the loader skips it when this flag is set.
+        if config.tie_word_embeddings:
+            self.lm_head.weight = self.get_input_embeddings().weight
         self.post_init()
 
     def get_input_embeddings(self) -> nn.Embedding:
