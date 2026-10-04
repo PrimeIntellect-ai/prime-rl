@@ -129,6 +129,19 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
         "admit": {},
     }
 
+    assert source.on_result(empty) is False
+    assert source.metrics()["curriculum/test/admission_rate"] == 0.0
+    assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.25}
+
+    # A scored rollout without token metadata still informs task difficulty.
+    assert source.on_result(make_rollout(sampled, reward=0.5)) is False
+    assert source.metrics()["curriculum/test/admission_rate"] == 0.0
+    assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.5}
+
+    assert source.on_result(make_rollout(sampled, reward=0.75, advantages=[1.0])) is True
+    assert source.metrics()["curriculum/test/admission_rate"] == 1.0
+    assert source.curricula["test"].sampler.task_rewards == {sampled.key: 0.75}
+
 
 def test_difficulty_pools_stack_with_advantage_gate_and_resume_sampling() -> None:
     tasks = [make_task(i) for i in range(3)]
