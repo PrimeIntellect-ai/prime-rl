@@ -1,4 +1,5 @@
 import json
+import warnings
 from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -6,7 +7,14 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
 
-from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
+from prime_rl.configs.shared import (
+    BaseWeightBroadcastConfig,
+    EnvVars,
+    FileSystemWeightBroadcastConfig,
+    LogConfig,
+    NCCLWeightBroadcastConfig,
+    SlurmConfig,
+)
 from prime_rl.utils.config import default_output_dir, find_package_resource
 from prime_rl.utils.parsers import resolve_reasoning_parser, resolve_tool_call_parser
 
@@ -503,8 +511,9 @@ class InferenceConfig(BaseConfig):
         if self.router is not None and self.router.type == "llm-d" and self.vllm.enable_return_routed_experts:
             raise ValueError(
                 "The llm-d router backend does not support routed-expert return "
-                "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
-                "Use router type 'vllm-router' for routed-expert runs."
+                "(inference.vllm.enable_return_routed_experts / trainer.enable_router_replay): it "
+                "breaks P/D and is unverified for multi-node. Use router type 'vllm-router' "
+                "for router-replay runs."
             )
         return self
 
@@ -667,3 +676,53 @@ class InferenceConfig(BaseConfig):
             namespace.kv_transfer_config = kv_transfer_config
 
         return namespace
+
+
+def fill_inference_gpus(vllm: VllmConfig, num_gpus: int) -> None:
+    """Fill ``num_gpus`` with DP ranks of ``tensor_parallel_size`` GPUs each.
+
+    ``api_server_count`` is raised to DP (LoRA allows only one API server): in-memory weight
+    transfer expects dp * tp workers, but vLLM creates only api_server_count * tp of them.
+    """
+    tp = vllm.tensor_parallel_size
+    if num_gpus % tp != 0:
+        raise ValueError(
+            f"Inference GPU count ({num_gpus}) must be divisible by inference.vllm.tensor_parallel_size ({tp})."
+        )
+    vllm.data_parallel_size = num_gpus // tp
+    if not vllm.enable_lora:
+        vllm.api_server_count = max(vllm.api_server_count, vllm.data_parallel_size)
+
+
+def wire_inference(
+    inference: "InferenceConfig | None", lora_rank: int | None, weight_broadcast: BaseWeightBroadcastConfig | None
+) -> BaseWeightBroadcastConfig:
+    """Wire a trainer's LoRA adapter and weight broadcast into the inference server it updates.
+
+    Returns the weight broadcast, defaulting to NCCL, or to filesystem with LoRA or without a
+    managed inference server.
+    """
+    if lora_rank is not None:
+        if inference is not None:
+            inference.vllm.enable_lora = True
+            inference.vllm.max_lora_rank = lora_rank
+        else:
+            warnings.warn(
+                "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
+                "make sure to set --enable_lora and --max-lora-rank.",
+                stacklevel=2,
+            )
+    if weight_broadcast is None:
+        if lora_rank is not None or inference is None:
+            weight_broadcast = FileSystemWeightBroadcastConfig()
+        else:
+            weight_broadcast = NCCLWeightBroadcastConfig()
+    if lora_rank is not None and weight_broadcast.type != "filesystem":
+        raise ValueError(
+            "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
+            "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
+            "have no disk artifact to load from."
+        )
+    if inference is not None:
+        inference.weight_broadcast = WeightBroadcastConfig(type=weight_broadcast.type)
+    return weight_broadcast

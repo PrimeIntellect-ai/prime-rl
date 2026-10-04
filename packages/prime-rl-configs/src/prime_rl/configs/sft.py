@@ -9,14 +9,11 @@ from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
-from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.inference import InferenceConfig, fill_inference_gpus, wire_inference
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
-    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
-    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -408,30 +405,11 @@ class SFTConfig(BaseConfig):
             return self
 
         # LoRA runs broadcast the raw adapter, which evals reload via /load_lora_adapter
-        if self.model.lora is not None:
-            if self.inference is not None:
-                self.inference.vllm.enable_lora = True
-                self.inference.vllm.max_lora_rank = self.model.lora.rank
-            else:
-                warnings.warn(
-                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
-                    "make sure to set --enable_lora and --max-lora-rank.",
-                    stacklevel=2,
-                )
-
-        if self.weight_broadcast is None:
-            if self.model.lora is not None or self.inference is None:
-                self.weight_broadcast = FileSystemWeightBroadcastConfig()
-            else:
-                self.weight_broadcast = NCCLWeightBroadcastConfig()
+        lora_rank = self.model.lora.rank if self.model.lora is not None else None
+        self.weight_broadcast = wire_inference(self.inference, lora_rank, self.weight_broadcast)
         if self.weight_broadcast.type != "filesystem":
             if self.weight_broadcast.type == "nixl":
                 raise ValueError("NIXL weight broadcast is not supported for SFT online evals.")
-            if self.model.lora is not None:
-                raise ValueError(
-                    "LoRA training is not yet supported with in-memory weight broadcast. "
-                    "Set weight_broadcast.type = 'filesystem'."
-                )
             if self.eval.retrigger_on_resume:
                 raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
@@ -464,7 +442,6 @@ class SFTConfig(BaseConfig):
                 self.weight_broadcast.inference_world_size = (
                     self.deployment.num_infer_nodes * self.deployment.gpus_per_node
                 )
-            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "
@@ -501,21 +478,9 @@ class SFTConfig(BaseConfig):
                 f"({self.model.name}). Remove inference.vllm.model to inherit it."
             )
 
-        # Fill inference capacity with DP ranks (mirrors RLConfig.auto_setup_deployment).
-        num_infer_gpus = self.deployment.num_infer_gpus
-        vllm = self.inference.vllm
-        if num_infer_gpus != vllm.data_parallel_size * vllm.tensor_parallel_size:
-            if num_infer_gpus % vllm.tensor_parallel_size != 0:
-                raise ValueError(
-                    f"deployment.num_infer_gpus ({num_infer_gpus}) must be divisible by "
-                    f"inference.vllm.tensor_parallel_size ({vllm.tensor_parallel_size})."
-                )
-            vllm.data_parallel_size = num_infer_gpus // vllm.tensor_parallel_size
-        if vllm.api_server_count < vllm.data_parallel_size and not vllm.enable_lora:
-            vllm.api_server_count = vllm.data_parallel_size
+        fill_inference_gpus(self.inference.vllm, self.deployment.num_infer_gpus)
         if self.weight_broadcast.type == "nccl":
-            self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
-        self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+            self.weight_broadcast.inference_world_size = self.deployment.num_infer_gpus
 
         host = self.inference.server.host or "localhost"
         client = self.eval.client

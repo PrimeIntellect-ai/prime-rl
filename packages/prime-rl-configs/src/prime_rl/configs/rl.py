@@ -5,14 +5,11 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.inference import InferenceConfig
-from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.inference import InferenceConfig, fill_inference_gpus, wire_inference
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import (
     EnvVars,
-    FileSystemWeightBroadcastConfig,
-    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -376,29 +373,13 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_weight_broadcast(self):
-        """Auto-setup shared weight broadcast config for trainer, orchestrator, and inference.
-
-        Defaults to NCCL broadcast when no ``weight_broadcast`` is configured. Falls back to
-        filesystem when LoRA is enabled (not yet supported by in-memory transfer) or when no
-        inference server is configured.
-        """
-        if self.weight_broadcast is None:
-            if self.trainer.model.lora is not None or self.inference is None:
-                self.weight_broadcast = FileSystemWeightBroadcastConfig()
-            else:
-                self.weight_broadcast = NCCLWeightBroadcastConfig()
-        if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
-            raise ValueError(
-                "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
-                "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
-                "have no disk artifact to load from."
-            )
+        """Wire LoRA and the shared weight broadcast into trainer, orchestrator, and inference."""
+        lora = self.trainer.model.lora
+        self.weight_broadcast = wire_inference(self.inference, lora.rank if lora else None, self.weight_broadcast)
         if "inference_world_size" in self.weight_broadcast.model_fields_set:
             raise ValueError("weight_broadcast.inference_world_size is set automatically by rl; remove it.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
-        if self.inference is not None:
-            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
         return self
 
     @model_validator(mode="after")
@@ -463,16 +444,6 @@ class RLConfig(BaseConfig):
             if self.orchestrator.model.lora.alpha is None:
                 self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
 
-            if self.inference is not None:
-                self.inference.vllm.enable_lora = True
-                self.inference.vllm.max_lora_rank = self.trainer.model.lora.rank
-            else:
-                warnings.warn(
-                    "LoRA is enabled, but inference is not configured. When manually starting the inference server, "
-                    "make sure to set --enable_lora and --max-lora-rank.",
-                    stacklevel=2,
-                )
-
         return self
 
     @model_validator(mode="after")
@@ -489,25 +460,6 @@ class RLConfig(BaseConfig):
                 warnings.warn(
                     "Router replay is enabled, but inference is not configured. When manually starting the inference server, make sure to pass `--enable-return-routed-experts` to the vLLM server.",
                     stacklevel=2,
-                )
-        return self
-
-    @model_validator(mode="after")
-    def validate_llmd_no_routed_experts(self):
-        """Reject routed-expert return with the llm-d router (breaks P/D, unverified for multi-node).
-
-        Runs after ``auto_setup_router_replay`` so it also catches the
-        ``trainer.enable_router_replay`` path, which sets the inference flag here
-        (after InferenceConfig's own validators, which therefore miss it).
-        """
-        if self.inference is not None and self.inference.vllm.enable_return_routed_experts:
-            router = self.inference.router
-            if router is not None and router.type == "llm-d":
-                raise ValueError(
-                    "The llm-d router backend does not support routed-expert return "
-                    "(inference.vllm.enable_return_routed_experts / trainer.enable_router_replay): it "
-                    "breaks P/D and is unverified for multi-node. Use router type 'vllm-router' "
-                    "for router-replay runs."
                 )
         return self
 
@@ -548,18 +500,12 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_combined_replay(self):
-        inference = self.inference
-        if (
-            inference is not None
-            and inference.deployment.type == "disaggregated"
-            and inference.enable_return_sampling_mask
-            and inference.vllm.enable_return_routed_experts
-        ):
-            raise ValueError(
-                "Combined router and sampling replay is not supported with disaggregated P/D: "
-                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
-            )
+    def revalidate_inference_replay(self):
+        """Re-run the inference replay checks: router replay and sampling-mask capture turn on
+        inference flags after InferenceConfig has validated."""
+        if self.inference is not None:
+            self.inference.validate_llmd_no_routed_experts()
+            self.inference.validate_disaggregated_combined_replay()
         return self
 
     @model_validator(mode="after")
@@ -598,25 +544,8 @@ class RLConfig(BaseConfig):
             if self.deployment.num_train_gpus > 1:
                 self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
 
-            # fill up inference capacity with dp ranks
             if self.inference is not None:
-                num_infer_gpus = self.deployment.num_infer_gpus
-                if num_infer_gpus != self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size:
-                    assert num_infer_gpus % self.inference.vllm.tensor_parallel_size == 0, (
-                        "Number of inference GPUs must be divisible by the tensor parallel size"
-                    )
-                    self.inference.vllm.data_parallel_size = num_infer_gpus // self.inference.vllm.tensor_parallel_size
-                # Ensure api_server_count matches DP so all workers are created.
-                # Without this, in-memory weight transfer expects dp*tp workers
-                # but only api_server_count*tp exist, causing a deadlock.
-                dp = self.inference.vllm.data_parallel_size
-                if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
-                    self.inference.vllm.api_server_count = dp
-                if self.weight_broadcast.type != "filesystem":
-                    # Every inference GPU joins the in-memory transfer group, so size it after the DP fill.
-                    world_size = dp * self.inference.vllm.tensor_parallel_size
-                    self.trainer.weight_broadcast.inference_world_size = world_size
-                    self.orchestrator.weight_broadcast.inference_world_size = world_size
+                fill_inference_gpus(self.inference.vllm, self.deployment.num_infer_gpus)
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = (
@@ -685,22 +614,18 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-                # Every allocated inference GPU is an in-memory transfer worker.
-                # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
-                # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
-                # the GPU count directly. Deriving it from api_server_count double-counts:
-                # api_server_count can resolve to the *global* DP size, making the node
-                # factor count twice and wait for ranks that never connect. Matches
-                # the disaggregated path below.
-                total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
-                if self.trainer.weight_broadcast.type == "nccl":
-                    self.trainer.weight_broadcast.host = "0.0.0.0"
-                self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
-                self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
+            if self.trainer.weight_broadcast.type == "nccl":
+                self.trainer.weight_broadcast.host = "0.0.0.0"
 
+        if self.weight_broadcast.type != "filesystem":
+            # Every allocated inference GPU is an in-memory transfer worker. Multi-node uses the GPU
+            # count, not api_server_count, which can resolve to the global DP size and double-count.
+            if self.deployment.type == "multi_node":
+                world_size = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
+            else:
+                world_size = self.deployment.num_infer_gpus if self.inference is not None else 1
+            self.trainer.weight_broadcast.inference_world_size = world_size
+            self.orchestrator.weight_broadcast.inference_world_size = world_size
         return self
 
     @model_validator(mode="after")
@@ -719,7 +644,6 @@ class RLConfig(BaseConfig):
                 f"disaggregated inference nodes per replica ({expected_infer_nodes})."
             )
 
-        total_infer_gpus = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
         if "inference_metrics_roles" not in self.orchestrator.model_fields_set:
             # External-LB: one admin client per DP rank, so roles expand per rank
             # (stride = dp_local = gpus_per_node / tp). ADMIN_URLS lists all prefill
@@ -729,12 +653,6 @@ class RLConfig(BaseConfig):
                 infer_deploy.num_decode_nodes * stride
             )
             self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
-            self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
-            self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
-
         return self
 
     @model_validator(mode="after")
