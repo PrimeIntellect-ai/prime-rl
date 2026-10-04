@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import ConfigDict, Field, model_validator
 from pydantic_config import BaseConfig
+from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import default_output_dir, find_package_resource
@@ -441,6 +442,9 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 
 class InferenceConfig(BaseConfig):
+    renderer: RendererConfig = AutoRendererConfig()
+    """Server-side prompt rendering and message/image attribution for training records."""
+
     server: ServerConfig = ServerConfig()
 
     router: RouterConfig | None = Field(default_factory=VllmRouterConfig)
@@ -470,7 +474,7 @@ class InferenceConfig(BaseConfig):
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
     enable_return_sampling_mask: bool = False
-    """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
+    """Return per-token sampling masks (``sampling_mask``) on training Chat Completions and ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
 
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
@@ -616,6 +620,7 @@ class InferenceConfig(BaseConfig):
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            prime_renderer=self.renderer,
         )
 
         extra_fields = self.vllm.model_extra or {}

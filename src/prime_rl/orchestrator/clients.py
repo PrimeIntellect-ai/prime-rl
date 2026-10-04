@@ -10,9 +10,7 @@ import httpx
 import verifiers.v1 as vf
 from httpx import AsyncClient
 from openai import AsyncOpenAI
-from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 
 from prime_rl.configs.eval import PRIME_INFERENCE_URL
 from prime_rl.configs.shared import ClientConfig
@@ -48,16 +46,13 @@ def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
 
 class PrefillScorer:
     """Prefill-scores token ids against a pool's endpoint, lazily resolving
-    a single OpenAI client from the pool's train client config."""
+    a single OpenAI client from the pool's endpoint config."""
 
     def __init__(self) -> None:
         self._client: AsyncOpenAI | None = None
 
     async def score(self, config: vf.ClientConfig, model: str, token_ids: list[int]) -> list[float]:
         if self._client is None:
-            # Build the OpenAI client straight from the config fields — works for any
-            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
-            # for these chat-completions teacher configs.
             self._client = AsyncOpenAI(
                 base_url=config.base_url,
                 api_key=resolve_api_key(config.api_key_var),
@@ -78,18 +73,8 @@ class InferenceClient:
         self,
         client_config: ClientConfig,
         model_name: str,
-        train_client_type: str = "openai_chat_completions",
-        eval_client_type: str = "openai_chat_completions",
-        renderer_config: RendererConfig | None = None,
     ):
-        renderer_model_name = model_name if train_client_type == "renderer" else None
-        self.train_client = setup_client(
-            client_config,
-            client_type=train_client_type,
-            renderer_config=renderer_config,
-            renderer_model_name=renderer_model_name,
-        )
-        self.eval_client = setup_client(client_config, client_type=eval_client_type)
+        self.client = setup_client(client_config)
         self._scorer = PrefillScorer()
         # Managed routed deployments set admin_base_url so engine admin traffic
         # bypasses the client-facing router. External and frozen clients do not.
@@ -103,7 +88,7 @@ class InferenceClient:
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this endpoint's model (one logprob
         per token, 0.0 for the leading token)."""
-        return await self._scorer.score(self.train_client, self.model_name, token_ids)
+        return await self._scorer.score(self.client, self.model_name, token_ids)
 
     async def aclose(self) -> None:
         await self._scorer.aclose()
@@ -256,27 +241,12 @@ async def check_inference_ready(client_config: ClientConfig, model_name: str) ->
         await admin.aclose()
 
 
-def setup_client(
-    client_config: ClientConfig,
-    client_type: str = "openai_chat_completions",
-    renderer_config: RendererConfig | None = None,
-    renderer_model_name: str | None = None,
-) -> vf.ClientConfig:
-    """Build a v1 client config for the base URL. ``client_type``
-    ``renderer`` → token-in/out (``TrainClientConfig``, with the renderer the env
-    server should use forwarded as a serialized config so it doesn't fall back to the
-    default renderer); otherwise plain chat-completions (``EvalClientConfig``)."""
-    is_renderer = client_type == "renderer"
-    config_cls = TrainClientConfig if is_renderer else EvalClientConfig
-    renderer_extra: dict = {}
-    if is_renderer:
-        renderer_extra = {
-            "renderer": renderer_config,
-            "renderer_model_name": renderer_model_name,
-        }
-    headers = resolve_headers(client_config)
-    return config_cls(
-        base_url=client_config.base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra
+def setup_client(client_config: ClientConfig) -> vf.ClientConfig:
+    """Build the shared evaluation and training endpoint config."""
+    return vf.ClientConfig(
+        base_url=client_config.base_url,
+        api_key_var=client_config.api_key_var,
+        headers=resolve_headers(client_config),
     )
 
 

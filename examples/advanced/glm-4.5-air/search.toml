@@ -76,7 +76,7 @@ group_size = 16
 initial_inflight = 256
 max_inflight = 512
 
-[orchestrator.renderer]
+[inference.renderer]
 name = "glm-4.5"
 thinking_retention = "all"
 

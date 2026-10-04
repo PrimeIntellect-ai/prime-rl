@@ -1,2 +1,5 @@
-[model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+[vllm]
+model = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[renderer]
+name = "prime-qwen3"
