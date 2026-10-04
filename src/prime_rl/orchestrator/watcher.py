@@ -131,9 +131,13 @@ class WeightWatcher:
             await hook(step)
 
     def gauges(self) -> dict[str, float]:
-        return {
+        gauges = {
             "watcher/policy_version": float(self.policy.version),
             "watcher/update_count": float(self.update_count),
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,
         }
+        delta_endpoints = getattr(self.receiver, "delta_endpoints", None)
+        if delta_endpoints is not None:
+            gauges.update(delta_endpoints.metrics())
+        return gauges

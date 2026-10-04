@@ -23,6 +23,9 @@ class ServerConfig(BaseConfig):
     liveness_timeout_seconds: float = Field(30.0, gt=0)
     """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high."""
 
+    staging_dir: Path = Path("staging")
+    """Directory used by transactional weight uploads before commit."""
+
 
 # Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
 # tiny adapters round up to 8. Hardcoded rather than imported: prime-rl-configs does
@@ -219,6 +222,26 @@ class VllmConfig(BaseConfig):
 class WeightBroadcastConfig(BaseConfig):
     type: Literal["nccl", "filesystem", "nixl"] = "filesystem"
     """Weight broadcast transport."""
+
+
+class RelayConfig(BaseConfig):
+    enabled: bool = False
+    """Relay staged weights and commits from this inference server to ``peers``."""
+
+    peers: list[str] = Field(default_factory=list)
+    """Peer inference admin base URLs reached by this regional relay seed."""
+
+    fail_on_peer_error: bool = True
+    """Fail the seed operation when any peer fan-out request fails."""
+
+    stage_timeout_s: float = Field(3600.0, gt=0)
+    """Timeout for relay stage fan-out requests."""
+
+    commit_timeout_s: float = Field(600.0, gt=0)
+    """Timeout for relay commit fan-out requests."""
+
+    reload_timeout_s: float = Field(600.0, gt=0)
+    """Timeout for relay base-weight reload requests."""
 
 
 class CPUOffloadTier(BaseConfig):
@@ -463,6 +486,9 @@ class InferenceConfig(BaseConfig):
 
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
+    relay: RelayConfig = RelayConfig()
+    """Optional region-local sparse-delta relay fan-out."""
+
     kv_cache_offload: KVCacheOffloadConfig | None = None
     """KV cache offload for inference workers, as composable CPU/disk tiers. Discriminated on ``type``: ``native`` (vLLM ``OffloadingConnector``/``TieringOffloadingSpec``, self-contained) or ``mooncake`` (per-node Mooncake distributed store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
 
@@ -616,6 +642,13 @@ class InferenceConfig(BaseConfig):
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            staging_dir=self.server.staging_dir,
+            relay_enabled=self.relay.enabled,
+            relay_peers=self.relay.peers,
+            relay_fail_on_peer_error=self.relay.fail_on_peer_error,
+            relay_stage_timeout_s=self.relay.stage_timeout_s,
+            relay_commit_timeout_s=self.relay.commit_timeout_s,
+            relay_reload_timeout_s=self.relay.reload_timeout_s,
         )
 
         extra_fields = self.vllm.model_extra or {}

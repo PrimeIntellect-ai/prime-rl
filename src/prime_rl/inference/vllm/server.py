@@ -3,7 +3,7 @@ from argparse import Namespace
 
 import uvloop
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
@@ -13,8 +13,11 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
 from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
+from vllm.v1.engine.exceptions import EngineDeadError
 
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.inference.vllm.delta_sync import initialize_delta_sync_state
+from prime_rl.inference.vllm.delta_sync import router as delta_sync_router
 from prime_rl.utils.logger import get_logger
 
 logger = get_logger()
@@ -72,14 +75,35 @@ async def pause(request: Request):
 
 @router.post("/resume")
 async def resume(request: Request):
+    if getattr(request.app.state, "weights_dirty", False):
+        return JSONResponse({"error": "weights require reload after a failed update"}, status_code=409)
     await engine_client(request).resume_generation()
     return {"status": "resumed"}
+
+
+@router.get("/weight_health", response_class=Response)
+async def weight_health(request: Request) -> Response:
+    """Router health check that also rejects workers with inconsistent weights."""
+    if getattr(request.app.state, "weights_dirty", False):
+        return Response(status_code=503)
+    try:
+        await engine_client(request).check_health()
+    except EngineDeadError:
+        return Response(status_code=503)
+    return Response(status_code=200)
 
 
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    mode = data.get("mode", "full")
+    if mode == "full":
+        method = "update_weights_from_path"
+    elif mode == "delta":
+        method = "update_weights_from_delta_path"
+    else:
+        return JSONResponse({"error": f"unsupported weight update mode: {mode}"}, status_code=400)
+    await engine_client(request).collective_rpc(method, args=(data.get("weight_dir"),))
     return {"status": "ok"}
 
 
@@ -163,6 +187,7 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    initialize_delta_sync_state(state, args)
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
@@ -188,6 +213,7 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
+    app.include_router(delta_sync_router)
     return app
 
 

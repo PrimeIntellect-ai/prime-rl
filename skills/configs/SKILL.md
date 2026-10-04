@@ -88,6 +88,44 @@ The `sft` entrypoint takes the same eval shape at the top level for online evals
 
 In TOML, an empty section header (`[ckpt]`) does the same.
 
+## Sparse delta weight synchronization
+
+Sparse delta is a filesystem weight-broadcast payload mode. For remote
+inference, pair it with transactional streaming upload:
+
+```toml
+[weight_broadcast]
+type = "filesystem"
+mode = "delta"
+update_protocol = "stage_commit"
+stage_transport = "streaming_upload"
+background_stage = true
+retain_all_deltas = true
+delta_stream_group_size = 4
+```
+
+`streaming_upload` writes `delta.stream` and uploads complete records while
+later layers are scanned. `chunked_upload` waits for extraction and sends
+offset-based chunks; `http_upload` uses multipart; `shared_fs` sends only a
+path. Direct trainer/orchestrator entrypoints must set the corresponding
+filesystem fields separately because only the shared RL config propagates
+them.
+
+Sparse artifacts use logical Hugging Face names and global shapes. The vLLM
+worker maps them to fused and TP-local weights at apply time. Changed biases
+are included, and values widen when required to reproduce the target bits
+exactly; this does not change optimizer or reduction dtypes.
+
+The supported path is unquantized dense Qwen3/Llama-style models with PP=1,
+no expert parallelism, and no LoRA. Resume requires a separately synchronized
+full base and is rejected by the shared RL config. Transactional endpoints
+validate `base_version`, keep failed partial applications paused and dirty,
+and require a base reload before replay. Auto-launched vLLM routers use the
+weight-aware `/weight_health` endpoint so dirty workers leave rollout routing.
+Lease recovery additionally requires
+`retain_all_deltas = true` and an HTTP stage transport. See
+`docs/sparse_delta.md` for relay and multi-endpoint examples.
+
 ## Key files
 
 - `packages/prime-rl-configs/src/prime_rl/` — config classes under `configs/`; `utils/config.py` re-exports `BaseConfig` and `cli`

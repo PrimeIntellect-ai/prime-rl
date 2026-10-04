@@ -75,6 +75,7 @@ LLMD_EOF
         --request-id-headers x-session-id
         --request-timeout-secs {{ router.request_timeout_secs }}
         --prometheus-port "$((port + 21000))"
+        --health-check-endpoint /weight_health
         --worker-startup-timeout-secs 4200 --log-level debug)
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)

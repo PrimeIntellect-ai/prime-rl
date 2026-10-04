@@ -140,6 +140,7 @@ class AdminPlane:
     role list index."""
 
     def __init__(self, client_config: ClientConfig):
+        self.client_config = client_config
         self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
@@ -208,6 +209,7 @@ class AdminPlane:
         *,
         transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
+        mode: Literal["full", "delta"] = "full",
         on_paused: Callable[[], None] | None = None,
     ) -> None:
         """Update every inference engine through its configured weight transport."""
@@ -222,7 +224,7 @@ class AdminPlane:
                     _admin_post(
                         admin_client,
                         "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        json={"weight_dir": weight_dir_posix, "mode": mode},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in self.clients

@@ -487,6 +487,18 @@ class CheckpointConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    mode: Literal["full", "delta"] = "full"
+    """Payload encoding used for filesystem broadcasts."""
+
+    update_protocol: Literal["direct", "stage_commit"] = "direct"
+    """Apply a visible path directly or stage and atomically commit a version."""
+
+    stage_transport: Literal["shared_fs", "http_upload", "chunked_upload", "streaming_upload"] = "shared_fs"
+    """How stage/commit moves an artifact to inference servers."""
+
+    background_stage: bool = False
+    """Allow staging to overlap artifact production before commit."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"

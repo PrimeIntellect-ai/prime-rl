@@ -671,6 +671,21 @@ class DataLoaderConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    mode: Literal["full", "delta"] = "full"
+    """Payload encoding used for filesystem broadcasts."""
+
+    delta_index_encoding: Literal["optimized", "int32", "int64"] = "optimized"
+    """Sparse-index encoding used by delta artifacts."""
+
+    delta_streaming_enabled: bool = False
+    """Write append-only ``delta.stream`` artifacts instead of safetensors."""
+
+    delta_stream_group_size: int = Field(4, ge=0)
+    """Transformer layers processed between streaming flushes; zero flushes every record."""
+
+    retain_all_deltas: bool = False
+    """Keep the complete delta chain for endpoint recovery."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"

@@ -192,8 +192,28 @@ class ClientConfig(BaseConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    lease_enabled: bool = False
+    """Allow a partially failing static inference fleet to retire failed weight-update endpoints."""
+
+    lease_cooldown_s: float = Field(20.0, ge=0.0)
+    """Delay before probing a retired endpoint for recovery."""
+
+    lease_recovery_enabled: bool = False
+    """Reload the base model and replay retained sparse deltas on recovered endpoints."""
+
+    lease_recovery_poll_interval_s: float = Field(5.0, gt=0.0)
+    """Health-probe timeout used while recovering retired endpoints."""
+
     dynamo: DynamoConfig | None = None
     """Dynamo RL worker-discovery configuration."""
+
+    @model_validator(mode="after")
+    def validate_lease_recovery(self):
+        if self.lease_recovery_enabled and not self.lease_enabled:
+            raise ValueError("lease recovery requires lease_enabled=true.")
+        if self.dynamo is not None and self.lease_enabled:
+            raise ValueError("lease state is supported only by the static inference admin plane.")
+        return self
 
 
 class LogConfig(BaseConfig):

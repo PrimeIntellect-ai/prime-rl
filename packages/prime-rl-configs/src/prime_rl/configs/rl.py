@@ -165,6 +165,39 @@ class SharedFileSystemWeightBroadcastConfig(BaseConfig):
     timeout: int = 1200
     """Timeout in seconds for the broadcast handshake and transfer."""
 
+    mode: Literal["full", "delta"] = "full"
+    """Send full checkpoints or exact sparse deltas."""
+
+    update_protocol: Literal["direct", "stage_commit"] = "direct"
+    """Apply paths directly or use transactional stage/commit."""
+
+    stage_transport: Literal["shared_fs", "http_upload", "chunked_upload", "streaming_upload"] = "shared_fs"
+    """Transport used to place staged artifacts on inference servers."""
+
+    background_stage: bool = False
+    """Allow stage work to overlap delta production before commit."""
+
+    retain_all_deltas: bool = False
+    """Keep the complete delta chain for endpoint recovery."""
+
+    delta_index_encoding: Literal["optimized", "int32", "int64"] = "optimized"
+    """Sparse-index encoding used in delta artifacts."""
+
+    delta_stream_group_size: int = Field(4, ge=0)
+    """Transformer layers processed between streaming flushes; zero flushes every record."""
+
+    @model_validator(mode="after")
+    def validate_delta_options(self):
+        if self.background_stage and self.update_protocol != "stage_commit":
+            raise ValueError("background_stage requires update_protocol='stage_commit'.")
+        if self.stage_transport != "shared_fs" and self.update_protocol != "stage_commit":
+            raise ValueError("HTTP stage transports require update_protocol='stage_commit'.")
+        if self.stage_transport != "shared_fs" and self.mode != "delta":
+            raise ValueError("HTTP stage transports currently require mode='delta'.")
+        if self.retain_all_deltas and self.mode != "delta":
+            raise ValueError("retain_all_deltas requires mode='delta'.")
+        return self
+
 
 SharedWeightBroadcastConfig: TypeAlias = Annotated[
     SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
@@ -482,16 +515,51 @@ class RLConfig(BaseConfig):
             self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
         elif self.weight_broadcast.type == "filesystem":
             self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
+                timeout=self.weight_broadcast.timeout,
+                mode=self.weight_broadcast.mode,
+                delta_index_encoding=self.weight_broadcast.delta_index_encoding,
+                delta_streaming_enabled=self.weight_broadcast.stage_transport == "streaming_upload",
+                delta_stream_group_size=self.weight_broadcast.delta_stream_group_size,
+                retain_all_deltas=self.weight_broadcast.retain_all_deltas,
             )
             self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
+                timeout=self.weight_broadcast.timeout,
+                mode=self.weight_broadcast.mode,
+                update_protocol=self.weight_broadcast.update_protocol,
+                stage_transport=self.weight_broadcast.stage_transport,
+                background_stage=self.weight_broadcast.background_stage,
             )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_sparse_delta_runtime(self):
+        broadcast = self.weight_broadcast
+        if broadcast is None or broadcast.type != "filesystem" or broadcast.mode != "delta":
+            return self
+        if self.trainer.model.lora is not None:
+            raise ValueError("filesystem delta weight updates do not support LoRA.")
+        if self.resume is not None or self.trainer.resume is not None or self.orchestrator.resume is not None:
+            raise ValueError("delta weight updates cannot resume without a synchronized base; use full weights.")
+        if self.inference is not None:
+            if self.inference.vllm.api_server_count != 1 and broadcast.update_protocol == "stage_commit":
+                raise ValueError("stage_commit requires one inference API server per endpoint.")
+            if self.inference.vllm.enable_expert_parallel:
+                raise ValueError("sparse delta weight updates do not support expert parallelism.")
+            if self.inference.vllm.quantization is not None:
+                raise ValueError("sparse delta weight updates do not support quantized inference weights.")
+        client = self.orchestrator.model.client
+        if client.lease_enabled:
+            if broadcast.update_protocol != "stage_commit":
+                raise ValueError("endpoint leases require update_protocol='stage_commit'.")
+            if broadcast.stage_transport == "shared_fs":
+                raise ValueError("endpoint leases require an HTTP stage transport.")
+        if client.lease_recovery_enabled and not broadcast.retain_all_deltas:
+            raise ValueError("lease recovery requires retain_all_deltas=true.")
         return self
 
     @model_validator(mode="after")

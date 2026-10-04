@@ -122,6 +122,110 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+def test_sparse_delta_weight_broadcast_propagates_to_components():
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {},
+            "weight_broadcast": {
+                "type": "filesystem",
+                "mode": "delta",
+                "update_protocol": "stage_commit",
+                "stage_transport": "streaming_upload",
+                "background_stage": True,
+                "retain_all_deltas": True,
+                "delta_stream_group_size": 8,
+            },
+        }
+    )
+
+    assert config.trainer.weight_broadcast.mode == "delta"
+    assert config.trainer.weight_broadcast.delta_streaming_enabled is True
+    assert config.trainer.weight_broadcast.delta_stream_group_size == 8
+    assert config.trainer.weight_broadcast.retain_all_deltas is True
+    assert config.orchestrator.weight_broadcast.mode == "delta"
+    assert config.orchestrator.weight_broadcast.update_protocol == "stage_commit"
+    assert config.orchestrator.weight_broadcast.stage_transport == "streaming_upload"
+    assert config.orchestrator.weight_broadcast.background_stage is True
+
+
+def test_sparse_delta_rejects_unsupported_runtime_combinations():
+    base = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {},
+        "weight_broadcast": {"type": "filesystem", "mode": "delta"},
+    }
+
+    with pytest.raises(ValidationError, match="do not support LoRA"):
+        RLConfig.model_validate({**base, "trainer": {"model": {"lora": {}}}})
+    with pytest.raises(ValidationError, match="cannot resume"):
+        RLConfig.model_validate({**base, "resume": {}})
+    with pytest.raises(ValidationError, match="expert parallelism"):
+        RLConfig.model_validate({**base, "inference": {"vllm": {"enable_expert_parallel": True}}})
+    with pytest.raises(ValidationError, match="quantized inference"):
+        RLConfig.model_validate({**base, "inference": {"vllm": {"quantization": "fp8_per_block"}}})
+
+
+def test_sparse_delta_lease_recovery_requires_retained_http_chain():
+    base = {
+        "trainer": {},
+        "orchestrator": {
+            "model": {
+                "client": {
+                    "lease_enabled": True,
+                    "lease_recovery_enabled": True,
+                }
+            }
+        },
+        "inference": {},
+        "weight_broadcast": {
+            "type": "filesystem",
+            "mode": "delta",
+            "update_protocol": "stage_commit",
+            "stage_transport": "streaming_upload",
+        },
+    }
+
+    with pytest.raises(ValidationError, match="retain_all_deltas=true"):
+        RLConfig.model_validate(base)
+    with pytest.raises(ValidationError, match="HTTP stage transport"):
+        RLConfig.model_validate(
+            {
+                **base,
+                "weight_broadcast": {
+                    **base["weight_broadcast"],
+                    "stage_transport": "shared_fs",
+                    "retain_all_deltas": True,
+                },
+            }
+        )
+
+
+def test_inference_relay_config_reaches_server_namespace():
+    config = InferenceConfig.model_validate(
+        {
+            "relay": {
+                "enabled": True,
+                "peers": ["http://region-peer:8100/v1"],
+                "fail_on_peer_error": False,
+                "stage_timeout_s": 120,
+                "commit_timeout_s": 30,
+                "reload_timeout_s": 60,
+            }
+        }
+    )
+
+    namespace = config.to_namespace()
+    assert namespace.relay_enabled is True
+    assert namespace.relay_peers == ["http://region-peer:8100/v1"]
+    assert namespace.relay_fail_on_peer_error is False
+    assert namespace.relay_stage_timeout_s == 120
+    assert namespace.relay_commit_timeout_s == 30
+    assert namespace.relay_reload_timeout_s == 60
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})

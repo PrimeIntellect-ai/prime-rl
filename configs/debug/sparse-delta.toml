@@ -1,0 +1,44 @@
+max_steps = 2
+seq_len = 512
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[weight_broadcast]
+type = "filesystem"
+mode = "delta"
+update_protocol = "stage_commit"
+stage_transport = "streaming_upload"
+background_stage = true
+retain_all_deltas = true
+delta_stream_group_size = 4
+
+[trainer.optim]
+lr = 3e-6
+
+[orchestrator]
+batch_size = 2
+
+[orchestrator.train]
+group_size = 2
+
+[orchestrator.concurrency]
+max_inflight = 2
+
+[orchestrator.train.sampling]
+max_completion_tokens = 32
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference]
+
+[inference.vllm]
+max_model_len = 512
+gpu_memory_utilization = 0.25
+
+[orchestrator.renderer]
+name = "prime-qwen3"

@@ -185,6 +185,8 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         str(config.router.request_timeout_secs),
         "--worker-startup-timeout-secs",
         "4200",
+        "--health-check-endpoint",
+        "/weight_health",
         "--prometheus-port",
         str(config.server.port + 21000),
     ]
