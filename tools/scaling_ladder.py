@@ -25,11 +25,12 @@ from prime_rl.utils.scaling import Heuristic
 SCALED_INTERMEDIATE_KEYS = ("intermediate_size", "moe_intermediate_size", "shared_expert_intermediate_size")
 
 
-def scale_config(base: PretrainedConfig, hidden: int) -> PretrainedConfig:
-    """``base`` at width ``hidden``: same head dim and GQA ratio, heads, depth and MLP sizes scaled with width."""
+def scale_config(base: PretrainedConfig, hidden: int, layers: int | None = None) -> PretrainedConfig:
+    """``base`` at width ``hidden``: same head dim and GQA ratio, heads and MLP sizes scaled with width.
+    Depth scales with width too unless ``layers`` is given."""
     ratio = hidden / base.hidden_size
     heads = max(1, round(base.num_attention_heads * ratio))
-    layers = max(1, round(base.num_hidden_layers * ratio))
+    layers = layers or max(1, round(base.num_hidden_layers * ratio))
     updates = {
         "hidden_size": hidden,
         "num_attention_heads": heads,
@@ -73,9 +74,16 @@ def main():
     parser.add_argument("recipe", type=Path, help="SFT recipe TOML; model.name is the base shape")
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--widths", type=int, nargs="+", required=True, help="hidden sizes, one rung each")
+    parser.add_argument("--layers", type=int, nargs="+", help="depth per width; defaults to the base depth/width ratio")
+    parser.add_argument(
+        "--batch-tokens", type=int, nargs="+", help="tokens per batch per width; defaults to the heuristic"
+    )
     parser.add_argument("--tokens-per-param", type=float, default=20.0, help="tokens per active parameter")
     parser.add_argument("--name", help="ladder name (W&B group, rung name prefix); defaults to the recipe stem")
     args = parser.parse_args()
+    for option in ("layers", "batch_tokens"):
+        if getattr(args, option) is not None and len(getattr(args, option)) != len(args.widths):
+            raise SystemExit(f"--{option.replace('_', '-')} needs one value per width")
 
     recipe = tomllib.loads(args.recipe.read_text())
     model, data = recipe.get("model", {}), recipe.get("data", {})
@@ -86,11 +94,14 @@ def main():
     heuristic = Heuristic()
 
     rungs = []
-    for hidden in args.widths:
-        config = scale_config(base, hidden)
+    for i, hidden in enumerate(args.widths):
+        config = scale_config(base, hidden, args.layers[i] if args.layers else None)
         linear, quadratic = forward_flops(config)
         active = linear // 2 - config.vocab_size * hidden
-        batch_size = heuristic.batch_size(args.tokens_per_param * active, seq_len)
+        if args.batch_tokens:
+            batch_size = args.batch_tokens[i] // seq_len
+        else:
+            batch_size = heuristic.batch_size(args.tokens_per_param * active, seq_len)
         batch_tokens = batch_size * seq_len
         steps = max(1, round(args.tokens_per_param * active / batch_tokens))
         tokens = steps * batch_tokens

@@ -14,6 +14,8 @@ uv run python tools/scaling_ladder.py pretrain.toml ladder/ --widths 512 768 102
 - `ladder/<name>-d<width>/sft.toml`: an overlay with the rung's model (`model.init = "scratch"`, tokenizer of the base model), `data.batch_size`, `max_steps`, `optim.lr` / `betas2` / `eps`, a WSD schedule (`scheduler.type = "linear"` with warmup and decay), `run.name` and the W&B group.
 - `ladder/ladder.json`: one row per rung for the fit.
 
+`--layers` sets each rung's depth (one value per width) and `--batch-tokens` sets its tokens per batch; both default to the rules below.
+
 It prints the ladder:
 
 ```
@@ -52,7 +54,7 @@ The coefficients are placeholders. The LR, β2 and ε terms come from Marin's Mo
 Once at least three rungs have finished:
 
 ```bash
-uv run python tools/fit_scaling_law.py ladder/ladder.json <entity>/<project> --metric loss/mean
+uv run python tools/fit_scaling_law.py ladder/ladder.json <entity>/<project>
 ```
 
-Each rung's W&B run is found by its name. All rungs share one schedule shape. So at each fraction `f` of training the finished rungs' losses are fitted as `L_f(C) = E + A · C^-α` over training compute `C`. The tool prints the final-loss fit and, for every unfinished rung, the projected loss at each fraction next to the loss it has logged so far. Add the target run's width to `--widths` to get its config and its projection.
+Each rung's W&B run is found by its name. The fit uses the held-out `val/loss` when every run logs it, else the train `loss/mean` averaged over a window of 1% of the steps; `--metric` picks another key (e.g. `val/loss/<source>`). All rungs share one schedule shape. So at each fraction `f` of training the finished rungs' losses are fitted as `L_f(C) = E + A · C^-α` over training compute `C`. The tool prints the final-loss fit and, for every unfinished rung, the projected loss at each fraction next to the loss it has logged so far. Add the target run's width to `--widths` to get its config and its projection.

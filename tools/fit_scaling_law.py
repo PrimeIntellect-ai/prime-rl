@@ -7,7 +7,7 @@ training compute ``C``. Evaluating each fit at an unfinished rung's compute give
 loss trajectory. See docs/scaling-ladder.md.
 
 Usage:
-    uv run python tools/fit_scaling_law.py <output_dir>/ladder.json <entity/project> [--metric val/loss]
+    uv run python tools/fit_scaling_law.py <output_dir>/ladder.json <entity/project> [--metric val/loss/<source>]
 """
 
 import argparse
@@ -20,39 +20,46 @@ import wandb
 from prime_rl.utils.scaling import fit_power_law
 
 
-def fetch_history(api: wandb.Api, path: str, name: str, metric: str) -> tuple[np.ndarray, np.ndarray]:
+def find_run(api: wandb.Api, path: str, name: str) -> "wandb.apis.public.Run | None":
     runs = api.runs(path, filters={"display_name": name})
-    if len(runs) == 0:
-        return np.array([]), np.array([])
-    rows = [row for row in runs[0].scan_history(keys=["step", metric])]
+    return runs[0] if len(runs) else None
+
+
+def fetch_history(run: "wandb.apis.public.Run | None", metric: str) -> tuple[np.ndarray, np.ndarray]:
+    rows = list(run.scan_history(keys=["step", metric])) if run else []
     return np.array([row["step"] for row in rows]), np.array([row[metric] for row in rows])
 
 
 def loss_at(steps: np.ndarray, losses: np.ndarray, step: float, window: float) -> float:
-    """Mean loss over ``(step - window, step]``, or the last logged loss before ``step``."""
+    """Mean loss over ``(step - window, step]``, or the logged loss nearest to ``step``."""
     in_window = (steps > step - window) & (steps <= step)
     if in_window.any():
         return float(losses[in_window].mean())
-    return float(losses[steps <= step][-1])
+    return float(losses[np.abs(steps - step).argmin()])
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("ladder", type=Path, help="ladder.json from tools/scaling_ladder.py")
     parser.add_argument("wandb_path", help="W&B entity/project of the ladder runs")
-    parser.add_argument("--metric", default="loss/mean", help="W&B loss key")
+    parser.add_argument(
+        "--metric", help="W&B loss key; defaults to val/loss if every run logs it, else the train loss/mean"
+    )
     parser.add_argument("--points", type=int, default=20, help="fractions of training to fit")
     parser.add_argument("--window", type=float, default=0.01, help="smoothing window, as a fraction of the steps")
     args = parser.parse_args()
 
     rungs = json.loads(args.ladder.read_text())
     api = wandb.Api()
-    histories = {r["name"]: fetch_history(api, args.wandb_path, r["name"], args.metric) for r in rungs}
-    finished = [r for r in rungs if len(histories[r["name"]][0]) and histories[r["name"]][0].max() >= r["steps"]]
+    runs = {r["name"]: find_run(api, args.wandb_path, r["name"]) for r in rungs}
+    found = [run for run in runs.values() if run]
+    metric = args.metric or ("val/loss" if found and all("val/loss" in run.summary for run in found) else "loss/mean")
+    histories = {name: fetch_history(run, metric) for name, run in runs.items()}
+    finished = [r for r in rungs if runs[r["name"]] and runs[r["name"]].summary.get("step", 0) >= r["steps"]]
     targets = [r for r in rungs if r not in finished]
     if len(finished) < 3:
         raise SystemExit(f"need at least 3 finished rungs to fit, found {[r['name'] for r in finished]}")
-    print(f"fit on: {', '.join(r['name'] for r in finished)}")
+    print(f"fit {metric} on: {', '.join(r['name'] for r in finished)}")
 
     compute = np.array([r["flops"] for r in finished])
     fractions = np.linspace(1 / args.points, 1, args.points)
