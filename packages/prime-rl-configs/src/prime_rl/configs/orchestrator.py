@@ -90,70 +90,6 @@ class TrainSamplingConfig(BaseConfig):
             )
         return self
 
-    def to_sampling_args(self) -> dict[str, Any]:
-        """Convert to OAI-compatible sampling args dict, omitting None values."""
-        args: dict[str, Any] = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "logprobs": True,
-        }
-        if self.max_completion_tokens is not None:
-            args["max_completion_tokens"] = self.max_completion_tokens
-
-        # top_k rides extra_body (like EvalSamplingConfig), overriding the sentinel.
-        extra_body = dict(self.extra_body)
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if extra_body:
-            args["extra_body"] = extra_body
-
-        return args
-
-
-class EvalSamplingConfig(BaseConfig):
-    temperature: float | None = Field(None, ge=0, le=2.0)
-    """Sampling temperature. None defers to the inference server default."""
-
-    top_p: float | None = None
-    """Nucleus sampling threshold. None defers to the inference server default."""
-
-    top_k: int | None = None
-    """Top-k sampling. None defers to the inference server default."""
-
-    min_p: float | None = Field(None, ge=0)
-    """Min-p sampling threshold. None defers to the inference server default."""
-
-    max_completion_tokens: int | None = None
-    """Maximum output tokens per turn. None defers to the inference server default."""
-
-    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
-    """Reasoning effort constraint for reasoning models."""
-
-    extra_body: dict[str, Any] = {}
-    """Extra body parameters forwarded to the inference server."""
-
-    def to_sampling_args(self) -> dict[str, Any]:
-        """Convert to OAI-compatible sampling args dict. Only includes non-None fields."""
-        args: dict[str, Any] = {}
-        if self.temperature is not None:
-            args["temperature"] = self.temperature
-        if self.top_p is not None:
-            args["top_p"] = self.top_p
-        if self.max_completion_tokens is not None:
-            args["max_completion_tokens"] = self.max_completion_tokens
-        if self.reasoning_effort is not None:
-            args["reasoning_effort"] = self.reasoning_effort
-
-        extra_body = dict(self.extra_body)
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if self.min_p is not None:
-            extra_body["min_p"] = self.min_p
-        if extra_body:
-            args["extra_body"] = extra_body
-
-        return args
-
 
 class EnvConfig(BaseConfig):
     """One environment a run pulls from: the verifiers blocks it composes (``env`` — what
@@ -207,6 +143,9 @@ def inherit_defaults(defaults: dict[str, Any], source: dict) -> dict:
         own = source.get(name)
         if isinstance(value, BaseModel):
             if own is None or isinstance(own, dict):
+                if isinstance(value, vf.SamplingConfig):
+                    # Merge aliases under the same canonical keys as the group defaults.
+                    own = vf.SamplingConfig.model_validate(own or {}).model_dump(exclude_unset=True)
                 merged[name] = vf.merge_defaults(value, own)
         elif name not in source:
             merged[name] = value
@@ -318,7 +257,7 @@ class TrainSourceConfig(EnvConfig):
 
 
 class EvalSourceConfig(EnvConfig):
-    sampling: EvalSamplingConfig = EvalSamplingConfig()
+    sampling: vf.SamplingConfig = vf.SamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
     group_size: int = Field(1, ge=1)
@@ -409,7 +348,7 @@ class EvalSourcesConfig(SourceGroupConfig):
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
-    sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
+    sampling: vf.SamplingConfig = Field(default_factory=vf.SamplingConfig)
     """Sampling that every eval source inherits; can differ from training sampling."""
 
     select: vf.SelectConfig = vf.SelectConfig()
