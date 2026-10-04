@@ -92,16 +92,14 @@ class Qwen3_5DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
+        cu_seqlens_cpu: torch.LongTensor,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(
-                hidden_states,
-                cu_seqlens,
-            )
+            hidden_states = self.linear_attn(hidden_states, cu_seqlens, cu_seqlens_cpu)
         else:
             hidden_states, _ = self.self_attn(
                 hidden_states,
@@ -143,6 +141,10 @@ class Qwen3_5Model(nn.Module):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        # Copied to the host here, outside the activation-checkpointed layers: checkpointing replays saved
+        # device-to-host copies in call order, and FLA would otherwise copy inside the layer only on the
+        # first (uncached) call, shifting every later saved copy during the recompute.
+        cu_seqlens_cpu = cu_seqlens.cpu()
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
@@ -152,6 +154,7 @@ class Qwen3_5Model(nn.Module):
                 hidden_states,
                 position_embeddings,
                 cu_seqlens,
+                cu_seqlens_cpu,
                 max_seqlen,
                 routed_experts=layer_routed_experts,
             )

@@ -60,6 +60,7 @@ class GatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        cu_seqlens_cpu: torch.LongTensor,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -79,6 +80,7 @@ class GatedDeltaNet(nn.Module):
                 cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
                 group=self.cp_context.cp_group,
                 conv1d_kernel_size=self.conv_kernel_size,
+                cu_seqlens_cpu=cu_seqlens_cpu,
             )
 
         convolution = {
@@ -88,7 +90,7 @@ class GatedDeltaNet(nn.Module):
             "activation": "silu",
         }
         if context is None:
-            mixed_qkv, _ = causal_conv1d(**convolution, cu_seqlens=cu_seqlens)
+            mixed_qkv, _ = causal_conv1d(**convolution, cu_seqlens=cu_seqlens, cu_seqlens_cpu=cu_seqlens_cpu)
         else:
             mixed_qkv, _ = causal_conv1d_with_context_parallelism(**convolution, cp_context=context)
 
@@ -110,6 +112,7 @@ class GatedDeltaNet(nn.Module):
             "beta": beta,
             "use_qk_l2norm_in_kernel": True,
             "cu_seqlens": context.cu_seqlens if context is not None else cu_seqlens,
+            "cu_seqlens_cpu": context.cu_seqlens_cpu if context is not None else cu_seqlens_cpu,
         }
         if context is None:
             core_output, _ = chunk_gated_delta_rule(
