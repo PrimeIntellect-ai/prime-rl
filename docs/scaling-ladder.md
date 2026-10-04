@@ -10,7 +10,7 @@ uv run python tools/scaling_ladder.py pretrain.toml ladder/ --widths 512 768 102
 
 `pretrain.toml` is an ordinary `sft` config. Its `model.name` is the base shape. For each width the tool writes:
 
-- `ladder/<name>-d<width>/model/config.json`: the base HF config at that width. Heads, KV heads, layers and the MLP / expert / shared-expert intermediate sizes scale linearly with the width (MLP sizes round to multiples of 128). Head dim, vocabulary, number of experts and top-k stay fixed.
+- `ladder/<name>-d<width>/model/config.json`: the base HF config at that width. Heads, KV heads, layers and the MLP / expert / shared-expert intermediate sizes scale linearly with the width (MLP sizes round to multiples of 128). Head dim, vocabulary, number of experts, top-k and `initializer_range` stay fixed; embeddings are untied, as scratch init requires.
 - `ladder/<name>-d<width>/sft.toml`: an overlay with the rung's model (`model.init = "scratch"`, tokenizer of the base model), `data.batch_size`, `max_steps`, `optim.lr` / `betas2` / `eps`, a WSD schedule (`scheduler.type = "linear"` with warmup and decay), `run.name` and the W&B group.
 - `ladder/ladder.json`: one row per rung for the fit.
 

@@ -36,6 +36,8 @@ def scale_config(base: PretrainedConfig, hidden: int, layers: int | None = None)
         "num_attention_heads": heads,
         "num_key_value_heads": max(1, heads * base.num_key_value_heads // base.num_attention_heads),
         "num_hidden_layers": layers,
+        # Scratch init never ties embeddings.
+        "tie_word_embeddings": False,
     }
     for key in SCALED_INTERMEDIATE_KEYS:
         if getattr(base, key, None):
@@ -50,12 +52,11 @@ def scale_config(base: PretrainedConfig, hidden: int, layers: int | None = None)
 
 
 def total_params(config: PretrainedConfig) -> int:
-    """All matmul parameters plus the input embedding: the active count with every expert routed."""
+    """All matmul parameters plus the (untied) input embedding: the active count with every expert routed."""
     dense = copy.deepcopy(config)
     if getattr(config, "num_experts_per_tok", None):
         dense.num_experts_per_tok = getattr(config, "n_routed_experts", None) or config.num_experts
-    embedding = 0 if config.tie_word_embeddings else config.vocab_size * config.hidden_size
-    return forward_flops(dense)[0] // 2 + embedding
+    return forward_flops(dense)[0] // 2 + config.vocab_size * config.hidden_size
 
 
 def toml_overlay(values: dict[str, object]) -> str:
