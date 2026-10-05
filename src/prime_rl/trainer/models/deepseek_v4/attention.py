@@ -171,12 +171,61 @@ class DeepseekV4GroupedLinear(nn.Linear):
         self.n_groups = n_groups
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_shape = x.shape[:-2]
-        hidden_dim = x.shape[-1]
-        w = self.weight.view(self.n_groups, -1, hidden_dim).transpose(1, 2)
-        x = x.reshape(-1, self.n_groups, hidden_dim).transpose(0, 1)
-        y = torch.bmm(x, w).transpose(0, 1)
-        return y.reshape(*input_shape, self.n_groups, -1)
+        return grouped_linear(x, self.weight)
+
+
+@torch.library.custom_op("prime_rl::grouped_linear", mutates_args=())
+def grouped_linear(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """`(..., groups, in)` @ block-diagonal `(groups * out, in)` -> `(..., groups, out)`.
+
+    One GEMM per group reads its strided slice of `x` and writes its strided slice of the output,
+    so neither layout is ever transposed into a copy (as a batched matmul over a group-major view
+    would need, in forward and again in backward).
+    """
+    groups, hidden = x.shape[-2:]
+    rows = x.reshape(-1, groups, hidden)
+    w = weight.view(groups, -1, hidden)
+    out = x.new_empty(rows.shape[0], groups, w.shape[1])
+    for g in range(groups):
+        torch.mm(rows[:, g], w[g].t(), out=out[:, g])
+    return out.view(*x.shape[:-1], w.shape[1])
+
+
+@grouped_linear.register_fake
+def _grouped_linear_fake(x, weight):
+    return x.new_empty(*x.shape[:-1], weight.shape[0] // x.shape[-2])
+
+
+@torch.library.custom_op("prime_rl::grouped_linear_backward", mutates_args=())
+def grouped_linear_backward(
+    grad: torch.Tensor, x: torch.Tensor, weight: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    groups, hidden = x.shape[-2:]
+    rows = x.reshape(-1, groups, hidden)
+    w = weight.view(groups, -1, hidden)
+    grad = grad.reshape(-1, groups, w.shape[1])
+    grad_x = torch.empty_like(rows)
+    grad_w = torch.empty_like(w)
+    for g in range(groups):
+        torch.mm(grad[:, g], w[g], out=grad_x[:, g])
+        torch.mm(grad[:, g].t(), rows[:, g], out=grad_w[g])
+    return grad_x.view_as(x), grad_w.view_as(weight)
+
+
+@grouped_linear_backward.register_fake
+def _grouped_linear_backward_fake(grad, x, weight):
+    return torch.empty_like(x), torch.empty_like(weight)
+
+
+def _grouped_linear_setup_context(ctx, inputs, output) -> None:
+    ctx.save_for_backward(*inputs)
+
+
+def _grouped_linear_autograd(ctx, grad):
+    return grouped_linear_backward(grad, *ctx.saved_tensors)
+
+
+grouped_linear.register_autograd(_grouped_linear_autograd, setup_context=_grouped_linear_setup_context)
 
 
 @dataclass(frozen=True)
