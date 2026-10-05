@@ -59,13 +59,7 @@ def _fp8_blockwise_mm_backward(
         grad_x = grad_x_2d.reshape(x.shape)
 
     if needs_grad_weight:
-        # DeepGEMM's (1, 1, 128) recipe requires the token dimension to be aligned.
-        num_tokens = grad_output_2d.size(0)
-        padded_tokens = (num_tokens + block_size - 1) // block_size * block_size
-        if padded_tokens != num_tokens:
-            pad_rows = padded_tokens - num_tokens
-            grad_output_2d = torch.nn.functional.pad(grad_output_2d, (0, 0, 0, pad_rows))
-            x_2d = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
+        # The transposed casts zero-pad the token dimension, as DeepGEMM's (1, 1, 128) recipe requires.
         grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
         x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
         grad_weight_fp32 = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)

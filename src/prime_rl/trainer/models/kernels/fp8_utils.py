@@ -161,6 +161,28 @@ def _unpack_grouped_rows_kernel(
 
 
 @triton.jit
+def _fp8_scale(amax, USE_UE8M0: tl.constexpr):
+    scale = tl.math.div_rn(tl.maximum(amax.to(tl.float32), 1e-10), FP8_MAX)
+    if USE_UE8M0:
+        scale = tl.exp2(tl.ceil(tl.log2(scale)))
+    return scale
+
+
+@triton.jit
+def _fp8_quantize(x, scale):
+    """``x / scale`` rounded to e4m3, bit-identical to ``div_rn`` followed by a [-448, 448] clamp.
+
+    One Markstein correction step on ``x * (1 / scale)`` yields the correctly rounded quotient
+    without a per-element IEEE division, and the satfinite fp8 conversion does the clamping.
+    """
+    rcp = tl.math.div_rn(1.0, scale)
+    q = x * rcp
+    y = tl.math.fma(tl.math.fma(-q, scale, x), rcp, q)
+    # The correction step turns -0 into +0; q carries the sign of x.
+    return tl.where(q == 0.0, q, y).to(tl.float8e4nv)
+
+
+@triton.jit
 def _per_token_fp8_kernel(
     x_ptr,
     out_ptr,
@@ -168,38 +190,63 @@ def _per_token_fp8_kernel(
     rows,
     cols,
     stride_xm,
-    stride_xn,
-    stride_ym,
-    stride_yn,
-    stride_sm,
     stride_sk,
     USE_UE8M0: tl.constexpr,
+    EVEN_ROWS: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
     pid_m = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1)
-    row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    row_offsets = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
     col_offsets = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
-    row_offsets_i64 = row_offsets.to(tl.int64)
-    col_offsets_i64 = col_offsets.to(tl.int64)
-    mask = (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
-    x = tl.load(
-        x_ptr + row_offsets_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
-        mask=mask,
-        other=0.0,
-    ).to(tl.float32)
-    amax = tl.maximum(tl.max(tl.abs(x), axis=1), 1e-10)
-    scale = tl.math.div_rn(amax, FP8_MAX)
-    if USE_UE8M0:
-        scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
-    tl.store(
-        out_ptr + row_offsets_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
-        y.to(tl.float8e4nv),
-        mask=mask,
-    )
-    tl.store(sf_ptr + row_offsets_i64 * stride_sm + pid_k * stride_sk, scale, mask=row_offsets < rows)
+    row_mask = row_offsets < rows
+    x_ptrs = x_ptr + row_offsets[:, None] * stride_xm + col_offsets[None, :]
+    out_ptrs = out_ptr + row_offsets[:, None] * cols + col_offsets[None, :]
+    sf_ptrs = sf_ptr + pid_k * stride_sk + row_offsets
+    if EVEN_ROWS:
+        x = tl.load(x_ptrs)
+    else:
+        x = tl.load(x_ptrs, mask=row_mask[:, None], other=0.0)
+    scale = _fp8_scale(tl.max(tl.abs(x), axis=1), USE_UE8M0)
+    y = _fp8_quantize(x.to(tl.float32), scale[:, None])
+    if EVEN_ROWS:
+        tl.store(out_ptrs, y)
+        tl.store(sf_ptrs, scale)
+    else:
+        tl.store(out_ptrs, y, mask=row_mask[:, None])
+        tl.store(sf_ptrs, scale, mask=row_mask)
+
+
+@triton.jit
+def _per_token_fp8_tp_kernel(
+    x_ptr,
+    out_ptr,
+    sf_ptr,
+    rows,
+    padded_rows,
+    cols,
+    stride_xm,
+    USE_UE8M0: tl.constexpr,
+    EVEN_ROWS: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    # Loads a row-major [BLOCK_M tokens, BLOCK_N channels] tile, scales each channel over the
+    # tokens and stores the tile transposed; tokens past `rows` are written as zeros.
+    pid_n = tl.program_id(axis=0)
+    pid_m = tl.program_id(axis=1)
+    row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    x_ptrs = x_ptr + row_offsets.to(tl.int64)[:, None] * stride_xm + col_offsets[None, :]
+    if EVEN_ROWS:
+        x = tl.load(x_ptrs)
+    else:
+        x = tl.load(x_ptrs, mask=(row_offsets < rows)[:, None], other=0.0)
+    scale = _fp8_scale(tl.max(tl.abs(x), axis=0), USE_UE8M0)
+    y = _fp8_quantize(x.to(tl.float32), scale[None, :])
+    tl.store(out_ptr + col_offsets.to(tl.int64)[:, None] * padded_rows + row_offsets[None, :], tl.trans(y))
+    tl.store(sf_ptr + pid_m * cols + col_offsets, scale)
 
 
 @triton.jit
@@ -408,30 +455,33 @@ def unpack_rows_triton(
 def per_token_cast_to_fp8_triton(
     x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    assert x.dim() == 2
+    """Per-token (1 x gran_k) fp8 cast of ``x``.
+
+    Scales are returned MN-major and TMA-aligned, the layout DeepGEMM consumes without a
+    transpose kernel of its own.
+    """
+    assert x.dim() == 2 and x.stride(1) == 1
     assert gran_k == GROUP_ALIGNMENT
     rows, cols = x.shape
+    assert cols % gran_k == 0
+    block_m = 32
     out = torch.empty_like(x, dtype=torch.float8_e4m3fn)
-    sf = torch.empty((rows, ceil_div(cols, gran_k)), device=x.device, dtype=torch.float32)
-    grid = lambda meta: (ceil_div(rows, meta["BLOCK_M"]), ceil_div(cols, meta["BLOCK_K"]))
-    _per_token_fp8_kernel[grid](
+    sf = torch.empty((cols // gran_k, ceil_div(rows, 4) * 4), device=x.device, dtype=torch.float32)
+    _per_token_fp8_kernel[(ceil_div(rows, block_m), cols // gran_k)](
         x,
         out,
         sf,
         rows,
         cols,
         x.stride(0),
-        x.stride(1),
-        out.stride(0),
-        out.stride(1),
         sf.stride(0),
-        sf.stride(1),
         USE_UE8M0=use_ue8m0,
-        BLOCK_M=32,
+        EVEN_ROWS=rows % block_m == 0,
+        BLOCK_M=block_m,
         BLOCK_K=gran_k,
         num_warps=4,
     )
-    return out, sf
+    return out, sf[:, :rows].T
 
 
 def grouped_per_token_cast_to_fp8_triton(
@@ -654,29 +704,32 @@ def per_block_cast_to_fp8_tp_triton(
 def per_token_cast_to_fp8_tp_triton(
     x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Per-token fp8 cast of ``x.T`` without materializing the transpose."""
-    assert x.dim() == 2
+    """Per-token fp8 cast of ``x.T`` without materializing the transpose.
+
+    The token dimension (``x``'s rows) is zero-padded to a multiple of ``gran_k``, as DeepGEMM's
+    (1, 1, 128) wgrad recipe requires: the result is ``(cols, padded_rows)``. Scales are returned
+    MN-major, the layout DeepGEMM consumes without a transpose kernel of its own.
+    """
+    assert x.dim() == 2 and x.stride(1) == 1
     assert gran_k == GROUP_ALIGNMENT
     rows, cols = x.shape
-    out = torch.empty((cols, rows), device=x.device, dtype=torch.float8_e4m3fn)
-    sf = torch.empty((cols, ceil_div(rows, gran_k)), device=x.device, dtype=torch.float32)
-    grid = lambda meta: (ceil_div(cols, meta["BLOCK_M"]), ceil_div(rows, meta["BLOCK_K"]))
-    _per_token_fp8_kernel[grid](
+    block_n = 32
+    assert cols % block_n == 0
+    padded_rows = ceil_div(rows, gran_k) * gran_k
+    out = torch.empty((cols, padded_rows), device=x.device, dtype=torch.float8_e4m3fn)
+    sf = torch.empty((padded_rows // gran_k, cols), device=x.device, dtype=torch.float32)
+    _per_token_fp8_tp_kernel[(cols // block_n, padded_rows // gran_k)](
         x,
         out,
         sf,
-        cols,
         rows,
-        # transposed read: the kernel's per-row amax reduces over x's rows
-        x.stride(1),
+        padded_rows,
+        cols,
         x.stride(0),
-        out.stride(0),
-        out.stride(1),
-        sf.stride(0),
-        sf.stride(1),
         USE_UE8M0=use_ue8m0,
-        BLOCK_M=32,
-        BLOCK_K=gran_k,
-        num_warps=4,
+        EVEN_ROWS=rows == padded_rows,
+        BLOCK_M=gran_k,
+        BLOCK_N=block_n,
+        num_warps=2,
     )
-    return out, sf
+    return out, sf.T
