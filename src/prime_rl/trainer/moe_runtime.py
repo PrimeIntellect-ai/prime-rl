@@ -24,6 +24,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     BF16ExpertCompute,
     DeepGemmFP8ExpertCompute,
     ExpertCompute,
+    FusedSwigluExpertCompute,
     MXFP8ExpertCompute,
 )
 from prime_rl.trainer.models.layers.moe import MoE
@@ -39,6 +40,10 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             from prime_rl.trainer.models.layers.sonic_moe import SonicMoEExpertCompute
 
             return SonicMoEExpertCompute()
+        if compute.backend == "prime_kernels":
+            import prime_kernels
+
+            return FusedSwigluExpertCompute(prime_kernels.load("moe_experts"))
         return BF16ExpertCompute()
     if isinstance(compute, DeepGemmFP8MoEComputeConfig):
         if importlib.util.find_spec("deep_gemm") is None:
@@ -131,6 +136,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
+                hidden_size=moe.experts.down_proj.shape[1],
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")

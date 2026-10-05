@@ -36,7 +36,9 @@ For a fake-data dry run, append [`fake.toml`](sft/h200/fake.toml) instead.
 uv run sft @ examples/advanced/deepseek-v4.1-flash/sft/h200/base.toml @ examples/advanced/deepseek-v4.1-flash/sft/h200/math-10k.toml @ examples/advanced/deepseek-v4.1-flash/sft/h200/16k-12-node.toml
 ```
 
-On 12 nodes the sharded model state fits in GPU memory without CP or any offloading, and each GPU runs one 16k sequence per step (batch 96) with compiled transformer blocks. The experts are spread over all 96 GPUs (`ep = 96`) and the expert all-to-alls are pipelined in two chunks (`model.moe.dispatch.overlap_chunks = 2`): about 9.3 s per step (~170k tokens/s, 63-64% MFU), 100 GiB peak memory.
+On 12 nodes the sharded model state fits in GPU memory without CP or any offloading, and each GPU runs one 16k sequence per step (batch 96) with compiled transformer blocks. The experts are spread over all 96 GPUs (`ep = 96`) and dispatched with DeepEP: about 5.6 s per step (~280k tokens/s), 118 GiB peak memory.
+
+On Hopper, prime-kernels' fused indexer top-k, mHC projection and MoE expert kernels are picked up when installed (`model.moe.compute.backend = "prime_kernels"` for the experts); otherwise the model runs its own implementations.
 
 The engram tables are row-sharded across every data-parallel rank and served by all-to-all lookups, outside FSDP. Their gradients are dense fp32 shards, so plan for ~2 × 4 bytes × 197B / (number of GPUs) of engram state per GPU.
 
