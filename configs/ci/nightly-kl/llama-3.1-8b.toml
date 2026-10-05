@@ -1,0 +1,5 @@
+[model]
+name = "unsloth/Meta-Llama-3.1-8B-Instruct"
+
+[orchestrator.renderer]
+name = "llama-3"
