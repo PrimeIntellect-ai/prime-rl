@@ -1,8 +1,9 @@
 """Mismatch KL between the trainer and vLLM for every architecture that fits on one 8-GPU node.
 
-Each model runs a short reverse-text RL job (`configs/ci/nightly-kl/base.toml` plus the model's overlay).
-Step 1 is on-policy, so its mismatch KL measures only the numerical gap between the trainer's modeling
-code and vLLM's; the mean over all steps also catches drift once the weights start moving.
+Each model runs a short, fully on-policy reverse-text RL job (`configs/ci/nightly-kl/base.toml` plus the
+model's overlay), so mismatch KL measures only the numerical gap between the trainer's modeling code and
+vLLM's: step 1 on the checkpoint, the mean over all steps on the updated weights vLLM received from the
+trainer, which also covers the weight broadcast and conversion.
 """
 
 from dataclasses import dataclass
@@ -22,28 +23,26 @@ from tests.utils import (
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 CONFIG_DIR = Path("configs/ci/nightly-kl")
+NUM_STEPS = 10
 
 
 @dataclass(frozen=True)
 class KLBudget:
     step1: float
     mean: float
-    num_steps: int = 10
 
 
 # Budgets sit a few times above on-policy KL measured on H200s, with a floor that absorbs run-to-run noise.
 KL_BUDGETS = {
-    "llama-3.1-8b": KLBudget(step1=0.005, mean=0.03),
-    "qwen3-8b": KLBudget(step1=0.005, mean=0.01),
-    "qwen3.5-9b": KLBudget(step1=0.005, mean=0.02),
-    "qwen3-30b-a3b": KLBudget(step1=0.01, mean=0.015),
-    "qwen3.5-35b-a3b": KLBudget(step1=0.005, mean=0.01),
-    "gpt-oss-20b": KLBudget(step1=0.005, mean=0.05),
+    "llama-3.1-8b": KLBudget(step1=0.005, mean=0.005),
+    "qwen3-8b": KLBudget(step1=0.005, mean=0.005),
+    "qwen3.5-9b": KLBudget(step1=0.005, mean=0.005),
+    "qwen3-30b-a3b": KLBudget(step1=0.01, mean=0.01),
+    "qwen3.5-35b-a3b": KLBudget(step1=0.005, mean=0.005),
+    "gpt-oss-20b": KLBudget(step1=0.005, mean=0.005),
     "nemotron-3.5-lightning": KLBudget(step1=0.02, mean=0.02),
     # Laguna's own run-to-run KL on real text is ~0.1, so this only catches gross breakage.
     "laguna-xs.2": KLBudget(step1=0.2, mean=0.2),
-    # Trinity diverges after its first updates (on main too) and then never fills a batch; run one step.
-    "trinity-mini": KLBudget(step1=0.02, mean=0.02, num_steps=1),
 }
 
 
@@ -75,7 +74,7 @@ def rl_process(
         "@",
         (CONFIG_DIR / f"{model}.toml").as_posix(),
         "--max-steps",
-        str(KL_BUDGETS[model].num_steps),
+        str(NUM_STEPS),
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
@@ -100,5 +99,4 @@ def test_on_policy_mismatch_kl(trainer_lines: list[str], model: str):
 
 
 def test_mean_mismatch_kl(trainer_lines: list[str], model: str):
-    budget = KL_BUDGETS[model]
-    check_avg_mismatch_kl_in_range(trainer_lines, last_n_steps=budget.num_steps, max_threshold=budget.mean)
+    check_avg_mismatch_kl_in_range(trainer_lines, last_n_steps=NUM_STEPS, max_threshold=KL_BUDGETS[model].mean)

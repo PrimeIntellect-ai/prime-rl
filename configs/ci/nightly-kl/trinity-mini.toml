@@ -1,9 +1,0 @@
-[model]
-name = "arcee-ai/Trinity-Mini"
-
-[trainer.model]
-ep = 4
-
-# No typed renderer for Trinity; its chat template goes through apply_chat_template.
-[orchestrator.renderer]
-name = "default"
