@@ -248,6 +248,12 @@ class Orchestrator:
             get_logger().info(f"Resuming from step {self.resume_step}")
         else:
             get_logger().info("Starting from scratch")
+        # A run resumed from its final checkpoint has nothing left to collect; ``start`` exits too.
+        if config.max_steps is not None and self.progress.step > config.max_steps:
+            get_logger().success(
+                f"Resumed checkpoint step {self.resume_step} already reached max_steps={config.max_steps}"
+            )
+            return
 
         # Transports are local setup — initialize them before the env and inference waits.
         self.packer = BatchPacker(config)
@@ -391,6 +397,8 @@ class Orchestrator:
         background tasks, runs the main loop in this task, then cleans up."""
         await self.setup()
         config = self.config
+        if config.max_steps is not None and self.progress.step > config.max_steps:
+            return
         get_logger().info(f"Starting orchestrator loop (max_steps={config.max_steps or 'infinite'})")
         start_time = time.perf_counter()
 

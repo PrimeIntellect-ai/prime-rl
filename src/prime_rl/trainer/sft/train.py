@@ -397,6 +397,13 @@ def train(config: SFTConfig):
         logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
         weight_sender.broadcast(model, startup_version)
 
+    # A run resumed from its final checkpoint (e.g. a requeued job that failed after
+    # finishing) has nothing left to train. The startup broadcast above still runs so
+    # online evals can finish.
+    if config.max_steps is not None and progress.step > config.max_steps:
+        logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        return
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True

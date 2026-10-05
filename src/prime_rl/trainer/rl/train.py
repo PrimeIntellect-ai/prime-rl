@@ -229,6 +229,12 @@ def train(config: TrainerConfig):
     else:
         logger.info("Starting from scratch")
 
+    # A run resumed from its final checkpoint (e.g. a requeued job that failed after
+    # finishing) has nothing left to train.
+    if config.max_steps is not None and progress.step > config.max_steps:
+        logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        return
+
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
     t0 = time.perf_counter()
