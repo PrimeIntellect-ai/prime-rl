@@ -6,6 +6,7 @@ from fla.ops.cp import build_cp_context
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
+from prime_rl.trainer.models.layers.attn import delta_rule_flops_per_token
 from prime_rl.utils.cp import CPContext
 
 # FLA's context carries a process group that Dynamo cannot trace through the convolution.
@@ -55,6 +56,11 @@ class GatedDeltaNet(nn.Module):
         self.out_proj = nn.Linear(self.value_dim, hidden_size, bias=False)
 
         self.cp_context = CPContext()
+
+    def attention_flops_per_token(self, seq_len: int) -> int:
+        return delta_rule_flops_per_token(
+            num_heads=self.num_value_heads, key_head_dim=self.key_head_dim, v_head_dim=self.value_head_dim
+        )
 
     def forward(
         self,

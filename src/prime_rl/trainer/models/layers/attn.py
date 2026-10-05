@@ -404,6 +404,28 @@ def flash_attn_3_varlen_op(
     return out
 
 
+def quadratic_attention_flops_per_token(
+    *, num_heads: int, qk_head_dim: int, v_head_dim: int, seq_len: int, sliding_window: int | None = None
+) -> int:
+    """Training FLOPs per token of softmax attention, as torchtitan's `quadratic_attention_flops_per_token`.
+
+    Two matmuls per head and attended token (q @ K^T over `qk_head_dim`, scores @ V over `v_head_dim`),
+    2 FLOPs per multiply-add, 3x for forward plus backward. Causal sparsity and the flash-attention
+    recompute are not counted.
+    """
+    attended_tokens = seq_len if sliding_window is None else min(seq_len, sliding_window)
+    return 6 * num_heads * (qk_head_dim + v_head_dim) * attended_tokens
+
+
+def delta_rule_flops_per_token(*, num_heads: int, key_head_dim: int, v_head_dim: int) -> int:
+    """Training FLOPs per token of a gated delta-rule recurrence, as torchtitan's `delta_rule_flops_per_token`.
+
+    Reading, updating and querying the `[key_head_dim, v_head_dim]` state are three
+    `key_head_dim * v_head_dim` products per head.
+    """
+    return 6 * 3 * num_heads * key_head_dim * v_head_dim
+
+
 @dataclass
 class AttentionConfig:
     hidden_size: int
@@ -437,6 +459,7 @@ class FlashAttention(nn.Module):
     def __init__(self, config: AttentionConfig, flash_attn_version: int = 2):
         super().__init__()
         self.head_dim = config.head_dim
+        self.num_heads = config.num_attention_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.is_causal = config.is_causal
@@ -467,6 +490,15 @@ class FlashAttention(nn.Module):
 
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
+
+    def attention_flops_per_token(self, seq_len: int) -> int:
+        return quadratic_attention_flops_per_token(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            sliding_window=getattr(self, "sliding_window", None),
+        )
 
     def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Query, key and value projections, from one packed GEMM when qkv is fused."""

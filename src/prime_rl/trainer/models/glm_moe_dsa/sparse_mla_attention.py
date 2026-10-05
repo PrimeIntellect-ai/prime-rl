@@ -6,6 +6,7 @@ from torch import nn
 
 from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops_per_token
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -148,6 +149,19 @@ class GlmMoeDsaAttention(nn.Module):
         self.scaling = self.qk_head_dim ** (-0.5)
 
         self.cp_context = CPContext()
+
+    def attention_flops_per_token(self, seq_len: int) -> int:
+        # As torchtitan's DeepSeek V3/V4: MLA counted un-absorbed (qk = nope + rope), sparse attention
+        # attends `index_topk` tokens, and the indexer scores every token with its own heads.
+        flops = quadratic_attention_flops_per_token(
+            num_heads=self.num_heads,
+            qk_head_dim=self.qk_head_dim,
+            v_head_dim=self.v_head_dim,
+            seq_len=min(seq_len, self.args.index_topk),
+        )
+        if self.indexer is not None:
+            flops += 6 * self.args.index_n_heads * self.args.index_head_dim * seq_len
+        return flops
 
     def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
