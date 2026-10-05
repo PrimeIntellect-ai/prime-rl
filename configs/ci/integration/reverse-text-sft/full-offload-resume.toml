@@ -15,6 +15,10 @@ full_offload = true
 [optim]
 lr = 0.0
 
+# The -untied suffix misses the MODEL_RENDERER_MAP exact match; select the renderer explicitly.
+[renderer]
+name = "prime-qwen3"
+
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"
 batch_size = 4
