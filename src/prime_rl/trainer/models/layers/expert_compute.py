@@ -113,10 +113,15 @@ class MXFP8ExpertCompute(GroupedGemmExpertCompute):
 
 
 class FusedSwigluExpertCompute:
-    """prime-kernels' `moe_experts`: Hopper grouped GEMMs with the clamped SwiGLU fused into them."""
+    """prime-kernels' `moe_experts`: Hopper grouped GEMMs with the clamped SwiGLU fused into them.
 
-    def __init__(self, kernel: ModuleType) -> None:
+    With `fp8`, the GEMMs are DeepGEMM's blockwise FP8 (forward, dgrad and wgrad) with the
+    quantization fused into the surrounding passes.
+    """
+
+    def __init__(self, kernel: ModuleType, fp8: bool = False) -> None:
         self.kernel = kernel
+        self.fp8 = fp8
         self.token_group_alignment = kernel.TOKEN_GROUP_ALIGNMENT
 
     def validate(self, experts: "GroupedExperts") -> None:
@@ -127,7 +132,7 @@ class FusedSwigluExpertCompute:
         if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
             raise ValueError("The prime_kernels expert backend requires bias-free experts.")
         num_experts, hidden_size, intermediate_size = experts.down_proj.shape
-        reason = self.kernel.unsupported_shape_reason(hidden_size, intermediate_size)
+        reason = self.kernel.unsupported_shape_reason(hidden_size, intermediate_size, fp8=self.fp8)
         if reason is not None:
             raise ValueError(f"The prime_kernels expert backend cannot run these experts: {reason}")
 
@@ -146,5 +151,6 @@ class FusedSwigluExpertCompute:
             to_local(experts.down_proj).bfloat16().contiguous(),
             num_tokens_per_expert,
             experts.activation.limit,
+            fp8=self.fp8,
         )
         return output.type_as(x)

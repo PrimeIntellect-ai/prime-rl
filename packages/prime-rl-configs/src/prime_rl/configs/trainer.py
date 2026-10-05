@@ -218,6 +218,9 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
+    backend: Literal["torch", "prime_kernels"] = "torch"
+    """``prime_kernels`` fuses the FP8 quantization and the clamped SwiGLU into the passes around DeepGEMM's
+    GEMMs (prime-kernels' ``moe_experts``, SM90)."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):

@@ -40,6 +40,8 @@ On 12 nodes the sharded model state fits in GPU memory without CP or any offload
 
 On Hopper, prime-kernels' fused indexer top-k, mHC projection and MoE expert kernels are picked up when installed (`model.moe.compute.backend = "prime_kernels"` for the experts); otherwise the model runs its own implementations.
 
+Appending [`fp8.toml`](sft/h200/fp8.toml) trains the dense linears and the routed experts in blockwise FP8 (DeepSeek-V3's recipe). That takes the step to about 4.9 s (~320k tokens/s) but changes the numerics, so it is opt-in.
+
 The engram tables are row-sharded across every data-parallel rank and served by all-to-all lookups, outside FSDP. Their gradients are dense fp32 shards, so plan for ~2 × 4 bytes × 197B / (number of GPUs) of engram state per GPU.
 
 ## Inference

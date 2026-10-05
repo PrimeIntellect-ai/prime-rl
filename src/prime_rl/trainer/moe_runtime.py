@@ -53,6 +53,10 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             raise RuntimeError(
                 f"DeepGEMM FP8 expert compute requires SM90 or newer, but this device is SM{capability[0]}{capability[1]}."
             )
+        if compute.backend == "prime_kernels":
+            import prime_kernels
+
+            return FusedSwigluExpertCompute(prime_kernels.load("moe_experts"), fp8=True)
         return DeepGemmFP8ExpertCompute()
     if isinstance(compute, MXFP8MoEComputeConfig):
         import prime_kernels

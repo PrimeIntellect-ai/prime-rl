@@ -57,7 +57,7 @@ Dense linear precision and routed-expert precision are configured independently.
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default), `"sonicmoe"`, or `"prime_kernels"`.
-- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
+- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+), with `backend = "torch"` (default) or `"prime_kernels"` (prime-kernels' `moe_experts` FP8 path, which fuses the quantization and the clamped SwiGLU into the passes around DeepGEMM's GEMMs; DeepSeek-V4 / V4.1 experts)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
