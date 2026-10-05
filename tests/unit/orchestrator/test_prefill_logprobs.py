@@ -2,8 +2,11 @@ import asyncio
 import json
 
 import httpx
+from openai import AsyncOpenAI
+from verifiers.v1.configs.client import TrainClientConfig
 
-from prime_rl.orchestrator.clients import prefill_logprobs
+from prime_rl.orchestrator.clients import PrefillScorer, prefill_logprobs
+from prime_rl.utils.weight_sync import WEIGHT_VERSION_HEADER
 
 
 class _FakeOpenAIClient:
@@ -60,3 +63,41 @@ def test_prefill_logprobs_uses_inference_generate():
         ]
 
     asyncio.run(_run())
+
+
+def test_cached_prefill_client_refreshes_policy_version_headers():
+    versions = []
+
+    def respond(request):
+        versions.append(request.headers[WEIGHT_VERSION_HEADER])
+        return httpx.Response(
+            200,
+            json={
+                "request_id": "score",
+                "choices": [],
+                "prompt_logprobs": [None, {"2": {"logprob": -0.7}}],
+                "kv_transfer_params": None,
+            },
+        )
+
+    async def run():
+        scorer = PrefillScorer()
+        scorer._client = AsyncOpenAI(
+            base_url="http://test/v1",
+            api_key="EMPTY",
+            default_headers={WEIGHT_VERSION_HEADER: "1"},
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        )
+        try:
+            for version in ["1", "2"]:
+                config = TrainClientConfig(
+                    type="train",
+                    base_url="http://test/v1",
+                    headers={WEIGHT_VERSION_HEADER: version},
+                )
+                assert await scorer.score(config, "model", [1, 2]) == [0.0, -0.7]
+            assert versions == ["1", "2"]
+        finally:
+            await scorer.aclose()
+
+    asyncio.run(run())

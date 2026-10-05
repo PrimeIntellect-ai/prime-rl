@@ -148,6 +148,12 @@ class FileSystemWeightReceiver(WeightReceiver):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         client_config = self.admin_plane.client_config
+        if client_config.lease_enabled and (
+            self.config.mode != "delta"
+            or self.config.update_protocol != "stage_commit"
+            or self.config.stage_transport == "shared_fs"
+        ):
+            raise ValueError("endpoint retirement requires transactional HTTP sparse delta synchronization")
         self.delta_endpoints = DeltaEndpointPool(
             self.admin_plane.clients,
             lease_enabled=client_config.lease_enabled,
@@ -159,6 +165,9 @@ class FileSystemWeightReceiver(WeightReceiver):
             stage_chunk_retries=self.config.stage_chunk_retries,
             stage_retries=self.config.stage_retries,
         )
+
+    async def aclose(self) -> None:
+        await self.delta_endpoints.aclose()
 
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)

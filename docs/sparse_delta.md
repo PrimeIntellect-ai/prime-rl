@@ -81,10 +81,14 @@ generation cannot resume until the base model is reloaded.
 commit fan out to all healthy endpoints. PrimeRL records per-endpoint results
 and can retire a failed endpoint when leases are enabled.
 
-With `retain_all_deltas = true`, a recovered endpoint reloads its original base
-weights and replays the complete committed chain before it is marked healthy.
-Recovery validates that every replay entry names the preceding version as its
-base.
+With `retain_all_deltas = true`, recovery runs in the background while healthy
+endpoints continue receiving updates. A clean endpoint with a known version and
+matching committed-artifact SHA-256 replays only the missing deltas. Dirty or
+unrecognized endpoints reload their original base weights and replay the full
+chain. Each relay peer is checked and recovered independently through its seed.
+An endpoint rejoins only after every worker in its region reaches the current
+committed version. Replay state is held in memory; process restart is not
+checkpoint resume.
 
 For region-local fan-out, configure one inference server as a relay seed:
 
@@ -106,12 +110,16 @@ stage, commit, and reload operations to its peers. Keep
 `fail_on_peer_error = true` when peers serve rollouts so a partially updated
 region cannot silently continue.
 
-Rollout routing remains unchanged. PrimeRL's default `sticky_least_loaded`
+PrimeRL's default `sticky_least_loaded`
 vLLM router policy provides session-affine, load-aware routing across replicas. Auto-launched
 routers probe `/weight_health`, which removes a worker from rollout routing
-while a failed update has left its weights dirty. Lease state separately
-controls the admin endpoints used for synchronization and replay. External
-routers should use the same health endpoint.
+while its weights are dirty or it is retired or recovering. Managed endpoints
+also reject generation until recovery is complete. The orchestrator sends
+`X-Prime-Weight-Version` with live-policy requests: workers reject requests for
+versions newer than their active weights, even if an admin isolation request
+cannot reach them. External clients of lease-managed deployments must send this
+header, and external routers should probe `/weight_health`. This is weight
+admission, not a per-prompt lease or result-version attestation protocol.
 
 ## Supported models and limitations
 

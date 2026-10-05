@@ -13,7 +13,25 @@ from uuid import uuid4
 import httpx
 from httpx import AsyncClient
 
+from prime_rl.utils.logger import get_logger
+
 STAGE_UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
+
+
+class RelayPeerClient:
+    def __init__(self, client: AsyncClient, index: int) -> None:
+        self.client = client
+        self.prefix = f"/weight_peer/{index}"
+        self.base_url = httpx.URL(f"{str(client.base_url).rstrip('/')}{self.prefix}")
+
+    async def get(self, route: str, **kwargs: Any) -> httpx.Response:
+        return await self.client.get(f"{self.prefix}/{route.lstrip('/')}", **kwargs)
+
+    async def post(self, route: str, **kwargs: Any) -> httpx.Response:
+        return await self.client.post(f"{self.prefix}/{route.lstrip('/')}", **kwargs)
+
+
+WeightAdminClient = AsyncClient | RelayPeerClient
 
 
 @dataclass(frozen=True)
@@ -44,6 +62,8 @@ class EndpointLeaseRuntime:
     retired_count: int = 0
     recovery_attempt_count: int = 0
     recovery_success_count: int = 0
+    replayed_delta_count: int = 0
+    reload_count: int = 0
     last_reason: str | None = None
 
 
@@ -55,10 +75,28 @@ class DeltaReplayEntry:
     upload: bool
     upload_method: Literal["multipart", "chunked", "streaming"]
     done_path: Path | None
+    sha256: str
 
 
-def _endpoint_key(admin_client: AsyncClient) -> str:
+def _endpoint_key(admin_client: WeightAdminClient) -> str:
     return str(admin_client.base_url).rstrip("/").removesuffix("/v1")
+
+
+def _delta_artifact_path(weight_path: Path, upload_method: str) -> Path:
+    if weight_path.is_file():
+        return weight_path
+    preferred = "delta.stream" if upload_method == "streaming" else "delta.safetensors"
+    fallback = "delta.safetensors" if upload_method == "streaming" else "delta.stream"
+    path = weight_path / preferred
+    return path if path.exists() else weight_path / fallback
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(STAGE_UPLOAD_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _format_exception(exception: BaseException) -> str:
@@ -77,11 +115,11 @@ def _is_retryable_stage_error(error: BaseException) -> bool:
 
 
 async def _run_endpoint_operations(
-    admin_clients: list[AsyncClient],
+    admin_clients: list[WeightAdminClient],
     operation: str,
-    call: Callable[[AsyncClient], Awaitable[None]],
+    call: Callable[[WeightAdminClient], Awaitable[None]],
 ) -> list[EndpointOperationResult]:
-    async def _run(admin_client: AsyncClient) -> EndpointOperationResult:
+    async def _run(admin_client: WeightAdminClient) -> EndpointOperationResult:
         start = time.perf_counter()
         try:
             await call(admin_client)
@@ -104,18 +142,18 @@ async def _run_endpoint_operations(
     return results
 
 
-async def _pause_engine(client: AsyncClient) -> None:
+async def _pause_engine(client: WeightAdminClient) -> None:
     response = await client.post("/pause", params={"mode": "keep", "clear_cache": "false"})
     response.raise_for_status()
 
 
-async def _resume_engine(client: AsyncClient) -> None:
+async def _resume_engine(client: WeightAdminClient) -> None:
     response = await client.post("/resume")
     response.raise_for_status()
 
 
 async def stage_weights(
-    admin_clients: list[AsyncClient],
+    admin_clients: list[WeightAdminClient],
     weight_path: Path,
     version: str,
     mode: str = "full",
@@ -130,6 +168,7 @@ async def stage_weights(
     stage_retry_base_delay_s: float = 1.0,
     done_path: Path | None = None,
     poll_interval_s: float = 0.1,
+    relay: bool = True,
 ) -> list[EndpointOperationResult]:
     """Stage weights on static inference servers.
 
@@ -159,11 +198,13 @@ async def stage_weights(
         raise ValueError("poll_interval_s must be positive")
 
     data = {"version": version, "mode": mode}
+    if not relay:
+        data["relay"] = "false"
     if base_version is not None:
         data["base_version"] = base_version
 
     async def _post_with_retries(
-        admin_client: AsyncClient,
+        admin_client: WeightAdminClient,
         route: str,
         **kwargs: Any,
     ) -> httpx.Response:
@@ -213,25 +254,18 @@ async def stage_weights(
             upload_path = preferred_path if preferred_path.exists() or not fallback_path.exists() else fallback_path
         return upload_path
 
-    def _sha256_file(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as f:
-            while chunk := f.read(STAGE_UPLOAD_CHUNK_BYTES):
-                digest.update(chunk)
-        return digest.hexdigest()
-
-    async def _stage_path(admin_client: AsyncClient) -> None:
+    async def _stage_path(admin_client: WeightAdminClient) -> None:
         response = await admin_client.post("/stage", data={**data, "path": weight_path.as_posix()})
         response.raise_for_status()
 
-    async def _stage_multipart_upload(admin_client: AsyncClient, upload_path: Path) -> None:
+    async def _stage_multipart_upload(admin_client: WeightAdminClient, upload_path: Path) -> None:
         with upload_path.open("rb") as f:
             files = {"file": (upload_path.name, f, "application/octet-stream")}
             response = await admin_client.post("/stage", data=data, files=files)
         response.raise_for_status()
 
     async def _stage_chunked_upload(
-        admin_client: AsyncClient,
+        admin_client: WeightAdminClient,
         upload_path: Path,
         total_size: int,
         expected_sha256: str,
@@ -278,7 +312,7 @@ async def stage_weights(
         await _post_with_retries(admin_client, "/stage_finalize", data=chunk_data)
 
     async def _stage_streaming_upload(
-        admin_client: AsyncClient,
+        admin_client: WeightAdminClient,
         upload_path: Path,
         done_path: Path | None,
         upload_id: str,
@@ -356,7 +390,7 @@ async def stage_weights(
         finalize_data = {
             "upload_id": upload_id,
             "final_size": str(final_size),
-            "sha256": _sha256_file(upload_path),
+            "sha256": await asyncio.to_thread(_sha256_file, upload_path),
         }
         await _post_with_retries(admin_client, "/stage_stream_finalize", data=finalize_data)
 
@@ -370,7 +404,7 @@ async def stage_weights(
             )
         if upload_method == "chunked":
             total_size = upload_path.stat().st_size
-            expected_sha256 = _sha256_file(upload_path)
+            expected_sha256 = await asyncio.to_thread(_sha256_file, upload_path)
             return await _run_endpoint_operations(
                 admin_clients,
                 "stage_weights",
@@ -379,7 +413,7 @@ async def stage_weights(
                 ),
             )
 
-        async def _stage_streaming_with_retries(admin_client: AsyncClient) -> None:
+        async def _stage_streaming_with_retries(admin_client: WeightAdminClient) -> None:
             upload_id = uuid4().hex
             await _retry_complete_stage(
                 lambda: _stage_streaming_upload(admin_client, upload_path, done_path, upload_id)
@@ -398,42 +432,73 @@ async def stage_weights(
 
 
 async def commit_weights(
-    admin_clients: list[AsyncClient], version: str, mode: str | None = None
+    admin_clients: list[WeightAdminClient],
+    version: str,
+    mode: str | None = None,
+    *,
+    resume: bool = True,
+    relay: bool = True,
 ) -> list[EndpointOperationResult]:
     """Commit a staged weight version on static inference servers."""
     data = {"version": version}
     if mode is not None:
         data["mode"] = mode
+    if not resume:
+        data["resume"] = "false"
+    if not relay:
+        data["relay"] = "false"
 
-    async def _commit(admin_client: AsyncClient) -> None:
+    async def _commit(admin_client: WeightAdminClient) -> None:
         response = await admin_client.post("/commit", data=data)
         response.raise_for_status()
 
-    async def _commit_with_pause(admin_client: AsyncClient) -> None:
+    async def _commit_with_pause(admin_client: WeightAdminClient) -> None:
         await _pause_engine(admin_client)
         try:
             await _commit(admin_client)
         finally:
-            await _resume_engine(admin_client)
+            if resume:
+                await _resume_engine(admin_client)
 
     return await _run_endpoint_operations(admin_clients, "commit_weights", _commit_with_pause)
 
 
-async def reload_weights(admin_clients: list[AsyncClient]) -> list[EndpointOperationResult]:
+async def reload_weights(
+    admin_clients: list[WeightAdminClient], *, resume: bool = True, relay: bool = True
+) -> list[EndpointOperationResult]:
     """Reload base model weights on static inference servers."""
 
-    async def _reload(admin_client: AsyncClient) -> None:
-        response = await admin_client.post("/reload_weights")
+    data = {}
+    if not resume:
+        data["resume"] = "false"
+    if not relay:
+        data["relay"] = "false"
+
+    async def _reload(admin_client: WeightAdminClient) -> None:
+        response = await admin_client.post("/reload_weights", data=data)
         response.raise_for_status()
 
-    async def _reload_with_pause(admin_client: AsyncClient) -> None:
+    async def _reload_with_pause(admin_client: WeightAdminClient) -> None:
         await _pause_engine(admin_client)
         try:
             await _reload(admin_client)
         finally:
-            await _resume_engine(admin_client)
+            if resume:
+                await _resume_engine(admin_client)
 
     return await _run_endpoint_operations(admin_clients, "reload_weights", _reload_with_pause)
+
+
+async def set_weight_serving(
+    client: WeightAdminClient, *, enabled: bool, version: str | None = None, timeout_s: float = 5.0
+) -> None:
+    response = await client.post(
+        "/weight_serving",
+        params={"timeout_s": timeout_s},
+        json={"enabled": enabled, "version": version},
+        timeout=timeout_s,
+    )
+    response.raise_for_status()
 
 
 class DeltaEndpointPool:
@@ -466,6 +531,9 @@ class DeltaEndpointPool:
         self.staged_endpoints: dict[str, set[str]] = {}
         self.active_version = "base"
         self.lock = asyncio.Lock()
+        self._serving_initialized = False
+        self._recovery_tasks: dict[str, asyncio.Task] = {}
+        self._closed = False
 
     async def stage(
         self,
@@ -478,7 +546,18 @@ class DeltaEndpointPool:
         done_path: Path | None,
     ) -> None:
         async with self.lock:
-            await self._recover_eligible()
+            if self._closed:
+                raise RuntimeError("delta endpoint pool is closed")
+            if self.lease_enabled and not self._serving_initialized:
+                await self._record(
+                    _run_endpoint_operations(
+                        self.clients,
+                        "quarantine_weights",
+                        lambda client: set_weight_serving(client, enabled=False, timeout_s=self.health_timeout_s),
+                    ),
+                    allow_partial=True,
+                )
+                self._serving_initialized = True
             clients = self._healthy_clients("stage_weights")
             results = await self._record(
                 stage_weights(
@@ -505,6 +584,7 @@ class DeltaEndpointPool:
                 upload=upload,
                 upload_method=upload_method,
                 done_path=done_path,
+                sha256=await asyncio.to_thread(_sha256_file, _delta_artifact_path(weight_path, upload_method)),
             )
 
     async def commit(self, version: str) -> None:
@@ -538,12 +618,23 @@ class DeltaEndpointPool:
             ]
             if not commit_clients:
                 raise RuntimeError(f"No staged inference endpoint is available for delta version {version}.")
-            await self._record(
-                commit_weights(commit_clients, version=version, mode="delta"),
+            results = await self._record(
+                commit_weights(commit_clients, version=version, mode="delta", resume=not self.lease_enabled),
                 allow_partial=self.lease_enabled,
             )
             self.active_version = version
-            await self._recover_eligible()
+            if self.lease_enabled:
+                successful = {result.endpoint for result in results if result.ok}
+                await self._record(
+                    _run_endpoint_operations(
+                        [client for client in commit_clients if _endpoint_key(client) in successful],
+                        "enable_weight_serving",
+                        lambda client: set_weight_serving(
+                            client, enabled=True, version=version, timeout_s=self.health_timeout_s
+                        ),
+                    ),
+                    allow_partial=True,
+                )
 
     def metrics(self) -> dict[str, float]:
         state_values = {"healthy": 0.0, "retired": 2.0, "recovering": 3.0}
@@ -555,6 +646,8 @@ class DeltaEndpointPool:
             metrics[f"{prefix}/retired_count"] = float(runtime.retired_count)
             metrics[f"{prefix}/recovery_attempts"] = float(runtime.recovery_attempt_count)
             metrics[f"{prefix}/recovery_successes"] = float(runtime.recovery_success_count)
+            metrics[f"{prefix}/replayed_deltas"] = float(runtime.replayed_delta_count)
+            metrics[f"{prefix}/reloads"] = float(runtime.reload_count)
         return metrics
 
     def _healthy_clients(self, operation: str) -> list[AsyncClient]:
@@ -574,9 +667,15 @@ class DeltaEndpointPool:
         try:
             return await operation
         except EndpointOperationError as error:
+            failed = {result.endpoint for result in error.results if not result.ok}
             for result in error.results:
                 if not result.ok:
                     self._retire(result.endpoint, f"{result.operation} failed: {result.error}")
+            if self.lease_enabled:
+                await asyncio.gather(
+                    *(self._quarantine(client) for client in self.clients if _endpoint_key(client) in failed)
+                )
+            self._schedule_recoveries()
             if allow_partial and any(result.ok for result in error.results):
                 return error.results
             raise
@@ -588,76 +687,151 @@ class DeltaEndpointPool:
         runtime.retired_count += 1
         runtime.last_reason = reason
 
-    async def _recover_eligible(self) -> None:
-        if not self.recovery_enabled:
+    async def _quarantine(self, client: AsyncClient) -> None:
+        try:
+            await set_weight_serving(client, enabled=False, timeout_s=self.health_timeout_s)
+        except httpx.HTTPError as error:
+            get_logger().warning(f"Could not quarantine {_endpoint_key(client)}: {error}")
+
+    def _schedule_recoveries(self) -> None:
+        if not self.recovery_enabled or self._closed:
             return
-        now = time.monotonic()
         for client in self.clients:
             endpoint = _endpoint_key(client)
-            runtime = self.runtime[endpoint]
-            if runtime.state != "retired" or (runtime.retry_after is not None and now < runtime.retry_after):
+            task = self._recovery_tasks.get(endpoint)
+            if self.runtime[endpoint].state != "retired" or (task is not None and not task.done()):
                 continue
-            if not await self._healthy(client):
-                continue
-            await self._recover(client)
+            task = asyncio.create_task(self._recovery_loop(client), name=f"delta_recovery:{endpoint}")
+            self._recovery_tasks[endpoint] = task
+            task.add_done_callback(lambda done, key=endpoint: self._recovery_finished(key, done))
 
-    async def _healthy(self, client: AsyncClient) -> bool:
-        try:
-            response = await client.get("/health", timeout=self.health_timeout_s)
-            if response.status_code != 404:
-                response.raise_for_status()
-        except Exception:
-            return False
-        return True
+    def _recovery_finished(self, endpoint: str, task: asyncio.Task) -> None:
+        if self._recovery_tasks.get(endpoint) is task:
+            self._recovery_tasks.pop(endpoint)
+
+    async def _recovery_loop(self, client: AsyncClient) -> None:
+        endpoint = _endpoint_key(client)
+        while not self._closed:
+            runtime = self.runtime[endpoint]
+            if runtime.retry_after is not None:
+                await asyncio.sleep(max(0, runtime.retry_after - time.monotonic()))
+            async with self.lock:
+                if runtime.state != "retired":
+                    return
+                runtime.state = "recovering"
+                runtime.recovery_attempt_count += 1
+                runtime.retry_after = None
+                for staged in self.staged_endpoints.values():
+                    staged.discard(endpoint)
+            try:
+                await self._recover(client)
+            except asyncio.CancelledError:
+                await asyncio.shield(self._quarantine(client))
+                raise
+            except Exception as error:
+                async with self.lock:
+                    self._retire(endpoint, f"delta recovery failed: {error}")
+                get_logger().warning(f"Delta recovery failed on {endpoint}: {error}")
+                await asyncio.sleep(self.health_timeout_s)
+            else:
+                return
 
     async def _recover(self, client: AsyncClient) -> None:
         endpoint = _endpoint_key(client)
         runtime = self.runtime[endpoint]
-        runtime.state = "recovering"
-        runtime.recovery_attempt_count += 1
-        runtime.retry_after = None
-        for staged in self.staged_endpoints.values():
-            staged.discard(endpoint)
-        try:
-            await reload_weights([client])
-            for entry in self._replay_plan():
-                await stage_weights(
-                    [client],
-                    entry.weight_path,
-                    version=entry.version,
-                    mode="delta",
-                    base_version=entry.base_version,
-                    upload=entry.upload,
-                    upload_method=entry.upload_method,
-                    chunk_size_bytes=self.stage_chunk_size_bytes,
-                    num_streams=self.stage_num_streams,
-                    chunk_retries=self.stage_chunk_retries,
-                    stage_retries=self.stage_retries,
-                    done_path=entry.done_path,
-                )
-                await commit_weights([client], version=entry.version, mode="delta")
-                self.staged_endpoints.setdefault(entry.version, set()).add(endpoint)
-        except Exception as error:
-            self._retire(endpoint, f"delta replay recovery failed: {error}")
-            return
-        runtime.state = "healthy"
-        runtime.recovery_success_count += 1
-        runtime.last_reason = f"replayed delta chain to version {self.active_version}"
+        await set_weight_serving(client, enabled=False, timeout_s=self.health_timeout_s)
+        response = await client.get(
+            "/weight_status", params={"timeout_s": self.health_timeout_s}, timeout=self.health_timeout_s
+        )
+        response.raise_for_status()
+        status = response.json()
+        nodes: list[tuple[WeightAdminClient, dict[str, Any]]] = [(client, status)]
+        for index, peer in enumerate(status["peers"]):
+            if "error" in peer:
+                raise RuntimeError(f"relay peer {peer['url']} is unavailable: {peer['error']}")
+            nodes.append((RelayPeerClient(client, index), peer))
 
-    def _replay_plan(self) -> list[DeltaReplayEntry]:
-        if self.active_version == "base":
-            return []
-        entries = sorted(self.replay_entries.values(), key=lambda entry: int(entry.version))
+        async with self.lock:
+            target_version = self.active_version
+        versions: list[str] = []
+        for node, node_status in nodes:
+            version = self._trusted_version(node_status, target_version)
+            if version is None:
+                await reload_weights([node], resume=False, relay=False)
+                runtime.reload_count += 1
+                version = "base"
+            versions.append(version)
+
+        while True:
+            async with self.lock:
+                target_version = self.active_version
+            for index, (node, _) in enumerate(nodes):
+                for entry in self._replay_plan(versions[index], target_version):
+                    await self._replay(node, entry)
+                    versions[index] = entry.version
+                    runtime.replayed_delta_count += 1
+            await set_weight_serving(client, enabled=True, version=target_version, timeout_s=self.health_timeout_s)
+            async with self.lock:
+                if self.active_version == target_version:
+                    runtime.state = "healthy"
+                    runtime.recovery_success_count += 1
+                    runtime.last_reason = f"caught up to version {target_version}"
+                    self.staged_endpoints.setdefault(target_version, set()).add(endpoint)
+                    return
+            await set_weight_serving(client, enabled=False, timeout_s=self.health_timeout_s)
+
+    async def _replay(self, client: WeightAdminClient, entry: DeltaReplayEntry) -> None:
+        await stage_weights(
+            [client],
+            entry.weight_path,
+            version=entry.version,
+            mode="delta",
+            base_version=entry.base_version,
+            upload=entry.upload,
+            upload_method=entry.upload_method,
+            chunk_size_bytes=self.stage_chunk_size_bytes,
+            num_streams=self.stage_num_streams,
+            chunk_retries=self.stage_chunk_retries,
+            stage_retries=self.stage_retries,
+            done_path=entry.done_path,
+            relay=False,
+        )
+        await commit_weights([client], version=entry.version, mode="delta", resume=False, relay=False)
+
+    def _trusted_version(self, status: dict[str, Any], target_version: str) -> str | None:
+        if status["weights_dirty"]:
+            return None
+        version = status["active_version"]
+        if version == "base":
+            return "base" if status["active_sha256"] is None else None
+        entry = self.replay_entries.get(version)
+        if entry is None or status["active_sha256"] != entry.sha256:
+            return None
+        try:
+            self._replay_plan(version, target_version)
+        except RuntimeError:
+            return None
+        return version
+
+    def _replay_plan(self, base_version: str = "base", target_version: str | None = None) -> list[DeltaReplayEntry]:
+        version = self.active_version if target_version is None else target_version
         plan: list[DeltaReplayEntry] = []
-        expected_base = "base"
-        for entry in entries:
-            if entry.base_version != expected_base:
-                raise RuntimeError(
-                    f"delta replay chain is broken at version {entry.version}: "
-                    f"expected base {expected_base}, got {entry.base_version}"
-                )
+        seen: set[str] = set()
+        while version != base_version:
+            if version in seen:
+                raise RuntimeError(f"delta replay chain contains a cycle at version {version}")
+            seen.add(version)
+            entry = self.replay_entries.get(version)
+            if entry is None:
+                raise RuntimeError(f"missing delta replay entry for version {version} (base={base_version})")
             plan.append(entry)
-            expected_base = entry.version
-            if entry.version == self.active_version:
-                return plan
-        raise RuntimeError(f"missing delta replay entry for active version {self.active_version}")
+            version = entry.base_version
+        return list(reversed(plan))
+
+    async def aclose(self) -> None:
+        self._closed = True
+        tasks = list(self._recovery_tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._recovery_tasks.clear()

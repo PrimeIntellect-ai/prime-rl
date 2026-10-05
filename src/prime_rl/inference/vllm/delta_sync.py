@@ -7,18 +7,72 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse, Response
 from starlette.datastructures import State, UploadFile
+from starlette.types import ASGIApp, Receive, Scope, Send
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.logger import init_logger
+
+from prime_rl.utils.weight_sync import WEIGHT_VERSION_HEADER, generation_weight_error
 
 logger = init_logger("vllm.inference.delta_sync")
 router = APIRouter()
 
 WEIGHT_UPDATE_MODES = {"full", "delta"}
 STAGE_READ_CHUNK_BYTES = 16 * 1024 * 1024
+GENERATION_PATHS = {
+    "/v1/chat/completions",
+    "/v1/chat/completions/batch",
+    "/v1/completions",
+    "/v1/responses",
+    "/v1/messages",
+    "/generative_scoring",
+    "/v1/embeddings",
+    "/pooling",
+    "/score",
+    "/rerank",
+    "/v1/rerank",
+    "/invocations",
+    "/inference/v1/generate",
+}
+PEER_ADMIN_PATHS = {
+    "weight_status",
+    "weight_serving",
+    "pause",
+    "resume",
+    "stage",
+    "stage_chunk",
+    "stage_finalize",
+    "stage_stream_init",
+    "stage_stream_chunk",
+    "stage_stream_finalize",
+    "commit",
+    "reload_weights",
+}
+
+
+class WeightServingMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["path"].removeprefix(scope.get("root_path", "")) in GENERATION_PATHS:
+            request = Request(scope)
+            state = request.app.state
+            error = generation_weight_error(
+                active_version=getattr(state, "active_version", "base"),
+                weights_dirty=getattr(state, "weights_dirty", False),
+                serving_ready=getattr(state, "weight_serving_ready", True),
+                require_version=getattr(state, "require_weight_version", False),
+                minimum_version=request.headers.get(WEIGHT_VERSION_HEADER),
+            )
+            if error is not None:
+                status_code, message = error
+                await JSONResponse({"error": message}, status_code=status_code)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def engine_client(request: Request) -> EngineClient:
@@ -44,6 +98,14 @@ def _ensure_weight_staging_state(state: State) -> None:
         state.stage_upload_lock = asyncio.Lock()
     if not hasattr(state, "weights_dirty"):
         state.weights_dirty = False
+    if not hasattr(state, "weight_serving_ready"):
+        state.weight_serving_ready = True
+    if not hasattr(state, "weight_serving_revision"):
+        state.weight_serving_revision = 0
+    if not hasattr(state, "require_weight_version"):
+        state.require_weight_version = False
+    if not hasattr(state, "active_weight_sha256"):
+        state.active_weight_sha256 = None
     if not hasattr(state, "staging_dir"):
         state.staging_dir = Path("staging")
     state.staging_dir.mkdir(parents=True, exist_ok=True)
@@ -96,6 +158,115 @@ def _relay_transport(state: State, peer: str) -> httpx.AsyncBaseTransport | None
     if not transports:
         return None
     return transports.get(peer) or transports.get(_normalize_admin_url(peer))
+
+
+@router.get("/weight_status")
+async def weight_status(request: Request, relay: bool = True, timeout_s: float = Query(5.0, gt=0)):
+    state = request.app.state
+    _ensure_weight_staging_state(state)
+    status = {
+        "active_version": state.active_version,
+        "active_sha256": state.active_weight_sha256,
+        "weights_dirty": state.weights_dirty,
+        "serving_ready": state.weight_serving_ready,
+        "require_version": state.require_weight_version,
+    }
+
+    async def peer_status(peer: str) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s, transport=_relay_transport(state, peer)) as client:
+                response = await client.get(_relay_peer_url(peer, "/weight_status"), params={"relay": "false"})
+                response.raise_for_status()
+                return {"url": peer, **response.json()}
+        except httpx.HTTPError as error:
+            return {"url": peer, "error": str(error)}
+
+    status["peers"] = await asyncio.gather(*(peer_status(peer) for peer in _relay_peers(state))) if relay else []
+    return status
+
+
+@router.post("/weight_serving")
+async def weight_serving(request: Request, timeout_s: float = Query(5.0, gt=0)):
+    state = request.app.state
+    _ensure_weight_staging_state(state)
+    fields, _ = await _read_request_fields(request)
+    if "enabled" not in fields:
+        return _error_response(400, "enabled is required")
+    enabled = _coerce_bool(fields["enabled"], default=False)
+    version = fields.get("version")
+    if enabled and version is None:
+        return _error_response(400, "version is required when enabling generation")
+
+    state.weight_serving_ready = False
+    state.require_weight_version = True
+    state.weight_serving_revision += 1
+    revision = state.weight_serving_revision
+    async with state.weight_update_lock:
+        if revision != state.weight_serving_revision:
+            return _error_response(409, "serving control request was superseded")
+        if enabled and (state.weights_dirty or state.active_version != str(version)):
+            return _error_response(409, "weights do not match the serving version")
+        if not enabled:
+            await engine_client(request).pause_generation(mode="abort", clear_cache=False)
+
+        async def set_peer(peer: str) -> tuple[str, float | None]:
+            start = time.perf_counter()
+            try:
+                await _relay_post(
+                    state,
+                    peer,
+                    "/weight_serving",
+                    timeout_s=timeout_s,
+                    params={"timeout_s": timeout_s},
+                    json={"enabled": enabled, "version": version, "relay": False},
+                )
+            except httpx.HTTPError as error:
+                logger.warning("[relay][weight_serving] %s failed: %s", peer, error)
+                return peer, None
+            return peer, time.perf_counter() - start
+
+        peers = _relay_peers(state) if _relay_requested(fields) else []
+        relay_stats = dict(await asyncio.gather(*(set_peer(peer) for peer in peers)))
+        if any(duration is None for duration in relay_stats.values()):
+            return _error_response(502, "could not update generation readiness on every relay peer")
+        if enabled:
+            if revision != state.weight_serving_revision:
+                return _error_response(409, "serving control request was superseded")
+            await engine_client(request).check_health()
+            await engine_client(request).resume_generation()
+            if revision != state.weight_serving_revision:
+                return _error_response(409, "serving control request was superseded")
+            state.weight_serving_ready = True
+    return {"status": "ok", "serving_ready": enabled, "active_version": state.active_version}
+
+
+@router.api_route("/weight_peer/{peer_index}/{route}", methods=["GET", "POST"])
+async def weight_peer(request: Request, peer_index: int, route: str):
+    peers = _relay_peers(request.app.state)
+    if route not in PEER_ADMIN_PATHS or not 0 <= peer_index < len(peers):
+        return _error_response(404, "unknown weight admin peer or route")
+    peer = peers[peer_index]
+    headers = {
+        name: request.headers[name]
+        for name in ("content-type", "content-length", "authorization")
+        if name in request.headers
+    }
+    async with httpx.AsyncClient(
+        timeout=getattr(request.app.state, "relay_stage_timeout_s", 3600.0),
+        transport=_relay_transport(request.app.state, peer),
+    ) as client:
+        response = await client.request(
+            request.method,
+            _relay_peer_url(peer, route),
+            params=request.query_params,
+            headers=headers,
+            content=request.stream(),
+        )
+    return Response(
+        response.content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type"),
+    )
 
 
 async def _relay_post(
@@ -407,6 +578,7 @@ async def _fan_out_commit(
     version: str,
     mode: str,
     relay: bool,
+    resume: bool = True,
 ) -> dict[str, float | None]:
     peers = _relay_peers(state)
     if not relay or not peers:
@@ -414,7 +586,7 @@ async def _fan_out_commit(
 
     results: dict[str, float | None] = {}
     timeout_s = getattr(state, "relay_commit_timeout_s", 600.0)
-    data = {"version": version, "mode": mode, "relay": "false"}
+    data = {"version": version, "mode": mode, "relay": "false", "resume": str(resume).lower()}
     logger.info("[relay][commit] fan-out start v%s (%s) peers=%s", version, mode, peers)
 
     async def _send(peer: str) -> None:
@@ -424,7 +596,8 @@ async def _fan_out_commit(
             try:
                 await _relay_post(state, peer, "/commit", timeout_s=timeout_s, data=data)
             finally:
-                await _relay_resume_peer(state, peer, timeout_s)
+                if resume:
+                    await _relay_resume_peer(state, peer, timeout_s)
         except Exception as exc:
             results[peer] = None
             logger.warning("[relay][commit] v%s -> %s failed: %s", version, peer, exc)
@@ -436,7 +609,7 @@ async def _fan_out_commit(
     return results
 
 
-async def _fan_out_reload(state: State, *, relay: bool) -> dict[str, float | None]:
+async def _fan_out_reload(state: State, *, relay: bool, resume: bool = True) -> dict[str, float | None]:
     peers = _relay_peers(state)
     if not relay or not peers:
         return {}
@@ -450,9 +623,16 @@ async def _fan_out_reload(state: State, *, relay: bool) -> dict[str, float | Non
         try:
             await _relay_pause_peer(state, peer, timeout_s)
             try:
-                await _relay_post(state, peer, "/reload_weights", timeout_s=timeout_s, data={"relay": "false"})
+                await _relay_post(
+                    state,
+                    peer,
+                    "/reload_weights",
+                    timeout_s=timeout_s,
+                    data={"relay": "false", "resume": str(resume).lower()},
+                )
             finally:
-                await _relay_resume_peer(state, peer, timeout_s)
+                if resume:
+                    await _relay_resume_peer(state, peer, timeout_s)
         except Exception as exc:
             results[peer] = None
             logger.warning("[relay][reload_weights] -> %s failed: %s", peer, exc)
@@ -507,6 +687,11 @@ async def _register_staged_version(state: State, version: str, entry: dict[str, 
         if isinstance(metadata, JSONResponse):
             _cleanup_staged_file(state, entry)
             return metadata
+        if entry["mode"] == "delta":
+            entry["sha256"] = await asyncio.to_thread(_file_sha256, _stage_relay_file(Path(entry["path"]), "delta"))
+            if state.active_version == version and state.active_weight_sha256 != entry["sha256"]:
+                _cleanup_staged_file(state, entry)
+                return _error_response(409, "delta does not match the active version")
         previous = state.staged_versions.get(version)
         if previous is not None and previous["path"] != entry["path"]:
             _cleanup_staged_file(state, previous)
@@ -1181,6 +1366,7 @@ async def _commit_weights(request: Request):
         method = "update_weights_from_delta_path" if mode == "delta" else "update_weights_from_path"
         await engine_client(request).collective_rpc(method, args=(path.as_posix(),))
         state.active_version = version
+        state.active_weight_sha256 = entry.get("sha256")
         state.weights_dirty = False
     for staged_version, old_entry in list(staged_versions.items()):
         if staged_version == version:
@@ -1194,6 +1380,7 @@ async def _commit_weights(request: Request):
         version=version,
         mode=mode,
         relay=relay_requested,
+        resume=_coerce_bool(fields.get("resume"), default=True),
     )
     fanout_ms = (time.perf_counter() - fanout_start) * 1000
     failure_response = _relay_failure_response(request.app.state, "commit", relay_stats)
@@ -1225,12 +1412,15 @@ async def _reload_weights(request: Request):
     for upload in list(request.app.state.stage_uploads.values()):
         _cleanup_stage_upload(request.app.state, upload)
     request.app.state.active_version = "base"
+    request.app.state.active_weight_sha256 = None
     request.app.state.weights_dirty = False
     request.app.state.staged_versions.clear()
     request.app.state.stage_uploads.clear()
     request.app.state.finalized_stage_uploads.clear()
     fanout_start = time.perf_counter()
-    relay_stats = await _fan_out_reload(request.app.state, relay=relay_requested)
+    relay_stats = await _fan_out_reload(
+        request.app.state, relay=relay_requested, resume=_coerce_bool(fields.get("resume"), default=True)
+    )
     fanout_ms = (time.perf_counter() - fanout_start) * 1000
     failure_response = _relay_failure_response(request.app.state, "reload_weights", relay_stats)
     if failure_response is not None:
@@ -1246,6 +1436,10 @@ def initialize_delta_sync_state(state: State, args: Namespace) -> None:
     state.finalized_stage_uploads = {}
     state.active_version = "base"
     state.weights_dirty = False
+    state.weight_serving_ready = True
+    state.weight_serving_revision = 0
+    state.require_weight_version = False
+    state.active_weight_sha256 = None
     state.weight_update_lock = asyncio.Lock()
     state.stage_upload_lock = asyncio.Lock()
     state.api_server_count = int(getattr(args, "api_server_count", 1))

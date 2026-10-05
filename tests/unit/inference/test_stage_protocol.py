@@ -5,31 +5,36 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 
+from prime_rl.inference.vllm.delta_sync import GENERATION_PATHS, WeightServingMiddleware
 from prime_rl.inference.vllm.delta_sync import router as delta_sync_router
 from prime_rl.inference.vllm.server import router as server_router
 from prime_rl.orchestrator.delta_sync import (
     DeltaEndpointPool,
     commit_weights,
     reload_weights,
+    set_weight_serving,
     stage_weights,
 )
+from prime_rl.utils.weight_sync import WEIGHT_VERSION_HEADER
 
 
 class FakeEngineClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple]] = []
+        self.pause_modes: list[str] = []
+        self.paused = False
 
     async def collective_rpc(self, method: str, args: tuple = ()) -> None:
         self.calls.append((method, args))
         await asyncio.sleep(0)
 
     async def pause_generation(self, mode: str = "keep", clear_cache: bool = False) -> None:
-        pass
+        self.pause_modes.append(mode)
+        self.paused = True
 
     async def resume_generation(self) -> None:
-        pass
+        self.paused = False
 
     async def check_health(self) -> None:
         pass
@@ -45,16 +50,13 @@ def make_app(
 ):
     app = FastAPI()
     app.include_router(delta_sync_router)
+    app.include_router(server_router)
+    app.add_middleware(WeightServingMiddleware)
 
-    @app.post("/pause")
-    async def pause():
-        return {"status": "paused"}
-
-    @app.post("/resume")
-    async def resume():
-        if getattr(app.state, "weights_dirty", False):
-            return JSONResponse({"error": "weights require reload after a failed update"}, status_code=409)
-        return {"status": "resumed"}
+    @app.post("/v1/chat/completions")
+    async def generate():
+        app.state.generation_requests += 1
+        return {"version": app.state.active_version}
 
     app.state.engine_client = FakeEngineClient()
     app.state.staging_dir = tmp_path / "staging"
@@ -62,6 +64,10 @@ def make_app(
     app.state.staged_versions = {}
     app.state.stage_uploads = {}
     app.state.active_version = "base"
+    app.state.active_weight_sha256 = None
+    app.state.weight_serving_ready = True
+    app.state.require_weight_version = False
+    app.state.generation_requests = 0
     app.state.api_server_count = 1
     app.state.relay_enabled = bool(relay_peers)
     app.state.relay_peers = relay_peers or []
@@ -213,6 +219,376 @@ def test_weight_health_rejects_dirty_worker() -> None:
     asyncio.run(run())
 
 
+@pytest.mark.gpu
+def test_weight_guard_registers_before_vllm_builds_middleware_stack() -> None:
+    from vllm.entrypoints.launchers.cli_args import make_arg_parser
+    from vllm.utils.argparse_utils import FlexibleArgumentParser
+
+    from prime_rl.inference.vllm.server import custom_build_app
+
+    args = make_arg_parser(FlexibleArgumentParser()).parse_args([])
+    app = custom_build_app(args, ("generate",))
+    app.state.weight_serving_ready = False
+    assert args.middleware == []
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/v1/completions", json={"model": "test", "prompt": "hello"})
+            assert response.status_code == 503
+            assert response.json()["error"] == "weights are not ready for generation"
+
+    asyncio.run(run())
+
+
+def test_generation_is_fenced_until_exact_serving_version_is_ready(tmp_path) -> None:
+    app = make_app(tmp_path)
+    app.state.active_version = "2"
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.post("/v1/chat/completions")).status_code == 200
+            await set_weight_serving(client, enabled=False)
+            assert app.state.engine_client.pause_modes[-1] == "abort"
+            assert (await client.get("/weight_health")).status_code == 503
+            assert (await client.post("/resume")).status_code == 409
+            assert (await client.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "2"})).status_code == 503
+            assert (await client.post("/reload_weights", data={"resume": "false"})).status_code == 200
+            assert not app.state.weight_serving_ready
+            app.state.active_version = "2"
+            response = await client.post("/weight_serving", json={"enabled": True, "version": "3"})
+            assert response.status_code == 409
+            assert not app.state.weight_serving_ready
+            await set_weight_serving(client, enabled=True, version="2")
+            assert (await client.post("/v1/chat/completions")).status_code == 400
+            assert (await client.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "3"})).status_code == 503
+            assert (await client.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "2"})).status_code == 200
+            assert app.state.generation_requests == 2
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("root_path", ["", "/api"])
+def test_quarantine_covers_model_routes_with_application_root_path(tmp_path, root_path) -> None:
+    app = make_app(tmp_path)
+    app.root_path = root_path
+    app.state.weight_serving_ready = False
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            for path in GENERATION_PATHS:
+                response = await client.post(root_path + path, json={})
+                assert response.status_code == 503, path
+            assert (await client.get(root_path + "/v1/models")).status_code == 404
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("transport", ["multipart", "chunked", "streaming"])
+@pytest.mark.parametrize("trust", ["clean", "dirty", "wrong_hash"])
+def test_background_recovery_stays_fenced_and_catches_up_without_blocking(tmp_path, transport, trust) -> None:
+    healthy = make_app(tmp_path / "healthy")
+    lagging = make_app(tmp_path / "lagging")
+
+    async def run() -> None:
+        fail_stage = False
+        delay_recovery = False
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def lagging_transport(request):
+            if request.url.path.startswith("/stage"):
+                if fail_stage:
+                    return httpx.Response(503)
+                if delay_recovery:
+                    started.set()
+                    await release.wait()
+            return await httpx.ASGITransport(app=lagging).handle_async_request(request)
+
+        async with (
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=healthy), base_url="http://healthy") as first,
+            httpx.AsyncClient(transport=httpx.MockTransport(lagging_transport), base_url="http://lagging") as second,
+        ):
+            pool = DeltaEndpointPool(
+                [first, second],
+                lease_enabled=True,
+                recovery_enabled=True,
+                cooldown_s=0.01,
+                health_timeout_s=0.02,
+                stage_num_streams=2,
+                stage_chunk_size_bytes=4,
+                stage_chunk_retries=0,
+                stage_retries=0,
+            )
+
+            async def advance(version):
+                path = tmp_path / f"delta-{version}.safetensors"
+                path.write_bytes(f"delta-{version}".encode())
+                await pool.stage(
+                    path,
+                    version=str(version),
+                    base_version=pool.active_version,
+                    upload=True,
+                    upload_method=transport,
+                    done_path=None,
+                )
+                await pool.commit(str(version))
+
+            try:
+                await advance(0)
+                await advance(1)
+                fail_stage = True
+                await advance(2)
+                assert lagging.state.active_version == "1"
+                assert not lagging.state.weight_serving_ready
+                assert (await second.get("/weight_health")).status_code == 503
+                if trust == "dirty":
+                    lagging.state.weights_dirty = True
+                elif trust == "wrong_hash":
+                    lagging.state.active_weight_sha256 = "wrong"
+                fail_stage = False
+                delay_recovery = True
+                await asyncio.wait_for(started.wait(), timeout=2)
+                await asyncio.wait_for(advance(3), timeout=1)
+                assert healthy.state.active_version == "3"
+                assert not lagging.state.weight_serving_ready
+                response = await second.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "3"})
+                assert response.status_code == 503
+                assert lagging.state.generation_requests == 0
+                task = pool._recovery_tasks["http://lagging"]
+                release.set()
+                await asyncio.wait_for(task, timeout=2)
+                assert lagging.state.active_version == "3"
+                assert lagging.state.weight_serving_ready
+                runtime = pool.runtime["http://lagging"]
+                assert runtime.state == "healthy"
+                assert runtime.reload_count == (0 if trust == "clean" else 1)
+                assert runtime.replayed_delta_count == (2 if trust == "clean" else 4)
+                assert (
+                    await second.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "3"})
+                ).status_code == 200
+            finally:
+                release.set()
+                await pool.aclose()
+
+    asyncio.run(run())
+
+
+def test_stale_worker_rejects_new_policy_even_when_admin_quarantine_is_unreachable(tmp_path) -> None:
+    healthy = make_app(tmp_path / "healthy")
+    lagging = make_app(tmp_path / "lagging")
+
+    async def run() -> None:
+        failed = False
+
+        async def partial_outage(request):
+            if failed and (request.url.path.startswith("/stage") or request.url.path == "/weight_serving"):
+                return httpx.Response(503)
+            return await httpx.ASGITransport(app=lagging).handle_async_request(request)
+
+        async with (
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=healthy), base_url="http://healthy") as first,
+            httpx.AsyncClient(transport=httpx.MockTransport(partial_outage), base_url="http://lagging") as second,
+        ):
+            pool = DeltaEndpointPool(
+                [first, second],
+                lease_enabled=True,
+                recovery_enabled=False,
+                cooldown_s=0,
+                health_timeout_s=1,
+                stage_chunk_retries=0,
+                stage_retries=0,
+            )
+            try:
+                for version in range(2):
+                    path = tmp_path / f"delta-{version}.safetensors"
+                    path.write_bytes(f"delta-{version}".encode())
+                    failed = version == 1
+                    await pool.stage(
+                        path,
+                        version=str(version),
+                        base_version=pool.active_version,
+                        upload=True,
+                        upload_method="multipart",
+                        done_path=None,
+                    )
+                    await pool.commit(str(version))
+                assert lagging.state.active_version == "0"
+                assert lagging.state.weight_serving_ready
+                response = await second.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "1"})
+                assert response.status_code == 503
+                assert lagging.state.generation_requests == 0
+            finally:
+                await pool.aclose()
+
+    asyncio.run(run())
+
+
+def test_newer_quarantine_supersedes_pending_enable(tmp_path) -> None:
+    app = make_app(tmp_path)
+    app.state.active_version = "0"
+
+    async def run() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_resume():
+            entered.set()
+            await release.wait()
+            app.state.engine_client.paused = False
+
+        app.state.engine_client.resume_generation = delayed_resume
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            enable = asyncio.create_task(client.post("/weight_serving", json={"enabled": True, "version": "0"}))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            disable = asyncio.create_task(client.post("/weight_serving", json={"enabled": False}))
+            await asyncio.sleep(0)
+            assert not app.state.weight_serving_ready
+            assert (await client.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "0"})).status_code == 503
+            release.set()
+            assert (await asyncio.wait_for(enable, timeout=1)).status_code == 409
+            assert (await asyncio.wait_for(disable, timeout=1)).status_code == 200
+            assert app.state.engine_client.paused
+            assert not app.state.weight_serving_ready
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_recovery_admission_does_not_hold_pool_lock_and_shutdown_fences_worker(tmp_path, cancel) -> None:
+    healthy = make_app(tmp_path / "healthy")
+    lagging = make_app(tmp_path / "lagging")
+
+    async def run() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        delay = False
+
+        async def delayed_control(request):
+            response = await httpx.ASGITransport(app=lagging).handle_async_request(request)
+            if delay and request.url.path == "/weight_serving" and b'"enabled":true' in request.content:
+                entered.set()
+                await release.wait()
+            return response
+
+        async with (
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=healthy), base_url="http://healthy") as first,
+            httpx.AsyncClient(transport=httpx.MockTransport(delayed_control), base_url="http://lagging") as second,
+        ):
+            pool = DeltaEndpointPool(
+                [first, second], lease_enabled=True, recovery_enabled=True, cooldown_s=0, health_timeout_s=1
+            )
+
+            async def advance(version):
+                path = tmp_path / f"delta-{version}.safetensors"
+                path.write_bytes(f"delta-{version}".encode())
+                await pool.stage(
+                    path,
+                    version=str(version),
+                    base_version=pool.active_version,
+                    upload=True,
+                    upload_method="multipart",
+                    done_path=None,
+                )
+                await pool.commit(str(version))
+
+            try:
+                await advance(0)
+                pool._retire("http://lagging", "lost response")
+                delay = True
+                pool._schedule_recoveries()
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                await asyncio.wait_for(advance(1), timeout=1)
+                assert healthy.state.active_version == "1"
+                assert lagging.state.active_version == "0"
+                assert (
+                    await second.post("/v1/chat/completions", headers={WEIGHT_VERSION_HEADER: "1"})
+                ).status_code == 503
+                task = pool._recovery_tasks["http://lagging"]
+                delay = False
+                if cancel:
+                    await asyncio.wait_for(pool.aclose(), timeout=1)
+                    assert task.cancelled()
+                    assert not lagging.state.weight_serving_ready
+                    assert lagging.state.engine_client.paused
+                    assert not pool._recovery_tasks
+                else:
+                    release.set()
+                    await asyncio.wait_for(task, timeout=1)
+                    assert lagging.state.active_version == "1"
+                    assert lagging.state.weight_serving_ready
+                    assert pool.runtime["http://lagging"].state == "healthy"
+            finally:
+                release.set()
+                await pool.aclose()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("dirty_peer", [False, True])
+def test_relay_recovery_replays_each_peer_from_its_own_trusted_version(tmp_path, dirty_peer) -> None:
+    healthy = make_app(tmp_path / "healthy")
+    peer = make_app(tmp_path / "peer")
+    fail_commit = False
+
+    async def peer_transport(request):
+        if fail_commit and request.url.path == "/commit":
+            return httpx.Response(503)
+        return await httpx.ASGITransport(app=peer).handle_async_request(request)
+
+    seed = make_app(
+        tmp_path / "seed",
+        relay_peers=["http://peer"],
+        relay_transports={"http://peer": httpx.MockTransport(peer_transport)},
+        relay_fail_on_peer_error=True,
+    )
+
+    async def run() -> None:
+        nonlocal fail_commit
+        async with (
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=healthy), base_url="http://healthy") as first,
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=seed), base_url="http://seed") as second,
+        ):
+            pool = DeltaEndpointPool(
+                [first, second], lease_enabled=True, recovery_enabled=False, cooldown_s=0, health_timeout_s=1
+            )
+            try:
+                for version in range(3):
+                    path = tmp_path / f"delta-{version}.safetensors"
+                    path.write_bytes(f"delta-{version}".encode())
+                    fail_commit = version == 1
+                    await pool.stage(
+                        path,
+                        version=str(version),
+                        base_version=pool.active_version,
+                        upload=True,
+                        upload_method="multipart",
+                        done_path=None,
+                    )
+                    await pool.commit(str(version))
+                assert seed.state.active_version == "1"
+                assert peer.state.active_version == "0"
+                assert not seed.state.weight_serving_ready and not peer.state.weight_serving_ready
+                peer.state.weights_dirty = dirty_peer
+                fail_commit = False
+                pool.recovery_enabled = True
+                pool._schedule_recoveries()
+                await asyncio.wait_for(pool._recovery_tasks["http://seed"], timeout=2)
+                assert seed.state.active_version == peer.state.active_version == "2"
+                assert seed.state.weight_serving_ready and peer.state.weight_serving_ready
+                assert len(seed.state.engine_client.calls) == 3
+                peer_methods = [method for method, _ in peer.state.engine_client.calls]
+                assert peer_methods.count("reload_weights") == int(dirty_peer)
+                runtime = pool.runtime["http://seed"]
+                assert runtime.reload_count == int(dirty_peer)
+                assert runtime.replayed_delta_count == (4 if dirty_peer else 3)
+                assert (await second.get("/weight_peer/0/v1/chat/completions")).status_code == 404
+                assert (await second.get("/weight_peer/1/weight_status")).status_code == 404
+            finally:
+                await pool.aclose()
+
+    asyncio.run(run())
+
+
 def test_relay_commit_retry_does_not_reapply_seed_delta(tmp_path) -> None:
     peer = make_app(tmp_path / "peer")
     attempts = 0
@@ -302,14 +678,15 @@ def test_pool_restages_pending_delta_after_recovery(tmp_path) -> None:
                 done_path=None,
             )
             pool._retire("http://test", "simulated rollout failure")
-            await pool._recover_eligible()
-            assert app.state.staged_versions == {}
+            await pool._quarantine(client)
+            pool._schedule_recoveries()
+            await asyncio.wait_for(pool._recovery_tasks["http://test"], timeout=1)
+            assert pool.runtime["http://test"].state == "healthy"
+            assert pool.runtime["http://test"].reload_count == 0
             await pool.commit("1")
             assert app.state.active_version == "1"
-            assert [method for method, _ in app.state.engine_client.calls] == [
-                "reload_weights",
-                "update_weights_from_delta_path",
-            ]
+            assert [method for method, _ in app.state.engine_client.calls] == ["update_weights_from_delta_path"]
+            await pool.aclose()
 
     asyncio.run(run())
 

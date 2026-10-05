@@ -206,6 +206,8 @@ async def run_online_eval(config: SFTOnlineEvalConfig) -> None:
         # Finalize only on a clean exit — a crashed run must not mark the run completed.
         await monitors.finalize()
     finally:
+        if evaluation.receiver is not None:
+            await evaluation.receiver.aclose()
         await evaluation.runner.stop()
 
 

@@ -133,6 +133,9 @@ class WeightReceiver(ABC):
     async def initialize(self) -> None:
         """One-time transport bootstrap (rendezvous groups, sessions)."""
 
+    async def aclose(self) -> None:
+        """Stop background transport work before closing admin clients."""
+
     def step_dir(self, step: int) -> Path:
         return get_step_path(self.broadcast_dir, step)
 

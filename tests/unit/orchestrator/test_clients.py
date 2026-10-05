@@ -3,16 +3,19 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 from verifiers.v1.configs.client import EvalClientConfig
 
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
+    InferenceClient,
     _is_retryable_lora_error,
     check_health,
     load_lora_adapter,
     setup_client,
 )
+from prime_rl.utils.weight_sync import WEIGHT_VERSION_HEADER
 
 
 def test_is_retryable_lora_error_returns_true_for_404():
@@ -154,3 +157,24 @@ def test_setup_client_preserves_chat_client_defaults():
         base_url="http://worker-a:8000/v1",
         headers={},
     )
+
+
+@pytest.mark.parametrize("lease_enabled", [False, True])
+def test_policy_version_headers_do_not_mutate_shared_client(lease_enabled) -> None:
+    async def run() -> None:
+        clients = InferenceClient(
+            ClientConfig(lease_enabled=lease_enabled, headers={"X-Test": "keep", "x-prime-weight-version": "99"}),
+            model_name="policy",
+        )
+        try:
+            original = clients.train_client
+            request = clients.for_version(original, 3)
+            if lease_enabled:
+                assert request.headers == {"X-Test": "keep", WEIGHT_VERSION_HEADER: "3"}
+                assert original.headers["x-prime-weight-version"] == "99"
+            else:
+                assert request is original
+        finally:
+            await clients.aclose()
+
+    asyncio.run(run())

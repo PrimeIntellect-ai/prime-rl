@@ -551,6 +551,8 @@ class Dispatcher:
             clients, model_name, live_sourced = self._train_generation_for(group.env_name)
 
         client = clients.eval_client if group.kind == "eval" else clients.train_client
+        if live_sourced:
+            client = clients.for_version(client, self.policy.version)
 
         env_collection = self.train_envs if group.kind == "train" else self.eval_envs
         if env_collection is None:

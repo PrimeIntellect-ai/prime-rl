@@ -77,6 +77,8 @@ async def pause(request: Request):
 async def resume(request: Request):
     if getattr(request.app.state, "weights_dirty", False):
         return JSONResponse({"error": "weights require reload after a failed update"}, status_code=409)
+    if not getattr(request.app.state, "weight_serving_ready", True):
+        return JSONResponse({"error": "weights are quarantined until catch-up completes"}, status_code=409)
     await engine_client(request).resume_generation()
     return {"status": "resumed"}
 
@@ -84,7 +86,9 @@ async def resume(request: Request):
 @router.get("/weight_health", response_class=Response)
 async def weight_health(request: Request) -> Response:
     """Router health check that also rejects workers with inconsistent weights."""
-    if getattr(request.app.state, "weights_dirty", False):
+    if getattr(request.app.state, "weights_dirty", False) or not getattr(
+        request.app.state, "weight_serving_ready", True
+    ):
         return Response(status_code=503)
     try:
         await engine_client(request).check_health()
@@ -211,7 +215,12 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     Wrap build_app to include our custom router.
     """
-    app = _original_build_app(args, supported_tasks, model_config)
+    middleware = "prime_rl.inference.vllm.delta_sync.WeightServingMiddleware"
+    middlewares = list(args.middleware)
+    if middleware not in middlewares:
+        middlewares.append(middleware)
+    app_args = Namespace(**{**vars(args), "middleware": middlewares})
+    app = _original_build_app(app_args, supported_tasks, model_config)
     app.include_router(router)
     app.include_router(delta_sync_router)
     return app

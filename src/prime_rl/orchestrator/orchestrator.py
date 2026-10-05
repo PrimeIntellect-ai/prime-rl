@@ -1002,6 +1002,8 @@ class Orchestrator:
 
     async def on_policy_update(self, _step: int) -> None:
         """Refresh policy-dependent state after inference applies new weights."""
+        if self.clients is not None:
+            self.clients.weight_version = self.policy.version
         self.update_dispatch_gate()
         self.version_advanced.set()
 

@@ -17,6 +17,7 @@ from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
 from prime_rl.configs.eval import PRIME_INFERENCE_URL
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.weight_sync import WEIGHT_VERSION_HEADER
 
 
 def resolve_api_key(api_key_var: str) -> str:
@@ -63,7 +64,8 @@ class PrefillScorer:
                 api_key=resolve_api_key(config.api_key_var),
                 default_headers=config.headers or None,
             )
-        return await prefill_logprobs(self._client, model, token_ids)
+        client = self._client.with_options(default_headers=config.headers or {})
+        return await prefill_logprobs(client, model, token_ids)
 
     async def aclose(self) -> None:
         if self._client is not None:
@@ -99,11 +101,23 @@ class InferenceClient:
             else None
         )
         self.model_name = model_name
+        self.require_weight_version = client_config.lease_enabled
+        self.weight_version = 0
+
+    def for_version(self, client: vf.ClientConfig, version: int) -> vf.ClientConfig:
+        if not self.require_weight_version:
+            return client
+        headers = {
+            name: value for name, value in client.headers.items() if name.lower() != WEIGHT_VERSION_HEADER.lower()
+        }
+        headers[WEIGHT_VERSION_HEADER] = str(version)
+        return client.model_copy(update={"headers": headers})
 
     async def score(self, token_ids: list[int]) -> list[float]:
         """Prefill-score ``token_ids`` under this endpoint's model (one logprob
         per token, 0.0 for the leading token)."""
-        return await self._scorer.score(self.train_client, self.model_name, token_ids)
+        client = self.for_version(self.train_client, self.weight_version)
+        return await self._scorer.score(client, self.model_name, token_ids)
 
     async def aclose(self) -> None:
         await self._scorer.aclose()

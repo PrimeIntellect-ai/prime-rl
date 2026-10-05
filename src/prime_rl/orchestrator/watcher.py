@@ -75,6 +75,7 @@ class WeightWatcher:
         if self.task is not None:
             await safe_cancel(self.task)
             self.task = None
+        await self.receiver.aclose()
 
     async def apply_policy_update(self, next_step: int) -> None:
         async with self.update_lock:
