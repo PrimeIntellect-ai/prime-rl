@@ -23,6 +23,7 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim.sign_sgd import SignSGDInBackward
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -169,6 +170,14 @@ def train(config: SFTConfig):
             get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
         ),
     )
+
+    in_backward = None
+    if config.optim.type == "sign_sgd" and config.optim.apply_in_backward:
+        if gradient_manager is not None or config.model.optim_cpu_offload:
+            raise ValueError("optim.apply_in_backward does not combine with optimizer offloading")
+        if grad_accum_steps != 1:
+            raise ValueError(f"optim.apply_in_backward needs one micro-batch per step, got {grad_accum_steps}")
+        in_backward = SignSGDInBackward(optimizer, model)
 
     # Set up the learning rate scheduler
     # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
@@ -516,7 +525,10 @@ def train(config: SFTConfig):
         nan_loss_count = nan_loss_count.item()
 
         grad_norm: torch.Tensor | None = None
-        if config.optim.max_norm is not None:
+        if in_backward is not None:
+            # Already applied during backward; only the norm is left to report.
+            grad_norm = in_backward.grad_norm(grad_scale if global_token_count_val > 0 else 0.0)
+        elif config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")

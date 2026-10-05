@@ -1,6 +1,9 @@
 from typing import Callable
 
 import torch
+import torch.distributed as dist
+from torch import nn
+from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
 
@@ -51,3 +54,43 @@ class SignSGD(Optimizer):
                 p.add_(sign_grad, alpha=-group["lr"])
 
         return loss
+
+
+class SignSGDInBackward:
+    """`SignSGD` applied to each parameter as soon as its gradient is final, which then frees it.
+
+    No step ever holds every gradient at once. The update is exact for one micro-batch per step:
+    gradients are only rescaled (by the token count and clipping) after backward, and
+    `sign(c * g) == sign(g)` for any `c > 0`. The gradient norm is accumulated on the way, for logging.
+    """
+
+    def __init__(self, optimizer: SignSGD, model: nn.Module):
+        self.optimizer = optimizer
+        self._group = {id(p): group for group in optimizer.param_groups for p in group["params"]}
+        self._sum_of_squares = torch.zeros((), device=torch.cuda.current_device())
+        self._handles = [
+            p.register_post_accumulate_grad_hook(self._apply) for p in model.parameters() if id(p) in self._group
+        ]
+
+    @torch.no_grad()
+    def _apply(self, param: torch.Tensor) -> None:
+        grad = param.grad
+        local = grad.to_local() if isinstance(grad, DTensor) else grad
+        # Every rank adds its local sum of squares, so count each replica once.
+        replicas = 1
+        if isinstance(grad, DTensor):
+            for size, placement in zip(grad.device_mesh.shape, grad.placements):
+                replicas *= size if placement.is_replicate() else 1
+        self._sum_of_squares += local.float().square().sum() / replicas
+        group = self._group[id(param)]
+        if group["weight_decay"] > 0.0:
+            param.add_(param, alpha=-group["lr"] * group["weight_decay"])
+        param.add_(torch.sign(grad), alpha=-group["lr"])
+        param.grad = None
+
+    def grad_norm(self, grad_scale: float) -> torch.Tensor:
+        """The step's gradient norm after the loss scaling `scale_gradients_` would have applied."""
+        total = self._sum_of_squares.clone()
+        dist.all_reduce(total)
+        self._sum_of_squares.zero_()
+        return total.sqrt() * grad_scale

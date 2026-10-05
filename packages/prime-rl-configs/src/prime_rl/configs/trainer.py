@@ -517,6 +517,11 @@ class MuonConfig(BaseOptimizerConfig):
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
 
+    apply_in_backward: bool = False
+    """Update each parameter as soon as its gradient is final and free the gradient, so no step holds
+    every gradient at once. SFT only, with one micro-batch per step and no optimizer offload. Exact:
+    sign updates ignore the positive loss scaling and clipping applied after backward."""
+
 
 OptimizerConfig: TypeAlias = Annotated[
     SGDConfig | AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")

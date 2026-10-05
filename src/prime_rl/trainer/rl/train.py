@@ -171,6 +171,8 @@ def train(config: TrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     t0 = time.perf_counter()
+    if config.optim.type == "sign_sgd" and config.optim.apply_in_backward:
+        raise ValueError("optim.apply_in_backward is only supported by the SFT trainer")
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
