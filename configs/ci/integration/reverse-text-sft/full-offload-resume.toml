@@ -8,7 +8,7 @@ skip_scheduler = true
 step = 5
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
 optim_cpu_offload = false
 full_offload = true
 

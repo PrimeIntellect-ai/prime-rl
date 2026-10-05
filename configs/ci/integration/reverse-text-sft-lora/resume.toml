@@ -6,7 +6,7 @@ max_steps = 10
 step = 5
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
 
 [model.lora]
 rank = 8
