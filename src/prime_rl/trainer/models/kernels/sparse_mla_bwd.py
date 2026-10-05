@@ -305,6 +305,17 @@ def flat_kv_indices(indices: torch.Tensor, S_kv: int) -> torch.Tensor:
     return torch.where(indices <= S_kv - 2, indices + batch_offset, -1)
 
 
+def valid_topk_length(indices: torch.Tensor, S_kv: int) -> torch.Tensor:
+    """Per-query length of the shortest prefix of `indices` holding every valid index, flattened to [B * S].
+
+    Kernels taking it skip the tail past it; sentinel entries inside the prefix must still be masked
+    (see `flat_kv_indices`), so this is correct for any slot order.
+    """
+    topk = indices.shape[-1]
+    positions = torch.arange(1, topk + 1, device=indices.device, dtype=torch.int32)
+    return torch.where(indices <= S_kv - 2, positions, 0).amax(-1).view(-1)
+
+
 def tilelang_sparse_mla_backward(
     q: torch.Tensor,
     kv: torch.Tensor,

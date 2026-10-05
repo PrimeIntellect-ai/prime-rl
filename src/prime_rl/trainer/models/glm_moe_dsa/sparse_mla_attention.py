@@ -4,7 +4,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
-from prime_rl.trainer.models.kernels.cudnn_indexer import cudnn_fp8_indexer
+from prime_rl.trainer.models.kernels.cudnn_indexer import cudnn_fp8_indexer, cudnn_indexer_arch
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
@@ -57,8 +57,9 @@ class Indexer(nn.Module):
         self.k_norm = LayerNorm(dim=self.head_dim, eps=1e-6)
         self.weights_proj = nn.Linear(args.hidden_size, self.n_head, bias=False)
         self.weight_scale = (self.head_dim**-0.5) * (self.n_head**-0.5)
-        # The cuDNN indexer kernels are SM90 ports; SM100 keeps the Triton indexer.
-        self.use_cudnn_indexer = args.dsa_backend == "cudnn_flashmla" and torch.cuda.get_device_capability()[0] == 9
+        self.use_cudnn_indexer = (
+            args.dsa_backend == "cudnn_flashmla" and cudnn_indexer_arch(torch.device("cuda")) is not None
+        )
 
     @torch.no_grad()
     def compute_sparse_indices(

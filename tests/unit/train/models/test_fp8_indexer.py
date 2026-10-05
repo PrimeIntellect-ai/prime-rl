@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.kernels.cudnn_indexer import cudnn_fp8_indexer
+from prime_rl.trainer.models.kernels.cudnn_indexer import cudnn_fp8_indexer, cudnn_indexer_arch
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 
 pytestmark = [
@@ -113,8 +113,8 @@ def test_selection_agreement(segments):
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the cuDNN indexer kernels are SM90-only",
+    not torch.cuda.is_available() or cudnn_indexer_arch(torch.device("cuda")) is None,
+    reason="the cuDNN indexer kernels need SM90 / SM100 / SM103",
 )
 def test_cudnn_matches_triton_on_causal_documents():
     """The cuDNN indexer against the Triton one on a CP-style shard of packed causal documents.
