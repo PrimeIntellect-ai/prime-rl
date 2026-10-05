@@ -43,7 +43,12 @@ from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import Deep
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
-from prime_rl.trainer.models.kernels.dsv41_sparse_attn import dsv41_sparse_attn, flashmla_sparse_attn_available
+from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
+    IndexerSegments,
+    cudnn_indexer_available,
+    dsv41_index_topk_cudnn,
+)
+from prime_rl.trainer.models.kernels.dsv41_sparse_attn import dsv41_sparse_attn, fused_sparse_attn_available
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -69,6 +74,7 @@ class PackedContext:
     window_indices: Tensor  # (n_queries, sliding_window) int32, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress ratio
     use_candidates: bool  # whether some document is long enough for candidate blocks to bind
+    indexer_segments: dict[int, IndexerSegments] | None  # keyed by compress ratio; None without cuDNN's indexer
 
     @classmethod
     def build(
@@ -100,6 +106,14 @@ class PackedContext:
             use_candidates = (
                 layouts[rate].max_entries_per_doc > config.candidate_topk_blocks * config.candidate_block_size
             )
+        indexer_segments = None
+        if cudnn_indexer_available(config.index_n_heads, config.index_head_dim):
+            indexer_segments = {
+                rate: IndexerSegments.build(
+                    cu_seqlens=cu_seqlens, q_start=q_start, n_queries=n_queries, compress_rate=rate
+                )
+                for rate in config.compress_rates
+            }
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,
@@ -107,6 +121,7 @@ class PackedContext:
             window_indices=window_indices,
             compression_layouts=layouts,
             use_candidates=use_candidates,
+            indexer_segments=indexer_segments,
         )
 
     def check_position_ids(self, position_ids: Tensor) -> None:
@@ -231,10 +246,27 @@ class DeepseekV41Indexer(nn.Module):
         q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
 
-        entry_start = layout.first_entry_of_doc[packed.tok_doc_idx]
-        entry_stop = entry_start + (packed.position_ids[0] + 1) // self.compress_ratio
         emit = self.is_candidate_source and packed.use_candidates
         candidates_in = state.candidates if self.uses_candidates and packed.use_candidates else None
+        if packed.indexer_segments is not None and not emit and candidates_in is None:
+            # Blackwell, and no candidate blocks to emit or honor: cuDNN's fused scoring + top-k.
+            segments = packed.indexer_segments[self.compress_ratio]
+            top_k = dsv41_index_topk_cudnn(
+                q[0],
+                index_k,
+                w[0],
+                segments.cu_seqlens_q,
+                segments.cu_seqlens_k,
+                segments.q_causal_offsets,
+                self.index_topk,
+                self.compress_ratio,
+                segments.max_seqlen_q,
+                segments.max_seqlen_k,
+            )
+            return top_k.unsqueeze(0), index_k, state.candidates
+
+        entry_start = layout.first_entry_of_doc[packed.tok_doc_idx]
+        entry_stop = entry_start + (packed.position_ids[0] + 1) // self.compress_ratio
         top_k, candidates = dsv41_index_topk(
             q[0],
             index_k,
@@ -281,9 +313,10 @@ class DeepseekV41Attention(nn.Module):
         if blocker is not None:
             raise ValueError(f"DeepSeek V4.1 cannot run the fused sparse-attention kernel: {blocker}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
-        # FlashMLA forward + cuDNN backward on Hopper (about twice as fast); TileLang elsewhere.
+        # FlashMLA forward + cuDNN backward on Hopper (about twice as fast), cuDNN forward and backward
+        # on Blackwell (about 3.5x); TileLang elsewhere.
         self.sparse_attn = (
-            dsv41_sparse_attn if flashmla_sparse_attn_available(self.num_heads, self.head_dim) else dsv4_sparse_attn
+            dsv41_sparse_attn if fused_sparse_attn_available(self.num_heads, self.head_dim) else dsv4_sparse_attn
         )
 
         self.is_kv_source = layer_idx in config.kv_source_layer_ids

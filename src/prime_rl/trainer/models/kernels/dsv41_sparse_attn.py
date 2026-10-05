@@ -1,9 +1,12 @@
-"""DeepSeek-V4.1 sparse attention on FlashMLA's sparse prefill forward and cuDNN's DSA backward.
+"""DeepSeek-V4.1 sparse attention on FlashMLA / cuDNN sparse prefill forward and cuDNN's DSA backward.
+
+Hopper runs FlashMLA's forward with cuDNN's SM90 backward; Blackwell (SM100 / SM103) runs cuDNN's
+SM100 forward and backward.
 
 Same contract as `dsv4_sparse_attn` (the TileLang kernels): every query reads an explicit list of
 positions of one shared K = V latent buffer, with a per-head attention sink, and `-1` marks an
-empty slot. Both kernels take the sink natively: FlashMLA scales the output by
-`exp(lse) / (exp(lse) + exp(sink))` and returns the sink-free LSE, which cuDNN's backward consumes
+empty slot. Every kernel takes the sink natively: the forward scales the output by
+`exp(lse) / (exp(lse) + exp(sink))` and returns the sink-free LSE, which the backward consumes
 together with the sink to rebuild the sink-aware probabilities and the sink gradient.
 
 The kernels read flat tensors: `q` `(tokens, heads, dim)`, `kv` `(positions, dim)` and indices
@@ -19,6 +22,18 @@ except ImportError:
     flash_mla_sparse_fwd = None  # type: ignore
     flash_attn_bwd_sm90 = None  # type: ignore
 
+try:
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+        flash_attn_bwd_sm100,
+        flash_attn_bwd_sm100_workspace_size,
+    )
+    from cudnn.deepseek_sparse_attention.sparse_attention_forward._interface_sm100 import (
+        sparse_attention_forward_sm100,
+    )
+except ImportError:
+    sparse_attention_forward_sm100 = None  # type: ignore
+    flash_attn_bwd_sm100 = None  # type: ignore
+
 
 # FlashMLA's SM90 sparse prefill walks the slots two 64-slot tiles at a time.
 SLOT_TILE = 128
@@ -32,16 +47,17 @@ def _pad_slots(indices: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.pad(indices, (0, SLOT_TILE - remainder), value=-1).contiguous()
 
 
-def flashmla_sparse_attn_available(num_heads: int, head_dim: int) -> bool:
-    """FlashMLA's sparse prefill serves 64 or 128 heads of a 512-wide latent, on SM90 here."""
-    return (
-        num_heads in (64, 128)
-        and head_dim == 512
-        and flash_mla_sparse_fwd is not None
-        and flash_attn_bwd_sm90 is not None
-        and torch.cuda.is_available()
-        and torch.cuda.get_device_capability() == (9, 0)
-    )
+def _is_blackwell() -> bool:
+    return torch.cuda.get_device_capability() in ((10, 0), (10, 3))
+
+
+def fused_sparse_attn_available(num_heads: int, head_dim: int) -> bool:
+    """64 or 128 heads of a 512-wide latent: FlashMLA + cuDNN on SM90, cuDNN alone on SM100 / SM103."""
+    if num_heads not in (64, 128) or head_dim != 512 or not torch.cuda.is_available():
+        return False
+    if torch.cuda.get_device_capability() == (9, 0):
+        return flash_mla_sparse_fwd is not None and flash_attn_bwd_sm90 is not None
+    return _is_blackwell() and sparse_attention_forward_sm100 is not None and flash_attn_bwd_sm100 is not None
 
 
 @torch.library.custom_op("prime_rl::dsv41_sparse_attn", mutates_args=())
@@ -50,9 +66,14 @@ def dsv41_sparse_attn(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """`q` `(1, t, h, d)`, `kv` `(1, n, 1, d)`, `indices` `(1, t, 1, k)` int32 -> output and sink-free LSE."""
     _, t, h, d = q.shape
-    out, _max_logits, lse = flash_mla_sparse_fwd(
-        q.view(t, h, d), kv.view(-1, 1, d), _pad_slots(indices).view(t, 1, -1), sm_scale, d, attn_sink=sinks
-    )
+    if _is_blackwell():
+        out, _max_logits, lse, _ = sparse_attention_forward_sm100(
+            q.view(t, h, d), kv.view(-1, d), indices.view(t, -1), attn_sink=sinks, softmax_scale=sm_scale
+        )
+    else:
+        out, _max_logits, lse = flash_mla_sparse_fwd(
+            q.view(t, h, d), kv.view(-1, 1, d), _pad_slots(indices).view(t, 1, -1), sm_scale, d, attn_sink=sinks
+        )
     return out.view(1, t, h, d), lse.view(1, t, h)
 
 
@@ -73,6 +94,23 @@ def dsv41_sparse_attn_backward(
     sm_scale: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     _, t, h, d = q.shape
+    if _is_blackwell():
+        n_positions = kv.shape[1]
+        workspace = torch.empty(
+            flash_attn_bwd_sm100_workspace_size(t, n_positions, d, h, False), dtype=torch.uint8, device=q.device
+        )
+        dq, dkv, dsinks = flash_attn_bwd_sm100(
+            q.view(t, h, d),
+            kv.view(-1, d),
+            out.view(t, h, d),
+            grad_out.contiguous().view(t, h, d),
+            lse.view(t, h),
+            sinks,
+            indices.view(t, -1),
+            softmax_scale=sm_scale,
+            workspace=workspace,
+        )
+        return dq.view_as(q), dkv.view_as(kv).to(kv.dtype), dsinks.to(sinks.dtype)
     dq, dkv, dsinks = flash_attn_bwd_sm90(
         q.view(t, h, d),
         kv.view(-1, d),
@@ -108,4 +146,4 @@ def _backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.Tensor | None):
 dsv41_sparse_attn.register_autograd(_backward, setup_context=_setup_context)
 
 
-__all__ = ["dsv41_sparse_attn", "flashmla_sparse_attn_available"]
+__all__ = ["dsv41_sparse_attn", "fused_sparse_attn_available"]
