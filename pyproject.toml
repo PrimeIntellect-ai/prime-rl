@@ -65,7 +65,7 @@ gpu = [
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
-    "modelexpress==0.3.0 ; sys_platform == 'linux'",
+    "modelexpress==0.7.0 ; sys_platform == 'linux'",
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
 ]
 dashboard = [
@@ -182,22 +182,6 @@ exclude = [
     "deps/prime-envs/environments/tool_use/apex_agents",
 ]
 
-# ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
-# compatible with protobuf 6. prime-sandboxes requires protobuf>=6.31.1; keep
-# this capped to the validated protobuf major.
-[[tool.uv.dependency-metadata]]
-name = "modelexpress"
-version = "0.3.0"
-requires-dist = [
-    "grpcio>=1.66.2",
-    "huggingface_hub>=0.20.0",
-    "nixl",
-    "numpy>=1.24.0",
-    "protobuf>=5.27.0,<7.0.0",
-    "pydantic>=2.0.0",
-    "torch>=2.6.0",
-]
-
 # Mirror the upstream Pydantic compatibility correction until the next release.
 [[tool.uv.dependency-metadata]]
 name = "ai-dynamo-runtime"
@@ -300,6 +284,7 @@ flash-mla = { url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/downloa
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 mamba-ssm = { git = "https://github.com/state-spaces/mamba", rev = "f577286" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
+modelexpress = { git = "https://github.com/ai-dynamo/modelexpress.git", subdirectory = "modelexpress_client/python", rev = "8512b8c" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

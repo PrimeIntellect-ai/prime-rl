@@ -79,8 +79,27 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
 
 
+class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["modelexpress"] = "modelexpress"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    staging_mode: Literal["COPY_TO_HOST", "COPY_TO_DEVICE", "IN_PLACE"] = "COPY_TO_HOST"
+    """Trainer storage policy passed to ModelExpress."""
+
+    staging_buffer_bytes: int | None = Field(None, gt=0)
+    """Receiver staging capacity per buffer. None stages a complete update."""
+
+    staging_buffers_count: int = Field(1, ge=1)
+    """Number of receiver buffers. Two overlap the next read with installation."""
+
+
 WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    FileSystemWeightBroadcastConfig
+    | NCCLWeightBroadcastConfig
+    | NIXLWeightBroadcastConfig
+    | ModelExpressWeightBroadcastConfig,
     Field(discriminator="type"),
 ]
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
