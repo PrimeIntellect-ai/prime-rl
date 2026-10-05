@@ -5,6 +5,7 @@ import pytest
 
 from prime_rl.orchestrator.batch import (
     _is_multimodal_sample,
+    _refine_by_swapping,
     build_bin_cost,
     pad_micro_batch,
     prepare_batch,
@@ -79,6 +80,35 @@ def make_flops_config():
         num_hidden_layers=2,
         head_dim=8,
     )
+
+
+@pytest.mark.parametrize(
+    ("weights", "partitions", "expected"),
+    [
+        ([4, 1], [[0, 1]], [[0, 1]]),
+        ([9, 2, 5], [[0], [1], [2]], [[0], [1], [2]]),
+        ([9, 1, 7, 3], [[0, 1], [2, 3]], [[0, 1], [2, 3]]),
+        ([10, 8, 7, 5], [[0, 1], [2, 3]], [[2, 1], [0, 3]]),
+        ([8, 8, 8, 6, 3, 1], [[0, 1], [2, 3], [4, 5]], [[4, 1], [2, 3], [0, 5]]),
+        (
+            [1, 3, 5, 7, 9, 11, 13, 15],
+            [[0, 1], [2, 3], [4, 5], [6, 7]],
+            [[6, 1], [4, 3], [2, 5], [0, 7]],
+        ),
+    ],
+    ids=["single-rank", "single-microbatch", "balanced", "two-rank-tie", "equal-weights", "multiple-swaps"],
+)
+def test_refine_by_swapping_preserves_assignments(
+    weights: list[int], partitions: list[list[int]], expected: list[list[int]]
+):
+    original = [partition.copy() for partition in partitions]
+
+    refined = _refine_by_swapping(weights, partitions)
+
+    assert refined == expected
+    assert partitions == original
+    assert refined is not partitions
+    assert all(result is not source for result, source in zip(refined, partitions, strict=True))
 
 
 def test_training_sample_requires_env_name():
