@@ -1,0 +1,66 @@
+# Qwen3-235B-A22B SFT, highest measured MFU: the torchtitan-matched benchmark setup
+# (configs/benchmark/qwen3-235b-a22b/sft-4n-16k.toml: 4 nodes x 8 B300, FSDP over 32 GPUs, ep=8,
+# seq 16384, 32 x 16384 tokens per step, AdamW fp32 states, balanced routing, fullgraph) with the
+# Mega MoE dispatch and selective activation checkpointing. Selective AC only fits at this size with
+# Mega MoE, whose fused op saves one tensor per layer instead of the grouped-GEMM intermediates.
+# Measured 3.93 s/step, 52.0% MFU (the formula in docs/performance.md), 203 GiB peak; full AC
+# (`--model.ac.mode full`) gives 4.10 s/step at 141 GiB. See docs/performance.md.
+#
+#   uv run sft @ configs/benchmark/qwen3-235b-a22b/sft-4n-16k-mega-moe.toml
+#
+# Needs the Mega MoE `deep_gemm` build (`uv sync --extra mega-moe`), nvcc 13.0 for its JIT kernels,
+# and NCCL_MAX_CTAS <= num_reserved_sms (16) so NCCL never deadlocks against the persistent grid.
+
+dist_timeout_seconds = 14400
+max_steps = 20
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+NCCL_MAX_CTAS = "16"
+CUDA_HOME = "/usr/local/cuda-13.0"
+PATH = "/usr/local/cuda-13.0/bin:${PATH}"
+
+[renderer]
+name = "qwen3"
+
+[model]
+name = "Qwen/Qwen3-235B-A22B-Thinking-2507"
+impl = "custom"
+seq_len = 16384
+ep = 8
+optim_cpu_offload = false
+ac_offloading = "None"
+moe_router_dtype = "bfloat16"
+
+[model.ac]
+mode = "selective"
+freq = 1
+
+[model.compile]
+fullgraph = true
+
+[model.moe.dispatch]
+type = "mega_moe"
+# micro_batch_size (1) * seq_len (16384) tokens per rank per forward.
+max_tokens_per_rank = 16384
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+seq_len = 16384
+batch_size = 32
+micro_batch_size = 1
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+
+[slurm]
+job_name = "bench-qwen235b-sft-4n-16k-mega-moe"
+partition = "all"
+
+[model.debug]
+force_balanced_routing = true
