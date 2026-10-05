@@ -619,6 +619,10 @@ class RLConfig(BaseConfig):
                 dp = self.inference.vllm.data_parallel_size
                 if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
                     self.inference.vllm.api_server_count = dp
+                # auto_setup_weight_broadcast ran before DP was filled in above.
+                if self.weight_broadcast.type in ("nccl", "nixl"):
+                    self.trainer.weight_broadcast.inference_world_size = num_infer_gpus
+                    self.orchestrator.weight_broadcast.inference_world_size = num_infer_gpus
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = (
