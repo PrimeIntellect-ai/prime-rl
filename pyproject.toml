@@ -69,7 +69,7 @@ gpu = [
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
-    "modelexpress==0.3.0 ; sys_platform == 'linux'",
+    "modelexpress==0.7.0 ; sys_platform == 'linux'",
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
     # Precompiled FlashInfer kernels for vLLM's flashinfer-python pin. Without them every fresh node
     # downloads the trtllm-gen cubins and JIT-builds its modules into its node-local cache at startup.
@@ -189,22 +189,6 @@ exclude = [
     "deps/prime-envs/environments/tool_use/apex_agents",
 ]
 
-# ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
-# compatible with protobuf 6. prime-sandboxes requires protobuf>=6.31.1; keep
-# this capped to the validated protobuf major.
-[[tool.uv.dependency-metadata]]
-name = "modelexpress"
-version = "0.3.0"
-requires-dist = [
-    "grpcio>=1.66.2",
-    "huggingface_hub>=0.20.0",
-    "nixl",
-    "numpy>=1.24.0",
-    "protobuf>=5.27.0,<7.0.0",
-    "pydantic>=2.0.0",
-    "torch>=2.6.0",
-]
-
 # Mirror the upstream Pydantic compatibility correction until the next release.
 [[tool.uv.dependency-metadata]]
 name = "ai-dynamo-runtime"
@@ -318,6 +302,7 @@ flashinfer-jit-cache = [
     { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
+modelexpress = { git = "https://github.com/ai-dynamo/modelexpress.git", subdirectory = "modelexpress_client/python", rev = "8512b8c" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
