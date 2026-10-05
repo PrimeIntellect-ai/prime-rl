@@ -61,6 +61,9 @@ class GatedDeltaNet(nn.Module):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
     ) -> torch.Tensor:
+        # Per-layer copy keeps FLA's identity-keyed tensor cache identical across the forward and the
+        # AC recompute; see Qwen3_5GatedDeltaNet.forward.
+        cu_seqlens = cu_seqlens.clone()
         batch_size, sequence_length, _ = hidden_states.shape
 
         mixed_qkv = self.in_proj_qkv(hidden_states)

@@ -128,6 +128,9 @@ class NemotronHMamba2(nn.Module):
         self.cp_context = CPContext()
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
+        # Per-layer copy keeps FLA's identity-keyed tensor cache identical across the forward and the
+        # AC recompute; see Qwen3_5GatedDeltaNet.forward.
+        cu_seqlens = cu_seqlens.clone()
         batch_size, sequence_length, _ = hidden_states.shape
         projected_states = self.in_proj(hidden_states)
         gate, convolution_input, time_step = torch.split(
