@@ -23,7 +23,6 @@ dion = false
 fastokens = false
 flash-attn-3 = false
 flash-mla = false
-flashinfer-cubin = false
 flashinfer-python = false
 harbor = "2026-08-11T00:00:00Z"
 nixl-cu13 = false
