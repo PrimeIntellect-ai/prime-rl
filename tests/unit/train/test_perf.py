@@ -1,35 +1,19 @@
 import pytest
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, GenerationConfig
+from transformers import AutoConfig
 
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.perf import PerfCounter
 
 
+# Expected values are torchtitan's `get_nparams_and_flops(model, seq_len=1024)` for its matching flavors.
 @pytest.mark.parametrize(
-    "model_name, active_params, flops_per_token",
-    [("Qwen/Qwen3-0.6B", 595_984_384, 4_280_549_376), ("Jackmin108/debug-moe-0.5B", 256_442_368, 1_840_644_096)],
+    "model_name, flops_per_token",
+    [("Qwen/Qwen3-0.6B", 4_280_942_592), ("Qwen/Qwen3-30B-A3B", 20_667_125_760)],
 )
-def test_perf_counter(model_name: str, active_params: int, flops_per_token: int):
-    # This speeds up the model loading as its a fake device
+def test_flops_per_token_matches_torchtitan(model_name: str, flops_per_token: int):
+    config = AutoConfig.from_pretrained(model_name, attn_implementation="flash_attention_2")
+    config.pad_token_id = config.eos_token_id
     with torch.device("meta"):
-        config = AutoConfig.from_pretrained(model_name)
-        if getattr(config, "pad_token_id", None) is None:
-            gen_config = GenerationConfig.from_model_config(config)
-            # Use `is not None` instead of truthiness: token ID 0 is valid.
-            config.pad_token_id = next(
-                (
-                    v
-                    for v in [gen_config.pad_token_id, gen_config.eos_token_id, getattr(config, "eos_token_id", None)]
-                    if v is not None
-                ),
-                None,
-            )
-        model = AutoModelForCausalLM.from_config(config)
-    perf_counter = PerfCounter(model, seq_len=1024)
-
-    assert perf_counter.get_active_mm_params(config) == active_params, (
-        f"Expected {active_params:,} active parameters, got {perf_counter.get_active_mm_params(config):,} active parameters"
-    )
-    assert perf_counter.num_flop_per_token == flops_per_token, (
-        f"Expected {flops_per_token:,} FLOPS per token, got {perf_counter.num_flop_per_token:,} FLOPS per token"
-    )
+        model = AutoModelForCausalLMPrimeRL.from_config(config)
+    assert PerfCounter(model, seq_len=1024).num_flop_per_token == flops_per_token

@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops_per_token
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import apply_rotary_embedding
@@ -47,6 +48,18 @@ class IndexedGatedAttention(nn.Module):
         self.cp_context = CPContext()
         # Resolve once before torch.compile traces the layer; the loader caches the module.
         self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
+
+    def attention_flops_per_token(self, seq_len: int) -> int:
+        # As torchtitan's DeepSeek V4 CSA: the indexer scores every compressed block,
+        # attention reads `token_budget` tokens.
+        indexer = self.indexer
+        indexer_flops = 6 * indexer.num_query_heads * indexer.head_dim * (seq_len // indexer.compression_ratio)
+        return indexer_flops + quadratic_attention_flops_per_token(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=min(seq_len, indexer.token_budget),
+        )
 
     def forward(
         self,
