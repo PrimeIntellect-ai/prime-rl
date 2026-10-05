@@ -56,6 +56,20 @@ class PrimeModel(nn.Module):
         """
         return False
 
+    def skip_weight_transfer(self, name: str) -> bool:
+        """Whether a state-dict entry stays out of trainer-to-inference weight transfer.
+
+        Only frozen entries may be skipped: the inference engine keeps serving its own copy.
+        """
+        return False
+
+    def to_inference_format(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Turn HF-named training weights into the format the inference engine loads, in place.
+
+        The default sends them as they are; a model served from a quantized checkpoint re-quantizes.
+        """
+        return state_dict
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         """

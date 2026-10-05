@@ -155,7 +155,9 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool], key: str, default: t
     return torch.float32 if keep_in_fp32(key) else default
 
 
-def gather_weights_parallel(model: "PrimeModel", dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
+def gather_weights_parallel(
+    model: "PrimeModel", dtype: torch.dtype = torch.bfloat16, skip: Callable[[str], bool] | None = None
+) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
     Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
@@ -172,13 +174,14 @@ def gather_weights_parallel(model: "PrimeModel", dtype: torch.dtype = torch.bflo
     Sinkhorn normalization rather than as an error.
     """
     world = get_world()
-    owners = partition_weights(model.state_dict(), world.world_size, dtype)
+    state_dict = {key: value for key, value in model.state_dict().items() if skip is None or not skip(key)}
+    owners = partition_weights(state_dict, world.world_size, dtype)
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-        for key, value in model.state_dict().items():
+        for key, value in state_dict.items():
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
                 target_dtype = resolve_wire_dtype(model.keep_in_fp32_for_weight_transfer, key, dtype)

@@ -56,8 +56,8 @@ class FileSystemWeightSender(WeightSender):
                 )
         else:
             dist.barrier()
-            state_dict = gather_weights_parallel(model)
-            state_dict = convert_state_dict_to_hf(model, state_dict)
+            state_dict = gather_weights_parallel(model, skip=model.skip_weight_transfer)
+            state_dict = model.to_inference_format(convert_state_dict_to_hf(model, state_dict))
             self.logger.debug(f"Saving weights to {step_dir}")
             save_state_dict_parallel(state_dict, step_dir)
 

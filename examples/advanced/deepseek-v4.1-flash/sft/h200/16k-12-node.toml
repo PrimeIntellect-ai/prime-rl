@@ -1,0 +1,25 @@
+# 12-node, 16k-token overlay: enough GPUs that the model state fits without CP or offloading,
+# so each GPU runs one 16k sequence per micro-batch and transformer blocks compile.
+# Compose after the data overlay, e.g. base.toml @ math-10k.toml @ 16k-12-node.toml.
+
+[model]
+cp = 1
+optim_cpu_offload = false
+ac_offloading = "None"
+# V4.1 Flash activates ~16B of its 748B parameters, so at 16k tokens per GPU the run is bound by
+# InfiniBand traffic, not compute. Spreading the experts over every GPU removes their FSDP
+# all-gathers and reduce-scatters, and chunked dispatch hides much of the expert all-to-alls.
+ep = 96
+
+[model.moe.dispatch]
+overlap_chunks = 2
+
+[model.compile]
+
+[data]
+seq_len = 16384
+batch_size = 96
+micro_batch_size = 1
+
+[deployment]
+num_train_nodes = 12

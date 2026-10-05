@@ -1,0 +1,17 @@
+# One 8xH200 node serving the published fp8 / fp4 checkpoint with vLLM's native DeepSeek-V4.1 support.
+#
+#   uv run inference @ examples/advanced/deepseek-v4.1-flash/infer/single-node.toml
+
+use_deep_gemm = true
+
+[server]
+port = 8000
+
+[vllm]
+model = "deepseek-ai/DeepSeek-V4.1-Flash"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.85
+max_model_len = 16384
+kv_cache_dtype = "fp8"
+block_size = 64
