@@ -32,11 +32,7 @@ The trainer only runs `prime-rl`'s own model implementations, selected by the `m
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | ✅ |
 
-Checkpoints that tie the LM head to the input embeddings (`tie_word_embeddings: true`, e.g. small Qwen3 models) are rejected. Convert one to an untied checkpoint with the same weights:
-
-```bash
-uv run python tools/untie_word_embeddings.py Qwen/Qwen3-0.6B ./Qwen3-0.6B-untied
-```
+Checkpoints that tie the LM head to the input embeddings (`tie_word_embeddings: true`, e.g. small Qwen3 models) are rejected.
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
