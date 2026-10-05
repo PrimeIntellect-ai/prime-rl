@@ -34,7 +34,8 @@ class PrimeModel(nn.Module):
         if config.tie_word_embeddings:
             raise ValueError(
                 f"{config.model_type!r} checkpoint ties its LM head to the input embeddings "
-                "(tie_word_embeddings=true), which PrimeRL does not support."
+                "(tie_word_embeddings=true), which PrimeRL does not support. Convert it to an untied checkpoint "
+                "with `uv run python tools/untie_word_embeddings.py <model> <output_dir>`."
             )
         self.config = config
 

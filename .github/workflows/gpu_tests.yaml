@@ -48,6 +48,44 @@ jobs:
           PYTEST_OUTPUT_DIR: /tmp/outputs
         run: uv run pytest tests/unit -m gpu
 
+  multi-gpu-model-tests:
+    name: Multi-GPU model tests (${{ matrix.test }})
+    runs-on: vm
+    container:
+      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+      options: --gpus all
+    timeout-minutes: 45
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each file runs in its own 2-rank torchrun process: they skip under plain pytest.
+        test: [test_parallel_equivalence, test_fsdp_training]
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - name: Init public submodules
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+      - name: Install dependencies
+        run: uv sync --all-extras --all-packages --locked
+      - name: Run ${{ matrix.test }} on 2 GPUs
+        env:
+          USERNAME_CI: CI_RUNNER
+          WANDB_MODE: offline
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: uv run torchrun --nproc-per-node=2 -m pytest tests/unit/train/models/${{ matrix.test }}.py -m gpu -q -rxXf
+
   integration-tests:
     name: Integration tests (${{ matrix.test }})
     runs-on: ${{ matrix.runner }}
