@@ -10,6 +10,8 @@ The kernels read flat tensors: `q` `(tokens, heads, dim)`, `kv` `(positions, dim
 `(tokens, slots)`, so the batch axis (always 1 for packed rows) is folded in and out here.
 """
 
+import functools
+
 import torch
 
 try:
@@ -99,9 +101,22 @@ def _setup_context(ctx, inputs, output) -> None:
     ctx.sm_scale = sm_scale
 
 
+@functools.cache
+def _sparse_attn_backward_impl(num_heads: int, head_dim: int):
+    """prime-kernels' Hopper backward when it is built for this GPU and shape (~1.2x cuDNN's), else cuDNN's."""
+    import prime_kernels
+
+    if "dsa_sparse_attn_bwd" in prime_kernels.KERNELS and prime_kernels.is_available("dsa_sparse_attn_bwd"):
+        kernel = prime_kernels.load("dsa_sparse_attn_bwd")
+        if kernel.unsupported_shape_reason(num_heads, head_dim) is None:
+            return kernel.dsa_sparse_attn_backward
+    return dsv41_sparse_attn_backward
+
+
 def _backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.Tensor | None):
     q, kv, out, lse, indices, sinks = ctx.saved_tensors
-    dq, dkv, dsinks = dsv41_sparse_attn_backward(grad_out, q, kv, out, lse, indices, sinks, ctx.sm_scale)
+    backward = _sparse_attn_backward_impl(q.shape[-2], q.shape[-1])
+    dq, dkv, dsinks = backward(grad_out, q, kv, out, lse, indices, sinks, ctx.sm_scale)
     return dq, dkv, None, dsinks, None
 
 
