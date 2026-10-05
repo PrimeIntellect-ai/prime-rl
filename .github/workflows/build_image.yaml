@@ -197,7 +197,7 @@ jobs:
           # the version is deterministic on the self-hosted runners (otherwise
           # the rolling moby/buildkit:buildx-stable-1 tag is used, and a
           # persistent runner may keep a stale local copy of it).
-          driver-opts: image=moby/buildkit:v0.33.1
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
