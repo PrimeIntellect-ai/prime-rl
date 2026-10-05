@@ -141,6 +141,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
                 hidden_size=moe.experts.down_proj.shape[1],
+                experts=moe.experts,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
@@ -148,6 +149,23 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
         if ep_mesh is not None:
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
+
+    if isinstance(dispatch, DeepEPMoEDispatchConfig) and dispatch.two_batch_overlap:
+        language_model = get_language_model(
+            model, override=config.vlm.language_model_attr if config.vlm is not None else None
+        )
+        if not hasattr(language_model, "two_batch_overlap"):
+            raise ValueError(f"{type(language_model).__name__} does not implement two-batch overlap.")
+        language_model.two_batch_overlap = True
+        # Each micro-batch's DeepEP kernels run while the other's compute does, and need all their
+        # `num_sms` SMs at once; kernels that hold every SM until they finish would stall them.
+        compute_sms = torch.cuda.get_device_properties().multi_processor_count - dispatch.num_sms
+        if isinstance(selected_compute, FusedSwigluExpertCompute):
+            selected_compute.kernel.set_num_sms(compute_sms)
+        if importlib.util.find_spec("deep_gemm") is not None:
+            import deep_gemm
+
+            deep_gemm.set_num_sms(compute_sms)
 
     get_logger().info(
         f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "

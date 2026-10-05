@@ -13,6 +13,7 @@ all-to-alls with data-dependent split sizes.
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.base import CPSupport, PrimeModel
@@ -68,17 +69,48 @@ class DeepseekV41DecoderLayer(nn.Module):
         routed_experts: Tensor | None = None,
         *,
         packed: PackedContext,
-    ) -> tuple[Tensor, ...]:
-        state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
+        overlap_with: tuple | None = None,
+    ) -> tuple:
+        """`overlap_with` is a second micro-batch's `(mhc_states, pre_mix, shared, routed_experts, packed)`;
+        with it, the outputs of both micro-batches are returned."""
+        shared = (compressed_kv, index_k, top_k_indices, candidates)
+        if overlap_with is not None:
+            return self._forward_overlapped(((mhc_states, pre_mix, shared, routed_experts, packed), overlap_with))
+        mhc_states, ffn_pre, post, comb, ffn_in, state = self._attention(
+            mhc_states, pre_mix, SharedAttnState(*shared), packed
+        )
+        mlp_out = self.mlp(ffn_in, routed_experts=routed_experts)
+        return (self.ffn_hc.update_states(post, comb, mlp_out, mhc_states), ffn_pre, *state.as_tuple())
 
+    def _attention(
+        self, mhc_states: Tensor, pre_mix: Tensor, state: SharedAttnState, packed: PackedContext
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, SharedAttnState]:
+        """Attention and its write-back, then the FFN's gates and normalized input."""
         attn_pre, post, comb, attn_in = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
         attn_out, state = self.self_attn(self.input_layernorm(attn_in), packed=packed, state=state)
         mhc_states = self.attn_hc.update_states(post, comb, attn_out, mhc_states)
-
         ffn_pre, post, comb, ffn_in = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
-        mlp_out = self.mlp(self.post_attention_layernorm(ffn_in), routed_experts=routed_experts)
-        mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, mhc_states)
-        return (mhc_states, ffn_pre, *state.as_tuple())
+        return mhc_states, ffn_pre, post, comb, self.post_attention_layernorm(ffn_in), state
+
+    def _forward_overlapped(self, batches: tuple) -> tuple:
+        """Two micro-batches through one layer: the first's tokens travel to their experts during
+        the second's attention, the second's while the first's experts run, and the first's results
+        travel back while the second's experts run. Backward mirrors the order."""
+        staged = []
+        for mhc_states, pre_mix, shared, routed_experts, packed in batches:
+            mhc_states, ffn_pre, post, comb, ffn_in, state = self._attention(
+                mhc_states, pre_mix, SharedAttnState(*shared), packed
+            )
+            staged.append((mhc_states, ffn_pre, post, comb, ffn_in, state, self.mlp.launch(ffn_in, routed_experts)))
+        staged = [(*stage[:-1], self.mlp.compute(stage[-1])) for stage in staged]
+        return tuple(
+            (
+                self.ffn_hc.update_states(post, comb, self.mlp.finish(ffn_in, in_flight), mhc_states),
+                ffn_pre,
+                *state.as_tuple(),
+            )
+            for mhc_states, ffn_pre, post, comb, ffn_in, state, in_flight in staged
+        )
 
 
 # fp32 in the published checkpoint; mirrors V4's list.
@@ -86,6 +118,9 @@ KEEP_IN_FP32_MODULES = ("attn_hc", "ffn_hc", "sinks", "selection_bias")
 
 
 class DeepseekV41TextModel(nn.Module):
+    # Set by the trainer (`model.moe.dispatch.two_batch_overlap`).
+    two_batch_overlap: bool = False
+
     def __init__(self, config: DeepseekV41TextConfig):
         super().__init__()
         self.config = config
@@ -121,6 +156,12 @@ class DeepseekV41TextModel(nn.Module):
         assert seq_lens_are_pre_shard == (cp_world_size > 1), (
             f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
         )
+        if self.two_batch_overlap:
+            assert cp_world_size == 1, "two-batch overlap does not support context parallelism"
+            num_first_docs = _middle_document_boundary(seq_lens)
+            if num_first_docs is not None:
+                return self._forward_two_batches(input_ids, position_ids, seq_lens, routed_experts, num_first_docs)
+
         inputs_embeds = self.embed_tokens(input_ids)
         packed = PackedContext.build(
             config=self.config,
@@ -148,6 +189,77 @@ class DeepseekV41TextModel(nn.Module):
                 mhc_states, pre_mix, *shared, routed_experts_layer, packed=packed
             )
         return self.norm(collapse_streams(mhc_states, pre_mix))
+
+    def _forward_two_batches(
+        self,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        seq_lens: Tensor,
+        routed_experts: Tensor | None,
+        num_first_docs: int,
+    ) -> Tensor:
+        """`forward` with the packed row split after its first `num_first_docs` documents into two
+        micro-batches that move through every layer together."""
+        split = int(seq_lens[:num_first_docs].sum())
+        batches = []
+        for tokens, lens in (
+            (slice(0, split), seq_lens[:num_first_docs]),
+            (slice(split, None), seq_lens[num_first_docs:]),
+        ):
+            ids = input_ids[:, tokens]
+            embeds = self.embed_tokens(ids)
+            packed = PackedContext.build(
+                config=self.config, seq_lens=lens, device=embeds.device, cp_rank=0, cp_world_size=1
+            )
+            packed.check_position_ids(position_ids[:, tokens])
+            mhc_states = embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
+            batches.append(
+                {
+                    "mhc_states": mhc_states,
+                    "pre_mix": identity_pre_mix(mhc_states),
+                    "shared": SharedAttnState().as_tuple(),
+                    "packed": packed,
+                    "hash_ids": self.engram_hasher(ids, packed.tok_doc_start)
+                    if self.engram_hasher is not None
+                    else None,
+                    "routed_experts": routed_experts[:, tokens] if routed_experts is not None else None,
+                }
+            )
+
+        for layer_idx, decoder_layer in enumerate(self.layers):
+            engram = self.engrams[str(layer_idx)] if str(layer_idx) in self.engrams else None
+            layer_inputs = []
+            for batch in batches:
+                if engram is not None:
+                    batch["mhc_states"] = engram(batch["mhc_states"], batch["hash_ids"][:, engram.engram_idx])
+                routed = batch["routed_experts"]
+                layer_inputs.append(
+                    (
+                        batch["mhc_states"],
+                        batch["pre_mix"],
+                        batch["shared"],
+                        routed[:, :, layer_idx, :] if routed is not None else None,
+                        batch["packed"],
+                    )
+                )
+            (mhc_states, pre_mix, shared, routed, packed), second = layer_inputs
+            outputs = decoder_layer(mhc_states, pre_mix, *shared, routed, packed=packed, overlap_with=second)
+            for batch, (mhc_states, pre_mix, *shared) in zip(batches, outputs):
+                batch["mhc_states"], batch["pre_mix"], batch["shared"] = mhc_states, pre_mix, tuple(shared)
+        return torch.cat([self.norm(collapse_streams(b["mhc_states"], b["pre_mix"])) for b in batches], dim=1)
+
+
+def _middle_document_boundary(seq_lens: Tensor) -> int | None:
+    """How many leading documents end closest to the middle of the row, or None when no document
+    boundary lies in its middle half (one long document cannot be split into two micro-batches)."""
+    lengths = seq_lens.tolist()
+    total = sum(lengths)
+    best, best_distance, end = None, total, 0
+    for num_docs, length in enumerate(lengths[:-1], start=1):
+        end += length
+        if total / 4 <= end <= 3 * total / 4 and abs(end - total / 2) < best_distance:
+            best, best_distance = num_docs, abs(end - total / 2)
+    return best
 
 
 class DeepseekV41ForCausalLM(PrimeModel):

@@ -266,6 +266,11 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     token_chunk_size: int | None = Field(None, ge=1)
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
+    two_batch_overlap: bool = False
+    """Split each packed row at its middle document boundary into two micro-batches that move through
+    every layer together, so one's attention runs while the other's tokens travel to and from their
+    experts. Only for models that implement it (DeepSeek-V4.1)."""
+
 
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,

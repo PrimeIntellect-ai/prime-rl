@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from weakref import WeakValueDictionary
 
 import torch
@@ -283,6 +283,7 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         num_sms: int,
         token_chunk_size: int | None,
         hidden_size: int,
+        experts: ExpertFunction,
     ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.num_local_experts = num_experts // group.size()
@@ -291,7 +292,7 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         self._pending_combine_events: list[EventOverlap] = []
         self._dispatcher_id = id(self)
         _combine_dispatchers[self._dispatcher_id] = self
-        self._experts: ExpertFunction | None = None
+        self._experts = experts
         configure_num_sms(num_sms)
         # Create the communication buffer now: created lazily, it would be built inside the first
         # activation-checkpointed forward, whose recompute then replays every later cached op
@@ -358,11 +359,14 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         *,
         score_before_experts: bool,
     ) -> torch.Tensor:
-        self._experts = experts
-        outputs = torch.ops.prime_rl.deepep_moe(
-            x, selected_experts_indices, top_scores, self._dispatcher_id, score_before_experts, torch.is_grad_enabled()
-        )
-        return outputs[0]
+        # Every chunk is sent before any is computed, so later chunks travel while earlier ones compute.
+        chunks = [
+            self.launch(x[start:end], top_scores[start:end], selected_experts_indices[start:end])
+            for start, end in self.chunk_ranges(x.shape[0])
+        ]
+        chunks = [self.compute(chunk, score_before_experts) for chunk in chunks]
+        outputs = [self.wait(chunk) for chunk in chunks]
+        return torch.cat(outputs) if len(outputs) > 1 else outputs[0]
 
     def synchronize(self) -> None:
         self._synchronize_combines()
@@ -370,6 +374,34 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
     def chunk_ranges(self, num_tokens: int) -> list[tuple[int, int]]:
         size = self.token_chunk_size or max(num_tokens, 1)
         return [(start, min(start + size, num_tokens)) for start in range(0, max(num_tokens, 1), size)]
+
+    @torch.compiler.disable()
+    def launch(self, x: torch.Tensor, top_scores: torch.Tensor, selected_experts_indices: torch.Tensor) -> InFlightMoE:
+        """Start sending tokens to their experts' ranks; `compute` and `wait` finish the layer."""
+        key, recv_x, recv_idx, recv_scores, counts = torch.ops.prime_rl.deepep_dispatch_launch(
+            x, selected_experts_indices, top_scores, self._dispatcher_id
+        )
+        return InFlightMoE(key, recv_x, recv_idx, recv_scores, counts, x.shape[0])
+
+    @torch.compiler.disable()
+    def compute(self, chunk: InFlightMoE, score_before_experts: bool) -> InFlightMoE:
+        """Wait for the tokens, run the local experts and start sending the results back."""
+        out = torch.ops.prime_rl.deepep_experts(
+            chunk.recv_x,
+            chunk.recv_idx,
+            chunk.recv_scores,
+            chunk.counts,
+            chunk.key,
+            chunk.num_tokens,
+            self._dispatcher_id,
+            score_before_experts,
+        )
+        return replace(chunk, out=out)
+
+    @torch.compiler.disable()
+    def wait(self, chunk: InFlightMoE) -> torch.Tensor:
+        """The combined expert output, once it has arrived."""
+        return torch.ops.prime_rl.deepep_combine_wait(chunk.out, chunk.key)
 
     def routed_experts(
         self,
@@ -387,162 +419,197 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         routed = self._experts(gather_pairs(recv_x, layout), num_tokens_per_expert)
         return reduce_pairs(routed, layout, recv_scores)
 
-    def moe_forward(
-        self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor, score_before_experts: bool
-    ) -> tuple[torch.Tensor, list[object], list[torch.Tensor]]:
-        """Dispatch every chunk up front, then run each chunk's experts while later chunks are in flight."""
-        buffer = get_buffer(self.group, get_hidden_bytes(x))
-        topk_idx = topk_idx.contiguous().masked_fill(topk_weights == 0, -1)
-        topk_weights = topk_weights.float().contiguous()
-        in_flight = []
-        for start, end in self.chunk_ranges(x.shape[0]):
-            chunk_idx = topk_idx[start:end]
-            per_rank, per_rdma_rank, per_expert, in_rank, _ = buffer.get_dispatch_layout(
-                topk_idx=chunk_idx, num_experts=self.num_experts
-            )
-            recv_x, recv_idx, recv_scores, counts, handle, event = buffer.dispatch(
-                x=x[start:end],
-                topk_idx=chunk_idx,
-                topk_weights=topk_weights[start:end],
-                num_tokens_per_rank=per_rank,
-                num_tokens_per_rdma_rank=per_rdma_rank,
-                is_token_in_rank=in_rank,
-                num_tokens_per_expert=per_expert,
-                previous_event=_new_event_overlap(),
-                async_finish=True,
-                allocate_on_comm_stream=True,
-            )
-            in_flight.append((recv_x, recv_idx, recv_scores, counts, handle, event))
 
-        combined, handles, saved, events = [], [], [], []
-        for recv_x, recv_idx, recv_scores, counts, handle, event in in_flight:
-            event.current_stream_wait()
-            routed = self.routed_experts(recv_x, recv_idx, recv_scores, counts, score_before_experts)
-            out, _, event = buffer.combine(
-                x=routed,
-                handle=handle,
-                previous_event=_new_event_overlap(),
-                async_finish=True,
-                allocate_on_comm_stream=True,
-            )
-            combined.append(out)
-            events.append(event)
-            handles.append(handle)
-            saved += [recv_x, recv_idx, recv_scores, torch.tensor(counts, dtype=torch.int32)]
-        for event in events:
-            event.current_stream_wait()
-        return torch.cat(combined) if len(combined) > 1 else combined[0], handles, saved
+@dataclass(frozen=True)
+class InFlightMoE:
+    """One MoE layer's tokens between `launch`, `compute` and `wait`."""
 
-    def moe_backward(
-        self,
-        grad_out: torch.Tensor,
-        handles: list[object],
-        saved: tuple[torch.Tensor, ...],
-        score_before_experts: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Send every chunk's output gradient back up front, then run each chunk's expert backward
-        (recomputing its forward) while the other chunks' gradients are in flight."""
-        buffer = get_buffer(self.group, get_hidden_bytes(grad_out))
-        grad_out = grad_out.contiguous()
-        ranges = self.chunk_ranges(grad_out.shape[0])
-        in_flight = []
-        for i, (start, end) in enumerate(ranges):
-            grad_recv, _, _, _, _, event = buffer.dispatch(
-                x=grad_out[start:end],
-                handle=handles[i],
-                previous_event=_new_event_overlap(),
-                async_finish=True,
-                allocate_on_comm_stream=True,
-            )
-            in_flight.append((grad_recv, event))
-
-        grads, events = [], []
-        for i, (grad_recv, event) in enumerate(in_flight):
-            recv_x, recv_idx, recv_scores, counts = saved[4 * i : 4 * i + 4]
-            with torch.enable_grad():
-                recv_x = recv_x.detach().requires_grad_()
-                recv_scores = recv_scores.detach().requires_grad_()
-                routed = self.routed_experts(recv_x, recv_idx, recv_scores, counts.tolist(), score_before_experts)
-            event.current_stream_wait()
-            # Accumulates the experts' weight gradients like any other backward.
-            torch.autograd.backward(routed, grad_recv)
-            grad_x, grad_scores, event = buffer.combine(
-                x=recv_x.grad,
-                handle=handles[i],
-                topk_weights=recv_scores.grad,
-                previous_event=_new_event_overlap(),
-                async_finish=True,
-                allocate_on_comm_stream=True,
-            )
-            grads.append((grad_x, grad_scores))
-            events.append(event)
-        for event in events:
-            event.current_stream_wait()
-        grad_x = torch.cat([g for g, _ in grads]) if len(grads) > 1 else grads[0][0]
-        grad_scores = torch.cat([g for _, g in grads]) if len(grads) > 1 else grads[0][1]
-        return grad_x, grad_scores
+    key: torch.Tensor
+    recv_x: torch.Tensor
+    recv_idx: torch.Tensor
+    recv_scores: torch.Tensor
+    counts: torch.Tensor
+    num_tokens: int
+    out: torch.Tensor | None = None
 
 
-# Forward communication handles, kept from the forward to its backward.
-_moe_handles: dict[int, list[object]] = {}
+@dataclass
+class _Transfers:
+    """DeepEP state one MoE layer's three ops share, forward and backward.
+
+    Forward: `deepep_dispatch_launch` sends the tokens (`dispatched`), `deepep_experts` waits for
+    them and sends the results back (`combined`), `deepep_combine_wait` waits for those. Backward
+    mirrors it: `deepep_combine_wait` sends the output gradient (`grad_received`), `deepep_experts`
+    waits for it and sends the input gradients back (`grad_returned`), and `deepep_dispatch_launch`
+    waits for those. Between a send and its wait, the other micro-batch's work runs.
+    """
+
+    handle: object
+    dispatched: EventOverlap
+    combined: EventOverlap | None = None
+    grad_received: tuple[torch.Tensor, EventOverlap] | None = None
+    grad_returned: tuple[torch.Tensor, torch.Tensor, EventOverlap] | None = None
 
 
-@torch.library.custom_op("prime_rl::deepep_moe", mutates_args=())
-def deepep_moe(
-    x: torch.Tensor,
-    topk_idx: torch.Tensor,
-    topk_weights: torch.Tensor,
+_transfers: dict[int, _Transfers] = {}
+
+
+@torch.library.custom_op("prime_rl::deepep_dispatch_launch", mutates_args=())
+def deepep_dispatch_launch(
+    x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor, dispatcher_id: int
+) -> list[torch.Tensor]:
+    """Start sending tokens to their experts' ranks. Returns the transfer key and the received
+    tokens, expert ids, scores and per-expert pair counts, still in flight until `deepep_experts`."""
+    dispatcher = _combine_dispatchers[dispatcher_id]
+    buffer = get_buffer(dispatcher.group, get_hidden_bytes(x))
+    topk_idx = topk_idx.contiguous().masked_fill(topk_weights == 0, -1)
+    per_rank, per_rdma_rank, per_expert, in_rank, _ = buffer.get_dispatch_layout(
+        topk_idx=topk_idx, num_experts=dispatcher.num_experts
+    )
+    recv_x, recv_idx, recv_scores, counts, handle, event = buffer.dispatch(
+        x=x,
+        topk_idx=topk_idx,
+        topk_weights=topk_weights.float().contiguous(),
+        num_tokens_per_rank=per_rank,
+        num_tokens_per_rdma_rank=per_rdma_rank,
+        is_token_in_rank=in_rank,
+        num_tokens_per_expert=per_expert,
+        previous_event=_new_event_overlap(),
+        async_finish=True,
+        allocate_on_comm_stream=True,
+    )
+    key = _get_next_handle_id()
+    _transfers[key.item()] = _Transfers(handle=handle, dispatched=event)
+    return [key, recv_x, recv_idx, recv_scores, torch.tensor(counts, dtype=torch.int32)]
+
+
+@deepep_dispatch_launch.register_fake
+def _deepep_dispatch_launch_fake(x, topk_idx, topk_weights, dispatcher_id):
+    dispatcher = _combine_dispatchers[dispatcher_id]
+    rows = torch.library.get_ctx().new_dynamic_size()
+    return [
+        torch.empty(1, dtype=torch.int64),
+        x.new_empty(rows, x.shape[1]),
+        topk_idx.new_empty(rows, topk_idx.shape[1]),
+        x.new_empty(rows, topk_idx.shape[1], dtype=torch.float32),
+        torch.empty(dispatcher.num_local_experts, dtype=torch.int32),
+    ]
+
+
+def _deepep_dispatch_launch_setup_context(ctx, inputs, output) -> None:
+    x, _, topk_weights, _ = inputs
+    ctx.key, ctx.x_dtype, ctx.weights_dtype = output[0].item(), x.dtype, topk_weights.dtype
+
+
+def _deepep_dispatch_launch_backward(ctx, *grads):
+    grad_x, grad_scores, event = _transfers.pop(ctx.key).grad_returned
+    event.current_stream_wait()
+    return grad_x.to(ctx.x_dtype), None, grad_scores.to(ctx.weights_dtype), None
+
+
+deepep_dispatch_launch.register_autograd(
+    _deepep_dispatch_launch_backward, setup_context=_deepep_dispatch_launch_setup_context
+)
+
+
+@torch.library.custom_op("prime_rl::deepep_experts", mutates_args=())
+def deepep_experts(
+    recv_x: torch.Tensor,
+    recv_idx: torch.Tensor,
+    recv_scores: torch.Tensor,
+    counts: torch.Tensor,
+    key: torch.Tensor,
+    num_tokens: int,
     dispatcher_id: int,
     score_before_experts: bool,
-    keep_for_backward: bool,
-) -> list[torch.Tensor]:
-    """Routed experts of one MoE layer over DeepEP, pipelined over token chunks.
-
-    Returns the combined output, the key of the communication handles its backward reuses, and
-    each chunk's received tokens, expert ids, scores and per-expert pair counts. Activation
-    checkpointing saves all of them, so recompute neither resends tokens nor reruns the experts;
-    the backward recomputes each chunk's experts itself, overlapped with communication.
-    """
+) -> torch.Tensor:
+    """Wait for the dispatched tokens, run the local experts and start sending the results back.
+    The `(num_tokens, hidden)` output is in flight until `deepep_combine_wait`."""
     dispatcher = _combine_dispatchers[dispatcher_id]
-    out, handles, saved = dispatcher.moe_forward(x, topk_idx, topk_weights, score_before_experts)
-    key = _get_next_handle_id()
-    if keep_for_backward:
-        _moe_handles[key.item()] = handles
-    return [out, key, *saved]
+    transfers = _transfers[key.item()]
+    transfers.dispatched.current_stream_wait()
+    routed = dispatcher.routed_experts(recv_x, recv_idx, recv_scores, counts.tolist(), score_before_experts)
+    out, _, transfers.combined = _buffer.combine(
+        x=routed,
+        handle=transfers.handle,
+        previous_event=_new_event_overlap(),
+        async_finish=True,
+        allocate_on_comm_stream=True,
+    )
+    return out
 
 
-@deepep_moe.register_fake
-def _deepep_moe_fake(x, topk_idx, topk_weights, dispatcher_id, score_before_experts, keep_for_backward):
-    dispatcher = _combine_dispatchers[dispatcher_id]
-    ctx = torch.library.get_ctx()
-    outputs = [torch.empty_like(x), torch.empty(1, dtype=torch.int64)]
-    for _ in dispatcher.chunk_ranges(x.shape[0]):
-        rows = ctx.new_dynamic_size()
-        outputs += [
-            x.new_empty(rows, x.shape[1]),
-            topk_idx.new_empty(rows, topk_idx.shape[1]),
-            x.new_empty(rows, topk_idx.shape[1], dtype=torch.float32),
-            torch.empty(dispatcher.num_local_experts, dtype=torch.int32),
-        ]
-    return outputs
+@deepep_experts.register_fake
+def _deepep_experts_fake(recv_x, recv_idx, recv_scores, counts, key, num_tokens, dispatcher_id, score_before_experts):
+    return recv_x.new_empty(num_tokens, recv_x.shape[1])
 
 
-def _deepep_moe_setup_context(ctx, inputs, output) -> None:
-    x, _, topk_weights, dispatcher_id, score_before_experts, _ = inputs
-    ctx.dispatcher_id, ctx.score_before_experts = dispatcher_id, score_before_experts
-    ctx.handle_key = output[1].item()
-    ctx.x_dtype, ctx.weights_dtype = x.dtype, topk_weights.dtype
-    ctx.save_for_backward(*output[2:])
+def _deepep_experts_setup_context(ctx, inputs, output) -> None:
+    recv_x, recv_idx, recv_scores, counts, key, _, dispatcher_id, score_before_experts = inputs
+    ctx.key, ctx.dispatcher_id, ctx.score_before_experts = key.item(), dispatcher_id, score_before_experts
+    ctx.save_for_backward(recv_x, recv_idx, recv_scores, counts)
 
 
-def _deepep_moe_backward(ctx, grads):
+def _deepep_experts_backward(ctx, grad_out):
     dispatcher = _combine_dispatchers[ctx.dispatcher_id]
-    handles = _moe_handles.pop(ctx.handle_key)
-    grad_x, grad_scores = dispatcher.moe_backward(grads[0], handles, ctx.saved_tensors, ctx.score_before_experts)
-    return grad_x.to(ctx.x_dtype), None, grad_scores.to(ctx.weights_dtype), None, None, None
+    transfers = _transfers[ctx.key]
+    recv_x, recv_idx, recv_scores, counts = ctx.saved_tensors
+    # Recompute the experts while the output gradient is still arriving.
+    with torch.enable_grad():
+        recv_x = recv_x.detach().requires_grad_()
+        recv_scores = recv_scores.detach().requires_grad_()
+        routed = dispatcher.routed_experts(recv_x, recv_idx, recv_scores, counts.tolist(), ctx.score_before_experts)
+    grad_routed, event = transfers.grad_received
+    event.current_stream_wait()
+    # Accumulates the experts' weight gradients like any other backward.
+    torch.autograd.backward(routed, grad_routed)
+    grad_x, grad_scores, event = _buffer.combine(
+        x=recv_x.grad,
+        handle=transfers.handle,
+        topk_weights=recv_scores.grad,
+        previous_event=_new_event_overlap(),
+        async_finish=True,
+        allocate_on_comm_stream=True,
+    )
+    transfers.grad_returned = (grad_x, grad_scores, event)
+    # `deepep_dispatch_launch`'s backward returns `grad_returned`; these only order it after this one.
+    return recv_x.grad, None, recv_scores.grad, None, None, None, None, None
 
 
-deepep_moe.register_autograd(_deepep_moe_backward, setup_context=_deepep_moe_setup_context)
+deepep_experts.register_autograd(_deepep_experts_backward, setup_context=_deepep_experts_setup_context)
+
+
+@torch.library.custom_op("prime_rl::deepep_combine_wait", mutates_args=())
+def deepep_combine_wait(out: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
+    """`deepep_experts`' output once it has arrived."""
+    _transfers[key.item()].combined.current_stream_wait()
+    return out.clone()
+
+
+@deepep_combine_wait.register_fake
+def _deepep_combine_wait_fake(out, key):
+    return torch.empty_like(out)
+
+
+def _deepep_combine_wait_setup_context(ctx, inputs, output) -> None:
+    ctx.key = inputs[1].item()
+
+
+def _deepep_combine_wait_backward(ctx, grad):
+    transfers = _transfers[ctx.key]
+    grad = grad.contiguous()
+    grad_routed, _, _, _, _, event = _buffer.dispatch(
+        x=grad,
+        handle=transfers.handle,
+        previous_event=_new_event_overlap(),
+        async_finish=True,
+        allocate_on_comm_stream=True,
+    )
+    transfers.grad_received = (grad_routed, event)
+    return grad, None
+
+
+deepep_combine_wait.register_autograd(_deepep_combine_wait_backward, setup_context=_deepep_combine_wait_setup_context)
 
 
 register_deepep_cuda_ops()

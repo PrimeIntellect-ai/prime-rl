@@ -367,30 +367,7 @@ class MoE(nn.Module):
         """
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
-
-        if routed_experts is not None:
-            _, _, top_k = routed_experts.shape
-            routed_experts = routed_experts.reshape(
-                -1, top_k
-            )  # we have to reshape here because the original is non-contiguous
-
-        # top_scores and selected_experts_indices shape (bs*slen*top_k,)
-        # num_tokens_per_expert shape (num_experts,)
-        (
-            top_scores,
-            selected_experts_indices,
-            num_tokens_per_expert,
-            routing_confidence_sum,
-        ) = self.router(x, routed_experts=routed_experts)
-
-        # Accumulate expert usage for selection-bias updates and metrics.
-        with torch.no_grad():
-            record_moe_routing_statistics(
-                self.tokens_per_expert,
-                self.routing_confidence_sum,
-                num_tokens_per_expert,
-                routing_confidence_sum,
-            )
+        top_scores, selected_experts_indices = self._route(x, routed_experts)
 
         routed_output = self.token_dispatcher.run(
             self.prepare_expert_input(x),
@@ -412,6 +389,42 @@ class MoE(nn.Module):
             routed_output = routed_output + shared_output
 
         return routed_output.reshape(bs, slen, dim)
+
+    def _route(self, x: torch.Tensor, routed_experts: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Top-k scores and expert ids of the `(tokens, dim)` input, recording the routing statistics."""
+        if routed_experts is not None:
+            # `(bs, slen, top_k)` and non-contiguous, so reshape rather than view.
+            routed_experts = routed_experts.reshape(-1, routed_experts.shape[-1])
+        top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum = self.router(
+            x, routed_experts=routed_experts
+        )
+        # Accumulate expert usage for selection-bias updates and metrics.
+        with torch.no_grad():
+            record_moe_routing_statistics(
+                self.tokens_per_expert,
+                self.routing_confidence_sum,
+                num_tokens_per_expert,
+                routing_confidence_sum,
+            )
+        return top_scores, selected_experts_indices
+
+    def launch(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None):
+        """Two-batch overlap, step 1: route `x` and start sending it to its experts (DeepEP dispatch)."""
+        tokens = x.view(-1, x.shape[-1])
+        top_scores, selected_experts_indices = self._route(tokens, routed_experts)
+        return self.token_dispatcher.launch(self.prepare_expert_input(tokens), top_scores, selected_experts_indices)
+
+    def compute(self, in_flight):
+        """Step 2: run the local experts on the arrived tokens and start sending the results back."""
+        return self.token_dispatcher.compute(in_flight, self.score_before_experts)
+
+    def finish(self, x: torch.Tensor, in_flight) -> torch.Tensor:
+        """Step 3: `forward`'s output, from the arrived expert results and the shared expert."""
+        tokens = x.view(-1, x.shape[-1])
+        routed_output = self.prepare_expert_output(self.token_dispatcher.wait(in_flight))
+        if self.shared_expert is not None:
+            routed_output = routed_output + self.shared_expert(tokens)
+        return routed_output.reshape(x.shape)
 
     def init_weights(
         self,
