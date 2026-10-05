@@ -94,7 +94,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 # The runtime dependency image contains no first-party source or editable installs.
 COPY --from=manifests /manifests /app
 RUN --mount=type=cache,target=/usr/local/share/uv/cache \
-    uv sync --all-packages --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra disagg --extra quack --extra kernels --locked --no-dev \
+    uv sync --all-packages --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 --extra flash-attn-cute --extra flash-mla --extra disagg --extra quack --extra kernels --locked --no-dev \
         --no-install-local
 
 # Build NIXL from source against the UCX 1.19 baked above. The PyPI nixl wheel
@@ -243,7 +243,10 @@ COPY --from=builder --chown=appuser:appuser \
     --exclude=lib/python3.12/site-packages/flash_attn \
     --exclude=lib/python3.12/site-packages/flash_attn_2_cuda*.so \
     /app/.venv /app/.venv
-RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]'
+RUN /app/.venv/bin/python -c 'from importlib.metadata import version; [version(name) for name in ("deep-ep", "deep-gemm", "mamba-ssm", "nixl", "prime-kernels", "quack-kernels", "vllm", "vllm-router")]' \
+    && if [ "$(uname -m)" = "x86_64" ]; then \
+        /app/.venv/bin/python -c 'from importlib.metadata import version; version("flash-mla")'; \
+    fi
 
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
