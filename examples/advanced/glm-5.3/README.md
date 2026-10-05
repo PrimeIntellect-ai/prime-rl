@@ -114,7 +114,7 @@ This will start a SFT run with the following configuration:
 - The model is `zai-org/GLM-5.3-BF16`
 - The data is `PrimeIntellect/INTELLECT-3-SFT-10K` (math split)
 - 8 nodes at 131k context: CP 8, EP 8, full activation checkpointing with activation offloading, optimizer state offloaded to CPU
-- DSA attention runs on the FlashMLA sparse forward and the cuDNN sparse backward (`model.dsa_backend = "cudnn_flashmla"`)
+- DSA attention runs on the FlashMLA sparse forward and the cuDNN sparse backward, and the DSA indexer on the cuDNN FP8 scoring and top-k kernels (`model.dsa_backend = "cudnn_flashmla"`)
 
 For a fake-data dry run, append [`fake.toml`](sft/h200/fake.toml) instead. You can use the same dashboard to monitor the SFT run.
 
