@@ -53,7 +53,7 @@ gpu = [
     "torchvision ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.30.0 ; sys_platform == 'linux'",
+    "vllm>=0.31.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "ring-flash-attn>=0.1.8 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
@@ -147,7 +147,7 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
-    # vLLM 0.30.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
+    # vLLM 0.31.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
     "nvidia-cutlass-dsl==4.7.1",
     "transformers==5.6.2",
@@ -229,6 +229,8 @@ requires-dist = [
 # bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
 harbor = "2026-08-11T00:00:00Z"
 tokenspeed-mla = false
+# vLLM 0.31.0 pins flashinfer-python 0.7.0.post1, published inside the rolling window
+flashinfer-python = false
 fastokens = false
 flash_attn_3 = false
 # PrimeIntellect-published packages in this project's dependency closure —
@@ -278,8 +280,8 @@ vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.2/vllm_router-0.2.2-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.30.0/vllm-0.30.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.30.0/vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.31.0/vllm-0.31.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.31.0/vllm-0.31.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },

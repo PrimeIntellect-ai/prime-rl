@@ -256,8 +256,7 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
     def _is_nixl_routed_experts_pd_config(config: VllmConfig) -> bool:
         kv_transfer_config = config.kv_transfer_config
         return (
-            config.model_config is not None
-            and config.model_config.enable_return_routed_experts
+            config.aux_output_config.enable_return_routed_experts
             and kv_transfer_config is not None
             and kv_transfer_config.kv_connector == "NixlConnector"
             and kv_transfer_config.is_kv_transfer_instance
@@ -277,11 +276,11 @@ def monkey_patch_return_routed_experts_with_nixl_connector():
         # vLLM rejects every KV connector, but our P/D path uses NIXL and
         # stitches prefill/decode routed experts in the router. CPU KV offload
         # remains rejected by prime-rl config validation.
-        config.model_config.enable_return_routed_experts = False
+        config.aux_output_config.enable_return_routed_experts = False
         try:
             return original_post_init(config)
         finally:
-            config.model_config.enable_return_routed_experts = True
+            config.aux_output_config.enable_return_routed_experts = True
 
     _post_init._prime_rl_allows_nixl_routed_experts = True
     VllmConfig.__post_init__ = _post_init

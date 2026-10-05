@@ -66,7 +66,7 @@ class PrimeRlServingTokens(ServingTokens):
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
         routed_experts: _GenerateRoutedExpertsCapture | None = None
-        if self.model_config.enable_return_routed_experts:
+        if self.engine_client.vllm_config.aux_output_config.enable_return_routed_experts:
             routed_experts = _GenerateRoutedExpertsCapture(
                 result_generator,
                 start=request.sampling_params.routed_experts_prompt_start,
