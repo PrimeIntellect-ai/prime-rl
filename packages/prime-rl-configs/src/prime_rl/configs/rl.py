@@ -440,6 +440,16 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
+        if self.weight_broadcast.type == "modelexpress":
+            dynamo = self.orchestrator.client.dynamo
+            if dynamo is not None and dynamo.enabled:
+                raise ValueError(
+                    "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."
+                )
+            if self.inference is not None:
+                extra = self.inference.vllm.model_extra or {}
+                if extra.get("speculative_config") is not None:
+                    raise ValueError("modelexpress does not support speculative decoding.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
@@ -699,7 +709,7 @@ class RLConfig(BaseConfig):
                 if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
                     self.inference.vllm.api_server_count = dp_per_node
 
-            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+            if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
                 # Every allocated inference GPU is an in-memory transfer worker.
                 # The external-LB launcher starts dp_per_node (= gpus_per_node / tp)
                 # TP-sharded servers per node, i.e. gpus_per_node workers per node, so use
@@ -708,11 +718,11 @@ class RLConfig(BaseConfig):
                 # factor count twice and wait for ranks that never connect. Matches
                 # the disaggregated path below.
                 total_infer_workers = self.deployment.total_infer_nodes * self.deployment.gpus_per_node
-                assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+                assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 if self.trainer.weight_broadcast.type == "nccl":
                     self.trainer.weight_broadcast.host = "0.0.0.0"
                 self.trainer.weight_broadcast.inference_world_size = total_infer_workers
-                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+                assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
                 self.orchestrator.weight_broadcast.inference_world_size = total_infer_workers
 
         return self
@@ -743,10 +753,10 @@ class RLConfig(BaseConfig):
                 infer_deploy.num_decode_nodes * stride
             )
             self.orchestrator.inference_metrics_roles = role_order * self.deployment.num_infer_replicas
-        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
-            assert self.trainer.weight_broadcast.type in ("nccl", "nixl")
+        if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
+            assert self.trainer.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.trainer.weight_broadcast.inference_world_size = total_infer_gpus
-            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl")
+            assert self.orchestrator.weight_broadcast.type in ("nccl", "nixl", "modelexpress")
             self.orchestrator.weight_broadcast.inference_world_size = total_infer_gpus
 
         return self

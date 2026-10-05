@@ -235,6 +235,51 @@ Full multi-node configs ship under [`examples/advanced/`](https://github.com/Pri
 
 For inference-only multi-node, set `[deployment] type = "multi_node"` on an inference TOML — each node runs an independent vLLM replica (TP and DP must fit within one node), fronted by a single global router on node 0. Point clients at the router URL the launcher prints.
 
+### ModelExpress weight broadcast
+
+Select `[weight_broadcast] type = "modelexpress"` for FSDP full-weight updates through
+the public ModelExpress control, trainer and generator clients. The MX client and
+server must use matching revisions with TrainerMesh, per-tensor wire dtypes and
+bounded streaming support. This integration targets MX revision `8512b8c`,
+including the TrainerMesh API from ai-dynamo/modelexpress#835.
+
+```toml
+[weight_broadcast]
+type = "modelexpress"
+host = "mx-server"
+port = 8001
+staging_mode = "COPY_TO_HOST"
+staging_buffer_bytes = 1073741824
+staging_buffers_count = 2
+```
+
+Run the matching MX server separately and provide its reachable address. The
+bundled NIXL service installer and automatic SLURM service launch do not configure
+this transport. All trainer ranks and the orchestrator need the same shared
+broadcast directory; only rendezvous markers use the filesystem, not weights.
+
+`COPY_TO_HOST` snapshots trainer shards into MX-owned host storage.
+`COPY_TO_DEVICE` uses additional GPU storage. `IN_PLACE` requires unchanged source
+storage and matching transfer dtypes until installation completes. Omitting
+`staging_buffer_bytes` stages a complete receiver update; setting it uses MX's
+bounded transfer/install through the same `stage_weight()` and `apply_weight()`
+methods. It limits each buffer, and `staging_buffers_count`
+defaults to one. Two buffers overlap the next read with the current install.
+Total staging capacity per worker is their product, excluding live weights
+and engine-owned workspaces.
+
+PrimeRL waits for publication before pausing inference, and resumes only after
+every initialized worker acknowledges the requested version. A failed update
+keeps inference paused and does not acknowledge the broadcast to the trainer.
+Restart the trainer and inference together after an uncertain update; there is
+no rollback. ModelExpress owns layouts, transfer planning, reader leases and
+source-buffer release safety.
+
+Use static vLLM admin endpoints. Dynamo discovery, speculative decoding, LoRA
+and SFT online evaluation are not supported by this transport. This adapter
+does not reject pipeline parallelism; PrimeRL's bundled deployment sizing and
+worker counts assume TP-only model parallelism, so PP refit is not qualified.
+
 ### NIXL weight broadcast
 
 Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transfer. Before the first SLURM run, install the NIXL/UCX build and the ModelExpress service binaries on the shared filesystem:
