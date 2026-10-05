@@ -1,7 +1,6 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.kernels.cudnn_indexer import cudnn_fp8_indexer
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 
 pytestmark = [
@@ -110,39 +109,3 @@ def test_selection_agreement(segments):
     mean, p1 = agreement.mean().item(), agreement.quantile(0.01).item()
     assert mean > AGREEMENT_MEAN, f"mean set agreement {mean} below {AGREEMENT_MEAN}"
     assert p1 > AGREEMENT_P1, f"p1 set agreement {p1} below {AGREEMENT_P1}"
-
-
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="the cuDNN indexer kernels are SM90-only",
-)
-def test_cudnn_matches_triton_on_causal_documents():
-    """The cuDNN indexer against the Triton one on a CP-style shard of packed causal documents.
-
-    The queries are the last 2560 tokens of a 4096-token row, so the shard starts mid-document and
-    `ks` / `ke` live in the gathered K's coordinates. Both kernels quantize identically and their
-    scores agree to fp32 rounding, so the selections only differ by ties (e.g. keys every head's
-    ReLU zeroes) at the top-k boundary.
-    """
-    num_q, num_k, doc_lens = 2560, 4096, (1500, 1300, 200, 1096)
-    doc_start = torch.cat([torch.full((n,), sum(doc_lens[:i])) for i, n in enumerate(doc_lens)]).cuda()
-    ks = doc_start[num_k - num_q :].int().contiguous()
-    ke = torch.arange(num_k - num_q + 1, num_k + 1, device="cuda", dtype=torch.int32)
-
-    q = torch.randn(num_q, HEADS, DIM, device="cuda").bfloat16()
-    k = torch.randn(num_k, DIM, device="cuda").bfloat16()
-    w = torch.randn(num_q, HEADS, device="cuda").bfloat16()
-
-    def selected(picks):
-        mask = torch.zeros(num_q, num_k + 1, dtype=torch.bool, device="cuda")
-        return mask.scatter_(1, picks.long(), True)[:, :num_k]
-
-    triton_selected = selected(fp8_indexer(q, k, w, ks, ke, TOPK))
-    cudnn_selected = selected(cudnn_fp8_indexer(q, k, w, ks, ke, TOPK))
-
-    assert torch.equal(cudnn_selected.sum(-1), (ke - ks).clamp(max=TOPK)), "wrong number of readable picks"
-    saturated = (ke - ks) > TOPK
-    assert torch.equal(cudnn_selected[~saturated], triton_selected[~saturated])
-    assert saturated.any(), "vacuous probe: no query has more readable keys than it can pick"
-    agreement = (cudnn_selected & triton_selected).sum(-1)[saturated] / TOPK
-    assert agreement.mean().item() > 0.999 and agreement.min().item() > 0.99
