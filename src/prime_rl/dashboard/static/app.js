@@ -7314,6 +7314,8 @@ $("#tm-messages").addEventListener(
   "scroll",
   (e) => {
     if (!e.target.matches?.("#replay-output") || !replay) return;
+    // top and bottom coincide when the output fits; keep the mode Home/End chose
+    if (e.target.scrollHeight - e.target.clientHeight < 24) return;
     const atBottom = e.target.scrollHeight - e.target.scrollTop - e.target.clientHeight < 24;
     replay.followOutput = atBottom;
     $("#replay-top")?.classList.toggle("active", !atBottom);
