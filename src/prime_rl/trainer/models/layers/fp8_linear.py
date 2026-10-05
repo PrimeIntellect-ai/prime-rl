@@ -177,7 +177,9 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
     skipped_unaligned: list[str] = []
     named_modules = dict(model.named_modules())
     for name, module in named_modules.items():
-        if not isinstance(module, nn.Linear):
+        # Subclasses of nn.Linear with their own forward (e.g. block-diagonal projections) compute
+        # something else than `x @ weight.T`, so only plain linears are swapped.
+        if type(module) is not nn.Linear:
             continue
         if any(re.search(pattern, name) for pattern in ignore_modules):
             skipped_modules.append(name)
