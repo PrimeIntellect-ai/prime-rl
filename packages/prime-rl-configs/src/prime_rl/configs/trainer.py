@@ -260,6 +260,11 @@ class DeepEPMoEDispatchConfig(BaseConfig):
 
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
+    precision: Literal["bf16", "mxfp8"] = "bf16"
+    """Precision of the fused expert GEMMs. ``mxfp8`` runs forward and backward on the MXFP8 kernels
+    (E4M3 data with 1x32 UE8M0 block scales, like the ``mxfp8`` expert compute); expert weights and
+    routed activations are quantized per call, gradients stay BF16/FP32. SM100 only."""
+
     max_tokens_per_rank: int = Field(8192, ge=1)
     """Upper bound on routed tokens per rank per forward call, used to size Mega MoE's symmetric
     buffer once at startup. Must be >= the largest `bs * slen` any rank will pass through a MoE

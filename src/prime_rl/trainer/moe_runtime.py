@@ -112,6 +112,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 group=ep_mesh.get_group(),
                 max_tokens_per_rank=dispatch.max_tokens_per_rank,
                 num_reserved_sms=dispatch.num_reserved_sms,
+                precision=dispatch.precision,
             )
         else:
             compute = selected_compute if moe in selected_moes else bf16_compute
