@@ -213,7 +213,12 @@ jobs:
         run: |
           set -euo pipefail
           key=$(uv run --no-project --python 3.12 scripts/docker_dependencies.py fingerprint .)
-          image="${REGISTRY}/${IMAGE_NAME}:deps-${key}-${SUFFIX}"
+          # deps-v2: remediation epoch for CVE-2026-93318 — the fingerprint
+          # hashes only Dockerfile/lock inputs, not the workflow or BuildKit
+          # version, so pre-fix deps-${key} images would otherwise be reused
+          # as the runtime base instead of being rebuilt by the pinned v0.33.1
+          # builder.
+          image="${REGISTRY}/${IMAGE_NAME}:deps-${key}-v2-${SUFFIX}"
           digest=$(uv run --no-project --python 3.12 scripts/docker_dependencies.py resolve "$image")
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
