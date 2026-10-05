@@ -10,6 +10,7 @@ The actual orchestrator implementation lives in
 """
 
 import asyncio
+import os
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.utils.config import cli
@@ -19,6 +20,11 @@ from prime_rl.utils.process import set_proc_title
 def main():
     set_proc_title("Orchestrator")
     config = cli(OrchestratorConfig)
+    # Apply the configured env vars in-process, like `entrypoints/inference.py` does:
+    # the rl/SLURM launchers inject them into the orchestrator subprocess, but a
+    # standalone `orchestrator @ config.toml` (e.g. a platform-hosted run) has no
+    # launcher to do it.
+    os.environ.update(config.env_vars)
     from prime_rl.orchestrator.orchestrator import run_orchestrator
 
     asyncio.run(run_orchestrator(config))
