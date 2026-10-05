@@ -54,15 +54,20 @@ def _chunked_top_k(logits: torch.Tensor, lengths: torch.Tensor, topk: int) -> to
     # Radix select is ~5x faster than torch.topk on real indexer scores, but ~1.4x slower when the
     # k-th value is tied across most of a row (e.g. the all-zero scores of a degenerate random init).
     num_rows, num_cols = logits.shape
+    # When every document is shorter than topk there are fewer columns than topk; pad with -1.
+    select = min(topk, num_cols)
     chunk_rows = max(256, TOPK_CHUNK_ELEMS // num_cols)
-    return torch.cat(
+    indices = torch.cat(
         [
-            indexer_top_k_wrapper(logits[lo : lo + chunk_rows], lengths[lo : lo + chunk_rows], topk, return_val=False)[
-                "indices"
-            ]
+            indexer_top_k_wrapper(
+                logits[lo : lo + chunk_rows], lengths[lo : lo + chunk_rows], select, return_val=False
+            )["indices"]
             for lo in range(0, num_rows, chunk_rows)
         ]
     )
+    if select < topk:
+        indices = torch.nn.functional.pad(indices, (0, topk - select), value=-1)
+    return indices
 
 
 @torch.library.custom_op("prime_rl::cudnn_fp8_indexer", mutates_args=())
@@ -111,8 +116,9 @@ def _sm90_top_k(q_fp8, q_scales, k_fp8, k_scales, w, ks, ke, segments, topk) -> 
     from cudnn.deepseek_sparse_attention.indexer_forward._interface_sm90 import indexer_fwd
 
     cu_seqlens_q, cu_seqlens_k, q_causal_offsets, max_seqlen_q, max_seqlen_k = segments
-    # Fold q's descale into the weights (fp32), as fp8_indexer does; K's descale goes to the kernel.
-    w = w * q_scales
+    # Fold q's descale into the weights, as fp8_indexer does. An fp32 W selects the kernel's
+    # pre-scaled path, which then skips q_scale (indexer_fwd_sm90 `use_fp8_prescaled_w`).
+    w = w.float() * q_scales
     # Rows 32-byte aligned for the top-k kernel's vector loads.
     num_cols = (max_seqlen_k + 7) // 8 * 8
 
