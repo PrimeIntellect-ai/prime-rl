@@ -13,16 +13,14 @@ except Exception:
     # This is expected on CPU-only machines
     pass
 
-import importlib.util
 import math
 
 import tilelang
 import torch
 from tilelang import language as T
 
+from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels.sparse_mla_bwd import (
-    DSA_BACKENDS,
-    cudnn_backward_arch,
     flat_kv_indices,
     sparse_mla_backward,
 )
@@ -218,17 +216,21 @@ def flashmla_sparse_mla_forward(
     return out.view(B, S, H, d_v), lse.view(B, S, H)
 
 
-@torch.library.custom_op("prime_rl::sparse_mla", mutates_args=())
+@torch.library.custom_op(
+    "prime_rl::sparse_mla",
+    mutates_args=(),
+    schema="(Tensor q, Tensor kv, Tensor indices, str backend, float? sm_scale=None, SymInt d_v=512, SymInt block_I=64, SymInt num_stages=2, SymInt threads=256) -> (Tensor, Tensor)",
+)
 def sparse_mla(
     q: torch.Tensor,
     kv: torch.Tensor,
     indices: torch.Tensor,
+    backend: DSABackend,
     sm_scale: float | None = None,
     d_v: int = 512,
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
-    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sparse MLA attention over the top-k `indices`; returns the output and its natural-log LSE.
 
@@ -237,7 +239,6 @@ def sparse_mla(
     (SM90; SM100 / SM103 untested).
     """
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
-    assert backend in DSA_BACKENDS, f"Unknown DSA backend: {backend}"
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
     _, seq_len_kv, kv_group, _ = kv.shape
 
@@ -250,31 +251,26 @@ def sparse_mla(
     assert indices.shape == (batch, seq_len, kv_group, topk)
 
     if backend == "cudnn_flashmla":
-        assert cudnn_backward_arch(q, kv) is not None, (
-            "dsa_backend='cudnn_flashmla' requires an SM90/SM100/SM103 GPU and a single KV head"
-        )
-        assert importlib.util.find_spec("flash_mla") is not None, (
-            "dsa_backend='cudnn_flashmla' requires FlashMLA; install it with `uv sync --extra flash-mla`"
-        )
         if sm_scale is None:
             sm_scale = dim_plus_tail_dim**-0.5
-        return flashmla_sparse_mla_forward(q, kv, indices, sm_scale, d_v)
-
-    kernel = sparse_mla_fwd(
-        heads,
-        dim,
-        tail_dim,
-        topk,
-        kv_group,
-        sm_scale,
-        True,
-        block_I=block_I,
-        num_stages=num_stages,
-        threads=threads,
-    )
-    out, lse = kernel(q, kv, indices)
-    # The TileLang kernel returns a base-2 LSE.
-    return out, lse * math.log(2.0)
+        out, lse = flashmla_sparse_mla_forward(q, kv, indices, sm_scale, d_v)
+    else:
+        kernel = sparse_mla_fwd(
+            heads,
+            dim,
+            tail_dim,
+            topk,
+            kv_group,
+            sm_scale,
+            True,
+            block_I=block_I,
+            num_stages=num_stages,
+            threads=threads,
+        )
+        out, lse = kernel(q, kv, indices)
+        # The TileLang kernel returns a base-2 LSE.
+        lse = lse * math.log(2.0)
+    return out, lse
 
 
 @sparse_mla.register_fake
@@ -282,18 +278,18 @@ def _sparse_mla_fake(
     q: torch.Tensor,
     kv: torch.Tensor,
     indices: torch.Tensor,
+    backend: DSABackend,
     sm_scale: float | None = None,
     d_v: int = 512,
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
-    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return q.new_empty((*q.shape[:-1], d_v)), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
 
 def _sparse_mla_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sm_scale, _d_v, _block_I, _num_stages, _threads, backend = inputs
+    q, kv, indices, backend, sm_scale, _d_v, _block_I, _num_stages, _threads = inputs
     out, lse = output
     ctx.save_for_backward(q, kv, out, indices, lse)
     ctx.sm_scale = sm_scale
@@ -310,8 +306,8 @@ def _sparse_mla_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.
         grad_out,
         indices,
         lse.detach(),
-        ctx.sm_scale,
         ctx.backend,
+        ctx.sm_scale,
     )
     return dq, dkv, None, None, None, None, None, None, None
 

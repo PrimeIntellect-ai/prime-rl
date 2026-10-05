@@ -22,6 +22,7 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
+DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
 
 
 class GCConfig(BaseConfig):
@@ -325,7 +326,7 @@ class ModelConfig(BaseModelConfig):
 
     quantization: QuantizationConfig | None = None
 
-    dsa_backend: Literal["tilelang", "cudnn_flashmla"] = "tilelang"
+    dsa_backend: DSABackend = "tilelang"
     """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
 
     index_cache: IndexCacheConfig | None = None

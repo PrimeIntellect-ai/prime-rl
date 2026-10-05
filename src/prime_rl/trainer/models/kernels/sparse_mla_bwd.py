@@ -19,6 +19,8 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from prime_rl.configs.trainer import DSABackend
+
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
@@ -278,8 +280,6 @@ def bwd(
     return sparse_mla_bwd_kernel
 
 
-DSA_BACKENDS = ("tilelang", "cudnn_flashmla")
-
 _CUDNN_SM100_CAPABILITIES = ((10, 0), (10, 3))
 
 
@@ -372,7 +372,11 @@ def cudnn_sparse_mla_backward(
     return dq.view_as(q), dkv.view_as(kv)
 
 
-@torch.library.custom_op("prime_rl::sparse_mla_backward", mutates_args=())
+@torch.library.custom_op(
+    "prime_rl::sparse_mla_backward",
+    mutates_args=(),
+    schema="(Tensor q, Tensor kv, Tensor out, Tensor grad_out, Tensor indices, Tensor lse, str backend, float? sm_scale=None) -> (Tensor, Tensor)",
+)
 def sparse_mla_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
@@ -380,8 +384,8 @@ def sparse_mla_backward(
     grad_out: torch.Tensor,
     indices: torch.Tensor,
     lse: torch.Tensor,
+    backend: DSABackend,
     sm_scale: float | None = None,
-    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sparse MLA backward for the `backend` route (see `sparse_mla`); `lse` is natural-log."""
     assert q.is_contiguous()
@@ -395,13 +399,12 @@ def sparse_mla_backward(
     topk = indices.shape[-1]
     assert indices.shape == (B, S, kv_group, topk)
     assert lse.shape == (B, S, H)
-    assert backend in DSA_BACKENDS, f"Unknown DSA backend: {backend}"
 
     if backend == "cudnn_flashmla":
-        arch = cudnn_backward_arch(q, kv)
-        assert arch is not None, "dsa_backend='cudnn_flashmla' requires an SM90/SM100/SM103 GPU and a single KV head"
-        return cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, arch)
-    return tilelang_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
+        dq, dkv = cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, cudnn_backward_arch(q, kv))
+    else:
+        dq, dkv = tilelang_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
+    return dq, dkv
 
 
 @sparse_mla_backward.register_fake
@@ -412,7 +415,7 @@ def _sparse_mla_backward_fake(
     grad_out: torch.Tensor,
     indices: torch.Tensor,
     lse: torch.Tensor,
+    backend: DSABackend,
     sm_scale: float | None = None,
-    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv)
