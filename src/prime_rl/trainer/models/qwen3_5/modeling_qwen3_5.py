@@ -267,8 +267,9 @@ def _encode_images_per_cp_rank(
     per_rank_tokens = [int(tokens[b].sum()) if b else 0 for b in buckets]
     max_tokens = max(per_rank_tokens)
     padded = local.new_zeros(max_tokens, hidden)
-    if local.shape[0]:
-        padded[: local.shape[0]] = local
+    # The empty copy retains the dummy vision graph so every rank enters
+    # both the gather and FSDP backward collectives.
+    padded[: local.shape[0]] = local
 
     if requires_grad:
         gathered = gather_for_cp(padded.unsqueeze(0), cp_context.cp_group).squeeze(0)
