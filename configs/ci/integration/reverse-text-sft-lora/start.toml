@@ -3,7 +3,7 @@ max_steps = 5
 [ckpt]
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
 
 [model.lora]
 rank = 8

@@ -3,7 +3,7 @@ max_steps = 100
 [ckpt] # Checkpoint at the end of training
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
 
 [data]
 name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"

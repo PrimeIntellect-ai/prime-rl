@@ -7,7 +7,7 @@ seq_len = 2048
 step = 15
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT-untied"
 
 [trainer.optim]
 lr = 5e-5

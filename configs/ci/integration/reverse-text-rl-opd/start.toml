@@ -14,7 +14,7 @@ seq_len = 2048
 type = "filesystem"
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT-untied"
 
 [monitors.wandb]
 project = "reverse-text-ci"

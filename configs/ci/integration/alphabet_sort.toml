@@ -10,7 +10,7 @@ type = "filesystem"
 [ckpt]
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
 
 [trainer.optim]
 lr = 1e-5
