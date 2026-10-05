@@ -1,5 +1,8 @@
 name: Nightly FFT
 
+# DISABLED: the configs in configs/ci/nightly-fft/ train on outdated checkpoints that tie their LM head
+# to the input embeddings (Qwen3-1.7B, Qwen3-1.7B-Wordle-SFT, Qwen3-4B-Instruct-2507), which the trainer
+# rejects. The schedule is off until these runs move to untied models; manual dispatch still works.
 on:
     # Allow to manually trigger the workflow
     workflow_dispatch:
@@ -12,10 +15,6 @@ on:
                 description: "prime-rl image tag to pin (e.g. v0.7.1.dev58). Leave empty to auto-resolve the newest v*.dev* with a published manifest."
                 required: false
                 default: ""
-
-    # Scheduled run at 3AM PST (11AM UTC)
-    schedule:
-        - cron: "0 11 * * *"
 
 permissions:
     contents: read
@@ -30,6 +29,10 @@ jobs:
             matrix: ${{ steps.build-matrix.outputs.matrix }}
 
         steps:
+            - name: Warn about outdated models
+              run: |
+                  echo "::warning title=Nightly FFT disabled::configs/ci/nightly-fft/ uses outdated tied-embedding checkpoints that the trainer rejects. The schedule is off until these runs move to untied models."
+
             - name: Checkout repository
               uses: actions/checkout@v7
               with:
