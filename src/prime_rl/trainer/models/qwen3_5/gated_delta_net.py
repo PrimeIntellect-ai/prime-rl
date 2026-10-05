@@ -55,6 +55,12 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
     ) -> torch.Tensor:
+        # FLA memoizes cu_seqlens metadata by tensor identity. With one cu_seqlens shared by all
+        # layers, the first linear-attention layer misses that cache in the forward but hits it
+        # in the activation-checkpoint recompute. The recompute then runs fewer ops, and selective
+        # checkpointing replays saved outputs to the wrong ops (e.g. the MoE's CPU split sizes
+        # reach a Triton kernel under EP). A per-layer copy gives both passes the same pattern.
+        cu_seqlens = cu_seqlens.clone()
         batch_size, sequence_length, _ = hidden_states.shape
         mixed_qkv = self.in_proj_qkv(hidden_states)
         output_gate = self.in_proj_z(hidden_states).reshape(
