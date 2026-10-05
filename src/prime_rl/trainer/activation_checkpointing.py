@@ -33,6 +33,7 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
     {
         "aten::topk",
         "prime_rl::fp8_indexer",
+        "prime_rl::cudnn_fp8_indexer",
         "prime_kernels::select_indexed_blocks",
         "prime_rl::record_moe_routing_statistics",
     }
