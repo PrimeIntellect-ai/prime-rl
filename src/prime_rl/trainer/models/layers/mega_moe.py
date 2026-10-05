@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,14 +22,8 @@ def mega_moe_available() -> bool:
         return False
     if torch.cuda.get_device_capability() < (10, 0):
         return False
-    return all(
-        _accepts_natural_layout(getattr(deep_gemm, name, None)) for name in ("bf16_mega_moe", "bf16_mega_moe_backward")
-    )
-
-
-def _accepts_natural_layout(kernel) -> bool:
-    """Whether a Mega MoE kernel takes L1 weights in the natural ``[gate | up]`` layout."""
-    return kernel is not None and "l1_natural_layout" in inspect.signature(kernel).parameters
+    # Upstream DeepGEMM has no training backward - only the prime-mega-moe build exposes both kernels
+    return all(hasattr(deep_gemm, name) for name in ("bf16_mega_moe", "bf16_mega_moe_backward"))
 
 
 def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
@@ -108,9 +101,7 @@ def mega_moe_forward(
     num_tokens, hidden = x.shape
     _stage_inputs(buffer, x, topk_idx, topk_weights)
     y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
-    deep_gemm.bf16_mega_moe(
-        y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp, l1_natural_layout=True
-    )
+    deep_gemm.bf16_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
     return y
 
 
@@ -252,8 +243,6 @@ def mega_moe_backward(
         weights.l2,
         buffer,
         activation_clamp=activation_clamp,
-        dw_natural_layout=True,
-        l1_natural_layout=True,
     )
     return dx, dw1, dw2, dtopk
 
@@ -294,8 +283,7 @@ class MegaMoEExpertCompute:
         if not mega_moe_available():
             raise RuntimeError(
                 "Mega MoE requires an SM100+/Blackwell GPU and the prime-mega-moe `deep_gemm` build "
-                "(`uv sync --extra mega-moe`), whose `bf16_mega_moe` and `bf16_mega_moe_backward` "
-                "accept `l1_natural_layout`."
+                "(`uv sync --extra mega-moe`) that exposes `bf16_mega_moe` and `bf16_mega_moe_backward`."
             )
         self.validate(experts)
         hidden = experts.down_proj.shape[1]
