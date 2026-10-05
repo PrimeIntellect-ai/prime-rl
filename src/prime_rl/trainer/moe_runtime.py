@@ -17,6 +17,7 @@ from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
 from prime_rl.trainer.distributed.token_dispatcher import (
     LocalTokenDispatcher,
     MXFP8TorchTokenDispatcher,
+    OverlappedTorchTokenDispatcher,
     TorchTokenDispatcher,
 )
 from prime_rl.trainer.models.layers.expert_compute import (
@@ -105,6 +106,14 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     top_k=moe.router.top_k,
                     token_group_alignment=compute.token_group_alignment,
                     group=ep_mesh.get_group(),
+                )
+            elif dispatch.overlap_chunks > 1:
+                token_dispatcher = OverlappedTorchTokenDispatcher(
+                    num_experts=moe.experts.num_experts,
+                    top_k=moe.router.top_k,
+                    token_group_alignment=compute.token_group_alignment,
+                    group=ep_mesh.get_group(),
+                    chunks=dispatch.overlap_chunks,
                 )
             else:
                 token_dispatcher = TorchTokenDispatcher(

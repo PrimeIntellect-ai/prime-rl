@@ -241,6 +241,17 @@ class TorchMoEDispatchConfig(BaseConfig):
     transport: Literal["bf16", "mxfp8"] = "bf16"
     """Wire format for routed activations and their reverse-path gradients."""
 
+    overlap_chunks: int = Field(1, ge=1)
+    """Split each MoE layer's tokens into this many chunks and pipeline them, so one chunk's
+    all-to-alls overlap another chunk's expert compute. ``1`` dispatches all tokens at once.
+    Only the bf16 transport supports more than one chunk."""
+
+    @model_validator(mode="after")
+    def validate_overlap_chunks(self):
+        if self.overlap_chunks > 1 and self.transport != "bf16":
+            raise ValueError("overlap_chunks > 1 requires transport='bf16'")
+        return self
+
 
 class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
@@ -331,6 +342,10 @@ class ModelConfig(BaseModelConfig):
 
     freeze_moe_router: bool = False
     """Freeze MoE router parameters during training."""
+
+    freeze_engram_tables: bool = False
+    """Freeze DeepSeek-V4.1's engram n-gram tables (~98B parameters each). Required for RL: the tables are
+    too large to broadcast, so the inference engine keeps serving its own copy."""
 
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""

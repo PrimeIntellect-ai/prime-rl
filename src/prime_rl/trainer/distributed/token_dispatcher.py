@@ -305,6 +305,100 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         )
 
 
+class OverlappedTorchTokenDispatcher(TorchTokenDispatcher):
+    """Torch all-to-all dispatch that hides communication behind the routed experts.
+
+    The tokens are split into `chunks` contiguous pieces, each dispatched, computed and combined
+    on its own. Every token all-to-all is issued asynchronously, so while one chunk's experts run
+    the next chunk's dispatch and the previous chunk's combine are in flight. Only the first
+    dispatch and the last combine stay exposed. All chunks' token counts are exchanged and moved to
+    the host up front, in one sync: a per-chunk sync would wait on the all-to-alls issued before it
+    and serialize them again. Each collective output is waited on at its first use, so the
+    program order alone decides what overlaps.
+    """
+
+    def __init__(self, num_experts: int, top_k: int, token_group_alignment: int, group: ProcessGroup, chunks: int):
+        super().__init__(num_experts, top_k, token_group_alignment, group)
+        self.chunks = chunks
+
+    def run(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        experts: ExpertFunction,
+        *,
+        score_before_experts: bool,
+    ) -> torch.Tensor:
+        import torch.distributed._functional_collectives as funcol
+
+        ep_degree = self.group.size()
+        experts_per_rank = self.num_experts // ep_degree
+        pieces = []
+        for xc, sc, ic in zip(
+            x.chunk(self.chunks), top_scores.chunk(self.chunks), selected_experts_indices.chunk(self.chunks)
+        ):
+            routed_input, token_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
+                xc, sc, ic, num_experts=self.num_experts, top_k=self.top_k
+            )
+            scores_after_experts = None
+            if score_before_experts:
+                routed_input = (routed_input.float() * sorted_scores.reshape(-1, 1)).to(x.dtype)
+            else:
+                scores_after_experts = sorted_scores
+            pieces.append((xc.shape[0], routed_input, token_indices, scores_after_experts, num_tokens_per_expert))
+
+        with torch.no_grad():
+            counts = torch.stack([piece[-1] for piece in pieces])  # (chunks, num_experts)
+            counts_group = all_to_all_single_equal(counts.t().contiguous(), self.group).t()
+            splits = torch.stack(
+                (
+                    counts.view(len(pieces), ep_degree, -1).sum(-1),
+                    counts_group.reshape(len(pieces), ep_degree, -1).sum(-1),
+                )
+            ).cpu()
+        input_splits, output_splits = splits[0].tolist(), splits[1].tolist()
+
+        def dispatch(c: int) -> torch.Tensor:
+            return funcol.all_to_all_single_autograd(pieces[c][1], output_splits[c], input_splits[c], self.group)
+
+        # Chunk c + 1 is dispatched right after chunk c's experts are issued, so its all-to-all runs
+        # on the communication stream while those experts run on the compute stream.
+        dispatched = dispatch(0)
+        combined = []
+        for c, (num_tokens, _, token_indices, scores_after_experts, _) in enumerate(pieces):
+            routed_input, num_tokens_per_expert, permutation = permute_for_grouped_gemm(
+                dispatched,
+                counts_group[c].contiguous(),
+                experts_per_rank=experts_per_rank,
+                num_ranks=ep_degree,
+                alignment=self.token_group_alignment,
+            )
+            expert_output = experts(routed_input, num_tokens_per_expert)
+            if c + 1 < len(pieces):
+                dispatched = dispatch(c + 1)
+            routed_output = unpermute_from_grouped_gemm(expert_output, permutation)
+            combined.append(
+                (
+                    funcol.all_to_all_single_autograd(routed_output, input_splits[c], output_splits[c], self.group),
+                    num_tokens,
+                    token_indices,
+                    scores_after_experts,
+                )
+            )
+        return torch.cat(
+            [
+                _scatter_routed_output(
+                    routed_output,
+                    num_tokens=num_tokens,
+                    token_indices_experts_sorted=token_indices,
+                    scores_after_experts=scores_after_experts,
+                )
+                for routed_output, num_tokens, token_indices, scores_after_experts in combined
+            ]
+        )
+
+
 class MXFP8TorchTokenDispatcher(TorchTokenDispatcher):
     def __init__(
         self,

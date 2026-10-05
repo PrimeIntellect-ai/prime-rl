@@ -1,0 +1,7 @@
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+splits = ["math"]
+batch_size = 8
+micro_batch_size = 1
+seq_len = 131072

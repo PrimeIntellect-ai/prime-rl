@@ -7,6 +7,7 @@ from prime_rl.trainer.models.afmoe import AfmoeConfig, AfmoeForCausalLM
 from prime_rl.trainer.models.base import PrimeModel
 from prime_rl.trainer.models.config import AttnImplementation, PrimeModelConfig
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
+from prime_rl.trainer.models.deepseek_v41 import DeepseekV41Config, DeepseekV41ForCausalLM, DeepseekV41TextConfig
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.gpt_oss import GptOssConfig, GptOssForCausalLM
@@ -37,6 +38,8 @@ MODEL_REGISTRY: dict[str, tuple[type[PrimeModelConfig], type[PrimeModel]]] = {
         (Qwen3Config, Qwen3ForCausalLM),
         (AfmoeConfig, AfmoeForCausalLM),
         (DeepseekV4Config, DeepseekV4ForCausalLM),
+        (DeepseekV41TextConfig, DeepseekV41ForCausalLM),
+        (DeepseekV41Config, DeepseekV41ForCausalLM),
         (Glm4MoeConfig, Glm4MoeForCausalLM),
         (GlmMoeDsaConfig, GlmMoeDsaForCausalLM),
         (GptOssConfig, GptOssForCausalLM),
@@ -84,8 +87,12 @@ def build_model_config(
 def load_model_config(
     name_or_path: str, attn_implementation: AttnImplementation = "flash_attention_2"
 ) -> PrimeModelConfig:
-    """Load the PrimeRL config of a local checkpoint directory or a HuggingFace Hub repo."""
-    return build_model_config(read_config_json(name_or_path), attn_implementation)
+    """Load the PrimeRL config of a local checkpoint directory or a HuggingFace Hub repo.
+
+    ``name_or_path`` rides along as a config key, so a config that needs the checkpoint's other files
+    (e.g. its tokenizer) can declare the field; every other config drops it.
+    """
+    return build_model_config({**read_config_json(name_or_path), "name_or_path": name_or_path}, attn_implementation)
 
 
 __all__ = ["MODEL_REGISTRY", "build_model_config", "get_model_cls", "load_model_config", "read_config_json"]

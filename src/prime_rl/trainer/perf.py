@@ -115,6 +115,10 @@ class PerfCounter:
         if hasattr(config, "text_config"):
             config = config.text_config
 
+        if hasattr(config, "active_mm_params"):
+            # Architectures whose projections the generic count below misdescribes count their own.
+            return config.active_mm_params()
+
         vocab_size = config.vocab_size
         hidden_size = config.hidden_size
         intermediate_size = getattr(config, "intermediate_size", getattr(config, "moe_intermediate_size", 0))

@@ -147,7 +147,7 @@ class NCCLBroadcaster:
     @torch.no_grad()
     def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
-        state_dict = model.state_dict()
+        state_dict = {key: value for key, value in model.state_dict().items() if not model.skip_weight_transfer(key)}
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
@@ -159,6 +159,7 @@ class NCCLBroadcaster:
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
             layer_state_dict = resolve_dtensors(layer_state_dict, model.keep_in_fp32_for_weight_transfer, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
+            layer_state_dict = model.to_inference_format(layer_state_dict)
             if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)
 

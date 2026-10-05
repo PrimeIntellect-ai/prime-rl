@@ -34,6 +34,8 @@ from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, cast_float_and_contiguous
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Indexer
+from prime_rl.trainer.models.deepseek_v41.engram import ShardedEngramTable
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -183,7 +185,7 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, (Indexer, DeepseekV4Indexer, SparseAttentionIndexer)):
+        if isinstance(module, (Indexer, DeepseekV4Indexer, DeepseekV41Indexer, SparseAttentionIndexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -489,6 +491,19 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
+    # Engram hash tables are row-sharded over the FSDP mesh and looked up by all-to-all, so FSDP,
+    # which would all-gather them whole, never manages them. They share FSDP's process group: a
+    # second NCCL communicator over the same ranks, running its all-to-alls concurrently with FSDP's
+    # prefetch all-gathers, can order the two differently on different GPUs and deadlock.
+    engram_tables = [module for module in model.modules() if isinstance(module, ShardedEngramTable)]
+    if engram_tables and parallel_dims.dp_replicate_enabled:
+        raise NotImplementedError("engram tables are sharded over one FSDP group; dp_replicate > 1 is not supported")
+    for table in engram_tables:
+        table.shard_(hsdp_mesh, parallel_dims.fsdp_gradient_divide_factor)
+    ignored_params = {table.weight for table in engram_tables}
+    for engram in getattr(language_model, "engrams", {}).values():
+        fully_shard(engram, mesh=hsdp_mesh, ignored_params=ignored_params, **fsdp_config)
+
     fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
@@ -572,6 +587,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
+        ignored_params=ignored_params,
     )
 
     if not parallel_dims.ep_enabled:
@@ -742,6 +758,14 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    # Expert-parallel dispatch sizes its all-to-all outputs from routing counts; without this, the
+    # resulting graph break inside a checkpointed block sends the whole block back to eager.
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
+    # Issue each in-graph collective (expert-parallel all-to-alls) as early as its inputs allow and
+    # wait on it only right before its first use, so a chunked dispatch's communication overlaps
+    # the expert compute around it.
+    torch._inductor.config.reorder_for_compute_comm_overlap = True
+    torch._inductor.config.reorder_for_compute_comm_overlap_passes = ["sink_waits", "raise_comms"]
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
@@ -878,6 +902,11 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    if config.freeze_engram_tables:
+        for module in model.modules():
+            if isinstance(module, ShardedEngramTable):
+                module.weight.requires_grad_(False)
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
