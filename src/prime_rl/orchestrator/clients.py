@@ -191,9 +191,18 @@ class AdminPlane:
                 response.raise_for_status()
             except httpx.HTTPStatusError as error:
                 if error.response.status_code == 404:
+                    # Compatibility: older engines do not expose this route; skip the broadcast setup.
                     get_logger().warning(
                         "The route /init_broadcaster does not exist. Skipping NCCL broadcast initialization."
                     )
+                else:
+                    # Fail closed: /init_broadcaster is not retried here (re-entering it always
+                    # constructs a fresh receiver on the engine, with ambiguous partial-completion
+                    # semantics), so a non-404 failure means NCCL broadcast init did not succeed.
+                    raise RuntimeError(
+                        f"/init_broadcaster failed with HTTP {error.response.status_code} (rank_offset={rank_offset}): "
+                        "NCCL broadcast initialization did not succeed on this engine"
+                    ) from error
 
         await asyncio.gather(
             *(
