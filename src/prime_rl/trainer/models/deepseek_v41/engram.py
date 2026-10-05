@@ -7,18 +7,13 @@ hyper-connection stream plus a shared value, and a gate built from how well each
 its key decides how much of the value goes into that stream.
 
 The tables are far too large for FSDP, which all-gathers a whole parameter to compute with it.
-`ShardedEngramTable` instead keeps each rank's contiguous slice of rows as a `Shard(0)` DTensor
-over the FSDP mesh and serves a lookup with two all-to-alls: row ids go to the ranks
-owning them and rows come back. The backward retraces the route with gradients, so a rank only
-ever touches its own slice.
+The trainer row-shards each table over the FSDP mesh with `AllToAllEmbeddingParallel`, which serves
+a lookup by sending the row ids to the ranks owning them and receiving only those rows.
 """
 
 import numpy as np
 import torch
-import torch.distributed as dist
-import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import DeepseekV41TextConfig
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import is_prime
@@ -175,101 +170,6 @@ class EngramHasher(nn.Module):
         return torch.cat(hashes, dim=-1) + self.offsets
 
 
-def _all_to_all(tensor: Tensor, output_splits: list[int], input_splits: list[int], group) -> Tensor:
-    out = tensor.new_empty((sum(output_splits), *tensor.shape[1:]))
-    dist.all_to_all_single(out, tensor.contiguous(), output_splits, input_splits, group=group)
-    return out
-
-
-class _ShardedLookup(torch.autograd.Function):
-    """Rows `ids` of a row-sharded table, routed to and from their owners with all-to-alls."""
-
-    @staticmethod
-    def forward(ctx, local_weight: Tensor, ids: Tensor, rows_per_rank: int, group, grad_scale: float, out_dtype):
-        world_size, rank = dist.get_world_size(group), dist.get_rank(group)
-        # Repeated n-grams are fetched once. `unique` sorts, which also orders the ids by owner.
-        unique_ids, inverse = torch.unique(ids, sorted=True, return_inverse=True)
-        send_counts = torch.bincount(unique_ids // rows_per_rank, minlength=world_size)
-        recv_counts = torch.empty_like(send_counts)
-        dist.all_to_all_single(recv_counts, send_counts, group=group)
-        send_splits, recv_splits = send_counts.tolist(), recv_counts.tolist()
-
-        recv_ids = _all_to_all(unique_ids, recv_splits, send_splits, group)
-        local_rows = recv_ids - rank * rows_per_rank
-        rows = local_weight[local_rows].to(out_dtype)
-        unique_rows = _all_to_all(rows, send_splits, recv_splits, group)
-
-        ctx.save_for_backward(inverse, local_rows)
-        ctx.splits = (send_splits, recv_splits)
-        ctx.group, ctx.grad_scale, ctx.n_unique = group, grad_scale, unique_ids.numel()
-        ctx.weight_shape, ctx.weight_dtype = local_weight.shape, local_weight.dtype
-        return unique_rows[inverse]
-
-    @staticmethod
-    def backward(ctx, grad_out: Tensor):
-        inverse, local_rows = ctx.saved_tensors
-        send_splits, recv_splits = ctx.splits
-        # Repeated ids sum in fp32 before the bf16 trip to their owner.
-        grad_unique = grad_out.new_zeros(ctx.n_unique, grad_out.shape[-1], dtype=torch.float32)
-        grad_unique.index_add_(0, inverse.flatten(), grad_out.reshape(-1, grad_out.shape[-1]).float())
-        grad_rows = _all_to_all(grad_unique.to(grad_out.dtype), recv_splits, send_splits, ctx.group)
-        grad_weight = torch.zeros(ctx.weight_shape, dtype=ctx.weight_dtype, device=grad_out.device)
-        grad_weight.index_add_(0, local_rows, grad_rows.to(ctx.weight_dtype), alpha=ctx.grad_scale)
-        return grad_weight, None, None, None, None, None
-
-
-class ShardedEngramTable(nn.Module):
-    """One engram layer's hash table, row-sharded across a process group.
-
-    Built as a plain `(num_embeddings, head_dim)` parameter; `shard_` turns it into a `Shard(0)`
-    DTensor over the data-parallel mesh before materialization, so no rank ever holds the full
-    table. Unsharded (a single process) the lookup is a plain gather.
-    """
-
-    def __init__(self, num_embeddings: int, embedding_dim: int):
-        super().__init__()
-        self.num_embeddings = num_embeddings
-        self.embedding_dim = embedding_dim
-        self.weight = nn.Parameter(torch.empty(num_embeddings, embedding_dim))
-        self.grad_scale = 1.0
-
-    def shard_(self, mesh, grad_divide_factor: int) -> None:
-        """Replace the parameter with this rank's slice as a `Shard(0)` DTensor over the 1-D `mesh`.
-
-        Gradients are summed over every rank's tokens by the backward all-to-all, then divided by
-        `grad_divide_factor`, matching the averaging FSDP applies to every other parameter.
-        """
-        from torch.distributed.tensor import Shard
-
-        assert self.weight.is_meta, "shard the engram table before materializing it"
-        world_size, rank = mesh.size(), mesh.get_local_rank()
-        rows_per_rank = -(-self.num_embeddings // world_size)
-        local_rows = max(0, min(rows_per_rank, self.num_embeddings - rank * rows_per_rank))
-        local = torch.empty(local_rows, self.embedding_dim, device="meta", dtype=self.weight.dtype)
-        dtensor = DTensor.from_local(
-            local,
-            mesh,
-            [Shard(0)],
-            run_check=False,
-            shape=self.weight.shape,
-            stride=self.weight.stride(),
-        )
-        self.weight = nn.Parameter(dtensor, requires_grad=self.weight.requires_grad)
-        self.grad_scale = 1.0 / grad_divide_factor
-        # NCCL sets up the point-to-point connections an all-to-all needs at its first use. Do that
-        # now, before weights and activations fill the GPU, instead of at the first lookup.
-        probe = torch.zeros(world_size, device=torch.cuda.current_device())
-        dist.all_to_all_single(torch.empty_like(probe), probe, group=mesh.get_group())
-
-    def forward(self, ids: Tensor, out_dtype: torch.dtype = torch.bfloat16) -> Tensor:
-        if not isinstance(self.weight, DTensor):
-            return F.embedding(ids, self.weight).to(out_dtype)
-        mesh = self.weight.device_mesh
-        rows_per_rank = -(-self.num_embeddings // mesh.size())
-        local_weight = self.weight.to_local()
-        return _ShardedLookup.apply(local_weight, ids, rows_per_rank, mesh.get_group(), self.grad_scale, out_dtype)
-
-
 @torch.compile
 def _engram_gate(h: Tensor, kv: Tensor, gate_weight: Tensor, hc_mult: int, eps: float, clamp_value: float) -> Tensor:
     """`h + gate * value`, the gate a signed-sqrt sigmoid of each stream's normalized match to its key."""
@@ -294,7 +194,7 @@ class DeepseekV41Engram(nn.Module):
         self.eps = config.rms_norm_eps
         self.clamp_value = 1e-6
         n_hash_cols = (config.engram_max_ngram_size - 1) * config.engram_n_heads
-        self.embed = ShardedEngramTable(config.engram_num_embeddings[engram_idx], config.engram_head_dim)
+        self.embed = nn.Embedding(config.engram_num_embeddings[engram_idx], config.engram_head_dim)
         self.wkv = nn.Linear(
             n_hash_cols * config.engram_head_dim, config.hidden_size * (config.hc_mult + 1), bias=False
         )
@@ -303,8 +203,7 @@ class DeepseekV41Engram(nn.Module):
 
     def forward(self, mhc_states: Tensor, hash_ids: Tensor) -> Tensor:
         """`hash_ids` is `(t, n_hash_cols)` for this rank's `t` tokens."""
-        rows = self.embed(hash_ids.flatten(), out_dtype=mhc_states.dtype)
-        rows = rows.view(*mhc_states.shape[:2], -1)
+        rows = self.embed(hash_ids).to(mhc_states.dtype).view(*mhc_states.shape[:2], -1)
         # The gate math is fp32 over every stream; recompute it in backward instead of storing it.
         return torch.utils.checkpoint.checkpoint(self._mix, mhc_states, rows, use_reentrant=False)
 
@@ -319,4 +218,4 @@ class DeepseekV41Engram(nn.Module):
         nn.init.ones_(self.k_weight)
 
 
-__all__ = ["DeepseekV41Engram", "EngramHasher", "ShardedEngramTable"]
+__all__ = ["DeepseekV41Engram", "EngramHasher"]

@@ -30,12 +30,12 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
+from prime_rl.trainer.distributed.embedding_parallel import AllToAllEmbeddingParallel, EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, cast_float_and_contiguous
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Indexer
-from prime_rl.trainer.models.deepseek_v41.engram import ShardedEngramTable
+from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -487,13 +487,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # which would all-gather them whole, never manages them. They share FSDP's process group: a
     # second NCCL communicator over the same ranks, running its all-to-alls concurrently with FSDP's
     # prefetch all-gathers, can order the two differently on different GPUs and deadlock.
-    engram_tables = [module for module in model.modules() if isinstance(module, ShardedEngramTable)]
-    if engram_tables and parallel_dims.dp_replicate_enabled:
+    engrams = [module for module in model.modules() if isinstance(module, DeepseekV41Engram)]
+    if engrams and parallel_dims.dp_replicate_enabled:
         raise NotImplementedError("engram tables are sharded over one FSDP group; dp_replicate > 1 is not supported")
-    for table in engram_tables:
-        table.shard_(hsdp_mesh, parallel_dims.fsdp_gradient_divide_factor)
-    ignored_params = {table.weight for table in engram_tables}
-    for engram in getattr(language_model, "engrams", {}).values():
+    for engram in engrams:
+        parallelize_module(
+            engram.embed, hsdp_mesh, AllToAllEmbeddingParallel(parallel_dims.fsdp_gradient_divide_factor)
+        )
+    ignored_params = {engram.embed.weight for engram in engrams}
+    for engram in engrams:
         fully_shard(engram, mesh=hsdp_mesh, ignored_params=ignored_params, **fsdp_config)
 
     fullgraph = config.compile is not None and config.compile.fullgraph
@@ -897,8 +899,8 @@ def setup_model(
 
     if config.freeze_engram_tables:
         for module in model.modules():
-            if isinstance(module, ShardedEngramTable):
-                module.weight.requires_grad_(False)
+            if isinstance(module, DeepseekV41Engram):
+                module.embed.weight.requires_grad_(False)
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
