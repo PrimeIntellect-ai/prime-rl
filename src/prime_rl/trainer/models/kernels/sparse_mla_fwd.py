@@ -25,6 +25,7 @@ from prime_rl.trainer.models.kernels.sparse_mla_bwd import (
     cudnn_backward_arch,
     flat_kv_indices,
     sparse_mla_backward,
+    valid_topk_length,
 )
 
 
@@ -203,17 +204,13 @@ def flashmla_sparse_mla_forward(
     B, S, H, D_qk = q.shape
     S_kv, kv_group = kv.shape[1:3]
     topk = indices.shape[-1]
-    # Shortest prefix holding every valid index, so the kernel skips the sentinel tail
-    # (the indexer sorts valid indices first); invalid entries inside it are -1.
-    positions = torch.arange(1, topk + 1, device=indices.device, dtype=torch.int32)
-    topk_length = torch.where(indices <= S_kv - 2, positions, 0).amax(-1).view(B * S)
     out, _max_logits, lse = flash_mla_sparse_fwd(
         q.view(B * S, H, D_qk),
         kv.view(B * S_kv, kv_group, D_qk),
         flat_kv_indices(indices, S_kv).view(B * S, kv_group, topk),
         sm_scale,
         d_v,
-        topk_length=topk_length,
+        topk_length=valid_topk_length(indices, S_kv),
     )
     return out.view(B, S, H, d_v), lse.view(B, S, H)
 
