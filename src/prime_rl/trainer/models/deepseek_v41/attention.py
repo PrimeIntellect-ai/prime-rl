@@ -55,6 +55,17 @@ except ImportError:
     sparse_attn_shape_error = None  # type: ignore
 
 
+def _index_topk_op(num_heads: int, head_dim: int, block_size: int):
+    """prime-kernels' fused indexer top-k when it is built for this GPU and shape, else prime-rl's chunked one."""
+    import prime_kernels
+
+    if "dsa_indexer_topk" in prime_kernels.KERNELS and prime_kernels.is_available("dsa_indexer_topk"):
+        kernel = prime_kernels.load("dsa_indexer_topk")
+        if kernel.unsupported_shape_reason(num_heads, head_dim, block_size) is None:
+            return kernel.dsv41_index_topk
+    return dsv41_index_topk
+
+
 @dataclass(frozen=True)
 class PackedContext:
     """Document-aware bookkeeping for one packed row, derived once per forward from `seq_lens`.
@@ -199,6 +210,7 @@ class DeepseekV41Indexer(nn.Module):
         self.uses_candidates = 0 <= config.candidate_source_layer_id < layer_idx
         self.candidate_block_size = config.candidate_block_size
         self.candidate_topk_blocks = config.candidate_topk_blocks
+        self.index_topk_op = _index_topk_op(self.num_heads, self.head_dim, self.candidate_block_size)
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
         if self.owns_k:
@@ -235,7 +247,7 @@ class DeepseekV41Indexer(nn.Module):
         entry_stop = entry_start + (packed.position_ids[0] + 1) // self.compress_ratio
         emit = self.is_candidate_source and packed.use_candidates
         candidates_in = state.candidates if self.uses_candidates and packed.use_candidates else None
-        top_k, candidates = dsv41_index_topk(
+        top_k, candidates = self.index_topk_op(
             q[0],
             index_k,
             w[0],

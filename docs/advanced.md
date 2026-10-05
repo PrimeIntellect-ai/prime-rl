@@ -56,7 +56,7 @@ Dense linear precision and routed-expert precision are configured independently.
 
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
-- `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
+- `type = "bf16"` (default), with `backend = "torch"` (default), `"sonicmoe"`, or `"prime_kernels"`.
 - `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
@@ -77,6 +77,8 @@ backend = "sonicmoe"
 [trainer.model.moe.dispatch]
 type = "torch"
 ```
+
+`backend = "prime_kernels"` runs `prime-kernels`' `moe_experts` (SM90): grouped GEMMs with the clamped SwiGLU fused in, for bias-free gated experts with a clamped SwiGLU (DeepSeek-V4 / V4.1).
 
 ```toml
 [trainer.model.quantization]

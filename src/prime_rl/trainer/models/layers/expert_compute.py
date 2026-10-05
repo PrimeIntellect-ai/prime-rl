@@ -110,3 +110,41 @@ class MXFP8ExpertCompute(GroupedGemmExpertCompute):
             partial(kernel.grouped_gemm, high_precision_wgrad=high_precision_wgrad),
             token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
         )
+
+
+class FusedSwigluExpertCompute:
+    """prime-kernels' `moe_experts`: Hopper grouped GEMMs with the clamped SwiGLU fused into them."""
+
+    def __init__(self, kernel: ModuleType) -> None:
+        self.kernel = kernel
+        self.token_group_alignment = kernel.TOKEN_GROUP_ALIGNMENT
+
+    def validate(self, experts: "GroupedExperts") -> None:
+        from prime_rl.trainer.models.deepseek_v4.moe import ClampedSwiglu
+
+        if not isinstance(experts.activation, ClampedSwiglu):
+            raise ValueError("The prime_kernels expert backend requires gated experts with a clamped SwiGLU.")
+        if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
+            raise ValueError("The prime_kernels expert backend requires bias-free experts.")
+        num_experts, hidden_size, intermediate_size = experts.down_proj.shape
+        reason = self.kernel.unsupported_shape_reason(hidden_size, intermediate_size)
+        if reason is not None:
+            raise ValueError(f"The prime_kernels expert backend cannot run these experts: {reason}")
+
+    def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        def to_local(tensor: torch.Tensor) -> torch.Tensor:
+            return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+        if experts.gate_up_proj is None:
+            gate_proj, up_proj = to_local(experts.gate_proj).bfloat16(), to_local(experts.up_proj).bfloat16()
+        else:
+            gate_proj, up_proj = to_local(experts.gate_up_proj).bfloat16(), None
+        output = self.kernel.moe_experts(
+            x.bfloat16().contiguous(),
+            gate_proj,
+            up_proj,
+            to_local(experts.down_proj).bfloat16().contiguous(),
+            num_tokens_per_expert,
+            experts.activation.limit,
+        )
+        return output.type_as(x)

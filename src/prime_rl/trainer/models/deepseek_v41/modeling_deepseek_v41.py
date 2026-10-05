@@ -71,16 +71,12 @@ class DeepseekV41DecoderLayer(nn.Module):
     ) -> tuple[Tensor, ...]:
         state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
 
-        attn_pre, post, comb = self.attn_hc(mhc_states)
-        attn_out, state = self.self_attn(
-            self.input_layernorm(collapse_streams(mhc_states, pre_mix)), packed=packed, state=state
-        )
+        attn_pre, post, comb, attn_in = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
+        attn_out, state = self.self_attn(self.input_layernorm(attn_in), packed=packed, state=state)
         mhc_states = self.attn_hc.update_states(post, comb, attn_out, mhc_states)
 
-        ffn_pre, post, comb = self.ffn_hc(mhc_states)
-        mlp_out = self.mlp(
-            self.post_attention_layernorm(collapse_streams(mhc_states, attn_pre)), routed_experts=routed_experts
-        )
+        ffn_pre, post, comb, ffn_in = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
+        mlp_out = self.mlp(self.post_attention_layernorm(ffn_in), routed_experts=routed_experts)
         mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, mhc_states)
         return (mhc_states, ffn_pre, *state.as_tuple())
 

@@ -25,6 +25,15 @@ class _MixesMatmul(torch.autograd.Function):
         return torch.mm(grad, w), torch.mm(grad.t(), x, out_dtype=torch.float32).to(w.dtype)
 
 
+def _fused_hyper_connection():
+    """prime-kernels' fused mHC projection, gates and collapse when it is built for this GPU, else None."""
+    import prime_kernels
+
+    if "mhc_projection" in prime_kernels.KERNELS and prime_kernels.is_available("mhc_projection"):
+        return prime_kernels.load("mhc_projection").hyper_connection
+    return None
+
+
 class DeepseekV41HyperConnection(nn.Module):
     """V4.1's mHC gates for one sublayer, computed from the streams entering it.
 
@@ -45,6 +54,7 @@ class DeepseekV41HyperConnection(nn.Module):
         self.base = nn.Parameter(torch.empty(mix))
         # One scale per gate: `pre`, `post`, `comb`.
         self.scale = nn.Parameter(torch.empty(3))
+        self.fused = _fused_hyper_connection()
 
     def forward(self, mhc_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hc = self.hc_mult
@@ -64,6 +74,24 @@ class DeepseekV41HyperConnection(nn.Module):
         comb_logits = comb_w.view(*comb_w.shape[:-1], hc, hc) * comb_scale + comb_b.view(hc, hc)
         comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
         return pre, post, comb
+
+    def gates_and_collapse(
+        self, mhc_states: torch.Tensor, pre_mix: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """`forward`'s gates plus the streams collapsed by `pre_mix`, the previous sublayer's `pre`."""
+        if self.fused is not None:
+            return self.fused(
+                mhc_states,
+                self.fn,
+                self.scale,
+                self.base,
+                pre_mix,
+                rms_eps=self.input_norm.eps,
+                hc_eps=self.hc_eps,
+                sinkhorn_iters=self.hc_sinkhorn_iters,
+            )
+        pre, post, comb = self(mhc_states)
+        return pre, post, comb, collapse_streams(mhc_states, pre_mix)
 
     @staticmethod
     def update_states(
