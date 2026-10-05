@@ -88,7 +88,13 @@ def clip_grad_norm_(
     manager: "GradientOffloadManager | None",
     model: nn.Module,
     max_norm: float,
+    rescale: bool = True,
 ) -> Tensor:
+    """Global gradient norm, rescaling the gradients down to `max_norm` when `rescale`.
+
+    An optimizer whose update ignores the gradient's scale (SignSGD) only needs the norm, and
+    skipping the rescale saves a pass over every gradient.
+    """
     if manager is not None:
         grad_norm = manager.clip_grad_norm_(max_norm)
     else:
@@ -104,8 +110,9 @@ def clip_grad_norm_(
             norm = torch.nn.utils.get_total_norm([param.grad for param in parameters])
             norms.append(norm.full_tensor() if isinstance(norm, DTensor) else norm)
         grad_norm = torch.linalg.vector_norm(torch.stack(norms)) if norms else torch.tensor(0.0)
-        for parameters in mesh_parameters.values():
-            torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
+        if rescale:
+            for parameters in mesh_parameters.values():
+                torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
     return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
 
 
