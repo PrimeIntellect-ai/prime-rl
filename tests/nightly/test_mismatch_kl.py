@@ -22,16 +22,16 @@ from tests.utils import (
 pytestmark = [pytest.mark.gpu, pytest.mark.slow]
 
 CONFIG_DIR = Path("configs/ci/nightly-kl")
-NUM_STEPS = 10
 
 
 @dataclass(frozen=True)
 class KLBudget:
     step1: float
-    mean: float | None
+    mean: float
+    num_steps: int = 10
 
 
-# Budgets sit a few times above KL measured on H200s, with a floor that absorbs run-to-run noise.
+# Budgets sit a few times above on-policy KL measured on H200s, with a floor that absorbs run-to-run noise.
 KL_BUDGETS = {
     "llama-3.1-8b": KLBudget(step1=0.005, mean=0.03),
     "qwen3-8b": KLBudget(step1=0.005, mean=0.01),
@@ -42,8 +42,8 @@ KL_BUDGETS = {
     "nemotron-3.5-lightning": KLBudget(step1=0.02, mean=0.02),
     # Laguna's own run-to-run KL on real text is ~0.1, so this only catches gross breakage.
     "laguna-xs.2": KLBudget(step1=0.2, mean=0.2),
-    # Trinity diverges after the first updates (on main too); only the on-policy step is checked.
-    "trinity-mini": KLBudget(step1=0.02, mean=None),
+    # Trinity diverges after its first updates (on main too) and then never fills a batch; run one step.
+    "trinity-mini": KLBudget(step1=0.02, mean=0.02, num_steps=1),
 }
 
 
@@ -75,7 +75,7 @@ def rl_process(
         "@",
         (CONFIG_DIR / f"{model}.toml").as_posix(),
         "--max-steps",
-        str(NUM_STEPS),
+        str(KL_BUDGETS[model].num_steps),
         "--monitors.wandb.project",
         wandb_project,
         "--monitors.wandb.name",
@@ -100,7 +100,5 @@ def test_on_policy_mismatch_kl(trainer_lines: list[str], model: str):
 
 
 def test_mean_mismatch_kl(trainer_lines: list[str], model: str):
-    budget = KL_BUDGETS[model].mean
-    if budget is None:
-        pytest.skip(f"{model} only checks the on-policy step")
-    check_avg_mismatch_kl_in_range(trainer_lines, last_n_steps=NUM_STEPS, max_threshold=budget)
+    budget = KL_BUDGETS[model]
+    check_avg_mismatch_kl_in_range(trainer_lines, last_n_steps=budget.num_steps, max_threshold=budget.mean)
