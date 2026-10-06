@@ -1,0 +1,8 @@
+[model]
+name = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+
+[trainer.model]
+ep = 4
+
+[orchestrator.renderer]
+name = "nemotron-3.5"

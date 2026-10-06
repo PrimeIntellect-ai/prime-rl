@@ -1,0 +1,8 @@
+[model]
+name = "Qwen/Qwen3.5-35B-A3B"
+
+[trainer.model]
+ep = 4
+
+[orchestrator.renderer]
+name = "qwen3.5"

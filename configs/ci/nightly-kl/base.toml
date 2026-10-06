@@ -1,0 +1,41 @@
+# Mismatch-KL check for one architecture: short reverse-text RL on a single 8-GPU node.
+# Compose with a model overlay: `rl @ configs/ci/nightly-kl/base.toml @ configs/ci/nightly-kl/<model>.toml`.
+# Every step is on-policy, so mismatch KL measures trainer-vs-vLLM numerics: step 1 on the checkpoint, later
+# steps on the updated weights vLLM received from the trainer.
+max_steps = 10
+seq_len = 4096
+
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
+
+# vLLM startup (compile, weight load) can outlast the default rendezvous timeout.
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[trainer.model]
+attn = "flash_attention_3"
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 128
+max_off_policy_steps = 0
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 2048
+
+[[orchestrator.train.source]]
+name = "reverse-text"
+env.taskset.id = "reverse-text"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference.vllm]
+max_model_len = 4096

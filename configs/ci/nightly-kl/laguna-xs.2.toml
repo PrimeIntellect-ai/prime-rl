@@ -1,0 +1,8 @@
+[model]
+name = "poolside/Laguna-XS.2"
+
+[trainer.model]
+ep = 4
+
+[orchestrator.renderer]
+name = "laguna-xs.2"
