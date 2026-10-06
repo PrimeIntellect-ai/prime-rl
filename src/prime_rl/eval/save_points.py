@@ -2,7 +2,7 @@
 
 An episode saves its progress (``vf.EpisodeState.save()``) while it runs. Each save
 lands here as ``<run_dir>/save_points/<env>/<dispatch id>.json``, replacing the previous
-one, and is removed once the episode lands ok. A resume hands the ones left behind to
+one, and is removed once the episode lands ok in the trace stream. A resume hands the ones left behind to
 the rollouts still owed, which ``EpisodeState.load()`` them."""
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ class SavePoint:
 class SavePoints:
     def __init__(self, run_dir: Path) -> None:
         self.root = run_dir / "save_points"
+        self.landing: dict[str, Path] = {}
+        """Save points of ok episodes on their way to the trace stream, by episode id."""
 
     def path(self, env_name: str, dispatch_id: str) -> Path:
         return self.root / env_name / f"{dispatch_id}.json"
@@ -38,8 +40,13 @@ class SavePoints:
         tmp.write_bytes(orjson.dumps(record))
         tmp.replace(path)
 
-    def clear(self, meta: InflightEpisode) -> None:
-        self.path(meta.env_name, meta.dispatch_id).unlink(missing_ok=True)
+    def finish(self, meta: InflightEpisode, episode_id: str) -> None:
+        """``meta``'s episode finished ok: its save point goes once the episode landed."""
+        self.landing[episode_id] = self.path(meta.env_name, meta.dispatch_id)
+
+    def landed(self, episode_id: str) -> None:
+        if (path := self.landing.pop(episode_id, None)) is not None:
+            path.unlink(missing_ok=True)
 
     def load(self) -> dict[str, dict[str, list[SavePoint]]]:
         """The save points left behind, by env and task key."""

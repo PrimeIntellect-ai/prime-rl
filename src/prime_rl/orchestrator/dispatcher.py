@@ -163,7 +163,7 @@ class Dispatcher:
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
-        # Where eval episodes' save points persist until they land ok
+        # Where eval episodes' save points persist until they land ok (``EvalRunner.land``)
         self.save_points = save_points
 
         # Starting value of the dynamic cap (the concurrency controller moves
@@ -752,7 +752,7 @@ class Dispatcher:
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
         if self.save_points is not None and meta.kind == "eval" and episode.ok:
-            self.save_points.clear(meta)
+            self.save_points.finish(meta, episode.id)
         await self.out_q.put(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:

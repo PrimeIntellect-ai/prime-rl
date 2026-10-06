@@ -265,6 +265,8 @@ class EvalRunner:
         its env's batch, which is finalized once the epoch is complete."""
         step = eval_work(episode).step
         await monitors.log([episode], step, "eval", "all")
+        if self.dispatcher.save_points is not None:
+            self.dispatcher.save_points.landed(episode.id)
         eval_batch = self.eval_sink.add(episode)
         if eval_batch is not None:
             await self.finalize_eval_batch(eval_batch)
