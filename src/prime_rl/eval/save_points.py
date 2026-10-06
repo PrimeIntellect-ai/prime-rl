@@ -1,9 +1,9 @@
 """Save points of in-flight eval episodes, so a resumed eval continues them.
 
-An episode records its progress with ``vf.save_point`` while it runs. Each one lands
-here as ``<run_dir>/save_points/<env>/<dispatch id>.json``, replacing the previous one,
-and is removed once the episode lands ok. A resume hands the ones left behind to the
-rollouts still owed: a relaunched episode reads its state with ``vf.restored``."""
+An episode saves its progress (``vf.EpisodeState.save()``) while it runs. Each save
+lands here as ``<run_dir>/save_points/<env>/<dispatch id>.json``, replacing the previous
+one, and is removed once the episode lands ok. A resume hands the ones left behind to
+the rollouts still owed, which ``EpisodeState.load()`` them."""
 
 from __future__ import annotations
 
