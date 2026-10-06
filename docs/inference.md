@@ -18,6 +18,7 @@ This page covers the inference configuration and the supported features/deployme
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
     - [Router Replay](#router-replay)
+    - [Total Router Recall](#total-router-recall)
 
 
 ## Overview
@@ -300,6 +301,30 @@ enable_return_routed_experts = true
 This however is not free, it adds a significant overhead to the HTTP requests as this payload can grow quite large. We reccomend sizing up the env server pool (`orchestrator.*.source.serve.pool`) to allow for more parallelization on the verifiers side.
 
 Currently this feature is also not supported with CPU KV cache offload, which can have negative impact on the inference throughput.
+
+### Total Router Recall
+
+Router replay only replays expert ids; the trainer still recomputes the routing weights from its own router logits, so a replayed expert can carry a very different weight than it had at sampling time. Total Router Recall ([mismatch blog](https://kiddyboots216.github.io/mismatch/#total-router-recall)) also returns the sampler's fp32 routing weights and has the trainer use them.
+
+```toml
+[trainer]
+enable_router_replay = true
+enable_total_router_recall = true # this will also auto-set inference.enable_return_routed_expert_weights = true
+```
+
+When launching the inference server standalone, set `inference.enable_return_routed_expert_weights = true` yourself.
+
+- The trainer uses the sampler's expert ids and weights as constants, so **the router is not trained** while this is on (`trainer.model.freeze_moe_router` is set automatically). Gradients still reach the experts and the rest of the model.
+- The routed-experts payload becomes int32 `[tokens, layers, 2 * top_k]` (expert ids, then fp32 weight bits) and rides router replay's data path unchanged, inline in the HTTP response. That is `8 * layers * top_k` bytes per token, 8x the uint8 ids-only payload:
+
+  | | bytes/token | one response (raw / base64) | orchestrator RAM per 1Mi batch tokens | vLLM CPU slot buffer per 1Mi KV slots |
+  | --- | --- | --- | --- | --- |
+  | Qwen3-30B-A3B (48 layers, top-8) @ 32k | 3,072 (ids-only 384) | 96 / 128 MiB (ids-only 12 / 16) | 3 GiB (0.375) | 3 GiB (0.375) |
+  | GLM-5 (78 layers, top-8) @ 131k | 4,992 (ids-only 624) | 624 / 832 MiB (ids-only 78 / 104) | 4.9 GiB (0.61) | 4.9 GiB (0.61) |
+
+  The vLLM slot buffer is sized for the whole KV block pool of each engine; its real size is logged at startup.
+- Weights are captured from vLLM's `BaseRouter` routers (Qwen3-MoE, Qwen3.5-MoE, GLM-4.5/GLM-5, Nemotron-H, Laguna, ...) in the trainer's convention, including `routed_scaling_factor` for models where vLLM applies it to the MoE output. Monolithic MoE kernels (e.g. FP8/NVFP4 FlashInfer TRT-LLM MoE) and DeepSeek-V4 only capture ids and fail at startup.
+- Same constraints as router replay, and disaggregated P/D is not supported.
 
 ### Sampling Replay
 

@@ -478,6 +478,9 @@ class InferenceConfig(BaseConfig):
     enable_fp32_router_logits: bool = True
     """Emit fp32 MoE router logits: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented natively by vLLM, which reads ``moe_router_dtype`` off the HF config — this flag injects ``hf_overrides = {"moe_router_dtype": "float32"}`` (GLM-5.x gets fp32 routing regardless)."""
 
+    enable_return_routed_expert_weights: bool = False
+    """Return the sampler's fp32 routing weights next to the routed expert ids (Total Router Recall). The ``rl`` entrypoint sets this from ``trainer.enable_total_router_recall``; standalone servers must set it explicitly. Implies ``vllm.enable_return_routed_experts``."""
+
     # Launcher-only fields
 
     deployment: InferenceDeploymentConfig = SingleNodeInferenceDeploymentConfig()
@@ -495,6 +498,14 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_routed_expert_weights(self):
+        if self.enable_return_routed_expert_weights:
+            if self.deployment.type == "disaggregated":
+                raise ValueError("enable_return_routed_expert_weights is not supported with disaggregated P/D.")
+            self.vllm.enable_return_routed_experts = True
         return self
 
     @model_validator(mode="after")

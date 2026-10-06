@@ -15,6 +15,9 @@ def setup_vllm_env(config: InferenceConfig):
     if config.enable_return_sampling_mask or config.vllm.enable_return_routed_experts:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
 
+    if config.enable_return_routed_expert_weights:
+        os.environ["PRIME_RETURN_ROUTED_EXPERT_WEIGHTS"] = "1"
+
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which
     # grammar-constrains generation (xgrammar structural tags) for tool_choice
     # "required"/named and strict tools — a sampling distribution the trainer never

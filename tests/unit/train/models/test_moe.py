@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
@@ -252,3 +253,49 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_total_router_recall_payload_reaches_moe_router(monkeypatch):
+    import pybase64
+
+    from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
+    from prime_rl.orchestrator.batch import packed_samples_into_micro_bs, prepare_sample
+    from prime_rl.orchestrator.trajectories import _encode_routed_experts
+    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.transports.batch import TrainingSample
+
+    monkeypatch.setenv("PRIME_RETURN_ROUTED_EXPERT_WEIGHTS", "1")
+    torch.manual_seed(0)
+    moe = MoE.from_args(MoEArgs(num_experts=4, top_k=2), dim=8, hidden_dim=16, shared_expert=None)
+    moe.init_weights(0.02, torch.device("cpu"))
+    ids = torch.tensor([[[0, 3]], [[2, 1]], [[1, 0]]], dtype=torch.int32)  # [tokens, layers, top_k]
+    weights = torch.tensor([[[0.75, 0.25]], [[0.5, 0.5]], [[0.875, 0.125]]])
+
+    # vLLM response -> verifiers decode -> orchestrator -> trainer packing -> trainer tensors
+    payload = serialize_routed_experts(torch.cat([ids, weights.view(torch.int32)], dim=-1).numpy())
+    array = np.frombuffer(pybase64.b64decode(payload["data"]), dtype=payload["dtype"]).reshape(payload["shape"])
+    sample = TrainingSample(
+        token_ids=[1, 2, 3],
+        mask=[False, True, True],
+        logprobs=[0.0, -0.1, -0.2],
+        temperatures=[1.0, 1.0, 1.0],
+        advantages=[0.0, 1.0, 1.0],
+        env_name="test-env",
+        routed_experts=_encode_routed_experts(array, num_tokens=3),
+    )
+    (micro_batch,) = packed_samples_into_micro_bs([prepare_sample(sample, seq_len=8)], 8, 1, len)
+    routed_experts = DataLoader._micro_batch_to_tensor(None, micro_batch)["routed_experts"]
+
+    recorded = {}
+    run = moe.token_dispatcher.run
+
+    def record_run(x, scores, selected, *args, **kwargs):
+        recorded["scores"], recorded["selected"] = scores, selected
+        return run(x, scores, selected, *args, **kwargs)
+
+    moe.token_dispatcher.run = record_run
+    moe(torch.randn(1, 3, 8), routed_experts=routed_experts[:, :, 0]).sum().backward()
+
+    assert torch.equal(recorded["scores"], weights.view(-1, 2))
+    assert torch.equal(recorded["selected"], ids.view(-1, 2))
+    assert moe.router.gate.weight.grad is None
