@@ -200,9 +200,8 @@ class Dispatcher:
         self.metrics = DispatcherMetrics()
 
         # Orchestrator-owned gate. When clear, ``fill_inflight`` returns
-        # without scheduling new train groups. Closed when a live rollout
-        # starting on the current weights would already be past
-        # ``max_off_policy_steps``; reopened once those weights land.
+        # without scheduling new groups. The dispatcher itself doesn't know
+        # *why* — the orchestrator toggles this based on step / policy lead.
         self.dispatch_allowed = asyncio.Event()
         self.dispatch_allowed.set()
         self.policy_update_pending = False
