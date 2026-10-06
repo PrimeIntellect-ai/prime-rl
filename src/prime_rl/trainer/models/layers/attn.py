@@ -70,7 +70,7 @@ def _flash_attn_4_varlen(
 
 
 @_flash_attn_4_varlen.register_fake
-def _(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, causal, window_size_left, window_size_right):
+def _(q, k, v, *args):
     out = q.new_empty((*q.shape[:-1], v.shape[-1]))
     lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
     return out, lse
@@ -111,21 +111,7 @@ def _flash_attn_4_varlen_backward(
 
 
 @_flash_attn_4_varlen_backward.register_fake
-def _(
-    dout,
-    q,
-    k,
-    v,
-    out,
-    lse,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    max_seqlen_q,
-    max_seqlen_k,
-    causal,
-    window_size_left,
-    window_size_right,
-):
+def _(dout, q, k, v, *args):
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
 
 
@@ -199,6 +185,13 @@ def _flash_attn_3_varlen(
     return out, lse
 
 
+@_flash_attn_3_varlen.register_fake
+def _(q, k, v, *args):
+    out = q.new_empty((*q.shape[:-1], v.shape[-1]))
+    lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
+    return out, lse
+
+
 @torch.library.custom_op("prime_rl_attn::flash_attn_3_varlen_backward", mutates_args=())
 def _flash_attn_3_varlen_backward(
     dout: torch.Tensor,
@@ -239,6 +232,18 @@ def _flash_attn_3_varlen_backward(
     return dq, dk, dv
 
 
+@_flash_attn_3_varlen_backward.register_fake
+def _(dout, q, k, v, *args):
+    return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+
+
+def _pad_head_dim_to_multiple_of_8(t: torch.Tensor) -> torch.Tensor:
+    head_dim = t.shape[-1]
+    if head_dim % 8 == 0:
+        return t
+    return torch.nn.functional.pad(t, [0, 8 - head_dim % 8])
+
+
 @torch.library.custom_op("prime_rl_attn::flash_attn_2_varlen", mutates_args=())
 def _flash_attn_2_varlen(
     q: torch.Tensor,
@@ -270,6 +275,15 @@ def _flash_attn_2_varlen(
         window_size_right=window_size_right,
     )
     return out_padded[..., :head_dim], lse
+
+
+# FA2's kernel allocates its outputs with empty_like on the padded inputs, so the fakes keep their strides and padding.
+@_flash_attn_2_varlen.register_fake
+def _(q, k, v, *args):
+    head_dim = q.shape[-1]
+    out = torch.empty_like(_pad_head_dim_to_multiple_of_8(q))[..., :head_dim]
+    lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
+    return out, lse
 
 
 @torch.library.custom_op("prime_rl_attn::flash_attn_2_varlen_backward", mutates_args=())
@@ -318,91 +332,32 @@ def _flash_attn_2_varlen_backward(
     return dq[..., :head_dim], dk[..., :head_dim], dv[..., :head_dim]
 
 
-def _pad_head_dim_to_multiple_of_8(t: torch.Tensor) -> torch.Tensor:
-    head_dim = t.shape[-1]
-    if head_dim % 8 == 0:
-        return t
-    return torch.nn.functional.pad(t, [0, 8 - head_dim % 8])
-
-
-def _flash_attn_varlen_fake(q, k, v, *args):
-    out = q.new_empty((*q.shape[:-1], v.shape[-1]))
-    lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
-    return out, lse
-
-
-def _flash_attn_varlen_backward_fake(dout, q, k, v, *args):
-    return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
-
-
-# FA2's kernel allocates its output with empty_like on the padded q, so the fakes keep q's strides and padding.
-def _flash_attn_2_varlen_fake(q, k, v, *args):
-    head_dim = q.shape[-1]
-    out = torch.empty_like(_pad_head_dim_to_multiple_of_8(q))[..., :head_dim]
-    lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
-    return out, lse
-
-
-def _flash_attn_2_varlen_backward_fake(dout, q, k, v, *args):
+@_flash_attn_2_varlen_backward.register_fake
+def _(dout, q, k, v, *args):
     head_dim = q.shape[-1]
     return tuple(torch.empty_like(_pad_head_dim_to_multiple_of_8(t))[..., :head_dim] for t in (q, k, v))
 
 
 def _flash_attn_varlen_setup_context(ctx, inputs, output) -> None:
-    (
-        q,
-        k,
-        v,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        max_seqlen_q,
-        max_seqlen_k,
-        softmax_scale,
-        causal,
-        window_size_left,
-        window_size_right,
-    ) = inputs
+    q, k, v, cu_seqlens_q, cu_seqlens_k, *scalar_args = inputs
     out, lse = output
     ctx.save_for_backward(q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k)
-    ctx.max_seqlen = (max_seqlen_q, max_seqlen_k)
-    ctx.softmax_scale = softmax_scale
-    ctx.causal = causal
-    ctx.window_size = (window_size_left, window_size_right)
+    ctx.scalar_args = scalar_args
 
 
 def _flash_attn_varlen_autograd(backward_op, ctx, dout: torch.Tensor, _dlse: torch.Tensor | None):
-    q, k, v, out, lse, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
-    dq, dk, dv = backward_op(
-        dout.contiguous(),
-        q,
-        k,
-        v,
-        out,
-        lse,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        *ctx.max_seqlen,
-        ctx.softmax_scale,
-        ctx.causal,
-        *ctx.window_size,
-    )
+    dq, dk, dv = backward_op(dout.contiguous(), *ctx.saved_tensors, *ctx.scalar_args)
     return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
-for _forward_op, _backward_op, _forward_fake, _backward_fake in (
-    (
-        _flash_attn_2_varlen,
-        _flash_attn_2_varlen_backward,
-        _flash_attn_2_varlen_fake,
-        _flash_attn_2_varlen_backward_fake,
-    ),
-    (_flash_attn_3_varlen, _flash_attn_3_varlen_backward, _flash_attn_varlen_fake, _flash_attn_varlen_backward_fake),
-):
-    _forward_op.register_fake(_forward_fake)
-    _backward_op.register_fake(_backward_fake)
-    _forward_op.register_autograd(
-        functools.partial(_flash_attn_varlen_autograd, _backward_op), setup_context=_flash_attn_varlen_setup_context
-    )
+_flash_attn_2_varlen.register_autograd(
+    functools.partial(_flash_attn_varlen_autograd, _flash_attn_2_varlen_backward),
+    setup_context=_flash_attn_varlen_setup_context,
+)
+_flash_attn_3_varlen.register_autograd(
+    functools.partial(_flash_attn_varlen_autograd, _flash_attn_3_varlen_backward),
+    setup_context=_flash_attn_varlen_setup_context,
+)
 
 
 def flash_attn_2_varlen_op(
