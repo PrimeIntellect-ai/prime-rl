@@ -72,8 +72,8 @@ class Env:
         self.tasks: Iterator[vf.Task] | None = None
         """The env's selected tasks (``select``), client-side, set at
         ``start()``. A bounded selection is materialized (``num_tasks`` is its count)
-        and iterated from there; an unbounded one streams off the taskset through a
-        ``TaskFeed``. Consumed once — by ``TrainSource`` (train) or ``EvalSource`` (eval)."""
+        and iterated from there; an unbounded one streams off the taskset through a ``TaskFeed``. Consumed once — by
+        ``TrainSource`` (train) or ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
 
     @property
@@ -167,24 +167,20 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path, *, streaming: bool = False):
+    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
         super().__init__(config, address, address_file)
         self.sampling_args = config.sampling.to_sampling_args()
-        self.streaming = streaming
-        """Whether an unbounded taskset may stream through one epoch (a standalone eval)."""
         self.examples: list[vf.Task] = []
         self.feed: TaskFeed | None = None
+        """An unbounded taskset, streamed through a single epoch (a standalone eval)."""
 
     async def start(self) -> None:
         await super().start()
         if isinstance(self.tasks, TaskFeed):
-            if not self.streaming:
-                raise ValueError(f"Eval env {self.name} has an infinite taskset — set select.limit to bound it")
-            # Streams once, through a single epoch.
             self.feed = self.tasks
-            return
-        # A fixed eval set, pulled off the tasks once and reused every epoch.
-        self.examples = list(self.tasks)
+        else:
+            # A fixed eval set, pulled off the tasks once and reused every epoch.
+            self.examples = list(self.tasks)
 
 
 EnvT = TypeVar("EnvT", bound=Env)
@@ -256,22 +252,10 @@ class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
     def __init__(
-        self,
-        configs: Sequence[EvalSourceConfig],
-        addresses: dict[tuple[str, str], str | None],
-        config_dir: Path,
-        *,
-        streaming: bool = False,
+        self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str | None], config_dir: Path
     ):
-        """``streaming`` lets unbounded tasksets stream through a single epoch (a standalone
-        eval); evals that repeat per checkpoint need bounded ones."""
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
             name = config.resolved_name
-            env = EvalEnv(
-                config,
-                addresses[("eval", name)],
-                env_address_file(config_dir, "eval", name),
-                streaming=streaming,
-            )
+            env = EvalEnv(config, addresses[("eval", name)], env_address_file(config_dir, "eval", name))
             self._envs[env.name] = env
