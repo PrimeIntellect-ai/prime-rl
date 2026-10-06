@@ -581,6 +581,9 @@ def train(config: SFTConfig):
                 if value > 0:
                     step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
+        if is_first_step:
+            effective_rs_cap = model._get_fsdp_state()._comm_ctx.reduce_scatter_max_input_buffers
+            logger.info(f"Effective FSDP reduce-scatter max input buffers: {effective_rs_cap}")
 
         # Log progress metrics
         samples_by_source = dataset_progress["num_samples"]
