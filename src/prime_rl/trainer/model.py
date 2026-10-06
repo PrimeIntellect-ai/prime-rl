@@ -653,6 +653,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
     )
+    if config.reduce_scatter_max_input_buffers is not None:
+        # Recurses into every FSDP unit, overriding the routers' value: the effective cap is the max over all units.
+        model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
     if not parallel_dims.ep_enabled:
         return
