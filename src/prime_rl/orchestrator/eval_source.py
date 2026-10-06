@@ -2,7 +2,10 @@
 
 The policy watcher calls ``trigger(step)`` after each applied policy,
 including startup. The dispatcher pulls via ``next_task()`` until
-``bool(source) == False``. Constructed only when eval is configured."""
+``bool(source) == False``. Constructed only when eval is configured.
+
+A standalone eval may stream an unbounded taskset through its one epoch: its tasks are
+pulled off the env's ``TaskFeed`` as they become ready, until the taskset ends."""
 
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
     from prime_rl.orchestrator.envs import EvalEnvs
+    from prime_rl.orchestrator.task_feed import TaskFeed
 
 
 class EvalSource:
@@ -34,14 +38,19 @@ class EvalSource:
         self.skip_first_step = skip_first_step
 
         self.tasks_by_env: dict[str, list[vf.Task]] = {}
+        self.feeds: dict[str, TaskFeed] = {}
         self.group_sizes: dict[str, int] = {}
         self.intervals: dict[str, int] = {}
         for env in eval_envs:
             self.tasks_by_env[env.name] = list(env.examples)
+            if env.feed is not None:
+                self.feeds[env.name] = env.feed
             self.group_sizes[env.name] = env.config.group_size
             self.intervals[env.name] = intervals[env.name] if intervals is not None else 1
 
         self.queue: deque[TaskRequest] = deque()
+        self.streams: dict[str, tuple[int, dict[str, int]]] = {}
+        """Fired streaming envs: their step and the rollouts each landed task key still owes."""
         self.owed: dict[str, dict[str, int]] | None = None
         self.groups: dict[str, dict[str, str]] = {}
 
@@ -67,9 +76,12 @@ class EvalSource:
         fired = [
             name
             for name, interval in self.intervals.items()
-            if (is_first or force or step % interval == 0) and self.tasks_by_env[name]
+            if (is_first or force or step % interval == 0) and (self.tasks_by_env[name] or name in self.feeds)
         ]
         owed, self.owed = self.owed, None
+        for name in fired:
+            if name in self.feeds:
+                self.streams[name] = (step, dict(owed[name]) if owed is not None else {})
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
@@ -92,10 +104,24 @@ class EvalSource:
         return fired
 
     def next_task(self) -> TaskRequest | None:
-        """Pop the next eval task, or ``None`` when the queue is empty."""
-        if not self.queue:
-            return None
-        return self.queue.popleft()
+        """Pop the next eval task, or ``None`` when the queue is empty and no stream has a
+        task ready."""
+        if self.queue:
+            return self.queue.popleft()
+        for env_name, (step, owed) in self.streams.items():
+            feed = self.feeds[env_name]
+            while feed.ready():
+                task = next(feed)
+                # a key that landed before a resume owes only the rest of its group
+                rollouts = owed.pop(task.key, self.group_sizes[env_name])
+                if rollouts > 0:
+                    group_id = self.groups.get(env_name, {}).get(task.key)
+                    return TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
+        return None
+
+    def streaming(self, env_name: str) -> bool:
+        """Whether ``env_name`` is a fired stream whose taskset has not ended."""
+        return env_name in self.streams and not self.feeds[env_name].exhausted
 
     def cancel_step(self, step: int) -> list[TaskRequest]:
         """Remove and return queued examples for a superseded eval step."""
@@ -104,7 +130,8 @@ class EvalSource:
         return cancelled
 
     def __bool__(self) -> bool:
-        return bool(self.queue)
+        # a stream with no task ready yet still has work until its taskset ends
+        return bool(self.queue) or any(self.streaming(name) for name in self.streams)
 
     def __len__(self) -> int:
         return len(self.queue)
