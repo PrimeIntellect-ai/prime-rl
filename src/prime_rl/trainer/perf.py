@@ -1,5 +1,4 @@
 import time
-from fractions import Fraction
 
 import torch
 from torch import nn
@@ -17,25 +16,21 @@ def get_active_params(model: nn.Module) -> int:
     Routed experts count by `top_k / num_experts`; embeddings count only when tied to the lm_head;
     the vision encoder and LoRA adapters do not count.
     """
-    weights = {id(param): Fraction(1) for param in model.parameters()}
-    for module in model.modules():
-        if isinstance(module, MoE):
-            for param in module.experts.parameters():
-                weights[id(param)] = Fraction(module.router.top_k, module.experts.num_experts)
-    lm_head_params = {id(param) for param in model.lm_head.parameters()}
-    for module in model.modules():
-        if isinstance(module, nn.Embedding):
-            for param in module.parameters(recurse=False):
-                if id(param) not in lm_head_params:
-                    weights[id(param)] = Fraction(0)
+    excluded = {id(param) for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name}
     visual = getattr(model.model, "visual", None)
     if visual is not None:
-        for param in visual.parameters():
-            weights[id(param)] = Fraction(0)
-    for name, param in model.named_parameters():
-        if "lora_A" in name or "lora_B" in name:
-            weights[id(param)] = Fraction(0)
-    return int(sum(param.numel() * weights[id(param)] for param in model.parameters()))
+        excluded |= {id(param) for param in visual.parameters()}
+    lm_head_params = {id(param) for param in model.lm_head.parameters()}
+    inactive_expert_params = 0
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            excluded |= {id(param) for param in module.parameters(recurse=False)} - lm_head_params
+        elif isinstance(module, MoE):
+            # Expert weights lead with `num_experts`, so the division is exact.
+            num_experts, top_k = module.experts.num_experts, module.router.top_k
+            expert_params = sum(p.numel() for p in module.experts.parameters() if id(p) not in excluded)
+            inactive_expert_params += expert_params * (num_experts - top_k) // num_experts
+    return sum(param.numel() for param in model.parameters() if id(param) not in excluded) - inactive_expert_params
 
 
 class PerfCounter:
