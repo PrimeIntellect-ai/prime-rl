@@ -109,10 +109,16 @@ class Env:
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
-    def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
+    def _sampling(self, cache_salt: str | None, payload_dir: str | None) -> vf.SamplingConfig:
         sampling = {**self.sampling_args}
+        extra_body = {**sampling.get("extra_body", {})}
         if cache_salt is not None:
-            sampling["extra_body"] = {**sampling.get("extra_body", {}), "cache_salt": cache_salt}
+            extra_body["cache_salt"] = cache_salt
+        if payload_dir is not None:
+            # vLLM SamplingParams.extra_args, read by the generate handler (serving_tokens.py).
+            extra_body["extra_args"] = {**extra_body.get("extra_args", {}), "payload_dir": payload_dir}
+        if extra_body:
+            sampling["extra_body"] = extra_body
         return vf.SamplingConfig(**sampling)
 
     async def run(
@@ -121,6 +127,7 @@ class Env:
         model_name: str,
         cache_salt: str | None,
         task_data: dict,
+        payload_dir: str | None,
         on_delta: Callable[[dict], None] | None = None,
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
@@ -130,7 +137,7 @@ class Env:
             task_data=task_data,
             client=client,
             model=model_name,
-            sampling=self._sampling(cache_salt),
+            sampling=self._sampling(cache_salt, payload_dir),
             on_delta=on_delta,
         )
 
