@@ -434,7 +434,7 @@ class RLConfig(BaseConfig):
                 "have no disk artifact to load from."
             )
         if self.weight_broadcast.type == "modelexpress":
-            dynamo = self.orchestrator.client.dynamo
+            dynamo = self.orchestrator.model.client.dynamo
             if dynamo is not None and dynamo.enabled:
                 raise ValueError(
                     "modelexpress requires static inference admin endpoints; Dynamo discovery is not supported."

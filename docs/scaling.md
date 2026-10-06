@@ -243,6 +243,19 @@ server must use matching revisions with TrainerMesh, per-tensor wire dtypes and
 bounded streaming support. This integration targets MX revision `8512b8c`,
 including the TrainerMesh API from ai-dynamo/modelexpress#835.
 
+ModelExpress is installed separately; the published 0.7.0 package does not
+contain the required APIs. After installing PrimeRL, install the compatible
+client revision into the same environment:
+
+```bash
+uv pip install "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@8512b8c7130db34721a0b2ec57c23198fed3ef4f#subdirectory=modelexpress_client/python"
+```
+
+Run PrimeRL with `uv run --no-sync` after this manual installation, or use
+`uv sync --inexact` to preserve separately installed packages. A regular exact
+sync removes packages not declared in the project. The existing `nixl` transport
+also requires a separately installed ModelExpress client.
+
 ```toml
 [weight_broadcast]
 type = "modelexpress"
@@ -260,7 +273,10 @@ broadcast directory; only rendezvous markers use the filesystem, not weights.
 
 `COPY_TO_HOST` snapshots trainer shards into MX-owned host storage.
 `COPY_TO_DEVICE` uses additional GPU storage. `IN_PLACE` requires unchanged source
-storage and matching transfer dtypes until installation completes. Omitting
+storage and matching transfer dtypes until installation completes. FP32 trainer
+weights transferred as BF16 require conversion and cannot use `IN_PLACE`.
+`COPY_TO_HOST` is the default; use `IN_PLACE` only when every bound tensor meets
+these requirements. Omitting
 `staging_buffer_bytes` stages a complete receiver update; setting it uses MX's
 bounded transfer/install through the same `stage_weight()` and `apply_weight()`
 methods. It limits each buffer, and `staging_buffers_count`
