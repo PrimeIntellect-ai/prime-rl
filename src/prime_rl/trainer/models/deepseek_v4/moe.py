@@ -6,30 +6,12 @@ selection with a frozen token-id lookup but keeps the learned gating weights.
 """
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.layers.activations import ClampedSilu
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, ScoreFuncType, TokenChoiceTopKRouter
-
-
-class ClampedSwiglu:
-    """SwiGLU with both branches clamped, as in HF's `DeepseekV4Experts`.
-
-    Structurally an `Activation`, but with `limit` as instance state: V4 reads its clamp
-    off `config.swiglu_limit`, while the shared `ActivationDispatch` holds stateless
-    classes keyed by name and so has nowhere to put a per-model number.
-    """
-
-    def __init__(self, limit: float) -> None:
-        self.limit = limit
-
-    def apply(self, gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
-        assert gate is not None, "V4's routed experts are gated"
-        gate = gate.clamp(max=self.limit)
-        up = up.clamp(min=-self.limit, max=self.limit)
-        return F.silu(gate) * up
 
 
 class DeepseekV4HashRouter(TokenChoiceTopKRouter):
@@ -64,53 +46,6 @@ class DeepseekV4HashRouter(TokenChoiceTopKRouter):
         self.register_buffer("tid2eid", torch.zeros(vocab_size, top_k, dtype=torch.long), persistent=True)
 
 
-class DeepseekV4Experts(GroupedExperts):
-    """Routed experts with V4's clamped SwiGLU.
-
-    The shared `GroupedExperts` already stores the stacked `gate_proj`/`up_proj`/`down_proj`
-    that the on-disk per-expert `w1`/`w2`/`w3` convert into, and its `forward` reaches the
-    activation through `self.activation`, so only that attribute and the initialization
-    spread differ from the base class.
-    """
-
-    def __init__(self, dim: int, hidden_dim: int, num_experts: int, swiglu_limit: float) -> None:
-        super().__init__(dim, hidden_dim, num_experts, expert_type="gated")
-        self.activation = ClampedSwiglu(swiglu_limit)
-
-    def init_weights(self, init_std: float) -> None:
-        # Both halves of HF's fused gate_up_proj are drawn from the same std=0.02
-        # distribution, so gate and up match that here despite being separate tensors.
-        # The base class scales up_proj by init_std instead.
-        nn.init.trunc_normal_(self.gate_proj, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.up_proj, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.down_proj, mean=0.0, std=init_std)
-
-
-class DeepseekV4MLP(FeedForward):
-    """Dense SwiGLU MLP with V4's clamp, used as the MoE layer's shared expert.
-
-    The shared `FeedForward` already names its projections the way HF's `LlamaMLP` (which
-    HF's `DeepseekV4MLP` subclasses) does, and initializes them the same way, so only the
-    activation changes: gate and up are clamped before the SwiGLU. Unlike the routed
-    experts they are separate tensors here, so there is nothing to chunk.
-    """
-
-    def __init__(self, config: DeepseekV4Config):
-        # `FeedForward` builds its projections without a bias whatever `bias` says.
-        assert not config.mlp_bias, "mlp_bias is not supported by the shared `FeedForward`"
-        super().__init__(
-            dim=config.hidden_size,
-            hidden_dim=config.moe_intermediate_size,
-            activation=config.hidden_act,
-        )
-        self.limit = config.swiglu_limit
-
-    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
-        gate = self.gate_proj(x).clamp(max=self.limit)
-        up = self.up_proj(x).clamp(min=-self.limit, max=self.limit)
-        return self.down_proj(F.silu(gate) * up)
-
-
 class DeepseekV4MoE(MoE):
     """A V4 MoE layer, hash-routed or standard according to `config.num_hash_layers`.
 
@@ -127,8 +62,9 @@ class DeepseekV4MoE(MoE):
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int):
         assert config.hidden_act == "silu", (
-            f"the routed experts hardcode SiLU; hidden_act={config.hidden_act!r} is not supported"
+            f"the experts hardcode SiLU; hidden_act={config.hidden_act!r} is not supported"
         )
+        assert not config.mlp_bias, "mlp_bias is not supported"
         is_hash = layer_idx < config.num_hash_layers
 
         router_kwargs = dict(
@@ -146,15 +82,20 @@ class DeepseekV4MoE(MoE):
             if is_hash
             else TokenChoiceTopKRouter(**router_kwargs, selection_bias=True)
         )
-        experts = DeepseekV4Experts(
+        activation = ClampedSilu(config.swiglu_limit)
+        experts = GroupedExperts(
             dim=config.hidden_size,
             hidden_dim=config.moe_intermediate_size,
             num_experts=config.n_routed_experts,
-            swiglu_limit=config.swiglu_limit,
+            activation=activation,
         )
         # HF sizes its shared expert at `moe_intermediate_size` regardless of
         # `n_shared_experts`, which therefore only decides whether one exists at all.
-        shared_expert = DeepseekV4MLP(config) if config.n_shared_experts > 0 else None
+        shared_expert = (
+            FeedForward(dim=config.hidden_size, hidden_dim=config.moe_intermediate_size, activation=activation)
+            if config.n_shared_experts > 0
+            else None
+        )
 
         super().__init__(
             router=router,
@@ -166,6 +107,11 @@ class DeepseekV4MoE(MoE):
         )
         self.layer_idx = layer_idx
         self.is_hash = is_hash
+
+    def init_weights(self, init_std: float, buffer_device: torch.device) -> None:
+        super().init_weights(init_std, buffer_device)
+        # HF draws both halves of its fused gate_up_proj from std=0.02; the shared init uses init_std for up.
+        nn.init.trunc_normal_(self.experts.up_proj, mean=0.0, std=0.02)
 
     def forward(
         self,

@@ -13,7 +13,7 @@ from torch import nn
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
-from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
+from prime_rl.trainer.models.layers.activations import Activation, ActivationDispatch, ActivationType
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, ExpertCompute
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
@@ -76,7 +76,7 @@ class GroupedExperts(nn.Module):
         num_experts: int,
         *,
         expert_type: ExpertType = "gated",
-        activation: ActivationType = "silu",
+        activation: ActivationType | Activation = "silu",
         bias: bool = False,
         compute: ExpertCompute | None = None,
     ):
@@ -93,7 +93,7 @@ class GroupedExperts(nn.Module):
         self.up_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias else None
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
-        self.activation = ActivationDispatch[activation]
+        self.activation = ActivationDispatch[activation] if isinstance(activation, str) else activation
         if expert_type == "non_gated":
             self.supported_fusions = {}
         self.set_compute(compute or BF16ExpertCompute())
