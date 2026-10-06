@@ -92,7 +92,10 @@ class SignSGD(Optimizer):
         assert param.is_cuda and param.is_contiguous() and grad.is_contiguous()
         mesh = p.device_mesh if isinstance(p, DTensor) else None
         if mesh is not None:
-            assert all(isinstance(pl, Shard) for pl in p.placements), "the norm sums disjoint shards only"
+            # Shards are disjoint, so the norm sums them; a replicated dimension would count twice.
+            assert all(isinstance(pl, Shard) or size == 1 for pl, size in zip(p.placements, mesh.shape)), (
+                "the norm sums disjoint shards only"
+            )
         if mesh not in self._sumsq:
             self._sumsq[mesh] = torch.zeros((), dtype=torch.float32, device=param.device)
         if param.numel():
