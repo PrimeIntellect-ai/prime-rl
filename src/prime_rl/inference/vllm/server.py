@@ -1,4 +1,5 @@
 import asyncio
+import gc
 from argparse import Namespace
 
 import uvloop
@@ -29,6 +30,8 @@ def engine_client(request: Request) -> EngineClient:
 def models(request: Request) -> OpenAIServingModels:
     return request.app.state.openai_serving_models
 
+
+API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
@@ -148,6 +151,13 @@ async def custom_init_app_state(
         prime_serving = object.__new__(PrimeRlServingTokens)
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
+
+    # Under RL load the API server holds millions of live objects, and CPython's
+    # default thresholds rerun full collections over them every few seconds.
+    # Move everything alive after startup out of GC and collect less often.
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(*API_SERVER_GC_THRESHOLDS)
 
 
 import vllm.entrypoints.launchers.api_server.entry

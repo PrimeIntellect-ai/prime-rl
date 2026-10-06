@@ -6,11 +6,14 @@ deltas here:
     * ``serialize_routed_experts`` round-trips a compact raw-byte payload.
     * The subclass overrides ``serve_tokens_full_generator`` without
       monkey-patching the parent.
-    * ``post_process`` swaps in the compact routed_experts while preserving
+    * ``post_process`` swaps in the packed payloads while preserving
       the rest of the upstream response (``usage`` included).
+    * The sampled-token logprobs pack from vLLM's flat logprobs.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import numpy as np
 import pybase64
@@ -20,11 +23,13 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     PlaceholderRangeInfo,
 )
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
+from vllm.logprobs import FlatLogprobs, Logprob
 
 from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
-    _GenerateRoutedExpertsCapture,
+    _PackedOutputs,
+    pack_sampled_logprobs,
 )
 
 
@@ -64,8 +69,10 @@ def test_serialize_routed_experts_uses_compact_raw_payload():
 
 def test_generate_response_post_process_preserves_prompt_metadata():
     compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
-    capture = _GenerateRoutedExpertsCapture(_empty_request_outputs())
-    capture.routed_experts[0] = compact_routed_experts
+    capture = _PackedOutputs(
+        _empty_request_outputs(), SimpleNamespace(sampling_params=SimpleNamespace(routed_experts_prompt_start=0))
+    )
+    capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
     response = GenerateResponse(
         request_id="request-id",
@@ -92,3 +99,12 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     assert payload["prompt_token_ids"] == [10, 11, 12, 13]
     assert payload["mm_placeholders"] == {"image": [{"offset": 1, "length": 2}]}
     assert payload["usage"]["total_tokens"] == 7
+
+
+def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
+    logprobs = FlatLogprobs()
+    logprobs.append({5: Logprob(-0.5, 2, None), 7: Logprob(-0.1, 1, None)})  # sampled token first
+    logprobs.append(None)
+    logprobs.append({3: Logprob(float("-inf"), 9, None)})
+
+    np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
