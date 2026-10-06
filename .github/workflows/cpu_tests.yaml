@@ -75,7 +75,7 @@ jobs:
           from prime_rl.configs.trainer import TrainerConfig
           from prime_rl.configs.env_server import EnvServerConfig
           from prime_rl.utils.config import BaseConfig, find_package_resource, rgetattr, rsetattr
-          from prime_rl.utils.validation import validate_shared_ckpt_config
+          from prime_rl.utils.validation import propagate_shared_fields
 
           # `verifiers` (+ its `datasets` dep) is a declared slim dep: the v1 config types
           # (EnvConfig, Task, ...) extend verifiers.v1, which is pure-pydantic and pulls no

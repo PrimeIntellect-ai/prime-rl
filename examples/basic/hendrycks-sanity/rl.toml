@@ -9,7 +9,7 @@ num_train_gpus = 4
 num_infer_gpus = 4
 
 [model]
-name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+name = "Qwen/Qwen3-1.7B"
 
 [orchestrator]
 batch_size = 512

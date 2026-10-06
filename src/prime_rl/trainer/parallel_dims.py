@@ -75,10 +75,9 @@ class ParallelDims:
             assert ep % cp == 0 and (dp_shard * cp) % ep == 0
 
     def build_mesh(self) -> DeviceMesh:
-        if self.ep > 1:
-            return self._build_mesh_with_ep()
-        else:
-            return self._build_mesh_without_ep()
+        mesh = self._build_mesh_with_ep() if self.ep > 1 else self._build_mesh_without_ep()
+        self._submeshes["head"] = self._submeshes["dp_shard_cp"]
+        return mesh
 
     def _build_mesh_with_ep(self) -> DeviceMesh:
         # With ep, dp_shard and ep are derived submeshes:
@@ -96,12 +95,13 @@ class ParallelDims:
                 dp_shard_mod_ep,
                 dp_shard_in_ep,
                 self.cp,
+                1,
             ],
-            ["pp", "dp_replicate", "dp_shard_mod_ep", "dp_shard_in_ep", "cp"],
+            ["pp", "dp_replicate", "dp_shard_mod_ep", "dp_shard_in_ep", "cp", "dp_shard_mod_head"],
         ):
             # dp_shard_mod_ep is needed even if it's 1, whose FSDP wrapping
             # helps the MoE layers do mixed precision training
-            if d > 1 or name == "dp_shard_mod_ep":
+            if d > 1 or name in ("dp_shard_mod_ep", "dp_shard_mod_head"):
                 dims.append(d)
                 names.append(name)
 
@@ -158,10 +158,10 @@ class ParallelDims:
         dims = []
         names = []
         for d, name in zip(
-            [self.pp, self.dp_replicate, self.dp_shard, self.cp],
-            ["pp", "dp_replicate", "dp_shard", "cp"],
+            [self.pp, self.dp_replicate, self.dp_shard, self.cp, 1],
+            ["pp", "dp_replicate", "dp_shard", "cp", "dp_shard_mod_head"],
         ):
-            if d > 1 or name == "dp_shard":
+            if d > 1 or name == "dp_shard" or (name == "dp_shard_mod_head" and self.dp_shard * self.cp > 1):
                 dims.append(d)
                 names.append(name)
 
@@ -292,12 +292,6 @@ def resolve_ep(config: ModelConfig) -> None:
     models, resolves to 1 (no-op).
     """
     if config.ep != "auto":
-        return
-
-    # EP requires the custom implementation; skip auto-resolution for HF impl
-    if config.impl not in ("custom", "auto"):
-        config.ep = 1
-        get_logger().info(f"EP auto: impl='{config.impl}' does not support EP, resolving ep=1")
         return
 
     world_size = dist.get_world_size()

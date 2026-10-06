@@ -246,7 +246,7 @@ The shipped end-to-end examples in [`examples/`](https://github.com/PrimeIntelle
 - [**Wordle**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/wordle) — `Qwen3-1.7B` playing Wordle. Multi-turn SFT + RL; 2–4 H100s.
 - [**Alphabet Sort**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/alphabet-sort) — `Qwen3-4B-Instruct-2507` sorting names alphabetically. Multi-turn LoRA RL without SFT warmup; one H100.
 - [**Wiki Search**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/wiki-search) — `Qwen3-4B-Instruct-2507` answering trivia by searching a Wikipedia corpus. Multi-turn with tool use.
-- [**Hendrycks Sanity**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/hendrycks-sanity) — `DeepSeek-R1-Distill-Qwen-1.5B` on a filtered MATH subset. Useful for algorithm ablations.
+- [**Hendrycks Sanity**](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/basic/hendrycks-sanity) — `Qwen3-1.7B` on a filtered MATH subset. Useful for algorithm ablations.
 
 **Advanced** (32–2048 GPUs, SLURM):
 

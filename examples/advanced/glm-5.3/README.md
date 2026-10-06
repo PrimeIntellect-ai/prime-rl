@@ -113,5 +113,17 @@ This will start a SFT run with the following configuration:
 
 - The model is `zai-org/GLM-5.3-BF16`
 - The data is `PrimeIntellect/INTELLECT-3-SFT-10K` (math split)
+- 8 nodes at 131k context: CP 8, EP 8, full activation checkpointing with activation offloading, optimizer state offloaded to CPU
+- DSA attention runs on the FlashMLA sparse forward and the cuDNN sparse backward (`model.dsa_backend = "cudnn_flashmla"`)
 
 For a fake-data dry run, append [`fake.toml`](sft/h200/fake.toml) instead. You can use the same dashboard to monitor the SFT run.
+
+### 12 nodes at 16k
+
+For 16k-token samples, append [`16k-12-node.toml`](sft/h200/16k-12-node.toml) after the data overlay:
+
+```bash
+uv run sft @ examples/advanced/glm-5.3/sft/h200/base.toml @ examples/advanced/glm-5.3/sft/h200/math-10k.toml @ examples/advanced/glm-5.3/sft/h200/16k-12-node.toml
+```
+
+On 12 nodes the sharded model state fits in GPU memory without CP or any offloading. Each GPU runs one 16k sequence per step (batch 96), and transformer blocks compile with `fullgraph = true`. Full activation checkpointing stays on; peak memory is about 115 GiB per GPU.

@@ -13,7 +13,7 @@ concurrency:
 jobs:
   unit-tests:
     name: Unit tests
-    runs-on: vm
+    runs-on: prime-rl-2xh200
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
@@ -61,34 +61,34 @@ jobs:
       matrix:
         include:
           - test: reverse_text_sft
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text_sft.py"
           - test: reverse_text_sft_lora
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text_sft_lora.py"
           - test: reverse_text
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text.py"
           - test: reverse_text_rl_opd
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text_rl_opd.py"
           - test: reverse_text_rl_sft
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text_rl_sft.py"
           - test: alphabet_sort
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_alphabet_sort.py"
           - test: reverse_text_lora
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text_lora.py"
           - test: reverse_text_moe
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_reverse_text_moe.py"
           - test: benchmark_regression
             runner: 4xa6000
             pytest_args: "tests/integration/test_benchmark_regression.py"
           - test: gsm8k_eval
-            runner: vm
+            runner: prime-rl-2xh200
             pytest_args: "tests/integration/test_gsm8k_eval.py"
     steps:
       - name: Install Git

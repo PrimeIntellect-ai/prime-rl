@@ -4,6 +4,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 
+from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
@@ -30,6 +31,7 @@ class SparseMlaAttentionArgs:
     index_n_heads: int
     index_head_dim: int
     index_topk: int
+    dsa_backend: DSABackend
     use_index_cache: bool = False
     skip_topk: bool = False
 
@@ -230,7 +232,7 @@ class GlmMoeDsaAttention(nn.Module):
             position_embeddings_full=position_embeddings,
         )
 
-        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.scaling)
+        out, _ = sparse_mla(sparse_q, sparse_kv, indices, self.args.dsa_backend, self.scaling)
         out = torch.einsum("bshk,hdk->bshd", out, w_v)
         batch_size, total_tokens = out.shape[:2]
         out = out.reshape(batch_size, total_tokens, -1)

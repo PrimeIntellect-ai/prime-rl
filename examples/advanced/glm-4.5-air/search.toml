@@ -45,7 +45,6 @@ dist_timeout_seconds = 3600
 enable_router_replay = true
 
 [trainer.model]
-impl = "custom"
 attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"

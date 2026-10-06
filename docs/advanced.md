@@ -16,19 +16,14 @@ This page covers the specialized features layered on top of the core training st
 
 ## Custom Modeling
 
-`prime-rl` ships custom optimized model implementations for several MoE families. With `model.impl = "auto"` (default) the trainer picks the custom path when the HF config type is registered, falling back to plain HF otherwise. To force one:
-
-```toml
-[trainer.model]
-impl = "custom"        # or "hf" to force the HF path
-```
+The trainer only runs `prime-rl`'s own model implementations, selected from the HF config type. Besides dense Llama, Qwen3 and Qwen3.5, these cover the families below. Other architectures fail at trainer setup.
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
 | GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
-| Qwen3 / Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
+| Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
 | MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
@@ -36,8 +31,6 @@ impl = "custom"        # or "hf" to force the HF path
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | ✅ |
-
-Selective activation checkpointing works with either implementation. The custom path additionally enables EP, CP, low-precision training, and grouped MoE kernels. Forcing `impl = "hf"` is mostly useful when debugging and disables those model-specific runtime features.
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
@@ -137,7 +130,7 @@ With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is 
 enabled = ["gate_up", "qkv"]   # [] disables
 ```
 
-Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning, or fails at startup with `raise_on_fail = true`. Fusions are skipped when LoRA is enabled.
+Fusions are runtime-only. Checkpoints keep the canonical parameter names and shapes, so a run can turn a fusion on or off at any point and still load its own checkpoints, and exported weights are unaffected. Only modules that support a fusion are packed; a requested fusion that no module supports logs a warning and is skipped. Fusions are skipped when LoRA is enabled.
 
 Muon receives the packed layout as matrix partitions and orthogonalizes each logical matrix on its own, so a packed parameter trains exactly as the parameters it replaces would — including per-projection learning-rate scaling for grouped-query attention — while keeping a single momentum tensor.
 
@@ -161,7 +154,6 @@ Add `[model.vlm]` and bfloat16 dtypes:
 ```toml
 [model]
 name = "Qwen/Qwen3.5-4B"
-impl = "custom"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 

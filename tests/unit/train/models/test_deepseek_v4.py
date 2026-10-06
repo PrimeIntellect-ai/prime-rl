@@ -8,13 +8,14 @@ from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM, eager_reference
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
+from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
 
 # Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
 # the kernel it would dispatch to, so the whole file needs tilelang even though nothing here calls it.

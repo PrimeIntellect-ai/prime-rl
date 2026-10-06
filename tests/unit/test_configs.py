@@ -37,14 +37,11 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
+    """Any TOML file inside `configs/` or `examples/`."""
     config_files = list(Path("configs").rglob("*.toml"))
     example_files = list(Path("examples").rglob("*.toml"))
-    # The k8s example configs are mounted into the chart's containers verbatim, so a
-    # stale key there breaks a deploy with nothing else to catch it.
-    k8s_files = list(Path("k8s").rglob("*.toml"))
 
-    return config_files + example_files + k8s_files
+    return config_files + example_files
 
 
 def can_parse(config_cls: type, args: list[str]) -> bool:
@@ -357,31 +354,12 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
 
 
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
-def test_full_optimizer_offload_accepts_debug_backend(config_cls):
-    config = config_cls.model_validate(
-        {
-            "model": {
-                "optim_cpu_offload": False,
-                "full_offload": {
-                    "cpu_optimizer_backend": "torch",
-                },
-            },
-            "optim": {"max_norm": None},
-        }
-    )
-
-    assert config.model.full_offload is not None
-    assert config.model.full_offload.cpu_optimizer_backend == "torch"
-
-
-@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
-@pytest.mark.parametrize("optimizer_type", ["sgd", "muon"])
-def test_full_optimizer_offload_requires_supported_optimizer(config_cls, optimizer_type):
+def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
     with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
         config_cls.model_validate(
             {
                 "model": {"optim_cpu_offload": False, "full_offload": True},
-                "optim": {"type": optimizer_type, "max_norm": None},
+                "optim": {"type": "muon", "max_norm": None},
             }
         )
 
@@ -642,7 +620,6 @@ def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {
             "cp": 2,
-            "impl": "custom",
             "optimization_dtype": "bfloat16",
             "reduce_dtype": "bfloat16",
             "vlm": {
@@ -898,12 +875,12 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "trainer": {"model": {"impl": "custom"}},
+            "trainer": {"model": {"attn": "flash_attention_3"}},
             "orchestrator": {"renderer": {"name": "default"}},
         }
     )
     assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
-    assert config.trainer.model.impl == "custom"
+    assert config.trainer.model.attn == "flash_attention_3"
 
 
 def test_run_dir_propagates_through_cli(tmp_path):

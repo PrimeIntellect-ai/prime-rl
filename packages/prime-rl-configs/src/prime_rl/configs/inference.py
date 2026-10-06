@@ -21,7 +21,7 @@ class ServerConfig(BaseConfig):
     """Port to bind to."""
 
     liveness_timeout_seconds: float = Field(30.0, gt=0)
-    """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. With Kubernetes liveness probes, keep the probe ``timeoutSeconds`` at least this high."""
+    """Timeout in seconds for the ``/liveness`` endpoint's internal vLLM worker RPC. Health checks polling this endpoint should use a timeout at least this high."""
 
 
 # Valid vLLM max_lora_rank values (`vllm.config.lora.MaxLoRARanks`), excluding 1 so
@@ -509,16 +509,12 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_combined_replay(self):
-        """NIXL routed-expert capture uses the V1 runner, while sampling replay needs V2."""
-        if (
-            self.deployment.type == "disaggregated"
-            and self.enable_return_sampling_mask
-            and self.vllm.enable_return_routed_experts
-        ):
+    def validate_disaggregated_no_routed_experts(self):
+        """vLLM rejects routed-expert capture with NIXL KV transfer."""
+        if self.deployment.type == "disaggregated" and self.vllm.enable_return_routed_experts:
             raise ValueError(
-                "Combined router and sampling replay is not supported with disaggregated P/D: "
-                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
+                "Routed-expert return (enable_return_routed_experts) is not supported with disaggregated P/D: "
+                "vLLM does not capture routed experts across NIXL KV transfer."
             )
         return self
 
