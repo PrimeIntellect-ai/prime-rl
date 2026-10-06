@@ -75,11 +75,7 @@ from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
-from prime_rl.utils.async_utils import (
-    EventLoopLagMonitor,
-    EventLoopLagStats,
-    safe_cancel,
-)
+from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
@@ -264,10 +260,7 @@ class Orchestrator:
         self.packer = BatchPacker(config)
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
-            config.output_dir,
-            config.num_train_workers,
-            self.progress.step,
-            config.rollout_transport,
+            config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
         )
 
         # Wait phase: envs, then inference, then the trainer's startup broadcast —
@@ -287,12 +280,7 @@ class Orchestrator:
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(
-                self.progress,
-                self.train_source,
-                step=self.resume_step,
-                path=resume_path,
-            )
+            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
@@ -841,12 +829,7 @@ class Orchestrator:
 
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
-        payload: dict[str, float] = {
-            **disp_gauges,
-            **disp_drain,
-            **watcher_gauges,
-            **self.concurrency.gauges(),
-        }
+        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean
@@ -1038,10 +1021,7 @@ class Orchestrator:
             if self.train_envs is not None:
                 get_logger().debug("Stopping generation source and algorithm clients")
                 for env in self.train_envs:
-                    for clients in (
-                        env.generation_source.connected,
-                        env.algorithm.connected,
-                    ):
+                    for clients in (env.generation_source.connected, env.algorithm.connected):
                         if clients is not None:
                             await clients.aclose()
 
