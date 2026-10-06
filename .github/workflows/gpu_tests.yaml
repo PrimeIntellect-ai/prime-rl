@@ -50,7 +50,7 @@ jobs:
 
   multi-gpu-model-tests:
     name: Multi-GPU model tests (${{ matrix.test }})
-    runs-on: vm
+    runs-on: prime-rl-2xh200
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all

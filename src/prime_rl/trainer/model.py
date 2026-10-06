@@ -1,6 +1,7 @@
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch._dynamo
@@ -33,7 +34,7 @@ from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
-from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, cast_float_and_contiguous
+from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, PrimeModelConfig, cast_float_and_contiguous
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
@@ -306,6 +307,20 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
+def set_model_options(model_config: PrimeModelConfig, option: str, fields: dict[str, Any], explicit: bool) -> None:
+    """Set the architecture-config fields behind the trainer option ``model.<option>``.
+
+    Only architectures that use an option declare its fields. Setting it for any other architecture
+    is an error if the user asked for it (``explicit``), and skipped if it is just the default.
+    """
+    declared = type(model_config).model_fields
+    if all(name in declared for name in fields):
+        for name, value in fields.items():
+            setattr(model_config, name, value)
+    elif explicit:
+        raise ValueError(f"model.{option} does not apply to {model_config.model_type!r} models.")
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> PrimeModel:
@@ -318,12 +333,21 @@ def get_model(
         eos_token_id = model_config.eos_token_id
         model_config.pad_token_id = eos_token_id[0] if isinstance(eos_token_id, list) else eos_token_id
 
+    set_model_options(
+        model_config,
+        "dsa_backend",
+        {"dsa_backend": config.dsa_backend},
+        explicit="dsa_backend" in config.model_fields_set,
+    )
     if config.index_cache is not None:
-        model_config.use_index_cache = True
-        model_config.index_topk_freq = config.index_cache.topk_freq
-        model_config.index_topk_pattern = config.index_cache.topk_pattern
-        # Explicit override supersedes the model's native IndexShare schedule.
-        model_config.indexer_types = None
+        index_cache_fields = {
+            "use_index_cache": True,
+            "index_topk_freq": config.index_cache.topk_freq,
+            "index_topk_pattern": config.index_cache.topk_pattern,
+            # Explicit override supersedes the model's native IndexShare schedule.
+            "indexer_types": None,
+        }
+        set_model_options(model_config, "index_cache", index_cache_fields, explicit=True)
     else:
         # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
         # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
