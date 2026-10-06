@@ -72,8 +72,8 @@ class Env:
         self.tasks: Iterator[vf.Task] | None = None
         """The env's selected tasks (``select``), client-side, set at
         ``start()``. A bounded selection is materialized (``num_tasks`` is its count)
-        and iterated from there; an unbounded one streams off the taskset through a ``TaskFeed``. Consumed once — by
-        ``TrainSource`` (train) or ``EvalEnv.start`` (eval)."""
+        and iterated from there; an unbounded one streams off the taskset. Consumed once — by ``TrainSource`` (train) or
+        ``EvalEnv.start`` (eval)."""
         self._env_client: EnvClient | None = None
 
     @property
@@ -103,7 +103,7 @@ class Env:
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         else:
-            self.tasks = TaskFeed(iter(taskset), name=self.name)
+            self.tasks = iter(taskset)
             self.num_tasks = None
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
@@ -172,12 +172,12 @@ class EvalEnv(Env):
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[vf.Task] = []
         self.feed: TaskFeed | None = None
-        """An unbounded taskset, streamed through a single epoch (a standalone eval)."""
+        """An infinite taskset, streamed through a single epoch (a standalone eval)."""
 
     async def start(self) -> None:
         await super().start()
-        if isinstance(self.tasks, TaskFeed):
-            self.feed = self.tasks
+        if self.num_tasks is None:
+            self.feed = TaskFeed(self.tasks, name=self.name)
         else:
             # A fixed eval set, pulled off the tasks once and reused every epoch.
             self.examples = list(self.tasks)

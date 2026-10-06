@@ -76,7 +76,7 @@ Per-source `group_size` and `sampling` override the top-level defaults. The top-
 
 Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`.
 
-A source whose taskset is unbounded (no `select.limit`) streams: its tasks are dispatched as the taskset yields them, and the source is done once the taskset ends and its last rollout lands. The taskset may wait between tasks; it is read on its own thread.
+A source whose taskset is infinite (`Taskset.INFINITE`, with no `select.limit`) streams: its tasks are dispatched as the taskset yields them, and the source is done once the taskset ends and its last rollout lands. The taskset may wait between tasks; it is read on its own thread.
 
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 

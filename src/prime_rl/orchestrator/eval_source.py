@@ -4,7 +4,7 @@ The policy watcher calls ``trigger(step)`` after each applied policy,
 including startup. The dispatcher pulls via ``next_task()`` until
 ``bool(source) == False``. Constructed only when eval is configured.
 
-A standalone eval may stream an unbounded taskset through its one epoch: its tasks are
+A standalone eval may stream an infinite taskset through its one epoch: its tasks are
 pulled off the env's ``TaskFeed`` as they become ready, until the taskset ends."""
 
 from __future__ import annotations

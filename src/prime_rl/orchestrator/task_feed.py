@@ -1,6 +1,6 @@
-"""TaskFeed: read an unbounded taskset off the event loop.
+"""TaskFeed: read an infinite taskset off the event loop.
 
-An unbounded taskset's ``next()`` may block, e.g. a generator waiting for its next
+An infinite taskset's ``next()`` may block, e.g. a generator waiting for its next
 task to be ready. A feed calls it on its own thread, one task ahead, so the dispatcher
 polls without blocking: ``ready()`` says whether a task can be taken now."""
 
