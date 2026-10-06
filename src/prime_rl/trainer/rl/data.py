@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -7,6 +7,8 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.multimodal import MaterializedMM, MultimodalAdapter
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -47,8 +49,9 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Materialized immediately before this microbatch's forward pass.
+    # Materialized into materialized_mm by prepare_micro_batch.
     mm_refs: MMRefs | None
+    materialized_mm: NotRequired[MaterializedMM | None]
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -170,6 +173,27 @@ class FakeDataLoader:
             "ce_weights": None,
             "ref_kl_weights": None,
         }
+
+
+_worker_processor: Any | None = None
+_worker_mm_adapter: MultimodalAdapter | None = None
+
+
+def init_micro_batch_worker(processor: Any | None, mm_adapter: MultimodalAdapter | None) -> None:
+    global _worker_processor, _worker_mm_adapter
+    _worker_processor = processor
+    _worker_mm_adapter = mm_adapter
+
+
+def prepare_micro_batch(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
+    """Run a micro batch's CPU preprocessing; called in a WorkerPool initialized by init_micro_batch_worker."""
+    mm_refs = micro_batch.get("mm_refs")
+    if mm_refs is None:
+        return micro_batch
+    if _worker_processor is None or _worker_mm_adapter is None:
+        raise ValueError("Received multimodal samples but [model.vlm] is not set")
+    materialized_mm = materialize_mm_refs(mm_refs, _worker_processor, _worker_mm_adapter)
+    return {**micro_batch, "mm_refs": None, "materialized_mm": materialized_mm}
 
 
 class DataLoader:

@@ -17,7 +17,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, init_micro_batch_worker, prepare_micro_batch
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -37,7 +37,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.multimodal import get_multimodal_adapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -71,6 +70,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
@@ -147,6 +147,7 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
+    micro_batch_pool = WorkerPool(config.data.num_workers, init_micro_batch_worker, (processor, mm_adapter))
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -336,7 +337,7 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
+        for micro_step, micro_batch in enumerate(micro_batch_pool.imap(prepare_micro_batch, micro_batches)):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -367,15 +368,12 @@ def train(config: TrainerConfig):
 
             mm_kwargs = None
             mm_forward_policy = None
-            mm_refs = micro_batch.get("mm_refs")
-            if mm_refs is not None:
-                if processor is None or mm_adapter is None:
-                    raise ValueError("Received multimodal samples but [model.vlm] is not set")
-                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+            materialized = micro_batch.get("materialized_mm")
+            if materialized is not None:
                 mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
                 mm_forward_policy = materialized.forward_policy
-                micro_batch["mm_refs"] = None
-                del materialized, mm_refs
+                micro_batch["materialized_mm"] = None
+            del materialized
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -732,6 +730,7 @@ def train(config: TrainerConfig):
 
     if gradient_manager is not None:
         gradient_manager.close()
+    micro_batch_pool.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")

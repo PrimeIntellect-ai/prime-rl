@@ -612,6 +612,9 @@ class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
+    num_workers: int = Field(0, ge=0)
+    """Number of worker processes that prepare micro batches (e.g. image decoding and preprocessing) ahead of the training loop. 0 prepares them inline in the main process."""
+
 
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
