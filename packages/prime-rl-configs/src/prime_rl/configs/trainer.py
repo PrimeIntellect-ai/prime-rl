@@ -514,6 +514,12 @@ class MuonConfig(BaseOptimizerConfig):
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
 
+    step_in_backward: bool = False
+    """Update each parameter during backward, as soon as its reduced gradient is ready, instead of in a
+    separate step afterwards. The update overlaps the rest of backward and gradients are freed as they
+    are consumed. Steps that run validation keep the separate step, so validation sees the weights the
+    step trained on."""
+
 
 OptimizerConfig: TypeAlias = Annotated[
     SGDConfig | AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")
