@@ -17,7 +17,7 @@ class ZMQBatchSender(BatchSender):
         silently. The dispatch gate allows at most ``max_off_policy_steps + 1``
         shipped steps to sit ahead of the applied policy (one message per rank
         per step). The default HWM of 10 covers the default cap of 8; raising
-        the cap to the HWM or above can drop batches. The READY barrier below
+        the cap to 9 or above can drop batches. The READY barrier below
         covers slow joiners at startup.
         """
         super().__init__(output_dir, data_world_size)
