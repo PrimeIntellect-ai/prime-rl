@@ -84,9 +84,10 @@ def main():
     rows = []
     for prefix, layout in [(prefix, layout) for prefix in prefixes for layout in LAYOUTS]:
         runs = {
-            variant: load_metrics(RUNS_DIR / f"{prefix}{layout}-{variant}")
+            variant: metrics
             for variant in variants
             if (RUNS_DIR / f"{prefix}{layout}-{variant}/monitors/file/metrics.jsonl").exists()
+            and STEADY_STEPS[-1] in (metrics := load_metrics(RUNS_DIR / f"{prefix}{layout}-{variant}"))
         }
         if not runs:
             continue
