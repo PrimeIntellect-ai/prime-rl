@@ -296,6 +296,15 @@ class Dispatcher:
             g.kind == "eval" and g.episodes_to_schedule > 0 for g in self.groups.values()
         )
 
+    def eval_env_settled(self, env_name: str) -> bool:
+        """Whether every eval rollout of ``env_name`` this dispatcher took on has been
+        handed to ``out_q`` and taken off it: no group left to schedule, none in flight."""
+        return (
+            self.out_q.empty()
+            and not any(group.kind == "eval" and group.env_name == env_name for group in self.groups.values())
+            and not any(meta.kind == "eval" and meta.env_name == env_name for meta in self.inflight.values())
+        )
+
     @property
     def is_idle(self) -> bool:
         """True once nothing is in flight, no eval work remains (queued *or* a partly-scheduled eval

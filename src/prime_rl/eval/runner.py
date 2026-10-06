@@ -249,13 +249,10 @@ class EvalRunner:
 
     def stream_done(self, env_name: str) -> bool:
         """Whether a streaming env's taskset ended and every rollout it dispatched landed."""
-        if self.eval_envs.get(env_name).feed is None or self.eval_source.streaming(env_name):
-            return False
-        dispatcher = self.dispatcher
         return (
-            dispatcher.out_q.empty()
-            and not any(group.env_name == env_name and group.kind == "eval" for group in dispatcher.groups.values())
-            and not any(meta.env_name == env_name and meta.kind == "eval" for meta in dispatcher.inflight.values())
+            self.eval_envs.get(env_name).feed is not None
+            and not self.eval_source.streaming(env_name)
+            and self.dispatcher.eval_env_settled(env_name)
         )
 
     async def land(self, episode: vf.Episode, pending: set[str]) -> None:
