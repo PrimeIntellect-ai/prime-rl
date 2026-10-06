@@ -66,6 +66,7 @@ gpu = [
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
+    "modelexpress>=0.7.0 ; sys_platform == 'linux'",
 ]
 dashboard = [
     "fastapi>=0.115",
@@ -208,6 +209,7 @@ requires-dist = [
 ]
 
 [tool.uv.exclude-newer-package]
+modelexpress = "2026-10-04T00:00:00Z"
 # verifiers pins harbor==0.24.0, published inside the rolling window;
 # bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
 harbor = "2026-10-08T00:00:00Z"

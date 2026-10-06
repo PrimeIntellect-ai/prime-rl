@@ -243,18 +243,16 @@ server must use matching revisions with TrainerMesh, per-tensor wire dtypes and
 bounded streaming support. This integration targets MX revision `8512b8c`,
 including the TrainerMesh API from ai-dynamo/modelexpress#835.
 
-ModelExpress is installed separately; the published 0.7.0 package does not
-contain the required APIs. After installing PrimeRL, install the compatible
-client revision into the same environment:
+The GPU extra includes `modelexpress>=0.7.0`, but the published 0.7.0 package does
+not contain the APIs required by this transport. Install the compatible client
+revision into the same environment:
 
 ```bash
 uv pip install "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@8512b8c7130db34721a0b2ec57c23198fed3ef4f#subdirectory=modelexpress_client/python"
 ```
 
-Run PrimeRL with `uv run --no-sync` after this manual installation, or use
-`uv sync --inexact` to preserve separately installed packages. A regular exact
-sync removes packages not declared in the project. The existing `nixl` transport
-also requires a separately installed ModelExpress client.
+Run PrimeRL with `uv run --no-sync` after this manual installation. Running
+`uv sync` can replace the source-installed client with the locked distribution.
 
 ```toml
 [weight_broadcast]
@@ -285,7 +283,7 @@ Total staging capacity per worker is their product, excluding live weights
 and engine-owned workspaces.
 
 PrimeRL waits for publication before pausing inference, and resumes only after
-every initialized worker acknowledges the requested version. A failed update
+all configured inference clients complete the update request. A failed update
 keeps inference paused and does not acknowledge the broadcast to the trainer.
 Restart the trainer and inference together after an uncertain update; there is
 no rollback. ModelExpress owns layouts, transfer planning, reader leases and
