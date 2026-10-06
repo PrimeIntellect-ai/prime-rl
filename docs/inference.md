@@ -287,7 +287,7 @@ On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (o
 
 Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.
 
-To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Capture runs on vLLM's V2 model runner (forced automatically). Router replay is not supported with disaggregated P/D: vLLM does not capture routed experts across NIXL KV transfer.
+To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Capture runs on vLLM's V2 model runner (forced automatically). Under disaggregated P/D the router takes the prompt routing from the prefill instance and the completion routing from the decode instance. The pinned router (v0.2.2) merges uint8 routing only, so P/D router replay does not support models with more than 256 experts until [router#61](https://github.com/PrimeIntellect-ai/router/pull/61) ships.
 
 ```toml
 [trainer]
@@ -313,6 +313,6 @@ top_k = 512   # optional, defaults to 512 under truncation (bounds each sampling
 
 That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
 
-Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run together with router replay. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
+Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run together with router replay, including under disaggregated P/D. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
 
 When launching the inference server standalone, set `inference.enable_return_sampling_mask = true` yourself; clients must sample with `0 < top_k <= 512`.

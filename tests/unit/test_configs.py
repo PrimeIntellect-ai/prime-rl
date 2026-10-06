@@ -1011,11 +1011,14 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-def test_combined_replay_uses_v2_runner(monkeypatch):
+@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
     config = InferenceConfig(
+        deployment=deployment,
+        slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
         vllm={"enable_return_routed_experts": True},
     )
