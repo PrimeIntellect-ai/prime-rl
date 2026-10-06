@@ -83,6 +83,9 @@ class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
 class ModelExpressWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
     type: Literal["modelexpress"] = "modelexpress"
 
+    model_name: str | None = None
+    """Model identity. Set automatically from the trainer model config."""
+
     port: int = 8001
     """ModelExpress gRPC port."""
 

@@ -29,10 +29,12 @@ INSTALLED_MARKER = ".installed"
 
 
 class ModelExpressWeightSender(WeightSender):
-    def __init__(self, output_dir: Path, config: ModelExpressWeightBroadcastConfig, model_name: str):
+    def __init__(self, output_dir: Path, config: ModelExpressWeightBroadcastConfig):
         super().__init__(output_dir, config.timeout)
+        if config.model_name is None:
+            raise ValueError("modelexpress requires model_name in the broadcast config")
         self.config = config
-        self.model_name = model_name
+        self.model_name = config.model_name
         self._trainer: ModelExpressTrainerClient | None = None
         self._control: ModelExpressControlClient | None = None
         self._mesh_id: str | None = None
@@ -131,7 +133,7 @@ class ModelExpressWeightReceiver(WeightReceiver):
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Weight version {uid} was not ready within {self.config.timeout}s")
             await asyncio.sleep(0.1)
-        await self.admin_plane.update_weights(None, transport="modelexpress", step=step, version_uid=uid)
+        await self.admin_plane.update_modelexpress_weights(version_uid=uid, step=step)
         await asyncio.to_thread(self._control.delete_weight_version, uid)
         installed = self.step_dir(step) / INSTALLED_MARKER
         pending = installed.with_suffix(".pending")
