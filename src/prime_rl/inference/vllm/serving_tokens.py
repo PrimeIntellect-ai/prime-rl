@@ -12,7 +12,7 @@ raw bytes (the form the PD router can merge and the renderers parse),
 ``logprobs.content``, and ``sampling_mask`` as CSR ``{ids, counts}`` int32 arrays
 instead of one list per token. A request whose ``sampling_params.extra_args``
 carries a ``payload_dir`` (the orchestrator's train rollouts on multi-node runs)
-gets its ``routed_experts`` and ``sampling_mask`` written to one file there and
+gets its per-token side arrays (``PAYLOAD_FIELDS``) written to one file there and
 returned as ``payload`` segments instead.
 
 Per-token Python objects are what makes the API server slow under RL load:
@@ -48,8 +48,8 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
-from prime_rl.inference.patches import PackedSamplingMask
 from prime_rl.inference.vllm.routed_experts import compact_routed_experts, serialize_routed_experts
+from prime_rl.transports.payload import csr_rows
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
@@ -83,13 +83,6 @@ def pack_sampled_logprobs(logprobs: FlatLogprobs) -> np.ndarray:
     values = np.full(len(starts), LOGPROB_SENTINEL, dtype=np.float32)
     values[has_entry] = flat[starts[has_entry]]
     return np.maximum(values, LOGPROB_SENTINEL)
-
-
-def mask_rows(mask: PackedSamplingMask) -> np.ndarray:
-    """CSR sampling masks as ``[completion tokens, widest]`` int32 rows padded with -1."""
-    rows = np.full((len(mask.counts), max(int(mask.counts.max(initial=0)), 1)), -1, dtype=np.int32)
-    rows[np.arange(rows.shape[1]) < mask.counts[:, None]] = mask.ids
-    return rows
 
 
 class _PackedOutputs:
@@ -135,7 +128,7 @@ class _PackedOutputs:
                         fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
                     else:
                         # Mask row i is completion token i.
-                        arrays.append(("sampling_mask", prompt_len, mask_rows(mask)))
+                        arrays.append(("sampling_mask", prompt_len, csr_rows("sampling_mask", mask.ids, mask.counts)))
                     output.sampling_mask = None
             yield request_output
 

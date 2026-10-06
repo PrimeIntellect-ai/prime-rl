@@ -1,7 +1,7 @@
-"""Per-token side arrays (router-replay ids, sampling masks) passed by handle: the
-inference server writes a request's rows to a shared file and returns ``PayloadSegment``s,
-the orchestrator clips and shifts the segments into micro-batch positions, and each
-trainer rank reads the rows of its window."""
+"""Per-token side arrays (router-replay ids and weights, sampling masks and their sampler
+logprobs) passed by handle: the inference server writes a request's rows to a shared file and
+returns ``PayloadSegment``s, the orchestrator clips and shifts the segments into micro-batch
+positions, and each trainer rank reads the rows of its window."""
 
 import math
 import os
@@ -9,9 +9,30 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal, NamedTuple
 
 import msgspec
 import numpy as np
+
+
+class PayloadField(NamedTuple):
+    fill: int | float
+    """Value at positions no segment covers, and padding of rows narrower than the widest
+    one. An int fill makes ragged rows int32, a float fill float32."""
+    window: Literal["inputs", "labels", "sequence"]
+    """What a trainer rank reads on text micro batches: its CP chunk of input positions
+    (routing, consumed by the forward pass), its CP chunk shifted one position ahead onto
+    the labels (sampling masks ride at the sampled token's own position), or the whole
+    sequence at its own positions (consumed by the loss after the CP gather). Multimodal
+    micro batches read every field whole, because the model may defer CP sharding."""
+
+
+PAYLOAD_FIELDS = {
+    "routed_experts": PayloadField(0, "inputs"),
+    "routed_expert_weights": PayloadField(0.0, "inputs"),
+    "sampling_mask": PayloadField(-1, "labels"),
+    "sampling_mask_logprobs": PayloadField(-math.inf, "sequence"),
+}
 
 
 class PayloadSegment(msgspec.Struct, array_like=True, gc=False, frozen=True):
@@ -46,16 +67,27 @@ def clip_segments(segments: Iterable[PayloadSegment], lo: int, hi: int) -> list[
     return clipped
 
 
-def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int, fill: int) -> np.ndarray | None:
-    """Rows ``[lo, hi)`` of ``field`` as int32, ``fill`` where no segment covers a position;
-    None when no segment carries ``field``. Rows narrower than the field's widest segment
-    fill the leading entries (sampling masks are written at each request's own width).
-    Later segments win."""
+def csr_rows(field: str, values: np.ndarray, counts: np.ndarray) -> np.ndarray:
+    """CSR per-token rows (``counts[i]`` values for token ``i``) as a ``[tokens, widest]``
+    array padded with the field's fill."""
+    fill = PAYLOAD_FIELDS[field].fill
+    width = max(int(counts.max(initial=0)), 1)
+    out = np.full((len(counts), width), fill, dtype=np.float32 if isinstance(fill, float) else np.int32)
+    out[np.arange(width) < counts[:, None]] = values
+    return out
+
+
+def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int) -> np.ndarray | None:
+    """Rows ``[lo, hi)`` of ``field``, as float32 for float fields and int32 otherwise, the
+    field's fill where no segment covers a position; None when no segment carries ``field``.
+    Rows narrower than the field's widest segment fill the leading entries (ragged fields
+    are written at each request's own width). Later segments win."""
     field_segments = [segment for segment in segments if segment.field == field]
     if not field_segments:
         return None
     shape = [max(dims) for dims in zip(*(segment.shape for segment in field_segments))]
-    out = np.full((hi - lo, *shape), fill, dtype=np.int32)
+    dtype = np.float32 if np.dtype(field_segments[0].dtype).kind == "f" else np.int32
+    out = np.full((hi - lo, *shape), PAYLOAD_FIELDS[field].fill, dtype=dtype)
     segments = clip_segments(field_segments, lo, hi)
     for segment, data in zip(segments, _read_segments(segments)):
         rows = np.frombuffer(data, dtype=segment.dtype).reshape(segment.rows, *segment.shape)
