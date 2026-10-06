@@ -290,7 +290,7 @@ def get_load_balance_stats(
 def get_global_moe_stats(
     model: nn.Module,
     ep_group: dist.ProcessGroup | None,
-    dp_cp_group: dist.ProcessGroup,
+    world_group: dist.ProcessGroup,
 ) -> tuple[dict[str, Tensor], Tensor]:
     """Reduce one microstep's routing stats across EP, then DP and CP ranks.
 
@@ -304,10 +304,10 @@ def get_global_moe_stats(
             continue
         value = values.max() if name == "max_vio" else values.mean()
         if name == "max_vio":
-            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
+            dist.all_reduce(value, op=dist.ReduceOp.MAX, group=world_group)
         else:
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            value /= dist.get_world_size(dp_cp_group)
+            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=world_group)
+            value /= dist.get_world_size(world_group)
         stats[name] = value.to("cpu")
     return stats, tokens_per_expert
 
@@ -526,7 +526,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
-    shard_size = parallel_dims.get_mesh("dp_shard_cp").size()
+    shard_size = parallel_dims.get_mesh("fsdp").size()
 
     def shard_placement_fn(parameter: nn.Parameter) -> Shard | None:
         # Qwen's single-row shared-expert gates need equal shards for Muon's all-to-all.
@@ -543,13 +543,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     expert_mesh_info: FSDPMeshInfo | None = None
     if parallel_dims.ep_enabled:
-        dp_mod_ep_mesh_dim_names = []
-        if parallel_dims.dp_replicate_enabled:
-            dp_mod_ep_mesh_dim_names.append("dp_replicate")
-        dp_mod_ep_mesh_dim_names.append("dp_shard_mod_ep")
-
-        dp_mod_ep_mesh = parallel_dims.world_mesh[tuple(dp_mod_ep_mesh_dim_names)]
-        expert_mesh_info = _get_mesh_info(dp_mod_ep_mesh)
+        expert_hsdp_mesh = parallel_dims.get_mesh("expert_hsdp")
+        expert_mesh_info = _get_mesh_info(expert_hsdp_mesh)
         assert isinstance(expert_mesh_info, FSDPMeshInfo)
 
     is_vlm_training = config.vlm is not None
@@ -567,16 +562,12 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
-            if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
+            if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("vocab").size() > 1:
                 embedding = module.ngram_embedding
-                dp_mod_head_mesh = (
-                    parallel_dims.world_mesh["dp_replicate", "dp_shard_mod_head"]
-                    if parallel_dims.dp_replicate_enabled
-                    else parallel_dims.get_mesh("dp_shard_mod_head")
-                )
-                parallelize_module(embedding, parallel_dims.get_mesh("head"), EmbeddingParallel())
-                fully_shard(embedding, mesh=dp_mod_head_mesh, **fsdp_config)
-                embedding.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+                vocab_hsdp_mesh = parallel_dims.get_mesh("vocab_hsdp")
+                parallelize_module(embedding, parallel_dims.get_mesh("vocab"), EmbeddingParallel())
+                fully_shard(embedding, mesh=vocab_hsdp_mesh, **fsdp_config)
+                embedding.set_gradient_divide_factor(parallel_dims.world_size)
 
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config
@@ -615,9 +606,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             **block_fsdp_config,
         )
         if expert_mesh_info is not None and isinstance(block_mlp, MoE):
-            # Expert gradients reduce over the EP-complement mesh only, so they divide by the full
-            # data-parallel size. That is already the dense parameters' default divisor.
-            transformer_block.set_gradient_divide_factor(parallel_dims.fsdp_gradient_divide_factor)
+            # Expert gradients reduce over the EP-complement mesh only, so they divide by the world
+            # size. That is already the dense parameters' default divisor.
+            transformer_block.set_gradient_divide_factor(parallel_dims.world_size)
 
     shard_norm_and_lm_head = hasattr(model, "config") and not model.config.tie_word_embeddings
     final_module = (

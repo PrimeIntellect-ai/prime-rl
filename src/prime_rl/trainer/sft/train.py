@@ -235,7 +235,7 @@ def train(config: SFTConfig):
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
-    dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
+    world_group = parallel_dims.get_mesh("world").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
 
@@ -327,8 +327,8 @@ def train(config: SFTConfig):
                 else:
                     nan_count += 1
 
-        dist.all_reduce(total_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        dist.all_reduce(total_loss_sum, op=dist.ReduceOp.SUM, group=world_group)
+        dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=world_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
@@ -437,10 +437,10 @@ def train(config: SFTConfig):
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
             local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
             global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=world_group)
             global_token_count_val = global_step_token_count.item() // cp_size
             grad_scale = (
-                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                parallel_dims.world_size * grad_accum_steps / global_token_count_val
                 if global_token_count_val > 0
                 else 1.0
             )
@@ -477,7 +477,7 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, world_group)
                 for name, value in micro_moe_stats.items():
                     moe_stats[f"{name}/mean"] += value / grad_accum_steps
                     if name == "max_vio":
@@ -485,14 +485,14 @@ def train(config: SFTConfig):
                 step_tokens_per_expert += tokens_per_expert
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
-        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, world_group) if is_moe_model else {}
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=world_group)
             global_token_count_val = global_step_token_count.item()
             if global_token_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                grad_scale = parallel_dims.world_size * grad_accum_steps / global_token_count_val
                 scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
@@ -505,7 +505,7 @@ def train(config: SFTConfig):
             reshard_module(model)
 
         # Compute the global mean loss for logging.
-        dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=world_group)
         dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
         if global_token_count_val > 0:
             batch_loss = (step_loss_sum / global_token_count_val).item()

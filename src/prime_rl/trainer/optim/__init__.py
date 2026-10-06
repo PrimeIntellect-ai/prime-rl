@@ -176,7 +176,7 @@ def _create_muon_optimizer(
     if expert_params:
         experts_mesh_name = None
         if parallel_dims.ep_enabled:
-            experts_mesh_name = "dp_shard_mod_ep"
+            experts_mesh_name = "fsdp_mod_ep"
         param_groups.append(
             dict(
                 params=expert_params,
@@ -200,8 +200,8 @@ def _create_muon_optimizer(
 
     param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
 
-    if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
-        distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
+    if parallel_dims.fsdp_enabled:
+        distributed_mesh = parallel_dims.get_mesh("fsdp")
     else:
         distributed_mesh = parallel_dims.world_mesh
 
@@ -232,5 +232,5 @@ def _create_muon_optimizer(
     # main and expert groups establish independent NCCL peer connections.
     _warmup_muon_mesh(distributed_mesh)
     if expert_params and parallel_dims.ep_enabled:
-        _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
+        _warmup_muon_mesh(parallel_dims.get_mesh("fsdp_mod_ep"))
     return optimizer
