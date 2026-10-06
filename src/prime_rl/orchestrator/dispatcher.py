@@ -423,19 +423,6 @@ class Dispatcher:
 
         await self.cancel_stale_live_groups()
 
-    def stale_live_group_ids(self) -> list[uuid.UUID]:
-        """Live train groups whose dispatch version is already past the bound."""
-        if self.progress is None or self.train_envs is None:
-            return []
-        min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
-        return [
-            gid
-            for gid, group in self.groups.items()
-            if group.kind == "train"
-            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
-            and group.policy_version_at_start < min_version
-        ]
-
     async def cancel_stale_live_groups(self) -> int:
         """Drop live train groups that can no longer train. Frees their permits
         so a later, fresh-enough rollout can take the slot."""
@@ -448,6 +435,19 @@ class Dispatcher:
                 "Consider increasing it to avoid this."
             )
         return cancelled
+
+    def stale_live_group_ids(self) -> list[uuid.UUID]:
+        """Live train groups whose dispatch version is already past the bound."""
+        if self.progress is None or self.train_envs is None:
+            return []
+        min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
+        return [
+            gid
+            for gid, group in self.groups.items()
+            if group.kind == "train"
+            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
+            and group.policy_version_at_start < min_version
+        ]
 
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
