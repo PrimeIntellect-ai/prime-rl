@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import time
 from datetime import timedelta
 
 import pytest
@@ -9,28 +10,19 @@ import torch.distributed as dist
 import torch.multiprocessing as multiprocessing
 from datasets import Dataset
 from renderers.base import RenderedTokens
-from transformers import Qwen3Config
 
-from prime_rl.configs.sft import GlobalPackingConfig, SFTDataConfig
-from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
-from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, inject_prime_lm_head
-from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
-from prime_rl.trainer.parallel_dims import get_parallel_dims
-from prime_rl.trainer.sft.broker import GlobalDataLoader, GlobalPackedDataset
-from prime_rl.trainer.sft.data import SFTDataset, cat_collate
+from prime_rl.configs.sft import PackingConfig, SFTDataConfig
+from prime_rl.trainer.sft.data import SFTDataset
+from prime_rl.trainer.sft.data.broker import PackedDataLoader
 from prime_rl.trainer.world import reset_world
-from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
-
-pytestmark = pytest.mark.gpu
 
 
-class VariableRenderer:
+class TextRenderer:
     def __call__(self, example):
         return self
 
     def render(self, messages, **kwargs):
-        content = [ord(char) % 50 + 3 for char in messages[-1]["content"]]
+        content = [ord(char) for char in messages[-1]["content"]]
         return RenderedTokens(
             token_ids=[0, *content, 1],
             message_indices=[-1, *([len(messages) - 1] * (len(content) + 1))],
@@ -41,135 +33,197 @@ class VariableRenderer:
         return [1]
 
 
-def distributed_packing_worker(rank, cp_size, cp_style, model_family, directory):
-    world_size = 2 * cp_size
+class ObservedLoader(PackedDataLoader):
+    def __init__(self, *args, **kwargs):
+        self.communication_windows = []
+        super().__init__(*args, **kwargs)
+
+    def _exchange(self, rows):
+        time.sleep(0.001 * (1 + self.rank))
+        start = time.perf_counter()
+        result = super()._exchange(rows)
+        self.communication_windows.append((start, time.perf_counter()))
+        return result
+
+
+def distributed_loader_worker(rank, world_size, cp_size, backend, directory):
     os.environ.update(
         RANK=str(rank), WORLD_SIZE=str(world_size), LOCAL_RANK=str(rank), LOCAL_WORLD_SIZE=str(world_size)
     )
     reset_world()
     torch.set_num_threads(1)
-    torch.cuda.set_device(rank)
+    if backend == "nccl":
+        torch.cuda.set_device(rank)
     dist.init_process_group(
-        "nccl",
+        backend,
         rank=rank,
         world_size=world_size,
         init_method=f"file://{directory}/init",
-        timeout=timedelta(seconds=180),
-        device_id=torch.device("cuda", rank),
+        timeout=timedelta(seconds=120),
+        device_id=torch.device("cuda", rank) if backend == "nccl" else None,
     )
-    delivery_group = dist.new_group(backend="gloo", timeout=timedelta(seconds=180))
-    data_config = SFTDataConfig(seq_len=32, batch_size=4, num_workers=2, global_packing=GlobalPackingConfig())
-    raw = Dataset.from_dict({"prompt": [""] * 5, "completion": ["a" * length for length in [27, 18, 7, 22, 8]]})
-    source = SFTDataset(raw, VariableRenderer(), shuffle=False, seq_len=32, max_epochs=1)
-    dataset = GlobalPackedDataset(source, data_config, dp_size=2) if rank == 0 else None
-    loader = GlobalDataLoader(dataset, data_config, cp_size, delivery_group)
-    local_rows = list(loader)
+    verification = dist.new_group(backend="gloo", timeout=timedelta(seconds=120))
+    raw = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {
+                        "role": "user" if index % 11 == 0 else "assistant",
+                        "content": chr(65 + index % 26) * (1 + index * 13 % 43),
+                    }
+                ]
+            }
+            for index in range(37)
+        ]
+    )
+    config = SFTDataConfig(
+        seq_len=16, batch_size=8, micro_batch_size=2, num_workers=1, packing=PackingConfig(chunk_size=2)
+    )
+    microsteps = config.batch_size // (world_size // cp_size * config.micro_batch_size)
+    epochs = None if backend == "nccl" else 3
+
+    def make_loader(max_epochs=epochs, settings=config):
+        dataset = SFTDataset(raw, TextRenderer(), seq_len=16, shuffle=True, seed=7, max_epochs=max_epochs)
+        return ObservedLoader(dataset, settings, cp_size=cp_size, timeout_seconds=120)
+
+    reference = SFTDataset(raw, TextRenderer(), seq_len=16, shuffle=True, seed=7)
+    shuffled = {}
+
+    def expected_sample(position):
+        epoch, index = divmod(position, len(raw))
+        if epoch not in shuffled:
+            shuffled[epoch] = raw.shuffle(seed=7 + epoch, keep_in_memory=True)
+        sample = reference._process(shuffled[epoch][index])
+        if sample is None:
+            return None
+        return {key: sample[key][:32] for key in ("input_ids", "target_ids", "position_ids", "loss_mask")}
+
+    def verify_step(rows, loader, previous):
+        received = [None] * world_size
+        dist.all_gather_object(received, (rows, loader.dataset_progress), group=verification)
+        assert all(progress == received[0][1] for _, progress in received)
+        for base in range(0, world_size, cp_size):
+            for peer in range(1, cp_size):
+                for left, right in zip(received[base][0], received[base + peer][0], strict=True):
+                    assert left["sample_ids"] == right["sample_ids"]
+                    for key in ("input_ids", "target_ids", "position_ids", "loss_mask", "seq_lens"):
+                        torch.testing.assert_close(left[key], right[key], rtol=0, atol=0)
+        unique = [rows for rows, _ in received[::cp_size]]
+        positions, costs = [], []
+        for round_rows in zip(*unique, strict=True):
+            for row in round_rows:
+                offset, lengths = 0, []
+                for position in row["sample_ids"]:
+                    expected = expected_sample(position)
+                    length = len(expected["input_ids"])
+                    for key, values in expected.items():
+                        assert row[key][0, offset : offset + length].tolist() == values
+                    positions.append(position)
+                    lengths.append(length)
+                    offset += length
+                costs.append(sum(length**2 for length in lengths))
+                assert row["num_tokens"] == offset
+                assert not row["loss_mask"][0, offset:].any()
+                assert not row["input_ids"][0, offset:].any()
+                assert row["position_ids"][0, offset:].tolist() == list(range(32 - offset))
+                if lengths:
+                    lengths[-1] += 32 - offset
+                assert row["seq_lens"].tolist() == (lengths or [32])
+        end = loader.dataset_progress["step"]
+        assert sorted(positions) == [
+            position for position in range(previous, end) if expected_sample(position) is not None
+        ]
+        assert costs == sorted(costs)
+        return end
+
+    model = optimizer = None
+    if backend == "nccl":
+        from torch.distributed.fsdp import fully_shard
+
+        torch.manual_seed(123)
+        model = torch.nn.Sequential(
+            torch.nn.Embedding(256, 512), torch.nn.Linear(512, 512), torch.nn.GELU(), torch.nn.Linear(512, 128)
+        ).cuda()
+        for layer in model:
+            if next(layer.parameters(), None) is not None:
+                fully_shard(layer)
+        fully_shard(model)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    loader = make_loader()
+    position = 0
+    model_windows, communication_windows = [], []
+    for step in range(64 if model is not None else 3):
+        time.sleep(0.002 * (rank % 2))
+        rows = [next(loader) for _ in range(microsteps)]
+        if model is not None:
+            start = time.perf_counter()
+            for row in rows:
+                loss = model(row["input_ids"].cuda()).square().mean()
+                assert torch.isfinite(loss)
+                (loss / microsteps).backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            torch.cuda.synchronize()
+            model_windows.append((start, time.perf_counter()))
+        position = verify_step(rows, loader, position)
+        if step == 2:
+            state = copy.deepcopy(loader.state_dict())
+            loader.future.result()
+            assert loader.state_dict() == state
+            loader.close()
+            communication_windows.extend(loader.communication_windows)
+            changed = config.model_copy(update={"num_workers": 2, "packing": PackingConfig(chunk_size=3)})
+            loader = make_loader(settings=changed)
+            loader.load_state_dict(state)
+        if model is not None and step in [16, 32, 48]:
+            validation = make_loader(max_epochs=1)
+            valid_position = 0
+            while (first := next(validation, None)) is not None:
+                rows = [first, *(next(validation) for _ in range(microsteps - 1))]
+                valid_position = verify_step(rows, validation, valid_position)
+            assert all(
+                expected_sample(position) is None
+                for position in range(valid_position, validation.dataset_progress["step"])
+            )
+            assert validation.dataset_progress["step"] == len(raw)
+            validation.close()
+    if model is None:
+        while (first := next(loader, None)) is not None:
+            rows = [first, *(next(loader) for _ in range(microsteps - 1))]
+            position = verify_step(rows, loader, position)
+        assert all(expected_sample(index) is None for index in range(position, loader.dataset_progress["step"]))
+        position = loader.dataset_progress["step"]
+        assert position == 3 * len(raw)
+    time.sleep(0.003 * rank)
     loader.close()
-    gathered = [None] * world_size
-    dist.all_gather_object(gathered, local_rows, group=delivery_group)
-    for lane in range(2):
-        for peer in range(1, cp_size):
-            for primary_row, peer_row in zip(gathered[lane * cp_size], gathered[lane * cp_size + peer], strict=True):
-                for key in ("input_ids", "target_ids", "position_ids", "seq_lens", "loss_mask"):
-                    torch.testing.assert_close(primary_row[key], peer_row[key], rtol=0, atol=0)
-    sample_ids = [tuple(sample_id) for rows in gathered[::cp_size] for row in rows for sample_id in row["sample_ids"]]
-    assert sorted(sample_ids) == [(0, index) for index in range(5)]
-    assert len(local_rows) == 2
-    assert any(not row["loss_mask"].any() for rows in gathered for row in rows)
-
-    torch.manual_seed(13)
-    config_kwargs = dict(
-        vocab_size=64,
-        hidden_size=128,
-        intermediate_size=192,
-        num_hidden_layers=2,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        head_dim=32,
-        max_position_embeddings=64,
-        tie_word_embeddings=False,
+    communication_windows.extend(loader.communication_windows)
+    overlaps = sum(
+        any(start < model_end and end > model_start for model_start, model_end in model_windows)
+        for start, end in communication_windows
     )
-    if model_family == "glm4":
-        model_config = Glm4MoeConfig(
-            **config_kwargs,
-            moe_intermediate_size=32,
-            n_routed_experts=4,
-            num_experts_per_tok=2,
-            n_shared_experts=1,
-            first_k_dense_replace=1,
+    if model is not None:
+        assert overlaps > 0
+    with open(f"{directory}/rank-{rank}.json", "w") as output:
+        json.dump(
+            {
+                "position": position,
+                "exchanges": len(communication_windows),
+                "overlapped_exchanges": overlaps,
+                "model_steps": len(model_windows),
+            },
+            output,
         )
-        model_class = Glm4MoeForCausalLM
-    else:
-        model_config = Qwen3Config(**config_kwargs)
-        model_class = Qwen3ForCausalLM
-    model_config._attn_implementation = "flash_attention_2"
-    model = model_class(model_config).to(device="cuda", dtype=torch.bfloat16)
-    inject_prime_lm_head(model, chunk_size=None)
-    reference = copy.deepcopy(model)
-    reference_loss = torch.zeros((), device="cuda")
-    token_count = sum(int(row["loss_mask"].sum()) for rows in gathered[::cp_size] for row in rows)
-
-    for example in raw:
-        row = cat_collate([source._process(example)])
-        inputs = {key: row[key].cuda() for key in ("input_ids", "position_ids", "seq_lens")}
-        labels = row["target_ids"].cuda().masked_fill(~row["loss_mask"].cuda(), IGNORE_INDEX)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = reference(**inputs, labels=labels)["loss"]
-        reference_loss += loss.detach()
-        (loss / token_count).backward()
-
-    runtime = ModelConfig(cp=cp_size, cp_style=cp_style, ep=1, attn="flash_attention_2", compile=None)
-    parallel = get_parallel_dims(runtime, data_config.seq_len)
-    if cp_size > 1:
-        setup_context_parallel(model, runtime, parallel)
-    cp_rank = rank % cp_size
-    cp_group = parallel.world_mesh["cp"].get_group() if cp_size > 1 else None
-    actual_loss = torch.zeros((), device="cuda")
-    for row in local_rows:
-        input_ids = row["input_ids"].cuda()
-        position_ids = row["position_ids"].cuda()
-        seq_lens = row["seq_lens"].cuda()
-        labels = row["target_ids"].cuda().masked_fill(~row["loss_mask"].cuda(), IGNORE_INDEX)
-        if cp_size > 1:
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, seq_lens=seq_lens, cp_style=cp_style
-            )
-            labels = shard_for_cp(labels, cp_rank, cp_size)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(input_ids, position_ids, seq_lens=seq_lens, labels=labels, seq_lens_are_pre_shard=cp_size > 1)[
-                "loss"
-            ]
-        actual_loss += loss.detach()
-        (loss / token_count).backward()
-    dist.all_reduce(actual_loss)
-    torch.testing.assert_close(actual_loss, reference_loss, atol=0.1, rtol=0.003)
-    max_error = 0.0
-    for parameter, expected in zip(model.parameters(), reference.parameters(), strict=True):
-        dist.all_reduce(parameter.grad)
-        max_error = max(max_error, float((parameter.grad - expected.grad).abs().max()))
-        torch.testing.assert_close(parameter.grad, expected.grad, atol=0.003, rtol=0.03)
-    if rank == 0:
-        with open(f"{directory}/result.json", "w") as output:
-            json.dump(
-                dict(
-                    model=model_family,
-                    cp=cp_size,
-                    style=cp_style,
-                    samples=sample_ids,
-                    tokens=token_count,
-                    max_grad_error=max_error,
-                ),
-                output,
-            )
-    dist.destroy_process_group(delivery_group)
+    dist.destroy_process_group(verification)
     dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("cp_size,cp_style", [(1, "ulysses"), (2, "ulysses"), (2, "ring")])
-@pytest.mark.parametrize("model_family", ["qwen3", "glm4"])
-def test_broker_dp_cp_loss_gradient_parity(tmp_path, cp_size, cp_style, model_family):
-    if torch.cuda.device_count() < 2 * cp_size:
-        pytest.skip(f"Requires {2 * cp_size} GPUs")
-    multiprocessing.spawn(
-        distributed_packing_worker, args=(cp_size, cp_style, model_family, str(tmp_path)), nprocs=2 * cp_size
-    )
+def test_distributed_payloads_cp_and_cursor_resume(tmp_path):
+    multiprocessing.spawn(distributed_loader_worker, args=(4, 2, "gloo", str(tmp_path)), nprocs=4)
+
+
+@pytest.mark.gpu
+def test_prefetch_overlaps_fsdp_and_optimizer_collectives(tmp_path):
+    if torch.cuda.device_count() < 4:
+        pytest.skip("Requires four GPUs")
+    multiprocessing.spawn(distributed_loader_worker, args=(4, 2, "nccl", str(tmp_path)), nprocs=4)

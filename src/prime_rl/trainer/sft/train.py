@@ -39,13 +39,12 @@ from prime_rl.trainer.model import (
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import (
+    PackedDataLoader,
     get_dataset_progress,
     get_dataset_state,
     load_sft_dataset,
     setup_dataloader,
-    setup_dataset,
 )
-from prime_rl.trainer.sft.broker import GlobalDataLoader, setup_global_dataloader
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -185,37 +184,18 @@ def train(config: SFTConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
-    global_packing = getattr(config.data, "global_packing", None) is not None
-    global_validation = config.val is not None and config.val.data.global_packing is not None
-    broker_group = (
-        dist.new_group(backend="gloo", timeout=timedelta(seconds=config.dist_timeout_seconds))
-        if global_packing or global_validation
-        else None
+    dataloader = setup_dataloader(
+        tokenizer,
+        config.data,
+        config.model.cp,
+        timeout_seconds=config.dist_timeout_seconds,
+        renderer_config=config.renderer,
+        processor=processor,
+        multimodal=multimodal,
     )
-    if global_packing:
-        dataloader = setup_global_dataloader(
-            tokenizer,
-            config.data,
-            config.model.cp,
-            broker_group,
-            timeout_seconds=config.dist_timeout_seconds,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
-    else:
-        dataset = setup_dataset(
-            tokenizer,
-            config.data,
-            config.model.cp,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
-        dataloader = setup_dataloader(dataset, config.data)
 
     val_raw_dataset = None
-    if config.val is not None and not global_validation:
+    if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
@@ -356,36 +336,22 @@ def train(config: SFTConfig):
         return mean_loss, nan_count.item(), total_token_count.item()
 
     def run_validation(step: int) -> None:
-        if global_validation:
-            val_dataloader = setup_global_dataloader(
-                tokenizer,
-                config.val.data,
-                config.model.cp,
-                broker_group,
-                timeout_seconds=config.dist_timeout_seconds,
-                max_epochs=1,
-                raw_dataset=val_raw_dataset,
-                renderer_config=config.renderer,
-                processor=processor,
-                multimodal=multimodal,
-            )
-        else:
-            val_dataset = setup_dataset(
-                tokenizer,
-                config.val.data,
-                config.model.cp,
-                max_epochs=1,
-                raw_dataset=val_raw_dataset,
-                renderer_config=config.renderer,
-                processor=processor,
-                multimodal=multimodal,
-            )
-            val_dataloader = setup_dataloader(val_dataset, config.val.data)
+        val_dataloader = setup_dataloader(
+            tokenizer,
+            config.val.data,
+            config.model.cp,
+            timeout_seconds=config.dist_timeout_seconds,
+            max_epochs=1,
+            raw_dataset=val_raw_dataset,
+            renderer_config=config.renderer,
+            processor=processor,
+            multimodal=multimodal,
+        )
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count, token_count = run_eval_loop(val_dataloader)
         validation_metrics = {"val/trainable_tokens": token_count}
-        if isinstance(val_dataloader, GlobalDataLoader):
+        if isinstance(val_dataloader, PackedDataLoader):
             validation_metrics["val/num_samples"] = sum(val_dataloader.dataset_progress["num_samples"].values())
             val_dataloader.close()
         if is_tt_moe_model(model):
@@ -702,7 +668,7 @@ def train(config: SFTConfig):
             "time/forward_backward_max": lane_times.item(),
             "step": progress.step,
         }
-        if isinstance(dataloader, GlobalDataLoader):
+        if isinstance(dataloader, PackedDataLoader):
             time_metrics.update(dataloader.metrics)
         asyncio.run(monitors.log(time_metrics, step=progress.step))
 
@@ -747,10 +713,8 @@ def train(config: SFTConfig):
     if gradient_manager is not None:
         gradient_manager.close()
 
-    if isinstance(dataloader, GlobalDataLoader):
+    if isinstance(dataloader, PackedDataLoader):
         dataloader.close()
-    if broker_group is not None:
-        dist.destroy_process_group(broker_group)
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("SFT trainer finished")

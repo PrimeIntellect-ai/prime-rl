@@ -45,7 +45,7 @@ class Batch(TypedDict):
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
     num_tokens: int
-    sample_ids: NotRequired[list[tuple[int, int]]]
+    sample_ids: NotRequired[list[int]]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -758,7 +758,7 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
+def setup_local_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
     packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
     return StatefulDataLoader(
         packing_dataset,
@@ -777,16 +777,12 @@ def get_dataset_state(dataloader: StatefulDataLoader) -> dict:
     state (it reaches the dataset copies inside workers when the iterator forks them;
     the main-process dataset object stays at position zero). The keys are torchdata's
     private worker-snapshot layout."""
-    if hasattr(dataloader, "dataset_progress"):
-        return {"broker": dataloader.dataset_progress}
     snapshots = dataloader.state_dict()["_snapshot"]["_worker_snapshots"]
     return {wid: snap["dataset_state"]["dataset"] for wid, snap in sorted(snapshots.items())}
 
 
 def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
     """Dataset position and aggregate counters from dataloader workers."""
-    if hasattr(dataloader, "dataset_progress"):
-        return dataloader.dataset_progress
     snapshot = dataloader.state_dict()["_snapshot"]
     worker_snapshots = snapshot["_worker_snapshots"]
     positions = [worker_snapshot["dataset_state"]["dataset"] for worker_snapshot in worker_snapshots.values()]

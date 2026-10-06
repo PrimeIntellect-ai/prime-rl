@@ -265,47 +265,25 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Global SFT Packing
 
-Text SFT can opt into a rank-0 broker that packs the globally shuffled sample
-stream before distributing rows to DP lanes:
+Text SFT packs a contiguous prefix of the globally shuffled sample stream
+across the entire optimizer step, before distributing rows to DP ranks.
+Each rank's normal `data.num_workers` processes render a strided shard.
+Packing has no lookahead or local/global switch. Communication chunk size
+controls amortization, not which samples belong to a step:
 
 ```toml
-[data.global_packing]
-lookahead_samples = 0
+[data.packing]
+chunk_size = 16
 ```
 
-Omitting this block uses independent local packing. The broker uses deterministic
-online best fit. At zero lookahead, each optimizer step selects a contiguous
-prefix of valid processed samples. A sample that cannot fit begins the next
-step. Positive `lookahead_samples` permits that many additional samples to fill
-holes; deferred samples retain arrival order and are tried first in the next
-step. Text exceeding `micro_batch_size * seq_len` is truncated without splitting
-it into independent attention segments. Samples without trainable tokens in the
-renderer context window are counted and filtered.
-
-Each DP lane receives exactly `batch_size / (DP * micro_batch_size)` rows of
-`micro_batch_size * seq_len` positions. CP peers receive identical full rows
-before context sharding. Token-normalized loss and optimizer accumulation use
-the same schedule as local packing. Multimodal models reject this option at
-configuration time.
-
-`data.num_workers` controls ordered rendering threads inside the broker's CPU
-worker. One prepared optimizer step is prefetched. Deferred payloads are bounded
-by `max_pending_samples` (128) and `max_pending_bytes` (256 MiB);
-`max_sample_bytes` (64 MiB) caps each serialized processed sample. Oversized
-payloads fail explicitly. Rendering also holds up to `num_workers` results.
-
-Checkpoints capture the last consumed global step, source cursor, and pending
-samples. Prefetched work is replayed after restart. Resume requires the same data
-configuration and DP/CP topology. Checkpoints are taken after complete optimizer
-steps. Validation inherits global packing when training enables it; it consumes
-every valid validation sample once and pads the final step so all ranks stop
-together. Validation loss is weighted by actual trainable tokens.
-
-Use `packing/fill_ratio`, `packing/trainable_ratio`, and
-`perf/trainable_tokens_per_second` to compare useful work. `perf/throughput`
-counts nominal positions. Broker metrics report preprocessing, packing,
-materialization, wait and transport times, CPU time, peak resident memory,
-pending payload size, and samples moved across a step boundary.
+Each DP rank receives `batch_size / (DP * micro_batch_size)` rows of
+`micro_batch_size * seq_len` positions; CP peers receive identical full rows.
+A CPU-only Gloo group prefetches one packed step without using model/NCCL
+groups. Resume re-renders from the last consumed step's global source cursor.
+Validation includes every usable example, padding its final step. Fake data and
+multimodal data use their modality-specific local loader. See the
+[SFT data implementation notes](../src/prime_rl/trainer/sft/data/README.md)
+for ordering, transport, checkpoint, and collective-lifetime details.
 
 ### Important Metrics
 
