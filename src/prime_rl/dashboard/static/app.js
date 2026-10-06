@@ -4334,6 +4334,20 @@ function normalizedCallUsage(usage = {}) {
   };
 }
 
+function livePreviewNodes(trace) {
+  const owners = new Map();
+  (trace.nodes || []).forEach((node, i) => {
+    for (const call of node.message?.tool_calls || []) {
+      if (call.id) owners.set(call.id, owners.has(call.id) ? null : i);
+    }
+  });
+  // Live previews have no branch metadata. Only unique tool-call IDs establish ownership.
+  return (trace.pending || []).map((message) => ({
+    message,
+    parent: message.role === "tool" ? owners.get(message.tool_call_id) ?? null : null,
+  }));
+}
+
 function renderMessages(ep, trace, branches) {
   const container = $("#tm-messages");
   entriesObserver?.disconnect();
@@ -4357,12 +4371,16 @@ function renderMessages(ep, trace, branches) {
   }
   const path = currentPath(trace, branches);
   const concatenated = currentBranchIdx === -1;
-  const pending = currentLive ? trace.pending || [] : [];
-  const nodes = [...trace.nodes, ...pending.map((message, i) => ({
-    message, parent: i ? trace.nodes.length + i - 1 : path.at(-1),
-  }))];
-  const messagePath = [...path, ...pending.map((_, i) => trace.nodes.length + i)];
+  const pending = currentLive ? livePreviewNodes(trace) : [];
+  const nodes = [...trace.nodes, ...pending];
+  const pathSet = new Set(path);
+  const linkedPending = pending.flatMap((node, i) =>
+    node.parent != null && pathSet.has(node.parent) ? [trace.nodes.length + i] : []);
+  const unassignedPending = pending.flatMap((node, i) =>
+    node.parent == null ? [trace.nodes.length + i] : []);
+  const messagePath = [...path, ...linkedPending];
   const positions = new Map(messagePath.map((idx, i) => [idx, i]));
+  unassignedPending.forEach((idx, i) => positions.set(idx, i));
   const toolResults = new Map();
   const resultOwners = new Map();
   for (const idx of messagePath) {
@@ -4422,7 +4440,7 @@ function renderMessages(ep, trace, branches) {
     const role = node.message?.role ?? "?";
     const marks = hlByNode.get(idx) || [];
     const chips = [];
-    if (isPending) chips.push("awaiting model");
+    if (isPending) chips.push("response pending");
     if (concatenated && node.parent != null && node.parent !== idx - 1) chips.push(`↳ branches from ${node.parent + 1}`);
     if (node.sampled) chips.push("sampled");
     const nodeCalls = callsByNode.get(idx) || [];
@@ -4498,12 +4516,19 @@ function renderMessages(ep, trace, branches) {
         `${callChipHtml(item)}<span class="entry-chev">›</span></summary></details>`,
     )
     .join("");
+  const liveInputsHtml = unassignedPending.length
+    ? concatenated
+      ? `<details class="live-inputs" open><summary>Live inputs · branch not yet recorded (${unassignedPending.length})</summary>` +
+        `<div class="chart-empty">These inputs belong to in-flight model requests. They are not a single conversation; branch ownership appears when responses are recorded.</div>` +
+        unassignedPending.map(entryHtml).join("") + `</details>`
+      : `<div class="chart-empty">${unassignedPending.length} live inputs have no recorded branch yet. View them in All.</div>`
+    : "";
   container.innerHTML =
     errorsHtml +
     (systemPosition === -1 ? toolsHtml : "") +
     entryPath.slice(0, rendered).map(entryHtml).join("") +
     (rendered < entryPath.length ? `<div id="tm-more" class="chart-empty">scroll for ${entryPath.length - rendered} more entries</div>` : "") +
-    unlinkedCallsHtml;
+    unlinkedCallsHtml + liveInputsHtml;
   if (hl && !hl.scrolled) {
     const first = container.querySelector(".hl-entry");
     // consume the one-shot flag only when the scroll lands: openEpisode renders
@@ -5828,13 +5853,14 @@ function renderEpisode() {
   const taskFields = Object.entries(trace?.task?.data || {}).filter(([key, value]) => !TASK_SCAFFOLD_FIELDS.has(key) && value != null);
   const judgeCalls = Array.isArray(trace?.info?.judge_calls) ? trace.info.judge_calls : [];
   const hasEvidence = taskFields.length > 0 || judgeCalls.length > 0;
-  branchTabs.hidden = branches.length <= 1 && !hasEvidence;
+  const hasLivePreview = currentLive && trace?.pending?.length > 0;
+  branchTabs.hidden = branches.length <= 1 && !hasEvidence && !hasLivePreview;
   branchTabs.innerHTML =
     !branchTabs.hidden
       ? branches
           .map((_, i) => `<button data-branch="${i}" class="${currentEvidenceView == null && i === currentBranchIdx ? "active" : ""}">branch ${i}</button>`)
           .join("") +
-        (branches.length > 1
+        (branches.length > 1 || hasLivePreview
           ? `<button data-branch="-1" class="${currentEvidenceView == null && currentBranchIdx === -1 ? "active" : ""}" title="all branches concatenated top to bottom">all</button>`
           : "")
       : "";
