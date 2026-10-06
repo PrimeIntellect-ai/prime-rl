@@ -333,7 +333,7 @@ class ModelConfig(BaseModelConfig):
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
-    """Freeze MoE router gate parameters (``requires_grad=False``, so they get no optimizer state). ``auto`` (default) resolves to ``True`` for RL and ``False`` for SFT: in RL, router updates shift which experts the trainer picks away from what inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. A no-op for non-MoE models."""
+    """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
