@@ -9,14 +9,16 @@ LABELS=(--comm-label 'L0:layers\.0\)$' --comm-label 'E:\) \[pg=2\]$' --comm-labe
 
 stage() { [[ " ${STAGES:-waits figures} " == *" $1 "* ]]; }
 
+# PREFIX selects an ablation scenario, e.g. PREFIX=s1k-noac- (empty: the 16k, full-AC baseline).
+PREFIX=${PREFIX:-}
 stage waits && for layout in ${LAYOUTS:-ep8 fsdp16}; do
   for rank in 0 8; do
     traces=()
     for v in fp32-cap1 fp32-cap2 fp32-cap3 bf16-cap1 bf16-cap2; do
-      traces+=(--trace "$v=$T/$layout-$v-trace/trace_$rank.json.gz")
+      traces+=(--trace "$v=$T/$PREFIX$layout-$v-trace/trace_$rank.json.gz")
     done
-    uv run --script $S/comm_waits.py "${traces[@]}" "${LABELS[@]}" --json $P/derived/waits-$layout-rank$rank.json \
-      > $P/derived/waits-$layout-rank$rank.txt
+    uv run --script $S/comm_waits.py "${traces[@]}" "${LABELS[@]}" --json $P/derived/waits-$PREFIX$layout-rank$rank.json \
+      > $P/derived/waits-$PREFIX$layout-rank$rank.txt
   done
 done
 
@@ -103,3 +105,39 @@ stage bars && {
   uv run --script $S/run_metrics.py --csv $P/derived/summary.csv --out $FIG/step-time.png --lines time/step \
     --lines loss/mean --steady 5 20 --title "Untraced runs: per-step time and loss (gray: steady-state steps 5-20)"
 }
+
+# Ablations: attribute stalls to reduce-scatters and all-gathers together (they share the 16-rank communicator).
+stage waits-allcomm && for layout in ${LAYOUTS:-ep8 fsdp16}; do
+  for rank in 0 8; do
+    traces=()
+    for v in fp32-cap1 fp32-cap2 fp32-cap3 bf16-cap1 bf16-cap2; do
+      traces+=(--trace "$v=$T/$PREFIX$layout-$v-trace/trace_$rank.json.gz")
+    done
+    uv run --script $S/comm_waits.py "${traces[@]}" --comm-kernel 'ReduceScatter|AllGather' \
+      --launch-annotation '^FSDP::(post_backward_reduce|all_gather) ' \
+      --comm-label 'AG router:^FSDP::all_gather .*mlp\.router\)$' --comm-label 'AG:^FSDP::all_gather ' "${LABELS[@]}" \
+      --json $P/derived/waits-allcomm-$PREFIX$layout-rank$rank.json > $P/derived/waits-allcomm-$PREFIX$layout-rank$rank.txt
+  done
+done
+
+# Ablation timelines (no activation checkpointing, so no recompute phase), layer 12, rank 0. On fsdp16 the comm row
+# also shows all-gathers, which share the 16-rank communicator with the reduce-scatters; on ep8 they run on another
+# stream and communicator, so only reduce-scatters are drawn.
+declare -A COMM_KERNEL=([ep8]='ReduceScatter' [fsdp16]='ReduceScatter|AllGather')
+declare -A COMM_ROW=([ep8]='reduce-scatter' [fsdp16]='RS and AG')
+stage ablation-figures && for layout in ${LAYOUTS:-ep8 fsdp16}; do
+  traces=()
+  for v in fp32-cap1 fp32-cap2 fp32-cap3 bf16-cap1 bf16-cap2; do
+    traces+=(--trace "$v=$T/$PREFIX$layout-$v-trace/trace_0.json.gz")
+  done
+  uv run --script $S/timeline_figure.py --out $FIG/timeline-$PREFIX$layout.png --window ${WINDOW:--2 60} --no-delta \
+    --main-exclude '^nccl' --comm-kernel "${COMM_KERNEL[$layout]}" --launch-annotation '^FSDP::(post_backward_reduce|all_gather) ' \
+    --wait-annotation '^FSDP::post_backward_rs_wait' --comm-row-label "${COMM_ROW[$layout]}" --comm-legend-suffix '' \
+    --comm-label 'AG router:^FSDP::all_gather .*mlp\.router\)$:#cc79a7' --comm-label 'AG:^FSDP::all_gather :#999999' \
+    --comm-label 'RS E:\) \[pg=2\]$:#d55e00' --comm-label 'RS D:\) \[pg=16\]$:#56b4e9' \
+    --comm-label 'RS R:mlp\.router\)$:#f0e442' --comm-label 'RS D+E:layers\.\d+\)$:#d55e00' \
+    --category 'EP all-to-all:SendRecv:#e69f00' --category 'other NCCL:^nccl:#555555' --category 'compute:.:#0072b2' \
+    --anchor-comm-owner "${OWNER[$layout]}" --anchor-label "the GPU start of ${ALIGN[$layout]}, rank 0" "${traces[@]}" \
+    --title "${TITLE_PREFIX:-} ${SETUP[$layout]}: backward after layer 12's reduce-scatter" \
+    > $P/derived/timeline-$PREFIX$layout.txt
+done

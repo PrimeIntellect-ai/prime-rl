@@ -98,9 +98,13 @@ def parse_args():
     parser.add_argument("--launch-annotation", default=r"^FSDP::post_backward_reduce")
     parser.add_argument("--wait-annotation", default=None, help="shade GPU stalls caused by these host waits")
     parser.add_argument("--comm-step-marker", default="backward", help="host range the comm analysis covers")
-    parser.add_argument("--match-us", type=float, default=50.0)
+    parser.add_argument("--match-us", type=float, default=200.0)
     parser.add_argument("--exclude-compute", default=r"^nccl")
+    parser.add_argument("--main-exclude", default=None,
+                        help="ignore kernels matching this when picking the main stream (e.g. ^nccl)")
     parser.add_argument("--anchor-comm-owner", default=None, help="align at the comm kernel launched in this range")
+    parser.add_argument("--comm-row-label", default="reduce-scatter", help="y-axis label of the communication row")
+    parser.add_argument("--comm-legend-suffix", default=" reduce-scatter", help="appended to comm labels in the legend")
     return parser.parse_args()
 
 
@@ -117,11 +121,11 @@ def categorize(name, categories):
     return next((label, color) for label, pattern, color in categories if pattern is None or pattern.search(name))
 
 
-def load_step(path, step_marker, step_index):
+def load_step(path, step_marker, step_index, main_exclude=None):
     trace = load_trace(path)
     start, end = trace.window(step_marker, step_index, span="next")
     kernels = [e for e in trace.kernels if start <= e["ts"] < end]
-    main = trace.main_stream(kernels)
+    main = trace.main_stream(kernels, main_exclude)
     stream = [e for e in kernels if (e["pid"], e["tid"]) == main]
     device = [e for e in kernels if e["pid"] == main[0]]
     annotations = [e for e in trace.gpu_annotations if start <= e["ts"] < end]
@@ -203,7 +207,7 @@ def kernel_label(kernel, categories, phases):
     return label, color
 
 
-def draw_comm_row(ax, comm, anchor_ts, lo, hi, comm_labels):
+def draw_comm_row(ax, comm, anchor_ts, lo, hi, comm_labels, row_label="reduce-scatter"):
     """Second row (y 1.25 to 2.25) with labeled communication kernels, plus shaded stalls on the main row."""
     colors = {label: color for label, _, color in comm_labels}
     for c in comm["comms"]:
@@ -227,7 +231,7 @@ def draw_comm_row(ax, comm, anchor_ts, lo, hi, comm_labels):
                 va="top", fontsize=8, color="#cc0000", clip_on=False)
     ax.set_ylim(-0.1, 2.35)
     ax.set_yticks([0.5, 1.75])
-    ax.set_yticklabels(["compute stream", "reduce-scatter"], fontsize=9)
+    ax.set_yticklabels(["compute stream", row_label], fontsize=9)
 
 
 def idle_gaps(kernels, lo, hi, min_us):
@@ -273,7 +277,7 @@ def main():
     arms = []
     for spec in args.trace:
         label, path = spec.split("=", 1)
-        arms.append((label, load_step(path, args.step_marker, args.step_index)))
+        arms.append((label, load_step(path, args.step_marker, args.step_index, args.main_exclude)))
 
     show_delta = len(arms) == 2 and not args.no_delta
     heights = [1] * len(arms) + ([1.4] if show_delta else [])
@@ -306,7 +310,7 @@ def main():
         ax.set_xlim(lo, hi)
         ax.set_yticks([])
         if comm is not None:
-            draw_comm_row(ax, comm, anchor_ts, lo, hi, comm_labels)
+            draw_comm_row(ax, comm, anchor_ts, lo, hi, comm_labels, args.comm_row_label)
             print(f"{label}: " + ", ".join(
                 f"stall {w['stall_ms']:.2f} ms on {w['popped_label']}" for w in comm["waits"] if w["matched"]
                 and lo <= (w["gpu_start"] - anchor_ts) / 1e3 <= hi
@@ -355,9 +359,10 @@ def main():
 
     legend_entries = [(label, color) for label, _, color in categories[:-1]]
     legend_entries += [(label, color) for label, _, color, _ in segments]
-    legend_entries += [(f"{label} reduce-scatter" if args.comm_kernel else label, color) for label, _, color in comm_labels]
+    legend_entries += [(f"{label}{args.comm_legend_suffix}", color) for label, _, color in comm_labels]
     legend_entries.append(OTHER[::2])
-    labels = [label for label, _ in legend_entries if not label.endswith("reduce-scatter")]
+    comm_legend = {f"{label}{args.comm_legend_suffix}" for label, _, _ in comm_labels}
+    labels = [label for label, _ in legend_entries if label not in comm_legend]
     if show_delta:
         ax = fig.add_subplot(grid[len(arms)])
         before, after = totals

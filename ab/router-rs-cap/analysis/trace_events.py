@@ -10,7 +10,8 @@ Library (imported by comm_waits.py and timeline_figure.py):
   thread that spans the launch and whose name matches `pattern`.
 - `Trace.window(marker, index)` returns the [start, end) of the `index`th CPU-side `user_annotation` named
   `marker`, from its start to its end (`span="event"`) or to the next marker of that name (`span="next"`).
-- `Trace.main_stream(kernels)` is the (pid, tid) with the most kernel time among `kernels`.
+- `Trace.main_stream(kernels, exclude)` is the (pid, tid) with the most kernel time among `kernels`, ignoring
+  kernels matching `exclude` (pass the NCCL pattern when communication can outweigh compute).
 
 CLI: print every host range on the busiest host thread inside a window, indented by nesting, to learn a
 trace's annotation structure before writing category or label regexes.
@@ -94,10 +95,13 @@ class Trace:
         return self._by_thread[key]
 
     @staticmethod
-    def main_stream(kernels):
+    def main_stream(kernels, exclude=None):
+        """Stream with the most kernel time, not counting kernels whose name matches `exclude` (e.g. NCCL)."""
+        pattern = re.compile(exclude) if exclude else None
         per_stream = defaultdict(float)
         for e in kernels:
-            per_stream[(e["pid"], e["tid"])] += e["dur"]
+            if pattern is None or not pattern.search(e["name"]):
+                per_stream[(e["pid"], e["tid"])] += e["dur"]
         return max(per_stream, key=per_stream.get)
 
 

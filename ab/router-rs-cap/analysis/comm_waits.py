@@ -21,7 +21,7 @@ that a larger cap avoids at the last hook can reappear there (e.g. FSDP's final 
 reduce-scatter), so compare stall plus tail across arms.
 
 The analyzed window is the `--step-index`th CPU-side `user_annotation` named `--step-marker` (default: the last
-`backward`). Kernels count if their launch falls inside it. The main stream is the stream with most kernel time.
+`backward`). Kernels count if their launch falls inside it. The main stream is the stream with the most kernel time outside `--exclude-compute`.
 
 Usage:
   uv run --script comm_waits.py --trace "ep8 fp32 cap1=traces/ep8-fp32-cap1/trace_0.json.gz" [--trace ...] \\
@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument("--launch-annotation", default=r"^FSDP::post_backward_reduce")
     parser.add_argument("--comm-label", action="append", default=[], help="LABEL:REGEX on the launching range")
     parser.add_argument("--exclude-compute", default=r"^nccl", help="main-stream kernels not counted as compute")
-    parser.add_argument("--match-us", type=float, default=50.0, help="tolerance for matching the popped kernel")
+    parser.add_argument("--match-us", type=float, default=200.0, help="tolerance for matching the popped kernel (cross-stream event wake-up plus launch is ~0.1 ms)")
     parser.add_argument("--per-wait", action="store_true", help="print one line per wait range")
     parser.add_argument("--per-comm", default=None, metavar="REGEX",
                         help="print each comm kernel whose launching range matches, in ms from --list-from")
@@ -95,7 +95,7 @@ def analyze_trace(trace, args, rules):
     """Waits and labeled comm kernels in one trace; `args` carries the CLI options (see parse_args)."""
     lo, hi = trace.window(args.step_marker, args.step_index, span="event")
     launched = [k for k in trace.kernels if k["launch"] is not None and lo <= k["launch"]["ts"] < hi]
-    main = trace.main_stream(launched)
+    main = trace.main_stream(launched, args.exclude_compute)
     stream = [k for k in launched if (k["pid"], k["tid"]) == main]
     stream.sort(key=lambda k: k["launch"]["ts"])
     exclude = re.compile(args.exclude_compute)
@@ -146,6 +146,8 @@ def analyze_trace(trace, args, rules):
                 "matched": matched,
                 "popped": popped["owner"] if matched else None,
                 "popped_label": popped["label"] if matched else None,
+                "nearest": popped["owner"] if popped else None,
+                "nearest_end_to_next_ms": (after["ts"] - popped["end"]) / 1e3 if popped else None,
             }
         )
     last_compute_end = compute[-1][1] if compute else lo
@@ -205,7 +207,11 @@ def main():
         summary = summarize(label, result)
         if args.per_wait:
             for w in result["waits"]:
-                popped = f"popped {w['popped_label']} ({w['popped']})" if w["matched"] else "unmatched"
+                popped = (
+                    f"popped {w['popped_label']} ({w['popped']})"
+                    if w["matched"]
+                    else f"unmatched; nearest comm end {w['nearest_end_to_next_ms']:+.3f} ms before next ({w['nearest']})"
+                )
                 print(f"    {w['wait'][:70]:<70} stall {w['stall_ms']:7.3f} ms host lag {w['host_lag_ms']:7.3f} {popped}")
         if args.per_comm:
             pattern = re.compile(args.per_comm)
