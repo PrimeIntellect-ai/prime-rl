@@ -14,6 +14,7 @@ declare -A VARIANT=(
   [branch-bf16]="branch bfloat16 false flash_attention_3"
   [branch-bf16-r2]="branch bfloat16 false flash_attention_3"
   [branch-bf16-fg]="branch bfloat16 true flash_attention_3"
+  [branch-bf16-fg-r2]="branch bfloat16 true flash_attention_3"
   [main-fp32]="main float32 false flash_attention_3"
   [branch-fp32]="branch float32 false flash_attention_3"
   [branch-bf16-fg-fa2]="branch bfloat16 true flash_attention_2"

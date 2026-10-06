@@ -9,7 +9,7 @@ RUNS_DIR = Path.home() / "tmp/fa-custom-op/runs"
 STEADY_STEPS = range(5, 21)
 COMPARISONS = {
     "bf16 router, no fullgraph": ["main-bf16", "main-bf16-r2", "branch-bf16", "branch-bf16-r2"],
-    "bf16 router, fullgraph (branch only)": ["main-bf16", "branch-bf16", "branch-bf16-fg", "branch-bf16-fg-fa2"],
+    "bf16 router, fullgraph (branch only)": ["main-bf16", "branch-bf16", "branch-bf16-fg", "branch-bf16-fg-r2", "branch-bf16-fg-fa2"],
     "fp32 router, no fullgraph": ["main-fp32", "branch-fp32"],
 }
 
