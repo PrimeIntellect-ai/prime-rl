@@ -322,10 +322,10 @@ class EvalRunner:
 
         parts = []
         for env_name, _step, arrived, expected in sorted(self.eval_sink.batch_progress()):
-            if expected is None:  # a stream's size is known once it ends
-                parts.append(f"{env_name} {arrived}")
-            else:
-                parts.append(f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name)
+            # a stream's size is known only once it ends
+            parts.append(
+                f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else f"{env_name} {arrived}"
+            )
         progress_part = " | ".join(parts) if parts else "Idle"
 
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))

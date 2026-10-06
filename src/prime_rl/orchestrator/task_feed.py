@@ -1,8 +1,8 @@
 """TaskFeed: read an infinite taskset off the event loop.
 
-An infinite taskset's ``next()`` may block, e.g. a generator waiting for its next
-task to be ready. A feed calls it on its own thread, one task ahead, so the dispatcher
-polls without blocking: ``ready()`` says whether a task can be taken now."""
+An infinite taskset's ``next()`` may block, e.g. a generator waiting for its next task
+to be ready. A feed calls it on its own thread, one task ahead, so the dispatcher polls
+without blocking."""
 
 from __future__ import annotations
 
@@ -15,42 +15,32 @@ import verifiers.v1 as vf
 _END = object()
 
 
-class TaskFeed(Iterator[vf.Task]):
+class TaskFeed:
     def __init__(self, tasks: Iterator[vf.Task], *, name: str) -> None:
-        self._tasks = tasks
         self._queue: queue.Queue = queue.Queue(maxsize=1)
-        self._next: object | None = None
         self._error: BaseException | None = None
-        self.exhausted = False
+        self.done = False
         """Whether the taskset ended and every task it yielded was taken."""
-        threading.Thread(target=self._pull, name=f"task-feed-{name}", daemon=True).start()
+        threading.Thread(target=self._pull, args=(tasks,), name=f"task-feed-{name}", daemon=True).start()
 
-    def _pull(self) -> None:
+    def _pull(self, tasks: Iterator[vf.Task]) -> None:
         try:
-            for task in self._tasks:
+            for task in tasks:
                 self._queue.put(task)
         except BaseException as error:
             self._error = error
         self._queue.put(_END)
 
-    def ready(self) -> bool:
-        """Whether a task can be taken now. Raises the taskset's own error."""
-        if self._next is None:
+    def poll(self) -> vf.Task | None:
+        """The next task if one is ready, else None. Raises the taskset's own error."""
+        if not self.done:
             try:
-                self._next = self._queue.get_nowait()
+                task = self._queue.get_nowait()
             except queue.Empty:
-                return False
-        if self._next is _END:
-            if self._error is not None:
-                raise self._error
-            self.exhausted = True
-            return False
-        return True
-
-    def __next__(self) -> vf.Task:
-        if not self.ready():
-            if self.exhausted:
-                raise StopIteration
-            raise RuntimeError("no task is ready; check ready() before taking one")
-        task, self._next = self._next, None
-        return task  # type: ignore[return-value]
+                return None
+            if task is not _END:
+                return task
+            self.done = True
+        if self._error is not None:
+            raise self._error
+        return None

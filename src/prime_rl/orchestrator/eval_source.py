@@ -111,9 +111,7 @@ class EvalSource:
         if self.queue:
             return self.queue.popleft()
         for env_name, (step, owed) in self.streams.items():
-            feed = self.feeds[env_name]
-            while feed.ready():
-                task = next(feed)
+            while (task := self.feeds[env_name].poll()) is not None:
                 # a key that landed before a resume owes only the rest of its group
                 rollouts = owed.pop(task.key, self.group_sizes[env_name])
                 if rollouts > 0:
@@ -123,7 +121,7 @@ class EvalSource:
 
     def streaming(self, env_name: str) -> bool:
         """Whether ``env_name`` is a fired stream whose taskset has not ended."""
-        return env_name in self.streams and not self.feeds[env_name].exhausted
+        return env_name in self.streams and not self.feeds[env_name].done
 
     def cancel_step(self, step: int) -> list[TaskRequest]:
         """Remove and return queued examples for a superseded eval step."""
