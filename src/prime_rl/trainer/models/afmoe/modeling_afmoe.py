@@ -15,9 +15,9 @@ from transformers.utils import TransformersKwargs
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import (
-    flash_attn_3_varlen_func,
-    flash_attn_4_varlen_func,
-    flash_attn_varlen_func,
+    flash_attn_2_varlen_op,
+    flash_attn_3_varlen_op,
+    flash_attn_4_varlen_op,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -87,30 +87,25 @@ class AfmoeFlashAttention(AfmoeAttentionBase):
     """AFMoE attention using Flash Attention varlen functions."""
 
     _funcs = {
-        2: flash_attn_varlen_func,
-        3: flash_attn_3_varlen_func,
-        4: flash_attn_4_varlen_func,
+        2: flash_attn_2_varlen_op,
+        3: flash_attn_3_varlen_op,
+        4: flash_attn_4_varlen_op,
     }
 
     def __init__(self, config: AfmoeAttentionConfig, flash_attn_version: int = 4):
         super().__init__(config)
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
-        self._flash_attn_call = self.func
-        if self._flash_attn_version == 4:
-            self._flash_attn_call = torch._dynamo.disable(self.func)
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
-        args = [q, k, v, cu_seqlens, cu_seqlens]
-        if self._flash_attn_version != 4:
-            args.extend([max_seqlen, max_seqlen])
         kwargs: dict = {"causal": True}
         if self.sliding_window is not None:
             kwargs["window_size"] = (self.sliding_window - 1, 0)
-        out = self._flash_attn_call(*args, **kwargs)
-        if isinstance(out, tuple):
-            out = out[0]
+        if self._flash_attn_version == 4:
+            out, _ = self.func(q, k, v, cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens, **kwargs)
+        else:
+            out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
         return out
 
     def forward(

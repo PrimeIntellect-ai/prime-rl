@@ -15,6 +15,11 @@ RAW_FUNCS = {
     3: attn.flash_attn_3_varlen_func,
     4: attn.flash_attn_4_varlen_func,
 }
+OPS = {
+    2: attn.flash_attn_2_varlen_op,
+    3: attn.flash_attn_3_varlen_op,
+    4: attn.flash_attn_4_varlen_op,
+}
 MIN_COMPUTE_CAPABILITY = {2: (8, 0), 3: (9, 0), 4: (9, 0)}
 MAX_COMPUTE_CAPABILITY = {2: None, 3: (9, 0), 4: None}
 
@@ -35,6 +40,55 @@ def _skip_unless_supported(version: int) -> None:
 def _cu_seqlens() -> torch.Tensor:
     lens = torch.tensor([0, *DOC_LENS], dtype=torch.int32, device="cuda")
     return lens.cumsum(0, dtype=torch.int32)
+
+
+def _call(version: int, func, q, k, v, cu_seqlens, causal: bool, window_size):
+    kwargs = {"causal": causal}
+    if window_size is not None:
+        kwargs["window_size"] = window_size
+    if version == 4:
+        out, _ = func(q, k, v, cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens, **kwargs)
+        return out
+    max_seqlen = max(DOC_LENS)
+    return func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
+
+
+def _forward_backward(version: int, func, q, k, v, dout, cu_seqlens, causal: bool, window_size):
+    q, k, v = (t.detach().clone().requires_grad_() for t in (q, k, v))
+    out = _call(version, func, q, k, v, cu_seqlens, causal, window_size)
+    out.backward(dout)
+    return out.detach(), q.grad, k.grad, v.grad
+
+
+@pytest.mark.parametrize("version", [2, 3, 4])
+@pytest.mark.parametrize("head_dim", [128, 60])
+@pytest.mark.parametrize(
+    ("causal", "window_size"),
+    [(True, None), (True, (15, 0)), (False, None)],
+    ids=["causal", "sliding_window", "non_causal"],
+)
+def test_op_matches_library_function(version, head_dim, causal, window_size):
+    _skip_unless_supported(version)
+    if head_dim % 8 != 0 and version != 2:
+        pytest.skip("only FA2 pads the head dim")
+    torch.manual_seed(0)
+    total = sum(DOC_LENS)
+    q = torch.randn(total, NUM_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(total, NUM_KV_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
+    v = torch.randn(total, NUM_KV_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
+    dout = torch.randn_like(q)
+    cu_seqlens = _cu_seqlens()
+
+    expected = _forward_backward(version, RAW_FUNCS[version], q, k, v, dout, cu_seqlens, causal, window_size)
+    actual = _forward_backward(version, OPS[version], q, k, v, dout, cu_seqlens, causal, window_size)
+
+    out, dq, dk, dv = actual
+    expected_out, expected_dq, expected_dk, expected_dv = expected
+    assert torch.equal(out, expected_out)
+    assert torch.equal(dq, expected_dq)
+    # FA3's GQA backward accumulates dk/dv across query heads with atomics, so even two raw calls differ.
+    torch.testing.assert_close(dk, expected_dk)
+    torch.testing.assert_close(dv, expected_dv)
 
 
 @pytest.mark.parametrize("version", [2, 3, 4])
