@@ -440,15 +440,13 @@ class Dispatcher:
         cancelled = 0
         for gid in stale_groups:
             cancelled += await self.drop_group(gid, reason="stale")
+
         if cancelled:
             get_logger().warning(
                 f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
         return cancelled
-
-    def stale_live_group_ids(self) -> list[uuid.UUID]:
-        """Live train groups whose dispatch version is already past the bound."""
 
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
