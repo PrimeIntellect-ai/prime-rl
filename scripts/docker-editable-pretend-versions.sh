@@ -53,8 +53,8 @@ describe_tag() {
     sed -E 's/-[0-9]+-g[0-9a-f]+$//' <<< "$1"
 }
 
-verifiers_git_version() {
-    local dir="$root/deps/verifiers"
+standard_git_version() {
+    local dir="$1"
     local desc tag distance
 
     [ -d "$dir" ] || return 1
@@ -62,6 +62,14 @@ verifiers_git_version() {
     tag="$(describe_tag "$desc")"
     distance="$(describe_distance "$desc")"
     next_patch_dev_version "$tag" "$distance"
+}
+
+verifiers_git_version() {
+    standard_git_version "$root/deps/verifiers"
+}
+
+pydantic_config_git_version() {
+    standard_git_version "$root/deps/pydantic-config"
 }
 
 renderers_git_version() {
@@ -111,22 +119,27 @@ resolve_version() {
 
 verifiers_version="$(resolve_version verifiers VERIFIERS_PRETEND_VERSION verifiers_git_version)"
 renderers_version="$(resolve_version renderers RENDERERS_PRETEND_VERSION renderers_git_version)"
+pydantic_config_version="$(resolve_version prime-pydantic-config PYDANTIC_CONFIG_PRETEND_VERSION pydantic_config_git_version)"
 
 printf 'Resolved verifiers pretend version: %s\n' "$verifiers_version" >&2
 printf 'Resolved renderers pretend version: %s\n' "$renderers_version" >&2
+printf 'Resolved pydantic-config pretend version: %s\n' "$pydantic_config_version" >&2
 
 case "$mode" in
 shell)
     printf "export VERIFIERS_PRETEND_VERSION='%s'\n" "$verifiers_version"
     printf "export RENDERERS_PRETEND_VERSION='%s'\n" "$renderers_version"
+    printf "export PYDANTIC_CONFIG_PRETEND_VERSION='%s'\n" "$pydantic_config_version"
     ;;
 github-output)
     printf 'verifiers=%s\n' "$verifiers_version"
     printf 'renderers=%s\n' "$renderers_version"
+    printf 'pydantic_config=%s\n' "$pydantic_config_version"
     ;;
 env)
     printf 'VERIFIERS_PRETEND_VERSION=%s\n' "$verifiers_version"
     printf 'RENDERERS_PRETEND_VERSION=%s\n' "$renderers_version"
+    printf 'PYDANTIC_CONFIG_PRETEND_VERSION=%s\n' "$pydantic_config_version"
     ;;
 *)
     printf 'Unknown output mode: %s\n' "$mode" >&2

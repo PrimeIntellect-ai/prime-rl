@@ -1546,6 +1546,7 @@ def row_filter(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
+    trace: str | None = None,
     ok: bool | None = None,
     start: float | None = None,
     end: float | None = None,
@@ -1562,6 +1563,8 @@ def row_filter(
         if env and row.get("env") != env:
             return False
         if episode is not None and row.get("id") != episode:
+            return False
+        if trace is not None and trace not in row.get("trace_ids", []):
             return False
         if ok is not None and bool(row.get("ok")) != ok:
             return False
@@ -1591,6 +1594,7 @@ def list_stream_episodes(
     kind: str | None = None,
     env: str | None = None,
     episode: str | None = None,
+    trace: str | None = None,
     ok: bool | None = None,
     sort: str = "arrival",
     order: str = "desc",
@@ -1618,7 +1622,7 @@ def list_stream_episodes(
     if upto is not None:
         rows = rows[:upto]
     envs, kinds = index_facets(run_dir)
-    keep = row_filter(step=step, kind=kind, env=env, episode=episode, ok=ok, start=start, end=end)
+    keep = row_filter(step=step, kind=kind, env=env, episode=episode, trace=trace, ok=ok, start=start, end=end)
     if sort == "arrival":
         # the index is already in arrival order: walk it from the right end and stop
         # once the page is full, so the common view costs a page rather than a run

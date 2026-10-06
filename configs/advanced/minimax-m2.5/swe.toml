@@ -24,7 +24,6 @@ interval = 100
 project = "minimax-swe"
 
 [trainer.model]
-impl = "custom"
 attn = "flash_attention_3"
 ep = 8
 cp = 4

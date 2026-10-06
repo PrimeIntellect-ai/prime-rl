@@ -42,6 +42,7 @@ from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_expert_load_stats,
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
@@ -67,11 +68,11 @@ from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
-from prime_rl.utils.metrics_server import HealthServer, MetricsServer
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit
 
 
 @clean_exit
@@ -100,19 +101,6 @@ def train(config: TrainerConfig):
     if config.heartbeat is not None and world.is_master:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat)
-
-    # Setup metrics server (full on master, health-only on other nodes' local rank 0)
-    metrics_server = None
-    health_server = None
-    if config.metrics_server is not None and world.local_rank == 0:
-        if world.is_master:
-            logger.info(f"Initializing metrics server on port {config.metrics_server.port}")
-            metrics_server = MetricsServer(config.metrics_server)
-            metrics_server.start()
-        else:
-            logger.info(f"Initializing health server on port {config.metrics_server.port}")
-            health_server = HealthServer(config.metrics_server.port, config.metrics_server.host)
-            health_server.start()
 
     # Set precision
     setup_torch_distributed(
@@ -308,29 +296,32 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize each loss component by its own global (dp_cp) token count, so every rank
-        # divides by the same denominator. With a per-rank denominator, ranks with fewer loss
+        # Normalize each loss component by its own global (dp_cp) denominator, so every rank
+        # divides by the same value. With a per-rank denominator, ranks with fewer loss
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
         # FSDP's per-rank divide is undone after the microbatch loop via
         # fsdp_gradient_divide_factor. One batched collective keeps every rank issuing the same
-        # op regardless of which components its samples carry.
-        local_rl_scale = 0
+        # op regardless of which components its samples carry. rl divides by the sum of its
+        # weights (the token count for 0/1 weights; the group count under prompt-mean
+        # aggregation); ce and ref_kl divide by their token counts, so a fractional ce weight
+        # (echo's alpha) scales the loss instead of cancelling out.
+        local_rl_scale = 0.0
         local_ce_scale = 0
         local_ref_kl_scale = 0
         for micro_batch in micro_batches:
             mask = micro_batch["loss_mask"]
             rl_w = micro_batch["rl_weights"]
-            local_rl_scale += int((mask & (rl_w != 0)).sum()) if rl_w is not None else int(mask.sum())
+            local_rl_scale += float(rl_w[mask].sum(dtype=torch.float64)) if rl_w is not None else int(mask.sum())
             if micro_batch["ce_weights"] is not None:
                 local_ce_scale += int((micro_batch["ce_weights"] != 0).sum())
             if micro_batch["ref_kl_weights"] is not None:
                 local_ref_kl_scale += int((micro_batch["ref_kl_weights"] != 0).sum())
         global_scales = torch.tensor(
-            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.int64, device="cuda"
+            [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.float64, device="cuda"
         )
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        rl_scale, ce_scale, ref_kl_scale = (max(scale, 1) for scale in global_scales.tolist())
+        rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
         prepare_gradient_offload(
             gradient_manager,
             parallel_dims.fsdp_gradient_divide_factor,
@@ -344,6 +335,7 @@ def train(config: TrainerConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
 
+        step_tokens_per_expert = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -559,8 +551,10 @@ def train(config: TrainerConfig):
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
-                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in moe_stats.items():
                     tensors[name].append(value.reshape(1))
+                step_tokens_per_expert += tokens_per_expert
 
             # Add loss tensors to tensor dict for logging purposes
             for key, loss_tensor in loss_tensors.items():
@@ -582,7 +576,7 @@ def train(config: TrainerConfig):
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # Update the model parameters
         optimizer.step()
@@ -634,6 +628,8 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        if is_moe_model:
+            tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
@@ -712,20 +708,6 @@ def train(config: TrainerConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        # Update Prometheus metrics if configured
-        if metrics_server is not None:
-            metrics_server.update(
-                step=progress.step,
-                loss=tensor_stats["loss/mean"],
-                throughput=throughput,
-                grad_norm=grad_norm.item() if grad_norm is not None else None,
-                peak_memory_gib=peak_memory,
-                learning_rate=current_lr,
-                mfu=mfu,
-                entropy=tensor_stats.get("entropy/all/mean", 0.0),
-                mismatch_kl=tensor_stats.get("mismatch_kl/all/mean", 0.0),
-            )
-
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
@@ -754,12 +736,6 @@ def train(config: TrainerConfig):
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")
     asyncio.run(monitors.finalize())
-
-    # Stop metrics/health server if configured
-    if metrics_server is not None:
-        metrics_server.stop()
-    if health_server is not None:
-        health_server.stop()
 
 
 def main():

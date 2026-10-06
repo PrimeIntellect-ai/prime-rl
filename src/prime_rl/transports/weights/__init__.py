@@ -2,7 +2,8 @@ from pathlib import Path
 
 import torch
 
-from prime_rl.configs.trainer import LoRAConfig, WeightBroadcastConfig
+from prime_rl.configs.shared import WeightBroadcastConfig
+from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender, prune_broadcasts_beyond

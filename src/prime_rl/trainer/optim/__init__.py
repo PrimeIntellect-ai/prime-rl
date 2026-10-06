@@ -3,7 +3,7 @@ import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.optim import SGD, AdamW, Optimizer
+from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
@@ -14,9 +14,9 @@ from prime_rl.trainer.optim.offload import (
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
+from prime_rl.trainer.optim.sign_sgd import SignSGD
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.sign_sgd import SignSGD
 from prime_rl.utils.logger import get_logger
 
 
@@ -71,12 +71,7 @@ def setup_optimizer(
         if full_offload_dtype_policy is None:
             raise ValueError("CPU optimizer offload requires an explicit per-parameter dtype policy")
         optimizer_named_params, master_weights = _create_cpu_master_weights(
-            model,
-            named_params,
-            pin_memory=not (
-                config.type in ("adamw", "sign_sgd") and full_offload_config.cpu_optimizer_backend == "native"
-            ),
-            dtype_policy=full_offload_dtype_policy,
+            model, named_params, dtype_policy=full_offload_dtype_policy
         )
 
     optimizer = _create_optimizer(
@@ -122,14 +117,6 @@ def _create_optimizer(
     # param at load time, mismatching the saved state). Muon filters internally below.
     trainable_params = [p for _, p in named_params if p.requires_grad]
     match config.type:
-        case "sgd":
-            return SGD(
-                params=trainable_params,
-                lr=lr,
-                weight_decay=config.weight_decay,
-                momentum=config.momentum,
-                nesterov=config.nesterov,
-            )
         case "adamw":
             return AdamW(
                 params=trainable_params,

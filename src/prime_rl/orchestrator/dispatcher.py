@@ -143,7 +143,7 @@ class Dispatcher:
         max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
-        on_episode_complete: Callable[[str, str, int, float], None] | None = None,
+        on_episode_complete: Callable[[int], None] | None = None,
     ) -> None:
         self.policy = policy
         self.progress = progress
@@ -157,7 +157,7 @@ class Dispatcher:
         self.max_off_policy_steps = max_off_policy_steps
         self.run_id = run_id
         self.run_name = run_name
-        # ``(env_name, kind, total_tokens, duration_s)`` per completed episode
+        # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
 
         # Starting value of the dynamic cap (the concurrency controller moves
@@ -694,9 +694,7 @@ class Dispatcher:
         if not episode.ok and not episode.traces:
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
         if self.on_episode_complete is not None and meta.started_at > 0:
-            self.on_episode_complete(
-                meta.env_name, meta.kind, episode.num_total_tokens, time.monotonic() - meta.started_at
-            )
+            self.on_episode_complete(episode.num_total_tokens)
         await self.emit_episode(meta, group, episode)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:

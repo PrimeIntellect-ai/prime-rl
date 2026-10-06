@@ -6,8 +6,7 @@ from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.monitors import EvalMonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
-from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig
-from prime_rl.configs.trainer import WeightBroadcastConfig
+from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig, WeightBroadcastConfig
 from prime_rl.utils.config import default_output_dir
 
 

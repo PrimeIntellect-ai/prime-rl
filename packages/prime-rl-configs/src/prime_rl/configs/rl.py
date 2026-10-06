@@ -8,50 +8,24 @@ from pydantic import Field, model_validator
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import FileMonitorConfig, PrimeTrainMonitorConfig
-from prime_rl.configs.orchestrator import (
-    FileSystemWeightBroadcastConfig as OrchestratorFileSystemWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    NCCLWeightBroadcastConfig as OrchestratorNCCLWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    NIXLWeightBroadcastConfig as OrchestratorNIXLWeightBroadcastConfig,
-)
-from prime_rl.configs.orchestrator import (
-    OrchestratorConfig,
-)
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.shared import (
     EnvVars,
+    FileSystemWeightBroadcastConfig,
+    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TransportConfig,
     VLMConfig,
-)
-from prime_rl.configs.trainer import (
-    FileSystemWeightBroadcastConfig as TrainerFileSystemWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    NCCLWeightBroadcastConfig as TrainerNCCLWeightBroadcastConfig,
-)
-from prime_rl.configs.trainer import (
-    NIXLWeightBroadcastConfig as TrainerNIXLWeightBroadcastConfig,
+    WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     TokenizerConfig,
     TrainerConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-from prime_rl.utils.validation import (
-    propagate_shared_fields,
-    validate_shared_ckpt_config,
-    validate_shared_max_steps,
-    validate_shared_model_name,
-    validate_shared_seq_len,
-    validate_shared_tokenizer,
-    validate_shared_wandb_config,
-    validate_shared_weight_broadcast,
-)
+from prime_rl.utils.validation import propagate_shared_fields
 
 
 class SharedLogConfig(BaseConfig):
@@ -126,50 +100,6 @@ class SharedModelConfig(BaseConfig):
 
     vlm: "VLMConfig | None" = None
     """VLM configuration. Set this to enable vision-language model support."""
-
-
-class SharedInMemoryWeightBroadcastConfig(BaseConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer."""
-
-
-class SharedNCCLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for NCCL weight broadcast."""
-
-
-class SharedNIXLWeightBroadcastConfig(SharedInMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
-class SharedFileSystemWeightBroadcastConfig(BaseConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer."""
-
-
-SharedWeightBroadcastConfig: TypeAlias = Annotated[
-    SharedFileSystemWeightBroadcastConfig | SharedNCCLWeightBroadcastConfig | SharedNIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
 
 
 class BaseDeploymentConfig(BaseConfig):
@@ -290,7 +220,7 @@ class RLConfig(BaseConfig):
     seq_len: int | None = None
     """Shared sequence length. Propagates to ``trainer.model.seq_len`` and ``orchestrator.seq_len`` only when those values were not explicitly set; explicit per-component values always win."""
 
-    weight_broadcast: SharedWeightBroadcastConfig | None = None
+    weight_broadcast: WeightBroadcastConfig | None = None
 
     rollout_transport: TransportConfig | None = None
 
@@ -396,15 +326,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_resume(self):
-        """Propagate the top-level resume onto the sub-configs."""
-        if self.resume is None:
-            return self
-        self.trainer.resume = self.resume.model_copy()
-        self.orchestrator.resume = self.resume.model_copy()
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Default the W&B and Prime platform run names to ``run.name``.
 
@@ -427,13 +348,70 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_shared_configs(self):
-        """Validate consistency of shared configs across trainer, orchestrator, and inference."""
-        validate_shared_model_name(self.trainer, self.orchestrator, self.inference)
-        validate_shared_tokenizer(self.trainer, self.orchestrator, self.inference)
-        validate_shared_max_steps(self.trainer, self.orchestrator)
-        validate_shared_seq_len(self.trainer, self.orchestrator)
-        validate_shared_ckpt_config(self.trainer, self.orchestrator)
-        validate_shared_wandb_config(self.trainer, self.orchestrator)
+        """Cross-component constraints for values set per sub-config rather than through the
+        shared fields (``propagate_shared_fields`` already rejects shared vs sub-config conflicts)."""
+        trainer, orchestrator, inference = self.trainer, self.orchestrator, self.inference
+
+        def require_equal(name: str, values: dict[str, Any]) -> None:
+            if len({repr(v) for v in values.values()}) > 1:
+                found = ", ".join(f"{path}={value!r}" for path, value in values.items())
+                raise ValueError(f"{name} must match across components ({found}). Set the shared [{name}] instead.")
+
+        # The orchestrator queries the inference server it is paired with; without one, it
+        # must match the trainer whose weights the external server receives.
+        if inference is not None:
+            require_equal(
+                "model.name",
+                {"inference.vllm.model": inference.vllm.model, "orchestrator.model.name": orchestrator.model.name},
+            )
+        else:
+            require_equal(
+                "model.name",
+                {"trainer.model.name": trainer.model.name, "orchestrator.model.name": orchestrator.model.name},
+            )
+        # ``tokenizer.name`` / ``trust_remote_code`` may differ (e.g. FP8-quantized inference variants).
+        chat_templates = {
+            "trainer.tokenizer.chat_template": trainer.tokenizer.chat_template,
+            "orchestrator.tokenizer.chat_template": orchestrator.tokenizer.chat_template,
+        }
+        if inference is not None:
+            chat_templates["inference.vllm.chat_template"] = inference.vllm.chat_template
+        require_equal("tokenizer.chat_template", chat_templates)
+        require_equal(
+            "max_steps", {"trainer.max_steps": trainer.max_steps, "orchestrator.max_steps": orchestrator.max_steps}
+        )
+        require_equal("resume", {"trainer.resume": trainer.resume, "orchestrator.resume": orchestrator.resume})
+        if trainer.model.seq_len < orchestrator.seq_len:
+            raise ValueError(
+                f"trainer.model.seq_len ({trainer.model.seq_len}) must be >= orchestrator.seq_len "
+                f"({orchestrator.seq_len}) so the trainer can handle every sequence the orchestrator produces."
+            )
+        if (trainer.ckpt is None) != (orchestrator.ckpt is None):
+            raise ValueError(
+                "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
+            )
+        if trainer.ckpt and orchestrator.ckpt:
+            require_equal(
+                "ckpt.interval",
+                {
+                    "trainer.ckpt.interval": trainer.ckpt.interval,
+                    "orchestrator.ckpt.interval": orchestrator.ckpt.interval,
+                },
+            )
+        trainer_wandb, orchestrator_wandb = trainer.monitors.wandb, orchestrator.monitors.wandb
+        if (trainer_wandb is None) != (orchestrator_wandb is None):
+            raise ValueError(
+                "W&B must be configured on both trainer and orchestrator, otherwise only one side's "
+                "metrics are logged. Use the shared [monitors.wandb]."
+            )
+        if trainer_wandb and orchestrator_wandb:
+            require_equal(
+                "monitors.wandb.project",
+                {
+                    "trainer.monitors.wandb.project": trainer_wandb.project,
+                    "orchestrator.monitors.wandb.project": orchestrator_wandb.project,
+                },
+            )
         return self
 
     @model_validator(mode="after")
@@ -446,52 +424,28 @@ class RLConfig(BaseConfig):
         """
         if self.weight_broadcast is None:
             if self.trainer.model.lora is not None or self.inference is None:
-                self.weight_broadcast = SharedFileSystemWeightBroadcastConfig()
+                self.weight_broadcast = FileSystemWeightBroadcastConfig()
             else:
-                self.weight_broadcast = SharedNCCLWeightBroadcastConfig()
+                self.weight_broadcast = NCCLWeightBroadcastConfig()
         if self.weight_broadcast.type != "filesystem" and self.trainer.model.lora is not None:
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if self.weight_broadcast.type in ("nccl", "nixl"):
-            inference_world_size = (
+        if "inference_world_size" in self.weight_broadcast.model_fields_set:
+            raise ValueError("weight_broadcast.inference_world_size is set automatically by rl; remove it.")
+        update = {}
+        if self.weight_broadcast.type != "filesystem":
+            update["inference_world_size"] = (
                 self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
                 if self.inference
                 else 1
             )
-            common_config = dict(
-                host=self.weight_broadcast.host,
-                port=self.weight_broadcast.port,
-                timeout=self.weight_broadcast.timeout,
-                inference_world_size=inference_world_size,
-            )
-            if self.weight_broadcast.type == "nccl":
-                transport_config = {}
-                trainer_config_type = TrainerNCCLWeightBroadcastConfig
-                orchestrator_config_type = OrchestratorNCCLWeightBroadcastConfig
-            else:
-                transport_config = dict(
-                    session_id=self.weight_broadcast.session_id,
-                    overlap_transfer_and_replay=self.weight_broadcast.overlap_transfer_and_replay,
-                )
-                trainer_config_type = TrainerNIXLWeightBroadcastConfig
-                orchestrator_config_type = OrchestratorNIXLWeightBroadcastConfig
-            self.trainer.weight_broadcast = trainer_config_type(**common_config, **transport_config)
-            self.orchestrator.weight_broadcast = orchestrator_config_type(**common_config, **transport_config)
-        elif self.weight_broadcast.type == "filesystem":
-            self.trainer.weight_broadcast = TrainerFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
-            )
-            self.orchestrator.weight_broadcast = OrchestratorFileSystemWeightBroadcastConfig(
-                timeout=self.weight_broadcast.timeout
-            )
+        self.trainer.weight_broadcast = self.weight_broadcast.model_copy(update=update)
+        self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy(update=update)
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
-
-        validate_shared_weight_broadcast(self.trainer, self.orchestrator, self.inference)
-
         return self
 
     @model_validator(mode="after")
@@ -641,17 +595,17 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_combined_replay(self):
+    def validate_disaggregated_no_routed_experts(self):
+        """Runs after ``auto_setup_router_replay``, which sets the inference flag after InferenceConfig's validators."""
         inference = self.inference
         if (
             inference is not None
             and inference.deployment.type == "disaggregated"
-            and inference.enable_return_sampling_mask
             and inference.vllm.enable_return_routed_experts
         ):
             raise ValueError(
-                "Combined router and sampling replay is not supported with disaggregated P/D: "
-                "NIXL routed-expert capture uses the V1 model runner, while sampling replay needs V2."
+                "Router replay (inference.vllm.enable_return_routed_experts / trainer.enable_router_replay) "
+                "is not supported with disaggregated P/D: vLLM does not capture routed experts across NIXL KV transfer."
             )
         return self
 

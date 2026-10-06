@@ -43,6 +43,48 @@ class BaseWeightBroadcastConfig(BaseConfig):
     fails the run when no consumer acknowledges an offered version in time."""
 
 
+class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    type: Literal["filesystem"] = "filesystem"
+
+
+class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
+    host: str = "localhost"
+    """Weight transfer host."""
+
+    port: int
+    """Weight transfer port."""
+
+    inference_world_size: int = Field(1, ge=1)
+    """Total inference workers across all servers. Set automatically by ``rl`` and ``sft``."""
+
+
+class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nccl"] = "nccl"
+
+    port: int = 29501
+    """Port for the NCCL broadcast rendezvous."""
+
+
+class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
+    type: Literal["nixl"] = "nixl"
+
+    port: int = 8001
+    """ModelExpress gRPC port."""
+
+    session_id: str = "default"
+    """ModelExpress session ID."""
+
+    overlap_transfer_and_replay: bool = False
+    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
+
+
+WeightBroadcastConfig: TypeAlias = Annotated[
+    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
+    Field(discriminator="type"),
+]
+"""Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
+
+
 class RunConfig(BaseConfig):
     name: str | None = None
     """Run name. Auto-generated as ``<envs>--<model>--<short-id>`` when unset, so every launch gets a fresh, readable run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
@@ -226,14 +268,6 @@ class HeartbeatConfig(BaseConfig):
     """Minimum seconds between pings. Beats can arrive far more often (evals beat once
     per landed episode); surplus beats are dropped to stay under Better Stack's heartbeat
     rate limit. Size it well under the monitor's period."""
-
-
-class MetricsServerConfig(BaseConfig):
-    port: int = Field(8000, ge=1, le=65535)
-    """Port to expose metrics and health endpoints on."""
-
-    host: str = "0.0.0.0"
-    """Host to bind the server to."""
 
 
 class BaseTransportConfig(BaseConfig):

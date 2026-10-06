@@ -354,6 +354,7 @@ def _bf16_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> MegaMo
 def _dw_dtype(weight: torch.Tensor) -> torch.dtype:
     return weight.dtype if weight.dtype in (torch.bfloat16, torch.float32) else torch.float32
 
+
 @torch.library.custom_op("prime_rl::mega_moe_forward", mutates_args=())
 def mega_moe_forward_op(
     x: torch.Tensor,

@@ -8,13 +8,13 @@ from pydantic import BeforeValidator, Field, field_validator, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
-    BaseWeightBroadcastConfig,
     EnvVars,
+    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
-    MetricsServerConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
+    WeightBroadcastConfig,
     ZMQTransportConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
@@ -22,6 +22,7 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
+DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
 
 
 class GCConfig(BaseConfig):
@@ -61,9 +62,6 @@ class OptimizerInBackwardOffloadConfig(BaseConfig):
     bit-faithful to that path, disable offloading.
     """
 
-    cpu_optimizer_backend: Literal["native", "torch"] = "native"
-    """CPU optimizer implementation used by full offload (AdamW or SignSGD). ``native`` is the production kernel; ``torch`` is a slower debugging and parity fallback."""
-
     numa_bind: bool = True
     """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
 
@@ -83,7 +81,7 @@ OptimizerInBackwardOffload = Annotated[
 
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
-    """Compile transformer blocks with ``fullgraph=True``."""
+    """Compile transformer blocks with ``fullgraph=True``. Custom MoE models need ``moe_router_dtype="bfloat16"``: the fp32 router is its own FSDP unit inside the block, and dynamo cannot trace FSDP hooks."""
 
     mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
     """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
@@ -92,9 +90,6 @@ class CompileConfig(BaseConfig):
 class FusionsConfig(BaseConfig):
     enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]
     """Runtime parameter fusions. ``gate_up`` runs each MoE expert's gate and up projections as one grouped GEMM; ``qkv`` runs attention's q, k and v projections as one GEMM. Only modules that support a fusion are packed, checkpoints keep the canonical parameter names and shapes, and fusions are skipped when LoRA is enabled. Set to ``[]`` to disable."""
-
-    raise_on_fail: bool = False
-    """Fail at startup when no module supports a requested fusion, instead of logging a warning and continuing without it."""
 
     shard_fused_on_dim1: bool = False
     """Experimental. Shard fused 2-D weights along dim 1 under FSDP so that weight loading and checkpointing are zero-copy: the checkpoint reads and writes the fused weights and their optimizer state in place, instead of assembling a full copy of every fused weight on each rank first. Requires the hidden size to be divisible by the FSDP shard mesh size."""
@@ -339,19 +334,19 @@ class ModelConfig(BaseModelConfig):
     cp_style: Literal["ring", "ulysses"] = "ring"
     """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
 
-    impl: Literal["hf", "custom", "auto"] = "auto"
-    """Model implementation. ``auto`` selects ``custom`` if supported by the model, otherwise ``hf``."""
-
     optimization_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for model optimization."""
 
     reduce_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for gradient/parameter reductions."""
 
-    moe_router_dtype: Literal["bfloat16", "float32"] = "float32"
-    """Compute dtype for MoE router gates. ``float32`` (default) keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. Router score functions (sigmoid/softmax) run in fp32 regardless. Only affects the custom MoE implementation; a no-op for non-MoE and HF-impl models."""
+    moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
+    """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
 
     quantization: QuantizationConfig | None = None
+
+    dsa_backend: DSABackend = "tilelang"
+    """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
 
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
@@ -369,20 +364,6 @@ class ModelConfig(BaseModelConfig):
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
 
     @model_validator(mode="after")
-    def trust_remote_code_only_with_hf(self):
-        """Trust remote code only if the model is from HF."""
-        if self.trust_remote_code:
-            if self.impl not in ("hf", "auto"):
-                raise ValueError("Trust remote code is only supported with the HF implementation or auto mode.")
-        return self
-
-    @model_validator(mode="after")
-    def vlm_only_with_custom_impl(self):
-        if self.vlm is not None and self.impl != "custom":
-            raise ValueError("VLM training requires model.impl='custom'")
-        return self
-
-    @model_validator(mode="after")
     def vlm_cp_requires_ulysses(self):
         if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
             raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
@@ -392,11 +373,6 @@ class ModelConfig(BaseModelConfig):
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
-        if self.cp > 1 and self.impl not in ("custom", "auto"):
-            raise ValueError(
-                "Context parallelism requires model.impl='custom' or 'auto' "
-                "(resolved to a custom PrimeRL implementation)"
-            )
         return self
 
     @model_validator(mode="after")
@@ -415,19 +391,6 @@ class ModelConfig(BaseModelConfig):
                 "Cannot enable both optim_cpu_offload and full_offload. "
                 "Set optim_cpu_offload=false when enabling full optimizer offload."
             )
-        return self
-
-    @model_validator(mode="after")
-    def flash_attention_4_only_with_custom_impl(self):
-        # "auto" may resolve to FA4 on Blackwell, so apply the same impl constraint.
-        if self.attn in ("flash_attention_4", "auto") and self.impl not in ("custom", "auto"):
-            raise ValueError("Flash attention 4 is only supported with model.impl='custom' or 'auto'")
-        return self
-
-    @model_validator(mode="after")
-    def quantization_only_with_custom_impl(self):
-        if self.quantization is not None and self.impl not in ("custom", "auto"):
-            raise ValueError(f"{self.quantization.type} training is only supported with model.impl='custom' or 'auto'.")
         return self
 
     @model_validator(mode="after")
@@ -517,21 +480,11 @@ class BaseOptimizerConfig(BaseConfig):
     lr: float = Field(1e-6, ge=0)
     """Peak learning rate."""
 
-    weight_decay: float = Field(0.01, ge=0)
-    """L2 weight-decay coefficient."""
+    weight_decay: Annotated[float, Field(ge=0)] | Literal["auto"] = "auto"
+    """L2 weight-decay coefficient. ``"auto"`` (default) resolves to ``0.0`` for RL and ``0.01`` for SFT."""
 
     max_norm: float | None = Field(1.0, ge=0)
     """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
-
-
-class SGDConfig(BaseOptimizerConfig):
-    type: Literal["sgd"] = "sgd"
-
-    nesterov: bool = True
-    """Use Nesterov momentum."""
-
-    momentum: float = 0.9
-    """SGD momentum factor."""
 
 
 class AdamWConfig(BaseOptimizerConfig):
@@ -561,9 +514,7 @@ class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
 
 
-OptimizerConfig: TypeAlias = Annotated[
-    SGDConfig | AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")
-]
+OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
 
 
 class CheckpointConfig(BaseConfig):
@@ -578,9 +529,6 @@ class CheckpointConfig(BaseConfig):
 
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
-
-    skip_progress: bool = False
-    """Skip loading the progress from checkpoint."""
 
     skip_scheduler: bool = False
     """Skip loading the scheduler from checkpoint."""
@@ -602,9 +550,6 @@ class IPOLossConfig(BaseConfig):
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
-
-    kl_tau: float = Field(0.0, ge=0)
-    """Temperature for the KL term."""
 
 
 class IcePopLossConfig(BaseConfig):
@@ -689,48 +634,6 @@ class DataLoaderConfig(BaseConfig):
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
 
-class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    # TODO: Should not be configurable, but auto-inferred
-    inference_world_size: int = 1
-    """Number of inference workers."""
-
-
-class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
-
-
-class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two staging arenas so inference can replay one weight group while receiving the next."""
-
-
-WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
-
-
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -789,11 +692,22 @@ class TrainerConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
-    metrics_server: MetricsServerConfig | None = None
-    """Prometheus metrics server configuration. If set, exposes a ``/metrics`` endpoint for scraping."""
-
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
+
+    @model_validator(mode="after")
+    def resolve_moe_router_dtype_auto(self):
+        """Resolve ``model.moe_router_dtype='auto'``: RL routes in fp32, matching the fp32-routed checkpoints it trains from (e.g. GLM-5.x)."""
+        if self.model.moe_router_dtype == "auto":
+            self.model.moe_router_dtype = "float32"
+        return self
+
+    @model_validator(mode="after")
+    def resolve_weight_decay_auto(self):
+        """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
+        if self.optim.weight_decay == "auto":
+            self.optim.weight_decay = 0.0
+        return self
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
@@ -874,18 +788,4 @@ class TrainerConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
-
-    @model_validator(mode="after")
-    def ep_only_with_custom_impl(self):
-        if self.model.ep != 1 and self.model.ep != "auto" and self.model.impl not in ("custom", "auto"):
-            raise ValueError("EP is only supported with the custom implementation or auto mode")
-
-        return self
-
-    @model_validator(mode="after")
-    def router_replay_only_with_custom_impl(self):
-        if self.enable_router_replay and self.model.impl not in ("custom", "auto"):
-            raise ValueError("Router replay is only supported with the custom implementation or auto mode")
-
         return self

@@ -8,7 +8,7 @@ from typing import final
 
 import torch.nn as nn
 
-from prime_rl.configs.trainer import WeightBroadcastConfig
+from prime_rl.configs.shared import WeightBroadcastConfig
 from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger

@@ -163,7 +163,7 @@ class ConcurrencyController:
 
     # ── inbound hooks ────────────────────────────────────────────────────────
 
-    def record_episode(self, env_name: str, kind: str, tokens: int, duration: float) -> None:
+    def record_episode(self, tokens: int) -> None:
         """One completed unit (from the dispatcher). Advances the turnover
         clock and, while the last poll was green, grows the cap — so growth
         is paced by the pipeline itself at any concurrency scale."""
