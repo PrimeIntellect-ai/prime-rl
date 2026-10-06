@@ -831,6 +831,11 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    # Symbolic from the first compile: max_seqlen differs per rank and step, and a per-rank recompile stalls all ranks.
+    max_seqlen_sources = r".*\['max_seqlen'\]"
+    torch.compiler.config.dynamic_sources = ",".join(
+        filter(None, [torch.compiler.config.dynamic_sources, max_seqlen_sources])
+    )
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
