@@ -81,4 +81,5 @@ def build_state(progress: Progress, train_source: TrainSource) -> dict:
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:
     """The checkpoint manager always exists: ``resume`` decides whether it loads,
     ``ckpt`` whether it saves (a resume without ``ckpt`` loads but saves nothing)."""
-    return CheckpointManager(output_dir, config or CheckpointConfig())
+    ckpt_output_dir = (config.output_dir if config else None) or output_dir
+    return CheckpointManager(ckpt_output_dir, config or CheckpointConfig())
