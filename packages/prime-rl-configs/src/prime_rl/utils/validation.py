@@ -83,8 +83,7 @@ def propagate_shared_fields(data: Any) -> Any:
     )
 
     # [ckpt] leaves. (Bare empty ``[ckpt]`` block enablement is at the end.)
-    # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
-    propagate("ckpt.output_dir", "trainer.ckpt.output_dir")
+    propagate("ckpt.output_dir", "trainer.ckpt.output_dir", "orchestrator.ckpt.output_dir")
     propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
     propagate("ckpt.keep_last", "trainer.ckpt.keep_last", "orchestrator.ckpt.keep_last")
     propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval")
