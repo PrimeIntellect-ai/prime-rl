@@ -125,9 +125,7 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
-        self._modelexpress_workers: set[str] = set()
         self._modelexpress_lock = asyncio.Lock()
-        self._modelexpress_failed = False
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -184,18 +182,12 @@ class AdminPlane:
         self,
         weight_dir: Path | None,
         *,
-        transport: Literal["filesystem", "nccl", "nixl", "modelexpress"],
+        transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
-        version_uid: str | None = None,
     ) -> None:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
-
-        if transport == "modelexpress":
-            async with self._modelexpress_lock:
-                await self._update_modelexpress_weights(version_uid, step, on_paused)
-            return
 
         await _pause_engines(self.clients, step=step)
         try:
@@ -215,40 +207,34 @@ class AdminPlane:
         finally:
             await _resume_engines(self.clients)
 
-    async def _update_modelexpress_weights(
-        self, version_uid: str | None, step: int, on_paused: Callable[[], None] | None
+    async def update_modelexpress_weights(
+        self,
+        *,
+        version_uid: str,
+        step: int = 0,
+        on_paused: Callable[[], None] | None = None,
     ) -> None:
-        if version_uid is None or not self._modelexpress_workers:
-            raise ValueError("modelexpress requires initialized workers and version_uid")
-        if self._modelexpress_failed:
-            raise RuntimeError("A ModelExpress update failed; restart trainer and inference before another update")
-        self._modelexpress_failed = True
-        await _pause_engines(self.clients, step=step)
-        if on_paused is not None:
-            on_paused()
+        """Install an exact MX version; keep inference paused if installation is uncertain."""
+        async with self._modelexpress_lock:
+            if not version_uid:
+                raise ValueError("modelexpress requires version_uid")
+            await _pause_engines(self.clients, step=step)
+            if on_paused is not None:
+                on_paused()
 
-        async def install(client):
-            response = await client.post(
-                "/update_weights",
-                json={"version_uid": version_uid},
-                timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
-            )
-            response.raise_for_status()
-            return response.json()["workers"]
+            async def install(client):
+                response = await client.post(
+                    "/update_weights",
+                    json={"version_uid": version_uid},
+                    timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
+                )
+                response.raise_for_status()
 
-        results = await asyncio.gather(*(install(client) for client in self.clients), return_exceptions=True)
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-        acknowledgments = [worker for workers in results for worker in workers]
-        if (
-            len(acknowledgments) != len(self._modelexpress_workers)
-            or {worker["worker_id"] for worker in acknowledgments} != self._modelexpress_workers
-            or any(worker["version_uid"] != version_uid for worker in acknowledgments)
-        ):
-            raise RuntimeError("Not every inference worker acknowledged the requested weight version")
-        await _resume_engines(self.clients)
-        self._modelexpress_failed = False
+            results = await asyncio.gather(*(install(client) for client in self.clients), return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            await _resume_engines(self.clients)
 
     async def initialize_modelexpress(
         self,
@@ -280,13 +266,8 @@ class AdminPlane:
                 timeout=max(ADMIN_TIMEOUT_S, timeout),
             )
             response.raise_for_status()
-            return response.json()["workers"]
 
-        results = await asyncio.gather(*(initialize(index, client) for index, client in enumerate(self.clients)))
-        workers = [worker for group in results for worker in group]
-        if len(workers) != inference_world_size or len(set(workers)) != inference_world_size:
-            raise RuntimeError("modelexpress initialization did not return every expected inference worker")
-        self._modelexpress_workers = set(workers)
+        await asyncio.gather(*(initialize(index, client) for index, client in enumerate(self.clients)))
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
