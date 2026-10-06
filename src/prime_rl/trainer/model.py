@@ -21,7 +21,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
+from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.parallel import parallelize_module
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -718,6 +718,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        _random_init_(model)
         _move_buffers_to_cuda(model, config)
         return
 
@@ -873,6 +874,24 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
+
+
+@torch.no_grad()
+def _random_init_(model: nn.Module, std: float = 0.02) -> None:
+    """Draw every parameter shard: matrices from N(0, std), norm weights and scales one, the rest zero.
+
+    `to_empty` leaves whatever the allocator hands back, so without this a debug run computes on
+    arbitrary values, and kernels whose speed depends on them (top-k selection, routing) time
+    differently from run to run.
+    """
+    for name, param in model.named_parameters():
+        local = param.to_local() if isinstance(param, DTensor) else param
+        if local.ndim >= 2:
+            local.normal_(mean=0.0, std=std)
+        elif "norm" in name or name.endswith("scale"):
+            local.fill_(1.0)
+        else:
+            local.zero_()
 
 
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:

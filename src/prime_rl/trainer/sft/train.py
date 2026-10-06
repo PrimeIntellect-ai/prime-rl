@@ -487,13 +487,20 @@ def train(config: SFTConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
+        # A scale-invariant optimizer (SignSGD) steps identically on rescaled gradients, so the
+        # per-token normalization is left off the gradients and only applied to the logged norm.
+        scale_invariant = getattr(optimizer, "scale_invariant", False)
+        grad_norm_scale = 1.0
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item()
             if global_token_count_val > 0:
                 grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+                if scale_invariant:
+                    grad_norm_scale = grad_scale
+                else:
+                    scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -516,7 +523,8 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, rescale=not scale_invariant)
+            grad_norm = grad_norm * grad_norm_scale
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()

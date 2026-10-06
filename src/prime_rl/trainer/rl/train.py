@@ -570,13 +570,21 @@ def train(config: TrainerConfig):
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        # A scale-invariant optimizer (SignSGD) steps identically on rescaled gradients, so this
+        # factor is left off the gradients and only applied to the logged norm.
+        scale_invariant = getattr(optimizer, "scale_invariant", False)
+        grad_norm_scale = 1.0
         if gradient_manager is None:
-            scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
+            if scale_invariant:
+                grad_norm_scale = parallel_dims.fsdp_gradient_divide_factor
+            else:
+                scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, rescale=not scale_invariant)
+            grad_norm = grad_norm * grad_norm_scale
 
         # Update the model parameters
         optimizer.step()
