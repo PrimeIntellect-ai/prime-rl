@@ -8,8 +8,8 @@ from pathlib import Path
 RUNS_DIR = Path.home() / "tmp/fa-custom-op/runs"
 STEADY_STEPS = range(5, 21)
 COMPARISONS = {
-    "bf16 router, no fullgraph": ["main-bf16", "main-bf16-r2", "branch-bf16", "branch-bf16-r2"],
-    "bf16 router, fullgraph (branch only)": ["main-bf16", "branch-bf16", "branch-bf16-fg", "branch-bf16-fg-r2", "branch-bf16-fg-fa2"],
+    "bf16 router, no fullgraph": ["main-bf16", "main-bf16-r2", "main-bf16-r3", "branch-bf16", "branch-bf16-r2", "branch-bf16-r3"],
+    "bf16 router, fullgraph (branch only)": ["main-bf16", "branch-bf16", "branch-bf16-fg", "branch-bf16-fg-r2", "branch-bf16-fg-warm40", "branch-bf16-fg-fa2"],
     "fp32 router, no fullgraph": ["main-fp32", "branch-fp32"],
 }
 
@@ -43,6 +43,7 @@ def main():
             for variant in variants
             if (RUNS_DIR / variant / "monitors/file/metrics.jsonl").exists()
         }
+        runs = {variant: metrics for variant, metrics in runs.items() if metrics}
         if not runs:
             continue
         reference = variants[0]
