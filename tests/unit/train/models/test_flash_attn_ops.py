@@ -20,44 +20,43 @@ OPS = {
     3: attn.flash_attn_3_varlen_op,
     4: attn.flash_attn_4_varlen_op,
 }
-MIN_COMPUTE_CAPABILITY = {2: (8, 0), 3: (9, 0), 4: (9, 0)}
-MAX_COMPUTE_CAPABILITY = {2: None, 3: (9, 0), 4: None}
+SUPPORTS_COMPUTE_CAPABILITY = {
+    2: lambda capability: capability >= (8, 0),
+    3: lambda capability: capability == (9, 0),
+    4: lambda capability: capability >= (9, 0),
+}
 
 
-def _skip_unless_supported(version: int) -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
-    if RAW_FUNCS[version] is None:
-        pytest.skip(f"FlashAttention {version} not installed")
-    capability = torch.cuda.get_device_capability()
-    if capability < MIN_COMPUTE_CAPABILITY[version]:
-        pytest.skip(f"FlashAttention {version} needs compute capability >= {MIN_COMPUTE_CAPABILITY[version]}")
-    max_capability = MAX_COMPUTE_CAPABILITY[version]
-    if max_capability is not None and capability[0] > max_capability[0]:
-        pytest.skip(f"FlashAttention {version} needs compute capability {max_capability}")
+def _skip_unless_supported(version: int, head_dim: int = 128) -> None:
+    if not torch.cuda.is_available() or RAW_FUNCS[version] is None:
+        pytest.skip(f"FlashAttention {version} not available")
+    if not SUPPORTS_COMPUTE_CAPABILITY[version](torch.cuda.get_device_capability()):
+        pytest.skip(f"FlashAttention {version} does not support this GPU")
+    if head_dim % 8 != 0 and version != 2:
+        pytest.skip("only FA2 pads the head dim")
 
 
-def _cu_seqlens() -> torch.Tensor:
-    lens = torch.tensor([0, *DOC_LENS], dtype=torch.int32, device="cuda")
-    return lens.cumsum(0, dtype=torch.int32)
-
-
-def _call(version: int, func, q, k, v, cu_seqlens, causal: bool, window_size):
+def _attention(version: int, func, causal: bool = True, window_size: tuple[int, int] | None = None):
+    cu_seqlens = torch.tensor([0, *DOC_LENS], dtype=torch.int32, device="cuda").cumsum(0, dtype=torch.int32)
+    max_seqlen = max(DOC_LENS)
     kwargs = {"causal": causal}
     if window_size is not None:
         kwargs["window_size"] = window_size
-    if version == 4:
-        out, _ = func(q, k, v, cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens, **kwargs)
-        return out
-    max_seqlen = max(DOC_LENS)
-    return func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
+
+    def attention(q, k, v):
+        if version == 4:
+            out, _ = func(q, k, v, cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens, **kwargs)
+            return out
+        return func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
+
+    return attention
 
 
-def _forward_backward(version: int, func, q, k, v, dout, cu_seqlens, causal: bool, window_size):
-    q, k, v = (t.detach().clone().requires_grad_() for t in (q, k, v))
-    out = _call(version, func, q, k, v, cu_seqlens, causal, window_size)
+def _forward_backward(attention, q, k, v, dout):
+    leaves = [t.detach().clone().requires_grad_() for t in (q, k, v)]
+    out = attention(*leaves)
     out.backward(dout)
-    return out.detach(), q.grad, k.grad, v.grad
+    return out.detach(), *(t.grad for t in leaves)
 
 
 @pytest.mark.parametrize("version", [2, 3, 4])
@@ -68,22 +67,18 @@ def _forward_backward(version: int, func, q, k, v, dout, cu_seqlens, causal: boo
     ids=["causal", "sliding_window", "non_causal"],
 )
 def test_op_matches_library_function(version, head_dim, causal, window_size):
-    _skip_unless_supported(version)
-    if head_dim % 8 != 0 and version != 2:
-        pytest.skip("only FA2 pads the head dim")
+    _skip_unless_supported(version, head_dim)
     torch.manual_seed(0)
     total = sum(DOC_LENS)
     q = torch.randn(total, NUM_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
     k = torch.randn(total, NUM_KV_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
     v = torch.randn(total, NUM_KV_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
     dout = torch.randn_like(q)
-    cu_seqlens = _cu_seqlens()
 
-    expected = _forward_backward(version, RAW_FUNCS[version], q, k, v, dout, cu_seqlens, causal, window_size)
-    actual = _forward_backward(version, OPS[version], q, k, v, dout, cu_seqlens, causal, window_size)
-
-    out, dq, dk, dv = actual
-    expected_out, expected_dq, expected_dk, expected_dv = expected
+    expected_out, expected_dq, expected_dk, expected_dv = _forward_backward(
+        _attention(version, RAW_FUNCS[version], causal, window_size), q, k, v, dout
+    )
+    out, dq, dk, dv = _forward_backward(_attention(version, OPS[version], causal, window_size), q, k, v, dout)
     assert torch.equal(out, expected_out)
     assert torch.equal(dq, expected_dq)
     # FA3's GQA backward accumulates dk/dv across query heads with atomics, so even two raw calls differ.
@@ -114,7 +109,7 @@ def test_compiled_flash_attention_fullgraph_matches_eager(version, sliding_windo
     compiled = torch.compile(module, fullgraph=True)
 
     hidden_states = torch.randn(1, sum(DOC_LENS), config.hidden_size, device="cuda", dtype=torch.bfloat16)
-    cu_seqlens = _cu_seqlens()
+    cu_seqlens = torch.tensor([0, *DOC_LENS], dtype=torch.int32, device="cuda").cumsum(0, dtype=torch.int32)
     max_seqlen = max(DOC_LENS)
 
     def run(fn):
@@ -138,9 +133,7 @@ def test_compiled_flash_attention_fullgraph_matches_eager(version, sliding_windo
 @pytest.mark.parametrize("version", [2, 3, 4])
 @pytest.mark.parametrize("head_dim", [128, 60])
 def test_compiled_op_matches_eager_for_head_major_inputs(version, head_dim):
-    _skip_unless_supported(version)
-    if head_dim % 8 != 0 and version != 2:
-        pytest.skip("only FA2 pads the head dim")
+    _skip_unless_supported(version, head_dim)
     torch._dynamo.reset()
     torch.manual_seed(0)
     total = sum(DOC_LENS)
@@ -148,19 +141,10 @@ def test_compiled_op_matches_eager_for_head_major_inputs(version, head_dim):
         torch.randn(NUM_HEADS, total, head_dim, device="cuda", dtype=torch.bfloat16).transpose(0, 1) for _ in range(3)
     )
     dout = torch.randn(total, NUM_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
-    cu_seqlens = _cu_seqlens()
+    attention = _attention(version, OPS[version])
 
-    def attention(q, k, v):
-        return _call(version, OPS[version], q, k, v, cu_seqlens, causal=True, window_size=None)
-
-    def run(fn):
-        leaves = [t.detach().clone().requires_grad_() for t in (q, k, v)]
-        out = fn(*leaves)
-        out.backward(dout)
-        return out.detach(), *(t.grad for t in leaves)
-
-    eager = run(attention)
-    compiled = run(torch.compile(attention, fullgraph=True))
+    eager = _forward_backward(attention, q, k, v, dout)
+    compiled = _forward_backward(torch.compile(attention, fullgraph=True), q, k, v, dout)
 
     for expected_tensor, actual_tensor in zip(eager, compiled):
         assert torch.equal(actual_tensor, expected_tensor)
