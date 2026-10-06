@@ -6,6 +6,7 @@ from torch.distributed.tensor.parallel import parallelize_module
 
 from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
+    CudnnMXFP8MoEComputeConfig,
     DeepEPMoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
     ModelConfig,
@@ -57,6 +58,15 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
         )
+    if isinstance(compute, CudnnMXFP8MoEComputeConfig):
+        capability = torch.cuda.get_device_capability()
+        if capability not in ((10, 0), (10, 3)):
+            raise RuntimeError(
+                f"cuDNN MXFP8 expert compute requires SM100 or SM103, but this device is SM{capability[0]}{capability[1]}."
+            )
+        from prime_rl.trainer.models.layers.cudnn_moe import CudnnMXFP8ExpertCompute
+
+        return CudnnMXFP8ExpertCompute()
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 

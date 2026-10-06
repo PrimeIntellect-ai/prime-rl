@@ -59,6 +59,7 @@ Dense linear precision and routed-expert precision are configured independently.
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
 - `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
+- `type = "cudnn_mxfp8"` (requires cuDNN frontend and SM100/SM103): the whole expert MLP runs on cuDNN frontend's fused MXFP8 grouped GEMMs, with the GLU and its clamp fused into the GEMM epilogues. It supports gated, bias-free experts with SwiGLU, GPT-OSS's clamped SwiGLU, or DeepSeek V4's clamped SwiGLU, and pads every expert's tokens to a multiple of 256.
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
 

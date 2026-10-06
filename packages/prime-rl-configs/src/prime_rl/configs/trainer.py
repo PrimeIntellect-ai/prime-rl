@@ -228,8 +228,14 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """MXFP8 expert-compute recipe."""
 
 
+class CudnnMXFP8MoEComputeConfig(MoEComputeConfigBase):
+    """Run the routed-expert MLP with cuDNN frontend's fused MXFP8 grouped GEMMs (SM100 / SM103)."""
+
+    type: Literal["cudnn_mxfp8"] = "cudnn_mxfp8"
+
+
 MoEComputeConfig: TypeAlias = Annotated[
-    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig,
+    BF16MoEComputeConfig | DeepGemmFP8MoEComputeConfig | MXFP8MoEComputeConfig | CudnnMXFP8MoEComputeConfig,
     Field(discriminator="type"),
 ]
 
