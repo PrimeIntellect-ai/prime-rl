@@ -964,9 +964,7 @@ class Orchestrator:
         lead = (self.progress.step - 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        uses_live_policy = self.train_envs is None or any(
-            env.generation_source.uses_live_policy for env in self.train_envs
-        )
+        uses_live_policy = any(env.generation_source.uses_live_policy for env in self.train_envs)
         if lead > max_off_policy_steps and uses_live_policy:
             if was_set:
                 required_version = (self.progress.step - 1) - max_off_policy_steps
