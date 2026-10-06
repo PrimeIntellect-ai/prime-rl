@@ -266,6 +266,11 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     token_chunk_size: int | None = Field(None, ge=1)
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
+    fp8: bool = False
+    """Send tokens to the experts as FP8 (1 x 128 blocks, power-of-two scales), halving the forward
+    dispatch traffic and the received tokens kept for backward. Requires FP8 expert compute, which
+    quantizes its input the same way; gradients travel in bf16."""
+
 
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
@@ -278,6 +283,13 @@ class MoERuntimeConfig(BaseConfig):
 
     compute: MoEComputeConfig = BF16MoEComputeConfig()
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
+
+    @model_validator(mode="after")
+    def fp8_dispatch_requires_fp8_compute(self):
+        if isinstance(self.dispatch, DeepEPMoEDispatchConfig) and self.dispatch.fp8:
+            if not isinstance(self.compute, DeepGemmFP8MoEComputeConfig):
+                raise ValueError("dispatch.fp8 requires compute.type = 'deepgemm_fp8'")
+        return self
 
 
 class ModelConfig(BaseModelConfig):

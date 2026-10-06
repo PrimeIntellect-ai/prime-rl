@@ -219,6 +219,28 @@ def _per_token_fp8_kernel(
 
 
 @triton.jit
+def _per_token_dequant_kernel(
+    q_ptr,
+    sf_ptr,
+    out_ptr,
+    rows,
+    cols,
+    stride_sm,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    pid_k = tl.program_id(axis=1)
+    row_offsets = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
+    col_offsets = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
+    row_mask = row_offsets < rows
+    offsets = row_offsets[:, None] * cols + col_offsets[None, :]
+    q = tl.load(q_ptr + offsets, mask=row_mask[:, None], other=0.0)
+    scale = tl.load(sf_ptr + row_offsets * stride_sm + pid_k, mask=row_mask, other=0.0)
+    tl.store(out_ptr + offsets, (q.to(tl.float32) * scale[:, None]).to(tl.bfloat16), mask=row_mask[:, None])
+
+
+@triton.jit
 def _per_token_fp8_tp_kernel(
     x_ptr,
     out_ptr,
@@ -482,6 +504,23 @@ def per_token_cast_to_fp8_triton(
         num_warps=4,
     )
     return out, sf[:, :rows].T
+
+
+def per_token_dequant_fp8_triton(q: torch.Tensor, sf: torch.Tensor) -> torch.Tensor:
+    """bf16 rows from a per-token (1 x 128) fp8 cast; ``sf`` is ``[rows, cols / 128]``, token-major.
+
+    Exact for power-of-two scales: an e4m3 value times a power of two is representable in bf16.
+    """
+    assert q.dim() == 2 and q.is_contiguous() and sf.stride(1) == 1
+    rows, cols = q.shape
+    assert sf.shape == (rows, cols // GROUP_ALIGNMENT)
+    out = torch.empty(rows, cols, device=q.device, dtype=torch.bfloat16)
+    if rows:
+        block_m = 32
+        _per_token_dequant_kernel[(ceil_div(rows, block_m), cols // GROUP_ALIGNMENT)](
+            q, sf, out, rows, cols, sf.stride(0), BLOCK_M=block_m, BLOCK_K=GROUP_ALIGNMENT, num_warps=4
+        )
+    return out
 
 
 def grouped_per_token_cast_to_fp8_triton(

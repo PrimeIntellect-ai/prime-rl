@@ -9,6 +9,7 @@ from deep_ep.utils import EventHandle, EventOverlap
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.distributed.token_dispatcher import ExpertFunction, TokenDispatcherBase
+from prime_rl.trainer.models.kernels.fp8_utils import per_token_cast_to_fp8_triton, per_token_dequant_fp8_triton
 from prime_rl.trainer.models.kernels.moe_permute import PairLayout, build_pair_layout, gather_pairs, reduce_pairs
 
 _buffer: Buffer | None = None
@@ -283,11 +284,13 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         num_sms: int,
         token_chunk_size: int | None,
         hidden_size: int,
+        fp8: bool = False,
     ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.num_local_experts = num_experts // group.size()
         self.group = group
         self.token_chunk_size = token_chunk_size
+        self.fp8 = fp8
         self._pending_combine_events: list[EventOverlap] = []
         self._dispatcher_id = id(self)
         _combine_dispatchers[self._dispatcher_id] = self
@@ -387,6 +390,10 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         routed = self._experts(gather_pairs(recv_x, layout), num_tokens_per_expert)
         return reduce_pairs(routed, layout, recv_scores)
 
+    def received_tokens(self, recv_x: torch.Tensor, recv_sf: torch.Tensor) -> torch.Tensor:
+        """Received tokens in bf16; FP8 dispatch keeps them quantized until the experts read them."""
+        return per_token_dequant_fp8_triton(recv_x, recv_sf) if self.fp8 else recv_x
+
     def moe_forward(
         self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor, score_before_experts: bool
     ) -> tuple[torch.Tensor, list[object], list[torch.Tensor]]:
@@ -400,8 +407,12 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
             per_rank, per_rdma_rank, per_expert, in_rank, _ = buffer.get_dispatch_layout(
                 topk_idx=chunk_idx, num_experts=self.num_experts
             )
+            chunk = x[start:end]
+            if self.fp8:
+                chunk_q, chunk_sf = per_token_cast_to_fp8_triton(chunk, use_ue8m0=True)
+                chunk = (chunk_q, chunk_sf.contiguous())
             recv_x, recv_idx, recv_scores, counts, handle, event = buffer.dispatch(
-                x=x[start:end],
+                x=chunk,
                 topk_idx=chunk_idx,
                 topk_weights=topk_weights[start:end],
                 num_tokens_per_rank=per_rank,
@@ -417,7 +428,10 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         combined, handles, saved, events = [], [], [], []
         for recv_x, recv_idx, recv_scores, counts, handle, event in in_flight:
             event.current_stream_wait()
-            routed = self.routed_experts(recv_x, recv_idx, recv_scores, counts, score_before_experts)
+            recv_x, recv_sf = recv_x if self.fp8 else (recv_x, recv_x.new_empty(0))
+            routed = self.routed_experts(
+                self.received_tokens(recv_x, recv_sf), recv_idx, recv_scores, counts, score_before_experts
+            )
             out, _, event = buffer.combine(
                 x=routed,
                 handle=handle,
@@ -428,7 +442,7 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
             combined.append(out)
             events.append(event)
             handles.append(handle)
-            saved += [recv_x, recv_idx, recv_scores, torch.tensor(counts, dtype=torch.int32)]
+            saved += [recv_x, recv_sf, recv_idx, recv_scores, torch.tensor(counts, dtype=torch.int32)]
         for event in events:
             event.current_stream_wait()
         return torch.cat(combined) if len(combined) > 1 else combined[0], handles, saved
@@ -458,9 +472,9 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
 
         grads, events = [], []
         for i, (grad_recv, event) in enumerate(in_flight):
-            recv_x, recv_idx, recv_scores, counts = saved[4 * i : 4 * i + 4]
+            recv_x, recv_sf, recv_idx, recv_scores, counts = saved[5 * i : 5 * i + 5]
             with torch.enable_grad():
-                recv_x = recv_x.detach().requires_grad_()
+                recv_x = self.received_tokens(recv_x, recv_sf).detach().requires_grad_()
                 recv_scores = recv_scores.detach().requires_grad_()
                 routed = self.routed_experts(recv_x, recv_idx, recv_scores, counts.tolist(), score_before_experts)
             event.current_stream_wait()
@@ -499,9 +513,10 @@ def deepep_moe(
     """Routed experts of one MoE layer over DeepEP, pipelined over token chunks.
 
     Returns the combined output, the key of the communication handles its backward reuses, and
-    each chunk's received tokens, expert ids, scores and per-expert pair counts. Activation
-    checkpointing saves all of them, so recompute neither resends tokens nor reruns the experts;
-    the backward recomputes each chunk's experts itself, overlapped with communication.
+    each chunk's received tokens, their FP8 scales (empty without FP8 dispatch), expert ids, scores
+    and per-expert pair counts. Activation checkpointing saves all of them, so recompute neither
+    resends tokens nor reruns the experts; the backward recomputes each chunk's experts itself,
+    overlapped with communication.
     """
     dispatcher = _combine_dispatchers[dispatcher_id]
     out, handles, saved = dispatcher.moe_forward(x, topk_idx, topk_weights, score_before_experts)
@@ -518,8 +533,14 @@ def _deepep_moe_fake(x, topk_idx, topk_weights, dispatcher_id, score_before_expe
     outputs = [torch.empty_like(x), torch.empty(1, dtype=torch.int64)]
     for _ in dispatcher.chunk_ranges(x.shape[0]):
         rows = ctx.new_dynamic_size()
+        if dispatcher.fp8:
+            tokens = x.new_empty(rows, x.shape[1], dtype=torch.float8_e4m3fn)
+            scales = x.new_empty(rows, x.shape[1] // 128, dtype=torch.float32)
+        else:
+            tokens, scales = x.new_empty(rows, x.shape[1]), x.new_empty(0)
         outputs += [
-            x.new_empty(rows, x.shape[1]),
+            tokens,
+            scales,
             topk_idx.new_empty(rows, topk_idx.shape[1]),
             x.new_empty(rows, topk_idx.shape[1], dtype=torch.float32),
             torch.empty(dispatcher.num_local_experts, dtype=torch.int32),
