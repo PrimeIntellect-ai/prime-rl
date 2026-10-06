@@ -317,6 +317,15 @@ class VllmRouterConfig(BaseConfig):
     policy: str = "sticky_least_loaded"
     """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
 
+    health_check_timeout_secs: int = Field(60, ge=1)
+    """Timeout for each worker ``/health`` probe. The router default (5 s) can be missed when the API-server event loop stalls (e.g. a GC pause)."""
+
+    health_failure_threshold: int = Field(10, ge=1)
+    """Consecutive failed ``/health`` probes before the router marks a worker unhealthy and stops routing to it."""
+
+    circuit_breaker_failure_threshold: int | None = Field(None, ge=1)
+    """Consecutive failed requests before the router's circuit breaker stops routing to a worker. ``None`` disables the circuit breaker, so a burst of aborted or timed-out requests cannot take an engine out of rotation."""
+
 
 class LlmdRouterConfig(BaseConfig):
     """llm-d router backend (EPP + Envoy)."""

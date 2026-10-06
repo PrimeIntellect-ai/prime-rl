@@ -75,7 +75,14 @@ LLMD_EOF
         --request-id-headers x-session-id
         --request-timeout-secs {{ router.request_timeout_secs }}
         --prometheus-port "$((port + 21000))"
-        --worker-startup-timeout-secs 4200 --log-level debug)
+        --worker-startup-timeout-secs 4200 --log-level debug
+        --health-check-timeout-secs {{ router.health_check_timeout_secs }}
+        --health-failure-threshold {{ router.health_failure_threshold }}
+{%- if router.circuit_breaker_failure_threshold is none %}
+        --disable-circuit-breaker)
+{%- else %}
+        --cb-failure-threshold {{ router.circuit_breaker_failure_threshold }})
+{%- endif %}
     if [ "$mode" = pd ]; then
         cmd+=(--vllm-pd-disaggregation $worker_args)
     else

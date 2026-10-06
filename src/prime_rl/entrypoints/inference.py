@@ -187,7 +187,15 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
         "4200",
         "--prometheus-port",
         str(config.server.port + 21000),
+        "--health-check-timeout-secs",
+        str(config.router.health_check_timeout_secs),
+        "--health-failure-threshold",
+        str(config.router.health_failure_threshold),
     ]
+    if config.router.circuit_breaker_failure_threshold is None:
+        cmd.append("--disable-circuit-breaker")
+    else:
+        cmd += ["--cb-failure-threshold", str(config.router.circuit_breaker_failure_threshold)]
     return subprocess.Popen(cmd)
 
 
