@@ -335,6 +335,19 @@ def _flash_attn_varlen_backward_fake(dout, q, k, v, *args):
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
 
 
+# FA2's kernel allocates its output with empty_like on the padded q, so the fakes keep q's strides and padding.
+def _flash_attn_2_varlen_fake(q, k, v, *args):
+    head_dim = q.shape[-1]
+    out = torch.empty_like(_pad_head_dim_to_multiple_of_8(q))[..., :head_dim]
+    lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
+    return out, lse
+
+
+def _flash_attn_2_varlen_backward_fake(dout, q, k, v, *args):
+    head_dim = q.shape[-1]
+    return tuple(torch.empty_like(_pad_head_dim_to_multiple_of_8(t))[..., :head_dim] for t in (q, k, v))
+
+
 def _flash_attn_varlen_setup_context(ctx, inputs, output) -> None:
     (
         q,
@@ -376,12 +389,17 @@ def _flash_attn_varlen_autograd(backward_op, ctx, dout: torch.Tensor, _dlse: tor
     return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
-for _forward_op, _backward_op in (
-    (_flash_attn_2_varlen, _flash_attn_2_varlen_backward),
-    (_flash_attn_3_varlen, _flash_attn_3_varlen_backward),
+for _forward_op, _backward_op, _forward_fake, _backward_fake in (
+    (
+        _flash_attn_2_varlen,
+        _flash_attn_2_varlen_backward,
+        _flash_attn_2_varlen_fake,
+        _flash_attn_2_varlen_backward_fake,
+    ),
+    (_flash_attn_3_varlen, _flash_attn_3_varlen_backward, _flash_attn_varlen_fake, _flash_attn_varlen_backward_fake),
 ):
-    _forward_op.register_fake(_flash_attn_varlen_fake)
-    _backward_op.register_fake(_flash_attn_varlen_backward_fake)
+    _forward_op.register_fake(_forward_fake)
+    _backward_op.register_fake(_backward_fake)
     _forward_op.register_autograd(
         functools.partial(_flash_attn_varlen_autograd, _backward_op), setup_context=_flash_attn_varlen_setup_context
     )
