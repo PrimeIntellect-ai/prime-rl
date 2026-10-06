@@ -8,7 +8,7 @@ from pathlib import Path
 
 RUNS_DIR = Path.home() / "tmp/router-rs-cap/runs"
 LAYOUTS = ["fsdp16", "ep8"]
-VARIANTS = ["fp32-cap1", "fp32-cap2", "fp32-cap2-r2", "fp32-main", "fp32-cap3", "bf16fg-cap1", "bf16fg-cap2"]
+VARIANTS = ["fp32-cap1", "fp32-cap2", "fp32-cap2-r2", "fp32-main", "fp32-cap3", "bf16-cap1", "bf16-cap2"]
 STEADY_STEPS = range(5, 21)
 LOSS_REFERENCE = {"fp32": "fp32-cap2", "bf16fg": "bf16fg-cap1", "bf16": "bf16-cap1"}
 

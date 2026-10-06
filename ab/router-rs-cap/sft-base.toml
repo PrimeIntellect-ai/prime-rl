@@ -45,3 +45,4 @@ num_train_nodes = 2
 job_name = "rs-cap-ab"
 partition = "all"
 time = "01:00:00"
+exclude = "prime-nebius-puku-h200-gpu-001"
