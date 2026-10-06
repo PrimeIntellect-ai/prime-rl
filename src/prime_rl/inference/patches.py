@@ -19,6 +19,8 @@ def apply_shared_vllm_patches():
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_routed_experts_with_pd_connectors()
+    monkey_patch_clamp_kv_offload_loads_for_routed_experts()
+    monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
@@ -281,6 +283,160 @@ def _is_pd_decode_request(request) -> bool:
     """A request on a P/D decode instance (NIXL clears ``do_remote_prefill`` once scheduled, not ``remote_engine_id``)."""
     params = request.kv_transfer_params or {}
     return bool(params.get("remote_engine_id")) and not params.get("do_remote_decode")
+
+
+def _routed_experts_load_limit(request, num_computed_tokens: int, block_size: int) -> int | None:
+    """How many tokens past ``num_computed_tokens`` an external KV load may cover under routed-expert capture.
+
+    vLLM keeps routing rows in a local store keyed by block hash, and no connector moves them with
+    the KV. A loaded block whose rows are not in that store fails the engine step
+    (``BlockObjectStoreError``) once a request needs its rows. vLLM returns rows only from
+    ``routed_experts_prompt_start`` on (the client already holds the rows before it), so loads
+    that stop at that block boundary are always safe. Decode-side P/D requests are not bounded:
+    they emit rows only from their first forward on this instance.
+    """
+    if _is_pd_decode_request(request):
+        return None
+    prompt_start = request.sampling_params.routed_experts_prompt_start
+    return max(0, prompt_start // block_size * block_size - num_computed_tokens)
+
+
+def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
+    """Clamp native (``OffloadingConnector``) and Mooncake KV offload loads with `_routed_experts_load_limit`.
+
+    Multi-turn reloads stay below the next turn's ``routed_experts_prompt_start`` and keep their
+    hits; offloaded prefixes past it (first turns, shared prompts) are recomputed.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import OffloadingConnector
+
+    if getattr(OffloadingConnector._max_loadable_tokens, "_prime_rl_routed_experts_clamp", False):
+        return
+
+    original_max_loadable_tokens = OffloadingConnector._max_loadable_tokens
+    original_get_num_new_matched_tokens = MooncakeStoreConnector.get_num_new_matched_tokens
+
+    def _max_loadable_tokens(self, request, num_computed_tokens):
+        bound = original_max_loadable_tokens(self, request, num_computed_tokens)
+        if not self._vllm_config.aux_output_config.enable_return_routed_experts:
+            return bound
+        limit = _routed_experts_load_limit(request, num_computed_tokens, self._vllm_config.cache_config.block_size)
+        if limit is None:
+            return bound
+        return limit if bound is None else min(bound, limit)
+
+    def _get_num_new_matched_tokens(self, request, num_computed_tokens):
+        num_tokens, load_async = original_get_num_new_matched_tokens(self, request, num_computed_tokens)
+        if not num_tokens or not self._vllm_config.aux_output_config.enable_return_routed_experts:
+            return num_tokens, load_async
+        scheduler = self.connector_scheduler
+        limit = _routed_experts_load_limit(request, num_computed_tokens, scheduler._block_size)
+        if limit is None or num_tokens <= limit:
+            return num_tokens, load_async
+        if limit == 0:
+            del scheduler.load_specs[request.request_id]
+            return 0, False
+        # The new end is a full block inside the hit, stored under its own hash, so the tail-key
+        # overrides for the old (possibly partial) end no longer apply.
+        load_spec = scheduler.load_specs[request.request_id]
+        load_spec.kvpool_cached_tokens = num_computed_tokens + limit
+        load_spec.tail_key_boundaries = ()
+        return limit, load_async
+
+    _max_loadable_tokens._prime_rl_routed_experts_clamp = True
+    OffloadingConnector._max_loadable_tokens = _max_loadable_tokens
+    MooncakeStoreConnector.get_num_new_matched_tokens = _get_num_new_matched_tokens
+
+
+def _track_externally_loaded_blocks(kv_cache_manager, gid: int, block_size: int) -> set[int]:
+    """Live set of block ids (in KV cache group ``gid``) filled by an external KV load since their last allocation.
+
+    Such blocks enter the GPU prefix cache, but no forward pass on this instance stored their routing rows.
+    """
+    from vllm.utils.math_utils import cdiv
+
+    loaded: set[int] = set()
+    block_pool = kv_cache_manager.block_pool
+    get_new_blocks = block_pool.get_new_blocks
+    allocate_slots = kv_cache_manager.allocate_slots
+
+    def _get_new_blocks(num_blocks):
+        blocks = get_new_blocks(num_blocks)
+        loaded.difference_update(block.block_id for block in blocks)
+        return blocks
+
+    def _allocate_slots(request, num_new_tokens, *args, **kwargs):
+        blocks = allocate_slots(request, num_new_tokens, *args, **kwargs)
+        num_external = kwargs.get("num_external_computed_tokens", 0)
+        if blocks is not None and num_external:
+            start = request.num_computed_tokens + kwargs.get("num_new_computed_tokens", 0)
+            block_ids = kv_cache_manager.get_block_ids(request.request_id)[gid]
+            loaded.update(block_ids[start // block_size : cdiv(start + num_external, block_size)])
+        return blocks
+
+    block_pool.get_new_blocks = _get_new_blocks
+    kv_cache_manager.allocate_slots = _allocate_slots
+    return loaded
+
+
+def _first_loaded_block(block_ids: list[int], loaded: set[int], prompt_start: int, block_size: int) -> int | None:
+    """Index of the first block in ``block_ids`` holding rows from ``prompt_start`` on that was filled by a load."""
+    return next((i for i in range(prompt_start // block_size, len(block_ids)) if block_ids[i] in loaded), None)
+
+
+def monkey_patch_routed_experts_cut_loaded_prefix_hits():
+    """Cut local prefix-cache hits at externally loaded blocks that a request needs routing rows from.
+
+    The load clamp keeps the loading request safe, but the loaded blocks then serve local prefix
+    hits. A later request with a lower ``routed_experts_prompt_start`` would need their rows, which
+    this instance never stored, and the engine step would fail with ``BlockObjectStoreError``. Such
+    hits are cut at the first loaded block, so the rest is recomputed. Requests with output (resumed
+    after preemption) and decode-side P/D requests need no prompt rows from the store.
+    """
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.kv_cache_interface import is_full_attention_spec
+
+    if getattr(Scheduler._get_local_prefix_cache_hit, "_prime_rl_routed_experts_cut", False):
+        return
+
+    original_init = Scheduler.__init__
+    original_get_local_prefix_cache_hit = Scheduler._get_local_prefix_cache_hit
+
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._prime_rl_loaded_blocks = None
+        if self.aux_output_connector is None or self.connector is None:
+            return
+        groups = self.kv_cache_config.kv_cache_groups
+        gid = next(i for i, g in enumerate(groups) if not g.host_resident and is_full_attention_spec(g.kv_cache_spec))
+        block_size = groups[gid].kv_cache_spec.block_size
+        self._prime_rl_loaded_blocks = (
+            gid,
+            block_size,
+            _track_externally_loaded_blocks(self.kv_cache_manager, gid, block_size),
+        )
+
+    def _get_local_prefix_cache_hit(self, request):
+        hit = original_get_local_prefix_cache_hit(self, request)
+        if self._prime_rl_loaded_blocks is None or request.num_output_tokens or _is_pd_decode_request(request):
+            return hit
+        gid, block_size, loaded = self._prime_rl_loaded_blocks
+        start = request.sampling_params.routed_experts_prompt_start
+        cut = _first_loaded_block(hit[0].get_block_ids()[gid], loaded, start, block_size) if loaded else None
+        if cut is None:
+            return hit
+        # Redo the lookup capped at the cut, so every KV cache group (e.g. Mamba) agrees on the hit.
+        kv_cache_manager = self.kv_cache_manager
+        keep = cut * block_size // self.block_size * self.block_size
+        blocks, num_local, num_uncached = kv_cache_manager.coordinator.find_longest_cache_hit(
+            request.block_hashes, keep
+        )
+        boundary = num_local + num_uncached if num_uncached else 0
+        return kv_cache_manager.create_kv_cache_blocks(blocks), num_local, boundary, False
+
+    _get_local_prefix_cache_hit._prime_rl_routed_experts_cut = True
+    Scheduler.__init__ = __init__
+    Scheduler._get_local_prefix_cache_hit = _get_local_prefix_cache_hit
 
 
 def monkey_patch_strip_routed_experts_from_chat():
