@@ -160,6 +160,8 @@ tools = "schemas"
 
 **Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list.
 
+**Per-message loss masks.** A `message_loss_mask` column holds one 0/1 flag per message, in the order the trainer sees them (prompt messages, then completion messages). When a row has it, only assistant messages flagged 1 contribute to the loss, on top of `[loss_mask]`; rows without it (or with a null value) are unaffected. Use it to keep earlier assistant turns as context without training on them, for example when appending new turns to an existing conversation. Tokens a template attributes to the next message but the model samples, such as GLM's turn-closing role marker, count toward the preceding assistant message.
+
 Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:
 
 ```toml

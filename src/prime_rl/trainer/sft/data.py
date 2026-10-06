@@ -209,6 +209,29 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
+def apply_message_loss_mask(
+    renderer: Renderer, messages: list[dict], tools: list[dict], loss_mask: list[bool], message_mask: list
+) -> list[bool]:
+    """Restrict ``loss_mask`` to tokens owned by assistant messages whose ``message_mask`` flag is set.
+
+    A token belongs to the nearest assistant message at or before the message it is attributed to, because some
+    templates (e.g. GLM) close an assistant turn with a sampled role marker attributed to the next message.
+    Tokens appended after the rendered sequence (``ensure_final_stop``) belong to the final message.
+    """
+    if len(message_mask) != len(messages):
+        raise ValueError(f"message_loss_mask has {len(message_mask)} entries for {len(messages)} messages")
+    rendered = renderer.render(messages, tools=tools)
+    roles = [message["role"] for message in messages]
+    keep = []
+    for index in rendered.message_indices:
+        owner = index
+        while owner >= 0 and roles[owner] != "assistant":
+            owner -= 1
+        keep.append(owner >= 0 and bool(message_mask[owner]))
+    keep += [bool(message_mask[-1])] * (len(loss_mask) - len(keep))
+    return [trainable and kept for trainable, kept in zip(loss_mask, keep)]
+
+
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
@@ -277,9 +300,9 @@ class SFTDataset(StatefulIterableDataset):
         self.renderers = renderers
         self.columns = columns
         # Default names are optional: a dataset carries either messages or
-        # prompt/completion, and tools only for tool use. A name set in the
-        # config must exist.
-        for field in ("messages", "prompt", "completion", "tools"):
+        # prompt/completion, and tools and message_loss_mask only when needed.
+        # A name set in the config must exist.
+        for field in ("messages", "prompt", "completion", "tools", "message_loss_mask"):
             column = getattr(columns, field)
             if column != field and column not in dataset.column_names:
                 raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
@@ -362,6 +385,9 @@ class SFTDataset(StatefulIterableDataset):
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
+        message_mask = example.get(self.columns.message_loss_mask)
+        if message_mask is not None:
+            loss_mask = apply_message_loss_mask(renderer, messages, tools, loss_mask, message_mask)
         mm = sample.multi_modal_data
         mm_token_type_ids = list(sample.mm_token_type_ids) if sample.mm_token_type_ids is not None else None
         if mm is not None and mm.mm_items and not self.multimodal:
