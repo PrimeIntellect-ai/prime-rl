@@ -13,6 +13,7 @@ OVERLAP_LABEL = {"ep8": "E", "fsdp16": "D+E"}
 LAYOUTS = ["fsdp16", "ep8"]
 VARIANTS = ["fp32-cap1", "fp32-cap2", "fp32-cap2-r2", "fp32-main", "fp32-cap3", "bf16-cap1", "bf16-cap2"]
 STEADY_STEPS = range(5, 21)
+SCENARIO_STEADY_STEPS = range(10, 41)
 LOSS_REFERENCE = {"fp32": "fp32-cap2", "bf16fg": "bf16fg-cap1", "bf16": "bf16-cap1"}
 
 
@@ -52,11 +53,11 @@ def max_loss_diff(a: dict, b: dict) -> float:
     return max(abs(b[step]["loss/mean"] - a[step]["loss/mean"]) for step in set(a) & set(b))
 
 
-def traced_metrics(layout, variant):
+def traced_metrics(prefix, layout, variant):
     """Rank 0 and rank 8 means of the comm_waits.py summaries, if the traced run exists."""
     summaries = []
     for rank in (0, 8):
-        path = WAITS_DIR / f"waits-{layout}-rank{rank}.json"
+        path = WAITS_DIR / f"waits-{prefix}{layout}-rank{rank}.json"
         if path.exists() and variant in (results := json.loads(path.read_text())):
             summaries.append(results[variant]["summary"])
     if not summaries:
@@ -73,18 +74,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("variants", nargs="*", default=VARIANTS)
     parser.add_argument("--csv", default=None, help="write one row per run, plus traced stall/overlap metrics")
+    parser.add_argument("--scenario", action="append", default=[], help="scenario prefix(es); none is the baseline")
     args = parser.parse_args()
     variants = args.variants
+    global STEADY_STEPS
+    if args.scenario:
+        STEADY_STEPS = SCENARIO_STEADY_STEPS
+    prefixes = [f"{scenario}-" for scenario in args.scenario] or [""]
     rows = []
-    for layout in LAYOUTS:
+    for prefix, layout in [(prefix, layout) for prefix in prefixes for layout in LAYOUTS]:
         runs = {
-            variant: load_metrics(RUNS_DIR / f"{layout}-{variant}")
+            variant: load_metrics(RUNS_DIR / f"{prefix}{layout}-{variant}")
             for variant in variants
-            if (RUNS_DIR / f"{layout}-{variant}/monitors/file/metrics.jsonl").exists()
+            if (RUNS_DIR / f"{prefix}{layout}-{variant}/monitors/file/metrics.jsonl").exists()
         }
         if not runs:
             continue
-        print(f"\n{layout}")
+        print(f"\n{prefix}{layout} (steps {STEADY_STEPS.start} to {STEADY_STEPS.stop - 1})")
         header = (
             f"{'variant':<14} {'steps':>5} {'s/step (lower)':>14} {'tok/s/GPU (higher)':>18} "
             f"{'peak GiB (lower)':>16} {'paired ds/step vs fp32-cap2':>27} {'max |dloss| vs ref':>18}"
@@ -101,14 +107,14 @@ def main():
             )
             rows.append(
                 {
-                    "group": layout,
+                    "group": f"{prefix}{layout}",
                     "variant": variant,
-                    "run_dir": str(RUNS_DIR / f"{layout}-{variant}"),
+                    "run_dir": str(RUNS_DIR / f"{prefix}{layout}-{variant}"),
                     "s_step": summary["step_time"],
                     "tok_s_gpu": summary["tokens_per_gpu"],
                     "peak_gib": summary["peak_memory"],
                     "paired_ds_vs_cap2": paired,
-                    **traced_metrics(layout, variant),
+                    **traced_metrics(prefix, layout, variant),
                 }
             )
     if args.csv:

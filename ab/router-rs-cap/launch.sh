@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Usage: launch.sh <fsdp16|ep8> <variant> [--trace] [extra sft args]   e.g. launch.sh ep8 fp32-cap2 --dry-run
+# Usage: [SCENARIO=<scenario>] launch.sh <fsdp16|ep8> <variant> [--trace] [extra sft args]
+#   e.g. SCENARIO=s4k-noac launch.sh ep8 fp32-cap2 --dry-run   (no SCENARIO: the 16k, full-AC baseline)
 set -euo pipefail
 
 AB_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -22,6 +23,14 @@ declare -A VARIANT=(
   [bf16-cap2]="bfloat16 false 2"
 )
 
+# scenario -> "seq_len ac max_steps"
+declare -A SCENARIOS=(
+  [s4k-ac]="4096 full 40"
+  [s4k-noac]="4096 off 40"
+  [s8k-noac]="8192 off 40"
+  [s1k-noac]="1024 off 40"
+)
+
 layout=$1
 variant=$2
 shift 2
@@ -29,6 +38,19 @@ ep=${EP[$layout]}
 read -r router fullgraph cap <<<"${VARIANT[$variant]}"
 
 name="$layout-$variant"
+group=$layout
+scenario_args=()
+scenario_tags=""
+if [ -n "${SCENARIO:-}" ]; then
+  read -r seq_len ac max_steps <<<"${SCENARIOS[$SCENARIO]}"
+  name="$SCENARIO-$name"
+  group="$SCENARIO-$layout"
+  scenario_args=(--data.seq-len "$seq_len" --max-steps "$max_steps")
+  if [ "$ac" = "off" ]; then
+    scenario_args+=(--model.ac None)
+  fi
+  scenario_tags=",\"$SCENARIO\",\"seq$seq_len\",\"ac-$ac\""
+fi
 worktree=$BRANCH_WORKTREE
 cap_args=(--model.reduce-scatter-max-input-buffers "$cap")
 if [ "$cap" = "-" ]; then
@@ -37,7 +59,7 @@ if [ "$cap" = "-" ]; then
 fi
 
 trace_args=()
-tags="\"$layout\",\"router-$router\",\"fullgraph-$fullgraph\",\"cap-$cap\""
+tags="\"$layout\",\"router-$router\",\"fullgraph-$fullgraph\",\"cap-$cap\"$scenario_tags"
 if [ "${1:-}" = "--trace" ]; then
   shift
   name="$name-trace"
@@ -54,7 +76,7 @@ cd "$worktree"
 env -u HF_HOME PRL_OUTPUT_DIR="$RUNS_DIR" uv run --no-sync sft @ "$AB_DIR/sft-base.toml" \
   --run.name "$name" \
   --model.ep "$ep" --model.moe-router-dtype "$router" \
-  "${compile_args[@]}" "${cap_args[@]}" "${trace_args[@]}" \
-  --monitors.wandb.name "$name" --monitors.wandb.group "$layout" \
+  "${compile_args[@]}" "${cap_args[@]}" "${scenario_args[@]}" "${trace_args[@]}" \
+  --monitors.wandb.name "$name" --monitors.wandb.group "$group" \
   --monitors.wandb.tags "[$tags]" \
   --no-dashboard "$@"
