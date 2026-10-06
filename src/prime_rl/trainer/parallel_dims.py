@@ -36,9 +36,12 @@ __all__ = ["ParallelDims"]
 """
 [ParallelDims Mesh Breakdown]
 
-The trainer's ranks are organized into nested groups, and the mesh dims are the quotients between them.
+The trainer's ranks are organized into nested groups (sets of ranks) and laid out on one device
+mesh. The mesh's dims are the innermost group (cp) and the quotients between consecutive groups.
+Every process group the trainer communicates over is the set of ranks along one or more mesh dims.
+All of these are defined below.
 
-# Notation
+# Notation and mesh operations
 
 Mesh names double as their sizes. Three operations build one mesh from two dims A and B. Write a and
 b for local ranks on A and B (as in DeviceMesh.get_local_rank), so 0 <= a < A and 0 <= b < B:
@@ -58,48 +61,38 @@ contiguous block of ranks inside the next:
     is on (see expert_hsdp below).
   - world: every rank.
 
+This nesting is a design choice, not a requirement; see Design choices.
+
 # Mesh dims
 
-The world mesh is built from the quotients between consecutive groups, slowest-varying first:
+The device mesh has one dim per step in the nesting, so each nested group is a merge of the
+fastest dims. Slowest-varying first:
 
-  without EP:  dp_replicate, fsdp_mod_cp,            cp, fsdp_mod_vocab
-  with EP:     dp_replicate, fsdp_mod_ep, ep_mod_cp, cp, fsdp_mod_vocab
+  without EP:  dp_replicate, fsdp_mod_cp,            cp
+  with EP:     dp_replicate, fsdp_mod_ep, ep_mod_cp, cp
 
+The local ranks on these dims can be chosen independently, and together they determine the global
+rank. Each entry says what the local rank on that dim identifies.
   - cp: which chunk of each sequence the rank holds.
   - ep_mod_cp (EP): which cp group the rank is in, within its EP group.
   - fsdp_mod_cp (no EP): which cp group the rank is in, within its fsdp group.
-  - fsdp_mod_ep (EP): which EP group the rank is in, within its fsdp group. Ranks along it hold the same
-    experts and FSDP-shard them, so each holds 1 / (ep * fsdp_mod_ep) = 1 / fsdp of the expert params.
-  - dp_replicate = world_mod_fsdp: which replica the rank is in. Replicas hold identical params and
-    all-reduce gradients.
-  - fsdp_mod_vocab: always size 1, see vocab below.
+  - fsdp_mod_ep (EP): which EP group the rank is in, within its fsdp group.
+  - dp_replicate = world_mod_fsdp: which fsdp replica the rank is in.
 
-Size-1 dims are dropped, except fsdp_mod_cp and fsdp_mod_ep, which are always built, and fsdp_mod_vocab,
-which is built whenever fsdp > 1.
-
-# Other named meshes
-
-  - fsdp = fsdp_mod_cp x cp, or fsdp_mod_ep x ep_mod_cp x cp with EP: the FSDP shard group.
-  - ep = ep_mod_cp x cp (EP): the expert all-to-all group.
-  - dp = world_mod_cp: ranks with distinct data; sizes the data loader and token counts.
-  - world: every rank, flattened into one dim; all-reduces the loss and token counts.
-  - vocab = fsdp under a second name: the group over which NGramEmbedding's table is vocab-parallel
-    (EmbeddingParallel). Like EP, the sharded weights are never gathered; token ids move instead. Each
-    rank holds a slice of the table's rows; the group all-gathers every rank's token ids (padded to equal
-    length), each rank looks up the rows it owns (zeros elsewhere), and a reduce-scatter sums the partial
-    outputs and returns each rank's own tokens. Since vocab = fsdp, fsdp_mod_vocab = fsdp / vocab = 1.
+In addition to the nested groups, two derived groups are named:
+  - dp = world_mod_cp = dp_replicate x fsdp_mod_cp, or dp_replicate x fsdp_mod_ep x ep_mod_cp with EP:
+    ranks with distinct data.
+  - vocab = fsdp: the group NGramEmbedding's table is vocab-parallel over.
 
 # 2-D FSDP meshes
 
-Each FSDP mesh is (dp_replicate, shard dim) when dp_replicate > 1, and just the 1-D shard dim otherwise
-(the hsdp names are kept in that case).
-Params are sharded along the shard dim and replicated along dp_replicate.
-  - hsdp = (dp_replicate, fsdp): every other fully_shard (vision encoder, router, blocks, embeddings,
-    lm_head and norm, root).
-  - expert_hsdp = (dp_replicate, fsdp_mod_ep): the expert params. Each expert slice has one owner per EP
-    group, and expert_hsdp spans exactly those owners: ep * expert_hsdp = world, which ParallelDims
-    checks, so every token's gradient reaches each slice exactly once.
-  - vocab_hsdp = (dp_replicate, fsdp_mod_vocab): the NGramEmbedding.
+Each FSDP mesh is of the form (dp_replicate, shard dim) when dp_replicate > 1, and just the 1-D
+shard dim otherwise. Params are sharded along the shard dim and replicated along dp_replicate, which
+all three use by choice, not necessity; see Design choices.
+  - expert_hsdp = (dp_replicate, fsdp_mod_ep): for routed expert params when EP is on.
+  - vocab_hsdp = (dp_replicate, fsdp_mod_vocab): for NGramEmbedding when vocab > 1. Since
+    fsdp_mod_vocab = fsdp / vocab = 1, FSDP only replicates the table, which is already vocab-sharded.
+  - hsdp = (dp_replicate, fsdp): for all other params.
 
 # Example
 
@@ -124,22 +117,17 @@ in different EP groups own the same expert slice: they shard it along fsdp_mod_e
 it along dp_replicate ({0, 8}), so expert_hsdp for that slice is {0, 4, 8, 12}.
 Without EP, erase the middle boxes: fsdp_mod_ep x ep_mod_cp becomes the single dim fsdp_mod_cp.
 
-# Design choices, not constraints
+# Design choices
 
-The nesting cp ⊂ ep ⊂ fsdp ⊂ world, and the divisibility it implies, is a reasonable design choice
-rather than a requirement of the parallelisms themselves; ParallelDims raises NotImplementedError for
-EP layouts outside it. Other valid layouts include:
-  - cp outside fsdp: shard params over the data dims only, keeping cp intra-node and FSDP traffic
-    inter-node; cp ranks then hold identical params and all-reduce gradients, like replicas.
-  - ep spanning replicas: split experts over up to the whole world, with experts getting their own
-    data-parallel group of world / ep ranks; the expert all-to-all then crosses the slowest dim.
-  - ep not containing cp: ep inside cp, or independent of it. expert_hsdp must still satisfy
-    ep * expert_hsdp = world, so its shard part then includes part of cp and is no longer one dim.
-  - independent expert replication: correctness only needs ep * expert_hsdp = world, so the expert
-    params' replication degree could differ from dp_replicate, trading expert memory for communication.
-The current nesting gives expert and non-expert params the same 1 / fsdp share per rank, keeps the
-expert all-to-all within one replica, makes the expert FSDP shard group a single dim (fsdp_mod_ep),
-and builds every group from one mesh.
+The nesting cp ⊂ ep ⊂ fsdp ⊂ world spreads every param evenly over the full fsdp group, keeps the
+expert all-to-all within one replica, and makes the expert shard group a single dim (fsdp_mod_ep).
+Valid alternatives each give one of these up:
+  - cp outside fsdp: lets cp and FSDP traffic use different links (e.g. cp intra-node, FSDP
+    inter-node), but params shard over only fsdp / cp ranks and cp ranks hold identical copies.
+  - ep spanning replicas: the expert all-to-all crosses the slowest dim.
+  - ep not containing cp: the expert shard group spans part of cp, so it is no longer one dim.
+  - per-mesh replication: each 2-D FSDP mesh could use its own replicate degree instead of
+    dp_replicate; experts or the NGramEmbedding then get a different share per rank.
 """
 
 
