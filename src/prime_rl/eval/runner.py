@@ -89,12 +89,7 @@ class EvalRunner:
         self.admin_plane = AdminPlane(config.client)
 
         get_logger().info("Loading eval environment(s)")
-        self.eval_envs = EvalEnvs(
-            config.source,
-            config.env_addresses,
-            get_config_dir(self.run_dir),
-            streaming=not isinstance(config, SFTOnlineEvalConfig),
-        )
+        self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
         await self.eval_envs.start()
         get_logger().info(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
@@ -332,8 +327,8 @@ class EvalRunner:
 
         parts = []
         for env_name, _step, arrived, expected in sorted(self.eval_sink.batch_progress()):
-            if expected is None:
-                parts.append(f"{env_name} {arrived} (streaming)")
+            if expected is None:  # a stream's size is known once it ends
+                parts.append(f"{env_name} {arrived}")
             else:
                 parts.append(f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name)
         progress_part = " | ".join(parts) if parts else "Idle"
