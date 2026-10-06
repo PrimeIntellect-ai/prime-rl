@@ -66,7 +66,7 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
         return config.resume.dir_step
     if config.resume.step is not None:
         return config.resume.step
-    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
+    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)), ("trainer",))
 
 
 def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:

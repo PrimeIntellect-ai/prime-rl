@@ -6,6 +6,7 @@ from prime_rl.utils.pathing import (
     get_batch_dir,
     get_broadcast_dir,
     get_step_path,
+    resolve_latest_ckpt_step,
     validate_run_dir,
 )
 
@@ -117,3 +118,28 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
+
+
+def test_resolve_latest_ckpt_step_skips_incomplete_steps(tmp_path):
+    ckpt_dir = tmp_path / "checkpoints"
+    for step, files in {
+        10: ["trainer/.metadata", "orchestrator/progress.pt"],
+        20: ["trainer/.metadata", "orchestrator/progress.pt"],
+        30: ["trainer/__0_0.distcp", "orchestrator/progress.pt"],  # trainer save killed mid-write
+        34: ["orchestrator/progress.pt"],  # orchestrator ahead of the trainer
+    }.items():
+        for file in files:
+            path = get_step_path(ckpt_dir, step) / file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+    assert resolve_latest_ckpt_step(ckpt_dir, ("trainer", "orchestrator")) == 20
+    assert resolve_latest_ckpt_step(ckpt_dir, ("trainer",)) == 20
+    assert resolve_latest_ckpt_step(ckpt_dir, ("orchestrator",)) == 34
+    assert resolve_latest_ckpt_step(tmp_path / "missing", ("trainer",)) is None
+    # Steps exist but none is complete for these components: raise instead of starting from scratch
+    trainer_only = get_step_path(tmp_path / "trainer_only", 10) / "trainer"
+    trainer_only.mkdir(parents=True)
+    (trainer_only / ".metadata").touch()
+    with pytest.raises(FileNotFoundError):
+        resolve_latest_ckpt_step(tmp_path / "trainer_only", ("trainer", "orchestrator"))
