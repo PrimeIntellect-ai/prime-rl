@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
-from prime_rl.orchestrator.types import DispatchFailure
+from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation
 from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
 
 Subset = Literal["all", "effective"]
@@ -100,6 +100,51 @@ class Stat:
             f"{prefix}/p10": self.p10(),
             f"{prefix}/p90": self.p90(),
         }
+
+
+@dataclass
+class MetricWindow:
+    """Mergeable numeric observations, owned by a finite reporting window.
+
+    Distributions retain scalars for exact percentiles. Rate families share a
+    denominator so categories absent from a group still count toward its total.
+    No episode, trace, or error objects survive extraction.
+    """
+
+    distributions: dict[str, list[float]] = field(default_factory=dict)
+    counts: dict[str, float] = field(default_factory=dict)
+    rates: dict[str, tuple[dict[str, float], int]] = field(default_factory=dict)
+
+    def distribution(self, key: str, stat: Stat) -> None:
+        self.distributions.setdefault(key, []).extend(stat.values)
+
+    def rate(self, prefix: str, counts: dict[str, float], total: int) -> None:
+        current, denominator = self.rates.get(prefix, ({}, 0))
+        for name, count in counts.items():
+            current[name] = current.get(name, 0.0) + count
+        self.rates[prefix] = (current, denominator + total)
+
+    def count(self, key: str, value: float) -> None:
+        self.counts[key] = self.counts.get(key, 0.0) + value
+
+    def extend(self, other: MetricWindow) -> None:
+        for key, values in other.distributions.items():
+            self.distributions.setdefault(key, []).extend(values)
+        for key, value in other.counts.items():
+            self.count(key, value)
+        for prefix, (counts, total) in other.rates.items():
+            self.rate(prefix, counts, total)
+
+    def to_dict(self) -> dict[str, float]:
+        out = dict(self.counts)
+        for key, values in self.distributions.items():
+            out |= Stat(values).to_dict(key)
+        for prefix, (counts, total) in self.rates.items():
+            out |= {
+                f"{prefix}/{name}" if name else prefix: count / total if total else 0.0
+                for name, count in counts.items()
+            }
+        return out
 
 
 class StatGroup:
@@ -226,18 +271,6 @@ class TraceMetrics(StatGroup):
         """Pipeline cancellations (stale drop) — disjoint from errors."""
         return Stat([float(record.cancelled) for record in self.records])
 
-    def stop_conditions(self) -> dict[str, float]:
-        out = {
-            "generation_truncated": sum(
-                trace.is_truncated and trace.stop_condition != "prompt_too_long" for trace in self.traces
-            )
-            / len(self.traces)
-        }
-        conditions = [trace.stop_condition for trace in self.traces if trace.stop_condition is not None]
-        for condition in sorted(set(conditions)):
-            out[condition] = conditions.count(condition) / len(conditions)
-        return out
-
     def error_types(self) -> dict[str, int]:
         types = [trace.last_error.type for trace in self.traces if trace.has_error and trace.last_error is not None]
         return {error_type: types.count(error_type) for error_type in sorted(set(types))}
@@ -255,23 +288,39 @@ class TraceMetrics(StatGroup):
             "solved_some": 1 - (solved_none + solved_all) / num_groups,
         }
 
-    def to_dict(self, prefix: str, *, subset: Subset) -> dict[str, float]:
+    def snapshot(self, prefix: str, *, subset: Subset) -> MetricWindow:
         stats = self.stats()
-        out: dict[str, float] = {}
+        out = MetricWindow()
         for name in self.DISTRIBUTIONS:
-            out |= stats[name].to_dict(f"{prefix}/{name}")
+            out.distribution(f"{prefix}/{name}", stats[name])
         for name in self.RATES:
-            out[f"{prefix}/{name}/mean"] = stats[name].mean()
-        out |= self.timing.to_dict(f"{prefix}/timing")
-        out |= self.metrics.to_dict(f"{prefix}/metrics")
-        out |= self.rewards.to_dict(f"{prefix}/rewards")
+            out.rate(f"{prefix}/{name}", {"mean": sum(stats[name].values)}, len(stats[name].values))
+        for name, group in (("timing", self.timing), ("metrics", self.metrics), ("rewards", self.rewards)):
+            for key, stat in group.stats().items():
+                out.distribution(f"{prefix}/{name}/{key}", stat)
         if subset == "all":
-            out[f"{prefix}/has_error/mean"] = self.has_error.mean()
-            out[f"{prefix}/cancelled/mean"] = self.cancelled.mean()
-            out |= {f"{prefix}/error/{key}": float(value) for key, value in self.error_types().items()}
-            out |= {f"{prefix}/{key}": value for key, value in self.solve_rates().items()}
-        out |= {f"{prefix}/stop_condition/{key}": value for key, value in self.stop_conditions().items()}
+            out.rate(f"{prefix}/has_error", {"mean": sum(self.has_error.values)}, len(self.records))
+            out.rate(f"{prefix}/cancelled", {"mean": sum(self.cancelled.values)}, len(self.records))
+            for key, value in self.error_types().items():
+                out.count(f"{prefix}/error/{key}", float(value))
+            num_groups = len({episode_group_id(record.episode) for record in self.records})
+            out.rate(prefix, {key: value * num_groups for key, value in self.solve_rates().items()}, num_groups)
+        conditions = [trace.stop_condition for trace in self.traces if trace.stop_condition is not None]
+        out.rate(
+            f"{prefix}/stop_condition",
+            {condition: float(conditions.count(condition)) for condition in set(conditions)},
+            len(conditions),
+        )
+        # Truncation uses all traces; named stop conditions use only recorded conditions.
+        out.rate(
+            f"{prefix}/stop_condition/generation_truncated",
+            {"": sum(trace.is_truncated and trace.stop_condition != "prompt_too_long" for trace in self.traces)},
+            len(self.records),
+        )
         return out
+
+    def to_dict(self, prefix: str, *, subset: Subset) -> dict[str, float]:
+        return self.snapshot(prefix, subset=subset).to_dict()
 
 
 class EpisodeMetrics:
@@ -338,19 +387,22 @@ class EpisodeMetrics:
         trace-less episodes still count."""
         return Stat([float(episode.id in self.cancelled_ids) for episode in self.episodes])
 
-    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
+    def snapshot(self, *, prefix: str, subset: Subset) -> MetricWindow:
+        out = MetricWindow()
         if not self.episodes:
-            return {}
+            return out
         metric_prefix = f"{prefix}/{subset}"
-        out: dict[str, float] = {}
         for name in ("num_total_tokens", "num_input_tokens", "num_output_tokens", "num_turns", "num_branches"):
-            out |= getattr(self, name).to_dict(f"{metric_prefix}/{name}")
+            out.distribution(f"{metric_prefix}/{name}", getattr(self, name))
         if subset == "all":
-            out[f"{metric_prefix}/has_error/mean"] = self.has_error.mean()
-            out[f"{metric_prefix}/cancelled/mean"] = self.cancelled.mean()
+            out.rate(f"{metric_prefix}/has_error", {"mean": sum(self.has_error.values)}, len(self.episodes))
+            out.rate(f"{metric_prefix}/cancelled", {"mean": sum(self.cancelled.values)}, len(self.episodes))
         for agent, metrics in self.by_agent().items():
-            out |= metrics.to_dict(f"{metric_prefix}/{agent}", subset=subset)
+            out.extend(metrics.snapshot(f"{metric_prefix}/{agent}", subset=subset))
         return out
+
+    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
+        return self.snapshot(prefix=prefix, subset=subset).to_dict()
 
 
 class TrainMetrics(EpisodeMetrics):
@@ -358,15 +410,19 @@ class TrainMetrics(EpisodeMetrics):
     def reward(self) -> Stat:
         return Stat([float(record.trace.reward) for record in self.records])
 
-    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
-        out = super().to_wandb(prefix=prefix, subset=subset)
+    def snapshot(self, *, prefix: str, subset: Subset) -> MetricWindow:
+        out = super().snapshot(prefix=prefix, subset=subset)
         for agent, traces in self.by_agent().items():
             metric_prefix = f"{prefix}/{subset}/{agent}"
-            out[f"{metric_prefix}/is_trainable/mean"] = sum(
-                float(is_trainable(record.trace)) for record in traces.records
-            ) / len(traces.records)
-            out[f"{metric_prefix}/is_admitted/mean"] = sum(float(record.admitted) for record in traces.records) / len(
-                traces.records
+            out.rate(
+                f"{metric_prefix}/is_trainable",
+                {"mean": sum(float(is_trainable(record.trace)) for record in traces.records)},
+                len(traces.records),
+            )
+            out.rate(
+                f"{metric_prefix}/is_admitted",
+                {"mean": sum(float(record.admitted) for record in traces.records)},
+                len(traces.records),
             )
         return out
 
@@ -525,6 +581,58 @@ class TrainEpisodes(EpisodeCollection):
     @property
     def metrics(self) -> TrainMetrics:
         return TrainMetrics(self.selected_episodes, self.records, self.cancelled)
+
+
+@dataclass
+class RolloutWindow:
+    """Completed group accounting independent of whether a training batch fills."""
+
+    metrics: MetricWindow = field(default_factory=MetricWindow)
+    units: int = 0
+    tokens: int = 0
+    traces: int = 0
+    groups: int = 0
+    attempts: int = 0
+    discarded: int = 0
+    stale: int = 0
+    errored: int = 0
+
+    def observe(
+        self,
+        episodes: TrainEpisodes,
+        failures: list[DispatchFailure],
+        cancellation: GroupCancellation | None,
+        *,
+        env_name: str,
+        queued_trace_ids: set[str],
+    ) -> None:
+        cancelled = cancellation.count if cancellation is not None else 0
+        attempts = len(episodes) + len(failures) + cancelled
+        self.units += max(attempts, episodes.num_traces)
+        self.tokens += episodes.num_total_tokens
+        self.traces += episodes.num_traces
+        self.groups += 1
+        self.attempts += attempts
+        discarded = [episode for episode in episodes if not any(t.id in queued_trace_ids for t in episode.traces)]
+        self.discarded += len(discarded) + len(failures) + cancelled
+        self.stale += sum(episode.id in episodes.cancelled for episode in discarded)
+        if cancellation is not None and cancellation.reason == "stale":
+            self.stale += cancelled
+        self.errored += len(failures) + sum(
+            episode.id not in episodes.cancelled
+            and (not episode.ok or any(trace.has_error for trace in episode.traces))
+            for episode in discarded
+        )
+        for prefix in ("train/agg", f"train/{env_name}"):
+            self.metrics.extend(episodes.metrics.snapshot(prefix=prefix, subset="all"))
+            self.metrics.rate(
+                f"{prefix}/all/dispatch_failure", {"mean": float(len(failures))}, len(episodes) + len(failures)
+            )
+            for failure in failures:
+                self.metrics.count(f"{prefix}/all/dispatch_failure/{failure.error.type}", 1.0)
+        self.metrics.rate("rollout/env_share", {env_name: float(episodes.num_traces)}, episodes.num_traces)
+        self.metrics.count("rollout/traces/queued", float(len(queued_trace_ids)))
+        self.metrics.count("rollout/traces/discarded", float(episodes.num_traces - len(queued_trace_ids)))
 
 
 class EvalEpisodes(EpisodeCollection):

@@ -97,13 +97,15 @@ ROWS = 6
 
 
 def line_panels(metrics: Sequence[str], regexes: Sequence[str]) -> list[wr.LinePlot]:
-    # inference/* is logged against time (step_metric="_timestamp"), plotted on "RelativeTime(Wall)"
-    # (== W&B's "_absolute_runtime", seconds since run start) so runs started at different times
-    # overlay; everything else on "step" (prime-rl's logged training step, not internal "Step").
-    # x is set per-panel because LinePlot defaults it to "Step", which overrides the workspace x_axis.
-    return [wr.LinePlot(x="RelativeTime(Wall)" if m.startswith("inference/") else "step", y=[m]) for m in metrics] + [
-        wr.LinePlot(x="step", metric_regex=r) for r in regexes
-    ]
+    def axis(metric: str) -> str:
+        if metric.startswith("inference/"):
+            return "RelativeTime(Wall)"
+        if metric.startswith("train/") and "/all/" in metric:
+            return "rollout/window"
+        return "step"
+
+    # Explicit panel axes override the metric definitions in W&B.
+    return [wr.LinePlot(x=axis(m), y=[m]) for m in metrics] + [wr.LinePlot(x=axis(r), metric_regex=r) for r in regexes]
 
 
 def inference_section() -> ws.Section:

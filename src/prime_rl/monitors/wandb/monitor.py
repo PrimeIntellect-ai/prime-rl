@@ -119,6 +119,7 @@ class WandbMonitor(Monitor):
         # key prefixes that arrived via step=None (wall-time rows); their time axis
         # is defined lazily on first sight in log_metrics
         self._time_prefixes: set[str] = set()
+        self._rollout_metrics: set[str] = set()
 
         # Provision the curated "overview" saved view once per project (the run's primary process
         # in shared mode, else the single master). Best-effort: a workspaces/API failure must never
@@ -140,6 +141,10 @@ class WandbMonitor(Monitor):
         self.logger.info(f"Logging metrics to W&B ({self.wandb.url})")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
+        if "rollout/window" in metrics:
+            for key in metrics.keys() - self._rollout_metrics - {"rollout/window"}:
+                wandb.define_metric(key, step_metric="rollout/window")
+                self._rollout_metrics.add(key)
         # every log carries the monitor's own wall-time stamp
         if step is None:
             # time-keyed rows chart against wall time; whichever key prefixes show

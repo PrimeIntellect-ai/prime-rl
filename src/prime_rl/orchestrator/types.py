@@ -31,6 +31,7 @@ class Progress:
     total_tokens: int = 0
     total_samples: int = 0
     total_problems: int = 0
+    rollout_window: int = 0
 
 
 WorkKind = Literal["train", "eval"]
@@ -131,18 +132,10 @@ class GroupState:
 
 @dataclass
 class TrainBatch:
-    """Returned episodes, dispatch failures, shipped cohort, and trainer payload."""
+    """Exactly the shipped cohort and its trainer payload."""
 
-    episodes: TrainEpisodes
     cohort: TrainEpisodes
     samples: list[TrainingSample]
-    failures: list[DispatchFailure]
-    # Episodes with traces retained for a later batch are not discarded.
-    buffered_episode_ids: set[str]
-    # Group cancellations can account for attempts that returned no episode.
-    cancelled_attempts: int = 0
-    # Stale attempts are a subset of cancelled_attempts.
-    stale_attempts: int = 0
 
 
 @dataclass
