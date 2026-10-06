@@ -1,4 +1,3 @@
-from collections import defaultdict
 from typing import Callable
 
 import torch
@@ -24,6 +23,10 @@ def _sign_sgd_kernel(
     tl.store(param_ptr + offsets, param.to(param_ptr.dtype.element_ty), mask=mask)
     if ACCUMULATE_NORM:
         tl.atomic_add(sumsq_ptr, tl.sum(grad * grad))
+
+
+def _mesh_key(mesh) -> tuple:
+    return (mesh.mesh_dim_names or (), tuple(mesh.shape))
 
 
 def _local(tensor: torch.Tensor) -> torch.Tensor:
@@ -107,15 +110,15 @@ class SignSGD(Optimizer):
 
     def grad_norm(self) -> torch.Tensor:
         """Global norm of the gradients the armed backward stepped on; disarms."""
-        by_group = defaultdict(list)
-        for mesh, sumsq in self._sumsq.items():
-            by_group[None if mesh is None else mesh.get_group()].append(sumsq)
         total = torch.zeros((), dtype=torch.float32, device="cuda")
-        for pg, parts in by_group.items():
-            part = torch.stack(parts).sum()
-            if pg is not None:
-                dist.all_reduce(part, group=pg)
-            total += part
+        # Same order on every rank, so the collectives below line up.
+        for mesh, sumsq in sorted(self._sumsq.items(), key=lambda kv: () if kv[0] is None else _mesh_key(kv[0])):
+            if mesh is not None:
+                # Shards are disjoint across every mesh dimension, so their squares sum over each.
+                for dim in range(mesh.ndim):
+                    if mesh.size(dim) > 1:
+                        dist.all_reduce(sumsq, group=mesh.get_group(dim))
+            total += sumsq
         self.arm(False)
         return total.sqrt()
 
