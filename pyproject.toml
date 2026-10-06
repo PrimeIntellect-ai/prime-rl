@@ -65,7 +65,6 @@ gpu = [
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
-    "modelexpress==0.7.0 ; sys_platform == 'linux'",
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
 ]
 dashboard = [
@@ -284,7 +283,6 @@ flash-mla = { url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/downloa
 flash-linear-attention = { git = "https://github.com/fla-org/flash-linear-attention" }
 mamba-ssm = { git = "https://github.com/state-spaces/mamba", rev = "f577286" }
 flash_attn_3 = { index = "pytorch-cu130-test" }
-modelexpress = { git = "https://github.com/ai-dynamo/modelexpress.git", subdirectory = "modelexpress_client/python", rev = "8512b8c" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
