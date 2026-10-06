@@ -61,7 +61,9 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
 
 def release_trace_payload(trace: vf.Trace) -> None:
     """Release discarded node payloads while preserving graph statistics for metrics."""
+    trace.tools = []
     for node in trace.nodes:
+        node.tools = []
         message = node.message
         kwargs = {"role": message.role, "content": ""}
         if message.role == "tool":
@@ -227,8 +229,10 @@ class TrainSink:
             if policy is None or policy.start >= min_version:
                 continue
             samples = self.pending_batch.pop(trace_id)
+            trace = self._trace(trace_id)
             if self.token_batch_size is not None:
-                self.pending_tokens -= payload_tokens(samples, self._trace(trace_id))
+                self.pending_tokens -= payload_tokens(samples, trace)
+            release_trace_payload(trace)
             del self.episode_by_trace[trace_id]
             self.pending_episodes.cancelled.add(episode.id)
             dropped += 1
@@ -327,6 +331,8 @@ class TrainSink:
             for trace in episode.traces:
                 if trace.id in samples_by_trace:
                     self.episode_by_trace[trace.id] = episode
+                else:
+                    release_trace_payload(trace)
         if self.token_batch_size is not None:
             self.pending_tokens += sum(
                 payload_tokens(samples, self._trace(trace_id)) for trace_id, samples in samples_by_trace.items()
