@@ -2,6 +2,7 @@ import itertools
 import time
 
 import pytest
+import torch
 
 from prime_rl.utils.worker_pool import WorkerPool
 
@@ -24,6 +25,10 @@ def _fail_on_two(item: int) -> int:
     return item
 
 
+def _torch_num_threads(item: int) -> int:
+    return torch.get_num_threads()
+
+
 @pytest.mark.parametrize("num_workers", [0, 2])
 def test_imap_preserves_order_and_applies_initializer(num_workers: int):
     with WorkerPool(num_workers, _set_offset, (100,)) as pool:
@@ -36,8 +41,8 @@ def test_imap_propagates_worker_exception(num_workers: int):
         list(pool.imap(_fail_on_two, range(4)))
 
 
-@pytest.mark.parametrize("num_workers", [0, 2])
-def test_imap_pulls_lazily_and_bounded(num_workers: int):
+@pytest.mark.parametrize(("num_workers", "expected_pulls"), [(0, 4), (2, 6)])
+def test_imap_pulls_lazily_and_bounded(num_workers: int, expected_pulls: int):
     pulled = []
 
     def source():
@@ -50,4 +55,9 @@ def test_imap_pulls_lazily_and_bounded(num_workers: int):
         results = list(itertools.islice(pool.imap(_add_offset_slowest_first, source(), max_in_flight), 4))
 
     assert results == [0, 1, 2, 3]
-    assert len(pulled) <= len(results) + max_in_flight
+    assert len(pulled) == expected_pulls
+
+
+def test_workers_run_torch_single_threaded():
+    with WorkerPool(2) as pool:
+        assert list(pool.imap(_torch_num_threads, range(4))) == [1, 1, 1, 1]

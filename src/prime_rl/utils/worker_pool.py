@@ -1,11 +1,29 @@
 import multiprocessing
+import os
+import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ProcessPoolExecutor
 from typing import Any, TypeVar
 
+import torch
+
 T = TypeVar("T")
 R = TypeVar("R")
+
+
+def _exit_when_parent_dies(parent_pid: int) -> None:
+    while os.getppid() == parent_pid:
+        time.sleep(5.0)
+    os._exit(1)
+
+
+def _init_worker(parent_pid: int, initializer: Callable[..., None] | None, initargs: tuple[Any, ...]) -> None:
+    torch.set_num_threads(1)
+    threading.Thread(target=_exit_when_parent_dies, args=(parent_pid,), daemon=True).start()
+    if initializer is not None:
+        initializer(*initargs)
 
 
 class WorkerPool:
@@ -13,6 +31,7 @@ class WorkerPool:
 
     Workers are forked and must not use CUDA. ``fn`` and each item and result are pickled, so ``fn``
     must be a module-level function; ``initargs`` are inherited through the fork without pickling.
+    Like torch's DataLoader workers, each worker runs torch with one thread and exits when the parent dies.
     """
 
     def __init__(
@@ -30,8 +49,8 @@ class WorkerPool:
             self.executor = ProcessPoolExecutor(
                 max_workers=num_workers,
                 mp_context=multiprocessing.get_context("fork"),
-                initializer=initializer,
-                initargs=initargs,
+                initializer=_init_worker,
+                initargs=(os.getpid(), initializer, initargs),
             )
 
     def imap(self, fn: Callable[[T], R], items: Iterable[T], max_in_flight: int | None = None) -> Iterator[R]:
@@ -39,7 +58,8 @@ class WorkerPool:
         if self.executor is None:
             yield from map(fn, items)
             return
-        max_in_flight = max_in_flight or 2 * self.num_workers
+        if max_in_flight is None:
+            max_in_flight = 2 * self.num_workers
         pending: deque[Future[R]] = deque()
         try:
             for item in items:
