@@ -503,8 +503,6 @@ class InferenceConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_routed_expert_weights(self):
         if self.enable_return_routed_expert_weights:
-            if self.deployment.type == "disaggregated":
-                raise ValueError("enable_return_routed_expert_weights is not supported with disaggregated P/D.")
             self.vllm.enable_return_routed_experts = True
         return self
 

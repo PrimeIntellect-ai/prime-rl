@@ -37,19 +37,19 @@ def monkey_patch_return_routed_expert_weights():
 
     Enabled by ``inference.enable_return_routed_expert_weights`` (via the
     ``PRIME_RETURN_ROUTED_EXPERT_WEIGHTS`` env var, so it reaches every vLLM process).
-    The routed-experts buffers widen from ``[tokens, layers, top_k]`` expert ids to int32
-    ``[tokens, layers, 2 * top_k]``: the logical expert ids followed by the raw bits of
-    their fp32 routing weights. Both halves then share router replay's whole data path
-    (slot storage, prefix-cache reuse, request slicing, transport, packing) and the
-    trainer splits them again (``MoE.forward``).
+    vLLM 0.31 captures routed experts in ``RoutedExpertsCapturer`` and hands its snapshots to
+    the AuxOutput connector, whose buffers, block store and materialization take their row
+    shape and dtype from the capturer. Widening the capturer's rows from ``[layers, top_k]``
+    uint8/uint16 expert ids to int32 ``[layers, 2 * top_k]`` (the logical expert ids followed
+    by the raw bits of their fp32 routing weights) therefore carries both halves through
+    router replay's whole data path (prefix-cache reuse, request slicing, transport, packing);
+    the trainer splits them again (``MoE.forward``).
 
     Weights are captured in the trainer's convention (normalized and scaled): models that
     apply ``routed_scaling_factor`` to the MoE output rather than to the weights (e.g.
     GLM-4.5, Nemotron-H, Laguna) get it folded in here. Only routers deriving from vLLM's ``BaseRouter``
     expose weights; other capture paths (monolithic MoE kernels, DeepSeek-V4) fail loudly.
     """
-    import numpy as np
-    from vllm.logger import init_logger
     from vllm.model_executor.layers.fused_moe import routed_experts_capturer
     from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
     from vllm.model_executor.layers.fused_moe.runner.moe_runner import MoERunner
@@ -57,26 +57,22 @@ def monkey_patch_return_routed_expert_weights():
     if getattr(BaseRouter, "_prime_rl_captures_weights", False):
         return
 
-    logger = init_logger(__name__)
+    Capturer = routed_experts_capturer.RoutedExpertsCapturer
 
     original_get_shape = routed_experts_capturer._get_routed_experts_shape
-    original_manager_init = routed_experts_capturer.RoutedExpertsManager.__init__
-    original_capture = routed_experts_capturer.RoutedExpertsCapturer.capture
+    original_capturer_init = Capturer.__init__
+    original_capture = Capturer.capture
     original_runner_init = MoERunner.__init__
 
     def _get_routed_experts_shape(vllm_config):
         num_layers, num_experts, top_k = original_get_shape(vllm_config)
         return num_layers, num_experts, 2 * top_k
 
-    def _manager_init(self, vllm_config, kv_cache_config):
-        original_manager_init(self, vllm_config, kv_cache_config)
-        # Upstream stores expert ids as uint8/uint16, which would truncate the weight bits.
-        self.routed_experts_by_slot = np.zeros(self.routed_experts_by_slot.shape, dtype=np.int32)
-        logger.info(
-            "Total Router Recall: RoutedExpertsManager CPU buffer is %.2f GB (shape=%s, int32 ids + fp32 weights)",
-            self.routed_experts_by_slot.nbytes / 1e9,
-            self.routed_experts_by_slot.shape,
-        )
+    def _capturer_init(self, max_num_batched_tokens, vllm_config):
+        original_capturer_init(self, max_num_batched_tokens, vllm_config)
+        # Upstream narrows snapshots to uint8/uint16 expert ids, which would truncate the weight bits.
+        self.output_dtype_name = "int32"
+        self.output_dtype = torch.int32
 
     def _capture(self, layer_id, topk_ids):
         if topk_ids.shape[-1] != self.device_buffer.shape[-1]:
@@ -86,12 +82,17 @@ def monkey_patch_return_routed_expert_weights():
             )
         original_capture(self, layer_id, topk_ids)
 
+    def _snapshot_routing_data(self, num_tokens):
+        # Upstream's dtype cast doubles as the copy that keeps the snapshot stable while the
+        # next step overwrites the device buffer; the buffer is already int32, so copy explicitly.
+        return self.device_buffer[:num_tokens].clone()
+
     def _runner_init(self, *args, **kwargs):
         original_runner_init(self, *args, **kwargs)
         self.router.output_scale = self.routed_scaling_factor
 
     def _select_experts(self, hidden_states, router_logits, topk_indices_dtype=None, *, input_ids=None):
-        # Copy of BaseRouter._select_experts (vLLM 0.30) that also captures the weights.
+        # Copy of BaseRouter._select_experts (vLLM 0.31) that also captures the weights.
         self._validate_eplb_state()
         topk_weights, topk_ids = self._compute_routing(
             hidden_states, router_logits, topk_indices_dtype, input_ids=input_ids
@@ -104,8 +105,9 @@ def monkey_patch_return_routed_expert_weights():
         return topk_weights, topk_ids
 
     routed_experts_capturer._get_routed_experts_shape = _get_routed_experts_shape
-    routed_experts_capturer.RoutedExpertsManager.__init__ = _manager_init
-    routed_experts_capturer.RoutedExpertsCapturer.capture = _capture
+    Capturer.__init__ = _capturer_init
+    Capturer.capture = _capture
+    Capturer.snapshot_routing_data = _snapshot_routing_data
     MoERunner.__init__ = _runner_init
     BaseRouter.output_scale = 1.0  # set per layer by MoERunner.__init__
     BaseRouter._select_experts = _select_experts

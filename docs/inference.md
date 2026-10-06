@@ -317,14 +317,14 @@ When launching the inference server standalone, set `inference.enable_return_rou
 - The trainer uses the sampler's expert ids and weights as constants, so **the router is not trained** while this is on (`trainer.model.freeze_moe_router` is set automatically). Gradients still reach the experts and the rest of the model.
 - The routed-experts payload becomes int32 `[tokens, layers, 2 * top_k]` (expert ids, then fp32 weight bits) and rides router replay's data path unchanged, inline in the HTTP response. That is `8 * layers * top_k` bytes per token, 8x the uint8 ids-only payload:
 
-  | | bytes/token | one response (raw / base64) | orchestrator RAM per 1Mi batch tokens | vLLM CPU slot buffer per 1Mi KV slots |
+  | | bytes/token | one response (raw / base64) | orchestrator RAM per 1Mi batch tokens | vLLM AuxOutput store per 1Mi KV tokens |
   | --- | --- | --- | --- | --- |
   | Qwen3-30B-A3B (48 layers, top-8) @ 32k | 3,072 (ids-only 384) | 96 / 128 MiB (ids-only 12 / 16) | 3 GiB (0.375) | 3 GiB (0.375) |
   | GLM-5 (78 layers, top-8) @ 131k | 4,992 (ids-only 624) | 624 / 832 MiB (ids-only 78 / 104) | 4.9 GiB (0.61) | 4.9 GiB (0.61) |
 
-  The vLLM slot buffer is sized for the whole KV block pool of each engine; its real size is logged at startup.
+  vLLM's AuxOutput block store (an mmap, filled as blocks are cached) is sized for the whole KV block pool of each engine unless `aux_output_config.max_bytes` caps it.
 - Weights are captured from vLLM's `BaseRouter` routers (Qwen3-MoE, Qwen3.5-MoE, GLM-4.5/GLM-5, Nemotron-H, Laguna, ...) in the trainer's convention, including `routed_scaling_factor` for models where vLLM applies it to the MoE output. Monolithic MoE kernels (e.g. FP8/NVFP4 FlashInfer TRT-LLM MoE) and DeepSeek-V4 only capture ids and fail at startup.
-- Same constraints as router replay, and disaggregated P/D is not supported.
+- Same constraints as router replay, including the V2 model runner and no disaggregated P/D.
 
 ### Sampling Replay
 
