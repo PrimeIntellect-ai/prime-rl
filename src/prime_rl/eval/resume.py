@@ -74,22 +74,31 @@ def take_landed(run_dir: Path) -> list[dict]:
     return list(landed.values())
 
 
+def record_env(record: dict) -> str:
+    return record["env"].get("name") or record["env"]["id"]
+
+
 def plan(
     landed: list[dict], eval_envs: EvalEnvs
 ) -> tuple[list[vf.WireEpisode], dict[str, dict[str, int]], dict[str, dict[str, str]]]:
     """Match the landed episodes to the run's tasks: the episodes to keep, in stream
     order, the rollouts still owed per env and task key, and the group id a task's kept
-    episodes carry, so the owed ones complete that group rather than open another."""
+    episodes carry, so the owed ones complete that group rather than open another. A
+    streaming env's tasks are not known up front: each landed key is owed one group."""
     targets: dict[str, Counter[str]] = {}
     for env in eval_envs:
-        targets[env.name] = Counter(task.key for task in env.examples)
+        if env.feed is not None:
+            keys = {record["task"]["key"] for record in landed if record_env(record) == env.name}
+        else:
+            keys = [task.key for task in env.examples]
+        targets[env.name] = Counter(keys)
         for key in targets[env.name]:
             targets[env.name][key] *= env.config.group_size
     kept: list[vf.WireEpisode] = []
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     groups: dict[str, dict[str, str]] = defaultdict(dict)
     for record in landed:
-        env_name = record["env"].get("name") or record["env"]["id"]
+        env_name = record_env(record)
         key = record["task"]["key"]
         if counts[env_name][key] >= targets.get(env_name, Counter())[key]:
             continue
@@ -97,12 +106,13 @@ def plan(
         counts[env_name][key] += 1
         if (group := record.get("group") or {}).get("id"):
             groups[env_name].setdefault(key, group["id"])
+    # a streaming env keeps its complete keys at zero so they are skipped, not run fresh
     owed = {
-        env_name: {
-            key: target - counts[env_name][key]
-            for key, target in target_counts.items()
-            if target > counts[env_name][key]
+        env.name: {
+            key: target - counts[env.name][key]
+            for key, target in targets[env.name].items()
+            if env.feed is not None or target > counts[env.name][key]
         }
-        for env_name, target_counts in targets.items()
+        for env in eval_envs
     }
     return kept, owed, dict(groups)

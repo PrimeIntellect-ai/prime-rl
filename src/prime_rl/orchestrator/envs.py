@@ -31,6 +31,7 @@ from verifiers.v1.serve import EnvClient
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.generation_source import GenerationSource
+from prime_rl.orchestrator.task_feed import TaskFeed
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
 
@@ -71,8 +72,8 @@ class Env:
         self.tasks: Iterator[vf.Task] | None = None
         """The env's selected tasks (``select``), client-side, set at
         ``start()``. A bounded selection is materialized (``num_tasks`` is its count)
-        and iterated from there; an unbounded one streams off the taskset. Consumed once — by ``TrainSource`` (train) or
-        ``EvalEnv.start`` (eval)."""
+        and iterated from there; an unbounded one streams off the taskset through a
+        ``TaskFeed``. Consumed once — by ``TrainSource`` (train) or ``EvalSource`` (eval)."""
         self._env_client: EnvClient | None = None
 
     @property
@@ -102,7 +103,7 @@ class Env:
             self.tasks = iter(materialized)
             self.num_tasks = len(materialized)
         else:
-            self.tasks = iter(taskset)
+            self.tasks = TaskFeed(iter(taskset), name=self.name)
             self.num_tasks = None
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
@@ -166,15 +167,22 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
+    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path, *, streaming: bool = False):
         super().__init__(config, address, address_file)
         self.sampling_args = config.sampling.to_sampling_args()
+        self.streaming = streaming
+        """Whether an unbounded taskset may stream through one epoch (a standalone eval)."""
         self.examples: list[vf.Task] = []
+        self.feed: TaskFeed | None = None
 
     async def start(self) -> None:
         await super().start()
-        if self.num_tasks is None:
-            raise ValueError(f"Eval env {self.name} has an infinite taskset — set select.limit to bound it")
+        if isinstance(self.tasks, TaskFeed):
+            if not self.streaming:
+                raise ValueError(f"Eval env {self.name} has an infinite taskset — set select.limit to bound it")
+            # Streams once, through a single epoch.
+            self.feed = self.tasks
+            return
         # A fixed eval set, pulled off the tasks once and reused every epoch.
         self.examples = list(self.tasks)
 
@@ -248,10 +256,22 @@ class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
     def __init__(
-        self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str | None], config_dir: Path
+        self,
+        configs: Sequence[EvalSourceConfig],
+        addresses: dict[tuple[str, str], str | None],
+        config_dir: Path,
+        *,
+        streaming: bool = False,
     ):
+        """``streaming`` lets unbounded tasksets stream through a single epoch (a standalone
+        eval); evals that repeat per checkpoint need bounded ones."""
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
             name = config.resolved_name
-            env = EvalEnv(config, addresses[("eval", name)], env_address_file(config_dir, "eval", name))
+            env = EvalEnv(
+                config,
+                addresses[("eval", name)],
+                env_address_file(config_dir, "eval", name),
+                streaming=streaming,
+            )
             self._envs[env.name] = env

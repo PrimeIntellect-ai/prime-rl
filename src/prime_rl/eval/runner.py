@@ -88,7 +88,12 @@ class EvalRunner:
         self.admin_plane = AdminPlane(config.client)
 
         get_logger().info("Loading eval environment(s)")
-        self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
+        self.eval_envs = EvalEnvs(
+            config.source,
+            config.env_addresses,
+            get_config_dir(self.run_dir),
+            streaming=not isinstance(config, SFTOnlineEvalConfig),
+        )
         await self.eval_envs.start()
         get_logger().info(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
@@ -176,7 +181,8 @@ class EvalRunner:
         newer checkpoint, the unfinished episodes of this epoch are cancelled so the
         caller can move on to it."""
         for env_name in fired:
-            await monitors.log_eval_plan(env_name, step, self.eval_sink.batch_size_for(env_name))
+            if (expected := self.eval_sink.batch_size_for(env_name)) is not None:
+                await monitors.log_eval_plan(env_name, step, expected)
 
         now = time.perf_counter()
         for env_name in fired:
@@ -192,13 +198,18 @@ class EvalRunner:
         )
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=f"eval was triggered at step {step}")
 
-        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
+        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) != 0}
         for episode in restored:
             await self.land(episode, pending)
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None
 
         while pending:
+            for env_name in [name for name in pending if self.stream_done(name)]:
+                await self.finalize_eval_batch(self.eval_sink.process_batch((env_name, step)))
+                pending.discard(env_name)
+            if not pending:
+                break
             if (
                 cancellation_task is None
                 and superseding_step is not None
@@ -212,7 +223,7 @@ class EvalRunner:
                 )
 
             try:
-                if superseding_step is not None:
+                if superseding_step is not None or any(env.feed is not None for env in self.eval_envs):
                     item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=POLL_INTERVAL_S)
                 else:
                     item = await self.dispatcher.out_q.get()
@@ -240,6 +251,17 @@ class EvalRunner:
             get_logger().warning(
                 f"Cancelled {cancelled} unfinished eval episodes for step {step}; advancing to checkpoint {newer_step}"
             )
+
+    def stream_done(self, env_name: str) -> bool:
+        """Whether a streaming env's taskset ended and every rollout it dispatched landed."""
+        if self.eval_envs.get(env_name).feed is None or self.eval_source.streaming(env_name):
+            return False
+        dispatcher = self.dispatcher
+        return (
+            dispatcher.out_q.empty()
+            and not any(group.env_name == env_name and group.kind == "eval" for group in dispatcher.groups.values())
+            and not any(meta.env_name == env_name and meta.kind == "eval" for meta in dispatcher.inflight.values())
+        )
 
     async def land(self, episode: vf.Episode, pending: set[str]) -> None:
         """One episode of the epoch, arrived or restored: through the monitors and into
@@ -308,7 +330,10 @@ class EvalRunner:
 
         parts = []
         for env_name, _step, arrived, expected in sorted(self.eval_sink.batch_progress()):
-            parts.append(f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name)
+            if expected is None:
+                parts.append(f"{env_name} {arrived} (streaming)")
+            else:
+                parts.append(f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name)
         progress_part = " | ".join(parts) if parts else "Idle"
 
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))

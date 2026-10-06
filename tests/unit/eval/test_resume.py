@@ -15,7 +15,10 @@ def _task(key: str) -> SimpleNamespace:
 
 def _env(name: str, task_keys: list[str], *, group_size: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
-        name=name, examples=[_task(key) for key in task_keys], config=SimpleNamespace(group_size=group_size)
+        name=name,
+        examples=[_task(key) for key in task_keys],
+        feed=None,
+        config=SimpleNamespace(group_size=group_size),
     )
 
 

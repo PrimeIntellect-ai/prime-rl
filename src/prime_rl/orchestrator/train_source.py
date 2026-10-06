@@ -10,6 +10,7 @@ import verifiers.v1 as vf
 
 from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
+from prime_rl.orchestrator.task_feed import TaskFeed
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
 
@@ -24,19 +25,30 @@ class TrainSource:
             raise ValueError("TrainSource needs at least one train env")
 
         self.curricula: dict[str, Curriculum] = {}
+        self.feeds: dict[str, TaskFeed] = {}
+        """The unbounded envs' tasksets, which may have no task ready yet."""
         for env in self.envs:
             if env.tasks is None:
                 raise RuntimeError(f"env {env.name} not started")
             tasks = env.tasks if env.num_tasks is None else list(env.tasks)
             self.curricula[env.name] = Curriculum(env.config.curriculum, tasks)
+            if isinstance(env.tasks, TaskFeed):
+                self.feeds[env.name] = env.tasks
 
         self.env_names = [env.name for env in self.envs]
         self.weights = [float(env.config.ratio) for env in self.envs]
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
 
-    def next_task(self, *, step: int) -> TaskRequest:
+    def next_task(self, *, step: int) -> TaskRequest | None:
+        """The next task of a weighted-random env, or ``None`` when that env's taskset
+        has none ready yet."""
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
+        feed = self.feeds.get(env_name)
+        if feed is not None and not feed.ready():
+            if feed.exhausted:
+                raise RuntimeError(f"The taskset of train env {env_name} ended")
+            return None
         return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
 
     def on_result(self, group: list[vf.Episode]) -> bool:

@@ -76,6 +76,8 @@ Per-source `group_size` and `sampling` override the top-level defaults. The top-
 
 Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`.
 
+A source whose taskset is unbounded (no `select.limit`) streams: its tasks are dispatched as the taskset yields them, and the source is done once the taskset ends and its last rollout lands. The taskset may wait between tasks; it is read on its own thread.
+
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
 ## Resume
@@ -90,7 +92,7 @@ uv run eval @ eval.toml --run.name my-eval --resume
 
 The previous attempt's `monitors/file` is kept as `monitors/file.attempt_N`; the resumed attempt writes a fresh one. Nothing is deleted, and a resume reads every attempt's stream.
 
-A landed episode counts toward the task with its `task.key`, so `select` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The resumed config is not checked against the interrupted one: any of it may be overridden, so keep the model, the sampling and each source's env the same when the landed episodes must stay comparable. Rollouts that complete a task's landed group join that group, so pass@k and the dashboard see one group per task. Use `--clean` to start over instead.
+A landed episode counts toward the task with its `task.key`, so `select` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The resumed config is not checked against the interrupted one: any of it may be overridden, so keep the model, the sampling and each source's env the same when the landed episodes must stay comparable. Rollouts that complete a task's landed group join that group, so pass@k and the dashboard see one group per task. A streaming source skips the task keys whose group already landed. Use `--clean` to start over instead.
 
 ## Monitors
 
