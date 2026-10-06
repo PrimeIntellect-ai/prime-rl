@@ -452,6 +452,9 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
+        # The optimizer may update parameters inside the last backward; not when validation, which runs
+        # between backward and the step, has to see the weights before this step's update.
+        step_in_backward = getattr(config.optim, "step_in_backward", False) and not run_validation_this_step
         step_tokens_per_expert = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             if config.log.log_data:
@@ -474,6 +477,8 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
+                if step_in_backward:
+                    optimizer.arm(micro_step == grad_accum_steps - 1)
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
                 finish_backward(gradient_manager)
@@ -489,13 +494,20 @@ def train(config: SFTConfig):
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
+        # A scale-invariant optimizer (SignSGD) steps identically on rescaled gradients, so the
+        # per-token normalization is left off the gradients and only applied to the logged norm.
+        scale_invariant = getattr(optimizer, "scale_invariant", False)
+        grad_norm_scale = 1.0
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item()
             if global_token_count_val > 0:
                 grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+                if scale_invariant:
+                    grad_norm_scale = grad_scale
+                else:
+                    scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -516,12 +528,17 @@ def train(config: SFTConfig):
         nan_loss_count = nan_loss_count.item()
 
         grad_norm: torch.Tensor | None = None
-        if config.optim.max_norm is not None:
-            logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
-        logger.debug("Optimizer step")
-        optimizer.step()
-        optimizer.zero_grad()
+        if step_in_backward:
+            # The update already ran during backward; only the norm is left to collect.
+            grad_norm = optimizer.grad_norm() * grad_norm_scale
+        else:
+            if config.optim.max_norm is not None:
+                logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
+                grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, rescale=not scale_invariant)
+                grad_norm = grad_norm * grad_norm_scale
+            logger.debug("Optimizer step")
+            optimizer.step()
+            optimizer.zero_grad()
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]

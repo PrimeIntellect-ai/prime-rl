@@ -58,6 +58,8 @@ def setup_optimizer(
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     if cpu_offload and full_offload_config is not None:
         raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
+    if getattr(config, "step_in_backward", False) and (cpu_offload or full_offload_config is not None):
+        raise ValueError("optim.step_in_backward runs on the GPU; disable optimizer CPU offload")
     if full_offload_config is not None and config.type not in ("adamw", "sign_sgd"):
         raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
     if full_offload_config is not None and config.max_norm is not None:
@@ -136,11 +138,14 @@ def _create_optimizer(
         case "muon":
             return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
         case "sign_sgd":
-            return SignSGD(
+            optimizer = SignSGD(
                 params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
             )
+            if config.step_in_backward:
+                optimizer.enable_step_in_backward()
+            return optimizer
 
 
 def _create_muon_optimizer(
