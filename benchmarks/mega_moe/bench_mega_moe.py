@@ -85,9 +85,10 @@ def main() -> None:
     scores = torch.softmax(
         torch.randn(args.tokens_per_rank, args.num_experts, device=device, dtype=torch.float32), dim=-1
     )
+    # Keep the model's (num_tokens, top_k) routing shape: the Mega MoE backward returns dtop_scores in it.
     top_scores, selected_experts_indices = torch.topk(scores, args.top_k, dim=-1)
-    top_scores = top_scores.reshape(-1).contiguous().requires_grad_(True)
-    selected_experts_indices = selected_experts_indices.reshape(-1).contiguous()
+    top_scores = top_scores.contiguous().requires_grad_(True)
+    selected_experts_indices = selected_experts_indices.contiguous()
 
     bf16_compute = BF16ExpertCompute()
     baseline = (
