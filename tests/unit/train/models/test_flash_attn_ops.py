@@ -133,3 +133,34 @@ def test_compiled_flash_attention_fullgraph_matches_eager(version, sliding_windo
     assert torch.equal(q_proj_grad, expected_q_proj_grad)
     # Inductor sums the q/k/v projection grads in fp32 and rounds once; eager rounds after each add.
     torch.testing.assert_close(x_grad, expected_x_grad, atol=2e-2, rtol=1.6e-2)
+
+
+@pytest.mark.parametrize("version", [2, 3, 4])
+@pytest.mark.parametrize("head_dim", [128, 60])
+def test_compiled_op_matches_eager_for_head_major_inputs(version, head_dim):
+    _skip_unless_supported(version)
+    if head_dim % 8 != 0 and version != 2:
+        pytest.skip("only FA2 pads the head dim")
+    torch._dynamo.reset()
+    torch.manual_seed(0)
+    total = sum(DOC_LENS)
+    q, k, v = (
+        torch.randn(NUM_HEADS, total, head_dim, device="cuda", dtype=torch.bfloat16).transpose(0, 1) for _ in range(3)
+    )
+    dout = torch.randn(total, NUM_HEADS, head_dim, device="cuda", dtype=torch.bfloat16)
+    cu_seqlens = _cu_seqlens()
+
+    def attention(q, k, v):
+        return _call(version, OPS[version], q, k, v, cu_seqlens, causal=True, window_size=None)
+
+    def run(fn):
+        leaves = [t.detach().clone().requires_grad_() for t in (q, k, v)]
+        out = fn(*leaves)
+        out.backward(dout)
+        return out.detach(), *(t.grad for t in leaves)
+
+    eager = run(attention)
+    compiled = run(torch.compile(attention, fullgraph=True))
+
+    for expected_tensor, actual_tensor in zip(eager, compiled):
+        assert torch.equal(actual_tensor, expected_tensor)
