@@ -2,11 +2,11 @@
 
 Compares three ways of feeding `max_seqlen` to a compiled `FlashAttention` block (forward + backward):
 `static` (the true longest document, specialized by Dynamo, one graph per value), `dynamic` (the true value
-as a symbolic int, one graph for all values), and `upper_bound` (the total packed token count, which is what
+as a symbolic int via `torch.compiler.config.dynamic_sources`, as `apply_compile` sets it), and `upper_bound` (the total packed token count, which is what
 FA4 uses when `max_seqlen` is None). It also times the eager op alone with the true value vs the upper bound.
-Timing uses `triton.testing.do_bench` (CUDA events, L2 flush between reps). Outputs and gradients of every arm
-are compared bitwise against the same path with the true value (eager arms against eager, compiled against
-compiled static).
+Timing uses `triton.testing.do_bench` (CUDA events, L2 flush between reps). Each arm's forward output is
+compared bitwise against the same path with the true value (eager against eager, compiled against compiled
+static). Gradients are not compared: FA's GQA backward accumulates dk/dv with atomics, so they vary run to run.
 
 Usage (from the prime-rl repo, on a GPU node):
     uv run python tools/benchmark_flash_attn_max_seqlen.py <output.json> [--versions 2 3] [--reps 200]
@@ -69,48 +69,46 @@ def benchmark_version(version: int, reps: int) -> list[dict]:
         out.backward(dout)
         return out
 
-    def outputs(fn, cu_seqlens, max_seqlen):
-        module.zero_grad(set_to_none=True)
+    def forward_output(fn, cu_seqlens, max_seqlen):
         x = hidden_states.detach().clone().requires_grad_()
-        out = run(fn, x, cu_seqlens, max_seqlen)
-        return [out.detach(), x.grad, *(p.grad.clone() for p in params)]
+        return run(fn, x, cu_seqlens, max_seqlen).detach()
 
     def compile_dynamic_block():
         torch._dynamo.reset()
         block = torch.compile(module, fullgraph=True)
-        for warmup_max_seqlen in (13000, 14000):
-            outputs(block, cu_seqlens_for(DOC_LAYOUTS["2 docs"]), warmup_max_seqlen)
+        with torch.compiler.config.patch(dynamic_sources=r".*\['max_seqlen'\]"):
+            forward_output(block, cu_seqlens_for(DOC_LAYOUTS["2 docs"]), 13000)
         return block, unique_graphs()
 
     rows = []
     for layout, doc_lens in DOC_LAYOUTS.items():
         cu_seqlens = cu_seqlens_for(doc_lens)
         true_max = max(doc_lens)
-        reference = outputs(module, cu_seqlens, true_max)
+        reference = forward_output(module, cu_seqlens, true_max)
         x = hidden_states.detach().clone().requires_grad_()
         grad_to_none = [x, *params]
 
         arms = {"eager true max": (module, true_max), "eager upper bound": (module, TOTAL_TOKENS)}
         for name, (fn, max_seqlen) in arms.items():
             result = time_ms(lambda: run(fn, x, cu_seqlens, max_seqlen), grad_to_none, reps)
-            bitwise = all(torch.equal(a, b) for a, b in zip(outputs(fn, cu_seqlens, max_seqlen), reference))
+            bitwise = torch.equal(forward_output(fn, cu_seqlens, max_seqlen), reference)
             rows.append({"version": version, "layout": layout, "arm": name, "bitwise": bitwise, **result})
 
         compiled_reference = None
         for name, max_seqlen in (("compiled static", true_max), ("compiled upper bound", TOTAL_TOKENS)):
             torch._dynamo.reset()
             static_block = torch.compile(module, fullgraph=True)
-            compiled_outputs = outputs(static_block, cu_seqlens, max_seqlen)
-            compiled_reference = compiled_reference or compiled_outputs
+            compiled_output = forward_output(static_block, cu_seqlens, max_seqlen)
+            compiled_reference = compiled_output if compiled_reference is None else compiled_reference
             result = time_ms(lambda: run(static_block, x, cu_seqlens, max_seqlen), grad_to_none, reps)
-            bitwise = all(torch.equal(a, b) for a, b in zip(compiled_outputs, compiled_reference))
+            bitwise = torch.equal(compiled_output, compiled_reference)
             rows.append({"version": version, "layout": layout, "arm": name, "bitwise": bitwise, **result})
 
         dynamic_block, dynamic_graphs = compile_dynamic_block()
         result = time_ms(lambda: run(dynamic_block, x, cu_seqlens, true_max), grad_to_none, reps)
-        dynamic_outputs = outputs(dynamic_block, cu_seqlens, true_max)
+        dynamic_output = forward_output(dynamic_block, cu_seqlens, true_max)
         assert unique_graphs() == dynamic_graphs, "dynamic arm recompiled"
-        bitwise = all(torch.equal(a, b) for a, b in zip(dynamic_outputs, compiled_reference))
+        bitwise = torch.equal(dynamic_output, compiled_reference)
         rows.append({"version": version, "layout": layout, "arm": "compiled dynamic", "bitwise": bitwise, **result})
     return rows
 
@@ -124,7 +122,7 @@ def main():
 
     rows = [row for version in args.versions for row in benchmark_version(version, args.reps)]
     args.output.write_text(json.dumps({"device": torch.cuda.get_device_name(), "rows": rows}, indent=2))
-    print(f"{'FA':>2} {'layout':<8} {'arm':<21} {'median ms (lower)':>17} {'min ms':>8} {'max ms':>8} bitwise")
+    print(f"{'FA':>2} {'layout':<8} {'arm':<21} {'median ms (lower)':>17} {'min ms':>8} {'max ms':>8} fwd bitwise")
     for row in rows:
         print(
             f"{row['version']:>2} {row['layout']:<8} {row['arm']:<21} {row['median_ms']:>17.3f} "
