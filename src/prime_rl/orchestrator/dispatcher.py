@@ -17,14 +17,10 @@
 - ``on_version_pending`` (called by the watcher before the engines pause for
   the weight update) drops train groups already past ``max_off_policy_steps`` — a
   compute-saving early cancel; the sink's queue sweep is what guarantees the
-  bound. The same cancel runs from ``fill_inflight`` as soon as a live group
-  is known dead, so its permit frees for a rollout that can still train.
-  A live rollout that would be born past the bound is not started: scheduling
-  waits until inference is on a fresh enough policy. Eval episodes are
-  measurements for the policy version they started with. Online evals may
-  explicitly cancel them when a newer checkpoint is ready. Train episodes
-  sampled from a frozen model never go stale — their generation source
-  doesn't change with policy updates.
+  bound. Eval episodes are measurements for the policy version they started
+  with. Online evals may explicitly cancel them when a newer checkpoint is ready. Train
+  episodes sampled from a frozen model never go stale — their generation
+  source doesn't change with policy updates.
 """
 
 from __future__ import annotations
