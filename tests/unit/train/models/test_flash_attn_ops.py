@@ -1,6 +1,10 @@
 import pytest
 import torch
+from torch import nn
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper
 
+from prime_rl.configs.trainer import CompileConfig
+from prime_rl.trainer.model import apply_compile
 from prime_rl.trainer.models.layers import attn
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 
@@ -148,3 +152,35 @@ def test_compiled_op_matches_eager_for_head_major_inputs(version, head_dim):
 
     for expected_tensor, actual_tensor in zip(eager, compiled):
         assert torch.equal(actual_tensor, expected_tensor)
+
+
+@pytest.mark.parametrize("version", [2, 3])
+def test_apply_compile_traces_max_seqlen_symbolically(version, monkeypatch):
+    _skip_unless_supported(version)
+    monkeypatch.setattr(torch.compiler.config, "dynamic_sources", torch.compiler.config.dynamic_sources)
+    torch._dynamo.reset()
+    config = AttentionConfig(
+        hidden_size=256,
+        head_dim=64,
+        num_attention_heads=NUM_HEADS,
+        num_key_value_heads=NUM_KV_HEADS,
+        is_causal=True,
+        attention_bias=False,
+        use_qk_norm=False,
+        rms_norm_eps=1e-6,
+    )
+    model = nn.Module()
+    model.model = nn.Module()
+    attention = ATTN_IMPL2CLASS[f"flash_attention_{version}"](config).to(device="cuda", dtype=torch.bfloat16)
+    model.model.layers = nn.ModuleList([checkpoint_wrapper(attention)])
+    apply_compile(model, CompileConfig(fullgraph=True))
+
+    graphs_before = torch._dynamo.utils.counters["stats"]["unique_graphs"]
+    for doc_lens in ([128, 64, 64], [256]):
+        cu_seqlens = torch.tensor([0, *doc_lens], dtype=torch.int32, device="cuda").cumsum(0, dtype=torch.int32)
+        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        hidden_states = torch.randn(1, 256, config.hidden_size, device="cuda", dtype=torch.bfloat16)
+        out, _ = model.model.layers[0](hidden_states, cu_seqlens=cu_seqlens, max_seqlen=max(doc_lens))
+        out.sum().backward()
+
+    assert torch._dynamo.utils.counters["stats"]["unique_graphs"] - graphs_before == 1
