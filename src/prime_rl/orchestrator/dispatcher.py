@@ -33,7 +33,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
@@ -58,6 +58,9 @@ from prime_rl.orchestrator.types import (
 from prime_rl.orchestrator.utils import min_fresh_version
 from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.eval.save_points import SavePoints
 
 LIVE_INTERVAL_S = 0.5
 LIVE_EVENT_CAP = 20_000
@@ -144,6 +147,7 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[int], None] | None = None,
+        save_points: SavePoints | None = None,
     ) -> None:
         self.policy = policy
         self.progress = progress
@@ -159,6 +163,8 @@ class Dispatcher:
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
+        # Where eval episodes' save points persist until they land ok
+        self.save_points = save_points
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -531,6 +537,7 @@ class Dispatcher:
             target_episodes=rollouts,
             policy_version_at_start=self.policy.version,
             group_id=uuid.UUID(request.group_id) if request.group_id else None,
+            resumes=list(request.resumes),
         )
 
     async def schedule_group_episode(self, group_id: uuid.UUID, group: GroupState) -> bool:
@@ -577,6 +584,17 @@ class Dispatcher:
             client_config=client,
             started_at=time.monotonic(),
         )
+        resume = None
+        if group.resumes:
+            # the relaunched rollout takes over the interrupted one's save point
+            point = group.resumes.pop()
+            meta.dispatch_id, resume = point.dispatch_id, point.state
+        on_save_point = None
+        if self.save_points is not None and meta.kind == "eval":
+            save_points = self.save_points
+
+            def on_save_point(state: dict) -> None:
+                save_points.write(meta, state)
 
         session_ids: set[str] = set()
 
@@ -598,6 +616,8 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    resume=resume,
+                    on_save_point=on_save_point,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode
@@ -731,6 +751,8 @@ class Dispatcher:
         )
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
+        if self.save_points is not None and meta.kind == "eval" and episode.ok:
+            self.save_points.clear(meta)
         await self.out_q.put(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:

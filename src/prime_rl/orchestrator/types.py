@@ -11,6 +11,7 @@ from prime_rl.transports.batch import TrainingSample
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
+    from prime_rl.eval.save_points import SavePoint
     from prime_rl.orchestrator.metrics import EvalEpisodes, TrainEpisodes
 
 
@@ -85,6 +86,8 @@ class TaskRequest:
     """Rollouts of the task this request asks for; None is the env's group size."""
     group_id: str | None = None
     """The group these rollouts join (a resume completing a task's landed group); None mints one."""
+    resumes: tuple[SavePoint, ...] = ()
+    """Save points of interrupted rollouts of this request to continue (a resumed eval)."""
 
 
 @dataclass
@@ -127,6 +130,8 @@ class GroupState:
     emitted: int = 0
     policy_version_at_start: int = 0
     group_id: uuid.UUID | None = None
+    resumes: list[SavePoint] = field(default_factory=list)
+    """Save points the group's next rollouts continue from, one each."""
 
 
 @dataclass

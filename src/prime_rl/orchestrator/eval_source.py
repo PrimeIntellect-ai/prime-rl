@@ -18,6 +18,7 @@ from prime_rl.orchestrator.types import TaskRequest
 if TYPE_CHECKING:
     import verifiers.v1 as vf
 
+    from prime_rl.eval.save_points import SavePoint
     from prime_rl.orchestrator.envs import EvalEnvs
     from prime_rl.orchestrator.task_feed import TaskFeed
 
@@ -53,17 +54,25 @@ class EvalSource:
         """Fired streaming envs: their step and the rollouts each landed task key still owes."""
         self.owed: dict[str, dict[str, int]] | None = None
         self.groups: dict[str, dict[str, str]] = {}
+        self.save_points: dict[str, dict[str, list[SavePoint]]] = {}
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
         self.first_trigger = not is_resumed
 
-    def restore(self, owed: dict[str, dict[str, int]], groups: dict[str, dict[str, str]]) -> None:
+    def restore(
+        self,
+        owed: dict[str, dict[str, int]],
+        groups: dict[str, dict[str, str]],
+        save_points: dict[str, dict[str, list[SavePoint]]] | None = None,
+    ) -> None:
         """Rollouts the next trigger still owes per env and task key, the rest having
         landed before a resume; a task without an entry is complete. ``groups`` is the
-        group id the landed rollouts of a task carry, which the owed ones join."""
+        group id the landed rollouts of a task carry, which the owed ones join.
+        ``save_points`` are interrupted rollouts' progress, which owed ones continue."""
         self.owed = owed
         self.groups = groups
+        self.save_points = save_points or {}
 
     def trigger(self, step: int, *, force: bool = False) -> list[str]:
         """Fire eligible envs for ``step`` and return their names. On resume
@@ -97,11 +106,17 @@ class EvalSource:
                     rollouts = min(rollouts, owed[env_name].get(task.key, 0))
                     owed[env_name][task.key] = owed[env_name].get(task.key, 0) - rollouts
                 if rollouts > 0:
-                    group_id = self.groups.get(env_name, {}).get(task.key)
-                    self.queue.append(
-                        TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
-                    )
+                    self.queue.append(self.request(env_name, task, step, rollouts))
         return fired
+
+    def request(self, env_name: str, task: vf.Task, step: int, rollouts: int) -> TaskRequest:
+        """Rollouts of ``task``, continuing the save points its interrupted rollouts left."""
+        points = self.save_points.get(env_name, {}).get(task.key, [])
+        resumes, points[:] = points[:rollouts], points[rollouts:]
+        group_id = self.groups.get(env_name, {}).get(task.key) or (resumes[0].group_id if resumes else None)
+        return TaskRequest(
+            env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id, resumes=tuple(resumes)
+        )
 
     def next_task(self) -> TaskRequest | None:
         """Pop the next eval task, or ``None`` when the queue is empty and no stream has a
@@ -115,8 +130,7 @@ class EvalSource:
                 # a key that landed before a resume owes only the rest of its group
                 rollouts = owed.pop(task.key, self.group_sizes[env_name])
                 if rollouts > 0:
-                    group_id = self.groups.get(env_name, {}).get(task.key)
-                    return TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
+                    return self.request(env_name, task, step, rollouts)
         return None
 
     def streaming(self, env_name: str) -> bool:

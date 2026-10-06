@@ -92,6 +92,8 @@ uv run eval @ eval.toml --run.name my-eval --resume
 
 The previous attempt's `monitors/file` is kept as `monitors/file.attempt_N`; the resumed attempt writes a fresh one. Nothing is deleted, and a resume reads every attempt's stream.
 
+An episode that records save points (`vf.save_point` in `Env.run`) does not start over: each save point is kept under `save_points/` until its episode lands ok, and the resumed rollout continues from it (`vf.restored()`), joining the interrupted rollout's group. Its traces cover the part it ran after the save point.
+
 A landed episode counts toward the task with its `task.key`, so `select` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The resumed config is not checked against the interrupted one: any of it may be overridden, so keep the model, the sampling and each source's env the same when the landed episodes must stay comparable. Rollouts that complete a task's landed group join that group, so pass@k and the dashboard see one group per task. A streaming source skips the task keys whose group already landed. Use `--clean` to start over instead.
 
 ## Monitors

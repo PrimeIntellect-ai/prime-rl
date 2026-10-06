@@ -12,6 +12,7 @@ from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.eval import resume
 from prime_rl.eval.runner import EvalRunner
+from prime_rl.eval.save_points import SavePoints
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import clean_exit
@@ -44,7 +45,7 @@ class Eval:
         restored: list = []
         if config.resume:
             restored, owed, groups = resume.plan(landed, self.runner.eval_envs)
-            self.runner.eval_source.restore(owed, groups)
+            self.runner.eval_source.restore(owed, groups, SavePoints(config.run_dir).load())
             get_logger().info(
                 f"Resuming from the trace stream: {len(restored)} episodes restored, "
                 f"{sum(sum(counts.values()) for counts in owed.values())} rollouts owed"
