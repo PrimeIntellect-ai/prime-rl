@@ -107,7 +107,7 @@ transport = "bf16"
 
 For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
-Mega MoE (`type = "mega_moe"`) fuses dispatch, the bf16 SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs; `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, shipped as the prebuilt `deep_gemm` wheel that `uv sync --extra mega-moe` installs. Mega MoE needs EP > 1, SM100 GPUs, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128:
+Mega MoE (`type = "mega_moe"`) fuses dispatch, the bf16 SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs; `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork. It is distributed to partners as a prebuilt `deep_gemm` wheel that replaces the public one; install it after syncing with `uv pip install --no-deps <wheel>`. Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, SM100 GPUs, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128:
 
 ```toml
 [trainer.model.moe.dispatch]

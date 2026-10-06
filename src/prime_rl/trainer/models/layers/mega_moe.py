@@ -531,8 +531,8 @@ class MegaMoEExpertCompute:
         if not mega_moe_available(precision):
             kernels = " and ".join(f"`{name}`" for name in _MEGA_MOE_KERNELS[precision])
             raise RuntimeError(
-                "Mega MoE requires an SM100+/Blackwell GPU and the prime-mega-moe `deep_gemm` build "
-                f"(`uv sync --extra mega-moe`) that exposes {kernels}."
+                "Mega MoE requires an SM100+/Blackwell GPU and the prime-mega-moe `deep_gemm` wheel from "
+                f"Prime Intellect installed over the public one; this build does not expose {kernels}."
             )
         self.validate(experts)
         hidden = experts.down_proj.shape[1]

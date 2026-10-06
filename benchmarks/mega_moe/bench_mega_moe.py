@@ -3,7 +3,7 @@ bf16 EP path (``TorchTokenDispatcher`` + ``BF16ExpertCompute``) for the same rou
 workload, weights, and token counts, and check the gradients agree.
 
 Requires >=2 GPUs with symmetric-memory support (SM100/Blackwell), PyTorch >= 2.9, and the
-prime-mega-moe ``deep_gemm`` build (``uv sync --extra mega-moe``).
+prime-mega-moe ``deep_gemm`` wheel from Prime Intellect installed over the public one.
 ``--hidden`` must be a multiple of 256 and ``--intermediate`` a multiple of 128.
 
 Usage:
@@ -63,7 +63,7 @@ def main() -> None:
 
     if not mega_moe_available():
         raise RuntimeError(
-            "Mega MoE requires the prime-mega-moe deep_gemm build (`uv sync --extra mega-moe`) on an SM100+ GPU."
+            "Mega MoE requires the prime-mega-moe deep_gemm wheel from Prime Intellect installed over the public one, on an SM100+ GPU."
         )
     if args.num_experts % world_size:
         raise ValueError(f"num_experts ({args.num_experts}) must be divisible by world_size ({world_size}).")
