@@ -245,7 +245,10 @@ class ShardedEngramTable(nn.Module):
         world_size, rank = mesh.size(), mesh.get_local_rank()
         rows_per_rank = -(-self.num_embeddings // world_size)
         local_rows = max(0, min(rows_per_rank, self.num_embeddings - rank * rows_per_rank))
-        local = torch.empty(local_rows, self.embedding_dim, device="meta", dtype=self.weight.dtype)
+        # A frozen table is never updated, so it needs no fp32 master copy: it is stored in the
+        # bf16 the lookup returns, which halves its memory.
+        dtype = self.weight.dtype if self.weight.requires_grad else torch.bfloat16
+        local = torch.empty(local_rows, self.embedding_dim, device="meta", dtype=dtype)
         dtensor = DTensor.from_local(
             local,
             mesh,
