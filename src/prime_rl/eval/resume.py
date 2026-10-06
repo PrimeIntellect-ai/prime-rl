@@ -74,45 +74,40 @@ def take_landed(run_dir: Path) -> list[dict]:
     return list(landed.values())
 
 
-def record_env(record: dict) -> str:
-    return record["env"].get("name") or record["env"]["id"]
-
-
 def plan(
     landed: list[dict], eval_envs: EvalEnvs
 ) -> tuple[list[vf.WireEpisode], dict[str, dict[str, int]], dict[str, dict[str, str]]]:
     """Match the landed episodes to the run's tasks: the episodes to keep, in stream
     order, the rollouts still owed per env and task key, and the group id a task's kept
-    episodes carry, so the owed ones complete that group rather than open another. A
-    streaming env's tasks are not known up front: each landed key is owed one group."""
+    episodes carry, so the owed ones complete that group rather than open another."""
     targets: dict[str, Counter[str]] = {}
     for env in eval_envs:
-        if env.feed is not None:
-            keys = {record["task"]["key"] for record in landed if record_env(record) == env.name}
-        else:
-            keys = [task.key for task in env.examples]
-        targets[env.name] = Counter(keys)
+        targets[env.name] = Counter(task.key for task in env.examples)
         for key in targets[env.name]:
             targets[env.name][key] *= env.config.group_size
+    # a streaming env's tasks are not known up front: each landed key is owed one group
+    streams = {env.name: env.config.group_size for env in eval_envs if env.feed is not None}
     kept: list[vf.WireEpisode] = []
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     groups: dict[str, dict[str, str]] = defaultdict(dict)
     for record in landed:
-        env_name = record_env(record)
+        env_name = record["env"].get("name") or record["env"]["id"]
         key = record["task"]["key"]
-        if counts[env_name][key] >= targets.get(env_name, Counter())[key]:
+        if counts[env_name][key] >= streams.get(env_name, targets.get(env_name, Counter())[key]):
             continue
         kept.append(vf.WireEpisode.model_validate(record))
         counts[env_name][key] += 1
         if (group := record.get("group") or {}).get("id"):
             groups[env_name].setdefault(key, group["id"])
-    # a streaming env keeps its complete keys at zero so they are skipped, not run fresh
     owed = {
-        env.name: {
-            key: target - counts[env.name][key]
-            for key, target in targets[env.name].items()
-            if env.feed is not None or target > counts[env.name][key]
+        env_name: {
+            key: target - counts[env_name][key]
+            for key, target in target_counts.items()
+            if target > counts[env_name][key]
         }
-        for env in eval_envs
+        for env_name, target_counts in targets.items()
     }
+    # complete keys stay at zero, so the stream skips them rather than run them fresh
+    for env_name, group_size in streams.items():
+        owed[env_name] = {key: group_size - count for key, count in counts[env_name].items()}
     return kept, owed, dict(groups)

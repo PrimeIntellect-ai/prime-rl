@@ -44,6 +44,8 @@ class EvalSource:
         for env in eval_envs:
             self.tasks_by_env[env.name] = list(env.examples)
             if env.feed is not None:
+                if intervals is not None:  # evals that repeat per checkpoint need a fixed set
+                    raise ValueError(f"Eval env {env.name} has an infinite taskset — set select.limit to bound it")
                 self.feeds[env.name] = env.feed
             self.group_sizes[env.name] = env.config.group_size
             self.intervals[env.name] = intervals[env.name] if intervals is not None else 1

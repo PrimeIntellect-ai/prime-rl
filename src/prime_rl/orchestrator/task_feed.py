@@ -1,10 +1,8 @@
-"""TaskFeed: pull an unbounded taskset off the event loop.
+"""TaskFeed: read an unbounded taskset off the event loop.
 
-An unbounded taskset is a plain iterator, and its ``next()`` may block - e.g. a
-generator that waits until more tasks are ready. A feed calls it on its own thread and
-holds what it read in a small queue, so the dispatcher polls without ever blocking:
-``ready()`` says whether a task can be taken now, ``__next__`` takes it. Reading one
-task ahead keeps the generator deciding what to yield close to when it is dispatched."""
+An unbounded taskset's ``next()`` may block, e.g. a generator waiting for its next
+task to be ready. A feed calls it on its own thread, one task ahead, so the dispatcher
+polls without blocking: ``ready()`` says whether a task can be taken now."""
 
 from __future__ import annotations
 
