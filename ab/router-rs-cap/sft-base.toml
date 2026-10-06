@@ -2,6 +2,7 @@ max_steps = 20
 
 [env_vars]
 TRITON_CACHE_DIR = "/tmp/garrett/.triton-cache"
+UV_NO_SYNC = "1"
 
 [model]
 name = "/home/huggingface/hub/models--zai-org--GLM-4.5-Air/snapshots/a24ceef6ce4f3536971efe9b778bdaa1bab18daa"
