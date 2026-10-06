@@ -23,12 +23,12 @@ declare -A VARIANT=(
   [bf16-cap2]="bfloat16 false 2"
 )
 
-# scenario -> "seq_len ac max_steps"
+# scenario -> "seq_len ac max_steps num_layers"; s8k-noac at 24 layers peaks at 137 GiB and thrashes the allocator
 declare -A SCENARIOS=(
-  [s4k-ac]="4096 full 40"
-  [s4k-noac]="4096 off 40"
-  [s8k-noac]="8192 off 40"
-  [s1k-noac]="1024 off 40"
+  [s4k-ac]="4096 full 40 24"
+  [s4k-noac]="4096 off 40 24"
+  [s8k-noac]="8192 off 40 16"
+  [s1k-noac]="1024 off 40 24"
 )
 
 layout=$1
@@ -42,14 +42,14 @@ group=$layout
 scenario_args=()
 scenario_tags=""
 if [ -n "${SCENARIO:-}" ]; then
-  read -r seq_len ac max_steps <<<"${SCENARIOS[$SCENARIO]}"
+  read -r seq_len ac max_steps num_layers <<<"${SCENARIOS[$SCENARIO]}"
   name="$SCENARIO-$name"
   group="$SCENARIO-$layout"
-  scenario_args=(--data.seq-len "$seq_len" --max-steps "$max_steps")
+  scenario_args=(--data.seq-len "$seq_len" --max-steps "$max_steps" --model.debug.num-layers "$num_layers")
   if [ "$ac" = "off" ]; then
     scenario_args+=(--model.ac None)
   fi
-  scenario_tags=",\"$SCENARIO\",\"seq$seq_len\",\"ac-$ac\""
+  scenario_tags=",\"$SCENARIO\",\"seq$seq_len\",\"ac-$ac\",\"layers$num_layers\""
 fi
 worktree=$BRANCH_WORKTREE
 cap_args=(--model.reduce-scatter-max-input-buffers "$cap")
