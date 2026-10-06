@@ -43,7 +43,9 @@ GLM_4_5_AIR = AttentionConfig(
 
 
 def cu_seqlens_for(doc_lens: list[int]) -> torch.Tensor:
-    return torch.tensor([0, *doc_lens], dtype=torch.int32, device="cuda").cumsum(0, dtype=torch.int32)
+    cu_seqlens = torch.tensor([0, *doc_lens], dtype=torch.int32, device="cuda").cumsum(0, dtype=torch.int32)
+    torch._dynamo.mark_dynamic(cu_seqlens, 0)
+    return cu_seqlens
 
 
 def time_ms(fn, grad_to_none: list[torch.Tensor], reps: int) -> dict[str, float]:
