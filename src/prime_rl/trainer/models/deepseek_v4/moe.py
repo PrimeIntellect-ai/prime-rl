@@ -11,7 +11,7 @@ from torch import nn
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.layers.activations import ClampedSilu
 from prime_rl.trainer.models.layers.mlp import FeedForward
-from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, ScoreFuncType, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 
 
 class DeepseekV4HashRouter(TokenChoiceTopKRouter):
@@ -24,26 +24,9 @@ class DeepseekV4HashRouter(TokenChoiceTopKRouter):
     unbuilt, keeping the state dict aligned with HF's.
     """
 
-    def __init__(
-        self,
-        dim: int,
-        num_experts: int,
-        top_k: int,
-        score_func: ScoreFuncType,
-        route_norm: bool,
-        route_scale: float,
-        vocab_size: int,
-    ) -> None:
-        super().__init__(
-            dim=dim,
-            num_experts=num_experts,
-            top_k=top_k,
-            score_func=score_func,
-            route_norm=route_norm,
-            route_scale=route_scale,
-            selection_bias=False,
-        )
-        self.register_buffer("tid2eid", torch.zeros(vocab_size, top_k, dtype=torch.long), persistent=True)
+    def __init__(self, *, vocab_size: int, **router_kwargs) -> None:
+        super().__init__(**router_kwargs, selection_bias=False)
+        self.register_buffer("tid2eid", torch.zeros(vocab_size, self.top_k, dtype=torch.long), persistent=True)
 
 
 class DeepseekV4MoE(MoE):
