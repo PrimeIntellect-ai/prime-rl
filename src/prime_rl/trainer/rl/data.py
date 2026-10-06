@@ -1,5 +1,8 @@
+import dataclasses
+from collections.abc import Iterable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import numpy as np
 import torch
@@ -7,6 +10,8 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.multimodal import MaterializedMM, MultimodalAdapter
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -47,7 +52,7 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Materialized immediately before this microbatch's forward pass.
+    # Materialized by materialize_ahead, one micro batch ahead of the forward pass.
     mm_refs: MMRefs | None
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
@@ -253,6 +258,39 @@ class DataLoader:
             if micro_batch.ref_kl_weights is not None
             else None,
         )
+
+
+def materialize_ahead(
+    micro_batches: Iterable[TensorMicroBatch],
+    processor: Any | None,
+    mm_adapter: MultimodalAdapter | None,
+) -> Iterator[tuple[TensorMicroBatch, MaterializedMM | None]]:
+    """Yield each micro batch with its images decoded and preprocessed into pinned CPU tensors.
+
+    Micro batch t+1's images are materialized on a background thread while the caller trains
+    on micro batch t, so image decoding and preprocessing overlap with GPU compute.
+    """
+
+    def materialize(micro_batch: TensorMicroBatch) -> tuple[TensorMicroBatch, MaterializedMM | None]:
+        mm_refs = micro_batch.get("mm_refs")
+        if mm_refs is None:
+            return micro_batch, None
+        if processor is None or mm_adapter is None:
+            raise ValueError("Received multimodal samples but [model.vlm] is not set")
+        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+        micro_batch["mm_refs"] = None
+        pinned = {key: value.pin_memory() for key, value in materialized.kwargs.items()}
+        return micro_batch, dataclasses.replace(materialized, kwargs=pinned)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="mm-materialize") as pool:
+        pending: Future | None = None
+        for micro_batch in micro_batches:
+            submitted = pool.submit(materialize, micro_batch)
+            if pending is not None:
+                yield pending.result()
+            pending = submitted
+        if pending is not None:
+            yield pending.result()
 
 
 def _torch_dtype(name: str) -> torch.dtype:

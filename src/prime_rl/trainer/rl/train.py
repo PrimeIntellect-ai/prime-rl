@@ -17,7 +17,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, materialize_ahead
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -37,7 +37,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.multimodal import get_multimodal_adapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -336,7 +335,9 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
+        for micro_step, (micro_batch, materialized) in enumerate(
+            materialize_ahead(micro_batches, processor, mm_adapter)
+        ):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -367,15 +368,10 @@ def train(config: TrainerConfig):
 
             mm_kwargs = None
             mm_forward_policy = None
-            mm_refs = micro_batch.get("mm_refs")
-            if mm_refs is not None:
-                if processor is None or mm_adapter is None:
-                    raise ValueError("Received multimodal samples but [model.vlm] is not set")
-                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
+            if materialized is not None:
+                mm_kwargs = {key: value.to("cuda", non_blocking=True) for key, value in materialized.kwargs.items()}
                 mm_forward_policy = materialized.forward_policy
-                micro_batch["mm_refs"] = None
-                del materialized, mm_refs
+            del materialized
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
