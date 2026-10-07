@@ -257,21 +257,11 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | Knob | What it controls |
 |---|---|
 | `data.name` | HF dataset name or local path |
-| `data.batch_size` | Global packed-sequence batch size per optimizer step; `batch_size * seq_len` token positions, including padding |
+| `data.batch_size` | Global batch size per optimizer step |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
-
-### Global SFT Packing
-
-Text SFT packs a contiguous prefix of the globally shuffled sample stream
-across the entire optimizer step, before distributing rows to DP ranks.
-Each DP rank receives `batch_size / (DP * micro_batch_size)` rows of
-`micro_batch_size * seq_len` positions; CP peers receive identical full rows.
-The number of source examples varies with their lengths. Validation includes
-every usable example and pads its final batch. Fake and multimodal data use
-their modality-specific local loader.
 
 ### Important Metrics
 
