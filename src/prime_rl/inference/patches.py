@@ -46,12 +46,12 @@ def load_vllm_plugins():
     if not targets:
         return
 
-    from renderers.plugins import load_plugin_object
+    from renderers.custom import load_target
     from vllm.logger import init_logger
 
     logger = init_logger("vllm.prime_rl.plugins")
     for target in targets:
-        load_plugin_object(target)()
+        load_target(target)()
         logger.info(f"Loaded vLLM plugin {target}")
 
 
