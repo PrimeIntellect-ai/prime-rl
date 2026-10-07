@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
 
 import numpy as np
 import torch
@@ -49,9 +49,8 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Materialized into materialized_mm by prepare_micro_batch.
+    # Materialized by materialize_micro_batch_mm, ahead of this microbatch's forward pass when using workers.
     mm_refs: MMRefs | None
-    materialized_mm: NotRequired[MaterializedMM | None]
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -175,25 +174,19 @@ class FakeDataLoader:
         }
 
 
-_worker_processor: Any | None = None
-_worker_mm_adapter: MultimodalAdapter | None = None
+def materialize_micro_batch_mm(
+    mm_refs: MMRefs | None, processor: Any | None, mm_adapter: MultimodalAdapter | None
+) -> MaterializedMM | None:
+    """Decode and preprocess a micro batch's images, or return None for a text-only micro batch.
 
-
-def init_micro_batch_worker(processor: Any | None, mm_adapter: MultimodalAdapter | None) -> None:
-    global _worker_processor, _worker_mm_adapter
-    _worker_processor = processor
-    _worker_mm_adapter = mm_adapter
-
-
-def prepare_micro_batch(micro_batch: TensorMicroBatch) -> TensorMicroBatch:
-    """Run a micro batch's CPU preprocessing; called in a WorkerPool initialized by init_micro_batch_worker."""
-    mm_refs = micro_batch.get("mm_refs")
+    Takes only ``mm_refs`` rather than the whole micro batch: sending a micro batch to a worker would move all of
+    its tensors into shared memory (/dev/shm) until the step ends, costing a copy and an open file per tensor.
+    """
     if mm_refs is None:
-        return micro_batch
-    if _worker_processor is None or _worker_mm_adapter is None:
+        return None
+    if processor is None or mm_adapter is None:
         raise ValueError("Received multimodal samples but [model.vlm] is not set")
-    materialized_mm = materialize_mm_refs(mm_refs, _worker_processor, _worker_mm_adapter)
-    return {**micro_batch, "mm_refs": None, "materialized_mm": materialized_mm}
+    return materialize_mm_refs(mm_refs, processor, mm_adapter)
 
 
 class DataLoader:

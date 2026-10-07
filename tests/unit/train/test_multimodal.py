@@ -1,3 +1,4 @@
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -7,9 +8,9 @@ from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.multimodal.kimi_k25 import KimiK25Adapter
 from prime_rl.multimodal.qwen_vl import QwenVLAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
-from prime_rl.trainer.rl.data import init_micro_batch_worker, prepare_micro_batch
+from prime_rl.trainer.rl.data import materialize_micro_batch_mm
 from prime_rl.transports.batch import MMImageRef, MMRefs
-from prime_rl.utils.worker_pool import WorkerPool
+from prime_rl.utils.worker_map import WorkerMap
 
 _IMAGE_URL = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -58,7 +59,7 @@ def test_kimi_adapter_materializes_sparse_image_position():
     assert materialized.forward_policy == KimiK25Adapter.forward_policy
 
 
-def test_prepare_micro_batch_in_worker_pool_materializes_in_order():
+def test_materialize_micro_batch_mm_in_worker_map():
     class ImageProcessor:
         merge_size = 1
 
@@ -67,16 +68,14 @@ def test_prepare_micro_batch_in_worker_pool_materializes_in_order():
 
     processor = SimpleNamespace(image_processor=ImageProcessor())
     adapter = get_multimodal_adapter("qwen3_vl")
-    micro_batches = [{"id": 0, "mm_refs": _refs(2)}, {"id": 1, "mm_refs": None}, {"id": 2, "mm_refs": _refs(2)}]
 
-    with WorkerPool(1, init_micro_batch_worker, (processor, adapter)) as pool:
-        results = list(pool.imap(prepare_micro_batch, micro_batches))
+    with WorkerMap(1, partial(materialize_micro_batch_mm, processor=processor, mm_adapter=adapter)) as worker_map:
+        results = list(worker_map([_refs(2), None, _refs(2)]))
 
-    assert [micro_batch["id"] for micro_batch in results] == [0, 1, 2]
-    assert results[1].get("materialized_mm") is None
-    for micro_batch in (results[0], results[2]):
-        assert micro_batch["mm_refs"] is None
-        assert set(micro_batch["materialized_mm"].kwargs) == {"pixel_values", "image_grid_thw"}
-    with WorkerPool(1, init_micro_batch_worker, (None, None)) as pool:
+    assert results[1] is None
+    for materialized in (results[0], results[2]):
+        assert set(materialized.kwargs) == {"pixel_values", "image_grid_thw"}
+        assert materialized.forward_policy == QwenVLAdapter.forward_policy
+    with WorkerMap(1, partial(materialize_micro_batch_mm, processor=None, mm_adapter=None)) as worker_map:
         with pytest.raises(ValueError, match=r"\[model.vlm\] is not set"):
-            list(pool.imap(prepare_micro_batch, [{"mm_refs": _refs(2)}]))
+            list(worker_map([_refs(2)]))
