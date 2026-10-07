@@ -237,7 +237,9 @@ def _(dout, q, k, v, *args):
     return torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
 
 
-def _pad_head_dim_to_multiple_of_8(t: torch.Tensor) -> torch.Tensor:
+# FA2's public flash_attn_varlen_func pads the head dim to a multiple of 8 around its kernels; these ops call
+# the kernels directly, so they pad the same way.
+def pad_head_dim_to_multiple_of_8_for_fa2(t: torch.Tensor) -> torch.Tensor:
     head_dim = t.shape[-1]
     if head_dim % 8 == 0:
         return t
@@ -259,7 +261,7 @@ def _flash_attn_2_varlen(
     window_size_right: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     head_dim = q.shape[-1]
-    q, k, v = (_pad_head_dim_to_multiple_of_8(t) for t in (q, k, v))
+    q, k, v = (pad_head_dim_to_multiple_of_8_for_fa2(t) for t in (q, k, v))
     out_padded, lse, _, _ = _flash_attn_varlen_forward(
         q,
         k,
@@ -281,7 +283,7 @@ def _flash_attn_2_varlen(
 @_flash_attn_2_varlen.register_fake
 def _(q, k, v, *args):
     head_dim = q.shape[-1]
-    out = torch.empty_like(_pad_head_dim_to_multiple_of_8(q))[..., :head_dim]
+    out = torch.empty_like(pad_head_dim_to_multiple_of_8_for_fa2(q))[..., :head_dim]
     lse = q.new_empty((q.shape[1], q.shape[0]), dtype=torch.float32)
     return out, lse
 
@@ -304,7 +306,7 @@ def _flash_attn_2_varlen_backward(
     window_size_right: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     head_dim = q.shape[-1]
-    dout, q, k, v, out = (_pad_head_dim_to_multiple_of_8(t) for t in (dout, q, k, v, out))
+    dout, q, k, v, out = (pad_head_dim_to_multiple_of_8_for_fa2(t) for t in (dout, q, k, v, out))
     dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
     _flash_attn_varlen_backward(
         dout,
@@ -335,7 +337,7 @@ def _flash_attn_2_varlen_backward(
 @_flash_attn_2_varlen_backward.register_fake
 def _(dout, q, k, v, *args):
     head_dim = q.shape[-1]
-    return tuple(torch.empty_like(_pad_head_dim_to_multiple_of_8(t))[..., :head_dim] for t in (q, k, v))
+    return tuple(torch.empty_like(pad_head_dim_to_multiple_of_8_for_fa2(t))[..., :head_dim] for t in (q, k, v))
 
 
 def _flash_attn_varlen_setup_context(ctx, inputs, output) -> None:
