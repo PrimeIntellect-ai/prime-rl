@@ -367,16 +367,8 @@ class MoE(nn.Module):
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
         """
-        top_scores, selected_experts_indices = self.route(x, routed_experts)
-        return self.compute(x, top_scores, selected_experts_indices)
-
-    def route(
-        self,
-        x: torch.Tensor,
-        routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Route ``(bs, slen, dim)`` tokens and record routing statistics."""
-        x = x.view(-1, x.shape[-1])
+        bs, slen, dim = x.shape
+        x = x.view(-1, dim)
 
         if routed_experts is not None:
             _, _, top_k = routed_experts.shape
@@ -401,18 +393,6 @@ class MoE(nn.Module):
                 num_tokens_per_expert,
                 routing_confidence_sum,
             )
-
-        return top_scores, selected_experts_indices
-
-    def compute(
-        self,
-        x: torch.Tensor,
-        top_scores: torch.Tensor,
-        selected_experts_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Run the routed and shared experts on ``(bs, slen, dim)`` tokens."""
-        bs, slen, dim = x.shape
-        x = x.view(-1, dim)
 
         routed_output = self.token_dispatcher.run(
             self.prepare_expert_input(x),
