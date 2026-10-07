@@ -2,18 +2,20 @@ from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAtt
 from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextTextConfig,
+    Qwen3_8FlashNextVisionConfig,
 )
 from prime_rl.trainer.models.qwen3_8_flash_next.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.modeling_qwen3_8_flash_next import (
     Qwen3_8FlashNextDecoderLayer,
     Qwen3_8FlashNextForCausalLM,
-    Qwen3_8FlashNextModel,
     Qwen3_8FlashNextTextModel,
+    Qwen3_8FlashNextVLMModel,
 )
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding
+from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel
 
 __all__ = [
     "ExpandedRMSNorm",
@@ -25,8 +27,10 @@ __all__ = [
     "Qwen3_8FlashNextConfig",
     "Qwen3_8FlashNextDecoderLayer",
     "Qwen3_8FlashNextForCausalLM",
-    "Qwen3_8FlashNextModel",
     "Qwen3_8FlashNextTextConfig",
     "Qwen3_8FlashNextTextModel",
+    "Qwen3_8FlashNextVisionConfig",
+    "Qwen3_8FlashNextVisionModel",
+    "Qwen3_8FlashNextVLMModel",
     "RotaryEmbedding",
 ]

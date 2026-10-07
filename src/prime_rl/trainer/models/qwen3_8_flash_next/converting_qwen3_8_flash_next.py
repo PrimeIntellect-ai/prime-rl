@@ -52,10 +52,7 @@ def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
 def conversion_chain(config) -> list[ConvOp]:
     text_config = getattr(config, "text_config", config)
     model_prefix = "model.language_model" if hasattr(config, "text_config") else "model"
-    operations: list[ConvOp] = [
-        Drop("model.visual.", is_prefix=True),
-        Drop("mtp.", is_prefix=True),
-    ]
+    operations: list[ConvOp] = [Drop("mtp.", is_prefix=True)]
 
     for layer_index in range(text_config.num_hidden_layers):
         prefix = f"{model_prefix}.layers.{layer_index}.mlp"
