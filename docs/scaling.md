@@ -289,6 +289,11 @@ Restart the trainer and inference together after an uncertain update; there is
 no rollback. ModelExpress owns layouts, transfer planning, reader leases and
 source-buffer release safety.
 
+Trainer rank 0 and the orchestrator must share the broadcast directory. Only
+rank 0 reads the installation acknowledgment; it broadcasts success or failure
+to the other trainer ranks through the distributed process group. Other trainer
+nodes do not need access to that directory for ModelExpress weight updates.
+
 Use static vLLM admin endpoints. Dynamo discovery, speculative decoding, LoRA
 and SFT online evaluation are not supported by this transport. This adapter
 does not reject pipeline parallelism; PrimeRL's bundled deployment sizing and
