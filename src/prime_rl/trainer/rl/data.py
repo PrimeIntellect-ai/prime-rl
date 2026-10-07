@@ -49,7 +49,7 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Replaced by mm_kwargs and mm_forward_policy in materialize_micro_batch_mm, ahead of this microbatch's forward
+    # Replaced by mm_kwargs and mm_forward_policy in prepare_micro_batch, ahead of this microbatch's forward
     # pass when using workers.
     mm_refs: MMRefs | None
     mm_kwargs: NotRequired[dict[str, Tensor] | None]
@@ -177,17 +177,21 @@ class FakeDataLoader:
         }
 
 
-def materialize_micro_batch_mm(
-    inputs: dict[str, Any], processor: Any | None, mm_adapter: MultimodalAdapter | None
-) -> dict[str, Any]:
-    """Decode and preprocess a micro batch's ``mm_refs`` into its ``mm_kwargs`` and ``mm_forward_policy`` fields."""
-    mm_refs = inputs["mm_refs"]
-    if mm_refs is None:
-        return {"mm_refs": None, "mm_kwargs": None, "mm_forward_policy": None}
-    if processor is None or mm_adapter is None:
-        raise ValueError("Received multimodal samples but [model.vlm] is not set")
-    materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-    return {"mm_refs": None, "mm_kwargs": materialized.kwargs, "mm_forward_policy": materialized.forward_policy}
+def prepare_micro_batch(
+    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+) -> TensorMicroBatch:
+    """Prepare a micro batch for the training loop off the main thread; today this decodes and preprocesses its images."""
+    micro_batch["mm_kwargs"] = None
+    micro_batch["mm_forward_policy"] = None
+    mm_refs = micro_batch.get("mm_refs")
+    if mm_refs is not None:
+        if processor is None or mm_adapter is None:
+            raise ValueError("Received multimodal samples but [model.vlm] is not set")
+        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+        micro_batch["mm_kwargs"] = materialized.kwargs
+        micro_batch["mm_forward_policy"] = materialized.forward_policy
+        micro_batch["mm_refs"] = None
+    return micro_batch
 
 
 class DataLoader:

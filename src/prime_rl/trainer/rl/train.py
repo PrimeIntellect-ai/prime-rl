@@ -18,7 +18,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, materialize_micro_batch_mm
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -71,7 +71,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.worker_map import WorkerMap, prepare
+from prime_rl.utils.worker_map import WorkerMap
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
@@ -148,8 +148,8 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
-    mm_preparer = WorkerMap(
-        config.data.num_workers, partial(materialize_micro_batch_mm, processor=processor, mm_adapter=mm_adapter)
+    micro_batch_preparer = WorkerMap(
+        config.data.num_workers, partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
     )
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
@@ -340,7 +340,7 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
-        for micro_step, micro_batch in enumerate(prepare(mm_preparer, micro_batches, ["mm_refs"])):
+        for micro_step, micro_batch in enumerate(micro_batch_preparer(micro_batches)):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -729,7 +729,7 @@ def train(config: TrainerConfig):
 
     if gradient_manager is not None:
         gradient_manager.close()
-    mm_preparer.close()
+    micro_batch_preparer.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")

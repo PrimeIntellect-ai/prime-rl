@@ -1,11 +1,10 @@
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, MutableMapping, Sequence
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Generic, TypeVar
+from typing import Generic, TypeVar
 
 T = TypeVar("T")
 R = TypeVar("R")
-M = TypeVar("M", bound=MutableMapping[str, Any])
 
 
 class WorkerMap(Generic[T, R]):
@@ -55,17 +54,3 @@ class WorkerMap(Generic[T, R]):
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
-
-
-def prepare(
-    worker_map: WorkerMap[dict[str, Any], dict[str, Any]], items: Sequence[M], input_keys: Sequence[str]
-) -> Iterator[M]:
-    """Yield each item updated in place with ``worker_map``'s output on its ``input_keys`` fields.
-
-    Workers receive only ``input_keys`` rather than whole items: sending a micro batch to a worker would move all of
-    its tensors into shared memory (/dev/shm) until the step ends, costing a copy and an open file per tensor.
-    """
-    inputs = ({key: item[key] for key in input_keys} for item in items)
-    for item, updates in zip(items, worker_map(inputs)):
-        item.update(updates)
-        yield item

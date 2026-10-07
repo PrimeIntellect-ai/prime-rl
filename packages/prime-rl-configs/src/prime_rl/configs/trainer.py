@@ -613,7 +613,7 @@ class DataLoaderConfig(BaseConfig):
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
     num_workers: int = Field(0, ge=0)
-    """Number of worker processes that decode and preprocess micro batches' images ahead of the training loop. 0 does this inline in the main process. With workers, the image tensors of up to 2 * num_workers micro batches are held ahead in shared memory (/dev/shm)."""
+    """Number of background threads that prepare micro batches (e.g. decode and preprocess their images) ahead of the training loop, keeping up to 2 * num_workers micro batches ahead. 0 prepares them inline in the training loop."""
 
 
 class TrainerConfig(BaseConfig):
