@@ -2,34 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
-from prime_rl.utils.logger import get_logger
-
-if TYPE_CHECKING:
-    from renderers import RendererConfig
-
-    from prime_rl.orchestrator.clients import InferenceClient
-
-
-async def connect_frozen_client(
-    config: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
-) -> InferenceClient:
-    """Connect to an externally hosted frozen model and wait for it."""
-    from prime_rl.orchestrator.clients import InferenceClient, check_inference_ready
-
-    get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={config.base_url})")
-    if renderer_config is not None:
-        clients = InferenceClient(
-            config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
-        )
-    else:
-        clients = InferenceClient(config, model_name=config.name)
-    await check_inference_ready(config, config.name)
-    return clients
+from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 
 
 def iter_trainable_traces(episodes: list[vf.Episode]):

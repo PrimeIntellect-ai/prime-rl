@@ -214,10 +214,10 @@ class Dispatcher:
         """``(clients, model_name, is_live)`` for *train* rollouts of this env —
         eval always uses the policy."""
         assert self.train_envs is not None  # train groups only exist when train is configured
-        source = self.train_envs.get(env_name).generation_source
-        if source.uses_live_policy:
-            return source.clients, self.policy.model_name, True
-        return source.clients, source.clients.model_name, False
+        env = self.train_envs.get(env_name)
+        if env.uses_live_policy:
+            return env.clients, self.policy.model_name, True
+        return env.clients, env.clients.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -316,7 +316,7 @@ class Dispatcher:
         return [
             (self.progress.step - 1) - meta.policy_version
             for meta in self.inflight.values()
-            if meta.kind == "train" and self.train_envs.get(meta.env_name).generation_source.uses_live_policy
+            if meta.kind == "train" and self.train_envs.get(meta.env_name).uses_live_policy
         ]
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -423,7 +423,7 @@ class Dispatcher:
             gid
             for gid, group in self.groups.items()
             if group.kind == "train"
-            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
+            and self.train_envs.get(group.env_name).uses_live_policy
             and group.policy_version_at_start < min_version
         ]
         cancelled = 0
@@ -722,7 +722,7 @@ class Dispatcher:
         live_policy = meta.kind == "eval"
         if meta.kind == "train":
             assert self.train_envs is not None
-            live_policy = self.train_envs.get(meta.env_name).generation_source.uses_live_policy
+            live_policy = self.train_envs.get(meta.env_name).uses_live_policy
         policy = vf.PolicySpan(start=policy_version, end=self.policy.version) if live_policy else None
         work: vf.WorkInfo = (
             vf.EvalWorkInfo(step=meta.step, policy=policy)
