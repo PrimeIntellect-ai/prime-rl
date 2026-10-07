@@ -26,11 +26,11 @@ Validate VM provisioning, tool execution, and scoring first:
 uv run eval @ experiments/score-centering/eval-preflight.toml --run.name runtime-preflight --no-dashboard
 ```
 
-Prepare fresh launch scripts for both arms:
+Prepare launch scripts that resume both arms from the matched step-250 checkpoints:
 
 ```bash
-uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/baseline.toml --run.name ipo-eps03-seed42-compact-v1 --no-dashboard --dry-run
-uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/centered.toml --run.name ipo-sc-eps03-seed42-compact-v1 --no-dashboard --dry-run
+uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/baseline.toml --run.name ipo-eps03-seed42-compact-v1 --resume.step 250 --no-dashboard --dry-run
+uv run rl @ experiments/score-centering/common.toml @ experiments/score-centering/centered.toml --run.name ipo-sc-eps03-seed42-compact-v1 --resume.step 250 --no-dashboard --dry-run
 ```
 
 After the live preflight, schedule both arms in one four-node allocation:
@@ -40,7 +40,7 @@ sbatch experiments/score-centering/launch-pair.sbatch
 ```
 
 The launcher gives each arm one trainer node and one inference node, with 116 CPUs per node.
-It retains the automatic stall guard. Both arms start from base weights with no resume.
+Monitoring does not cancel jobs automatically. A failed arm does not stop the other arm.
 Preserve the earlier standalone-estimator results separately; their launch script and lineage are under `archive/`.
 For a three-update smoke check, add `@ experiments/score-centering/smoke.toml` before the CLI overrides and use separate names.
 Keep at most eight experiment nodes allocated across all checks and runs.

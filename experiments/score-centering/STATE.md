@@ -8,23 +8,45 @@ Do not merge or open a PR unless asked. No subagents are authorized.
 
 - The user selected IPO versus IPO plus score centering on 2026-09-20.
 - Both arms use IPO eps0.3; only the score-centering switch differs in the objective.
-- Prepare fresh base-weight runs `ipo-eps03-seed42-compact-v1` and `ipo-sc-eps03-seed42-compact-v1`.
+- Resume runs `ipo-eps03-seed42-compact-v1` and `ipo-sc-eps03-seed42-compact-v1` from their matched step-250 checkpoints.
 - Do not resume the previous standalone treatment or mix its 50 updates into this comparison.
-- `launch-pair.sbatch` reserves four nodes and retains CPU checks and the stall guard.
+- `launch-pair.sbatch` reserves four nodes and retains CPU checks. Automatic watchdog cancellation is removed.
 - Prior lineage and restart scripts are preserved under `archive/`.
 - Both full-config dry runs passed. Resolved trainer, orchestrator, and inference settings match after normalizing run paths, except `trainer.loss.score_centering`.
-- Both resolved trainers have `resume=None`, IPO eps0.3, adv_tau1.0, and kl_tau0.001.
+- Both resolved trainers and orchestrators have `resume.step=250`, IPO eps0.3, adv_tau1.0, and kl_tau0.001.
 - Weighted-score gradients match an independent dense reference, including advantages, loss masks, and loss weights.
 - User authorized scheduling both fresh experiments at 2026-09-20T20:34:15.489287+00:00. This supersedes the prior stop.
 - Paired SLURM job1039 released at 2026-09-20T20:38:17.616927+00:00. Four nodes total; both arms start from base weights.
 - Runtime preflight completed: four scored episodes, zero errors; Lego1/2 and TB2 1/2 solved. One TB2 rollout reached its turn limit.
-- Job1039 is RUNNING. IPO uses inference004/trainer007; IPO+SC uses inference008/trainer002. All four CPU-affinity checks passed at116 CPUs.
+- Job1039 was cancelled by the allocation watchdog at 2026-09-21 16:59:14 UTC. IPO uses inference004/trainer007; IPO+SC uses inference008/trainer002. All four CPU-affinity checks passed at116 CPUs.
 - At 2026-09-20T20:49:16.507229+00:00, both inference routers passed live compact-logprob generation checks: sampled scores and top128 head decode correctly. Both orchestrators are collecting initial train/eval rollouts at about517 inflight each. No completed optimizer update yet.
-- The allocation-scoped stall guard is emitting heartbeats with no stop reasons. Initial rollout logs include some malformed tool calls, one context overflow, and one sandbox provisioning failure; these are task/provider errors, not training instability.
+- At startup, the allocation-scoped stall guard emitted heartbeats with no stop reasons. Initial rollout logs include some malformed tool calls, one context overflow, and one sandbox provisioning failure; these are task/provider errors, not training instability.
 - W&B IPO: https://wandb.ai/primeintellect/score-centering-terminal/runs/215ad83bb301492184c0ca1fc616a221
 - W&B IPO+SC: https://wandb.ai/primeintellect/score-centering-terminal/runs/4ca8f7fb1e5544aa96b016c2f93ac8be
 - Both runs are visible at http://localhost:7789. Live check artifact: `results/monitor/compact-live-1039.json`.
-- Preflight: `ipo-sc-runtime-preflight-20260920`. Public push remains blocked pending explicit approval.
+- Preflight: `ipo-sc-runtime-preflight-20260920`.
+- Paired resume job1073 started at 2026-09-21T18:14:35Z on four nodes. IPO uses inference004/trainer007; IPO+SC uses inference008/trainer002.
+- Both attempt-2 launchers resolve trainer and orchestrator resume step250. Each trainer checkpoint contains metadata and eight DCP shards.
+- The paired launcher has no watchdog. It waits for both arms even if one arm fails, so one arm cannot cancel the other.
+- Both step-250 restores completed. At18:25UTC, both orchestrators were collecting rollouts with about510 inflight episodes each.
+- Resume W&B IPO: https://wandb.ai/primeintellect/score-centering-terminal/runs/d86337b26a3e42759894f58c661e846a
+- Resume W&B IPO+SC: https://wandb.ai/primeintellect/score-centering-terminal/runs/0550d0f772144ec8bb32bf2436373419
+- Job1073 completed normally with exit code0 on 2026-09-22T16:29:14Z.
+- Both arms reached step400 and wrote complete final trainer and orchestrator checkpoints.
+
+- User preference (2026-09-21): do not add watchdogs that automatically cancel jobs on stalled progress. Report problems without automatic cancellation. The launcher no longer starts a watchdog; `watch_progress.py` only records warnings.
+
+### Job1039 cancellation (2026-09-21)
+
+- Sandbox gateway failures appeared in both arms at16:18UTC: `Connect RPC failed (unavailable): Service Unavailable`.
+- The 16:00 hour contains1284 such trace failures for IPO and1243 for IPO+SC. New sandboxes reported RUNNING but failed gateway reachability for355seconds.
+- Both train batches stopped advancing around16:41UTC: IPO103/128 with441 inflight, IPO+SC124/128 with446 inflight.
+- IPO completed285 updates (last16:38:50UTC); IPO+SC completed256 (last16:40:06UTC). Final gradients were finite:0.07065 and0.09872.
+- At16:58:51UTC the guard recorded1201seconds without an IPO optimizer update. It signalled both orchestrators, then cancelled the shared allocation.
+- SLURM reports CANCELLED by2005 because the watchdog runs as mika. The job had not reached its two-day time limit.
+- This stop reflects sandbox gateway failures and rollout starvation; it does not establish numerical instability or score-centering robustness.
+- Checkpoint directories exist through285/256, but these latest checkpoints have not been validated for restore.
+- No restart was submitted during this diagnosis. Evidence: `results/monitor/guard-1039.jsonl`, `results/monitor/ipo_pair_1039.log`, and both run orchestrator logs.
 
 ### Previous standalone-estimator comparison
 

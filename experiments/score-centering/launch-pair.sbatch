@@ -44,14 +44,13 @@ ipo_pid=$!
 run_arm ipo-sc "${pair_hosts[2]},${pair_hosts[3]}" &
 sc_pid=$!
 
-(uv run --no-sync python -P experiments/score-centering/watch_progress.py "$SLURM_JOB_ID" \
-    outputs/score-centering/ipo-eps03-seed42-compact-v1 \
-    outputs/score-centering/ipo-sc-eps03-seed42-compact-v1 || scancel "$SLURM_JOB_ID") &
-guard_pid=$!
-
-# A failed arm ends the allocation; successful arms must both finish.
-wait -n "$ipo_pid" "$sc_pid"
+# Keep the allocation alive until both arms exit, even if one arm fails.
+set +e
 wait "$ipo_pid"
+ipo_status=$?
 wait "$sc_pid"
+sc_status=$?
+set -e
 
-kill "$guard_pid" 2>/dev/null || true
+printf 'ipo exit=%s, ipo-sc exit=%s\n' "$ipo_status" "$sc_status"
+(( ipo_status == 0 && sc_status == 0 ))

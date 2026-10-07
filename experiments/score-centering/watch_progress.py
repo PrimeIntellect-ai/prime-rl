@@ -1,13 +1,10 @@
-"""Stop this experiment allocation when an arm cannot make training progress."""
+"""Record experiment progress and warnings without controlling jobs."""
 
 import json
 import math
 import os
-import re
-import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -23,32 +20,6 @@ def read_progress(run):
             stream.readline()
         lines = stream.read().splitlines(keepends=True)
     return [json.loads(line) for line in lines if line.endswith(b"\n")]
-
-
-def stop_arm(job, run):
-    path = run / "launcher/logs" / f"job_{job}.log"
-    match = re.search(r"^TRAIN_HOSTS=(\S+)$", path.read_text(), re.MULTILINE)
-    if match is None:
-        return {"run": str(run), "signal": "trainer host unavailable"}
-    result = subprocess.run(
-        [
-            "srun",
-            f"--jobid={job}",
-            "--overlap",
-            "--nodes=1",
-            "--ntasks=1",
-            "--cpus-per-task=1",
-            f"--nodelist={match[1]}",
-            "pkill",
-            "-INT",
-            "-x",
-            "PRL::Orchestrat",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    return {"run": str(run), "signal_exit": result.returncode}
 
 
 def main():
@@ -85,21 +56,13 @@ def main():
         record = {
             "time": now,
             "job": job,
-            "stop_reasons": reasons,
+            "warnings": reasons,
             "last_update": {str(run): stamp for run, stamp in last_update.items()},
         }
         with log.open("a") as stream:
             stream.write(json.dumps(record) + "\n")
         if reasons:
             print(json.dumps(record), flush=True)
-            try:
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    for result in pool.map(lambda run: stop_arm(job, run), runs):
-                        print(json.dumps(result), flush=True)
-            finally:
-                time.sleep(20)
-                subprocess.run(["scancel", job], check=True)
-            return
         if len(completed) == len(runs):
             return
         time.sleep(30)
