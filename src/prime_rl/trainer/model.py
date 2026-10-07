@@ -848,8 +848,9 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, compile_moe_i
             and isinstance(layer, CheckpointWrapper)
             and isinstance(getattr(layer._checkpoint_wrapped_module, "mlp", None), MoE)
         ):
-            # The fp32 router's FSDP hook breaks the graph, and a break inside a compiled checkpoint
-            # sends the whole block to eager, so the checkpoint stays eager around the compiled block.
+            # A graph break inside a compiled checkpoint sends the block to eager, and the fp32 router's
+            # FSDP hook always breaks, so keep AC eager around the compiled block. Remove with
+            # pytorch/pytorch#196626, which lets the router join the block's FSDP unit.
             layer = layer._checkpoint_wrapped_module
             compiled_inside_ac += 1
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
