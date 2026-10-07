@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from prime_rl.orchestrator.clients import prefill_logprobs
+from prime_rl.orchestrator.clients import prefill_logprobs, prefill_logprobs_with_max
 
 
 class _FakeOpenAIClient:
@@ -58,5 +58,27 @@ def test_prefill_logprobs_uses_inference_generate():
                 },
             }
         ]
+
+    asyncio.run(_run())
+
+
+def test_prefill_logprobs_with_max_preserves_target_and_best_token_scores():
+    async def _run():
+        fake_openai = _FakeOpenAIClient(
+            {
+                "request_id": "gen-test",
+                "choices": [],
+                "prompt_logprobs": [
+                    None,
+                    {"2": {"logprob": -0.7}, "9": {"logprob": -0.2}},
+                    {"3": {"logprob": -1.3}, "4": {"logprob": -0.1}},
+                ],
+                "kv_transfer_params": None,
+            }
+        )
+
+        result = await prefill_logprobs_with_max(fake_openai, "ref-model", [1, 2, 3])
+
+        assert result == ([0.0, -0.7, -1.3], [0.0, -0.2, -0.1])
 
     asyncio.run(_run())
