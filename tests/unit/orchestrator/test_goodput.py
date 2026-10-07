@@ -238,12 +238,11 @@ def test_failed_episodes_stay_out_of_the_law(clock):
     assert ctl.lifetime == pytest.approx(60.0)
 
 
-def test_bootstrap_counts_engines_not_metric_endpoints(clock):
+def test_bootstrap_sizes_per_decode_engine(clock):
     ctl = GoodputController(ConcurrencyConfig(max_inflight=4096), batch_size=1024, max_off_policy_steps=8)
     ctl.bind(set_limit=lambda n: None, get_inflight=lambda: 0)
-    # One DP deployment of 4 engines behind 4 API servers: each also exposes engine "0"
-    keys = ["h#0", "h#0", "h#1", "h#0", "h#2", "h#0", "h#3"]
-    samples = [dataclasses.replace(sample(0.0), engine_id=f"server{i}", engine_key=k) for i, k in enumerate(keys)]
+    samples = [dataclasses.replace(sample(0.0), engine_id=f"server{i}.{i}") for i in range(4)]
+    samples.append(dataclasses.replace(sample(0.0), engine_id="prefill0.0", role="prefill"))
     ctl.observe(samples)
     assert ctl.max_inflight == bin_size(bin_of(64 * 4))
 

@@ -86,36 +86,45 @@ class EngineSample:
 
 
 def parse_prometheus_text(text: str) -> dict[str, EngineSnapshot]:
-    """Parse a vLLM Prometheus exposition into one snapshot per engine label."""
+    """Parse a vLLM Prometheus exposition into one snapshot per engine label.
+
+    API-server-level samples carry no ``engine`` label. They join the
+    endpoint's lowest labeled engine rather than a phantom ``"0"``: behind a
+    data-parallel deployment with one API server per rank, every server
+    would otherwise report a fake engine 0."""
+    samples = [
+        (family, sample)
+        for family in text_string_to_metric_families(text)
+        if family.name.startswith(METRIC_PREFIX) and family.type in ("counter", "gauge", "histogram")
+        for sample in family.samples
+        if not sample.name.endswith("_created") and math.isfinite(sample.value)
+    ]
+    labeled = sorted({sample.labels["engine"] for _, sample in samples if "engine" in sample.labels})
+    unlabeled = labeled[0] if labeled else "0"
     engines: dict[str, EngineSnapshot] = {}
-    for family in text_string_to_metric_families(text):
-        if not family.name.startswith(METRIC_PREFIX) or family.type not in ("counter", "gauge", "histogram"):
+    for family, sample in samples:
+        engine = engines.setdefault(sample.labels.get("engine", unlabeled), EngineSnapshot())
+        if family.name == CACHE_CONFIG_FAMILY:
+            engine.cache_config.update(sample.labels)
             continue
-        for sample in family.samples:
-            if sample.name.endswith("_created") or not math.isfinite(sample.value):
-                continue
-            engine = engines.setdefault(sample.labels.get("engine", "0"), EngineSnapshot())
-            if family.name == CACHE_CONFIG_FAMILY:
-                engine.cache_config.update(sample.labels)
-                continue
-            name = sample.name.removeprefix(METRIC_PREFIX)
-            # Keep the queue-reason breakdown instead of summing it away — the
-            # concurrency controller keys on capacity-queued requests
-            if name == "num_requests_waiting_by_reason":
-                name = f"num_requests_waiting_reason_{sample.labels.get('reason', 'unknown')}"
-            if family.type == "gauge":
-                engine.gauges[name] = engine.gauges.get(name, 0.0) + sample.value
-            elif family.type == "counter":
-                engine.counters[name] = engine.counters.get(name, 0.0) + sample.value
-            else:
-                histogram = engine.histograms.setdefault(family.name.removeprefix(METRIC_PREFIX), HistogramSnapshot())
-                if sample.name.endswith("_sum"):
-                    histogram.sum += sample.value
-                elif sample.name.endswith("_count"):
-                    histogram.count += sample.value
-                elif sample.name.endswith("_bucket"):
-                    le = float(sample.labels["le"])
-                    histogram.buckets[le] = histogram.buckets.get(le, 0.0) + sample.value
+        name = sample.name.removeprefix(METRIC_PREFIX)
+        # Keep the queue-reason breakdown instead of summing it away — the
+        # concurrency controller keys on capacity-queued requests
+        if name == "num_requests_waiting_by_reason":
+            name = f"num_requests_waiting_reason_{sample.labels.get('reason', 'unknown')}"
+        if family.type == "gauge":
+            engine.gauges[name] = engine.gauges.get(name, 0.0) + sample.value
+        elif family.type == "counter":
+            engine.counters[name] = engine.counters.get(name, 0.0) + sample.value
+        else:
+            histogram = engine.histograms.setdefault(family.name.removeprefix(METRIC_PREFIX), HistogramSnapshot())
+            if sample.name.endswith("_sum"):
+                histogram.sum += sample.value
+            elif sample.name.endswith("_count"):
+                histogram.count += sample.value
+            elif sample.name.endswith("_bucket"):
+                le = float(sample.labels["le"])
+                histogram.buckets[le] = histogram.buckets.get(le, 0.0) + sample.value
     return engines
 
 
@@ -417,7 +426,6 @@ class InferenceMetricsCollector:
             ),
             preemptions_delta=preemptions_delta,
             generation_tokens_delta=generation_tokens_delta,
-            engine_key=f"{sample.endpoint.client.base_url.host}#{sample.engine_label}",
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:

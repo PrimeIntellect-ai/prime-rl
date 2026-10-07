@@ -370,8 +370,7 @@ class GoodputController:
         self.now = now
         if not self.bootstrapped and not self.schedule:
             self.bootstrapped = True
-            engines = len({s.engine_key or s.engine_id for s in samples})
-            self.move(bin_of(self.config.bootstrap_inflight_per_engine * engines), now, reason="bootstrap")
+            self.move(bin_of(self.config.bootstrap_inflight_per_engine * len(samples)), now, reason="bootstrap")
         if self.last_poll is None:
             self.last_poll = now
             return

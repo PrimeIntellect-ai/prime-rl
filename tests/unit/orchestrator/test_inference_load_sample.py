@@ -1,7 +1,3 @@
-from types import SimpleNamespace
-
-import httpx
-
 from prime_rl.orchestrator.inference_metrics import (
     EngineSample,
     InferenceMetricsCollector,
@@ -29,9 +25,6 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
 """
 
 
-CLIENT = SimpleNamespace(base_url=httpx.URL("http://x:8000"))
-
-
 def engine_sample(endpoint, t, gen, pre):
     snapshot = parse_prometheus_text(VLLM_METRICS.format(gen=gen, pre=pre))["0"]
     return EngineSample(endpoint=endpoint, engine_label="0", timestamp=t, snapshot=snapshot)
@@ -39,7 +32,7 @@ def engine_sample(endpoint, t, gen, pre):
 
 def test_load_sample_carries_generation_token_delta():
     collector = InferenceMetricsCollector([])
-    endpoint = MetricsEndpoint(client=CLIENT, role=None, key="http://x:8000", name="server0")
+    endpoint = MetricsEndpoint(client=None, role=None, key="http://x:8000", name="server0")
     first = engine_sample(endpoint, 0.0, gen=1000.0, pre=2.0)
     load = collector.build_load_sample(first)
     assert load.generation_tokens_delta == 0.0  # no baseline yet
@@ -49,13 +42,26 @@ def test_load_sample_carries_generation_token_delta():
     assert load.generation_tokens_delta == 5000.0
     assert load.preemptions_delta == 3
     assert load.running == 12 and load.waiting == 3 and load.kv_usage == 0.25
-    assert load.engine_key == "x#0"
 
 
 def test_counter_reset_reads_as_no_signal():
     collector = InferenceMetricsCollector([])
-    endpoint = MetricsEndpoint(client=CLIENT, role=None, key="http://x:8000", name="server0")
+    endpoint = MetricsEndpoint(client=None, role=None, key="http://x:8000", name="server0")
     first = engine_sample(endpoint, 0.0, gen=9000.0, pre=0.0)
     collector.previous[first.key] = TimedSnapshot(timestamp=first.timestamp, snapshot=first.snapshot)
     load = collector.build_load_sample(engine_sample(endpoint, 5.0, gen=100.0, pre=0.0))
     assert load.generation_tokens_delta == 0.0
+
+
+def test_unlabeled_api_server_metrics_join_the_endpoint_engine():
+    # One API server per data-parallel rank: engine-level series carry the
+    # rank, API-server-level counters carry no engine label at all
+    text = VLLM_METRICS.format(gen=10.0, pre=0.0).replace('engine="0"', 'engine="2"') + (
+        "# HELP vllm:tool_call_parser_invocations_total Tool call parser invocations.\n"
+        "# TYPE vllm:tool_call_parser_invocations_total counter\n"
+        'vllm:tool_call_parser_invocations_total{model_name="m"} 7\n'
+    )
+    engines = parse_prometheus_text(text)
+    assert list(engines) == ["2"]
+    assert engines["2"].counters["tool_call_parser_invocations_total"] == 7.0
+    assert engines["2"].counters["generation_tokens_total"] == 10.0
