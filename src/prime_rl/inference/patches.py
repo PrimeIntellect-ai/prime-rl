@@ -48,9 +48,12 @@ def monkey_patch_packed_sampling_masks():
     vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
     runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
     objects per token that every gen-2 pass walks. Store only the (untracked) id
-    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Only
-    ``/inference/v1/generate`` reads ``CompletionOutput.sampling_mask``.
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
     """
+    from vllm.sampling_params import RequestOutputKind
     from vllm.v1.engine.output_processor import RequestState
 
     original_init = RequestState.__init__
@@ -62,11 +65,12 @@ def monkey_patch_packed_sampling_masks():
 
     def _init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        self.sampling_mask_chunks = _MaskIds()
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
 
     def _new_completion_output(self, token_ids, finish_reason, stop_reason):
         chunks = self.sampling_mask_chunks
-        if finish_reason is None or not chunks:
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
             return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
         self.sampling_mask_chunks = _MaskIds()
         output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
