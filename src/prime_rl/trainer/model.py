@@ -836,20 +836,18 @@ def mark_dynamic_int_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig, compile_moe_inside_ac: bool):
+def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         layer = language_model.layers[layer_id]
-        if (
-            compile_moe_inside_ac
-            and isinstance(layer, CheckpointWrapper)
-            and isinstance(getattr(layer._checkpoint_wrapped_module, "mlp", None), MoE)
+        if isinstance(layer, CheckpointWrapper) and any(
+            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
         ):
-            # A graph break inside a compiled checkpoint sends the block to eager, and the fp32 router's
-            # FSDP hook always breaks, so keep AC eager around the compiled block. Remove with
-            # pytorch/pytorch#196626, which lets the router join the block's FSDP unit.
+            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
+            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
+            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
             layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
         layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
@@ -1013,13 +1011,14 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> Compile -> FSDP, except that MoE blocks with an fp32 router compile inside AC
+    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile is not None:
-        apply_compile(model, config.compile, compile_moe_inside_ac=config.moe_router_dtype == "float32")
 
     setup_fsdp(model, config, parallel_dims)
+
+    if config.compile is not None:
+        apply_compile(model, config.compile)
 
     if loading_from_checkpoint_later:
         logger.warning(
