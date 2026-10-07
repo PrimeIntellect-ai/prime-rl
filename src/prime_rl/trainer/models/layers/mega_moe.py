@@ -9,7 +9,7 @@ import triton.language as tl
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DTensor
 
-from prime_rl.trainer.models.layers.activations import Silu
+from prime_rl.trainer.models.layers.activations import Activation, ClampedSilu, Silu
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -507,14 +507,12 @@ def _to_local(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
-def _activation_clamp(activation) -> float | None:
-    from prime_rl.trainer.models.deepseek_v4.moe import ClampedSwiglu
-
-    if activation is Silu:
+def _activation_clamp(activation: type[Activation] | Activation) -> float | None:
+    if activation is Silu or isinstance(activation, Silu):
         return None
-    if isinstance(activation, ClampedSwiglu):
+    if isinstance(activation, ClampedSilu):
         return float(activation.limit)
-    raise ValueError("Mega MoE requires a SwiGLU (`silu` or DeepSeek V4 clamped) expert activation.")
+    raise ValueError("Mega MoE requires a SwiGLU (`silu` or DeepSeek V4 `ClampedSilu`) expert activation.")
 
 
 class MegaMoEExpertCompute:
