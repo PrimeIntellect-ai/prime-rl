@@ -46,7 +46,7 @@ IGNORED_FIELDS = {
     "heartbeat": True,
     "concurrency": True,
     "tasks_per_minute": True,
-    "client": {"wait_for_ready_timeout", "skip_model_check"},
+    "client": {"wait_for_ready_timeout", "skip_model_check", "admin_base_url"},
     "source": {"__all__": {"serve": {"pool", "max_concurrent"}}},
 }
 
