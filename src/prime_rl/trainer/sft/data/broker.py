@@ -138,8 +138,11 @@ class PackedDataLoader:
         self.capacity = config.seq_len * config.micro_batch_size
         self.num_rows = config.batch_size // config.micro_batch_size
         self.source = StridedShard(dataset, self.rank, self.world_size, self.capacity)
+        data_signature = config.model_dump(mode="json", exclude={"num_workers", "packing"})
+        if not config.deterministic_sampling:
+            data_signature.pop("deterministic_sampling")
         self.signature = {
-            "data": config.model_dump(mode="json", exclude={"num_workers", "packing"}),
+            "data": data_signature,
             "size": dataset.num_examples,
             "max_epochs": dataset.max_epochs,
         }
