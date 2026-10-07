@@ -22,6 +22,7 @@ from pydantic import TypeAdapter
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_file_monitor_dir
 
 CONFIG_NAME = "eval.json"
@@ -36,6 +37,7 @@ IGNORED_FIELDS = {
     "select": True,
     "group_size": True,
     "resume": True,
+    "output_dir": True,
     "clean": True,
     "dry_run": True,
     "log": True,
@@ -44,7 +46,7 @@ IGNORED_FIELDS = {
     "heartbeat": True,
     "concurrency": True,
     "tasks_per_minute": True,
-    "client": {"wait_for_ready_timeout"},
+    "client": {"wait_for_ready_timeout", "skip_model_check"},
     "source": {"__all__": {"serve": {"pool", "max_concurrent"}}},
 }
 
@@ -87,25 +89,31 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
     # Sources are identified by unique names; their declaration order does not affect resume.
     expected["source"].sort(key=lambda source: orjson.dumps(source, option=orjson.OPT_SORT_KEYS))
     snapshot = TypeAdapter(dict)
+    skip_checks = config.resume is not None and config.resume.skip_checks
+    if skip_checks:
+        get_logger().warning(
+            "Skipping resume compatibility checks; saved episodes may use different experiment settings."
+        )
     landed: list[vf.WireEpisode] = []
     for directory in directories:
-        saved_path = directory / CONFIG_NAME
-        if not saved_path.is_file():
-            raise ValueError(f"--resume: no saved experiment config at {saved_path}")
-        # Snapshots are resolved configs: re-validating would fill missing fields with new defaults.
-        previous = snapshot.dump_python(snapshot.validate_json(saved_path.read_bytes()), exclude=IGNORED_FIELDS)
-        if "source" in previous:
-            previous["source"].sort(key=lambda source: orjson.dumps(source, option=orjson.OPT_SORT_KEYS))
-        changed = sorted(
-            key
-            for key in expected.keys() | previous.keys()
-            if key not in expected or key not in previous or expected[key] != previous[key]
-        )
-        if changed:
-            raise ValueError(
-                f"--resume: config differs from {saved_path} in [{', '.join(changed)}]. "
-                "Use the saved experiment settings or start a fresh run."
+        if not skip_checks:
+            saved_path = directory / CONFIG_NAME
+            if not saved_path.is_file():
+                raise ValueError(f"--resume: no saved experiment config at {saved_path}")
+            # Snapshots are resolved configs: re-validating would fill missing fields with new defaults.
+            previous = snapshot.dump_python(snapshot.validate_json(saved_path.read_bytes()), exclude=IGNORED_FIELDS)
+            if "source" in previous:
+                previous["source"].sort(key=lambda source: orjson.dumps(source, option=orjson.OPT_SORT_KEYS))
+            changed = sorted(
+                key
+                for key in expected.keys() | previous.keys()
+                if key not in expected or key not in previous or expected[key] != previous[key]
             )
+            if changed:
+                raise ValueError(
+                    f"--resume: config differs from {saved_path} in [{', '.join(changed)}]. "
+                    "Use the saved experiment settings, start a fresh run, or explicitly set --resume.skip-checks."
+                )
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
                 episode = vf.WireEpisode.model_validate(record)
