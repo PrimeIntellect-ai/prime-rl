@@ -166,6 +166,7 @@ def test_resume_validates_saved_episodes(tmp_path, ok, traces, valid) -> None:
         ({"client": {"wait_for_ready_timeout": 10}}, True),
         ({"client": {"skip_model_check": True}}, True),
         ({"client": {"admin_base_url": ["https://admin.invalid"]}}, True),
+        ({"client": {"dynamo": {"discovery_url": "https://discovery.invalid"}}}, True),
         ({"output_dir": "./another-output-location"}, True),
         ({"source": [{"env": {"id": "single_agent"}, "serve": {"pool": {"type": "elastic", "max_workers": 2}}}]}, True),
     ],
