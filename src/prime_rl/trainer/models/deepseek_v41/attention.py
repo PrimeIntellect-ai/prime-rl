@@ -41,7 +41,7 @@ from prime_rl.trainer.models.deepseek_v4.attention import (
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import DeepseekV41TextConfig
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope, dsv4_rope_inplace
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
 from prime_rl.trainer.models.kernels.dsv41_sparse_attn import dsv41_sparse_attn, flashmla_sparse_attn_available
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -325,7 +325,8 @@ class DeepseekV41Attention(nn.Module):
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))
         q = self.q_b_proj(q_residual).view(*input_shape, self.num_heads, self.head_dim)
-        q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
+        # The projection's output is read by nothing else, and the attention kernel's query gradient is fresh.
+        q = dsv4_rope_inplace(q, cos_sin_cache, packed.position_ids)
 
         if self.compress_ratio:
             latent = None
@@ -346,7 +347,10 @@ class DeepseekV41Attention(nn.Module):
         )
         attn_output, _ = self.sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling)
         # Values are the rotated keys; the conjugate rotation at the query position cancels that.
-        attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
+        # The attention backward reads its output, so only the gradient (fresh from `o_a_proj`) rotates in place.
+        attn_output = dsv4_rope_inplace(
+            attn_output, cos_sin_cache, packed.position_ids, inverse=True, in_place_forward=False
+        )
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
         return self.o_b_proj(grouped), state
 

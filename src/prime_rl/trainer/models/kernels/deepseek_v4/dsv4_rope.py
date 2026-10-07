@@ -82,6 +82,115 @@ def _triton_rope(
     return out
 
 
+@triton.autotune(
+    configs=[triton.Config({"BLOCK_H": block_h}, num_warps=warps) for block_h in (4, 8, 16, 32) for warps in (2, 4)],
+    key=["num_heads", "head_dim"],
+    # Benchmarking reruns the kernel on the same buffer; restore it so the rotation is applied once.
+    restore_value=["X"],
+)
+@triton.jit
+def _triton_rope_inplace_kernel(
+    X,
+    COS_SIN,
+    POS,
+    num_heads,
+    head_dim: tl.constexpr,
+    rope_dim: tl.constexpr,
+    INVERSE: tl.constexpr,
+    BLOCK_H: tl.constexpr,
+):
+    """Rotate the trailing `rope_dim` channels of `BLOCK_H` heads of one token in place."""
+    token = tl.program_id(0).to(tl.int64)
+    heads = tl.program_id(1) * BLOCK_H + tl.arange(0, BLOCK_H)
+    pairs = tl.arange(0, rope_dim // 2)
+
+    cos_sin = COS_SIN + tl.load(POS + token).to(tl.int64) * rope_dim
+    cos = tl.load(cos_sin + pairs)
+    sin = tl.load(cos_sin + rope_dim // 2 + pairs)
+    if INVERSE:
+        sin = -sin
+
+    offsets = (token * num_heads + heads[:, None]) * head_dim + (head_dim - rope_dim) + tl.arange(0, rope_dim)[None, :]
+    mask = heads[:, None] < num_heads
+    x = tl.load(X + offsets, mask=mask).to(tl.float32)
+    x1, x2 = tl.split(tl.reshape(x, (BLOCK_H, rope_dim // 2, 2)))
+    y1 = tl.fma(x1, cos, -(x2 * sin))
+    y2 = tl.fma(x1, sin, x2 * cos)
+    y = tl.reshape(tl.join(y1, y2), (BLOCK_H, rope_dim))
+    tl.store(X + offsets, y.to(X.dtype.element_ty), mask=mask)
+
+
+@torch.library.custom_op("prime_rl::dsv4_rope_", mutates_args=("x",))
+def _dsv4_rope_(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool) -> None:
+    """`dsv4_rope` in place on contiguous `x`, reading and writing only the rotary channels."""
+    if x.numel() == 0:
+        return
+    num_heads, head_dim = x.shape[-2:]
+    grid = lambda meta: (position_ids.numel(), triton.cdiv(num_heads, meta["BLOCK_H"]))
+    _triton_rope_inplace_kernel[grid](
+        x,
+        cos_sin_cache,
+        position_ids.contiguous(),
+        num_heads,
+        head_dim,
+        cos_sin_cache.shape[-1],
+        INVERSE=inverse,
+    )
+
+
+@_dsv4_rope_.register_fake
+def _(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool) -> None:
+    return None
+
+
+def _rope_in_place_or_copy(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool):
+    if not x.is_contiguous():
+        return _triton_rope(x, cos_sin_cache, position_ids, inverse)
+    _dsv4_rope_(x, cos_sin_cache, position_ids, inverse)
+    return x
+
+
+class _DSV4RopeInPlace(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, cos_sin_cache, position_ids, inverse, in_place_forward):
+        ctx.save_for_backward(cos_sin_cache, position_ids)
+        ctx.inverse = inverse
+        if not in_place_forward:
+            return _triton_rope(x, cos_sin_cache, position_ids, inverse)
+        out = _rope_in_place_or_copy(x, cos_sin_cache, position_ids, inverse)
+        if out is x:
+            ctx.mark_dirty(x)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        cos_sin_cache, position_ids = ctx.saved_tensors
+        grad = _rope_in_place_or_copy(grad, cos_sin_cache, position_ids, not ctx.inverse)
+        return grad, None, None, None, None
+
+
+def dsv4_rope_inplace(
+    x: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    position_ids: torch.Tensor,
+    *,
+    inverse: bool = False,
+    in_place_forward: bool = True,
+) -> torch.Tensor:
+    """`dsv4_rope` that rotates the incoming gradient in place and, with `in_place_forward`, `x` too.
+
+    In place, the leading channels of each head are left untouched rather than copied, so a 512-wide
+    head with 64 rotary channels moves an eighth of the bytes. The caller guarantees that:
+
+    - with `in_place_forward`, nothing reads the unrotated `x` afterwards (autograd's version check
+      catches a saved `x`, not other readers);
+    - the gradient of the output reaches this op alone. It must not be shared with another branch,
+      as an add's backward shares one gradient between both inputs; a GEMM's or an attention
+      kernel's input gradient is fresh.
+    """
+    return _DSV4RopeInPlace.apply(x, cos_sin_cache, position_ids, inverse, in_place_forward)
+
+
 @torch.library.custom_op("prime_rl::dsv4_rope", mutates_args=())
 def dsv4_rope(
     x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, *, inverse: bool = False
