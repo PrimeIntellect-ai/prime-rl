@@ -191,6 +191,32 @@ def start_router(config: InferenceConfig) -> subprocess.Popen:
     return subprocess.Popen(cmd)
 
 
+def check_kv_offload_shm(config: InferenceConfig) -> None:
+    """Fail fast if the node's native KV offload regions cannot fit in /dev/shm.
+
+    vLLM backs each engine's CPU tier with its own ``/dev/shm`` file of ``cpu.num_bytes`` and only
+    checks free space for that one engine, so engines that start together all pass, then SIGBUS.
+    SLURM launches one engine per process and exports ``GPUS_PER_NODE``; every GPU runs inference.
+    """
+    offload = config.kv_cache_offload
+    if offload is None or offload.type != "native":
+        return
+    if "GPUS_PER_NODE" in os.environ:
+        num_engines = int(os.environ["GPUS_PER_NODE"]) // config.vllm.tensor_parallel_size
+    else:
+        num_engines = config.vllm.data_parallel_size_local or config.vllm.data_parallel_size
+    required = num_engines * offload.cpu.num_bytes
+    stat = os.statvfs("/dev/shm")
+    shm_size = stat.f_blocks * stat.f_frsize
+    if required > shm_size:
+        gib = 1 << 30
+        raise ValueError(
+            f"Native KV offload needs {required / gib:.1f} GiB of /dev/shm ({num_engines} engines on this node x "
+            f"inference.kv_cache_offload.cpu.num_bytes = {offload.cpu.num_bytes / gib:.1f} GiB per engine), but /dev/shm "
+            f"on {os.uname().nodename} is {shm_size / gib:.1f} GiB. Lower cpu.num_bytes or run fewer engines per node."
+        )
+
+
 def inference_local(config: InferenceConfig):
     """Run inference locally: a router on ``server.port`` fronting the engine on ``backend_port``."""
     from prime_rl.inference.server import setup_vllm_env
@@ -210,6 +236,7 @@ def inference_local(config: InferenceConfig):
     os.environ.update({**DEFAULT_COMMON_ENV_VARS, **DEFAULT_INFERENCE_ENV_VARS, **config.env_vars})
 
     setup_vllm_env(config)
+    check_kv_offload_shm(config)
 
     router_process: subprocess.Popen | None = None
     router_stopping = Event()
