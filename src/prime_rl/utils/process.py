@@ -22,6 +22,8 @@ DEFAULT_COMMON_ENV_VARS: dict[str, str] = {
     "PYTHONUNBUFFERED": "1",
     "OMP_NUM_THREADS": "1",
     "GIT_LFS_SKIP_SMUDGE": "1",
+    # Processes sharing ~/.triton on a shared FS hang or crash. Per-user because /tmp is shared by all users.
+    "TRITON_CACHE_DIR": f"/tmp/triton-{os.getuid()}",
 }
 
 DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {

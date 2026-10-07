@@ -181,6 +181,8 @@ The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]
 
 > **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
 
+The Triton cache, on the other hand, is node-local by default (`/tmp/triton-<uid>`): processes sharing `~/.triton` on a shared filesystem can hang or crash. To change it, set `TRITON_CACHE_DIR` in `env_vars` in the config; a `TRITON_CACHE_DIR` exported in your shell or `.env` is overridden by the launcher defaults.
+
 ### Activation
 
 A SLURM config is usually a thin overlay that adds `[slurm]` (and `[deployment]` for multi-node) on top of a base config. Configs are composed left-to-right via the `@` CLI syntax — see [Configuration § TOML Composition](configuration.md#toml-composition):
