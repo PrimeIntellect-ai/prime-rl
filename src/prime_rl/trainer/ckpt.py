@@ -8,7 +8,13 @@ from typing import Any
 
 import torch
 from torch import nn
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict, set_state_dict
+from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
+from torch.distributed.checkpoint.state_dict import (
+    StateDictOptions,
+    get_state_dict,
+    set_model_state_dict,
+    set_state_dict,
+)
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
@@ -37,6 +43,49 @@ class Progress:
     total_samples: int = 0
 
 
+def _load_app_state(state_dict: dict[str, Any], path: Path, *, allow_partial_load: bool = False) -> None:
+    dcp_load(
+        state_dict=state_dict,
+        checkpoint_id=path,
+        planner=DefaultLoadPlanner(allow_partial_load=allow_partial_load),
+    )
+
+
+def load_trainer_checkpoint(
+    path: Path,
+    model: nn.Module,
+    optimizers: list[OptimizerLike],
+    scheduler: LRScheduler | None,
+    progress: Progress | None,
+    *,
+    skip_optimizer: bool = False,
+) -> None:
+    """Load a trainer checkpoint whose optimizer state may omit never-trained parameters.
+
+    A trainable parameter that never received a gradient has no entry in
+    ``optimizer.state``, so the save side wrote no optimizer shard for it. The load side
+    builds its template from a *fresh* optimizer, whose empty state makes
+    ``_init_optim_state`` materialize state for every ``requires_grad`` parameter — so a
+    strict load demands keys the checkpoint never wrote, and resume fails (#2676).
+
+    Model, scheduler and progress load strictly first. The optimizer then loads on its own with
+    ``allow_partial_load=True``, which matches non-distributed ``Optimizer.load_state_dict``
+    semantics: entries absent from the checkpoint are simply not restored. Tolerating absent
+    keys on the model side would silently resume from freshly initialized weights, so that
+    pass stays strict.
+    """
+    _load_app_state({"app": AppState(model, [], scheduler, progress)}, path)
+    if skip_optimizer:
+        return
+    # The optimizer pass re-uses `model` only to resolve parameter FQNs; `optimizer_only`
+    # keeps the model out of its template so the weight shards are not read twice.
+    _load_app_state(
+        {"app": AppState(model, optimizers, None, None, optimizer_only=True)},
+        path,
+        allow_partial_load=True,
+    )
+
+
 def _try_rmtree(path: Path, logger) -> None:
     """Remove a directory tree, logging and skipping on failure."""
     try:
@@ -60,11 +109,14 @@ class AppState(Stateful):
         optimizers: list[OptimizerLike],
         scheduler: LRScheduler | None,
         progress: Progress | None,
+        *,
+        optimizer_only: bool = False,
     ):
         self.model = model
         self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
+        self.optimizer_only = optimizer_only
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
@@ -88,15 +140,16 @@ class AppState(Stateful):
         # sees it under the canonical names. This dict is also the template dcp_load writes
         # into, and load_state_dict packs the loaded entries back into the runtime state.
         state_dict = {
-            "model": model_state_dict,
             "optimizers": split_packed_optimizer_state_for_checkpoint(self.model, optimizer_state_dict),
         }
-        if self.scheduler is not None:
-            scheduler_state_dict = self.scheduler.state_dict()
-            state_dict["scheduler"] = scheduler_state_dict
-        if self.progress is not None:
-            progress_state_dict = asdict(self.progress)
-            state_dict["progress"] = progress_state_dict
+        # An optimizer-only pass must not carry the model: dcp_load reads exactly the keys of
+        # its template, so including it would read every weight shard a second time.
+        if not self.optimizer_only:
+            state_dict["model"] = model_state_dict
+            if self.scheduler is not None:
+                state_dict["scheduler"] = self.scheduler.state_dict()
+            if self.progress is not None:
+                state_dict["progress"] = asdict(self.progress)
 
         for optimizer in self.optimizers:
             if isinstance(optimizer, OffloadOptimizer):
@@ -122,10 +175,12 @@ class AppState(Stateful):
             # through Optimizer.load_state_dict, whose _cast hook does
             # value.to(param.dtype, param.device) and would allocate a fresh GPU
             # copy of every state tensor — undoing the in-place CPU load and
-            # detaching optim.state from the tensors we just populated. So we only
-            # apply the model side here and flip the wrappers to initialized so
-            # subsequent steps take the steady-state path.
-            set_model_state_dict(self.model, model_state_dict=state_dict["model"])
+            # detaching optim.state from the tensors we just populated. So we leave the
+            # optimizer to the in-place load and flip the wrappers to initialized so
+            # subsequent steps take the steady-state path. The model is applied here only
+            # on a full load; an optimizer-only pass already had it applied.
+            if not self.optimizer_only:
+                set_model_state_dict(self.model, model_state_dict=state_dict["model"])
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
@@ -139,10 +194,13 @@ class AppState(Stateful):
             set_state_dict(
                 self.model,
                 checkpoint_optimizers,
-                model_state_dict=state_dict["model"],
+                # An optimizer-only pass has no model entries to apply, and an empty dict
+                # would otherwise trip the strict model check.
+                model_state_dict=state_dict.get("model", {}),
                 optim_state_dict=join_loaded_optimizer_state_for_runtime(
                     self.model, state_dict["optimizers"], runtime_optimizer_state_dict
                 ),
+                options=StateDictOptions(strict=not self.optimizer_only),
             )
 
         if self.scheduler is not None:
@@ -226,9 +284,14 @@ class CheckpointManager:
         start_time = time.perf_counter()
 
         # Load sharded state
-        app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
-        state_dict = {"app": app_state}
-        dcp_load(state_dict=state_dict, checkpoint_id=path)
+        load_trainer_checkpoint(
+            path,
+            model,
+            optimizers,
+            scheduler,
+            progress,
+            skip_optimizer=self.skip_optimizer,
+        )
         if self.skip_optimizer:
             for optimizer in optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
