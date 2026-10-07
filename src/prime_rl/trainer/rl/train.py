@@ -1,9 +1,11 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 from contextlib import nullcontext
+import os
 import time
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 
 # Import environment before any other imports
 # ruff: noqa: I001
@@ -711,6 +713,13 @@ def train(config: TrainerConfig):
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+
+        progress_file = os.environ.get("FFT_PROGRESS_FILE")
+        if progress_file and world.is_master:
+            path = Path(progress_file)
+            pending = path.with_name(path.name + ".tmp")
+            pending.write_text(f"{progress.step}\n")
+            pending.replace(path)
 
         if is_last_step:
             break
