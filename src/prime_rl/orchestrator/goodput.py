@@ -70,6 +70,10 @@ UCB = 1.0
 BIN_MEMORY = 4.0
 """Effective sample count cap per bin, so estimates track drift."""
 
+BIN_HALF_LIFE_S = 3600.0
+"""A bin's evidence halves over this long unvisited, widening its uncertainty
+bonus: as the workload drifts, stale neighbours get re-probed."""
+
 ABORT_RATIO = 0.7
 """A probe whose goodput falls below this fraction of the incumbent's for
 ``ABORT_POLLS`` consecutive polls reverts without waiting for the window."""
@@ -81,7 +85,14 @@ PENALTY_TTL_S = 1800.0
 """Bins that preempted or aborted score at ``PENALTY`` for this long."""
 
 PREEMPTION_POLLS = 2
-"""Consecutive polls with preemptions before stepping down."""
+"""Consecutive thrashing polls before stepping down."""
+
+PREEMPTION_FRACTION = 0.01
+"""A poll thrashes when preemptions reach this fraction of running sequences.
+Occasional preemptions are a cost the throughput measurement already sees."""
+
+LIFETIME_WINDOW = 256
+"""Recent episodes whose median wall time sets the hold length."""
 
 BINDING_FRACTION = 0.9
 """The cap binds when the measured pool fills this fraction of it."""
@@ -120,6 +131,7 @@ class _Bin:
     mean: float
     var: float
     n: float
+    t: float
 
 
 class GroupDurationLaw:
@@ -139,6 +151,9 @@ class GroupDurationLaw:
     def __init__(self, window: int = GROUP_WINDOW) -> None:
         # (virtual duration or age, completed, member tokens, member virtual finish, unfinished count)
         self.obs: deque[tuple[float, bool, np.ndarray, np.ndarray, int]] = deque(maxlen=window)
+        # Snapshot of in-flight groups, censored at their current age: without
+        # them the law only sees the groups fast enough to have finished
+        self.live: list[tuple[float, bool, np.ndarray, np.ndarray, int]] = []
         self.cache: tuple | None = None
         self.version = 0
 
@@ -149,6 +164,21 @@ class GroupDurationLaw:
     def add_censored(self, age: float, size: int, tokens: list[float], vtimes: list[float]) -> None:
         tok, vt = np.asarray(tokens, dtype=float), np.maximum(np.asarray(vtimes, dtype=float), 1e-9)
         self.append((float(age), False, tok, vt, max(size - len(tok), 1)))
+
+    def set_live(self, groups: list[tuple[float, int, list[float], list[float]]]) -> None:
+        """``(age, size, finished tokens, finished virtual times)`` per in-flight group."""
+        self.live = [
+            (
+                float(age),
+                False,
+                np.asarray(tok, dtype=float),
+                np.maximum(np.asarray(vt, dtype=float), 1e-9),
+                max(size - len(tok), 1),
+            )
+            for age, size, tok, vt in groups
+        ]
+        self.cache = None
+        self.version += 1
 
     def append(self, obs) -> None:
         self.obs.append(obs)
@@ -165,23 +195,24 @@ class GroupDurationLaw:
     def fit(self):
         """``(V, mass, tokens matrix, vtimes matrix, residual mass, mean group size, residual profile)``"""
         if self.cache is None:
-            n = len(self.obs)
-            key = np.array([o[0] for o in self.obs])
-            event = np.array([o[1] for o in self.obs])
+            obs = list(self.obs) + self.live
+            n = len(obs)
+            key = np.array([o[0] for o in obs])
+            event = np.array([o[1] for o in obs])
             order = np.lexsort((~event, key))  # events before censorings at ties
             at_risk = n - np.arange(n)
             surv = np.cumprod(np.where(event[order], 1.0 - 1.0 / at_risk, 1.0))
             mass = np.concatenate([[1.0], surv[:-1]]) - surv
             ev_idx = order[event[order]]
-            width = max(len(o[2]) for o in self.obs)
+            width = max(len(o[2]) for o in obs)
             tok = np.zeros((len(ev_idx), width))
             vt = np.ones((len(ev_idx), width))
             for row, i in enumerate(ev_idx):
-                m = len(self.obs[i][2])
-                tok[row, :m], vt[row, :m] = self.obs[i][2], self.obs[i][3]
-            size = float(np.mean([len(o[2]) + o[4] for o in self.obs]))
+                m = len(obs[i][2])
+                tok[row, :m], vt[row, :m] = obs[i][2], obs[i][3]
+            size = float(np.mean([len(o[2]) + o[4] for o in obs]))
             last = key[ev_idx].max() if len(ev_idx) else -math.inf
-            tail = [o for o in self.obs if not o[1] and o[0] >= last] or [o for o in self.obs if not o[1]]
+            tail = [o for o in obs if not o[1] and o[0] >= last] or [o for o in obs if not o[1]]
             profile = [(o[2], o[3], o[4]) for o in tail]
             self.cache = (key[ev_idx], mass[event[order]], tok, vt, float(surv[-1]) if n else 1.0, size, profile)
         return self.cache
@@ -235,7 +266,7 @@ class GoodputController:
         self.penalized: dict[int, float] = {}
         self.prev: int | None = None  # bin we came from on the last move
         self.climb = 1
-        self.lifetime: float | None = None
+        self.walls: deque[float] = deque(maxlen=LIFETIME_WINDOW)
         self.vclock = 0.0  # tokens one average in-flight episode has generated
         self.last_poll: float | None = None
         self.last_rate = 0.0
@@ -275,7 +306,7 @@ class GoodputController:
 
     def on_episode_done(self, group_id, output_tokens: int, wall_s: float | None = None) -> None:
         if wall_s is not None and wall_s > 0:
-            self.lifetime = wall_s if self.lifetime is None else 0.98 * self.lifetime + 0.02 * wall_s
+            self.walls.append(wall_s)
         group = self.groups.get(group_id)
         if group is None:
             return
@@ -311,7 +342,8 @@ class GoodputController:
             return
         self.poll_dt = dt
         tokens = sum(s.generation_tokens_delta for s in samples)
-        preempted = any(s.preemptions_delta > 0 for s in samples)
+        preemptions = sum(s.preemptions_delta for s in samples)
+        thrashing = preemptions >= max(1.0, PREEMPTION_FRACTION * sum(s.running for s in samples))
         inflight = self.get_inflight() if self.get_inflight is not None else 0
         rate = tokens / dt
         self.last_rate = rate
@@ -322,7 +354,10 @@ class GoodputController:
             self.follow_schedule(now, rate, inflight)
             return
 
-        self.preempt_polls = self.preempt_polls + 1 if preempted else 0
+        # Only while the cap is in force: right after a cut the pool still holds
+        # work admitted under the old cap, and cutting again on its preemptions
+        # cascades the cap to the floor
+        self.preempt_polls = self.preempt_polls + 1 if thrashing and inflight <= self.max_inflight else 0
         if self.preempt_polls >= PREEMPTION_POLLS:
             self.preempt_polls = 0
             self.penalized[self.cur] = now
@@ -424,7 +459,8 @@ class GoodputController:
         P = bin_size(i)
         b = self.bins.get(i)
         if b is not None:
-            T = b.mean + (UCB * math.sqrt(b.var / b.n) if optimistic else 0.0)
+            n = max(b.n * 0.5 ** ((self.now - b.t) / BIN_HALF_LIFE_S), 0.25)
+            T = b.mean + (UCB * math.sqrt(b.var / n) if optimistic else 0.0)
         elif self.bins:
             near = min(self.bins, key=lambda j: abs(j - i))
             # Optimistic: linear scaling above the data, flat below it
@@ -443,21 +479,32 @@ class GoodputController:
     def record(self, i: int, T: float) -> None:
         b = self.bins.get(i)
         if b is None:
-            self.bins[i] = _Bin(mean=T, var=(0.05 * T) ** 2, n=1.0)
+            self.bins[i] = _Bin(mean=T, var=(0.05 * T) ** 2, n=1.0, t=self.now)
             return
-        n = min(b.n + 1.0, BIN_MEMORY)
+        b.n *= 0.5 ** ((self.now - b.t) / BIN_HALF_LIFE_S)
+        b.t = self.now
+        n = min(max(b.n, 0.0) + 1.0, BIN_MEMORY)
         d = T - b.mean
         b.mean += d / n
         b.var = max((1 - 1 / n) * (b.var + d * d / n), (0.03 * b.mean) ** 2)
         b.n = n
 
+    def snapshot_live(self) -> None:
+        self.law.set_live([(self.vclock - g.started_v, g.size, g.lengths, g.finished_v) for g in self.groups.values()])
+
     def decide(self, now: float, binding: bool) -> None:
+        self.snapshot_live()
         lo, hi = bin_of(self.floor), bin_of(self.ceiling)
         cands = {self.cur, max(lo, self.cur - 1)}
-        if binding:
+        # Growing past the start needs evidence on staleness, not eta's default of 1
+        if binding and (self.law_ready or self.k_eff is None or not self.batch_size):
             cands.add(min(hi, self.cur + self.climb))
         scores = {i: self.score(i) for i in cands}
         best = max(scores, key=scores.get)
+        if scores[best] < 0 and scores[best] - scores[self.cur] < 0.05:
+            # Everything infeasible by about as much: the law can't tell yet
+            # (long groups still in flight), so hold instead of chasing noise
+            best = self.cur
         if best > self.cur and self.prev is not None and self.prev < self.cur and self.prev in self.bins:
             # Slow start: keep doubling the step while T scales near-linearly
             T0, T1 = self.bins[self.prev].mean, self.bins[self.cur].mean
@@ -471,6 +518,10 @@ class GoodputController:
 
     def move(self, i: int, now: float, *, reason: str | None, scores: dict | None = None) -> None:
         i = min(max(i, bin_of(self.floor)), bin_of(self.ceiling))
+        # Small bins round to the same size: step until the cap actually changes
+        step = 1 if i > self.cur else -1
+        while i != self.cur and bin_size(i) == bin_size(self.cur) and bin_of(self.floor) < i < bin_of(self.ceiling):
+            i += step
         self.prev = self.cur if i != self.cur else None
         self.cur = i
         self.abort_polls = 0
@@ -486,8 +537,12 @@ class GoodputController:
             if self.set_limit is not None:
                 self.set_limit(target)
 
+    @property
+    def lifetime(self) -> float:
+        return float(np.median(self.walls)) if self.walls else 0.0
+
     def start_phase(self, now: float) -> None:
-        life = self.lifetime or 0.0
+        life = self.lifetime
         self.settle_until = now + min(MAX_PHASE_S, max(MIN_SETTLE_S, SETTLE_LIFETIMES * life))
         self.measure_until = self.settle_until + min(MAX_PHASE_S, max(MIN_MEASURE_S, MEASURE_LIFETIMES * life))
         self.acc_tokens = self.acc_time = self.acc_pool = 0.0
@@ -514,7 +569,7 @@ class GoodputController:
             "concurrency/goodput_est": T * eta,
             "concurrency/probing": float(self.signal == "probe"),
             "concurrency/law_groups": float(len(self.law)),
-            "concurrency/episode_lifetime_s": self.lifetime or 0.0,
+            "concurrency/episode_lifetime_s": self.lifetime,
         }
         if self.law_ready:
             x, S, _ = self.model(P)

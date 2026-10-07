@@ -24,14 +24,14 @@ def clock(monkeypatch):
     return c
 
 
-def sample(tokens: float, preemptions: int = 0) -> EngineLoadSample:
+def sample(tokens: float, preemptions: int = 0, running: int = 0) -> EngineLoadSample:
     return EngineLoadSample(
         engine_id="0",
         role=None,
         kv_capacity_tokens=None,
         max_model_len=None,
         kv_usage=0.0,
-        running=0,
+        running=running,
         waiting=0,
         waiting_capacity=None,
         preemptions_delta=preemptions,
@@ -77,11 +77,12 @@ def test_censoring_shifts_mass_to_tail():
     assert S_plain == pytest.approx(0.5)
 
 
-def make_ctl(clock, **cfg):
+def make_ctl(clock, *, staleness: bool = True, **cfg):
     defaults = dict(initial_inflight=32, max_inflight=4096)
     defaults.update(cfg)
-    ctl = GoodputController(ConcurrencyConfig(**defaults), batch_size=1024, max_off_policy_steps=8)
-    return ctl
+    if not staleness:  # throughput only, as in evals
+        return GoodputController(ConcurrencyConfig(**defaults))
+    return GoodputController(ConcurrencyConfig(**defaults), batch_size=1024, max_off_policy_steps=8)
 
 
 def test_eta_decreasing_in_pool_and_group_size(clock):
@@ -120,22 +121,27 @@ def drive(ctl, clock, throughput, seconds, *, poll=5.0, pool=None, preempt=None)
         n = min(ctl.max_inflight, pool) if pool is not None else ctl.max_inflight
         inflight["n"] = n
         p = preempt(n) if preempt is not None else 0
-        ctl.observe([sample(throughput(n) * poll, preemptions=p)])
+        ctl.observe([sample(throughput(n) * poll, preemptions=p, running=n)])
         caps.append(ctl.max_inflight)
     return caps
 
 
 def test_climbs_to_saturation_knee(clock):
-    ctl = make_ctl(clock)
+    ctl = make_ctl(clock, staleness=False)
     knee = 400.0
     caps = drive(ctl, clock, lambda p: 20_000 * p / (p + knee), 4 * 3600)
     late = np.median(caps[len(caps) // 2 :])
-    # eta == 1 before any groups complete: climbs past the knee, flattens out
     assert late >= knee
 
 
-def test_backs_off_a_cliff(clock):
+def test_no_growth_without_staleness_evidence(clock):
     ctl = make_ctl(clock)
+    caps = drive(ctl, clock, lambda p: 10.0 * p, 3600)
+    assert max(caps) == 32
+
+
+def test_backs_off_a_cliff(clock):
+    ctl = make_ctl(clock, staleness=False)
     caps = drive(ctl, clock, lambda p: 30.0 * p if p <= 200 else 1500.0, 4 * 3600)
     late = caps[len(caps) // 2 :]
     assert np.mean([c <= 200 for c in late]) > 0.8
@@ -156,11 +162,26 @@ def test_fresh_fraction_bounds_growth_when_throughput_keeps_scaling(clock):
     assert ctl.eta(late) >= ctl.min_fresh - 0.02
 
 
-def test_preemptions_step_down(clock):
+def test_preemption_thrash_steps_down_without_cascading(clock):
     ctl = make_ctl(clock, initial_inflight=512)
     before = ctl.max_inflight
-    drive(ctl, clock, lambda p: 10.0 * p, 20, preempt=lambda n: 5)
+    drive(ctl, clock, lambda p: 10.0 * p, 20, preempt=lambda n: n // 20)
     assert ctl.max_inflight < before
+    # The pool still holds the old cap's work: further thrash must not cut again
+    inflight = {"n": before}
+    ctl.bind(set_limit=lambda n: None, get_inflight=lambda: inflight["n"])
+    cut = ctl.max_inflight
+    for _ in range(20):
+        clock.t += 5.0
+        ctl.observe([sample(1000.0, preemptions=before // 20, running=before)])
+    assert ctl.max_inflight == cut
+
+
+def test_occasional_preemptions_are_tolerated(clock):
+    ctl = make_ctl(clock, initial_inflight=512)
+    before = ctl.max_inflight
+    drive(ctl, clock, lambda p: 10.0 * p, 20, preempt=lambda n: 1)
+    assert ctl.max_inflight >= before
 
 
 def test_no_growth_while_pool_does_not_fill_cap(clock):
