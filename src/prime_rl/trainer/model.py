@@ -16,7 +16,6 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
@@ -24,6 +23,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, Shard
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
+from torch.utils.checkpoint import checkpoint
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
@@ -37,7 +37,10 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.activation_checkpointing import (
+    get_activation_checkpoint_context_fn,
+    get_activation_checkpoint_wrapper,
+)
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
@@ -799,20 +802,43 @@ def reshard_module(model: nn.Module):
             module.reshard()
 
 
-def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
+def _checkpoint_moe_compute(moe: MoE, context_fn: Callable) -> None:
+    compute = moe.compute
+
+    def checkpointed_compute(*args: torch.Tensor) -> torch.Tensor:
+        return checkpoint(compute, *args, use_reentrant=False, context_fn=context_fn)
+
+    moe.compute = checkpointed_compute
+
+
+def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig, checkpoint_around_moe_router: bool):
     language_model = get_language_model(model)
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
+    context_fn = get_activation_checkpoint_context_fn(ac_config)
     checkpointed_layers = 0
+    split_moe_layers = 0
 
     for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
         if layer_id % ac_config.freq != 0:
             continue
 
-        language_model.layers.register_module(layer_name, wrap_block(transformer_block))
+        block_mlp = getattr(transformer_block, "mlp", None)
+        if checkpoint_around_moe_router and isinstance(block_mlp, MoE):
+            # The fp32 router's FSDP hook breaks the graph, and a break inside a compiled checkpoint
+            # sends the whole block to eager, so checkpoint the attention and the post-router MoE work instead.
+            for attention_name in ("self_attn", "linear_attn"):
+                attention = getattr(transformer_block, attention_name, None)
+                if attention is not None:
+                    transformer_block.register_module(attention_name, wrap_block(attention))
+            _checkpoint_moe_compute(block_mlp, context_fn)
+            split_moe_layers += 1
+        else:
+            language_model.layers.register_module(layer_name, wrap_block(transformer_block))
         checkpointed_layers += 1
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers "
+        f"({split_moe_layers} around the MoE router, freq={ac_config.freq})"
     )
 
 
@@ -836,27 +862,15 @@ def mark_dynamic_int_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig, compile_moe_inside_ac: bool):
+def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
-    compiled_inside_ac = 0
     for layer_id in range(len(language_model.layers)):
-        layer = language_model.layers[layer_id]
-        if (
-            compile_moe_inside_ac
-            and isinstance(layer, CheckpointWrapper)
-            and isinstance(getattr(layer._checkpoint_wrapped_module, "mlp", None), MoE)
-        ):
-            # The fp32 router's FSDP hook breaks the graph, and a break inside a compiled checkpoint
-            # sends the whole block to eager, so the checkpoint stays eager around the compiled block.
-            layer = layer._checkpoint_wrapped_module
-            compiled_inside_ac += 1
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
-        f"Compiled {len(language_model.layers)} layers ({compiled_inside_ac} inside activation checkpointing, "
-        f"fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
+        f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
 
 
@@ -1015,11 +1029,11 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> Compile -> FSDP, except that MoE blocks with an fp32 router compile inside AC
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
-        apply_ac(model, config.ac)
+        apply_ac(model, config.ac, checkpoint_around_moe_router=config.moe_router_dtype == "float32")
     if config.compile is not None:
-        apply_compile(model, config.compile, compile_moe_inside_ac=config.moe_router_dtype == "float32")
+        apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
 

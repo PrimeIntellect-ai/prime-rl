@@ -116,17 +116,20 @@ def _selective_checkpoint_policy(
     return CheckpointPolicy.PREFER_RECOMPUTE
 
 
-def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
+def get_activation_checkpoint_context_fn(config: ActivationCheckpointConfig) -> Callable:
     if config.mode == "full":
         policy = _mandatory_checkpoint_policy
     else:
         targets = DEFAULT_SELECTIVE_TARGETS if config.targets is None else frozenset(config.targets)
         policy = partial(_selective_checkpoint_policy, targets=targets)
+    return partial(create_selective_checkpoint_contexts, policy)
 
+
+def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Callable[[nn.Module], nn.Module]:
     return partial(
         checkpoint_wrapper,
         checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-        context_fn=partial(create_selective_checkpoint_contexts, policy),
+        context_fn=get_activation_checkpoint_context_fn(config),
     )
 
 
@@ -136,5 +139,6 @@ __all__ = [
     "DEFAULT_SELECTIVE_TARGETS",
     "MANDATORY_SAVE_NAMESPACES",
     "MANDATORY_SAVE_OPERATIONS",
+    "get_activation_checkpoint_context_fn",
     "get_activation_checkpoint_wrapper",
 ]
