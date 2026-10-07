@@ -658,6 +658,11 @@ class InferenceConfig(BaseConfig):
         if self.enable_return_sampling_mask:
             namespace.return_sampling_mask = True
 
+        # The LoRA adapter is registered under the model name clients send, and vLLM rejects
+        # an adapter named like a served base model, so serve the base under another name.
+        if self.vllm.enable_lora and "served_model_name" not in extra_fields:
+            namespace.served_model_name = [f"{self.vllm.model}-base"]
+
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
             namespace.kv_transfer_config = kv_transfer_config
