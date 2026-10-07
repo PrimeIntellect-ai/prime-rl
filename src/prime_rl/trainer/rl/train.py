@@ -71,7 +71,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.worker_map import WorkerMap
+from prime_rl.utils.worker_map import WorkerMap, prepare
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
@@ -148,7 +148,7 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
-    mm_materializer = WorkerMap(
+    mm_preparer = WorkerMap(
         config.data.num_workers, partial(materialize_micro_batch_mm, processor=processor, mm_adapter=mm_adapter)
     )
 
@@ -340,8 +340,7 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
-        materialized_mms = mm_materializer(micro_batch.get("mm_refs") for micro_batch in micro_batches)
-        for micro_step, (micro_batch, materialized) in enumerate(zip(micro_batches, materialized_mms)):
+        for micro_step, micro_batch in enumerate(prepare(mm_preparer, micro_batches, ["mm_refs"])):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -370,13 +369,10 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
-            mm_kwargs = None
-            mm_forward_policy = None
-            if materialized is not None:
-                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
-                mm_forward_policy = materialized.forward_policy
-                micro_batch["mm_refs"] = None
-            del materialized
+            mm_kwargs = micro_batch.pop("mm_kwargs")
+            if mm_kwargs is not None:
+                mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
+            mm_forward_policy = micro_batch.pop("mm_forward_policy")
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -733,7 +729,7 @@ def train(config: TrainerConfig):
 
     if gradient_manager is not None:
         gradient_manager.close()
-    mm_materializer.close()
+    mm_preparer.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")

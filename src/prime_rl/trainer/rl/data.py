@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -7,7 +7,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
-from prime_rl.multimodal import MaterializedMM, MultimodalAdapter
+from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
@@ -49,8 +49,11 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Materialized by materialize_micro_batch_mm, ahead of this microbatch's forward pass when using workers.
+    # Replaced by mm_kwargs and mm_forward_policy in materialize_micro_batch_mm, ahead of this microbatch's forward
+    # pass when using workers.
     mm_refs: MMRefs | None
+    mm_kwargs: NotRequired[dict[str, Tensor] | None]
+    mm_forward_policy: NotRequired[ForwardPolicy | None]
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -175,18 +178,16 @@ class FakeDataLoader:
 
 
 def materialize_micro_batch_mm(
-    mm_refs: MMRefs | None, processor: Any | None, mm_adapter: MultimodalAdapter | None
-) -> MaterializedMM | None:
-    """Decode and preprocess a micro batch's images, or return None for a text-only micro batch.
-
-    Takes only ``mm_refs`` rather than the whole micro batch: sending a micro batch to a worker would move all of
-    its tensors into shared memory (/dev/shm) until the step ends, costing a copy and an open file per tensor.
-    """
+    inputs: dict[str, Any], processor: Any | None, mm_adapter: MultimodalAdapter | None
+) -> dict[str, Any]:
+    """Decode and preprocess a micro batch's ``mm_refs`` into its ``mm_kwargs`` and ``mm_forward_policy`` fields."""
+    mm_refs = inputs["mm_refs"]
     if mm_refs is None:
-        return None
+        return {"mm_refs": None, "mm_kwargs": None, "mm_forward_policy": None}
     if processor is None or mm_adapter is None:
         raise ValueError("Received multimodal samples but [model.vlm] is not set")
-    return materialize_mm_refs(mm_refs, processor, mm_adapter)
+    materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+    return {"mm_refs": None, "mm_kwargs": materialized.kwargs, "mm_forward_policy": materialized.forward_policy}
 
 
 class DataLoader:

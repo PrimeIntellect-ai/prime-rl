@@ -10,7 +10,7 @@ from prime_rl.multimodal.qwen_vl import QwenVLAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.data import materialize_micro_batch_mm
 from prime_rl.transports.batch import MMImageRef, MMRefs
-from prime_rl.utils.worker_map import WorkerMap
+from prime_rl.utils.worker_map import WorkerMap, prepare
 
 _IMAGE_URL = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -69,13 +69,17 @@ def test_materialize_micro_batch_mm_in_worker_map():
     processor = SimpleNamespace(image_processor=ImageProcessor())
     adapter = get_multimodal_adapter("qwen3_vl")
 
+    micro_batches = [{"mm_refs": _refs(2), "input_ids": torch.zeros(1, 4)}, {"mm_refs": None}, {"mm_refs": _refs(2)}]
     with WorkerMap(1, partial(materialize_micro_batch_mm, processor=processor, mm_adapter=adapter)) as worker_map:
-        results = list(worker_map([_refs(2), None, _refs(2)]))
+        results = list(prepare(worker_map, micro_batches, ["mm_refs"]))
 
-    assert results[1] is None
-    for materialized in (results[0], results[2]):
-        assert set(materialized.kwargs) == {"pixel_values", "image_grid_thw"}
-        assert materialized.forward_policy == QwenVLAdapter.forward_policy
+    assert all(result is micro_batch for result, micro_batch in zip(results, micro_batches))
+    assert results[1] == {"mm_refs": None, "mm_kwargs": None, "mm_forward_policy": None}
+    assert torch.equal(results[0]["input_ids"], torch.zeros(1, 4))
+    for micro_batch in (results[0], results[2]):
+        assert micro_batch["mm_refs"] is None
+        assert set(micro_batch["mm_kwargs"]) == {"pixel_values", "image_grid_thw"}
+        assert micro_batch["mm_forward_policy"] == QwenVLAdapter.forward_policy
     with WorkerMap(1, partial(materialize_micro_batch_mm, processor=None, mm_adapter=None)) as worker_map:
         with pytest.raises(ValueError, match=r"\[model.vlm\] is not set"):
-            list(worker_map([_refs(2)]))
+            list(prepare(worker_map, [{"mm_refs": _refs(2)}], ["mm_refs"]))
