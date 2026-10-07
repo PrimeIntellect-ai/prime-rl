@@ -343,6 +343,16 @@ def test_moe_router_dtype_auto_resolves_per_trainer():
             assert config_cls.model_validate({"model": {"moe_router_dtype": dtype}}).model.moe_router_dtype == dtype
 
 
+def test_freeze_moe_router_auto_resolves_per_trainer():
+    """``freeze_moe_router='auto'`` (the default) freezes the router for RL, not SFT; explicit values are kept."""
+    assert TrainerConfig.model_validate({}).model.freeze_moe_router is True
+    assert SFTConfig.model_validate({}).model.freeze_moe_router is False
+
+    for config_cls in (TrainerConfig, SFTConfig):
+        for freeze in (True, False):
+            assert config_cls.model_validate({"model": {"freeze_moe_router": freeze}}).model.freeze_moe_router is freeze
+
+
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
 def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):

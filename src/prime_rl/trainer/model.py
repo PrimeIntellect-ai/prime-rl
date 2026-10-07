@@ -138,10 +138,9 @@ def freeze_moe_router(model: nn.Module) -> None:
                 param.requires_grad = False
                 num_frozen += 1
 
-    if num_frozen == 0:
-        raise ValueError("No MoE router parameters found to freeze. Is this a MoE model?")
-
-    logger.info(f"Froze {num_frozen} MoE router parameters")
+    # No-op for non-MoE models: freeze_moe_router=True is the RL default.
+    if num_frozen > 0:
+        logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
 def apply_fp32_moe_router(model: nn.Module) -> None:
