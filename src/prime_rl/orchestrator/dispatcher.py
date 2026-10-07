@@ -69,7 +69,7 @@ class GroupObserver(Protocol):
 
     def on_group_start(self, group_id: uuid.UUID, size: int) -> None: ...
 
-    def on_episode_done(self, group_id: uuid.UUID, output_tokens: int, wall_s: float | None) -> None: ...
+    def on_episode_done(self, group_id: uuid.UUID, output_tokens: int, wall_s: float | None, ok: bool) -> None: ...
 
     def on_group_drop(self, group_id: uuid.UUID, reason: str) -> None: ...
 
@@ -660,7 +660,7 @@ class Dispatcher:
         except Exception as exc:
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
-            self.observe_episode_done(meta, output_tokens=0)
+            self.observe_episode_done(meta, output_tokens=0, ok=False)
             policy_version = self.complete_group_member(meta, group)
             await self.out_q.put(
                 DispatchFailure(
@@ -711,14 +711,14 @@ class Dispatcher:
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
         if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(episode.num_total_tokens)
-        self.observe_episode_done(meta, output_tokens=episode.num_output_tokens)
+        self.observe_episode_done(meta, output_tokens=episode.num_output_tokens, ok=episode.ok)
         await self.emit_episode(meta, group, episode)
 
-    def observe_episode_done(self, meta: InflightEpisode, *, output_tokens: int) -> None:
+    def observe_episode_done(self, meta: InflightEpisode, *, output_tokens: int, ok: bool) -> None:
         if self.group_observer is None:
             return
         wall_s = time.monotonic() - meta.started_at if meta.started_at > 0 else None
-        self.group_observer.on_episode_done(meta.group_id, output_tokens, wall_s)
+        self.group_observer.on_episode_done(meta.group_id, output_tokens, wall_s, ok)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
         """Advance group accounting and return the attempt's pinned policy version."""

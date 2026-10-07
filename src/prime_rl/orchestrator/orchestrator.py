@@ -999,6 +999,8 @@ class Orchestrator:
     async def on_policy_update(self, _step: int) -> None:
         """Refresh policy-dependent state after inference applies new weights."""
         self.update_dispatch_gate()
+        if isinstance(self.concurrency, GoodputController):
+            self.concurrency.on_policy_update(lead=(self.progress.step - 1) - self.policy.version)
         self.version_advanced.set()
 
     async def stop(self) -> None:

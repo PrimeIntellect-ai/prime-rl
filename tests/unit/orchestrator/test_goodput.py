@@ -1,3 +1,4 @@
+import dataclasses
 import math
 
 import numpy as np
@@ -93,7 +94,7 @@ def test_eta_decreasing_in_pool_and_group_size(clock):
         for _ in range(400):
             g = list(rng.lognormal(math.log(3000), 0.8, group_size))
             ctl.law.add_complete(g, g)
-        return [ctl.eta(p) for p in (256, 1024, 4096, 16384)]
+        return [ctl.eta(p, 1.0) for p in (256, 1024, 4096, 16384)]
 
     small, large = eta_curve(4), eta_curve(64)
     assert all(a >= b - 1e-12 for a, b in zip(small, small[1:]))
@@ -107,7 +108,7 @@ def test_eta_is_one_without_staleness_bound(clock):
     ctl = GoodputController(ConcurrencyConfig())
     for _ in range(50):
         ctl.law.add_complete([1000.0, 50000.0], [1000.0, 50000.0])
-    assert ctl.eta(10_000) == 1.0
+    assert ctl.eta(10_000, 1.0) == 1.0
 
 
 def drive(ctl, clock, throughput, seconds, *, poll=5.0, pool=None, preempt=None):
@@ -157,9 +158,9 @@ def test_fresh_fraction_bounds_growth_when_throughput_keeps_scaling(clock):
     caps = drive(ctl, clock, lambda p: 15.0 * p, 6 * 3600)
     late = np.median(caps[len(caps) // 2 :])
     # Goodput keeps rising with linear throughput; the fresh-fraction bound stops it
-    best = max(i for i in range(5, 60) if ctl.eta(bin_size(i)) >= ctl.min_fresh)
+    best = max(i for i in range(5, 60) if ctl.eta(bin_size(i), 1.0) >= ctl.min_fresh)
     assert abs(bin_of(late) - best) <= 1
-    assert ctl.eta(late) >= ctl.min_fresh - 0.02
+    assert ctl.eta(late, 1.0) >= ctl.min_fresh - 0.02
 
 
 def test_preemption_thrash_steps_down_without_cascading(clock):
@@ -218,3 +219,40 @@ def test_schedule_mode_pins_cap_and_measures(clock):
     assert set(caps) == {100, 300}
     assert caps[-1] == 300
     assert bin_of(100) in ctl.bins and ctl.bins[bin_of(100)].mean == pytest.approx(1000.0)
+
+
+def test_failed_episodes_stay_out_of_the_law(clock):
+    ctl = make_ctl(clock)
+    for g in range(20):
+        ctl.on_group_start(g, 4)
+        for _ in range(4):
+            ctl.on_episode_done(g, 0, wall_s=5.0, ok=False)  # e.g. sandbox creation failed
+    assert ctl.law.completed == 0 and ctl.errored_groups == 20 and not ctl.law_ready
+    # A partly failed group still measures its surviving members
+    ctl.on_group_start("partial", 4)
+    for tokens in (900, 1000, 1100):
+        ctl.on_episode_done("partial", tokens, wall_s=60.0)
+    ctl.on_episode_done("partial", 0, wall_s=2.0, ok=False)
+    assert ctl.law.completed == 1
+    assert list(ctl.law.obs[-1][2]) == [900, 1000, 1100]
+    assert ctl.lifetime == pytest.approx(60.0)
+
+
+def test_bootstrap_counts_engines_not_metric_endpoints(clock):
+    ctl = GoodputController(ConcurrencyConfig(max_inflight=4096), batch_size=1024, max_off_policy_steps=8)
+    ctl.bind(set_limit=lambda n: None, get_inflight=lambda: 0)
+    # One DP deployment of 4 engines behind 4 API servers: each also exposes engine "0"
+    keys = ["h#0", "h#0", "h#1", "h#0", "h#2", "h#0", "h#3"]
+    samples = [dataclasses.replace(sample(0.0), engine_id=f"server{i}", engine_key=k) for i, k in enumerate(keys)]
+    ctl.observe(samples)
+    assert ctl.max_inflight == bin_size(bin_of(64 * 4))
+
+
+def test_trainer_step_time_from_busy_policy_updates(clock):
+    ctl = make_ctl(clock)
+    assert ctl.train_step_s is None
+    for t, lead in [(0, 1), (90, 1), (180, 1), (270, 0), (500, 1), (590, 1)]:
+        clock.t = t
+        ctl.on_policy_update(lead)
+    # 270 -> 500 followed an idle trainer (lead 0): not a step time
+    assert ctl.train_step_s == pytest.approx(90.0)

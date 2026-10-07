@@ -1,3 +1,7 @@
+from types import SimpleNamespace
+
+import httpx
+
 from prime_rl.orchestrator.inference_metrics import (
     EngineSample,
     InferenceMetricsCollector,
@@ -25,6 +29,9 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
 """
 
 
+CLIENT = SimpleNamespace(base_url=httpx.URL("http://x:8000"))
+
+
 def engine_sample(endpoint, t, gen, pre):
     snapshot = parse_prometheus_text(VLLM_METRICS.format(gen=gen, pre=pre))["0"]
     return EngineSample(endpoint=endpoint, engine_label="0", timestamp=t, snapshot=snapshot)
@@ -32,7 +39,7 @@ def engine_sample(endpoint, t, gen, pre):
 
 def test_load_sample_carries_generation_token_delta():
     collector = InferenceMetricsCollector([])
-    endpoint = MetricsEndpoint(client=None, role=None, key="http://x", name="server0")
+    endpoint = MetricsEndpoint(client=CLIENT, role=None, key="http://x:8000", name="server0")
     first = engine_sample(endpoint, 0.0, gen=1000.0, pre=2.0)
     load = collector.build_load_sample(first)
     assert load.generation_tokens_delta == 0.0  # no baseline yet
@@ -42,11 +49,12 @@ def test_load_sample_carries_generation_token_delta():
     assert load.generation_tokens_delta == 5000.0
     assert load.preemptions_delta == 3
     assert load.running == 12 and load.waiting == 3 and load.kv_usage == 0.25
+    assert load.engine_key == "x#0"
 
 
 def test_counter_reset_reads_as_no_signal():
     collector = InferenceMetricsCollector([])
-    endpoint = MetricsEndpoint(client=None, role=None, key="http://x", name="server0")
+    endpoint = MetricsEndpoint(client=CLIENT, role=None, key="http://x:8000", name="server0")
     first = engine_sample(endpoint, 0.0, gen=9000.0, pre=0.0)
     collector.previous[first.key] = TimedSnapshot(timestamp=first.timestamp, snapshot=first.snapshot)
     load = collector.build_load_sample(engine_sample(endpoint, 5.0, gen=100.0, pre=0.0))

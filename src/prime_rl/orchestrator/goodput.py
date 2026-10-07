@@ -91,6 +91,20 @@ PREEMPTION_FRACTION = 0.01
 """A poll thrashes when preemptions reach this fraction of running sequences.
 Occasional preemptions are a cost the throughput measurement already sees."""
 
+TIE_FRACTION = 0.99
+"""Candidates within this fraction of the best score tie; the smallest pool
+wins, since in-flight work that buys no goodput only adds off-policyness."""
+
+IMMATURE_RESIDUAL = 0.2
+"""While more than this share of the group law sits beyond the slowest
+completed group (long groups still in flight), infeasibility is not
+trusted enough to cut on."""
+
+TRAIN_STEP_WINDOW = 16
+TRAIN_STEP_MIN_SAMPLES = 3
+"""Busy trainer steps (policy-update intervals) kept / needed for the
+trainer step time; until then the model assumes inference is the bottleneck."""
+
 LIFETIME_WINDOW = 256
 """Recent episodes whose median wall time sets the hold length."""
 
@@ -124,6 +138,12 @@ class _Group:
     started_v: float
     lengths: list[float] = field(default_factory=list)
     finished_v: list[float] = field(default_factory=list)
+    returned: int = 0
+
+    @property
+    def pending(self) -> int:
+        """Members that count: finished ones that generated, plus those still running."""
+        return len(self.lengths) + self.size - self.returned
 
 
 @dataclass
@@ -192,6 +212,11 @@ class GroupDurationLaw:
     def completed(self) -> int:
         return sum(1 for o in self.obs if o[1])
 
+    @property
+    def residual(self) -> float:
+        """Law mass beyond the slowest completed group."""
+        return self.fit()[4] if self.obs or self.live else 1.0
+
     def fit(self):
         """``(V, mass, tokens matrix, vtimes matrix, residual mass, mean group size, residual profile)``"""
         if self.cache is None:
@@ -255,7 +280,12 @@ class GoodputController:
         self.min_fresh = config.min_fresh_fraction
         self.law = GroupDurationLaw()
         self.groups: dict[uuid.UUID | str, _Group] = {}
-        self.model_cache: dict[tuple[int, int], tuple[float, float, float]] = {}
+        self.errored_groups = 0
+        self.warned_infeasible = False
+        self.train_steps: deque[float] = deque(maxlen=TRAIN_STEP_WINDOW)
+        self.last_update: float | None = None
+        self.last_lead = 0
+        self.model_cache: dict[tuple[int, int, int], tuple[float, float, float, float]] = {}
 
         # Without a user-set start, the cap is sized per decode engine on the first poll
         self.bootstrapped = config.initial_inflight is not None
@@ -304,23 +334,31 @@ class GoodputController:
     def on_group_start(self, group_id, size: int) -> None:
         self.groups[group_id] = _Group(size=size, started_v=self.vclock)
 
-    def on_episode_done(self, group_id, output_tokens: int, wall_s: float | None = None) -> None:
-        if wall_s is not None and wall_s > 0:
+    def on_episode_done(self, group_id, output_tokens: int, wall_s: float | None = None, ok: bool = True) -> None:
+        # Failed episodes (sandbox errors, tunnels, ...) say nothing about how
+        # long work takes: they must not shorten the lifetime or the law
+        failed = not ok or output_tokens <= 0
+        if wall_s is not None and wall_s > 0 and not failed:
             self.walls.append(wall_s)
         group = self.groups.get(group_id)
         if group is None:
             return
-        group.lengths.append(float(max(output_tokens, 0)))
-        group.finished_v.append(self.vclock - group.started_v)
-        if len(group.lengths) >= group.size:
+        group.returned += 1
+        if not failed:
+            group.lengths.append(float(output_tokens))
+            group.finished_v.append(self.vclock - group.started_v)
+        if group.returned >= group.size:
             del self.groups[group_id]
-            self.law.add_complete(group.lengths, group.finished_v)
+            if group.lengths:
+                self.law.add_complete(group.lengths, group.finished_v)
+            else:
+                self.errored_groups += 1
 
     def on_group_drop(self, group_id, reason: str) -> None:
         group = self.groups.pop(group_id, None)
         if group is None or reason not in ("stale", "overload"):
             return
-        self.law.add_censored(self.vclock - group.started_v, group.size, group.lengths, group.finished_v)
+        self.law.add_censored(self.vclock - group.started_v, group.pending, group.lengths, group.finished_v)
 
     # ── inbound: engine metrics ──────────────────────────────────────────────
 
@@ -332,7 +370,8 @@ class GoodputController:
         self.now = now
         if not self.bootstrapped and not self.schedule:
             self.bootstrapped = True
-            self.move(bin_of(self.config.bootstrap_inflight_per_engine * len(samples)), now, reason="bootstrap")
+            engines = len({s.engine_key or s.engine_id for s in samples})
+            self.move(bin_of(self.config.bootstrap_inflight_per_engine * engines), now, reason="bootstrap")
         if self.last_poll is None:
             self.last_poll = now
             return
@@ -390,7 +429,7 @@ class GoodputController:
         binding = pool >= BINDING_FRACTION * self.max_inflight
         held = self.cur if binding else bin_of(pool)
         self.record(held, T)
-        self.decide(now, binding)
+        self.decide(now, binding, T)
 
     def follow_schedule(self, now: float, rate: float, inflight: int) -> None:
         """Pin the cap to the schedule; still measure T per level, so the log
@@ -416,63 +455,100 @@ class GoodputController:
 
     # ── model ────────────────────────────────────────────────────────────────
 
-    def cutoff(self, P: float) -> float:
-        """Slowest group (virtual duration) that still trains fresh at pool ``P``."""
+    def cutoff(self, P: float, T: float) -> float:
+        """Slowest group (virtual duration) that still trains fresh at pool ``P``
+        and throughput ``T``. A group is dropped ~``k_eff`` trainer steps after
+        dispatch; a step takes the longer of producing a batch of fresh groups,
+        ``(B/G) C / (T S)``, and the trainer's own step. On the virtual clock
+        (pace ``T/P``) the deadline is ``x = (T/P) k_eff period``, so a group
+        is too slow iff ``x P S > k_eff (B/G) C`` (T cancels) and
+        ``x P > T k_eff t_train``."""
         V, *_, size, _ = self.law.fit()
         groups_per_batch = self.batch_size / size
+        t_train = self.train_step_s or 0.0
+
+        def too_slow(x: float) -> bool:
+            S, _, C = self.law.terms(x, self.k_eff, None)
+            return x * P * S > self.k_eff * groups_per_batch * C and x * P > T * self.k_eff * t_train
+
         lo, hi = 1.0, 1e3 * max(float(V.max()) if len(V) else 1.0, 1.0)
-        S, _, C = self.law.terms(hi, self.k_eff, None)
-        if hi * P * S <= self.k_eff * groups_per_batch * C:
+        if not too_slow(hi):
             return hi
         for _ in range(48):
             x = math.sqrt(lo * hi)
-            S, _, C = self.law.terms(x, self.k_eff, None)
-            if x * P * S > self.k_eff * groups_per_batch * C:
+            if too_slow(x):
                 hi = x
             else:
                 lo = x
         return math.sqrt(lo * hi)
 
-    def model(self, P: float) -> tuple[float, float, float]:
-        """``(cutoff, predicted group survival, eta)`` at pool ``P``, cached per law update."""
-        key = (int(P), self.law.version)
+    def model(self, P: float, T: float) -> tuple[float, float, float, float]:
+        """``(cutoff, predicted group survival, eta, goodput)`` at pool ``P`` and
+        throughput ``T``, cached per law update. Goodput is capped by what the
+        trainer can consume when its step time is known."""
+        t_train = self.train_step_s
+        tq = round(math.log(max(T, 1e-9)) * 50) if t_train else 0
+        key = (int(P), tq, self.law.version)
         if key not in self.model_cache:
-            if len(self.model_cache) > 256:
+            if len(self.model_cache) > 1024:
                 self.model_cache.clear()
-            x = self.cutoff(P)
-            S, _, C = self.law.terms(x, self.k_eff, None)
+            x = self.cutoff(P, T)
+            S, _, _ = self.law.terms(x, self.k_eff, None)
             _, A, C = self.law.terms(x, self.k_eff, self.staleness_scale)
-            self.model_cache[key] = (x, S, A / C if C > 0 else 1.0)
+            eta = A / C if C > 0 else 1.0
+            J = T * eta
+            if t_train and S > 0:
+                J = min(J, self.batch_size / self.law.fit()[5] * A / S / t_train)
+            self.model_cache[key] = (x, S, eta, J)
         return self.model_cache[key]
-
-    def eta(self, P: float) -> float:
-        return self.model(P)[2] if self.law_ready else 1.0
 
     @property
     def law_ready(self) -> bool:
         return self.k_eff is not None and bool(self.batch_size) and self.law.completed >= MIN_GROUPS
 
-    def goodput(self, P: float, T: float) -> float:
-        return T * self.eta(P)
+    def eta(self, P: float, T: float) -> float:
+        return self.model(P, T)[2] if self.law_ready else 1.0
 
-    def score(self, i: int, *, optimistic: bool = True) -> float:
-        P = bin_size(i)
+    def goodput(self, P: float, T: float) -> float:
+        return self.model(P, T)[3] if self.law_ready else T
+
+    @property
+    def train_step_s(self) -> float | None:
+        """Trainer step time, from policy updates that followed a busy step."""
+        return float(np.median(self.train_steps)) if len(self.train_steps) >= TRAIN_STEP_MIN_SAMPLES else None
+
+    def on_policy_update(self, lead: int) -> None:
+        """Inference applied a new policy; ``lead`` is how many shipped batches
+        it still trails. If the trainer had a batch queued since the previous
+        update, the interval between the two is one trainer step."""
+        now = time.monotonic()
+        if self.last_update is not None and self.last_lead >= 1:
+            self.train_steps.append(now - self.last_update)
+        self.last_update, self.last_lead = now, lead
+
+    def estimate(self, i: int, *, optimistic: bool = True) -> float | None:
+        """Throughput estimate at bin ``i`` (UCB when ``optimistic``)."""
         b = self.bins.get(i)
         if b is not None:
             n = max(b.n * 0.5 ** ((self.now - b.t) / BIN_HALF_LIFE_S), 0.25)
-            T = b.mean + (UCB * math.sqrt(b.var / n) if optimistic else 0.0)
-        elif self.bins:
-            near = min(self.bins, key=lambda j: abs(j - i))
-            # Optimistic: linear scaling above the data, flat below it
-            T = self.bins[near].mean * (P / bin_size(near) if i > near else 1.0)
-        else:
+            return b.mean + (UCB * math.sqrt(b.var / n) if optimistic else 0.0)
+        if not self.bins:
+            return None
+        near = min(self.bins, key=lambda j: abs(j - i))
+        # Optimistic: linear scaling above the data, flat below it
+        return self.bins[near].mean * (bin_size(i) / bin_size(near) if i > near else 1.0)
+
+    def score(self, i: int, *, optimistic: bool = True) -> float:
+        T = self.estimate(i, optimistic=optimistic)
+        if T is None:
             return 0.0
-        eta = self.eta(P)
+        P = bin_size(i)
+        eta = self.eta(P, T)
         if eta < self.min_fresh:
             # Infeasible: closer to the bound ranks higher, below any feasible bin
             return eta - self.min_fresh
         penalty = PENALTY if self.now - self.penalized.get(i, -math.inf) < PENALTY_TTL_S else 1.0
-        return T * eta * penalty
+        return self.goodput(P, T) * penalty
 
     # ── control loop ─────────────────────────────────────────────────────────
 
@@ -490,10 +566,18 @@ class GoodputController:
         b.n = n
 
     def snapshot_live(self) -> None:
-        self.law.set_live([(self.vclock - g.started_v, g.size, g.lengths, g.finished_v) for g in self.groups.values()])
+        self.law.set_live(
+            [(self.vclock - g.started_v, g.pending, g.lengths, g.finished_v) for g in self.groups.values()]
+        )
 
-    def decide(self, now: float, binding: bool) -> None:
+    def decide(self, now: float, binding: bool, T: float) -> None:
         self.snapshot_live()
+        if T <= 0:
+            # Nothing generated (engines idle or every rollout failing): no
+            # evidence about any cap, so hold
+            self.signal = "hold"
+            self.start_phase(now)
+            return
         lo, hi = bin_of(self.floor), bin_of(self.ceiling)
         cands = {self.cur, max(lo, self.cur - 1)}
         # Growing past the start needs evidence on staleness, not eta's default of 1
@@ -501,10 +585,12 @@ class GoodputController:
             cands.add(min(hi, self.cur + self.climb))
         scores = {i: self.score(i) for i in cands}
         best = max(scores, key=scores.get)
-        if scores[best] < 0 and scores[best] - scores[self.cur] < 0.05:
-            # Everything infeasible by about as much: the law can't tell yet
-            # (long groups still in flight), so hold instead of chasing noise
-            best = self.cur
+        if scores[best] < 0:
+            best = self.recover(lo)
+        else:
+            # Near-ties go to the smallest pool: in-flight work that buys no
+            # goodput only adds off-policyness
+            best = min(i for i in cands if scores[i] >= TIE_FRACTION * scores[best])
         if best > self.cur and self.prev is not None and self.prev < self.cur and self.prev in self.bins:
             # Slow start: keep doubling the step while T scales near-linearly
             T0, T1 = self.bins[self.prev].mean, self.bins[self.cur].mean
@@ -515,6 +601,33 @@ class GoodputController:
             self.climb = 1
         self.signal = "probe" if best != self.cur else "hold"
         self.move(best, now, reason=None, scores=scores)
+
+    def recover(self, lo: int) -> int:
+        """No neighbour meets ``min_fresh_fraction``. While the law is still
+        dominated by groups that haven't finished, it can't tell caps apart:
+        hold. Otherwise jump to the largest feasible cap below (eta falls with
+        P), or, if none is, maximize goodput and say so."""
+        if self.law.residual > IMMATURE_RESIDUAL:
+            return self.cur
+        a, b = lo, self.cur - 1
+        if a <= b and self.score(a) >= 0:
+            while a < b:
+                mid = (a + b + 1) // 2
+                if self.score(mid) >= 0:
+                    a = mid
+                else:
+                    b = mid - 1
+            return a
+        if not self.warned_infeasible:
+            self.warned_infeasible = True
+            get_logger().warning(
+                f"No concurrency keeps {self.min_fresh:.0%} of generated tokens fresh at max_off_policy_steps="
+                f"{self.k_eff - self.config.deadline_offset_steps:g} and batch_size={self.batch_size}: groups "
+                "routinely outlive the off-policy bound. Maximizing goodput regardless; consider raising "
+                "max_off_policy_steps or batch_size."
+            )
+        cands = range(lo, self.cur + 1, max(1, (self.cur - lo) // 16))
+        return max(cands, key=lambda i: self.goodput(bin_size(i), self.estimate(i) or 0.0))
 
     def move(self, i: int, now: float, *, reason: str | None, scores: dict | None = None) -> None:
         i = min(max(i, bin_of(self.floor)), bin_of(self.ceiling))
@@ -531,7 +644,7 @@ class GoodputController:
             detail = reason or ", ".join(f"{bin_size(j)}: {s:.0f}" for j, s in sorted((scores or {}).items()))
             get_logger().info(
                 f"{'Increased' if target > self.max_inflight else 'Decreased'} concurrency "
-                f"{self.max_inflight} -> {target} ({detail}) - eta={self.eta(target):.3f}"
+                f"{self.max_inflight} -> {target} ({detail}) - eta={self.eta(target, self.estimate(i) or self.last_rate):.3f}"
             )
             self.max_inflight = target
             if self.set_limit is not None:
@@ -559,20 +672,22 @@ class GoodputController:
     def gauges(self) -> dict[str, float]:
         b = self.bins.get(self.cur)
         P = float(self.max_inflight)
-        eta = self.eta(P)
         T = b.mean if b is not None else self.last_rate
+        eta = self.eta(P, T)
         out = {
             "concurrency/max_inflight": P,
             "concurrency/throughput": self.last_rate,
             "concurrency/throughput_est": T,
             "concurrency/eta": eta,
-            "concurrency/goodput_est": T * eta,
+            "concurrency/goodput_est": self.goodput(P, T),
             "concurrency/probing": float(self.signal == "probe"),
             "concurrency/law_groups": float(len(self.law)),
+            "concurrency/errored_groups": float(self.errored_groups),
             "concurrency/episode_lifetime_s": self.lifetime,
+            "concurrency/train_step_s": self.train_step_s or 0.0,
         }
         if self.law_ready:
-            x, S, _ = self.model(P)
+            x, S, _, _ = self.model(P, T)
             out["concurrency/cutoff_virtual_tokens"] = x
             # Validation pair: predicted vs observed share of train groups that finish fresh
             out["concurrency/pred_group_survival"] = S

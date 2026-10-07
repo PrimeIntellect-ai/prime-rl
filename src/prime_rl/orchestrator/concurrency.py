@@ -113,6 +113,10 @@ class EngineLoadSample:
     preemptions_delta: int
     # Generated tokens since the previous poll (``vllm:generation_tokens``)
     generation_tokens_delta: float = 0.0
+    # ``host#engine-label``: with several API servers in front of one
+    # data-parallel deployment, every server also exposes ``engine="0"``, so
+    # ``engine_id`` overcounts engines; this key does not
+    engine_key: str | None = None
 
 
 class ConcurrencyController:

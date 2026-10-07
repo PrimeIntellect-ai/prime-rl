@@ -417,6 +417,7 @@ class InferenceMetricsCollector:
             ),
             preemptions_delta=preemptions_delta,
             generation_tokens_delta=generation_tokens_delta,
+            engine_key=f"{sample.endpoint.client.base_url.host}#{sample.engine_label}",
         )
 
     def build_metrics(self, samples: list[EngineSample]) -> dict[str, float]:
