@@ -267,6 +267,27 @@ def dispatch_tokens_async(
     )
 
 
+def split_groups(group_sizes: list[int], max_rows: int, alignment: int) -> list[list[int]]:
+    """Cut consecutive expert groups of rows into slices of at most `max_rows` rows.
+
+    Returns each slice's per-expert group sizes. A group may span slices; it is cut at a multiple of
+    `alignment`, so every piece stays aligned.
+    """
+    slices, current, used = [], [0] * len(group_sizes), 0
+    for expert, size in enumerate(group_sizes):
+        while size:
+            take = min(size, (max_rows - used) // alignment * alignment)
+            if take == 0:
+                slices.append(current)
+                current, used = [0] * len(group_sizes), 0
+                continue
+            current[expert] += take
+            used += take
+            size -= take
+    slices.append(current)
+    return slices
+
+
 @dataclass(frozen=True)
 class DeepEPDispatchState:
     handle_id: torch.Tensor
@@ -384,11 +405,28 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
     ) -> torch.Tensor:
         """One rank's received tokens through its local experts, reduced back to one row per token."""
         layout, num_tokens_per_expert = build_pair_layout(recv_indices, pairs_per_expert, self.token_group_alignment)
+        group_sizes = [
+            -(-count // self.token_group_alignment) * self.token_group_alignment for count in pairs_per_expert
+        ]
         if score_before_experts:
-            routed = self._experts(gather_pairs(recv_x, layout, recv_scores), num_tokens_per_expert)
+            routed = self._sliced_experts(gather_pairs(recv_x, layout, recv_scores), num_tokens_per_expert, group_sizes)
             return reduce_pairs(routed, layout)
-        routed = self._experts(gather_pairs(recv_x, layout), num_tokens_per_expert)
+        routed = self._sliced_experts(gather_pairs(recv_x, layout), num_tokens_per_expert, group_sizes)
         return reduce_pairs(routed, layout, recv_scores)
+
+    def _sliced_experts(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor, group_sizes: list[int]):
+        """The experts on `x`, in row slices when a skewed routing sends this rank more rows than the
+        expert kernels address: prime-kernels' FP8 path indexes a padded copy (128 rows per expert
+        on top) with 32-bit offsets."""
+        max_rows = (2**31 - 1) // x.shape[1] - (len(group_sizes) + 1) * 128
+        if x.shape[0] <= max_rows:
+            return self._experts(x, num_tokens_per_expert)
+        outputs, start = [], 0
+        for sizes in split_groups(group_sizes, max_rows, self.token_group_alignment):
+            rows = sum(sizes)
+            outputs.append(self._experts(x[start : start + rows], torch.tensor(sizes, device=x.device)))
+            start += rows
+        return torch.cat(outputs)
 
     def received_tokens(self, recv_x: torch.Tensor, recv_sf: torch.Tensor) -> torch.Tensor:
         """Received tokens in bf16; FP8 dispatch keeps them quantized until the experts read them."""
