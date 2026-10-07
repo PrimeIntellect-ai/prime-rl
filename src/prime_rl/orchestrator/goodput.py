@@ -95,10 +95,10 @@ TIE_FRACTION = 0.99
 """Candidates within this fraction of the best score tie; the smallest pool
 wins, since in-flight work that buys no goodput only adds off-policyness."""
 
-IMMATURE_RESIDUAL = 0.2
-"""While more than this share of the group law sits beyond the slowest
-completed group (long groups still in flight), the law extrapolates their
-fate: the cap neither grows nor cuts on infeasibility."""
+UNRESOLVED_FRACTION = 0.2
+"""While more than this share of the group law is in flight and slower than
+every completed group, the law extrapolates their fate: the cap neither
+grows nor cuts on infeasibility."""
 
 TRAIN_STEP_WINDOW = 16
 TRAIN_STEP_MIN_SAMPLES = 3
@@ -165,8 +165,7 @@ class GroupDurationLaw:
     Each group keeps its members' ``(tokens, virtual finish time)``; a member
     still running at virtual time ``x`` is costed pro rata. Dropped and
     in-flight groups are right-censored at their virtual age; KM's mass beyond
-    the last completed group follows Efron's tail correction (those groups
-    finish at the oldest observed age)."""
+    the last completed group gets an exponential tail completion."""
 
     def __init__(self, window: int = GROUP_WINDOW) -> None:
         # (virtual duration or age, completed, member tokens, member virtual finish, unfinished count)
@@ -175,7 +174,6 @@ class GroupDurationLaw:
         # them the law only sees the groups fast enough to have finished
         self.live: list[tuple[float, bool, np.ndarray, np.ndarray, int]] = []
         self.cache: tuple | None = None
-        self.tail_age = 0.0
         self.version = 0
 
     def add_complete(self, tokens: list[float], vtimes: list[float]) -> None:
@@ -218,29 +216,41 @@ class GroupDurationLaw:
         """Law mass beyond the slowest completed group."""
         return self.fit()[4] if self.obs or self.live else 1.0
 
+    @property
+    def unresolved(self) -> float:
+        """Share of the law that is in flight and already slower than every
+        completed group: outcomes the law can only extrapolate. Dropped groups
+        are resolved (they did not train) and don't count."""
+        if not self.obs and not self.live:
+            return 1.0
+        V = self.fit()[0]
+        if not len(V):
+            return 1.0
+        slowest = float(V.max())
+        return sum(1 for o in self.live if o[0] > slowest) / (len(self.obs) + len(self.live))
+
     def fit(self):
         """``(V, mass, tokens matrix, vtimes matrix, residual mass, mean group size, residual profile)``"""
         if self.cache is None:
             obs = list(self.obs) + self.live
             n = len(obs)
-            key = np.array([o[0] for o in obs])
-            event = np.array([o[1] for o in obs])
+            key = np.array([o[0] for o in obs], dtype=float)
+            event = np.array([o[1] for o in obs], dtype=bool)
             order = np.lexsort((~event, key))  # events before censorings at ties
             at_risk = n - np.arange(n)
             surv = np.cumprod(np.where(event[order], 1.0 - 1.0 / at_risk, 1.0))
             mass = np.concatenate([[1.0], surv[:-1]]) - surv
             ev_idx = order[event[order]]
-            width = max(len(o[2]) for o in obs)
+            width = max((len(o[2]) for o in obs), default=0)
             tok = np.zeros((len(ev_idx), width))
             vt = np.ones((len(ev_idx), width))
             for row, i in enumerate(ev_idx):
                 m = len(obs[i][2])
                 tok[row, :m], vt[row, :m] = obs[i][2], obs[i][3]
-            size = float(np.mean([len(o[2]) + o[4] for o in obs]))
+            size = float(np.mean([len(o[2]) + o[4] for o in obs])) if obs else 1.0
             last = key[ev_idx].max() if len(ev_idx) else -math.inf
             tail = [o for o in obs if not o[1] and o[0] >= last] or [o for o in obs if not o[1]]
             profile = [(o[2], o[3], o[4]) for o in tail]
-            self.tail_age = float(key.max()) if n else 0.0
             self.cache = (key[ev_idx], mass[event[order]], tok, vt, float(surv[-1]) if n else 1.0, size, profile)
         return self.cache
 
@@ -255,21 +265,28 @@ class GroupDurationLaw:
         A = float((mass * tok.sum(axis=1) * w)[fresh].sum())
         spent = (tok * np.minimum(1.0, x / vt)).sum(axis=1)
         C = float((mass * spent).sum())
-        if resid > 0:
-            # Mass beyond the slowest completed group: nothing says when those
-            # groups finish. Efron's tail correction: they finish at the oldest
-            # observed age, members still running by then at ~that many tokens
-            # (the virtual clock counts the average episode's tokens)
-            V_t = self.tail_age
+        if resid > 0 and len(V):
+            # Mass beyond the slowest completed group: their finish times are
+            # unobserved. Complete the tail exponentially from the last KM point
+            # (Brown-Hollander-Korwar): V = V_last + Exp(lam), with
+            # S(V_last) = exp(-lam V_last). Members still running finish at ~V
+            # tokens (the virtual clock counts the average episode's tokens)
+            V_last = float(V.max())
+            lam = -math.log(resid) / max(V_last, 1e-9)
+            d = max(x - V_last, 0.0)
+            F = 1.0 - math.exp(-lam * d)  # P(V <= x)
+            mean_v_fresh = V_last * F + (1.0 - math.exp(-lam * d) * (1.0 + lam * d)) / lam  # E[V 1{V<=x}]
+            mean_v_capped = x if x <= V_last else V_last + F / lam  # E[min(V, x)]
             if profile:
-                full = float(np.mean([t.sum() + u * V_t for t, v, u in profile]))
-                cost = float(np.mean([(t * np.minimum(1.0, x / v)).sum() + u * min(x, V_t) for t, v, u in profile]))
+                done = float(np.mean([t.sum() for t, _, _ in profile]))
+                done_spent = float(np.mean([(t * np.minimum(1.0, x / v)).sum() for t, v, _ in profile]))
+                running = float(np.mean([u for _, _, u in profile]))
             else:
-                full, cost = size * V_t, size * min(x, V_t)
-            if V_t <= x:
-                S += resid
-                A += resid * full * (1.0 if staleness_scale is None else math.exp(-k_eff * V_t / x / staleness_scale))
-            C += resid * cost
+                done, done_spent, running = 0.0, 0.0, size
+            w = 1.0 if staleness_scale is None else math.exp(-k_eff * V_last / x / staleness_scale)
+            S += resid * F
+            A += resid * (done * F + running * mean_v_fresh) * w
+            C += resid * (done_spent + running * mean_v_capped)
         return S, A, C
 
 
@@ -514,7 +531,7 @@ class GoodputController:
     def growth_evidence(self) -> bool:
         if self.k_eff is None or not self.batch_size:
             return True
-        return self.law_ready and self.law.residual <= IMMATURE_RESIDUAL
+        return self.law_ready and self.law.unresolved <= UNRESOLVED_FRACTION
 
     @property
     def law_ready(self) -> bool:
@@ -591,6 +608,7 @@ class GoodputController:
             # evidence about any cap, so hold
             self.signal = "hold"
             self.start_phase(now)
+            get_logger().info(f"Holding concurrency at {self.max_inflight} (nothing generated)")
             return
         lo, hi = bin_of(self.floor), bin_of(self.ceiling)
         cands = {self.cur, max(lo, self.cur - 1)}
@@ -615,6 +633,17 @@ class GoodputController:
         elif best <= self.cur:
             self.climb = 1
         self.signal = "probe" if best != self.cur else "hold"
+        if best == self.cur:
+            get_logger().info(
+                f"Holding concurrency at {self.max_inflight} ("
+                + ", ".join(
+                    f"{bin_size(j)}: {sc:.0f}" if sc >= 0 else f"{bin_size(j)}: eta {sc + self.min_fresh:.2f}"
+                    for j, sc in sorted(scores.items())
+                )
+                + f") - T={T:.0f} eta={self.eta(bin_size(self.cur), T):.3f} binding={binding} "
+                f"law={self.law.completed}/{len(self.law)} unresolved={self.law.unresolved:.2f} "
+                f"train_step={self.train_step_s or 0:.0f}s"
+            )
         self.move(best, now, reason=None, scores=scores)
 
     def recover(self, lo: int) -> int:
@@ -622,7 +651,7 @@ class GoodputController:
         dominated by groups that haven't finished, it can't tell caps apart:
         hold. Otherwise jump to the largest feasible cap below (eta falls with
         P), or, if none is, maximize goodput and say so."""
-        if self.law.residual > IMMATURE_RESIDUAL:
+        if self.law.unresolved > UNRESOLVED_FRACTION:
             return self.cur
         a, b = lo, self.cur - 1
         if a <= b and self.score(a) >= 0:
@@ -698,6 +727,7 @@ class GoodputController:
             "concurrency/probing": float(self.signal == "probe"),
             "concurrency/law_groups": float(len(self.law)),
             "concurrency/errored_groups": float(self.errored_groups),
+            "concurrency/law_unresolved": self.law.unresolved if self.law_ready else 1.0,
             "concurrency/episode_lifetime_s": self.lifetime,
             "concurrency/train_step_s": self.train_step_s or 0.0,
         }
