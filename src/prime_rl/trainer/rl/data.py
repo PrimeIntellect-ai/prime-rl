@@ -180,7 +180,7 @@ class FakeDataLoader:
 def prepare_micro_batch(
     micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
 ) -> TensorMicroBatch:
-    """Prepare a micro batch for the training loop off the main thread; today this decodes and preprocesses its images."""
+    """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
     micro_batch["mm_kwargs"] = None
     micro_batch["mm_forward_policy"] = None
     mm_refs = micro_batch.get("mm_refs")
