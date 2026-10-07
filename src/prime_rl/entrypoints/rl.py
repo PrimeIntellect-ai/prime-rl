@@ -64,8 +64,11 @@ def env_server_names(config: RLConfig, split: str) -> list[str]:
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    data = dump_resolved_config(config, exclude=exclude)
+    # Set by rl, which rejects it as input; leave it out so the job can re-parse `rl.json`.
+    data["weight_broadcast"].pop("inference_world_size", None)
     with open(output_dir / RL_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(config, exclude=exclude), f, indent=2)
+        json.dump(data, f, indent=2)
 
 
 def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, Path | str]]:
