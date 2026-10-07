@@ -2,7 +2,6 @@ clean = true
 
 [env_vars]
 HF_HOME = "/home/huggingface"
-TRITON_CACHE_DIR = "/tmp/.cache/triton_cache"
 
 [model]
 name = "zai-org/GLM-5.3-BF16"
