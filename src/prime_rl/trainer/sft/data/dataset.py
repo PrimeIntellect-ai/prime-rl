@@ -19,6 +19,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.trainer.sft.data.selection import DeterministicMixture
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -261,7 +262,7 @@ class SFTDataset(StatefulIterableDataset):
 
     def __init__(
         self,
-        dataset: Dataset,
+        dataset: Dataset | DeterministicMixture,
         renderers: Callable[[dict], Renderer],
         shuffle: bool = True,
         seed: int = 0,
@@ -650,7 +651,8 @@ def setup_and_interleave_datasets(
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
     revision: str | None = None,
-) -> Dataset:
+    deterministic_sampling: bool = False,
+) -> Dataset | DeterministicMixture:
     logger = get_logger()
     datasets = []
     for subset, split in subsets_and_splits:
@@ -661,6 +663,8 @@ def setup_and_interleave_datasets(
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
         datasets.append(dataset)
+    if deterministic_sampling:
+        return DeterministicMixture(datasets, probabilities, stopping_strategy, seed)
     if len(datasets) > 1:
         logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
         dataset = interleave_datasets(
@@ -675,7 +679,7 @@ def setup_and_interleave_datasets(
     return dataset
 
 
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
+def load_sft_dataset(config: SFTDataConfig) -> Dataset | DeterministicMixture:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
     logger = get_logger()
     if config.subsets is None and config.splits is None:
@@ -685,6 +689,8 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            deterministic_sampling=config.deterministic_sampling,
+            seed=config.seed if config.deterministic_sampling else 0,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -694,6 +700,8 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            deterministic_sampling=config.deterministic_sampling,
+            seed=config.seed if config.deterministic_sampling else 0,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -703,6 +711,8 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            deterministic_sampling=config.deterministic_sampling,
+            seed=config.seed if config.deterministic_sampling else 0,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -713,6 +723,8 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            deterministic_sampling=config.deterministic_sampling,
+            seed=config.seed if config.deterministic_sampling else 0,
         )
 
 
@@ -722,7 +734,7 @@ def setup_dataset(
     non_dp_size: int = 1,
     *,
     max_epochs: int | None = None,
-    raw_dataset: Dataset | None = None,
+    raw_dataset: Dataset | DeterministicMixture | None = None,
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
     multimodal: bool = False,

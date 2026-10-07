@@ -1,5 +1,7 @@
 import uuid
 import warnings
+from fractions import Fraction
+from math import gcd, isclose, isfinite, lcm
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
@@ -110,6 +112,26 @@ class PackingConfig(BaseConfig):
     """Source rows per rank in each length-gather chunk. Does not change optimizer-step membership."""
 
 
+def deterministic_source_counts(probabilities: list[float] | None, num_sources: int) -> list[int]:
+    """Smallest integer source quotas, with a bounded schedule allocation."""
+    if probabilities is None:
+        return [1] * num_sources
+    if len(probabilities) != num_sources:
+        raise ValueError("Number of probabilities must equal the number of sources")
+    if not all(isfinite(p) and p >= 0 for p in probabilities) or not isclose(sum(probabilities), 1.0):
+        raise ValueError("Deterministic sampling probabilities must be finite, nonnegative, and sum to one")
+    fractions = [Fraction(str(p)).limit_denominator(1_000_000) for p in probabilities]
+    if any(not isclose(float(f), p, rel_tol=1e-12, abs_tol=0) for f, p in zip(fractions, probabilities)):
+        raise ValueError("Deterministic sampling requires probabilities expressible with a cycle of at most 1000000")
+    denominator = lcm(*(f.denominator for f in fractions))
+    counts = [f.numerator * (denominator // f.denominator) for f in fractions]
+    divisor = gcd(*counts)
+    counts = [count // divisor for count in counts]
+    if sum(counts) > 1_000_000:
+        raise ValueError("Deterministic sampling requires a cycle longer than 1000000; simplify the probabilities")
+    return counts
+
+
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
@@ -127,6 +149,9 @@ class SFTDataConfig(BaseDataConfig):
 
     probabilities: list[float] | None = None
     """Sampling probabilities for each subset/split."""
+
+    deterministic_sampling: bool = False
+    """Use seeded source permutations with exact quotas per cycle before DP sharding. Shuffle only within sources."""
 
     stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
     """Stopping strategy when interleaving multiple subsets/splits."""
@@ -149,6 +174,11 @@ class SFTDataConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_subsets_and_splits(self):
+        if self.deterministic_sampling:
+            sources = self.subsets if self.subsets is not None else self.splits
+            if sources == []:
+                raise ValueError("Deterministic sampling requires at least one source")
+            deterministic_source_counts(self.probabilities, len(sources) if sources is not None else 1)
         if self.subsets is not None or self.splits is not None:
             if self.subsets is not None and self.splits is not None:
                 if len(self.subsets) != len(self.splits):

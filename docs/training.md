@@ -285,6 +285,39 @@ multimodal data use their modality-specific local loader. See the
 [SFT data implementation notes](../src/prime_rl/trainer/sft/data/README.md)
 for ordering, transport, checkpoint, and collective-lifetime details.
 
+### Deterministic SFT Source Selection
+
+Enable fixed source quotas with `data.deterministic_sampling`:
+
+```toml
+[data]
+splits = ["train_sft", "test_sft"]
+probabilities = [0.999, 0.001]
+deterministic_sampling = true
+shuffle = true
+seed = 42
+```
+
+Each complete cycle of 1000 source selections contains 999 examples from the
+first source and one from the second. Each cycle has its own seeded permutation.
+General probabilities use their smallest integer ratio (`[0.6, 0.4]` gives
+`[3, 2]`); omitted probabilities give equal quotas. Zero-probability sources are
+excluded. Probabilities must sum to one and admit a cycle of at most 1,000,000
+selections; excessively precise ratios are rejected instead of rounded.
+
+`shuffle` shuffles rows within each source per epoch. The source schedule repeats
+each dataset epoch. `first_exhausted` ends when any active source runs out;
+`all_exhausted` wraps exhausted sources until every active source has been consumed
+at least once. The final cycle may be partial, so quotas apply to complete cycles
+within an epoch. Source rows do not repeat before that source is exhausted.
+
+Selection happens before rendering, filtering, packing, and DP sharding. Quotas
+count selected source rows, including rows later filtered out for having no
+trainable tokens; they do not prescribe token ratios or per-rank ratios. All ranks
+and workers share the same global schedule, and checkpoint resume restores it
+from the global cursor. With `deterministic_sampling = false` (the default), source
+selection uses Hugging Face interleaving and dataset shuffling.
+
 ### Important Metrics
 
 Pulled from the console log and mirrored to W&B.

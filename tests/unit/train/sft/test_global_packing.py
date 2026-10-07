@@ -9,6 +9,7 @@ from prime_rl.configs.sft import LossMaskConfig, PackingConfig, SFTConfig, SFTDa
 from prime_rl.trainer.sft.data import CatDataset, SFTDataset, cat_collate
 from prime_rl.trainer.sft.data.broker import PackedDataLoader, materialize_rows
 from prime_rl.trainer.sft.data.packing import OnlinePacker, SampleDescriptor, schedule_rows
+from prime_rl.trainer.sft.data.selection import DeterministicMixture
 
 
 class RendererFactory:
@@ -80,10 +81,18 @@ def test_tensor_materialization_matches_sample_fields():
 
 
 @pytest.mark.parametrize("workers,chunk_size", [(1, 1), (2, 3)])
-def test_prefetch_resume_is_cursor_only_and_chunk_independent(dummy_renderer, workers, chunk_size):
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_prefetch_resume_is_cursor_only_and_chunk_independent(dummy_renderer, workers, chunk_size, deterministic):
     raw = Dataset.from_dict({"prompt": [""] * 9, "completion": ["a" * size for size in [1, 6, 10, 2, 19, 3, 9, 7, 15]]})
+    if deterministic:
+        raw = DeterministicMixture([raw.select(range(5)), raw.select(range(5, 9))], [0.6, 0.4], "all_exhausted", 9)
     config = SFTDataConfig(
-        seq_len=8, micro_batch_size=2, batch_size=8, num_workers=workers, packing=PackingConfig(chunk_size=chunk_size)
+        seq_len=8,
+        micro_batch_size=2,
+        batch_size=8,
+        num_workers=workers,
+        packing=PackingConfig(chunk_size=chunk_size),
+        deterministic_sampling=deterministic,
     )
 
     def make_loader(settings):
@@ -97,6 +106,7 @@ def test_prefetch_resume_is_cursor_only_and_chunk_independent(dummy_renderer, wo
             loader.state_dict()
         prefix.extend(next(loader) for _ in range(3))
         state = copy.deepcopy(loader.state_dict())
+        assert ("deterministic_sampling" in state["signature"]["data"]) == deterministic
         loader.future.result()
         assert state == loader.state_dict()
         assert set(state) == {"signature", "progress"}
@@ -114,7 +124,7 @@ def test_prefetch_resume_is_cursor_only_and_chunk_independent(dummy_renderer, wo
     for actual_row, expected_row in zip(actual, expected, strict=True):
         for key in ("input_ids", "target_ids", "position_ids", "loss_mask", "seq_lens"):
             torch.testing.assert_close(actual_row[key], expected_row[key], rtol=0, atol=0)
-    assert sorted(position for row in prefix + actual for position in row["sample_ids"]) == list(range(27))
+    assert sorted(position for row in prefix + actual for position in row["sample_ids"]) == list(range(3 * len(raw)))
 
 
 def test_filtered_epoch_and_empty_validation(dummy_renderer):

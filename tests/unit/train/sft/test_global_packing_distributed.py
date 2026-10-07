@@ -14,6 +14,7 @@ from renderers.base import RenderedTokens
 from prime_rl.configs.sft import PackingConfig, SFTDataConfig
 from prime_rl.trainer.sft.data import SFTDataset
 from prime_rl.trainer.sft.data.broker import PackedDataLoader
+from prime_rl.trainer.sft.data.selection import DeterministicMixture
 from prime_rl.trainer.world import reset_world
 
 
@@ -46,7 +47,7 @@ class ObservedLoader(PackedDataLoader):
         return result
 
 
-def distributed_loader_worker(rank, world_size, cp_size, backend, directory):
+def distributed_loader_worker(rank, world_size, cp_size, backend, directory, deterministic=False):
     os.environ.update(
         RANK=str(rank), WORLD_SIZE=str(world_size), LOCAL_RANK=str(rank), LOCAL_WORLD_SIZE=str(world_size)
     )
@@ -76,8 +77,15 @@ def distributed_loader_worker(rank, world_size, cp_size, backend, directory):
             for index in range(37)
         ]
     )
+    if deterministic:
+        raw = DeterministicMixture([raw.select(range(25)), raw.select(range(25, 37))], [0.6, 0.4], "all_exhausted", 7)
     config = SFTDataConfig(
-        seq_len=16, batch_size=8, micro_batch_size=2, num_workers=1, packing=PackingConfig(chunk_size=2)
+        seq_len=16,
+        batch_size=8,
+        micro_batch_size=2,
+        num_workers=1,
+        packing=PackingConfig(chunk_size=2),
+        deterministic_sampling=deterministic,
     )
     microsteps = config.batch_size // (world_size // cp_size * config.micro_batch_size)
     epochs = None if backend == "nccl" else 3
@@ -218,12 +226,14 @@ def distributed_loader_worker(rank, world_size, cp_size, backend, directory):
     dist.destroy_process_group()
 
 
-def test_distributed_payloads_cp_and_cursor_resume(tmp_path):
-    multiprocessing.spawn(distributed_loader_worker, args=(4, 2, "gloo", str(tmp_path)), nprocs=4)
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_distributed_payloads_cp_and_cursor_resume(tmp_path, deterministic):
+    multiprocessing.spawn(distributed_loader_worker, args=(4, 2, "gloo", str(tmp_path), deterministic), nprocs=4)
 
 
 @pytest.mark.gpu
-def test_prefetch_overlaps_fsdp_and_optimizer_collectives(tmp_path):
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_prefetch_overlaps_fsdp_and_optimizer_collectives(tmp_path, deterministic):
     if torch.cuda.device_count() < 4:
         pytest.skip("Requires four GPUs")
-    multiprocessing.spawn(distributed_loader_worker, args=(4, 2, "nccl", str(tmp_path)), nprocs=4)
+    multiprocessing.spawn(distributed_loader_worker, args=(4, 2, "nccl", str(tmp_path), deterministic), nprocs=4)
