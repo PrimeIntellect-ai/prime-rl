@@ -96,11 +96,16 @@ def test_trigger_queues_only_owed_rollouts() -> None:
     assert [request.rollouts for request in source.queue] == [2, 1, 2, 2]
 
 
-def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
-    config = EvalConfig(source=[{"env": {"id": "single_agent"}}], run={"name": "resume-test"})
+@pytest.mark.parametrize("skip_checks", [False, True])
+def test_take_landed_reads_every_attempt_once(tmp_path, skip_checks) -> None:
+    config = EvalConfig(
+        source=[{"env": {"id": "single_agent"}}], run={"name": "resume-test"}, resume={"skip_checks": skip_checks}
+    )
 
     def land(*keys: str) -> None:
         resume.stamp_config(tmp_path, config.model_dump(mode="json"))
+        if skip_checks:
+            (get_file_monitor_dir(tmp_path) / resume.CONFIG_NAME).unlink()
         stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
         for key in keys:
             stream.append(orjson.dumps({**_record("math", key), "id": key}, option=orjson.OPT_APPEND_NEWLINE))
@@ -159,21 +164,24 @@ def test_resume_validates_saved_episodes(tmp_path, ok, traces, valid) -> None:
         ({"log": {"level": "debug"}, "dashboard": False, "monitors": {"prime": None}}, True),
         ({"concurrency": {"min_inflight": 8, "max_inflight": 8}, "tasks_per_minute": 10}, True),
         ({"client": {"wait_for_ready_timeout": 10}}, True),
+        ({"client": {"skip_model_check": True}}, True),
+        ({"output_dir": "./another-output-location"}, True),
         ({"source": [{"env": {"id": "single_agent"}, "serve": {"pool": {"type": "elastic", "max_workers": 2}}}]}, True),
     ],
 )
-def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, updates, allowed) -> None:
+@pytest.mark.parametrize("skip_checks", [False, True])
+def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, updates, allowed, skip_checks) -> None:
     original = {"source": [{"env": {"id": "single_agent"}}], "run": {"name": "resume-test"}}
     saved = EvalConfig.model_validate_json(orjson.dumps(original))
     if "client" in updates:
         updates = updates | {"client": saved.client.model_dump() | updates["client"]}
-    current = EvalConfig.model_validate(original | updates | {"resume": True})
+    current = EvalConfig.model_validate(original | updates | {"resume": {"skip_checks": skip_checks}})
     resume.stamp_config(tmp_path, saved.model_dump(mode="json"))
     directory = get_file_monitor_dir(tmp_path)
     directory.rename(directory.with_name("file.attempt_1"))
     # The newest attempt matches; an incompatible older attempt must still fail.
     resume.stamp_config(tmp_path, current.model_dump(mode="json"))
-    if allowed:
+    if allowed or skip_checks:
         assert resume.take_landed(tmp_path, current) == []
         assert not directory.exists()
     else:
@@ -189,13 +197,14 @@ def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, update
         None,
         ("model",),
         ("source",),
-        ("client", "skip_model_check"),
+        ("client", "base_url"),
         ("source", 0, "sampling", "temperature"),
         ("source", 0, "group_size"),
     ],
 )
-def test_take_landed_requires_saved_experiment(tmp_path, missing) -> None:
-    config = EvalConfig(source=[{"env": {"id": "single_agent"}}])
+@pytest.mark.parametrize("skip_checks", [False, True])
+def test_take_landed_requires_saved_experiment(tmp_path, missing, skip_checks) -> None:
+    config = EvalConfig(source=[{"env": {"id": "single_agent"}}], resume={"skip_checks": skip_checks})
     directory = get_file_monitor_dir(tmp_path)
     directory.mkdir(parents=True)
     if missing is not None:
@@ -205,10 +214,15 @@ def test_take_landed_requires_saved_experiment(tmp_path, missing) -> None:
             parent = parent[key]
         del parent[missing[-1]]
         resume.stamp_config(tmp_path, saved)
-    with pytest.raises(ValueError, match="no saved experiment config|config differs"):
-        resume.take_landed(tmp_path, config)
-    assert directory.is_dir()
-    assert resume.archives(tmp_path) == []
+    if skip_checks:
+        assert resume.take_landed(tmp_path, config) == []
+        assert not directory.exists()
+        assert len(resume.archives(tmp_path)) == 1
+    else:
+        with pytest.raises(ValueError, match="no saved experiment config|config differs"):
+            resume.take_landed(tmp_path, config)
+        assert directory.is_dir()
+        assert resume.archives(tmp_path) == []
 
 
 def test_take_landed_compares_effective_sources(tmp_path) -> None:
