@@ -840,7 +840,6 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, compile_moe_i
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
-    compiled_inside_ac = 0
     for layer_id in range(len(language_model.layers)):
         layer = language_model.layers[layer_id]
         if (
@@ -852,12 +851,10 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, compile_moe_i
             # FSDP hook always breaks, so keep AC eager around the compiled block. Remove with
             # pytorch/pytorch#196626, which lets the router join the block's FSDP unit.
             layer = layer._checkpoint_wrapped_module
-            compiled_inside_ac += 1
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
         layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
-        f"Compiled {len(language_model.layers)} layers ({compiled_inside_ac} inside activation checkpointing, "
-        f"fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
+        f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
 
 
