@@ -16,6 +16,7 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
@@ -835,15 +836,27 @@ def mark_dynamic_int_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig):
+def apply_compile(model: nn.Module, compile_config: CompileConfig, compile_moe_inside_ac: bool):
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
+    compiled_inside_ac = 0
     for layer_id in range(len(language_model.layers)):
+        layer = language_model.layers[layer_id]
+        if (
+            compile_moe_inside_ac
+            and isinstance(layer, CheckpointWrapper)
+            and isinstance(getattr(layer._checkpoint_wrapped_module, "mlp", None), MoE)
+        ):
+            # The fp32 router's FSDP hook breaks the graph, and a break inside a compiled checkpoint
+            # sends the whole block to eager, so the checkpoint stays eager around the compiled block.
+            layer = layer._checkpoint_wrapped_module
+            compiled_inside_ac += 1
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
-        f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
+        f"Compiled {len(language_model.layers)} layers ({compiled_inside_ac} inside activation checkpointing, "
+        f"fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
 
 
@@ -1002,11 +1015,11 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> Compile -> FSDP
+    # the right order is AC -> Compile -> FSDP, except that MoE blocks with an fp32 router compile inside AC
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile is not None:
-        apply_compile(model, config.compile)
+        apply_compile(model, config.compile, compile_moe_inside_ac=config.moe_router_dtype == "float32")
 
     setup_fsdp(model, config, parallel_dims)
 
