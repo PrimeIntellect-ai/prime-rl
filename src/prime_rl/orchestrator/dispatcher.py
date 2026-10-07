@@ -33,7 +33,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
@@ -62,6 +62,16 @@ from prime_rl.utils.logger import get_logger
 LIVE_INTERVAL_S = 0.5
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
+
+
+class GroupObserver(Protocol):
+    """Receives train-group lifecycle events (the goodput controller)."""
+
+    def on_group_start(self, group_id: uuid.UUID, size: int) -> None: ...
+
+    def on_episode_done(self, group_id: uuid.UUID, output_tokens: int, wall_s: float | None) -> None: ...
+
+    def on_group_drop(self, group_id: uuid.UUID, reason: str) -> None: ...
 
 
 class DispatcherMode(Enum):
@@ -144,6 +154,7 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         on_episode_complete: Callable[[int], None] | None = None,
+        group_observer: GroupObserver | None = None,
     ) -> None:
         self.policy = policy
         self.progress = progress
@@ -159,6 +170,8 @@ class Dispatcher:
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
+        # Train-group lifecycle events for the concurrency controller's length law
+        self.group_observer = group_observer
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -503,6 +516,8 @@ class Dispatcher:
             return False
         gid = fresh.group_id or uuid.uuid4()
         self.groups[gid] = fresh
+        if self.group_observer is not None and kind == "train":
+            self.group_observer.on_group_start(gid, fresh.target_episodes)
         return await self.schedule_group_episode(gid, fresh)
 
     def next_fresh_group(self, kind: WorkKind, envs) -> GroupState | None:
@@ -645,6 +660,7 @@ class Dispatcher:
         except Exception as exc:
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            self.observe_episode_done(meta, output_tokens=0)
             policy_version = self.complete_group_member(meta, group)
             await self.out_q.put(
                 DispatchFailure(
@@ -695,7 +711,14 @@ class Dispatcher:
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
         if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(episode.num_total_tokens)
+        self.observe_episode_done(meta, output_tokens=episode.num_output_tokens)
         await self.emit_episode(meta, group, episode)
+
+    def observe_episode_done(self, meta: InflightEpisode, *, output_tokens: int) -> None:
+        if self.group_observer is None:
+            return
+        wall_s = time.monotonic() - meta.started_at if meta.started_at > 0 else None
+        self.group_observer.on_episode_done(meta.group_id, output_tokens, wall_s)
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
         """Advance group accounting and return the attempt's pinned policy version."""
@@ -739,6 +762,8 @@ class Dispatcher:
         in-flight and never-dispatched), so count-to-``group_size``
         finalization still fires. Returns the owed count for metrics."""
         group = self.groups.pop(group_id, None)
+        if self.group_observer is not None:
+            self.group_observer.on_group_drop(group_id, reason)
         # Sync claim phase: pop matching tasks from ``self.inflight`` and
         # release their permits in one non-yielding sweep. After this loop
         # the dropped tasks are no longer reachable from ``self.inflight``,

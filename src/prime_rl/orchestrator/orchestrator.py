@@ -46,6 +46,7 @@ from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.orchestrator.goodput import GoodputController, make_concurrency_controller
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
@@ -114,7 +115,7 @@ class Orchestrator:
     train_source: TrainSource
     train_sink: TrainSink
     dispatcher: Dispatcher
-    concurrency: ConcurrencyController
+    concurrency: ConcurrencyController | GoodputController
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
     periodic_logger: PeriodicLogger
@@ -322,7 +323,12 @@ class Orchestrator:
 
         log_interval = config.log.interval
 
-        self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=config.seq_len)
+        self.concurrency = make_concurrency_controller(
+            config.concurrency,
+            fallback_cost=config.seq_len,
+            batch_size=config.batch_size,
+            max_off_policy_steps=config.max_off_policy_steps,
+        )
         self.dispatcher = Dispatcher(
             train_envs=self.train_envs,
             eval_envs=self.eval_envs,
@@ -338,6 +344,7 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            group_observer=self.concurrency if isinstance(self.concurrency, GoodputController) else None,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,

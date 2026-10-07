@@ -111,6 +111,8 @@ class EngineLoadSample:
     # not report the by-reason breakdown; fall back to ``waiting``)
     waiting_capacity: int | None
     preemptions_delta: int
+    # Generated tokens since the previous poll (``vllm:generation_tokens``)
+    generation_tokens_delta: float = 0.0
 
 
 class ConcurrencyController:

@@ -496,6 +496,24 @@ class ConcurrencyConfig(BaseConfig):
     max_inflight: int | None = Field(1024, ge=1)
     """Maximum number of in-flight episodes. Set it to avoid runaway concurrency, especially to limit other external resources (e.g. sandboxes). None removes the ceiling."""
 
+    mode: Literal["goodput", "legacy", "schedule"] = "goodput"
+    """``goodput`` maximizes accepted (fresh) generated tokens/s from measured engine throughput and the observed group length law. ``legacy`` is the KV-pressure AIMD controller. ``schedule`` pins the cap to ``schedule`` (benchmarking) while logging the goodput model's measurements."""
+
+    schedule: list[tuple[float, int]] | None = None
+    """``schedule`` mode: ``[(seconds since start, cap), ...]``; the cap in force is the last entry whose time has passed."""
+
+    bootstrap_inflight_per_engine: int = Field(64, ge=1)
+    """Goodput mode: starting cap per decode engine when ``initial_inflight`` is unset. Low is safe — the cap climbs geometrically while throughput scales."""
+
+    staleness_scale: float | None = Field(None, gt=0)
+    """Goodput mode: discount a group trained ``s`` steps off-policy by ``exp(-s / staleness_scale)``. None values every fresh token equally, so only drops at ``max_off_policy_steps`` cost goodput."""
+
+    min_fresh_fraction: float = Field(0.9, gt=0, le=1)
+    """Goodput mode: never pick a cap whose predicted fresh fraction of generated tokens falls below this. Bounds staleness waste and the batch's bias toward short groups (long groups are the ones that age out)."""
+
+    deadline_offset_steps: float = 0.5
+    """Goodput mode: added to ``max_off_policy_steps`` for the effective in-flight deadline in trainer steps. A group is dropped once the shipped-batch count passes its dispatch version by ``max_off_policy_steps``, which lands between K and K + 1 steps after dispatch."""
+
     @model_validator(mode="after")
     def validate_bounds(self):
         if self.max_inflight is not None:

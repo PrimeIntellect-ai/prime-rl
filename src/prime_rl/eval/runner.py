@@ -27,11 +27,11 @@ from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
-from prime_rl.orchestrator.concurrency import ConcurrencyController
 from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.orchestrator.goodput import GoodputController, make_concurrency_controller
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
@@ -106,7 +106,8 @@ class EvalRunner:
         # Pessimistic per-episode token cost for the controller's starting cap,
         # only used when the engine doesn't report its max context length.
         fallback_cost = max((source.sampling.max_completion_tokens or 0) for source in config.source) or 8192
-        self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=fallback_cost)
+        # Evals never go stale: no batch / off-policy bound, so goodput is throughput
+        self.concurrency = make_concurrency_controller(config.concurrency, fallback_cost=fallback_cost)
         self.dispatcher = Dispatcher(
             train_envs=None,
             eval_envs=self.eval_envs,
@@ -122,6 +123,7 @@ class EvalRunner:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            group_observer=self.concurrency if isinstance(self.concurrency, GoodputController) else None,
         )
         # No ``on_overload``: eval episodes are measurements and are never
         # cancelled — a cut only blocks admission until the pool drains.
