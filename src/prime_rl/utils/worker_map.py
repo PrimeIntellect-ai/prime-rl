@@ -1,59 +1,27 @@
-import multiprocessing
-import os
-import threading
-import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, MutableMapping, Sequence
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Generic, TypeVar
-
-import torch
 
 T = TypeVar("T")
 R = TypeVar("R")
 M = TypeVar("M", bound=MutableMapping[str, Any])
 
-# Set by init_worker in each worker process; ProcessPoolExecutor has no other place for per-worker state.
-worker_fn: Callable[[Any], Any] | None = None
-
-
-def exit_when_parent_dies(parent_pid: int) -> None:
-    while os.getppid() == parent_pid:
-        time.sleep(5.0)
-    os._exit(1)
-
-
-def init_worker(parent_pid: int, fn: Callable[[Any], Any]) -> None:
-    """Set up a forked worker: use one torch thread so workers don't oversubscribe the CPU cores the main process needs (as torch's DataLoader does), exit if the parent dies, and keep ``fn`` for tasks."""
-    global worker_fn
-    torch.set_num_threads(1)
-    threading.Thread(target=exit_when_parent_dies, args=(parent_pid,), daemon=True).start()
-    worker_fn = fn
-
-
-def call_worker_fn(item: Any) -> Any:
-    return worker_fn(item)
-
 
 class WorkerMap(Generic[T, R]):
-    """Ordered, bounded map of ``fn`` over an iterator, run in persistent worker processes, or inline when ``num_workers`` is 0.
+    """Ordered, bounded map of ``fn`` over an iterator, run in persistent background threads, or inline when ``num_workers`` is 0.
 
-    Workers are forked and must not use CUDA. ``fn`` is inherited through the fork without pickling, so it
-    may be a closure or partial; each item and result are pickled.
+    ``fn`` runs concurrently on up to ``num_workers`` threads, so it must be thread-safe.
     """
 
     def __init__(self, num_workers: int, fn: Callable[[T], R]):
         self.num_workers = num_workers
         self.fn = fn
-        self.executor: ProcessPoolExecutor | None = None
+        self.executor: ThreadPoolExecutor | None = None
         if num_workers > 0:
-            self.executor = ProcessPoolExecutor(
-                max_workers=num_workers,
-                # fork lets workers inherit fn without pickling it.
-                mp_context=multiprocessing.get_context("fork"),
-                initializer=init_worker,
-                initargs=(os.getpid(), fn),
-            )
+            # Threads share the trainer's memory, so items and results pass by reference: no pickling,
+            # no /dev/shm copies, and no forked copy-on-write memory, unlike worker processes.
+            self.executor = ThreadPoolExecutor(max_workers=num_workers, thread_name_prefix="worker-map")
 
     def __call__(self, items: Iterable[T]) -> Iterator[R]:
         """Yield ``fn(item)`` in input order, with at most ``2 * num_workers`` items submitted but not yet yielded.
@@ -69,7 +37,7 @@ class WorkerMap(Generic[T, R]):
         pending: deque[Future[R]] = deque()
         try:
             for item in items:
-                pending.append(self.executor.submit(call_worker_fn, item))
+                pending.append(self.executor.submit(self.fn, item))
                 if len(pending) >= max_in_flight:
                     yield pending.popleft().result()
             while pending:
