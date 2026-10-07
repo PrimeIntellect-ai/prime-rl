@@ -23,7 +23,7 @@ from torch.distributed.tensor import DTensor
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import forward, setup_model
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.models.llama import LlamaConfig, LlamaForCausalLM
+from prime_rl.trainer.models.llama import LlamaConfig
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.utils import clip_grad_norm_, setup_torch_distributed
 from prime_rl.utils.weights import save_state_dict
@@ -134,7 +134,5 @@ def test_fsdp_training(arch: str, distributed):
 
 
 def test_tied_word_embeddings_are_rejected():
-    config = LlamaConfig(hidden_size=64, num_attention_heads=4, vocab_size=128, tie_word_embeddings=True)
     with pytest.raises(ValueError, match="tie_word_embeddings"):
-        with torch.device("meta"):
-            LlamaForCausalLM(config)
+        LlamaConfig(hidden_size=64, num_attention_heads=4, vocab_size=128, tie_word_embeddings=True)

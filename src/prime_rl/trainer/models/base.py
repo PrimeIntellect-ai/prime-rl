@@ -31,11 +31,6 @@ class PrimeModel(nn.Module):
 
     def __init__(self, config: PrimeModelConfig):
         super().__init__()
-        if config.tie_word_embeddings:
-            raise ValueError(
-                f"{config.model_type!r} checkpoint ties its LM head to the input embeddings "
-                "(tie_word_embeddings=true), which PrimeRL does not support."
-            )
         self.config = config
 
     @classmethod

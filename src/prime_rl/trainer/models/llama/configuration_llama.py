@@ -1,6 +1,6 @@
 from typing import Any, ClassVar
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 
 from prime_rl.trainer.models.config import PrimeModelConfig
 from prime_rl.trainer.models.layers.rotary_emb import RopeParameters, standardize_rope_parameters
@@ -25,6 +25,12 @@ class LlamaConfig(PrimeModelConfig):
     attention_bias: bool = False
     mlp_bias: bool = False
     eos_token_id: int | list[int] | None = 2
+
+    @field_validator("pad_token_id", mode="before")
+    @classmethod
+    def _unwrap_pad_token_id(cls, value: int | list[int] | None) -> int | None:
+        # Llama 3.x checkpoints store a list of pad token ids.
+        return value[0] if isinstance(value, list) else value
 
     @model_validator(mode="before")
     @classmethod
