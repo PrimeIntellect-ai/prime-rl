@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from prime_rl.utils.worker_map import WorkerMap
+from prime_rl.utils.worker_pool import WorkerPool
 
 
 def _slowest_first(item: int) -> int:
@@ -19,7 +19,7 @@ def _fail_on_two(item: int) -> int:
 
 
 @pytest.mark.parametrize("num_workers", [0, 2])
-def test_worker_map_preserves_order(num_workers: int):
+def test_worker_pool_preserves_order(num_workers: int):
     offset = 100
     both_workers_busy = threading.Barrier(2, timeout=5)
 
@@ -28,18 +28,18 @@ def test_worker_map_preserves_order(num_workers: int):
             both_workers_busy.wait()
         return _slowest_first(item) + offset
 
-    with WorkerMap(num_workers, add_offset_slowest_first) as worker_map:
-        assert list(worker_map(range(6))) == [100, 101, 102, 103, 104, 105]
+    with WorkerPool(num_workers) as workers:
+        assert list(workers(add_offset_slowest_first, range(6))) == [100, 101, 102, 103, 104, 105]
 
 
 @pytest.mark.parametrize("num_workers", [0, 2])
-def test_worker_map_propagates_worker_exception(num_workers: int):
-    with WorkerMap(num_workers, _fail_on_two) as worker_map, pytest.raises(KeyError):
-        list(worker_map(range(4)))
+def test_worker_pool_propagates_worker_exception(num_workers: int):
+    with WorkerPool(num_workers) as workers, pytest.raises(KeyError):
+        list(workers(_fail_on_two, range(4)))
 
 
 @pytest.mark.parametrize(("num_workers", "expected_pulls"), [(0, 4), (2, 7)])
-def test_worker_map_pulls_lazily_and_bounded(num_workers: int, expected_pulls: int):
+def test_worker_pool_pulls_lazily_and_bounded(num_workers: int, expected_pulls: int):
     pulled = []
     processed = []
 
@@ -52,8 +52,8 @@ def test_worker_map_pulls_lazily_and_bounded(num_workers: int, expected_pulls: i
         processed.append(item)
         return _slowest_first(item)
 
-    with WorkerMap(num_workers, record_slowest_first) as worker_map:
-        results = list(itertools.islice(worker_map(source()), 4))
+    with WorkerPool(num_workers) as workers:
+        results = list(itertools.islice(workers(record_slowest_first, source()), 4))
     processed_at_close = list(processed)
     time.sleep(0.1)
 

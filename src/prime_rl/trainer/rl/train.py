@@ -71,7 +71,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.worker_map import WorkerMap
+from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
@@ -148,9 +148,8 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
-    micro_batch_preparer = WorkerMap(
-        config.data.num_workers, partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
-    )
+    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+    micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -340,7 +339,7 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
-        for micro_step, micro_batch in enumerate(micro_batch_preparer(micro_batches)):
+        for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -729,7 +728,7 @@ def train(config: TrainerConfig):
 
     if gradient_manager is not None:
         gradient_manager.close()
-    micro_batch_preparer.close()
+    micro_batch_workers.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")

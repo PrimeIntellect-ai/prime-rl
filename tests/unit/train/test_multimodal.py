@@ -14,7 +14,7 @@ from prime_rl.multimodal.qwen_vl import QwenVLAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.data import prepare_micro_batch
 from prime_rl.transports.batch import MMImageRef, MMRefs
-from prime_rl.utils.worker_map import WorkerMap
+from prime_rl.utils.worker_pool import WorkerPool
 
 _IMAGE_URL = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -79,7 +79,7 @@ def _color_refs(color: tuple[int, int, int]) -> MMRefs:
 
 
 @pytest.mark.parametrize("num_workers", [1, 2])
-def test_prepare_micro_batch_in_worker_map(num_workers: int):
+def test_prepare_micro_batch_in_worker_pool(num_workers: int):
     processor = SimpleNamespace(image_processor=_PixelImageProcessor())
     adapter = get_multimodal_adapter("qwen3_vl")
     prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=adapter)
@@ -92,10 +92,10 @@ def test_prepare_micro_batch_in_worker_map(num_workers: int):
         ]
 
     micro_batches = make_micro_batches()
-    with WorkerMap(num_workers, prepare) as worker_map:
-        results = list(worker_map(micro_batches))
-    with WorkerMap(0, prepare) as worker_map:
-        inline_results = list(worker_map(make_micro_batches()))
+    with WorkerPool(num_workers) as workers:
+        results = list(workers(prepare, micro_batches))
+    with WorkerPool(0) as workers:
+        inline_results = list(workers(prepare, make_micro_batches()))
 
     assert all(result is micro_batch for result, micro_batch in zip(results, micro_batches))
     assert results[1] == {
@@ -115,6 +115,6 @@ def test_prepare_micro_batch_in_worker_map(num_workers: int):
         assert all(
             torch.equal(result["mm_kwargs"][key], inline_result["mm_kwargs"][key]) for key in result["mm_kwargs"]
         )
-    with WorkerMap(num_workers, partial(prepare_micro_batch, processor=None, mm_adapter=None)) as worker_map:
+    with WorkerPool(num_workers) as workers:
         with pytest.raises(ValueError, match=r"\[model.vlm\] is not set"):
-            list(worker_map([{"mm_refs": _refs(2)}]))
+            list(workers(partial(prepare_micro_batch, processor=None, mm_adapter=None), [{"mm_refs": _refs(2)}]))
