@@ -9,7 +9,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTrainingSam
 from transformers import AutoTokenizer
 
 import prime_rl.trainer.sft.data.dataset as sft_data
-from prime_rl.trainer.sft.data import CatDataset, SFTDataset, _drop_null_fields
+from prime_rl.trainer.sft.data.dataset import CatDataset, SFTDataset, _drop_null_fields
 from prime_rl.trainer.utils import print_sample
 
 _BOS_TOKEN_ID = 0

@@ -3,11 +3,12 @@ import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from itertools import count
 from typing import NamedTuple
 
 import torch
 import torch.distributed as dist
-from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 from prime_rl.configs.sft import SFTDataConfig
 from prime_rl.trainer.sft.data.dataset import SFTDataset
@@ -22,15 +23,28 @@ class RenderedSample(NamedTuple):
     tokens: torch.Tensor
 
 
-class StridedShard(IterableDataset):
-    """Render each global stream position once, retaining filtered positions as empty records."""
+class StridedShard(Sampler[int]):
+    """Yield this rank's global stream positions, starting at the resume cursor."""
 
-    def __init__(self, dataset: SFTDataset, rank: int, world_size: int, capacity: int):
-        self.dataset = dataset
+    def __init__(self, rank: int, world_size: int, stop: int | None):
         self.rank = rank
         self.world_size = world_size
-        self.capacity = capacity
+        self.stop = stop
         self.position = 0
+
+    def __iter__(self):
+        start = self.position + (self.rank - self.position) % self.world_size
+        return count(start, self.world_size) if self.stop is None else iter(range(start, self.stop, self.world_size))
+
+
+class RenderedDataset(Dataset):
+    """Render global shuffled-stream positions, retaining filtered examples as empty records."""
+
+    def __init__(self, dataset: SFTDataset, capacity: int):
+        self.dataset = dataset
+        self.capacity = capacity
+        self.cached_epoch = None
+        self.shuffled = None
         sources = {
             value
             for column in ("__subset", "__split")
@@ -46,38 +60,30 @@ class StridedShard(IterableDataset):
         state["dataset"].logger = None
         return state
 
-    def __iter__(self):
+    def __getitem__(self, position: int) -> RenderedSample:
         self.dataset.logger = get_logger()
-        worker = get_worker_info()
-        worker_id, num_workers = (worker.id, worker.num_workers) if worker is not None else (0, 1)
-        position = self.position + (self.rank - self.position) % self.world_size + worker_id * self.world_size
-        size = self.dataset.num_examples
-        limit = None if self.dataset.max_epochs is None else size * self.dataset.max_epochs
-        cached_epoch, shuffled = None, None
-        while size and (limit is None or position < limit):
-            epoch, index = divmod(position, size)
-            if epoch != cached_epoch:
-                shuffled = (
-                    self.dataset.dataset.shuffle(seed=self.dataset.seed + epoch, keep_in_memory=True)
-                    if self.dataset.shuffle
-                    else self.dataset.dataset
-                )
-                cached_epoch = epoch
-            example = shuffled[index]
-            source = self.sources.index(example.get("__subset") or example.get("__split"))
-            sample = self.dataset._process(example)
-            tokens = torch.empty((4, 0), dtype=torch.int64)
-            if sample is not None:
-                if sample["mm_kwargs"] is not None or sample["mm_token_type_ids"] is not None:
-                    raise ValueError("Distributed packing requires text samples")
-                tokens = torch.tensor(
-                    [sample[key][: self.capacity] for key in ("input_ids", "target_ids", "position_ids", "loss_mask")],
-                    dtype=torch.int64,
-                )
-                if not tokens[3].any():
-                    tokens = torch.empty((4, 0), dtype=torch.int64)
-            yield RenderedSample(position, source, tokens)
-            position += self.world_size * num_workers
+        epoch, index = divmod(position, self.dataset.num_examples)
+        if epoch != self.cached_epoch:
+            self.shuffled = (
+                self.dataset.dataset.shuffle(seed=self.dataset.seed + epoch, keep_in_memory=True)
+                if self.dataset.shuffle
+                else self.dataset.dataset
+            )
+            self.cached_epoch = epoch
+        example = self.shuffled[index]
+        source = self.sources.index(example.get("__subset") or example.get("__split"))
+        sample = self.dataset._process(example)
+        tokens = torch.empty((4, 0), dtype=torch.int64)
+        if sample is not None:
+            if sample["mm_kwargs"] is not None or sample["mm_token_type_ids"] is not None:
+                raise ValueError("Distributed packing requires text samples")
+            tokens = torch.tensor(
+                [sample[key][: self.capacity] for key in ("input_ids", "target_ids", "position_ids", "loss_mask")],
+                dtype=torch.int64,
+            )
+            if not tokens[3].any():
+                tokens = torch.empty((4, 0), dtype=torch.int64)
+        return RenderedSample(position, source, tokens)
 
 
 def materialize_rows(rows: list[list[SampleDescriptor]], samples: dict[int, torch.Tensor], capacity: int) -> list[dict]:
@@ -121,33 +127,42 @@ class PackedDataLoader:
     different groups, so validation cannot reorder the training prefetch stream.
     Checkpoints use the last fully consumed step's cursor, never the producer's
     speculative cursor. Rendering buffers are reconstructed on resume.
+    Validation rounds packing capacity up to complete DP groups, including its padded tail.
     """
 
-    def __init__(self, dataset: SFTDataset, config: SFTDataConfig, cp_size: int = 1, timeout_seconds: int = 300):
+    def __init__(
+        self,
+        dataset: SFTDataset,
+        config: SFTDataConfig,
+        cp_size: int = 1,
+        timeout_seconds: int = 300,
+        *,
+        validation: bool = False,
+    ):
         world = get_world()
         self.rank, self.world_size = world.rank, world.world_size
         if self.world_size % cp_size:
             raise ValueError("World size must be divisible by CP size")
         self.cp_size = cp_size
         self.dp_size = self.world_size // cp_size
-        if config.batch_size % (self.dp_size * config.micro_batch_size):
+        self.num_rows = config.batch_size // config.micro_batch_size
+        if validation:
+            self.num_rows = (self.num_rows + self.dp_size - 1) // self.dp_size * self.dp_size
+        elif self.num_rows % self.dp_size:
             raise ValueError("Global batch size must be divisible by DP size times micro batch size")
         if not dataset.num_examples and dataset.max_epochs is None:
             raise ValueError("Training requires a nonempty dataset")
         self.config = config
         self.capacity = config.seq_len * config.micro_batch_size
-        self.num_rows = config.batch_size // config.micro_batch_size
-        self.source = StridedShard(dataset, self.rank, self.world_size, self.capacity)
-        self.signature = {
-            "data": config.model_dump(mode="json", exclude={"num_workers", "packing"}),
-            "size": dataset.num_examples,
-            "max_epochs": dataset.max_epochs,
-        }
+        self.source = RenderedDataset(dataset, self.capacity)
+        stop = None if dataset.max_epochs is None else dataset.num_examples * dataset.max_epochs
+        self.sampler = StridedShard(self.rank, self.world_size, stop)
         self.group = (
             dist.new_group(backend="gloo", timeout=timedelta(seconds=timeout_seconds)) if self.world_size > 1 else None
         )
         self.loader = DataLoader(
             self.source,
+            sampler=self.sampler,
             batch_size=None,
             num_workers=config.num_workers,
             prefetch_factor=2,
@@ -312,16 +327,14 @@ class PackedDataLoader:
     def state_dict(self) -> dict:
         if self.rows:
             raise RuntimeError("Packing checkpoints require a completed optimizer step")
-        return copy.deepcopy({"signature": self.signature, "progress": self.dataset_progress})
+        return copy.deepcopy({"progress": self.dataset_progress})
 
     def load_state_dict(self, state: dict) -> None:
         if self.executor is not None or self.closed:
             raise RuntimeError("Restore packing state before starting iteration")
-        if state["signature"] != self.signature:
-            raise ValueError("Packing resume requires the same dataset and batch configuration")
         self.dataset_progress = copy.deepcopy(state["progress"])
         self.position = self.dataset_progress["step"]
-        self.source.position = self.position
+        self.sampler.position = self.position
         self.epoch_started = self.position % max(1, self.source.dataset.num_examples) == 0
         self.num_samples.update(self.dataset_progress["num_samples"])
         self.num_tokens.update(self.dataset_progress["num_tokens"])

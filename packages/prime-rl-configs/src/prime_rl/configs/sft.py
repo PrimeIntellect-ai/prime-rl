@@ -107,7 +107,7 @@ class SFTColumnsConfig(BaseConfig):
 
 class PackingConfig(BaseConfig):
     chunk_size: int = Field(16, ge=1)
-    """Source rows per rank in each length-gather chunk. Does not change optimizer-step membership."""
+    """Source examples per rank per metadata gather. Larger chunks amortize communication at the cost of more buffering, without changing packing order or batch membership."""
 
 
 class SFTDataConfig(BaseDataConfig):

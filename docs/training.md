@@ -257,7 +257,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | Knob | What it controls |
 |---|---|
 | `data.name` | HF dataset name or local path |
-| `data.batch_size` | Global nominal sequences per optimizer step; token capacity is `batch_size * seq_len` |
+| `data.batch_size` | Global packed-sequence batch size per optimizer step; `batch_size * seq_len` token positions, including padding |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
@@ -267,23 +267,11 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 Text SFT packs a contiguous prefix of the globally shuffled sample stream
 across the entire optimizer step, before distributing rows to DP ranks.
-Each rank's normal `data.num_workers` processes render a strided shard.
-Packing has no lookahead or local/global switch. Communication chunk size
-controls amortization, not which samples belong to a step:
-
-```toml
-[data.packing]
-chunk_size = 16
-```
-
 Each DP rank receives `batch_size / (DP * micro_batch_size)` rows of
 `micro_batch_size * seq_len` positions; CP peers receive identical full rows.
-A CPU-only Gloo group prefetches one packed step without using model/NCCL
-groups. Resume re-renders from the last consumed step's global source cursor.
-Validation includes every usable example, padding its final step. Fake data and
-multimodal data use their modality-specific local loader. See the
-[SFT data implementation notes](../src/prime_rl/trainer/sft/data/README.md)
-for ordering, transport, checkpoint, and collective-lifetime details.
+The number of source examples varies with their lengths. Validation includes
+every usable example and pads its final batch. Fake and multimodal data use
+their modality-specific local loader.
 
 ### Important Metrics
 

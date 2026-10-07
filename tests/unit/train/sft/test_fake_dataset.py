@@ -1,6 +1,6 @@
 import pytest
 
-from prime_rl.trainer.sft.data import FakeDataset
+from prime_rl.trainer.sft.data.dataset import FakeDataset
 
 
 def test_init_fake_dataset():

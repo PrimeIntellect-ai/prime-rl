@@ -12,8 +12,8 @@ from datasets import Dataset
 from renderers.base import RenderedTokens
 
 from prime_rl.configs.sft import PackingConfig, SFTDataConfig
-from prime_rl.trainer.sft.data import SFTDataset
 from prime_rl.trainer.sft.data.broker import PackedDataLoader
+from prime_rl.trainer.sft.data.dataset import SFTDataset
 from prime_rl.trainer.world import reset_world
 
 
@@ -82,9 +82,9 @@ def distributed_loader_worker(rank, world_size, cp_size, backend, directory):
     microsteps = config.batch_size // (world_size // cp_size * config.micro_batch_size)
     epochs = None if backend == "nccl" else 3
 
-    def make_loader(max_epochs=epochs, settings=config):
+    def make_loader(max_epochs=epochs, settings=config, validation=False):
         dataset = SFTDataset(raw, TextRenderer(), seq_len=16, shuffle=True, seed=7, max_epochs=max_epochs)
-        return ObservedLoader(dataset, settings, cp_size=cp_size, timeout_seconds=120)
+        return ObservedLoader(dataset, settings, cp_size=cp_size, timeout_seconds=120, validation=validation)
 
     reference = SFTDataset(raw, TextRenderer(), seq_len=16, shuffle=True, seed=7)
     shuffled = {}
@@ -176,11 +176,16 @@ def distributed_loader_worker(rank, world_size, cp_size, backend, directory):
             changed = config.model_copy(update={"num_workers": 2, "packing": PackingConfig(chunk_size=3)})
             loader = make_loader(settings=changed)
             loader.load_state_dict(state)
-        if model is not None and step in [16, 32, 48]:
-            validation = make_loader(max_epochs=1)
+        if (model is None and step == 1) or (model is not None and step in [16, 32, 48]):
+            batch_size = 2 if step in [1, 16] else 6
+            validation_config = config.model_copy(update={"batch_size": batch_size})
+            with pytest.raises(ValueError, match="divisible"):
+                make_loader(settings=validation_config)
+            validation = make_loader(max_epochs=1, settings=validation_config, validation=True)
+            validation_microsteps = validation.num_rows // validation.dp_size
             valid_position = 0
             while (first := next(validation, None)) is not None:
-                rows = [first, *(next(validation) for _ in range(microsteps - 1))]
+                rows = [first, *(next(validation) for _ in range(validation_microsteps - 1))]
                 valid_position = verify_step(rows, validation, valid_position)
             assert all(
                 expected_sample(position) is None

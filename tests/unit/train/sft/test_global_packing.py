@@ -1,13 +1,14 @@
 import copy
 import random
+from itertools import islice
 
 import pytest
 import torch
 from datasets import Dataset
 
 from prime_rl.configs.sft import LossMaskConfig, PackingConfig, SFTConfig, SFTDataConfig
-from prime_rl.trainer.sft.data import CatDataset, SFTDataset, cat_collate
-from prime_rl.trainer.sft.data.broker import PackedDataLoader, materialize_rows
+from prime_rl.trainer.sft.data.broker import PackedDataLoader, StridedShard, materialize_rows
+from prime_rl.trainer.sft.data.dataset import CatDataset, SFTDataset, cat_collate
 from prime_rl.trainer.sft.data.packing import OnlinePacker, SampleDescriptor, schedule_rows
 
 
@@ -17,6 +18,24 @@ class RendererFactory:
 
     def __call__(self, example):
         return self.renderer
+
+
+def test_strided_sampler_resumes_without_duplicates():
+    for world_size in [1, 4, 8]:
+        for cursor in [0, 1, 7, 36, 37, 38]:
+            positions = []
+            for rank in range(world_size):
+                sampler = StridedShard(rank, world_size, stop=37)
+                sampler.position = cursor
+                shard = list(sampler)
+                assert all(position % world_size == rank for position in shard)
+                positions.extend(shard)
+                sampler.stop = None
+                assert list(islice(sampler, 5)) == [
+                    cursor + (rank - cursor) % world_size + index * world_size for index in range(5)
+                ]
+            assert sorted(positions) == list(range(cursor, 37))
+    assert list(StridedShard(0, 4, stop=0)) == []
 
 
 def test_best_fit_consumes_contiguous_prefixes():
@@ -99,7 +118,7 @@ def test_prefetch_resume_is_cursor_only_and_chunk_independent(dummy_renderer, wo
         state = copy.deepcopy(loader.state_dict())
         loader.future.result()
         assert state == loader.state_dict()
-        assert set(state) == {"signature", "progress"}
+        assert set(state) == {"progress"}
         expected = list(loader)
     finally:
         loader.close()
