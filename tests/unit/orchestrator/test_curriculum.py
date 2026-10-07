@@ -111,7 +111,7 @@ def test_train_source_composes_sampler_and_all_gates_with_state_and_metrics() ->
     source = TrainSource([env])
 
     sampled = source.next_task(step=1).task
-    empty = make_rollout(sampled, reward=1.0, advantages=[1.0])
+    empty = make_rollout(sampled, reward=1.0)
     empty[0].traces[0].nodes[0].sampled = False
     assert source.on_result(make_rollout(sampled, reward=0.25, advantages=[0.0]) + empty) is False
     assert source.metrics() == {
