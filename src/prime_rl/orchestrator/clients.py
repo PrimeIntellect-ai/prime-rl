@@ -294,7 +294,9 @@ async def maybe_check_has_model(
                 f"{result.text[:300]}"
             )
         models = body["data"]
-        if not any(model["id"] == model_name for model in models):
+        # A LoRA server lists the model name only once the adapter is loaded; until then
+        # the base model (served as ``<model>-base``) carries it as its ``root``.
+        if not any(model_name in (model["id"], model.get("root")) for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
 
