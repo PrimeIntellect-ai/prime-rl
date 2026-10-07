@@ -97,8 +97,8 @@ wins, since in-flight work that buys no goodput only adds off-policyness."""
 
 IMMATURE_RESIDUAL = 0.2
 """While more than this share of the group law sits beyond the slowest
-completed group (long groups still in flight), infeasibility is not
-trusted enough to cut on."""
+completed group (long groups still in flight), the law extrapolates their
+fate: the cap neither grows nor cuts on infeasibility."""
 
 TRAIN_STEP_WINDOW = 16
 TRAIN_STEP_MIN_SAMPLES = 3
@@ -511,6 +511,12 @@ class GoodputController:
         return self.model_cache[key]
 
     @property
+    def growth_evidence(self) -> bool:
+        if self.k_eff is None or not self.batch_size:
+            return True
+        return self.law_ready and self.law.residual <= IMMATURE_RESIDUAL
+
+    @property
     def law_ready(self) -> bool:
         return self.k_eff is not None and bool(self.batch_size) and self.law.completed >= MIN_GROUPS
 
@@ -588,8 +594,9 @@ class GoodputController:
             return
         lo, hi = bin_of(self.floor), bin_of(self.ceiling)
         cands = {self.cur, max(lo, self.cur - 1)}
-        # Growing past the start needs evidence on staleness, not eta's default of 1
-        if binding and (self.law_ready or self.k_eff is None or not self.batch_size):
+        # Growing needs evidence on staleness: enough completed groups, and the
+        # fate of most of the law known rather than extrapolated
+        if binding and self.growth_evidence:
             cands.add(min(hi, self.cur + self.climb))
         scores = {i: self.score(i) for i in cands}
         best = max(scores, key=scores.get)
