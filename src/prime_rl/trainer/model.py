@@ -307,18 +307,16 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
-def set_model_options(model_config: PrimeModelConfig, option: str, fields: dict[str, Any], explicit: bool) -> None:
+def set_model_options(model_config: PrimeModelConfig, option: str, fields: dict[str, Any]) -> None:
     """Set the architecture-config fields behind the trainer option ``model.<option>``.
 
-    Only architectures that use an option declare its fields. Setting it for any other architecture
-    is an error if the user asked for it (``explicit``), and skipped if it is just the default.
+    Only architectures that use an option declare its fields; setting it for any other architecture is an error.
     """
     declared = type(model_config).model_fields
-    if all(name in declared for name in fields):
-        for name, value in fields.items():
-            setattr(model_config, name, value)
-    elif explicit:
+    if not all(name in declared for name in fields):
         raise ValueError(f"model.{option} does not apply to {model_config.model_type!r} models.")
+    for name, value in fields.items():
+        setattr(model_config, name, value)
 
 
 def get_model(
@@ -333,12 +331,8 @@ def get_model(
         eos_token_id = model_config.eos_token_id
         model_config.pad_token_id = eos_token_id[0] if isinstance(eos_token_id, list) else eos_token_id
 
-    set_model_options(
-        model_config,
-        "dsa_backend",
-        {"dsa_backend": config.dsa_backend},
-        explicit="dsa_backend" in config.model_fields_set,
-    )
+    if config.dsa_backend is not None:
+        set_model_options(model_config, "dsa_backend", {"dsa_backend": config.dsa_backend})
     if config.index_cache is not None:
         index_cache_fields = {
             "use_index_cache": True,
@@ -347,7 +341,7 @@ def get_model(
             # Explicit override supersedes the model's native IndexShare schedule.
             "indexer_types": None,
         }
-        set_model_options(model_config, "index_cache", index_cache_fields, explicit=True)
+        set_model_options(model_config, "index_cache", index_cache_fields)
     else:
         # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
         # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
