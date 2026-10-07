@@ -707,6 +707,34 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+def assert_tied_word_embeddings(model: nn.Module) -> None:
+    """Require a model that declares ``tie_word_embeddings`` to actually share its head.
+
+    ``load_dcp_from_hf`` drops ``lm_head.weight`` from the checkpoint template whenever the
+    config says the embeddings are tied, because HF checkpoints carry no separate head. That
+    is only safe if the alias exists: the values reach the head through the shared storage.
+    A model that sets the flag without tying keeps whatever ``to_empty()`` allocated, and
+    training runs to completion with a dead output projection — uniform logits, zero
+    gradients everywhere upstream (#3700).
+
+    Checked rather than trusted because it is the one silent path: a parameter missing from
+    the checkpoint is loud (the strict plan raises), and a parameter missing from the
+    *template* can only happen here or in LoRA, which re-initializes after the load.
+    """
+    head = model.get_parameter("lm_head.weight")
+    embeddings = model.get_input_embeddings().weight
+    if head is not embeddings:
+        raise RuntimeError(
+            "config.tie_word_embeddings is set, so lm_head.weight is dropped from the "
+            "checkpoint template, but it is not the same parameter as the input embeddings. "
+            "It would keep its uninitialized values and train as a dead output projection "
+            "(https://github.com/PrimeIntellect-ai/prime-rl/issues/3700). Give the model the "
+            "tying contract its siblings declare, e.g. "
+            "`_tied_weights_keys = {'lm_head.weight': 'model.embed_tokens.weight'}` plus "
+            "`self.post_init()` — see Qwen3ForCausalLM."
+        )
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     device = "cpu" if config.fsdp_cpu_offload else "cuda"
     model.to_empty(device=device)
@@ -782,6 +810,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     state_dict = model.state_dict()
     state_dict = strip_lora_from_state_dict(state_dict)
     if model.config.tie_word_embeddings:
+        assert_tied_word_embeddings(model)
         state_dict.pop("lm_head.weight")
     dcp_load(
         state_dict,
