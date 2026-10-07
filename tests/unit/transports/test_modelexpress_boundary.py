@@ -1,6 +1,8 @@
 """Keep the framework adapter on ModelExpress's public client surface."""
 
 import ast
+import pickle
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,3 +93,67 @@ def test_modelexpress_worker_forwards_generator_buffer_config():
     for name in ("staging_buffer_bytes", "staging_buffers_count"):
         assert isinstance(keywords[name], ast.Name)
         assert keywords[name].id == name
+
+
+@pytest.mark.parametrize("outcome", ["success", "timeout", "wrong_uid", "read_error"])
+def test_modelexpress_installation_outcome_reaches_non_master_without_shared_storage(tmp_path, outcome):
+    source = ast.parse((ROOT / "src/prime_rl/transports/weights/modelexpress.py").read_text())
+    sender = next(
+        node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "ModelExpressWeightSender"
+    )
+    broadcast = next(node for node in sender.body if isinstance(node, ast.FunctionDef) and node.name == "_broadcast")
+    publication = next(
+        index
+        for index, node in enumerate(broadcast.body)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "publish_version"
+    )
+    # Execute the real acknowledgment block without importing the GPU runtime.
+    module = ast.parse("def acknowledge(self, step_dir, version): pass")
+    module.body[0].body = broadcast.body[publication + 1 :]
+    messages = []
+    calls = []
+    rank = 0
+
+    def broadcast_object_list(values, src):
+        assert src == 0
+        if rank == 0:
+            messages.append(pickle.dumps(values))
+        else:
+            values[:] = pickle.loads(messages[0])
+
+    namespace = {
+        "time": time,
+        "dist": SimpleNamespace(
+            broadcast_object_list=broadcast_object_list,
+            barrier=lambda: calls.append((rank, "barrier")),
+        ),
+        "INSTALLED_MARKER": ".installed",
+    }
+    exec(compile(ast.fix_missing_locations(module), "<installation acknowledgment>", "exec"), namespace)
+    installed = tmp_path / ".installed"
+    if outcome == "read_error":
+        installed.mkdir()
+    elif outcome != "timeout":
+        installed.write_text("version-a" if outcome == "success" else "version-b")
+    error_type = {"timeout": TimeoutError, "wrong_uid": RuntimeError, "read_error": IsADirectoryError}
+    errors = []
+    for rank in (0, 1):
+        sender = SimpleNamespace(
+            world=SimpleNamespace(is_master=rank == 0),
+            timeout=0,
+            _trainer=SimpleNamespace(release_version=lambda **kwargs: calls.append((rank, "release"))),
+        )
+        step_dir = tmp_path if rank == 0 else tmp_path / "non_master_local_fs"
+        if outcome == "success":
+            namespace["acknowledge"](sender, step_dir, SimpleNamespace(version_id="version-a"))
+        else:
+            with pytest.raises(error_type[outcome]) as exc:
+                namespace["acknowledge"](sender, step_dir, SimpleNamespace(version_id="version-a"))
+            errors.append(str(exc.value))
+    assert len(messages) == 1
+    assert calls == ([(0, "release"), (0, "barrier"), (1, "release"), (1, "barrier")] if outcome == "success" else [])
+    if errors:
+        assert errors[0] == errors[1]
