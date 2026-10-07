@@ -255,3 +255,15 @@ def test_trainer_step_time_from_busy_policy_updates(clock):
         ctl.on_policy_update(lead)
     # 270 -> 500 followed an idle trainer (lead 0): not a step time
     assert ctl.train_step_s == pytest.approx(90.0)
+
+
+def test_unfinished_groups_do_not_make_a_distant_deadline_look_stale(clock):
+    # Early in a run: a few short groups finished, many longer ones still in
+    # flight, and the deadline far beyond anything observed
+    ctl = make_ctl(clock)
+    for _ in range(8):
+        ctl.law.add_complete([500.0] * 8, [500.0] * 8)
+    ctl.law.set_live([(2000.0, 8, [600.0] * 4, [600.0] * 4)] * 16)
+    assert ctl.law.residual > 0.5
+    assert ctl.eta(16, 1.0) > 0.99  # deadline far beyond every age: all fresh
+    assert ctl.eta(1e6, 1.0) < 0.5  # deadline shorter than the in-flight ages

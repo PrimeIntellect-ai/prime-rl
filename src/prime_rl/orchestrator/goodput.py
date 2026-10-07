@@ -163,10 +163,10 @@ class GroupDurationLaw:
     queueing — and makes the censoring point of a dropped group exact.
 
     Each group keeps its members' ``(tokens, virtual finish time)``; a member
-    still running at virtual time ``x`` is costed pro rata. Dropped groups are
-    right-censored at their virtual age; KM's mass beyond the last completed
-    group is costed like those dropped groups (finished members as observed,
-    the rest running to the cutoff)."""
+    still running at virtual time ``x`` is costed pro rata. Dropped and
+    in-flight groups are right-censored at their virtual age; KM's mass beyond
+    the last completed group follows Efron's tail correction (those groups
+    finish at the oldest observed age)."""
 
     def __init__(self, window: int = GROUP_WINDOW) -> None:
         # (virtual duration or age, completed, member tokens, member virtual finish, unfinished count)
@@ -175,6 +175,7 @@ class GroupDurationLaw:
         # them the law only sees the groups fast enough to have finished
         self.live: list[tuple[float, bool, np.ndarray, np.ndarray, int]] = []
         self.cache: tuple | None = None
+        self.tail_age = 0.0
         self.version = 0
 
     def add_complete(self, tokens: list[float], vtimes: list[float]) -> None:
@@ -239,6 +240,7 @@ class GroupDurationLaw:
             last = key[ev_idx].max() if len(ev_idx) else -math.inf
             tail = [o for o in obs if not o[1] and o[0] >= last] or [o for o in obs if not o[1]]
             profile = [(o[2], o[3], o[4]) for o in tail]
+            self.tail_age = float(key.max()) if n else 0.0
             self.cache = (key[ev_idx], mass[event[order]], tok, vt, float(surv[-1]) if n else 1.0, size, profile)
         return self.cache
 
@@ -254,12 +256,19 @@ class GroupDurationLaw:
         spent = (tok * np.minimum(1.0, x / vt)).sum(axis=1)
         C = float((mass * spent).sum())
         if resid > 0:
-            # Groups slower than any that completed never train; they cost what
-            # the dropped ones did up to the cutoff
+            # Mass beyond the slowest completed group: nothing says when those
+            # groups finish. Efron's tail correction: they finish at the oldest
+            # observed age, members still running by then at ~that many tokens
+            # (the virtual clock counts the average episode's tokens)
+            V_t = self.tail_age
             if profile:
-                cost = float(np.mean([(t * np.minimum(1.0, x / v)).sum() + u * x for t, v, u in profile]))
+                full = float(np.mean([t.sum() + u * V_t for t, v, u in profile]))
+                cost = float(np.mean([(t * np.minimum(1.0, x / v)).sum() + u * min(x, V_t) for t, v, u in profile]))
             else:
-                cost = size * x
+                full, cost = size * V_t, size * min(x, V_t)
+            if V_t <= x:
+                S += resid
+                A += resid * full * (1.0 if staleness_scale is None else math.exp(-k_eff * V_t / x / staleness_scale))
             C += resid * cost
         return S, A, C
 
