@@ -516,7 +516,10 @@ class CheckpointConfig(BaseConfig):
     """Skip loading the dataloader from checkpoint."""
 
     skip_optimizer: bool = False
-    """Skip loading the optimizer state from checkpoint."""
+    """Save only bf16 model weights (no optimizer state) and skip loading optimizer state.
+
+    Such checkpoints cannot restore optimizer state when resuming training.
+    """
 
 
 class IPOLossConfig(BaseConfig):

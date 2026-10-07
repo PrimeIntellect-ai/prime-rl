@@ -60,11 +60,13 @@ class AppState(Stateful):
         optimizers: list[OptimizerLike],
         scheduler: LRScheduler | None,
         progress: Progress | None,
+        bf16_model: bool = False,
     ):
         self.model = model
         self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
+        self.bf16_model = bf16_model
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
@@ -84,13 +86,19 @@ class AppState(Stateful):
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
+        if self.bf16_model:
+            model_state_dict = {
+                name: tensor.to(torch.bfloat16)
+                if isinstance(tensor, torch.Tensor) and tensor.is_floating_point()
+                else tensor
+                for name, tensor in model_state_dict.items()
+            }
         # Runtime fusions own one physical state tensor per fused parameter; the checkpoint
         # sees it under the canonical names. This dict is also the template dcp_load writes
         # into, and load_state_dict packs the loaded entries back into the runtime state.
-        state_dict = {
-            "model": model_state_dict,
-            "optimizers": split_packed_optimizer_state_for_checkpoint(self.model, optimizer_state_dict),
-        }
+        state_dict = {"model": model_state_dict}
+        if not self.bf16_model:
+            state_dict["optimizers"] = split_packed_optimizer_state_for_checkpoint(self.model, optimizer_state_dict)
         if self.scheduler is not None:
             scheduler_state_dict = self.scheduler.state_dict()
             state_dict["scheduler"] = scheduler_state_dict
@@ -113,7 +121,9 @@ class AppState(Stateful):
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         has_cpu_offload = self._has_cpu_offload()
 
-        if has_cpu_offload:
+        if not checkpoint_optimizers:
+            set_model_state_dict(self.model, model_state_dict=state_dict["model"])
+        elif has_cpu_offload:
             # When CPU offload is on, the optimizer is already loaded by the time we
             # get here: state_dict() handed dcp_load a template whose tensors share
             # storage with optim.state[p][k], and dcp_load wrote the checkpoint bytes
@@ -189,12 +199,24 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ):
-        """Save the trainer checkpoint to a given path."""
+        """Save the trainer checkpoint to a given path.
+
+        With skip_optimizer, save bf16 model weights without optimizer state. Such
+        checkpoints cannot restore the optimizer state when resuming training.
+        """
         self.logger.debug(f"Saving training checkpoint to {path}")
         start_time = time.perf_counter()
 
         # Create checkpoint state
-        state_dict = {"app": AppState(model, optimizers, scheduler, progress)}
+        state_dict = {
+            "app": AppState(
+                model,
+                optimizers if not self.skip_optimizer else [],
+                scheduler,
+                progress,
+                bf16_model=self.skip_optimizer,
+            )
+        }
 
         # Checkpoint the local dataloader
         if dataloader is not None:
@@ -276,7 +298,7 @@ class CheckpointManager:
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:
-        """Save the full checkpoint state for a specified step."""
+        """Save the checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
