@@ -108,11 +108,6 @@ DTYPE_MAP = {
     "float32": torch.float32,
 }
 
-# We increase the torch.compile recompile limit and cache size as we found this
-# necessary for training INTELLECT-3 with Muon.
-torch._dynamo.config.recompile_limit = 16  # default: 8
-torch._dynamo.config.cache_size_limit = 64  # default: 8
-
 
 def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) -> None:
     logger = get_logger()
@@ -842,7 +837,7 @@ def mark_dynamic_int_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig):
+def apply_compile(model: nn.Module, compile_config: CompileConfig, recompile_limit: int):
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
@@ -856,7 +851,7 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
             # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
             layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode, recompile_limit=recompile_limit)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -959,6 +954,7 @@ def setup_model(
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
 ) -> nn.Module:
+    torch._dynamo.config.recompile_limit = config.recompile_limit
     resolve_auto_attn(config)
 
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
@@ -1024,7 +1020,7 @@ def setup_model(
     setup_fsdp(model, config, parallel_dims)
 
     if config.compile is not None:
-        apply_compile(model, config.compile)
+        apply_compile(model, config.compile, config.recompile_limit)
 
     if loading_from_checkpoint_later:
         logger.warning(

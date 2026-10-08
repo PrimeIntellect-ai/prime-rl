@@ -279,6 +279,9 @@ class ModelConfig(BaseModelConfig):
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
 
+    recompile_limit: Annotated[int, Field(ge=1)] = 64
+    """Recompiles dynamo allows per compiled function, for compiled model blocks and every other ``torch.compile`` in the trainer."""
+
     fusions: FusionsConfig = FusionsConfig()
     """Runtime parameter fusions, on by default."""
 
