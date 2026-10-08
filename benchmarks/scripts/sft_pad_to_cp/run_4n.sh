@@ -20,6 +20,6 @@ sed -e "s|^srun bash -s|srun $ATTACH bash -s|" \
 [ "$(grep -c "^srun $ATTACH" "$d/launcher/sft.attached.sh")" = 2 ] || { echo "srun patch count != 2"; exit 1; }
 cache=/tmp/garrett/sftpad/$run
 export SLURM_JOB_ID=3409 SLURM_JOB_NODELIST="$ORDERED" SLURM_JOB_NUM_NODES=4
-export HF_HUB_CACHE=/home/huggingface/hub TRITON_CACHE_DIR=$cache/triton TORCHINDUCTOR_CACHE_DIR=$cache/inductor
+export HF_HUB_CACHE=/home/huggingface/hub TRITON_CACHE_DIR=$cache/triton TORCHINDUCTOR_CACHE_DIR=$cache/inductor TILELANG_CACHE_DIR=$cache/tilelang
 export TRITON_PRINT_AUTOTUNING=1 TORCH_LOGS=recompiles
 env -u HF_HOME bash "$d/launcher/sft.attached.sh"

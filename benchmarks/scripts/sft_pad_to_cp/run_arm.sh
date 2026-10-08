@@ -9,7 +9,7 @@ srun --jobid=3409 --overlap -N1 --ntasks-per-node=1 --nodelist="$node" env -u HF
   set -euo pipefail
   cache=/tmp/garrett/sftpad/'"$run"'
   rm -rf "$cache" && mkdir -p "$cache"
-  export HF_HUB_CACHE=/home/huggingface/hub TRITON_CACHE_DIR=$cache/triton TORCHINDUCTOR_CACHE_DIR=$cache/inductor
+  export HF_HUB_CACHE=/home/huggingface/hub TRITON_CACHE_DIR=$cache/triton TORCHINDUCTOR_CACHE_DIR=$cache/inductor TILELANG_CACHE_DIR=$cache/tilelang
   export TRITON_PRINT_AUTOTUNING=1 TORCH_LOGS=recompiles PRL_OUTPUT_DIR='"$runs"'
   cd '"$arm"'
   uv run --no-sync sft @ '"$config"' --run.name '"$run"' --monitors.wandb.name '"$run"' --no-dashboard'"$extra"'
