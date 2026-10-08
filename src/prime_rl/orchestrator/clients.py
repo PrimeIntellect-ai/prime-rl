@@ -20,6 +20,7 @@ from verifiers.v1.configs.client import (
     resolve_headers,
 )
 
+from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
@@ -226,6 +227,21 @@ async def check_inference_ready(client_config: ClientConfig, model_name: str) ->
         await admin.wait_for_ready(model_name)
     finally:
         await admin.aclose()
+
+
+async def connect_frozen_client(
+    config: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
+) -> InferenceClient:
+    """Connect to an externally hosted frozen model and wait for it."""
+    get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={config.base_url})")
+    if renderer_config is not None:
+        clients = InferenceClient(
+            config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
+        )
+    else:
+        clients = InferenceClient(config, model_name=config.name)
+    await check_inference_ready(config, config.name)
+    return clients
 
 
 def setup_client(
