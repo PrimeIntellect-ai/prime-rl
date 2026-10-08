@@ -17,7 +17,7 @@ index 89aa26b40..0df32f88b 100644
 +                "diag/num_device_alloc": memory_stats["num_device_alloc"],
 +                "diag/num_device_free": memory_stats["num_device_free"],
 +                "diag/dynamo_unique_graphs": dynamo_counters["stats"]["unique_graphs"],
-+                "diag/indexer_tuning_keys": len(_triton_fp8_indexer_kernel.cache),
++                "diag/indexer_tuning_keys": len(getattr(_triton_fp8_indexer_kernel, "cache", {})),
 +                "diag/indexer_last_bench_s": getattr(_triton_fp8_indexer_kernel, "bench_time", 0.0),
 +            }
 +        )
