@@ -196,15 +196,17 @@ def check_kv_offload_shm(config: InferenceConfig) -> None:
 
     vLLM backs each engine's CPU tier with its own ``/dev/shm`` file of ``cpu.num_bytes`` and only
     checks free space for that one engine, so engines that start together all pass, then SIGBUS.
-    SLURM launches one engine per process and exports ``GPUS_PER_NODE``; every GPU runs inference.
+    Multi-node SLURM launches one engine per process (``data_parallel_size_local = 1``) on every GPU
+    of the node and exports ``GPUS_PER_NODE``; otherwise this process starts all of the node's engines.
     """
     offload = config.kv_cache_offload
     if offload is None or offload.type != "native":
         return
-    if "GPUS_PER_NODE" in os.environ:
-        num_engines = int(os.environ["GPUS_PER_NODE"]) // config.vllm.tensor_parallel_size
+    vllm = config.vllm
+    if vllm.data_parallel_size_local == 1 and "GPUS_PER_NODE" in os.environ:
+        num_engines = int(os.environ["GPUS_PER_NODE"]) // vllm.tensor_parallel_size
     else:
-        num_engines = config.vllm.data_parallel_size_local or config.vllm.data_parallel_size
+        num_engines = vllm.data_parallel_size_local or vllm.data_parallel_size
     required = num_engines * offload.cpu.num_bytes
     stat = os.statvfs("/dev/shm")
     shm_size = stat.f_blocks * stat.f_frsize
