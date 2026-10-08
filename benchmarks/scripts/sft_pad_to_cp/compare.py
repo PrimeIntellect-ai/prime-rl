@@ -30,7 +30,7 @@ def main():
 
     print(
         f"{'run':<36} {'steps':>5} {'step s, median [min, max]':>26} {'fwd/bwd s':>22} "
-        f"{'real tok/s/GPU':>14} {'samples/s':>9} {'peak GiB':>8} {'tunes':>5} {'graphs':>6} {'alloc retries':>13}"
+        f"{'real tok/s/GPU':>14} {'samples/s':>9} {'tokens M':>8} {'peak GiB':>8} {'tunes':>5} {'graphs':>6} {'alloc retries':>13}"
     )
     for run in args.runs:
         metrics = load_metrics(run)
@@ -38,11 +38,13 @@ def main():
         samples = [m["progress/num_samples"] for m in metrics.values()]
         steady_time = sum(m["time/step"] for m in steady)
         samples_per_s = (samples[-1] - samples[args.warmup - 1]) / steady_time if len(samples) > args.warmup else 0
+        tokens = [m["progress/num_tokens"] for m in metrics.values()]
+        steady_tokens_m = (tokens[-1] - tokens[args.warmup - 1]) / 1e6 if len(tokens) > args.warmup else 0
         last = list(metrics.values())[-1]
         print(
             f"{run:<36} {len(steady):>5} {spread([m['time/step'] for m in steady]):>26} "
             f"{spread([m['time/forward_backward'] for m in steady]):>22} "
-            f"{statistics.median(m['perf/throughput_per_gpu'] for m in steady):>14.0f} {samples_per_s:>9.2f} "
+            f"{statistics.median(m['perf/throughput_per_gpu'] for m in steady):>14.0f} {samples_per_s:>9.2f} {steady_tokens_m:>8.2f} "
             f"{max(m['perf/peak_memory'] for m in steady):>8.1f} {last.get('diag/indexer_tuning_keys', '-'):>5} "
             f"{last.get('diag/dynamo_unique_graphs', '-'):>6} {last.get('diag/num_alloc_retries', '-'):>13}"
         )
