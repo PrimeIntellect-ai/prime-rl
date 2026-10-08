@@ -279,7 +279,7 @@ class SFTDataset(StatefulIterableDataset):
         # Default names are optional: a dataset carries either messages or
         # prompt/completion, and tools only for tool use. A name set in the
         # config must exist.
-        for field in ("messages", "prompt", "completion", "tools"):
+        for field in ("messages", "prompt", "completion", "tools", "message_loss_mask"):
             column = getattr(columns, field)
             if column != field and column not in dataset.column_names:
                 raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
@@ -342,9 +342,7 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        # Defer to the renderer's sampled_mask by default: a role filter would
-        # drop sampled stop markers attributed to the next message (e.g. GLM's
-        # turn-closing <|user|> / <|observation|>).
+        # Let the renderer identify sampled targets when assistant loss is enabled.
         role_to_mask = None if self.loss_mask_config.assistant else should_mask
 
         # Non-assistant roles are opted into the loss via the renderer's
@@ -359,6 +357,7 @@ class SFTDataset(StatefulIterableDataset):
             tools=tools,
             content_sft_roles=content_sft_roles or None,
             ensure_final_stop=True,
+            message_loss_mask=example.get(self.columns.message_loss_mask),
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
