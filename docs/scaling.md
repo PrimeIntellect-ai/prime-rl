@@ -266,13 +266,17 @@ staging_buffers_count = 2
 
 Run the matching MX server separately and provide its reachable address. The
 bundled NIXL service installer and automatic SLURM service launch do not configure
-this transport. All trainer ranks and the orchestrator need the same shared
-broadcast directory; only rendezvous markers use the filesystem, not weights.
+this transport. Trainer rank 0 and the orchestrator need the same broadcast
+directory; other trainer ranks synchronize through the distributed process
+group. Only rendezvous markers use the filesystem, not weights.
 
 `COPY_TO_HOST` snapshots trainer shards into MX-owned host storage.
 `COPY_TO_DEVICE` uses additional GPU storage. `IN_PLACE` requires unchanged source
 storage and matching transfer dtypes until installation completes. FP32 trainer
 weights transferred as BF16 require conversion and cannot use `IN_PLACE`.
+The FP32 override preserves the dtype only for tensors selected by the model's
+`keep_in_fp32_for_weight_transfer` policy; it does not make all tensors eligible
+for in-place transfer.
 `COPY_TO_HOST` is the default; use `IN_PLACE` only when every bound tensor meets
 these requirements. Omitting
 `staging_buffer_bytes` stages a complete receiver update; setting it uses MX's
@@ -290,9 +294,11 @@ no rollback. ModelExpress owns layouts, transfer planning, reader leases and
 source-buffer release safety.
 
 Trainer rank 0 and the orchestrator must share the broadcast directory. Only
-rank 0 reads the installation acknowledgment; it broadcasts success or failure
+rank 0 reads the installation acknowledgment; it broadcasts a failure flag
 to the other trainer ranks through the distributed process group. Other trainer
 nodes do not need access to that directory for ModelExpress weight updates.
+On failure, rank 0 retains the original exception; other ranks raise an
+installation error without reading the marker or releasing the source version.
 
 Use static vLLM admin endpoints. Dynamo discovery, speculative decoding, LoRA
 and SFT online evaluation are not supported by this transport. This adapter
