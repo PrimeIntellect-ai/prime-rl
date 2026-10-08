@@ -1,7 +1,7 @@
 import re
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import BeforeValidator, Field, field_validator, model_validator
 
@@ -613,15 +613,16 @@ class DataLoaderConfig(BaseConfig):
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
 
-class TrainerConfig(BaseConfig):
+class BaseTrainerConfig(BaseConfig):
+    """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
+
+    auto_moe_router_dtype: ClassVar[Literal["float32", "bfloat16"]]
+    auto_freeze_moe_router: ClassVar[bool]
+    auto_weight_decay: ClassVar[float]
+
     model: ModelConfig = ModelConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
-
-    data: DataLoaderConfig = DataLoaderConfig()
-
-    loss: LossConfig = IPOLossConfig()
-    """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -629,32 +630,13 @@ class TrainerConfig(BaseConfig):
 
     ckpt: CheckpointConfig | None = None
 
-    resume: ResumeConfig | None = None
-    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
-    """Full training-state checkpoint configuration (model + optimizer + scheduler). If None, no resume-capable checkpoints are written."""
-
-    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
-    """Transport used to broadcast updated weights from trainer to inference."""
-
-    rollout_transport: TransportConfig = ZMQTransportConfig()
-    """Transport used to ship rollouts from orchestrator to trainer."""
-
     log: TrainerLogConfig = TrainerLogConfig()
-
-    monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
-
-    output_dir: Path = Field(default_factory=default_output_dir)
-    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
 
     max_steps: int | None = None
     """Maximum number of training steps. If None, runs indefinitely."""
-
-    enable_router_replay: bool = False
-    """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
 
     memory_profiler_path: Path | None = None
     """Path to write the memory profile to."""
@@ -675,24 +657,13 @@ class TrainerConfig(BaseConfig):
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
     @model_validator(mode="after")
-    def resolve_moe_router_dtype_auto(self):
-        """Resolve ``model.moe_router_dtype='auto'``: RL routes in fp32, matching the fp32-routed checkpoints it trains from (e.g. GLM-5.x)."""
+    def resolve_auto_defaults(self):
         if self.model.moe_router_dtype == "auto":
-            self.model.moe_router_dtype = "float32"
-        return self
-
-    @model_validator(mode="after")
-    def resolve_weight_decay_auto(self):
-        """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
-        if self.optim.weight_decay == "auto":
-            self.optim.weight_decay = 0.0
-        return self
-
-    @model_validator(mode="after")
-    def resolve_freeze_moe_router_auto(self):
-        """Resolve ``model.freeze_moe_router='auto'``: RL keeps the pretrained router."""
+            self.model.moe_router_dtype = self.auto_moe_router_dtype
         if self.model.freeze_moe_router == "auto":
-            self.model.freeze_moe_router = True
+            self.model.freeze_moe_router = self.auto_freeze_moe_router
+        if self.optim.weight_decay == "auto":
+            self.optim.weight_decay = self.auto_weight_decay
         return self
 
     @model_validator(mode="after")
@@ -755,6 +726,46 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_tokenizer(self):
+        if self.tokenizer.name is None:
+            self.tokenizer.name = self.model.name
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
+        return self
+
+
+class TrainerConfig(BaseTrainerConfig):
+    # fp32 routing matches the fp32-routed checkpoints RL trains from (e.g. GLM-5.x).
+    auto_moe_router_dtype = "float32"
+    # RL keeps the pretrained router.
+    auto_freeze_moe_router = True
+    # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.
+    auto_weight_decay = 0.0
+
+    data: DataLoaderConfig = DataLoaderConfig()
+
+    loss: LossConfig = IPOLossConfig()
+    """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
+
+    resume: ResumeConfig | None = None
+    """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
+
+    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
+    """Transport used to broadcast updated weights from trainer to inference."""
+
+    rollout_transport: TransportConfig = ZMQTransportConfig()
+    """Transport used to ship rollouts from orchestrator to trainer."""
+
+    monitors: MonitorsConfig = MonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    enable_router_replay: bool = False
+    """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
+
+    @model_validator(mode="after")
     def validate_lora_broadcast(self):
         if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
             raise ValueError(
@@ -766,12 +777,4 @@ class TrainerConfig(BaseConfig):
                 "model.lora.modules_to_save cannot be served: the weight broadcast ships only the "
                 "adapter tensors, so fully-trained modules would silently diverge from inference."
             )
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_tokenizer(self):
-        if self.tokenizer.name is None:
-            self.tokenizer.name = self.model.name
-        if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
