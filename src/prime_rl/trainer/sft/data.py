@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 from collections import defaultdict
+from itertools import cycle, islice
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
@@ -589,10 +590,11 @@ class CatDataset(StatefulIterableDataset):
             # the same experts, and the expert-parallel rank hosting those experts can run out of
             # memory on a heavily padded pack. Repeating the pack's own tokens routes padding like
             # real text. Pads stay loss-masked and follow every real token, so the loss is unchanged.
-            # Multimodal packs keep token 0 so no placeholder id lands outside its item.
+            # The pad run can be longer than the content, so the content repeats as often as needed.
+            # Multimodal packs keep token 0: vision models scatter image features into the positions
+            # that hold placeholder ids, so a repeated placeholder would have no feature to receive.
             if packed["mm_kwargs"] is None and result["input_ids"]:
-                content = result["input_ids"]
-                result["input_ids"].extend((content * (pad_len // len(content) + 1))[:pad_len])
+                result["input_ids"].extend(list(islice(cycle(result["input_ids"]), pad_len)))
             else:
                 result["input_ids"].extend([0] * pad_len)
             result["position_ids"].extend(range(pad_len))
