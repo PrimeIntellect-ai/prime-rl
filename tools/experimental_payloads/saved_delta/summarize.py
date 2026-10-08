@@ -56,7 +56,7 @@ def summarize_exact(results, observations, output):
     )
     fields = [key for key in records[0] if key not in ("versions", "source_hashes", "validation", "rows", "limits")]
     with (output / "exact-harness-results.csv").open("w") as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
+        writer = csv.DictWriter(file, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for record in records:
             writer.writerow({key: record[key] for key in fields})
@@ -126,7 +126,7 @@ def main(args):
     )
     fields = [key for key in full[0] if key not in ("details", "observer")]
     with (args.output / "saved-delta-results.csv").open("w") as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
+        writer = csv.DictWriter(file, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for record in full:
             writer.writerow({key: record[key] for key in fields})
