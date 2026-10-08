@@ -1,46 +1,32 @@
 #!/usr/bin/env bash
-# Every launch of the Dion Muon EP local-expert A/B, in order. Arm A pins Dion 6f9242d, arm B pins
-# the fix. Each arm runs from its own worktree detached at the arm's commit, with its own venv.
-set -euo pipefail
+# The launches behind the reported results of the Dion Muon EP local-expert A/B, in order. A record, not one
+# script to rerun: each line ran inside Slurm allocation 3409. Arm A pins Dion 6f9242d, arm B the fix; each
+# arm runs from its own worktree detached at the arm's commit, with its own venv.
+set -uo pipefail
 
 H=benchmarks/scripts/dion-muon-ep
 A=$HOME/github/PrimeIntellect-ai/prime-rl-dion-ab-a
 B=$HOME/github/PrimeIntellect-ai/prime-rl-dion-ab-b
-P1_HOST=prime-nebius-puku-h200-gpu-062
-P2_HOSTS=prime-nebius-puku-h200-gpu-064,prime-nebius-puku-h200-gpu-043
-F8_HOSTS=prime-nebius-puku-h200-gpu-022,prime-nebius-puku-h200-gpu-024,prime-nebius-puku-h200-gpu-025,prime-nebius-puku-h200-gpu-027,prime-nebius-puku-h200-gpu-043,prime-nebius-puku-h200-gpu-048,prime-nebius-puku-h200-gpu-062,prime-nebius-puku-h200-gpu-064
+N=prime-nebius-puku-h200-gpu
+P1=$N-062
+P2=$N-064,$N-043
+F8=$N-022,$N-024,$N-025,$N-027,$N-043,$N-048,$N-062,$N-064
 TRACES=$HOME/tmp/profiling/dion-muon-ep/traces
-MEMORY=$HOME/tmp/profiling/dion-muon-ep/memory
 
-p1() {
-    for arm in a b; do
-        dir=$A; [ $arm = b ] && dir=$B
-        for rep in 1 2; do $dir/$H/run_cell.sh $dir p1 dion-ab-p1-$arm-$rep $P1_HOST; done
-        $dir/$H/run_cell.sh $dir p1 dion-ab-p1-$arm-mem $P1_HOST --max-steps 5 \
-            --memory-profiler-path $MEMORY/p1-$arm
-    done
-}
+# P1: 1 node, 6 layers. Arm A runs out of memory at step 1.
+$A/$H/run_cell.sh $A p1 dion-ab-p1-a-1 $P1
+$B/$H/run_cell.sh $B p1 dion-ab-p1-b-1 $P1
 
-p2() {
-    for arm in a b; do
-        dir=$A; [ $arm = b ] && dir=$B
-        for rep in 1 2; do $dir/$H/run_cell.sh $dir p2 dion-ab-p2-$arm-$rep $P2_HOSTS; done
-        $dir/$H/run_cell.sh $dir p2 dion-ab-p2-$arm-trace $P2_HOSTS --max-steps 5 \
-            --trace-path $TRACES/p2-$arm
-        $dir/$H/run_cell.sh $dir p2 dion-ab-p2-$arm-mem $P2_HOSTS --max-steps 5 \
-            --memory-profiler-path $MEMORY/p2-$arm
-    done
-}
+# P2: 2 nodes, 6 layers, untraced timing then a 5-step trace per arm
+$A/$H/run_cell.sh $A p2 dion-ab-p2-a-1 $P2
+$B/$H/run_cell.sh $B p2 dion-ab-p2-b-1 $P2
+$A/$H/run_cell.sh $A p2 dion-ab-p2-a-trace3 $P2 --max-steps 5 --trace-path $TRACES/p2-a3
+$B/$H/run_cell.sh $B p2 dion-ab-p2-b-trace $P2 --max-steps 5 --trace-path $TRACES/p2-b
 
-f8_probe() {
-    $B/$H/run_cell.sh $B f8 dion-ab-f8-b-probe $F8_HOSTS --max-steps 3
-}
+# F8: 8 nodes, full model. Arm A runs out of memory at step 1.
+$A/$H/run_cell.sh $A f8 dion-ab-f8-a-2 $F8 --dist-timeout-seconds 1800
+$B/$H/run_cell.sh $B f8 dion-ab-f8-b-1 $F8 --dist-timeout-seconds 1800
 
-f8() {
-    for arm in a b; do
-        dir=$A; [ $arm = b ] && dir=$B
-        $dir/$H/run_cell.sh $dir f8 dion-ab-f8-$arm-1 $F8_HOSTS
-    done
-}
-
-"$@"
+# F8 truncated to 20 layers, so the baseline fits
+$A/$H/run_cell.sh $A f8 dion-ab-f8l20-a-1 $F8 --model.debug.num-layers 20 --dist-timeout-seconds 1800
+$B/$H/run_cell.sh $B f8 dion-ab-f8l20-b-1 $F8 --model.debug.num-layers 20 --dist-timeout-seconds 1800
