@@ -613,7 +613,7 @@ class DataLoaderConfig(BaseConfig):
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
     num_workers: int = Field(0, ge=0)
-    """Number of background threads that prepare micro batches (e.g. decode and preprocess their images) ahead of the training loop, keeping up to 2 * num_workers micro batches ahead. 0 prepares them inline in the training loop."""
+    """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
 
 
 class TrainerConfig(BaseConfig):
