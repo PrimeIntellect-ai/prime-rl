@@ -1,11 +1,14 @@
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.distributed.tensor import Shard
-from torch.distributed.tensor.parallel import RowwiseParallel
+from torch.distributed.tensor.parallel import ColwiseParallel
 
 
-class EmbeddingParallel(RowwiseParallel):
-    """Vocabulary-parallel embedding with uneven token batches on each rank."""
+class EmbeddingParallel(ColwiseParallel):
+    """Feature-sharded embedding with uneven token batches on each rank.
+
+    Column sharding keeps DTensor's dense embedding backward sharded as well.
+    """
 
     def __init__(self) -> None:
         super().__init__(input_layouts=Shard(0), output_layouts=Shard(0))
