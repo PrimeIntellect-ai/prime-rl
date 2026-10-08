@@ -569,6 +569,8 @@ def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
 
     with pytest.raises(ValueError, match="'messages' column"):
         next(iter(SFTDataset(dataset, lambda _: dummy_renderer)))
+    with pytest.raises(ValueError, match="data.columns.message_loss_mask"):
+        SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(message_loss_mask="selection"))
     with pytest.raises(ValueError, match="data.columns.prompt"):
         SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(prompt="question"))
 
@@ -594,3 +596,56 @@ def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer)
     next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="schemas"))))
 
     assert seen == [[], tools]
+
+
+@pytest.mark.parametrize("model", ["zai-org/GLM-5", "Qwen/Qwen3-0.6B"])
+@pytest.mark.parametrize("layout", ["messages", "prompt_completion"])
+@pytest.mark.parametrize("column", ["message_loss_mask", "selection"])
+@pytest.mark.parametrize("mask", [None, [True, True, True, True], [0, 0, 0, 1], [0, 1, 0, 0], [0, 0, 0, 0]])
+def test_sft_message_selection(model, layout, column, mask):
+    from prime_rl.configs.sft import SFTColumnsConfig
+
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    renderer = create_renderer(tokenizer)
+    messages = [
+        {"role": "user", "content": "Question"},
+        {"role": "assistant", "content": "Prefilled"},
+        {"role": "user", "content": "Follow up"},
+        {"role": "assistant", "content": "Answer"},
+    ]
+    row = {"messages": messages} if layout == "messages" else {"prompt": messages[:2], "completion": messages[2:]}
+    baseline = SFTDataset(Dataset.from_list([row]), lambda _: renderer)._process(row)
+    row[column] = mask
+    dataset = SFTDataset(
+        Dataset.from_list([row]), lambda _: renderer, columns=SFTColumnsConfig(message_loss_mask=column)
+    )
+    sample = dataset._process(row)
+    if mask == [0, 0, 0, 0]:
+        assert sample is None
+        return
+    assert sample["input_ids"] == baseline["input_ids"]
+    assert sample["target_ids"] == baseline["target_ids"]
+    if mask is None or all(mask):
+        assert sample["loss_mask"] == baseline["loss_mask"]
+        return
+    trained = tokenizer.decode([token for token, keep in zip(sample["target_ids"], sample["loss_mask"]) if keep])
+    if mask[1]:
+        assert "Prefilled" in trained
+        assert "Answer" not in trained
+        if model == "zai-org/GLM-5":
+            assert trained == "Prefilled<|user|>"
+    else:
+        assert "Prefilled" not in trained
+        assert "Answer" in trained
+        if model == "zai-org/GLM-5":
+            assert trained == "Answer<|endoftext|>"
+    assert "Question" not in trained
+    assert "Follow up" not in trained
+
+
+@pytest.mark.parametrize("mask", [[], [1, 0], ["0"], [2], [None]])
+def test_sft_rejects_invalid_message_selection(dummy_renderer, mask):
+    row = {"messages": [{"role": "assistant", "content": "Answer"}], "message_loss_mask": mask}
+    dataset = SFTDataset(Dataset.from_list([row]), lambda _: dummy_renderer)
+    with pytest.raises(ValueError, match="message_loss_mask"):
+        dataset._process(row)
