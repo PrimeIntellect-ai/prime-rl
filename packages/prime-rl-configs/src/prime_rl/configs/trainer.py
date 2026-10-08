@@ -332,8 +332,8 @@ class ModelConfig(BaseModelConfig):
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
-    freeze_moe_router: bool = False
-    """Freeze MoE router parameters during training."""
+    freeze_moe_router: bool | Literal["auto"] = "auto"
+    """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
@@ -612,6 +612,9 @@ class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
+    num_workers: int = Field(0, ge=0)
+    """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
+
 
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
@@ -686,6 +689,13 @@ class TrainerConfig(BaseConfig):
         """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = 0.0
+        return self
+
+    @model_validator(mode="after")
+    def resolve_freeze_moe_router_auto(self):
+        """Resolve ``model.freeze_moe_router='auto'``: RL keeps the pretrained router."""
+        if self.model.freeze_moe_router == "auto":
+            self.model.freeze_moe_router = True
         return self
 
     @model_validator(mode="after")

@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +16,7 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
@@ -125,23 +126,26 @@ def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) ->
     logger.info(f"Froze {num_frozen} parameters in vision encoder")
 
 
+def iter_moe_blocks(model: nn.Module) -> Iterator[MoE]:
+    """Yield the MoE MLP of each decoder layer, skipping dense layers."""
+    for layer in get_language_model(model).layers:
+        mlp = getattr(layer, "mlp", None)
+        if isinstance(mlp, MoE):
+            yield mlp
+
+
 def freeze_moe_router(model: nn.Module) -> None:
     """Freeze MoE router parameters to maintain stable routing during training."""
     logger = get_logger()
-    language_model = get_language_model(model)
     num_frozen = 0
+    for moe in iter_moe_blocks(model):
+        for param in moe.router.parameters():
+            param.requires_grad = False
+            num_frozen += 1
 
-    for layer in language_model.layers:
-        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, MoE):
-            for param in mlp.router.parameters():
-                param.requires_grad = False
-                num_frozen += 1
-
-    if num_frozen == 0:
-        raise ValueError("No MoE router parameters found to freeze. Is this a MoE model?")
-
-    logger.info(f"Froze {num_frozen} MoE router parameters")
+    # No-op for non-MoE models: freeze_moe_router=True is the RL default.
+    if num_frozen > 0:
+        logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
 def apply_fp32_moe_router(model: nn.Module) -> None:
@@ -150,16 +154,12 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
     The FSDP bf16 cast exemption is applied separately in `setup_fsdp`.
     """
     logger = get_logger()
-    language_model = get_language_model(model)
     num_routers = 0
-
-    for layer in language_model.layers:
-        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, MoE):
-            mlp.router.to(torch.float32)
-            if isinstance(mlp.router, TokenChoiceTopKRouter):
-                mlp.router.fp32_gate = True
-            num_routers += 1
+    for moe in iter_moe_blocks(model):
+        moe.router.to(torch.float32)
+        if isinstance(moe.router, TokenChoiceTopKRouter):
+            moe.router.fp32_gate = True
+        num_routers += 1
 
     # No-op for non-MoE models: moe_router_dtype='float32' is the default,
     # so absence of MoE routers is the common case, not an error.
@@ -177,13 +177,10 @@ def get_full_offload_dtype_policy(
     if config.moe_router_dtype != "float32":
         return policy
 
-    language_model = get_language_model(model)
-    for layer in language_model.layers:
-        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, MoE):
-            for param in mlp.router.parameters():
-                if param.is_floating_point():
-                    policy[id(param)] = (torch.float32, torch.float32)
+    for moe in iter_moe_blocks(model):
+        for param in moe.router.parameters():
+            if param.is_floating_point():
+                policy[id(param)] = (torch.float32, torch.float32)
     return policy
 
 
@@ -215,14 +212,10 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
 def apply_force_balanced_routing(model: nn.Module) -> None:
     """Force MoE token-choice routers into round-robin assignment for fake-data smoke tests."""
     logger = get_logger()
-    language_model = get_language_model(model)
     num_routers = 0
-
-    for layer in language_model.layers:
-        mlp = layer.mlp if hasattr(layer, "mlp") else layer.feed_forward if hasattr(layer, "feed_forward") else None
-        if isinstance(mlp, MoE):
-            mlp.router.force_balanced = True
-            num_routers += 1
+    for moe in iter_moe_blocks(model):
+        moe.router.force_balanced = True
+        num_routers += 1
 
     if num_routers == 0:
         raise ValueError("No MoE routers found to force-balance. Is this a MoE model?")
@@ -248,13 +241,7 @@ def get_load_balance_stats(
     """
     per_layer_max_vio = []
     per_layer_routing_confidence = []
-    language_model = get_language_model(model)
-    block_mlps = []
-    for transformer_block in language_model.layers:
-        # This is necessary for models that have mixed dense layers
-        block_mlp = getattr(transformer_block, "mlp", None)
-        if block_mlp is not None and hasattr(block_mlp, "tokens_per_expert"):
-            block_mlps.append(block_mlp)
+    block_mlps = list(iter_moe_blocks(model))
     if not block_mlps:
         return {"max_vio": None, "routing_confidence": None, "tokens_per_expert": torch.empty(0, 0)}
 
@@ -333,7 +320,7 @@ def compute_expert_load_stats(tokens_per_expert: Tensor) -> dict[str, Tensor]:
 
 def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -> dict[str, float]:
     """Sum a step's per-layer expert counts across the group (every rank routes distinct tokens) and compute load stats."""
-    if tokens_per_expert.numel() == 0:  # MoE model without prime-rl MoE layers (HF impl)
+    if tokens_per_expert.numel() == 0:
         return {}
     dist.all_reduce(tokens_per_expert, op=dist.ReduceOp.SUM, group=group)
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
@@ -829,12 +816,41 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     )
 
 
+# Int args whose value changes between calls. torch.compile treats an int arg as a constant and recompiles
+# whenever it changes, and every other rank waits in collectives until that rank finishes recompiling. Listed
+# here, an arg is symbolic from the first compile instead.
+DYNAMIC_INT_ARGS = (
+    # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
+    "max_seqlen",
+)
+
+
+def mark_dynamic_int_args() -> None:
+    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+    sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
+    for arg in DYNAMIC_INT_ARGS:
+        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
+        pattern = rf".*\['{arg}'\]"
+        if pattern not in sources:
+            sources.append(pattern)
+    torch.compiler.config.dynamic_sources = ",".join(sources)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
+        layer = language_model.layers[layer_id]
+        if isinstance(layer, CheckpointWrapper) and any(
+            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
+        ):
+            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
+            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
+            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
+            layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -995,13 +1011,14 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> Compile -> FSDP
+    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile is not None:
-        apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
+
+    if config.compile is not None:
+        apply_compile(model, config.compile)
 
     if loading_from_checkpoint_later:
         logger.warning(

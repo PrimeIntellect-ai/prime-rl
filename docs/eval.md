@@ -25,6 +25,8 @@ uv run eval gsm8k -n 32 -r 4 -c 8                                   # Prime Infe
 uv run eval @ configs/debug/eval/single-turn.toml                   # the same shape as a TOML
 ```
 
+The default endpoint comes from `PRIME_INFERENCE_URL`, then the Prime CLI's `inference_url`, then the standard Prime Inference URL. An explicit `client.base_url` wins. API keys and environment-backed headers are resolved when clients are built; Prime CLI credential and team fallbacks apply only to Prime Inference hosts, including for a separate admin URL.
+
 To evaluate a model you serve yourself, start a `uv run inference` vLLM server (or any OpenAI-compatible API) and point the client at it:
 
 ```bash

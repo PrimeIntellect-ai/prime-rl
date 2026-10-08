@@ -241,7 +241,9 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         cached_indices = None
         use_index_cache = getattr(self.config, "use_index_cache", False)
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = (
+                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+            )
             hidden_states, next_cached_indices = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,

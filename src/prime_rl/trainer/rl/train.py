@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 from contextlib import nullcontext
+from functools import partial
 import time
 import asyncio
 from datetime import timedelta
@@ -17,7 +18,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -37,7 +38,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.multimodal import get_multimodal_adapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -71,6 +71,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
@@ -147,6 +148,8 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
+    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+    micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -336,7 +339,9 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
+        step_local_num_tokens = 0
+        for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
+            step_local_num_tokens += micro_batch["input_ids"].shape[1]
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -365,17 +370,10 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
-            mm_kwargs = None
-            mm_forward_policy = None
-            mm_refs = micro_batch.get("mm_refs")
-            if mm_refs is not None:
-                if processor is None or mm_adapter is None:
-                    raise ValueError("Received multimodal samples but [model.vlm] is not set")
-                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
-                mm_forward_policy = materialized.forward_policy
-                micro_batch["mm_refs"] = None
-                del materialized, mm_refs
+            mm_kwargs = micro_batch.pop("mm_kwargs")
+            if mm_kwargs is not None:
+                mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
+            mm_forward_policy = micro_batch.pop("mm_forward_policy")
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -631,9 +629,10 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # Compute step metrics
-        num_local_tokens = seq_len * batch_size
-        num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
@@ -732,6 +731,7 @@ def train(config: TrainerConfig):
 
     if gradient_manager is not None:
         gradient_manager.close()
+    micro_batch_workers.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("RL trainer finished")

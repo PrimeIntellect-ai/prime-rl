@@ -26,11 +26,13 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
+from renderers import RendererConfig
 from verifiers.v1.serve import EnvClient
 
+from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.generation_source import GenerationSource
+from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
 from prime_rl.orchestrator.task_feed import TaskFeed
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
@@ -122,25 +124,16 @@ class Env:
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
     ) -> vf.WireEpisode:
-        """Run and return one typed episode. A failed multi-trace episode marks
-        its otherwise-clean traces failed so partial episodes never train.
+        """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
         change of one of the episode's traces — as it lands."""
-        episode = await self.env_client.run(
+        return await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
             on_delta=on_delta,
         )
-        for trace in episode.traces:
-            if not episode.ok and trace.ok:
-                error = episode.last_error or vf.Error(
-                    type="EpisodeFailed", message="A sibling trace in this episode failed"
-                )
-                trace.errors = [*trace.errors, error]
-                trace.ok = False
-        return episode
 
 
 class TrainEnv(Env):
@@ -151,17 +144,38 @@ class TrainEnv(Env):
         config: TrainSourceConfig,
         address: str | None,
         address_file: Path,
-        generation_source: GenerationSource,
+        clients: InferenceClient,
+        renderer_config: RendererConfig | None,
         algorithm: Algorithm,
     ):
         super().__init__(config, address, address_file)
-        self.generation_source = generation_source
+        # Train rollouts are generated from `clients`: the policy, or the frozen
+        # `sampling.source` connected in setup() with the renderer (token-in/out) client.
+        self.clients = clients
+        self.renderer_config = renderer_config
+        self.connected: InferenceClient | None = None
         self.algorithm = algorithm
-        self.sampling_args = generation_source.sampling_args(config.sampling.to_sampling_args())
+        self.uses_live_policy = config.algo.sampling.source == "policy"
+        self.sampling_args = config.sampling.to_sampling_args()
+        if not self.uses_live_policy:
+            # Logprobs only feed importance ratios on policy-sampled tokens; frozen endpoints may reject the knob.
+            self.sampling_args.pop("logprobs", None)
         # Truncated policy sampling must ship the sampling masks the trainer replays.
-        self.requires_sampling_masks = (
-            config.sampling.truncates_distribution() and config.algo.sampling.source == "policy"
-        )
+        self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
+
+    async def setup(self) -> None:
+        async def connect_source() -> None:
+            source = self.config.algo.sampling.source
+            if isinstance(source, FrozenModelConfig):
+                self.connected = await connect_frozen_client(source, renderer_config=self.renderer_config)
+                self.clients = self.connected
+
+        await asyncio.gather(connect_source(), self.algorithm.setup())
+
+    async def aclose(self) -> None:
+        for clients in (self.connected, self.algorithm.connected):
+            if clients is not None:
+                await clients.aclose()
 
 
 class EvalEnv(Env):
@@ -222,9 +236,8 @@ class Envs(Generic[EnvT]):
 
 
 class TrainEnvs(Envs[TrainEnv]):
-    """Collection of training environments, each paired with its
-    :class:`GenerationSource` and runtime :class:`Algorithm`, built from the env's
-    resolved algorithm config."""
+    """Collection of training environments, each with its runtime
+    :class:`Algorithm`, built from the env's resolved algorithm config."""
 
     def __init__(
         self,
@@ -242,7 +255,8 @@ class TrainEnvs(Envs[TrainEnv]):
                 config,
                 addresses[("train", config.resolved_name)],
                 env_address_file(config_dir, "train", config.resolved_name),
-                GenerationSource(config.algo.sampling, clients, renderer_config),
+                clients,
+                renderer_config,
                 build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env

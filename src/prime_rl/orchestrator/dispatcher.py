@@ -143,9 +143,11 @@ class Dispatcher:
         max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
+        policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
     ) -> None:
         self.policy = policy
+        self.policy_weights_change = policy_weights_change
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
@@ -214,10 +216,10 @@ class Dispatcher:
         """``(clients, model_name, is_live)`` for *train* rollouts of this env —
         eval always uses the policy."""
         assert self.train_envs is not None  # train groups only exist when train is configured
-        source = self.train_envs.get(env_name).generation_source
-        if source.uses_live_policy:
-            return source.clients, self.policy.model_name, True
-        return source.clients, source.clients.model_name, False
+        env = self.train_envs.get(env_name)
+        if env.uses_live_policy:
+            return env.clients, self.policy.model_name, True
+        return env.clients, env.clients.model_name, False
 
     @property
     def inflight_train_count(self) -> int:
@@ -325,7 +327,7 @@ class Dispatcher:
         return [
             (self.progress.step - 1) - meta.policy_version
             for meta in self.inflight.values()
-            if meta.kind == "train" and self.train_envs.get(meta.env_name).generation_source.uses_live_policy
+            if meta.kind == "train" and self.train_envs.get(meta.env_name).uses_live_policy
         ]
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -432,7 +434,7 @@ class Dispatcher:
             gid
             for gid, group in self.groups.items()
             if group.kind == "train"
-            and self.train_envs.get(group.env_name).generation_source.uses_live_policy
+            and self.train_envs.get(group.env_name).uses_live_policy
             and group.policy_version_at_start < min_version
         ]
         cancelled = 0
@@ -565,10 +567,8 @@ class Dispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
-        # version would invalidate its prefix cache every weight update for
-        # no reason.
-        if live_sourced:
+        # Only endpoints receiving policy weight updates need a cache salt.
+        if live_sourced and self.policy_weights_change:
             cache_salt = str(group.policy_version_at_start)
         else:
             cache_salt = None
@@ -674,10 +674,6 @@ class Dispatcher:
             )
             return
 
-        if not episode.traces and episode.ok:
-            episode.ok = False
-            episode.errors.append(vf.Error(type="EmptyEpisode", message="Episode returned with no traces"))
-
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
                 # Training keeps a timed-out rollout out of the batch: an error,
@@ -685,14 +681,6 @@ class Dispatcher:
                 trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
                 trace.ok = False
                 episode.ok = False
-            if not trace.has_error and not trace.is_timeout and trace.num_turns == 0:
-                # Empty trajectory: promote to an explicit error so the sink
-                # treats it like any other failure (``has_error`` reads ``ok``).
-                # A timed-out eval trace with no turns stays a timeout: scored, no samples.
-                trace.errors.append(vf.Error(type="EmptyTrajectory", message="Trace returned with no trajectory steps"))
-                trace.ok = False
-                episode.ok = False
-                get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if trace.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if trace.last_error is not None:
@@ -700,8 +688,14 @@ class Dispatcher:
                         f"Trace failed in group {meta.group_id} ({meta.env_name}) — "
                         f"{trace.last_error.type}: {trace.last_error.message}"
                     )
-        if not episode.ok and not episode.traces:
-            self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+        if not episode.ok:
+            if not any(trace.has_error for trace in episode.traces):
+                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            error = episode.last_error
+            get_logger().warning(
+                f"Episode failed in group {meta.group_id} ({meta.env_name})"
+                + (f" — {error.type}: {error.message}" if error is not None else "")
+            )
         if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(episode.num_total_tokens)
         await self.emit_episode(meta, group, episode)
@@ -731,7 +725,7 @@ class Dispatcher:
         live_policy = meta.kind == "eval"
         if meta.kind == "train":
             assert self.train_envs is not None
-            live_policy = self.train_envs.get(meta.env_name).generation_source.uses_live_policy
+            live_policy = self.train_envs.get(meta.env_name).uses_live_policy
         policy = vf.PolicySpan(start=policy_version, end=self.policy.version) if live_policy else None
         work: vf.WorkInfo = (
             vf.EvalWorkInfo(step=meta.step, policy=policy)

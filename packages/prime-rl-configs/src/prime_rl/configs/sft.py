@@ -101,6 +101,9 @@ class SFTColumnsConfig(BaseConfig):
     tools: str = "tools"
     """Column with the tool schemas in OpenAI function-calling format."""
 
+    message_loss_mask: str = "message_loss_mask"
+    """Optional column of booleans or integer 0/1 flags, one per resolved message (prompt + completion for split rows). Zero excludes a message from loss; one preserves its normal supervision. Missing or null masks leave supervision unchanged."""
+
     renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
@@ -281,6 +284,13 @@ class SFTConfig(BaseConfig):
         """Resolve ``optim.weight_decay='auto'``: SFT keeps the historical 0.01 default — standard L2 regularization for supervised training."""
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = 0.01
+        return self
+
+    @model_validator(mode="after")
+    def resolve_freeze_moe_router_auto(self):
+        """Resolve ``model.freeze_moe_router='auto'``: SFT trains the router."""
+        if self.model.freeze_moe_router == "auto":
+            self.model.freeze_moe_router = False
         return self
 
     @model_validator(mode="after")

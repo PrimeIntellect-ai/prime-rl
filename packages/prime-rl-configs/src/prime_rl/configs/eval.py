@@ -6,7 +6,14 @@ from pydantic import AliasChoices, Field, model_validator
 
 from prime_rl.configs.monitors import EvalMonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
-from prime_rl.configs.shared import ClientConfig, HeartbeatConfig, LogConfig, RunConfig, WeightBroadcastConfig
+from prime_rl.configs.shared import (
+    ClientConfig,
+    HeartbeatConfig,
+    LogConfig,
+    RunConfig,
+    VLLMClientConfig,
+    WeightBroadcastConfig,
+)
 from prime_rl.utils.config import default_output_dir
 
 
@@ -14,7 +21,7 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Eval sources run against a live inference server: the server's client and the
     adaptive concurrency band."""
 
-    client: ClientConfig = ClientConfig()
+    client: VLLMClientConfig = Field(default_factory=VLLMClientConfig)
     """Client of the inference server evals run against."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
@@ -43,9 +50,6 @@ class ServedEvalConfig(EvalSourcesConfig):
         return {("eval", source.resolved_name): source.serve.address for source in self.source}
 
 
-PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
-
-
 class EvalConfig(ServedEvalConfig):
     """``uv run eval``: evaluate the configured sources once against a live inference
     server, then exit. Every source's env server is spawned by the eval process unless
@@ -55,7 +59,7 @@ class EvalConfig(ServedEvalConfig):
     model: str = Field("deepseek/deepseek-v4.1-flash", validation_alias=AliasChoices("model", "m"))
     """Model id — the ``model`` field of every eval request and the startup model check."""
 
-    client: ClientConfig = ClientConfig(base_url=PRIME_INFERENCE_URL, api_key_var="PRIME_API_KEY")
+    client: ClientConfig = Field(default_factory=ClientConfig)
     """Client of the inference server. Defaults to Prime Inference."""
 
     select: vf.SelectCLIConfig = vf.SelectCLIConfig()

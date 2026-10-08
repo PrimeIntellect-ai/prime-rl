@@ -9,6 +9,7 @@ from verifiers.v1.types import AssistantMessage, ToolMessage, UserMessage
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
 from prime_rl.orchestrator.algo import EchoAlgorithm, assign_advantages, stamp_loss_routing
+from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.transports.batch.types import TrainingSample
 
@@ -201,8 +202,31 @@ def _make_episode() -> vf.Episode:
         task=trace.task,
         group=vf.GroupInfo(id="group"),
         traces=[trace],
+        ok=True,
     )
     return episode
+
+
+@pytest.mark.parametrize("failure", ["participant", "untrainable_participant", "environment"])
+def test_trainable_traces_exclude_failed_episodes_without_changing_verdicts(failure):
+    good = _make_episode()
+    good.errors = [vf.Error(type="RecoveredError", message="Previous attempt failed")]
+    good.traces[0].errors = list(good.errors)
+    failed = _make_episode()
+    failed.ok = False
+    if failure == "environment":
+        failed.errors = [vf.Error(type="EnvError", message="Finalization failed")]
+    else:
+        sibling = failed.traces[0].model_copy(deep=True)
+        sibling.id = "failed-sibling"
+        sibling.ok = False
+        sibling.errors = [vf.Error(type="AgentError", message="Participant failed")]
+        sibling.agent.trainable = failure == "participant"
+        failed.traces.append(sibling)
+    before = failed.model_dump()
+
+    assert list(iter_trainable_traces([failed, good])) == [(good, good.traces[0])]
+    assert failed.model_dump() == before
 
 
 def test_assign_advantages_full_length_stream():
