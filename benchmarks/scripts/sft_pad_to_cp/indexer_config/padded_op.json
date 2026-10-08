@@ -1,0 +1,272 @@
+[
+ {
+  "layout": "one",
+  "total": 252408,
+  "rank": 7,
+  "s_q": 31551,
+  "s_k": 63102,
+  "per_config": {
+   "M64_N64_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 135.59750366210938,
+    "padded_ms": 105.91155242919922
+   },
+   "M64_N128_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 90.81821060180664,
+    "padded_ms": 90.07215881347656
+   },
+   "M128_N64_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 149.07778930664062,
+    "padded_ms": 142.48406982421875
+   },
+   "M128_N128_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 104.28717041015625,
+    "padded_ms": 93.52998352050781
+   },
+   "M64_N64_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 108.4578857421875,
+    "padded_ms": 104.1480941772461
+   },
+   "M64_N128_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 93.6075325012207,
+    "padded_ms": 89.41664123535156
+   }
+  }
+ },
+ {
+  "layout": "fixed16384",
+  "total": 252408,
+  "rank": 7,
+  "s_q": 31551,
+  "s_k": 63102,
+  "per_config": {
+   "M64_N64_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 32.74860954284668,
+    "padded_ms": 29.465248107910156
+   },
+   "M64_N128_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 33.30140686035156,
+    "padded_ms": 29.356271743774414
+   },
+   "M128_N64_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 33.728702545166016,
+    "padded_ms": 31.5382080078125
+   },
+   "M128_N128_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 34.24012756347656,
+    "padded_ms": 29.642464637756348
+   },
+   "M64_N64_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 32.093135833740234,
+    "padded_ms": 29.882991790771484
+   },
+   "M64_N128_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 31.64838409423828,
+    "padded_ms": 29.88699245452881
+   }
+  }
+ },
+ {
+  "layout": "fixed4096",
+  "total": 252408,
+  "rank": 7,
+  "s_q": 31551,
+  "s_k": 63102,
+  "per_config": {
+   "M64_N64_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 29.619983673095703,
+    "padded_ms": 27.318464279174805
+   },
+   "M64_N128_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 31.316975593566895,
+    "padded_ms": 27.323455810546875
+   },
+   "M128_N64_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 30.139375686645508,
+    "padded_ms": 28.10540771484375
+   },
+   "M128_N128_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 31.8963041305542,
+    "padded_ms": 27.499296188354492
+   },
+   "M64_N64_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 29.555840492248535,
+    "padded_ms": 27.434751510620117
+   },
+   "M64_N128_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 29.375840187072754,
+    "padded_ms": 27.725759506225586
+   }
+  }
+ },
+ {
+  "layout": "mixed",
+  "total": 228776,
+  "rank": 3,
+  "s_q": 28597,
+  "s_k": 57193,
+  "per_config": {
+   "M64_N64_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 65.00527954101562,
+    "padded_ms": 53.5032958984375
+   },
+   "M64_N128_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 48.59297561645508,
+    "padded_ms": 47.12928009033203
+   },
+   "M128_N64_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 70.39039993286133,
+    "padded_ms": 67.76955032348633
+   },
+   "M128_N128_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 53.75084686279297,
+    "padded_ms": 48.37129592895508
+   },
+   "M64_N64_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 54.58544158935547,
+    "padded_ms": 52.6956787109375
+   },
+   "M64_N128_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 48.66521644592285,
+    "padded_ms": 47.14916801452637
+   }
+  }
+ },
+ {
+  "layout": "fixed4096",
+  "total": 80984,
+  "rank": 0,
+  "s_q": 10123,
+  "s_k": 20246,
+  "per_config": {
+   "M64_N64_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 4.0258400440216064,
+    "padded_ms": 3.8453121185302734
+   },
+   "M64_N128_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 4.116799831390381,
+    "padded_ms": 3.8384640216827393
+   },
+   "M128_N64_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 4.090784072875977,
+    "padded_ms": 3.964479923248291
+   },
+   "M128_N128_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 4.20363187789917,
+    "padded_ms": 3.864351987838745
+   },
+   "M64_N64_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 3.981343984603882,
+    "padded_ms": 3.850656032562256
+   },
+   "M64_N128_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 3.962048053741455,
+    "padded_ms": 3.8466880321502686
+   }
+  }
+ },
+ {
+  "layout": "one",
+  "total": 262144,
+  "rank": 7,
+  "s_q": 32768,
+  "s_k": 65536,
+  "per_config": {
+   "M64_N64_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 120.1707534790039,
+    "padded_ms": 120.18502044677734
+   },
+   "M64_N128_w4_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 98.57367706298828,
+    "padded_ms": 98.56795120239258
+   },
+   "M128_N64_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 154.99961853027344,
+    "padded_ms": 154.8923797607422
+   },
+   "M128_N128_w8_s2": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 103.77471923828125,
+    "padded_ms": 103.66716766357422
+   },
+   "M64_N64_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 106.12950134277344,
+    "padded_ms": 105.86009979248047
+   },
+   "M64_N128_w8_s3": {
+    "bitwise_equal": true,
+    "rows_differ": 0,
+    "stock_ms": 99.99488067626953,
+    "padded_ms": 99.93494415283203
+   }
+  }
+ }
+]
