@@ -545,6 +545,32 @@ class IPOLossConfig(BaseConfig):
         return self
 
 
+class IPOTISLossConfig(BaseConfig):
+    type: Literal["ipo_tis"] = "ipo_tis"
+
+    eps: float = Field(0.2, ge=0, allow_inf_nan=False)
+    """Maximum absolute probability change before a token is masked."""
+
+    ratio_cap: float = Field(2.0, ge=1, allow_inf_nan=False)
+    """Upper policy-gradient coefficient for accepted tokens; no lower ratio floor."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    score_centering: bool = False
+    """Center the masked, truncated importance-weighted score under the sampler."""
+
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Approximate an untruncated sampler with a captured head and proportional tail.
+    None selects exact centering over the complete replayed sampling support."""
+
+    @model_validator(mode="after")
+    def validate_score_centering_topk(self):
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        return self
+
+
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
 
@@ -617,7 +643,13 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | ScoreCenteringLossConfig | CustomLossConfig,
+    IPOLossConfig
+    | IPOTISLossConfig
+    | IcePopLossConfig
+    | PPOLossConfig
+    | CISPOLossConfig
+    | ScoreCenteringLossConfig
+    | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

@@ -567,7 +567,7 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
         loss = self.trainer.loss
-        ipo = loss.type == "ipo" and loss.score_centering
+        ipo = loss.type in ("ipo", "ipo_tis") and loss.score_centering
         exact = ipo and loss.score_centering_topk is None
         if loss.type != "score_centering" and not ipo:
             return self

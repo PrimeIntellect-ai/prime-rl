@@ -119,7 +119,7 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
-@pytest.mark.parametrize("loss_type", ["score_centering", "ipo"])
+@pytest.mark.parametrize("loss_type", ["score_centering", "ipo", "ipo_tis"])
 def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
     from prime_rl.entrypoints.rl import write_config
 
@@ -134,8 +134,8 @@ def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
             "roundtrip",
             "--trainer.loss.type",
             loss_type,
-            *(["--trainer.loss.score-centering"] if loss_type == "ipo" else []),
-            "--trainer.loss.score-centering-topk" if loss_type == "ipo" else "--trainer.loss.topk",
+            *(["--trainer.loss.score-centering"] if loss_type != "score_centering" else []),
+            "--trainer.loss.topk" if loss_type == "score_centering" else "--trainer.loss.score-centering-topk",
             "4",
         ],
     )
@@ -228,6 +228,17 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
     assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
+    ipo_tis = TrainerConfig.model_validate({"loss": {"type": "ipo_tis"}}).loss
+    assert ipo_tis.eps == 0.2
+    assert ipo_tis.ratio_cap == 2.0
+    assert not ipo_tis.score_centering
+    assert default_config.loss.eps == 0.3
+    assert default_config.loss.max_importance_ratio == 1e4
+    for cap in (0.5, float("inf"), float("nan")):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "ratio_cap": cap}})
+    with pytest.raises(ValidationError, match="score_centering_topk requires"):
+        TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "score_centering_topk": 128}})
 
     with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})

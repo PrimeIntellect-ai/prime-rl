@@ -215,6 +215,47 @@ The knobs under `[trainer.loss]` are:
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 
+### IPO with Truncated Importance Sampling
+
+`ipo_tis` retains IPO's absolute-probability acceptance mask and truncates the
+importance coefficient of accepted actions. A small absolute probability change
+can still have a large importance ratio, so the cap limits these contributions
+without rejecting the actions. It defaults to epsilon 0.2 and an upper cap of 2,
+with no lower ratio floor. The gradient coefficient remains nonzero above the cap.
+
+```toml
+[trainer.loss]
+type = "ipo_tis"
+eps = 0.2
+ratio_cap = 2.0
+score_centering = true
+score_centering_topk = 128
+```
+
+Score centering is optional and disabled by default. When enabled, it centers
+the masked, truncated score using the same coefficient in the sampled term and
+the baseline:
+
+$$
+w_v=\mathbf1\{|p_v-q_v|\le\epsilon\}\min(p_v/q_v,C),\qquad
+g(a)=A_a\left[w_a\nabla\log p_a-\sum_vq_vw_v\nabla\log p_v\right].
+$$
+
+Masking and truncation can introduce a nonzero expected weighted score. SC cancels
+the resulting constant-advantage drift, but does not recover every contribution
+removed by truncation or guarantee stable training. A lower ratio floor would
+increase contributions from actions with small trainer probability; this loss
+does not apply one.
+
+The example uses untruncated sampling with a captured head and proportional tail.
+Omit `score_centering_topk` to integrate over complete bounded sampling support
+with sampling replay, as described below. SC's capture, transport, and tail
+validation rules apply to both `ipo` and `ipo_tis`. `ratio_saturated` reports the
+fraction of accepted sampled tokens above the cap. With SC enabled,
+`tis/head_cap_removed_mass` and `tis/head_mask_removed_mass` separately report
+trainer probability mass removed from the captured head by truncation and masking.
+These are full-support masses only when the head covers the complete replay support.
+
 ### IcePop Loss
 
 IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
