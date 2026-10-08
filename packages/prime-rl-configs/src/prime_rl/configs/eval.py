@@ -52,7 +52,7 @@ class ServedEvalConfig(EvalSourcesConfig):
 
 class EvalResumeConfig(BaseConfig):
     skip_checks: bool = False
-    """Reuse saved episodes even when experiment settings differ or snapshots are missing."""
+    """Reuse saved episodes even when resolved configs differ or snapshots are missing."""
 
 
 class EvalConfig(ServedEvalConfig):

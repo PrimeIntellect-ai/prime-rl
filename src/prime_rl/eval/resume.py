@@ -6,8 +6,9 @@ so the rebuilt stream, the epoch's metrics and the platform upload cover the
 whole epoch - and only the rollouts still owed run. Failed episodes and the in-flight
 ones the interruption cut off are owed again.
 
-Each attempt's saved experiment settings must match before its episodes are reused.
-Operational settings such as concurrency and monitoring may change between attempts.
+The shared Verifiers rollout planner matches episodes to tasks by content hash.
+Each attempt's saved resolved config must match, except for ``resume``, before its
+episodes are reused. Intentional changes require ``--resume.skip-checks``.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from pathlib import Path
 
 import orjson
 import verifiers.v1 as vf
-from pydantic import TypeAdapter
 
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.monitors.file.traces import get_trace_stream
@@ -29,26 +29,6 @@ CONFIG_NAME = "eval.json"
 """The resolved config an attempt stamps into its file monitor directory once it is
 running, beside the episodes it produces, recording the config those episodes were
 measured with."""
-
-# Operational settings and group defaults already resolved into each source.
-IGNORED_FIELDS = {
-    "env": True,
-    "sampling": True,
-    "select": True,
-    "group_size": True,
-    "resume": True,
-    "output_dir": True,
-    "clean": True,
-    "dry_run": True,
-    "log": True,
-    "dashboard": True,
-    "monitors": True,
-    "heartbeat": True,
-    "concurrency": True,
-    "tasks_per_minute": True,
-    "client": {"wait_for_ready_timeout", "skip_model_check", "admin_base_url", "dynamo"},
-    "source": {"__all__": {"serve": {"pool", "max_concurrent"}}},
-}
 
 
 def stamp_config(run_dir: Path, config: dict) -> None:
@@ -85,10 +65,8 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
     directories = archives(run_dir)
     if current.is_dir() or not directories:
         directories.append(current)
-    expected = config.model_dump(mode="json", exclude=IGNORED_FIELDS)
-    # Sources are identified by unique names; their declaration order does not affect resume.
-    expected["source"].sort(key=lambda source: orjson.dumps(source, option=orjson.OPT_SORT_KEYS))
-    snapshot = TypeAdapter(dict)
+    # Enabling resume necessarily differs from the original launch.
+    expected = config.model_dump(mode="json", exclude={"resume"})
     skip_checks = config.resume is not None and config.resume.skip_checks
     if skip_checks:
         get_logger().warning(
@@ -99,11 +77,13 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
         if not skip_checks:
             saved_path = directory / CONFIG_NAME
             if not saved_path.is_file():
-                raise ValueError(f"--resume: no saved experiment config at {saved_path}")
+                raise ValueError(
+                    f"--resume: no saved config at {saved_path}. "
+                    "Set --resume.skip-checks to reuse episodes without a saved config."
+                )
             # Snapshots are resolved configs: re-validating would fill missing fields with new defaults.
-            previous = snapshot.dump_python(snapshot.validate_json(saved_path.read_bytes()), exclude=IGNORED_FIELDS)
-            if "source" in previous:
-                previous["source"].sort(key=lambda source: orjson.dumps(source, option=orjson.OPT_SORT_KEYS))
+            previous = orjson.loads(saved_path.read_bytes())
+            previous.pop("resume", None)
             changed = sorted(
                 key
                 for key in expected.keys() | previous.keys()
@@ -112,7 +92,7 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
             if changed:
                 raise ValueError(
                     f"--resume: config differs from {saved_path} in [{', '.join(changed)}]. "
-                    "Use the saved experiment settings, start a fresh run, or explicitly set --resume.skip-checks."
+                    "Use the saved config, start a fresh run, or set --resume.skip-checks if the changes are intentional."
                 )
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):

@@ -153,26 +153,22 @@ def test_resume_validates_saved_episodes(tmp_path, ok, traces, valid) -> None:
 
 
 @pytest.mark.parametrize(
-    "updates,allowed",
+    "updates",
     [
-        ({"model": "different-model"}, False),
-        ({"sampling": {"temperature": 0.3}}, False),
-        ({"select": {"limit": 2}}, False),
-        ({"group_size": 2}, False),
-        ({"client": {"base_url": "https://different.invalid/v1"}}, False),
-        ({"env": {"timeout": {"episode": 60}}}, False),
-        ({"log": {"level": "debug"}, "dashboard": False, "monitors": {"prime": None}}, True),
-        ({"concurrency": {"min_inflight": 8, "max_inflight": 8}, "tasks_per_minute": 10}, True),
-        ({"client": {"wait_for_ready_timeout": 10}}, True),
-        ({"client": {"skip_model_check": True}}, True),
-        ({"client": {"admin_base_url": ["https://admin.invalid"]}}, True),
-        ({"client": {"dynamo": {"discovery_url": "https://discovery.invalid"}}}, True),
-        ({"output_dir": "./another-output-location"}, True),
-        ({"source": [{"env": {"id": "single_agent"}, "serve": {"pool": {"type": "elastic", "max_workers": 2}}}]}, True),
+        {},
+        {"model": "different-model"},
+        {"sampling": {"temperature": 0.3}},
+        {"select": {"limit": 2}},
+        {"group_size": 2},
+        {"client": {"base_url": "https://different.invalid/v1"}},
+        {"env": {"timeout": {"episode": 60}}},
+        {"log": {"level": "debug"}, "dashboard": False},
+        {"concurrency": {"min_inflight": 8, "max_inflight": 8}, "tasks_per_minute": 10},
+        {"output_dir": "./another-output-location"},
     ],
 )
 @pytest.mark.parametrize("skip_checks", [False, True])
-def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, updates, allowed, skip_checks) -> None:
+def test_take_landed_checks_archived_config_before_rotating(tmp_path, updates, skip_checks) -> None:
     original = {"source": [{"env": {"id": "single_agent"}}], "run": {"name": "resume-test"}}
     saved = EvalConfig.model_validate_json(orjson.dumps(original))
     if "client" in updates:
@@ -183,12 +179,15 @@ def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, update
     directory.rename(directory.with_name("file.attempt_1"))
     # The newest attempt matches; an incompatible older attempt must still fail.
     resume.stamp_config(tmp_path, current.model_dump(mode="json"))
-    if allowed or skip_checks:
+    if not updates or skip_checks:
         assert resume.take_landed(tmp_path, current) == []
         assert not directory.exists()
     else:
-        with pytest.raises(ValueError, match="file.attempt_1/eval.json"):
+        with pytest.raises(ValueError, match="file.attempt_1/eval.json") as error:
             resume.take_landed(tmp_path, current)
+        changed = str(error.value).split(" in [", 1)[1].split("]", 1)[0].split(", ")
+        assert set(updates) <= set(changed)
+        assert "--resume.skip-checks" in str(error.value)
         assert directory.is_dir()
         assert len(resume.archives(tmp_path)) == 1
 
@@ -205,7 +204,7 @@ def test_take_landed_checks_archived_experiment_before_rotating(tmp_path, update
     ],
 )
 @pytest.mark.parametrize("skip_checks", [False, True])
-def test_take_landed_requires_saved_experiment(tmp_path, missing, skip_checks) -> None:
+def test_take_landed_requires_saved_config(tmp_path, missing, skip_checks) -> None:
     config = EvalConfig(source=[{"env": {"id": "single_agent"}}], resume={"skip_checks": skip_checks})
     directory = get_file_monitor_dir(tmp_path)
     directory.mkdir(parents=True)
@@ -221,27 +220,31 @@ def test_take_landed_requires_saved_experiment(tmp_path, missing, skip_checks) -
         assert not directory.exists()
         assert len(resume.archives(tmp_path)) == 1
     else:
-        with pytest.raises(ValueError, match="no saved experiment config|config differs"):
+        with pytest.raises(ValueError, match="no saved config|config differs"):
             resume.take_landed(tmp_path, config)
         assert directory.is_dir()
         assert resume.archives(tmp_path) == []
 
 
-def test_take_landed_compares_effective_sources(tmp_path) -> None:
+@pytest.mark.parametrize("reorder", [False, True])
+def test_take_landed_checks_source_order_and_shared_defaults(tmp_path, reorder) -> None:
     saved = EvalConfig(
         source=[{"env": {"id": "single_agent"}}, {"env": {"id": "single_agent"}, "name": "other", "group_size": 2}]
     )
-    reordered = saved.model_dump(mode="json")
-    reordered["source"].reverse()
-    current = EvalConfig.model_validate(
-        reordered
-        | {
+    updated = saved.model_dump(mode="json")
+    if reorder:
+        updated["source"].reverse()
+        changed = "source"
+    else:
+        updated |= {
             "group_size": 2,
             "sampling": {"temperature": 0.3},
             "select": {"limit": 2},
             "env": {"timeout": {"episode": 60}},
         }
-    )
-    assert current.source == list(reversed(saved.source))
+        changed = "env, group_size, sampling, select"
+    current = EvalConfig.model_validate(updated | {"resume": {}})
+    assert current.source == (list(reversed(saved.source)) if reorder else saved.source)
     resume.stamp_config(tmp_path, saved.model_dump(mode="json"))
-    assert resume.take_landed(tmp_path, current) == []
+    with pytest.raises(ValueError, match=rf"in \[{changed}\].*--resume.skip-checks"):
+        resume.take_landed(tmp_path, current)
