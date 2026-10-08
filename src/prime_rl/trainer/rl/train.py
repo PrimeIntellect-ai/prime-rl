@@ -339,7 +339,9 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
+        step_local_num_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
+            step_local_num_tokens += micro_batch["input_ids"].shape[1]
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -627,9 +629,10 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # Compute step metrics
-        num_local_tokens = seq_len * batch_size
-        num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
