@@ -4,7 +4,7 @@ import pytest
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import (
-    CostDeploymentConfig,
+    CostLatencyConfig,
     CostPenaltyConfig,
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
@@ -277,8 +277,8 @@ def test_linear_turns_term_penalizes_more_turns():
 
 
 def test_cost_penalty_prefix_cache_and_parallel_time():
-    """Two calls sharing a prefix, a parallel subagent sharing the root's first tokens, and
-    a call whose tool output was edited (cache miss from the first edited token)."""
+    """Two calls sharing a prefix, a parallel subagent with its own root, a call whose tool
+    output was edited (cache miss from the edited node), and a call without token ids."""
 
     def node(parent, ids, sampled=0):
         message = vf.AssistantMessage(content="a") if sampled else vf.UserMessage(content="u")
@@ -293,73 +293,41 @@ def test_cost_penalty_prefix_cache_and_parallel_time():
         node(0, [9, 10, 11], sampled=2),  # call 0: 5 uncached
         node(1, [20, 21, 22]),
         node(2, [9, 30, 31], sampled=2),  # call 1: 7 cached, 4 uncached
-        node(None, [1, 2, 3, 5, 6]),  # subagent root: shares 3 tokens with root 0
-        node(4, [9, 40], sampled=1),  # call 2 (parallel with call 1): 3 cached, 3 uncached
-        node(1, [20, 21, 99]),  # edited tool output, diverges at its third token
-        node(6, [9, 50, 51, 52], sampled=3),  # call 3: 9 cached, 2 uncached
+        node(None, [1, 2, 3, 5, 6]),
+        node(4, [9, 40], sampled=1),  # call 2 (parallel with call 1, new root): 6 uncached
+        node(1, [20, 21, 99]),  # edited tool output
+        node(6, [9, 50, 51, 52], sampled=3),  # call 3: 7 cached, 4 uncached
+        vf.MessageNode(parent=7, message=vf.AssistantMessage(content="j"), sampled=True),  # non-policy call
     ]
     trace = vf.Trace[vf.TaskData](
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         nodes=nodes,
-        calls=[call(1, 100, 101), call(3, 102, 103), call(5, 102.5, 103.5), call(7, 104, 105)],
+        calls=[call(1, 100, 101), call(3, 102, 103), call(5, 102.5, 103.5), call(7, 104, 105), call(8, 105, 105.5)],
         timing=vf.Timing(agent=vf.AgentSpan(start=100, end=106)),
     )
     config = CostPenaltyConfig(
-        usd_per_success=2,
-        usd_per_hour=3600,
-        deployment=CostDeploymentConfig(
-            input_usd_per_mtok=1e6,
-            output_usd_per_mtok=2e6,
-            output_tokens_per_s=4,
-            input_tokens_per_s=10,
-        ),
+        reward_per_usd=1,
+        input_usd_per_mtok=1e6,
+        cached_input_usd_per_mtok=1e5,
+        output_usd_per_mtok=2e6,
     )
-    cached, uncached, output = 19, 14, 8
-    parallelism = 3.5 / 4  # union of call intervals / sum of call durations
-    model_time = (uncached / 10 + output / 4) * parallelism
-    time_s = model_time + 2.5  # 6 s agent span - 3.5 s in model calls
-    cost = uncached + 0.1 * cached + 2 * output  # cached input defaults to 10% of the input price
+    cached, uncached, output = 14, 19, 8
+    token_usd = uncached + 0.1 * cached + 2 * output
+    assert rollout_cost(trace, config) == pytest.approx(
+        {"token_usd": token_usd, "cache_hit_rate": cached / (cached + uncached)}
+    )
+    config.latency = CostLatencyConfig(usd_per_hour=1, prefill_tokens_per_s=10, decode_tokens_per_s=4)
+    parallelism = 3.5 / 4  # union of policy call intervals / sum of their durations
+    tool_s = 2.5  # 6 s agent span - 3.5 s in policy calls
     assert rollout_cost(trace, config) == pytest.approx(
         {
-            "penalty": (cost + time_s) / 2,
-            "cost_usd": cost,
-            "time_s": time_s,
-            "model_time_s": model_time,
-            "tool_time_s": 2.5,
-            "parallelism": parallelism,
-            "prefix_cache_hit_rate": cached / (cached + uncached),
+            "token_usd": token_usd,
+            "cache_hit_rate": cached / (cached + uncached),
+            "latency_s": parallelism * (uncached / 10 + output / 4) + tool_s,
+            "tool_s": tool_s,
         }
     )
-
-
-def test_cost_penalty_skips_calls_without_token_ids():
-    """A non-policy call (no token ids) on a tokenized conversation adds no cost and no cached prefix."""
-    prompt = vf.MessageNode(parent=None, message=vf.UserMessage(content="u"), token_ids=[1, 2, 3], mask=[False] * 3)
-    judge = vf.MessageNode(parent=0, message=vf.AssistantMessage(content="j"), sampled=True)
-    policy = vf.MessageNode(
-        parent=0, message=vf.AssistantMessage(content="a"), token_ids=[4, 5], mask=[True, True], sampled=True
-    )
-    trace = vf.Trace[vf.TaskData](
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
-        nodes=[prompt, judge, policy],
-        calls=[
-            vf.ModelCall(node=1, time=vf.TimeSpan(start=0, end=1)),
-            vf.ModelCall(node=2, time=vf.TimeSpan(start=2, end=3)),
-        ],
-        timing=vf.Timing(agent=vf.AgentSpan(start=0, end=3)),
-    )
-    config = CostPenaltyConfig(
-        usd_per_success=1,
-        usd_per_hour=0,
-        deployment=CostDeploymentConfig(input_usd_per_mtok=1e6, output_usd_per_mtok=1e6, output_tokens_per_s=1),
-    )
-    cost = rollout_cost(trace, config)
-    assert cost["cost_usd"] == pytest.approx(3 + 2)  # only the policy call: 3 uncached input + 2 output
-    assert cost["prefix_cache_hit_rate"] == 0.0
-    assert cost["tool_time_s"] == pytest.approx(2.0)  # the judge call's 1 s counts as tool time, like a failed call
-    assert cost["parallelism"] == 1.0
 
 
 # --------------------------------------------------------------------------

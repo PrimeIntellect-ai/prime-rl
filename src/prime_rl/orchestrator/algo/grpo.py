@@ -36,7 +36,9 @@ class GRPOAlgorithm(Algorithm):
                 costs = [rollout_cost(trace, length_penalty) for trace in traces]
                 for trace, cost in zip(traces, costs, strict=True):
                     trace.record_metrics({f"cost_penalty/{name}": value for name, value in cost.items()})
-                ungated_penalty = torch.tensor([c["penalty"] for c in costs], dtype=rewards.dtype)
+                usd_per_s = length_penalty.latency.usd_per_hour / 3600 if length_penalty.latency else 0.0
+                usd = torch.tensor([c["token_usd"] + usd_per_s * c.get("latency_s", 0.0) for c in costs])
+                ungated_penalty = length_penalty.reward_per_usd * usd
             else:
                 output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
                 total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
@@ -67,54 +69,39 @@ class GRPOAlgorithm(Algorithm):
                 node.loss_weights = {**(node.loss_weights or {}), "rl": [weight if m else 0.0 for m in node.mask]}
 
 
-def _common_prefix(a: list[int], b: list[int]) -> int:
-    n = 0
-    for x, y in zip(a, b):
-        if x != y:
-            break
-        n += 1
-    return n
-
-
 def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float]:
-    """Modelled deployment cost (USD) and wait time (s) of one rollout, with their parts, and
-    the resulting penalty before the pass-rate gate.
+    """Token cost (USD) and prefix cache hit rate of one rollout and, with ``latency`` set,
+    its modelled latency and measured tool time (s).
 
-    A call's input is cached up to its longest common prefix with any earlier call's
-    prompt + completion in the trace (all agents, by call start), exact up to node
-    boundaries: graph nodes dedup identical prefixes, so the prefix is the leading
-    already-seen nodes on the call's path, extended token-wise into the first unseen
-    node against its seen siblings, and not beyond it. Calls to non-policy models carry
-    no token ids: they are priced at zero and do not seed the prefix cache."""
+    Prefix cache at node granularity: a call's input is cached up to the deepest node of
+    its path that was on an earlier call's path (all agents, by call start). Calls without
+    token ids (non-policy models) and failed calls cost nothing and count as tool time."""
     nodes = trace.nodes
+    prefix_len: list[int] = []
+    for node in nodes:
+        prefix_len.append(len(node.token_ids) + (prefix_len[node.parent] if node.parent is not None else 0))
     seen: set[int] = set()
-    seen_children: dict[int | None, list[int]] = {}
     uncached = cached = output = 0
-    # Failed calls (no node) and non-policy calls (no token ids) count as tool time.
     policy_calls = [c for c in trace.calls if c.node is not None and nodes[c.node].token_ids]
     for call in sorted(policy_calls, key=lambda c: c.time.start):
-        path = [call.node]
-        while (parent := nodes[path[-1]].parent) is not None:
-            path.append(parent)
-        path.reverse()
-        node = nodes[call.node]
-        num_sampled = sum(node.mask)
-        prompt_tail = node.token_ids[: node.mask.index(True)] if num_sampled else node.token_ids
-        spans = [nodes[n].token_ids for n in path[:-1]] + [prompt_tail]
-        k = 0
-        while k < len(path) - 1 and path[k] in seen:
-            k += 1
-        siblings = seen_children.get(path[k - 1] if k else None, [])
-        hit = sum(map(len, spans[:k])) + max(
-            (_common_prefix(spans[k], nodes[s].token_ids) for s in siblings), default=0
-        )
+        num_sampled = sum(nodes[call.node].mask)
+        num_input = prefix_len[call.node] - num_sampled
+        n = call.node
+        while n is not None and n not in seen:
+            seen.add(n)
+            n = nodes[n].parent
+        hit = min(prefix_len[n], num_input) if n is not None else 0
         cached += hit
-        uncached += sum(map(len, spans)) - hit
+        uncached += num_input - hit
         output += num_sampled
-        for parent, n in zip([None, *path], path):
-            if n not in seen:
-                seen.add(n)
-                seen_children.setdefault(parent, []).append(n)
+    token_usd = (
+        penalty.input_usd_per_mtok * uncached
+        + penalty.cached_input_usd_per_mtok * cached
+        + penalty.output_usd_per_mtok * output
+    ) / 1e6
+    cost = {"token_usd": token_usd, "cache_hit_rate": cached / max(1, cached + uncached)}
+    if penalty.latency is None:
+        return cost
 
     intervals = sorted((c.time.start, c.time.end) for c in policy_calls if c.time.duration > 0)
     busy = sum(end - start for start, end in intervals)
@@ -123,21 +110,7 @@ def rollout_cost(trace: vf.Trace, penalty: CostPenaltyConfig) -> dict[str, float
         union += max(0.0, end - max(start, reach))
         reach = max(reach, end)
     parallelism = union / busy if busy else 1.0
-    deployment = penalty.deployment
-    model_time = (uncached / deployment.input_tokens_per_s + output / deployment.output_tokens_per_s) * parallelism
-    tool_time = max(0.0, trace.timing.agent.duration - union)
-    time_s = model_time + tool_time
-    cost = (
-        deployment.input_usd_per_mtok * uncached
-        + deployment.cached_input_usd_per_mtok * cached
-        + deployment.output_usd_per_mtok * output
-    ) / 1e6
-    return {
-        "penalty": (cost + time_s / 3600 * penalty.usd_per_hour) / penalty.usd_per_success,
-        "cost_usd": cost,
-        "time_s": time_s,
-        "model_time_s": model_time,
-        "tool_time_s": tool_time,
-        "parallelism": parallelism,
-        "prefix_cache_hit_rate": cached / max(1, cached + uncached),
-    }
+    tool_s = max(0.0, trace.timing.agent.duration - union)
+    latency = penalty.latency
+    latency_s = parallelism * (uncached / latency.prefill_tokens_per_s + output / latency.decode_tokens_per_s) + tool_s
+    return {**cost, "latency_s": latency_s, "tool_s": tool_s}
