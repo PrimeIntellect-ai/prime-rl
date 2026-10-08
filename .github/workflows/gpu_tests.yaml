@@ -7,6 +7,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -44,6 +47,9 @@ jobs:
               - 'src/prime_rl/inference/**'
             sft:
               - *runtime
+              - 'tools/convert_{dcp_to_bf16,dcp_to_fp8,bf16_to_fp8,fp8_to_bf16}.py'
+              - 'src/prime_rl/dashboard/**'
+              - 'tests/integration/dashboard_smoke.py'
               - 'packages/prime-rl-configs/src/prime_rl/configs/{sft,eval,monitors}.py'
               - 'src/prime_rl/entrypoints/{sft,dashboard}.py'
               - 'src/prime_rl/monitors/**'
@@ -52,6 +58,9 @@ jobs:
               - 'configs/ci/integration/reverse-text-sft{,-lora}/**'
             rl:
               - *runtime
+              - 'tools/convert_{dcp_to_bf16,dcp_to_fp8,bf16_to_fp8,fp8_to_bf16}.py'
+              - 'src/prime_rl/dashboard/**'
+              - 'tests/integration/dashboard_smoke.py'
               - 'packages/prime-rl-configs/src/prime_rl/configs/{rl,orchestrator,inference,env_server,algorithm,eval,monitors}.py'
               - 'src/prime_rl/entrypoints/{rl,trainer,inference,orchestrator,env_server,dashboard}.py'
               - 'src/prime_rl/{inference,orchestrator,monitors}/**'
