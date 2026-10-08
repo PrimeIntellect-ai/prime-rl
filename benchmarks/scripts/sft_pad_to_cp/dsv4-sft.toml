@@ -1,0 +1,43 @@
+max_steps = 20
+
+[model]
+name = "/home/huggingface/hub/models--PrimeIntellect--DeepSeek-V4-Flash-0731-bf16/snapshots/c2c8e6760fbb0b85f3a11f244eeb8cbbb4d4c50d"
+cp = 8
+ep = 8
+freeze_moe_router = true
+optim_cpu_offload = false
+fsdp_cpu_offload = false
+ac_offloading = "None"
+
+[model.debug]
+num_layers = 6
+
+[model.moe.dispatch]
+type = "torch"
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "deepseek-v4"
+enable_thinking = true
+
+[data]
+name = "PrimeIntellect/SyntheticData-GLM5.2-scaleswe-reward0-rlm-filtered"
+splits = ["train"]
+seed = 0
+seq_len = 262144
+batch_size = 1
+micro_batch_size = 1
+
+[optim]
+lr = 1e-5
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "deepseek-v4-flash"
+group = "sft-pad-to-cp"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8

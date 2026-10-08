@@ -1,0 +1,26 @@
+diff --git a/src/prime_rl/trainer/sft/train.py b/src/prime_rl/trainer/sft/train.py
+index 89aa26b40..0df32f88b 100644
+--- a/src/prime_rl/trainer/sft/train.py
++++ b/src/prime_rl/trainer/sft/train.py
+@@ -615,6 +615,21 @@ def train(config: SFTConfig):
+             "perf/mfu": mfu,
+             "step": progress.step,
+         }
++        from torch._dynamo.utils import counters as dynamo_counters
++        from prime_rl.trainer.models.kernels.fp8_indexer import _triton_fp8_indexer_kernel
++
++        memory_stats = torch.cuda.memory_stats()
++        perf_metrics.update(
++            {
++                "diag/row_len": micro_batch["input_ids"].shape[1],
++                "diag/num_alloc_retries": memory_stats["num_alloc_retries"],
++                "diag/num_device_alloc": memory_stats["num_device_alloc"],
++                "diag/num_device_free": memory_stats["num_device_free"],
++                "diag/dynamo_unique_graphs": dynamo_counters["stats"]["unique_graphs"],
++                "diag/indexer_tuning_keys": len(_triton_fp8_indexer_kernel.cache),
++                "diag/indexer_last_bench_s": getattr(_triton_fp8_indexer_kernel, "bench_time", 0.0),
++            }
++        )
+         asyncio.run(monitors.log(perf_metrics, step=progress.step))
+ 
+         # Log optimizer metrics

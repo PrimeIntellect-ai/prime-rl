@@ -1,0 +1,284 @@
+{
+ "summary": {
+  "device": "NVIDIA H200",
+  "triton": "3.7.1",
+  "rank": 7,
+  "doc_len": 65536,
+  "median_retune_s": 1.2966773239895701,
+  "median_steady_call_s": 0.04117478302214295,
+  "num_retunes_in_sweep": 6
+ },
+ "jit_warm": [
+  {
+   "s_q": 32656,
+   "s_q_mod16": 0,
+   "first_call_s": 2.0397012210451066,
+   "steady_call_s": 0.04299602494575083,
+   "retune_s": 1.9967051960993558,
+   "retuned": true,
+   "bench_time_s": 1.3508927822113037,
+   "best_config": "M64_N128_w4_s2",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 19.818111419677734,
+    "M64_N128_w4_s2": 15.408271789550781,
+    "M128_N64_w8_s2": 27.142208099365234,
+    "M128_N128_w8_s2": 16.470815658569336,
+    "M64_N64_w8_s3": 16.60520076751709,
+    "M64_N128_w8_s3": 16.28108787536621
+   },
+   "num_tuning_keys": 1
+  },
+  {
+   "s_q": 32712,
+   "s_q_mod16": 8,
+   "first_call_s": 1.4156140747945756,
+   "steady_call_s": 0.043840746162459254,
+   "retune_s": 1.3717733286321163,
+   "retuned": true,
+   "bench_time_s": 1.372507095336914,
+   "best_config": "M64_N128_w4_s2",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 19.465599060058594,
+    "M64_N128_w4_s2": 15.95849609375,
+    "M128_N64_w8_s2": 27.612735748291016,
+    "M128_N128_w8_s2": 16.643552780151367,
+    "M64_N64_w8_s3": 19.130847930908203,
+    "M64_N128_w8_s3": 16.20342445373535
+   },
+   "num_tuning_keys": 2
+  },
+  {
+   "s_q": 32761,
+   "s_q_mod16": 9,
+   "first_call_s": 1.5610096522141248,
+   "steady_call_s": 0.04567857016809285,
+   "retune_s": 1.515331082046032,
+   "retuned": true,
+   "bench_time_s": 1.5160038471221924,
+   "best_config": "M64_N128_w8_s3",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 27.042848587036133,
+    "M64_N128_w4_s2": 19.152063369750977,
+    "M128_N64_w8_s2": 30.375295639038086,
+    "M128_N128_w8_s2": 22.224671363830566,
+    "M64_N64_w8_s3": 21.403871536254883,
+    "M64_N128_w8_s3": 18.062047958374023
+   },
+   "num_tuning_keys": 3
+  }
+ ],
+ "sweep": [
+  {
+   "s_q": 32768,
+   "s_q_mod16": 0,
+   "first_call_s": 1.3984312370885164,
+   "steady_call_s": 0.04572981409728527,
+   "retune_s": 1.352701422991231,
+   "retuned": true,
+   "bench_time_s": 1.3533246517181396,
+   "best_config": "M64_N128_w4_s2",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 19.71036720275879,
+    "M64_N128_w4_s2": 15.437424182891846,
+    "M128_N64_w8_s2": 27.150495529174805,
+    "M128_N128_w8_s2": 16.312560081481934,
+    "M64_N64_w8_s3": 16.74220848083496,
+    "M64_N128_w8_s3": 16.133472442626953
+   },
+   "num_tuning_keys": 4
+  },
+  {
+   "s_q": 32188,
+   "s_q_mod16": 12,
+   "first_call_s": 1.394346603890881,
+   "steady_call_s": 0.04239684506319463,
+   "retune_s": 1.3519497588276863,
+   "retuned": true,
+   "bench_time_s": 1.3537569046020508,
+   "best_config": "M64_N128_w4_s2",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 22.62983989715576,
+    "M64_N128_w4_s2": 15.535056114196777,
+    "M128_N64_w8_s2": 25.929567337036133,
+    "M128_N128_w8_s2": 18.49180793762207,
+    "M64_N64_w8_s3": 17.645536422729492,
+    "M64_N128_w8_s3": 15.600672245025635
+   },
+   "num_tuning_keys": 5
+  },
+  {
+   "s_q": 31445,
+   "s_q_mod16": 5,
+   "first_call_s": 1.347916710190475,
+   "steady_call_s": 0.04004383413121104,
+   "retune_s": 1.307872876059264,
+   "retuned": true,
+   "bench_time_s": 1.3095028400421143,
+   "best_config": "M64_N128_w8_s3",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 21.143040657043457,
+    "M64_N128_w4_s2": 15.496464252471924,
+    "M128_N64_w8_s2": 23.751232147216797,
+    "M128_N128_w8_s2": 17.880640029907227,
+    "M64_N64_w8_s3": 17.034847259521484,
+    "M64_N128_w8_s3": 14.45356798171997
+   },
+   "num_tuning_keys": 6
+  },
+  {
+   "s_q": 31155,
+   "s_q_mod16": 3,
+   "first_call_s": 1.3243980740662664,
+   "steady_call_s": 0.03891630214639008,
+   "retune_s": 1.2854817719198763,
+   "retuned": true,
+   "bench_time_s": 1.2871158123016357,
+   "best_config": "M64_N128_w8_s3",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 19.73206329345703,
+    "M64_N128_w4_s2": 14.736063957214355,
+    "M128_N64_w8_s2": 22.283472061157227,
+    "M128_N128_w8_s2": 17.089439392089844,
+    "M64_N64_w8_s3": 16.122672080993652,
+    "M64_N128_w8_s3": 13.691967964172363
+   },
+   "num_tuning_keys": 7
+  },
+  {
+   "s_q": 30121,
+   "s_q_mod16": 9,
+   "first_call_s": 1.2155318700242788,
+   "steady_call_s": 0.034768296871334314,
+   "retune_s": 1.1807635731529444,
+   "retuned": true,
+   "bench_time_s": 1.1823914051055908,
+   "best_config": "M64_N128_w8_s3",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 15.670032024383545,
+    "M64_N128_w4_s2": 12.158783912658691,
+    "M128_N64_w8_s2": 17.729888916015625,
+    "M128_N128_w8_s2": 14.01699161529541,
+    "M64_N64_w8_s3": 12.876768112182617,
+    "M64_N128_w8_s3": 11.021856307983398
+   },
+   "num_tuning_keys": 8
+  },
+  {
+   "s_q": 28331,
+   "s_q_mod16": 11,
+   "first_call_s": 1.046489141881466,
+   "steady_call_s": 0.028267316985875368,
+   "retune_s": 1.0182218248955905,
+   "retuned": true,
+   "bench_time_s": 1.0197362899780273,
+   "best_config": "M64_N128_w8_s3",
+   "config_median_ms": {
+    "M64_N64_w4_s2": 9.329552173614502,
+    "M64_N128_w4_s2": 8.177807807922363,
+    "M128_N64_w8_s2": 10.533151626586914,
+    "M128_N128_w8_s2": 9.281295776367188,
+    "M64_N64_w8_s3": 7.9072160720825195,
+    "M64_N128_w8_s3": 6.894864082336426
+   },
+   "num_tuning_keys": 9
+  },
+  {
+   "s_q": 32188,
+   "s_q_mod16": 12,
+   "first_call_s": 0.04229872184805572,
+   "steady_call_s": 0.04230573191307485,
+   "retune_s": -7.010065019130707e-06,
+   "retuned": false,
+   "bench_time_s": null,
+   "best_config": "M64_N128_w4_s2",
+   "config_median_ms": null,
+   "num_tuning_keys": 9
+  },
+  {
+   "s_q": 32188,
+   "s_q_mod16": 12,
+   "first_call_s": 0.04232939914800227,
+   "steady_call_s": 0.04234280902892351,
+   "retune_s": -1.3409880921244621e-05,
+   "retuned": false,
+   "bench_time_s": null,
+   "best_config": "M64_N128_w4_s2",
+   "config_median_ms": null,
+   "num_tuning_keys": 9
+  }
+ ],
+ "topk_identity": [
+  {
+   "s_q": 32768,
+   "reference": "M64_N64_w4_s2",
+   "per_config": {
+    "M64_N64_w4_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M64_N128_w4_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M128_N64_w8_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M128_N128_w8_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M64_N64_w8_s3": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M64_N128_w8_s3": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    }
+   }
+  },
+  {
+   "s_q": 32188,
+   "reference": "M64_N64_w4_s2",
+   "per_config": {
+    "M64_N64_w4_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M64_N128_w4_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M128_N64_w8_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M128_N128_w8_s2": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M64_N64_w8_s3": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    },
+    "M64_N128_w8_s3": {
+     "bitwise_equal": true,
+     "rows_differ": 0,
+     "set_rows_differ": 0
+    }
+   }
+  }
+ ]
+}
