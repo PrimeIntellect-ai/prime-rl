@@ -112,7 +112,7 @@ class ParallelDims:
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
-        # Mesh for data loading (no communication on this mesh)
+        # Mesh for data loading and per-step token counts
         dp_mesh_dim_names = []
         # Mesh for param sharding
         dp_shard_cp_mesh_dim_names = []
@@ -172,7 +172,7 @@ class ParallelDims:
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
-        # Mesh for data loading (no communication on this mesh)
+        # Mesh for data loading and per-step token counts
         dp_mesh_dim_names = []
         # Mesh for param sharding
         dp_shard_cp_mesh_dim_names = []
