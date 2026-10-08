@@ -1,0 +1,13 @@
+# Full 43-layer model on 8 nodes: the expert FSDP group has 8 ranks.
+
+[data]
+seq_len = 2048
+batch_size = 64
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+
+[slurm]
+job_name = "dion-muon-ep-f8"
+partition = "all"

@@ -1,0 +1,19 @@
+# Two nodes, 6 layers, cp 8: the expert FSDP group spans both nodes.
+
+[model]
+cp = 8
+
+[model.debug]
+num_layers = 6
+
+[data]
+seq_len = 16384
+batch_size = 2
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+
+[slurm]
+job_name = "dion-muon-ep-p2"
+partition = "all"
