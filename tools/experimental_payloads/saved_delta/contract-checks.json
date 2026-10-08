@@ -1,0 +1,55 @@
+{
+  "all_passed": true,
+  "checks": [
+    {
+      "mode": "native",
+      "mutation_and_exception": false,
+      "callback_count": 188,
+      "caught_exceptions": 0,
+      "native_episode_fingerprint": "63cc33538ea62aca108eb98396c4c3311c1797aef712f0b13d12444a27217fe8",
+      "passed": true
+    },
+    {
+      "mode": "typed-bytes",
+      "mutation_and_exception": false,
+      "callback_count": 188,
+      "caught_exceptions": 0,
+      "native_episode_fingerprint": "63cc33538ea62aca108eb98396c4c3311c1797aef712f0b13d12444a27217fe8",
+      "passed": true
+    },
+    {
+      "mode": "typed-views",
+      "mutation_and_exception": false,
+      "callback_count": 188,
+      "caught_exceptions": 0,
+      "native_episode_fingerprint": "63cc33538ea62aca108eb98396c4c3311c1797aef712f0b13d12444a27217fe8",
+      "passed": true
+    },
+    {
+      "mode": "native",
+      "mutation_and_exception": true,
+      "callback_count": 188,
+      "caught_exceptions": 1,
+      "native_episode_fingerprint": "2c9fba1d7970ab76023af490d82513fca84b962c1c7cfbe61a767abfbaefee94",
+      "passed": true
+    },
+    {
+      "mode": "typed-bytes",
+      "mutation_and_exception": true,
+      "callback_count": 188,
+      "caught_exceptions": 1,
+      "native_episode_fingerprint": "2c9fba1d7970ab76023af490d82513fca84b962c1c7cfbe61a767abfbaefee94",
+      "passed": true
+    },
+    {
+      "mode": "typed-views",
+      "mutation_and_exception": true,
+      "callback_count": 188,
+      "caught_exceptions": 1,
+      "native_episode_fingerprint": "2c9fba1d7970ab76023af490d82513fca84b962c1c7cfbe61a767abfbaefee94",
+      "passed": true
+    }
+  ],
+  "fixture_sha256": "0f1a150e527c2f429d7753f50ee378342028494409a3d642d58fc2ced24c9629",
+  "limits": "Unchanged native EnvClient.run and validation, with offline _request byte source. Values and native types match; raw dictionary insertion order may differ. No live receive-loop RPC, cancellation/timeout API, or Prime RL integration exercised."
+}

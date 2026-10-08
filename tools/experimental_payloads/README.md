@@ -5,6 +5,13 @@ training configuration, or transport. It asks whether avoiding binary copies or
 materializing fewer episodes is useful beyond the finite scalar accounting and
 reference release already implemented by that PR.
 
+There are two separate studies. The original synthetic completed-episode
+microbenchmark below includes native training sample construction. The
+[saved-delta replay](saved_delta/README.md) includes incremental arrival, ordered
+application, callback controls, full native episode return and buffered cleanup.
+It also reruns the previous full-native-return harness with decoder substitutions.
+Compare paths within each study; their timings measure different workflows.
+
 ## Compared paths
 
 | Path | Receive behavior | Accepted output |
