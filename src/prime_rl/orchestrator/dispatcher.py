@@ -665,10 +665,6 @@ class Dispatcher:
             )
             return
 
-        if not episode.traces and episode.ok:
-            episode.ok = False
-            episode.errors.append(vf.Error(type="EmptyEpisode", message="Episode returned with no traces"))
-
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
                 # Training keeps a timed-out rollout out of the batch: an error,
@@ -676,14 +672,6 @@ class Dispatcher:
                 trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
                 trace.ok = False
                 episode.ok = False
-            if not trace.has_error and not trace.is_timeout and trace.num_turns == 0:
-                # Empty trajectory: promote to an explicit error so the sink
-                # treats it like any other failure (``has_error`` reads ``ok``).
-                # A timed-out eval trace with no turns stays a timeout: scored, no samples.
-                trace.errors.append(vf.Error(type="EmptyTrajectory", message="Trace returned with no trajectory steps"))
-                trace.ok = False
-                episode.ok = False
-                get_logger().warning(f"Empty trajectory in group {meta.group_id} ({meta.env_name})")
             if trace.has_error:
                 self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
                 if trace.last_error is not None:
