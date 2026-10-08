@@ -114,6 +114,7 @@ class EvalRunner:
             eval_source=self.eval_source,
             policy_clients=self.clients,
             policy=self.policy,
+            policy_weights_change=isinstance(config, SFTOnlineEvalConfig),
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,

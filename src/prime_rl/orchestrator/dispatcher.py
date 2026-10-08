@@ -143,9 +143,11 @@ class Dispatcher:
         max_off_policy_steps: int,
         run_id: str,
         run_name: str | None,
+        policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
     ) -> None:
         self.policy = policy
+        self.policy_weights_change = policy_weights_change
         self.progress = progress
         self.train_envs = train_envs
         self.eval_envs = eval_envs
@@ -556,10 +558,8 @@ class Dispatcher:
         if env_collection is None:
             return False
         env = env_collection.get(group.env_name)
-        # Frozen-sourced train rollouts hit a frozen pool; salting per policy
-        # version would invalidate its prefix cache every weight update for
-        # no reason.
-        if live_sourced:
+        # Only endpoints receiving policy weight updates need a cache salt.
+        if live_sourced and self.policy_weights_change:
             cache_salt = str(group.policy_version_at_start)
         else:
             cache_salt = None
