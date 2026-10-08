@@ -119,6 +119,7 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
 
     def broadcast_object_list(values, src):
         assert src == 0
+        assert len(values) == 1 and isinstance(values[0], bool)
         if rank == 0:
             messages.append(pickle.dumps(values))
         else:
@@ -150,10 +151,11 @@ def test_modelexpress_installation_outcome_reaches_non_master_without_shared_sto
         if outcome == "success":
             namespace["acknowledge"](sender, step_dir, SimpleNamespace(version_id="version-a"))
         else:
-            with pytest.raises(error_type[outcome]) as exc:
+            expected_error = error_type[outcome] if rank == 0 else RuntimeError
+            with pytest.raises(expected_error) as exc:
                 namespace["acknowledge"](sender, step_dir, SimpleNamespace(version_id="version-a"))
             errors.append(str(exc.value))
     assert len(messages) == 1
     assert calls == ([(0, "release"), (0, "barrier"), (1, "release"), (1, "barrier")] if outcome == "success" else [])
     if errors:
-        assert errors[0] == errors[1]
+        assert errors[1] == "Inference weight installation failed on trainer rank zero"
