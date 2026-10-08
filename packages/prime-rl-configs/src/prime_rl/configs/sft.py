@@ -101,6 +101,10 @@ class SFTColumnsConfig(BaseConfig):
     tools: str = "tools"
     """Column with the tool schemas in OpenAI function-calling format."""
 
+    message_loss_mask: str = "message_loss_mask"
+    """Optional column with one 0/1 flag per message. When a row has it, only assistant messages flagged 1 are trained
+    (on top of the role-level ``[data.loss_mask]``); rows without it are unaffected."""
+
     renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 

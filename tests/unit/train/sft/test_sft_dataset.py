@@ -304,6 +304,32 @@ def test_multiturn_loss_mask_with_tools():
     print_sample(sample["input_ids"], sample["loss_mask"], tokenizer)
 
 
+def test_message_loss_mask_trains_only_flagged_assistant_messages():
+    messages = [
+        {"role": "system", "content": "System 0"},
+        {"role": "user", "content": "Prompt 0"},
+        {"role": "assistant", "content": "Completion 0"},
+        {"role": "user", "content": "Prompt 1"},
+        {"role": "assistant", "content": "Completion 1"},
+    ]
+    rows = [
+        {"messages": messages, "message_loss_mask": [0, 0, 0, 0, 1]},
+        {"messages": messages, "message_loss_mask": [0, 0, 1, 0, 1]},
+        {"messages": messages, "message_loss_mask": None},
+    ]
+    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
+    dataset = SFTDataset(Dataset.from_list(rows), lambda _: create_renderer(tokenizer), shuffle=False, max_epochs=1)
+    last_only, both, unmasked = [
+        tokenizer.decode([t for t, keep in zip(sample["target_ids"], sample["loss_mask"]) if keep])
+        for sample in dataset
+    ]
+
+    assert "Completion 1" in last_only and "Completion 0" not in last_only
+    assert "Completion 0" in both and "Completion 1" in both
+    assert both == unmasked
+    assert "Prompt" not in both
+
+
 def test_messages_rows_are_equivalent_to_empty_prompt_completion():
     messages = [
         {"role": "system", "content": "You are a helpful assistant with access to tools."},
