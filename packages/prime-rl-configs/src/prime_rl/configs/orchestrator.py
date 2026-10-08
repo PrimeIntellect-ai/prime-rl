@@ -14,13 +14,13 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
-    ClientConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
     ResumeConfig,
     TransportConfig,
+    VLLMClientConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -40,7 +40,7 @@ class ModelConfig(BaseModelConfig):
     lora: LoRAConfig | None = None
     """Per-run LoRA configuration. If None, LoRA is disabled."""
 
-    client: ClientConfig = ClientConfig()
+    client: VLLMClientConfig = Field(default_factory=VLLMClientConfig)
     """Client of the live deployment (``[orchestrator.model.client]``)."""
 
 

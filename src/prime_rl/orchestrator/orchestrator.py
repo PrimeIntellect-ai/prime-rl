@@ -289,9 +289,8 @@ class Orchestrator:
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
-        # A LoRA run's adapter is registered under the base model name: the
-        # single adapter shadows it (vLLM resolves lora_requests before the
-        # base-model match), so requests keep addressing one stable name.
+        # A LoRA run's adapter is registered under the model name clients send;
+        # the inference server serves the base model as ``<model>-base``.
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,

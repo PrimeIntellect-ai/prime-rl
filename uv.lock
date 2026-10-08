@@ -113,12 +113,14 @@ members = [
     "pi-programbench",
     "pi-swe-sweep",
     "pi-terminal-bench-2",
+    "pi-terminalbench2-1",
     "pinchbench",
     "prime-rl",
     "prolog",
     "proofnet",
     "proposer-solver",
     "proverbench",
+    "ptx-remote",
     "putnambench",
     "r2e-gym",
     "recursive-task-synthesis",
@@ -4719,7 +4721,7 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2
 
 [[package]]
 name = "pi-officeqa-pro-v2"
-version = "0.1.4"
+version = "0.1.5"
 source = { editable = "deps/prime-envs/environments/search/pi_officeqa_pro_v2" }
 dependencies = [
     { name = "verifiers" },
@@ -4741,7 +4743,7 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2
 
 [[package]]
 name = "pi-swe-sweep"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/swe/pi_swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -4760,6 +4762,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
+
+[[package]]
+name = "pi-terminalbench2-1"
+version = "0.2.2"
+source = { editable = "deps/prime-envs/environments/terminal/pi_terminalbench2_1" }
+dependencies = [
+    { name = "verifiers", extra = ["harbor"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2.dev162" }]
 
 [[package]]
 name = "pillow"
@@ -5173,7 +5186,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
-    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.3" },
+    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.4" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
@@ -5246,15 +5259,15 @@ requires-dist = [
 
 [[package]]
 name = "prime-runs"
-version = "0.1.3"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "prime-traces" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/ba/3d38aeafc0ef885eef7b99bbe26fe350b4248af8d3fa89d4ca8a249f0f04/prime_runs-0.1.3.tar.gz", hash = "sha256:181ab1c720ed9113abbf3719ba6863c9ee23c55309101c0b7f4021ff9dafbe20", size = 65541, upload-time = "2026-09-17T15:31:42.319Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6c/de/6fb503ce854315d096982b79340b02eb5a978b139a7c719d39df77e7f211/prime_runs-0.1.4.tar.gz", hash = "sha256:f06c2bc7db28f0ed99ca6b06aa5186245ca94009872eb861ab0be7cff25484bd", size = 67282, upload-time = "2026-10-08T00:23:59.354Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/93/5fff685470a6cb12fc93192432951a081de70e271aef1cebc506fba4ccc5/prime_runs-0.1.3-py3-none-any.whl", hash = "sha256:86c3d5183ed5848854a194233b4a9451deabea56a9063771244c5c54c00d69df", size = 45087, upload-time = "2026-09-17T15:31:40.913Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/51/8f300ac057c95afa9df591172b2e8374743afdeeae300771fd78c91a5f75/prime_runs-0.1.4-py3-none-any.whl", hash = "sha256:f33b477c2d53eca08524a3d469810943eee31af8f60ceffc38ef2b9c90596d1b", size = 46253, upload-time = "2026-10-08T00:23:57.736Z" },
 ]
 
 [package.optional-dependencies]
@@ -5264,7 +5277,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.4.2"
+version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5276,9 +5289,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/4d/a379cdf82d6f06c970bd4f0333c2360c08aba65c809d7492f49aece84c66/prime_sandboxes-0.4.2.tar.gz", hash = "sha256:4990a724cac0a662fde6e12e7eccfee092a78679cc568653b8ef52008dfa28e4", size = 139837, upload-time = "2026-10-02T22:38:31.345Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/1b/01e02c9d2346956f5ed77d269f836905a017ad796a4b4c719debd8942dc4/prime_sandboxes-0.4.3.tar.gz", hash = "sha256:a2169182f74307485c73f897e224c978eba3276133ddb40715be4d346594c487", size = 140588, upload-time = "2026-10-08T00:24:03.668Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/b5/6a9fe6ae1342872c1c0cc45072cc0c58a5fa2783c4c45770e585f2535c8f/prime_sandboxes-0.4.2-py3-none-any.whl", hash = "sha256:ed59f001c7575339d6c903166c5468f783eda0997586ec6476fd8b35f65746f9", size = 74970, upload-time = "2026-10-02T22:38:29.565Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/5f/d0b5cd1dabdb6e5cb1ab5d84c8ba9a96e2a9a0be8913ec9db9177c9645fb/prime_sandboxes-0.4.3-py3-none-any.whl", hash = "sha256:dd26007838c25b5d38a8b7af0514c07027b783406c0ea5b9fcf0eb74a45139bd", size = 75515, upload-time = "2026-10-08T00:24:02.208Z" },
 ]
 
 [[package]]
@@ -5296,16 +5309,16 @@ wheels = [
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.11"
+version = "0.1.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/c7/55c21d8e1abfb66d3a0dc0e25b89abb506b0a49605fb4b0040590af82136/prime_tunnel-0.1.11.tar.gz", hash = "sha256:cd93e78824ef824b45e636f5f506898bc7f9a6c913fd5095ab1df2233a49b949", size = 15889, upload-time = "2026-09-04T17:09:25.258Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/8b/b819661ea7dcfff21e4e000d7dfa799bc8107e2659cd5e0d961ecea08235/prime_tunnel-0.1.12.tar.gz", hash = "sha256:157c77cd15a16d091dba4b2df228a6b7e997ed1a3c5bc5f2c51ee989a31602e1", size = 16900, upload-time = "2026-10-04T20:33:47.617Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/7f/6ea38563db9414ed208758de6e8dc557b20e245787e42568f89531fc6717/prime_tunnel-0.1.11-py3-none-any.whl", hash = "sha256:19c5e02e389e5e61fff1507f07c46db9b05ad01424ff3b6a0cbe66187c957f61", size = 16676, upload-time = "2026-09-04T17:09:24.157Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/6a/b368c2cececc589bb8b13bf3c9cc819b4d29fc962d0ea9ffde005b873222/prime_tunnel-0.1.12-py3-none-any.whl", hash = "sha256:441d0a2f29c7e78a9337ee336c828fcc5ce1515c8cd12014b7d6c0b9728c355b", size = 16992, upload-time = "2026-10-04T20:33:46.17Z" },
 ]
 
 [[package]]
@@ -5463,6 +5476,32 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/13/125093eadae863ce03c6ffdbae9929430d116a246ef69866dad94da3bfbc/psutil-7.2.2-cp36-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8", size = 148972, upload-time = "2026-01-28T18:15:29.342Z" },
     { url = "https://files.pythonhosted.org/packages/04/78/0acd37ca84ce3ddffaa92ef0f571e073faa6d8ff1f0559ab1272188ea2be/psutil-7.2.2-cp36-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc", size = 148266, upload-time = "2026-01-28T18:15:31.597Z" },
 ]
+
+[[package]]
+name = "ptx-remote"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/code/ptx_remote" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "verifiers" },
+]
+
+[package.optional-dependencies]
+server = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30" },
+    { name = "verifiers", specifier = ">=0.3.2.dev150" },
+]
+provides-extras = ["server"]
 
 [[package]]
 name = "ptyprocess"
@@ -7766,9 +7805,9 @@ requires-dist = [
     { name = "openai", specifier = ">=2.54.0,<3.0.0" },
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
-    { name = "prime-runs", specifier = ">=0.1.3" },
+    { name = "prime-runs", specifier = ">=0.1.4" },
     { name = "prime-sandboxes", specifier = ">=0.4.2" },
-    { name = "prime-tunnel", specifier = ">=0.1.8" },
+    { name = "prime-tunnel", specifier = ">=0.1.12" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.12.dev2" },
