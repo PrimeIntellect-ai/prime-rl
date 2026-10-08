@@ -13,10 +13,10 @@ from vllm.distributed.utils import StatelessProcessGroup
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
+from prime_rl.trainer.vlm import get_layer_prefix
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
-from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import resolve_wire_dtype
 
 
@@ -152,7 +152,7 @@ class NCCLBroadcaster:
     def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
         state_dict = model.state_dict()
-        layer_prefix = get_layer_prefix(model.config)
+        layer_prefix = get_layer_prefix(model)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 

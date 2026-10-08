@@ -14,6 +14,7 @@ from prime_rl.configs.shared import (
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
+    VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -259,6 +260,9 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    vlm: VLMConfig | None = None
+    """VLM configuration. Setting this enables vision-language model support."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 

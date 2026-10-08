@@ -185,12 +185,6 @@ ServerType = Literal["vllm", "openai"]
 
 
 class VLMConfig(BaseConfig):
-    vision_encoder_attr: str
-    """Dotted attribute path to the vision encoder module (e.g. ``model.visual``)."""
-
-    language_model_attr: str
-    """Dotted attribute path to the language model module (e.g. ``model.language_model``)."""
-
     freeze_vision_encoder: bool = True
     """Freeze the vision encoder parameters during training."""
 
@@ -201,9 +195,6 @@ class BaseModelConfig(BaseConfig):
 
     trust_remote_code: bool = False
     """Trust remote code when initializing the tokenizer."""
-
-    vlm: "VLMConfig | None" = None
-    """VLM configuration. Setting this enables vision-language model support."""
 
 
 class DynamoConfig(BaseConfig):
