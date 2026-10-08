@@ -214,9 +214,11 @@ class PerfCounter:
         return flop_per_token
 
     def _count_lora_adapter_params(self) -> int:
-        """Count LoRA adapter parameters (sum of lora_A and lora_B across all LoRA modules)."""
         return sum(
-            module.get_lora_param_counts()[0] for module in self.model.modules() if isinstance(module, LoRAModule)
+            p.numel()
+            for module in self.model.modules()
+            if isinstance(module, LoRAModule)
+            for p in module.parameters(recurse=False)
         )
 
 

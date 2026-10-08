@@ -1,3 +1,4 @@
+import math
 from abc import abstractmethod
 from typing import Any
 
@@ -12,15 +13,22 @@ def lora_parameter(*shape: int, like: torch.Tensor) -> nn.Parameter:
 
 
 class LoRAModule(nn.Module):
-    """Base class for LoRA-wrapped modules."""
+    """Base class for LoRA-wrapped modules.
+
+    Subclasses register their ``*lora_A`` / ``*lora_B`` parameters directly on the module and call
+    ``reset_parameters()`` at the end of ``__init__``.
+    """
 
     base_layer: nn.Module
 
-    def __init__(self, base_layer: nn.Module) -> None:
+    def __init__(self, base_layer: nn.Module, rank: int, alpha: float, dropout: float) -> None:
         super().__init__()
         self.base_layer = base_layer
+        self.rank = rank
+        self.alpha = alpha
+        self.scaling = alpha / rank
+        self.lora_dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
-        # Freeze base layer parameters
         for param in self.base_layer.parameters():
             param.requires_grad = False
 
@@ -29,26 +37,21 @@ class LoRAModule(nn.Module):
         # load_state_dict pre-hook to add back prefix (to load base_layer parameters)
         self.register_load_state_dict_pre_hook(self._pre_load_state_dict_hook)
 
-    @abstractmethod
     def reset_parameters(self) -> None:
-        """Reset LoRA parameters."""
-        ...
+        """Kaiming uniform for A, zeros for B."""
+        for name, param in self.named_parameters(recurse=False):
+            if name.endswith("lora_A"):
+                nn.init.kaiming_uniform_(param, a=math.sqrt(5))
+            else:
+                nn.init.zeros_(param)
 
     @abstractmethod
     def adapter_state_dict(self) -> dict[str, torch.Tensor]:
         """Adapter tensors in the vLLM/PEFT layout, keyed relative to this module."""
         ...
 
-    @abstractmethod
-    def get_lora_param_counts(self) -> tuple[int, int]:
-        """Get the number of LoRA adapter parameters and adapted base parameters.
-
-        Returns:
-            A tuple of (adapter_params, adapted_params) where:
-            - adapter_params: Number of parameters in the LoRA adapter (lora_A + lora_B)
-            - adapted_params: Number of base layer parameters being adapted by LoRA
-        """
-        ...
+    def extra_repr(self) -> str:
+        return f"rank={self.rank}, alpha={self.alpha}"
 
     def __getattr__(self, name: str) -> Any:
         """Forward missing attributes to wrapped module."""
@@ -56,10 +59,6 @@ class LoRAModule(nn.Module):
             return super().__getattr__(name)  # defer to nn.Module's logic
         except AttributeError:
             return getattr(self.base_layer, name)
-
-    def __getitem__(self, key: int) -> Any:
-        """Forward indexing calls in case the module is a nn.Sequential."""
-        return self.base_layer.__getitem__(key)  # type: ignore[operator]
 
     @staticmethod
     def _post_state_dict_hook(
