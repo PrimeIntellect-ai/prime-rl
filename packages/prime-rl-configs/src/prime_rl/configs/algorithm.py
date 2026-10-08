@@ -119,7 +119,7 @@ class CostPenaltyConfig(BaseConfig):
 
     type: Literal["cost"] = "cost"
 
-    reward_per_usd: float = Field(ge=0, allow_inf_nan=False)
+    reward_per_usd: float = Field(gt=0, allow_inf_nan=False)
     """Reward lost per USD of cost, at pass rate 1."""
 
     input_usd_per_mtok: float = Field(ge=0, allow_inf_nan=False)
