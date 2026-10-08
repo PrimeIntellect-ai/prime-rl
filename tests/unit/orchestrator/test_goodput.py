@@ -268,3 +268,13 @@ def test_unfinished_groups_do_not_make_a_distant_deadline_look_stale(clock):
     assert ctl.model(16, 1.0)[2] > 0.99  # deadline far beyond every age: all fresh
     assert ctl.model(1e6, 1.0)[2] < 0.5  # deadline shorter than the in-flight ages
     assert ctl.eta(1e6, 1.0) == 1.0  # mostly extrapolated: no freshness verdict yet
+
+
+def test_down_moves_are_not_aborted_as_collapsed_probes(clock):
+    ctl = make_ctl(clock, staleness=False, initial_inflight=128, max_inflight=128)
+    drive(ctl, clock, lambda p: 10.0 * p, 600)  # measure 128
+    ctl.record(bin_of(64), 100.0)  # a stale, low estimate must not decide the probe
+    ctl.move(bin_of(64), clock.t, reason="test")
+    # Settle, then the abort window at half the throughput, short of the decision
+    caps = drive(ctl, clock, lambda p: 10.0 * p, 85)
+    assert set(caps) == {64}

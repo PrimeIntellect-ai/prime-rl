@@ -437,14 +437,15 @@ class GoodputController:
         self.acc_pool += inflight * dt
         self.rates.append(rate)
 
-        if self.prev is not None and self.prev in self.bins and len(self.rates) >= ABORT_POLLS:
+        # Only up-probes abort: they can fall off a cliff (thrash, eviction).
+        # A smaller cap is expected to generate less; its verdict waits for
+        # the full window
+        if self.prev is not None and self.prev < self.cur and self.prev in self.bins and len(self.rates) >= ABORT_POLLS:
             # Judge the probe on its running mean, and only when even its upper
             # noise band falls short: single polls are noise when few episodes
             # generate at once
             T_probe = self.acc_tokens / self.acc_time + 2.0 * math.sqrt(self.phase_noise())
-            if self.score(self.cur, optimistic=False) * T_probe / max(self.acc_tokens / self.acc_time, 1e-9) < (
-                ABORT_RATIO * self.score(self.prev, optimistic=False)
-            ):
+            if self.score(self.cur, T=T_probe) < ABORT_RATIO * self.score(self.prev, optimistic=False):
                 self.record(self.cur, self.acc_tokens / self.acc_time, self.phase_noise())
                 self.penalized[self.cur] = now
                 self.move(self.prev, now, reason="probe collapsed")
@@ -591,12 +592,13 @@ class GoodputController:
         ratio = bin_size(i) / bin_size(near)
         return self.bins[near].mean * (ratio if i > near else math.sqrt(ratio))
 
-    def score(self, i: int, *, optimistic: bool = True) -> float:
+    def score(self, i: int, *, optimistic: bool = True, T: float | None = None) -> float:
         """Goodput, discounted by ``(eta / min_fresh_fraction) ** freshness_weight``
         below the freshness floor: below it, staleness waste and the batch's
         bias toward short groups trade against throughput instead of being
         bought at any throughput cost."""
-        T = self.estimate(i, optimistic=optimistic)
+        if T is None:
+            T = self.estimate(i, optimistic=optimistic)
         if T is None:
             return 0.0
         P = bin_size(i)
