@@ -351,6 +351,14 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def vlm_requires_bf16(self):
+        if self.vlm is not None and (self.optimization_dtype != "bfloat16" or self.reduce_dtype != "bfloat16"):
+            raise ValueError(
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
