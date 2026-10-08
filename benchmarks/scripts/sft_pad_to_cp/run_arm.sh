@@ -4,6 +4,7 @@ set -euo pipefail
 arm=$HOME/tmp/sft_pad_to_cp/arms/$1; node=$2; run=$3; config=$4
 runs=$HOME/tmp/sft_pad_to_cp/runs
 mkdir -p "$runs"
+printf -v extra ' %q' "${@:5}"
 srun --jobid=3409 --overlap -N1 --ntasks-per-node=1 --nodelist="$node" env -u HF_HOME bash -c '
   set -euo pipefail
   cache=/tmp/garrett/sftpad/'"$run"'
@@ -11,5 +12,5 @@ srun --jobid=3409 --overlap -N1 --ntasks-per-node=1 --nodelist="$node" env -u HF
   export HF_HUB_CACHE=/home/huggingface/hub TRITON_CACHE_DIR=$cache/triton TORCHINDUCTOR_CACHE_DIR=$cache/inductor
   export TRITON_PRINT_AUTOTUNING=1 TORCH_LOGS=recompiles PRL_OUTPUT_DIR='"$runs"'
   cd '"$arm"'
-  uv run --no-sync sft @ '"$config"' --run.name '"$run"' --monitors.wandb.name '"$run"' --no-dashboard '"${*:5}"'
+  uv run --no-sync sft @ '"$config"' --run.name '"$run"' --monitors.wandb.name '"$run"' --no-dashboard'"$extra"'
 '
