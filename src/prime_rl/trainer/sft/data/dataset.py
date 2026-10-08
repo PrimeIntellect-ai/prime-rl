@@ -3,7 +3,7 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Literal, TypedDict, cast
+from typing import Any, Callable, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 import torch
@@ -33,6 +33,7 @@ class Sample(TypedDict):
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
+    num_tokens: NotRequired[int]
 
 
 class Batch(TypedDict):
@@ -43,6 +44,8 @@ class Batch(TypedDict):
     seq_lens: Int[Tensor, "packed"]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+    num_tokens: int
+    sample_ids: NotRequired[list[int]]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -591,6 +594,7 @@ class CatDataset(StatefulIterableDataset):
             result["target_ids"].extend([0] * pad_len)
             result["seq_lens"][-1] += pad_len
         result["mm_kwargs"] = packed["mm_kwargs"]
+        result["num_tokens"] = seq_len - pad_len
         if packed["mm_token_type_ids"] is not None:
             result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
         else:
@@ -609,6 +613,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
         "target_ids": torch.tensor(sample["target_ids"], dtype=torch.long).unsqueeze(0),
         "seq_lens": torch.tensor(sample["seq_lens"], dtype=torch.long),
+        "num_tokens": sample.get("num_tokens", len(sample["input_ids"])),
         "mm_kwargs": dict(mm_kwargs) if mm_kwargs is not None else None,
         "mm_token_type_ids": (
             torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
@@ -753,7 +758,7 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
+def setup_local_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
     packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
     return StatefulDataLoader(
         packing_dataset,

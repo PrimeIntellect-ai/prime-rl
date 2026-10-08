@@ -6,7 +6,9 @@ import torch
 from datasets import Dataset
 
 from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
-from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
+from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
+from prime_rl.trainer.sft.data.dataset import FakeDataset, SFTDataset
+from prime_rl.trainer.sft.data.dataset import setup_local_dataloader as setup_dataloader
 from prime_rl.trainer.world import reset_world
 
 

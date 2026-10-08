@@ -105,6 +105,11 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
+class PackingConfig(BaseConfig):
+    chunk_size: int = Field(16, ge=1)
+    """Source examples per rank per metadata gather. Larger chunks amortize communication at the cost of more buffering, without changing packing order or batch membership."""
+
+
 class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
@@ -131,6 +136,9 @@ class SFTDataConfig(BaseDataConfig):
 
     seed: int = 0
     """Random seed for shuffling. Re-shuffled per epoch by adding the epoch count to the seed."""
+
+    packing: PackingConfig = PackingConfig()
+    """Global text-SFT packing and distributed data-loading settings."""
 
     columns: SFTColumnsConfig = SFTColumnsConfig()
     """Columns that carry per-sample renderer arguments."""

@@ -41,10 +41,10 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import (
     get_dataset_progress,
     get_dataset_state,
-    load_sft_dataset,
     setup_dataloader,
-    setup_dataset,
 )
+from prime_rl.trainer.sft.data.broker import PackedDataLoader
+from prime_rl.trainer.sft.data.dataset import load_sft_dataset
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -184,15 +184,15 @@ def train(config: SFTConfig):
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
-    dataset = setup_dataset(
+    dataloader = setup_dataloader(
         tokenizer,
         config.data,
         config.model.cp,
+        timeout_seconds=config.dist_timeout_seconds,
         renderer_config=config.renderer,
         processor=processor,
         multimodal=multimodal,
     )
-    dataloader = setup_dataloader(dataset, config.data)
 
     val_raw_dataset = None
     if config.val is not None:
@@ -332,23 +332,28 @@ def train(config: SFTConfig):
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        return mean_loss, nan_count.item(), total_token_count.item()
 
     def run_validation(step: int) -> None:
-        val_dataset = setup_dataset(
+        val_dataloader = setup_dataloader(
             tokenizer,
             config.val.data,
             config.model.cp,
+            timeout_seconds=config.dist_timeout_seconds,
+            validation=True,
             max_epochs=1,
             raw_dataset=val_raw_dataset,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
         )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        mean_loss, nan_count, token_count = run_eval_loop(val_dataloader)
+        validation_metrics = {"val/trainable_tokens": token_count}
+        if isinstance(val_dataloader, PackedDataLoader):
+            validation_metrics["val/num_samples"] = sum(val_dataloader.dataset_progress["num_samples"].values())
+            val_dataloader.close()
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             get_load_balance_stats(model)
@@ -360,7 +365,13 @@ def train(config: SFTConfig):
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
         asyncio.run(
             monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+                {
+                    "val/loss": mean_loss,
+                    "val/perplexity": math.exp(min(mean_loss, 20)),
+                    **validation_metrics,
+                    "step": step,
+                },
+                step=step,
             )
         )
 
@@ -415,6 +426,7 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
+        step_real_tokens = 0
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
@@ -452,6 +464,7 @@ def train(config: SFTConfig):
 
         step_tokens_per_expert = 0
         for micro_step, micro_batch in enumerate(micro_batches):
+            step_real_tokens += micro_batch["num_tokens"]
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
@@ -486,6 +499,11 @@ def train(config: SFTConfig):
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        real_tokens = torch.tensor(step_real_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(real_tokens, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        real_token_count = real_tokens.item() // cp_size
+        lane_times = torch.tensor([forward_backward_time], device="cuda")
+        dist.all_reduce(lane_times, op=dist.ReduceOp.MAX, group=dp_cp_group)
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
@@ -610,6 +628,12 @@ def train(config: SFTConfig):
         # Log performance metrics
         perf_metrics = {
             "perf/throughput": throughput,
+            "perf/trainable_tokens_per_second": global_token_count_val / step_time,
+            "perf/real_tokens_per_second": real_token_count / step_time,
+            "packing/fill_ratio": real_token_count / num_tokens,
+            "packing/trainable_ratio": global_token_count_val / num_tokens,
+            "packing/real_tokens": real_token_count,
+            "packing/trainable_tokens": global_token_count_val,
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
             "perf/mfu": mfu,
@@ -641,8 +665,11 @@ def train(config: SFTConfig):
             "time/save_ckpt": save_ckpt_time,
             "time/broadcast_weights": broadcast_weights_time,
             "time/forward_backward": forward_backward_time,
+            "time/forward_backward_max": lane_times.item(),
             "step": progress.step,
         }
+        if isinstance(dataloader, PackedDataLoader):
+            time_metrics.update(dataloader.metrics)
         asyncio.run(monitors.log(time_metrics, step=progress.step))
 
         # Log disk metrics
@@ -685,6 +712,9 @@ def train(config: SFTConfig):
 
     if gradient_manager is not None:
         gradient_manager.close()
+
+    if isinstance(dataloader, PackedDataLoader):
+        dataloader.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success("SFT trainer finished")
