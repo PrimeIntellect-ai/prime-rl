@@ -518,7 +518,12 @@ def train(config: SFTConfig):
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")
-        optimizer.step()
+        optimizer_start_event = torch.cuda.Event(enable_timing=True)
+        optimizer_end_event = torch.cuda.Event(enable_timing=True)
+        optimizer_start_event.record()
+        with maybe_record_function("optimizer"):
+            optimizer.step()
+        optimizer_end_event.record()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
@@ -636,11 +641,13 @@ def train(config: SFTConfig):
         asyncio.run(monitors.log(loss_log_metrics, step=progress.step))
 
         # Log time metrics
+        optimizer_end_event.synchronize()
         time_metrics = {
             "time/step": step_time,
             "time/save_ckpt": save_ckpt_time,
             "time/broadcast_weights": broadcast_weights_time,
             "time/forward_backward": forward_backward_time,
+            "time/optimizer": optimizer_start_event.elapsed_time(optimizer_end_event) / 1000,
             "step": progress.step,
         }
         asyncio.run(monitors.log(time_metrics, step=progress.step))

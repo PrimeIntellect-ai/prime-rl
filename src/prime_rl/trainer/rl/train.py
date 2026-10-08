@@ -575,7 +575,12 @@ def train(config: TrainerConfig):
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # Update the model parameters
-        optimizer.step()
+        optimizer_start_event = torch.cuda.Event(enable_timing=True)
+        optimizer_end_event = torch.cuda.Event(enable_timing=True)
+        optimizer_start_event.record()
+        with maybe_record_function("optimizer"):
+            optimizer.step()
+        optimizer_end_event.record()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
@@ -688,6 +693,7 @@ def train(config: TrainerConfig):
         asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
 
         # Log time metrics
+        optimizer_end_event.synchronize()
         time_metrics = {
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
@@ -695,6 +701,7 @@ def train(config: TrainerConfig):
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
+            "time/optimizer": optimizer_start_event.elapsed_time(optimizer_end_event) / 1000,
             "step": progress.step,
         }
         asyncio.run(monitors.log(time_metrics, step=progress.step))
