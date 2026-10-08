@@ -163,6 +163,8 @@ language_model_attr = "model.language_model"
 # freeze_vision_encoder = true  # default; set false to fine-tune the encoder
 ```
 
+For `rl`, keep `[model.vlm]` in the shared `[model]` block but set the dtypes under `[trainer.model]` (see `configs/ci/nightly/multimodal_color_codeword.toml`).
+
 The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
 
 VLM training requires a registered custom PrimeRL implementation.
