@@ -107,13 +107,15 @@ transport = "bf16"
 
 For DeepEP, set `type = "deepep"` and tune `num_sms` plus optional `token_chunk_size` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
-Mega MoE (`type = "mega_moe"`) fuses dispatch, the bf16 SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs; `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork. It is distributed to partners as a prebuilt `deep_gemm` wheel that replaces the public one; install it after syncing with `uv pip install --no-deps <wheel>`. Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, SM100 GPUs, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128:
+Mega MoE (`type = "mega_moe"`) fuses dispatch, the SwiGLU expert MLP, and combine into one persistent kernel per direction, overlapping the expert-parallel communication with the GEMMs. `precision` selects `bf16` (default) or `mxfp8` expert GEMMs; `[trainer.model.moe.compute]` does not apply to those layers. The kernels come from prime-mega-moe, Prime Intellect's closed-source DeepGEMM fork, built as a `deep_gemm` wheel that replaces the public one (`uv pip install --no-deps <wheel>` after syncing). Without it, selecting `mega_moe` fails at startup with a message naming the missing kernels. Mega MoE needs EP > 1, SM90+ GPUs for `bf16` and SM100 for `mxfp8`, nvcc 13 on `CUDA_HOME` for the runtime JIT, gated experts without biases, `hidden_size` divisible by 256 and `moe_intermediate_size` by 128.
+
+The kernels are persistent grids that synchronize across ranks, so an NCCL kernel on another stream (FSDP all-gathers, gradient reductions) has to fit in the SMs they leave free, or the two deadlock. `num_reserved_sms` is how many SMs they leave free. `NCCL_MAX_CTAS` caps the CTAs (one per SM) a NCCL kernel launches, so the trainer refuses to start unless it is set to at most `num_reserved_sms`. 16 is enough for FSDP's collectives; every reserved SM is taken from the GEMMs, so match the two rather than over-reserving. The symmetric buffer is sized once at startup from `max_tokens_per_rank`, which defaults to the micro batch (`model.seq_len` for RL, `data.micro_batch_size * data.seq_len` for SFT); set it only to size the buffer for a different bound.
 
 ```toml
 [trainer.model.moe.dispatch]
 type = "mega_moe"
-max_tokens_per_rank = 2048  # >= micro_batch_size * seq_len on every rank
-num_reserved_sms = 16       # SMs left free for NCCL; pair with NCCL_MAX_CTAS <= this
+precision = "bf16"     # or "mxfp8" on SM100
+num_reserved_sms = 16  # SMs left free for NCCL; NCCL_MAX_CTAS must be <= this
 
 [trainer.env_vars]
 NCCL_MAX_CTAS = "16"

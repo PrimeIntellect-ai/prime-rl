@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -7,9 +8,9 @@ import torch
 import triton
 import triton.language as tl
 from torch.distributed import ProcessGroup
-from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.activations import Activation, ClampedSilu, Silu
+from prime_rl.trainer.models.layers.expert_compute import to_local
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -48,14 +49,29 @@ def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
 
 
 @dataclass
-class MegaMoeExpertWeights:
+class MegaMoeBF16ExpertWeights:
     l1: torch.Tensor
+    """Gate/up concatenated ``[E, 2I, H]``."""
     l2: torch.Tensor
+    """``[E, H, I]``."""
+
+    @classmethod
+    def build(cls, gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> MegaMoeBF16ExpertWeights:
+        return cls(l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous())
 
 
 def reserve_sms_for_comm(num_reserved_sms: int) -> None:
+    """Cap the Mega MoE grids at ``total - num_reserved_sms`` SMs. The grids are persistent and
+    synchronize across ranks, so a concurrent NCCL kernel must fit in the reserved SMs or the two
+    deadlock; ``NCCL_MAX_CTAS`` (one CTA per SM) bounds how many a NCCL kernel takes."""
     import deep_gemm
 
+    nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
+    if nccl_max_ctas is None or int(nccl_max_ctas) > num_reserved_sms:
+        raise ValueError(
+            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, so `NCCL_MAX_CTAS` must be set to at most "
+            f"{num_reserved_sms} (got {nccl_max_ctas!r}); set it in `env_vars` or raise `num_reserved_sms`."
+        )
     total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
     deep_gemm.set_num_sms(max(total - num_reserved_sms, 1))
 
@@ -250,28 +266,31 @@ class MegaMoeFP8ExpertWeights:
     l2_t: tuple[torch.Tensor, torch.Tensor] | None
     """``[E, H, I]`` scaled along H (backward dz = dy @ W2)."""
 
+    @classmethod
+    def build(cls, gate_up_proj: torch.Tensor, down_proj: torch.Tensor, for_backward: bool) -> MegaMoeFP8ExpertWeights:
+        from deep_gemm.mega import _interleave_weights
 
-def _fp8_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor, for_backward: bool) -> MegaMoeFP8ExpertWeights:
-    from deep_gemm.mega import _interleave_weights
-
-    num_experts, two_i, hidden = gate_up_proj.shape
-    inter = two_i // 2
-    l1_bf16 = _interleave_weights(gate_up_proj.contiguous())
-    l1_fp8, l1_sf = _mx_cast(l1_bf16.view(num_experts * two_i, hidden), along_rows=False)
-    l1 = (l1_fp8.view(num_experts, two_i, hidden), _mx_weight_sf(l1_sf.view(num_experts, two_i, -1), two_i, hidden))
-    if not for_backward:
-        down = down_proj.contiguous()
-        l2_fp8, l2_sf = _mx_cast(down.view(num_experts * hidden, inter), along_rows=False)
-        l2 = (
-            l2_fp8.view(num_experts, hidden, inter),
-            _mx_weight_sf(l2_sf.view(num_experts, hidden, -1), hidden, inter),
+        num_experts, two_i, hidden = gate_up_proj.shape
+        inter = two_i // 2
+        l1_bf16 = _interleave_weights(gate_up_proj.contiguous())
+        l1_fp8, l1_sf = _mx_cast(l1_bf16.view(num_experts * two_i, hidden), along_rows=False)
+        l1 = (
+            l1_fp8.view(num_experts, two_i, hidden),
+            _mx_weight_sf(l1_sf.view(num_experts, two_i, -1), two_i, hidden),
         )
-        return MegaMoeFP8ExpertWeights(l1=l1, l2=l2, l1_t=None, l2_t=None)
-    l1_t_fp8, l1_t_sf = _cast_weight_along_rows(l1_bf16)
-    l1_t = (l1_t_fp8, _mx_weight_sf(l1_t_sf, hidden, two_i))
-    l2_t_fp8, l2_t_sf = _cast_weight_along_rows(down_proj.contiguous())
-    l2_t = (l2_t_fp8, _mx_weight_sf(l2_t_sf, inter, hidden))
-    return MegaMoeFP8ExpertWeights(l1=l1, l2=None, l1_t=l1_t, l2_t=l2_t)
+        if not for_backward:
+            down = down_proj.contiguous()
+            l2_fp8, l2_sf = _mx_cast(down.view(num_experts * hidden, inter), along_rows=False)
+            l2 = (
+                l2_fp8.view(num_experts, hidden, inter),
+                _mx_weight_sf(l2_sf.view(num_experts, hidden, -1), hidden, inter),
+            )
+            return cls(l1=l1, l2=l2, l1_t=None, l2_t=None)
+        l1_t_fp8, l1_t_sf = _cast_weight_along_rows(l1_bf16)
+        l1_t = (l1_t_fp8, _mx_weight_sf(l1_t_sf, hidden, two_i))
+        l2_t_fp8, l2_t_sf = _cast_weight_along_rows(down_proj.contiguous())
+        l2_t = (l2_t_fp8, _mx_weight_sf(l2_t_sf, inter, hidden))
+        return cls(l1=l1, l2=None, l1_t=l1_t, l2_t=l2_t)
 
 
 def mega_moe_forward_fp8(
@@ -334,7 +353,7 @@ def mega_moe_forward(
     x: torch.Tensor,
     topk_idx: torch.Tensor,
     topk_weights: torch.Tensor,
-    weights: MegaMoeExpertWeights,
+    weights: MegaMoeBF16ExpertWeights,
     buffer,
     activation_clamp: float | None = None,
 ) -> torch.Tensor:
@@ -345,12 +364,6 @@ def mega_moe_forward(
     y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
     deep_gemm.bf16_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
     return y
-
-
-def _bf16_weights(gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> MegaMoeExpertWeights:
-    return MegaMoeExpertWeights(
-        l1=gate_up_proj.to(torch.bfloat16).contiguous(), l2=down_proj.to(torch.bfloat16).contiguous()
-    )
 
 
 def _dw_dtype(weight: torch.Tensor) -> torch.dtype:
@@ -374,14 +387,13 @@ def mega_moe_forward_op(
             x_bf16,
             topk_idx,
             topk_weights,
-            _fp8_weights(gate_up_proj, down_proj, for_backward=False),
+            MegaMoeFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=False),
             buffer,
             activation_clamp,
         )
     else:
-        y = mega_moe_forward(
-            x_bf16, topk_idx, topk_weights, _bf16_weights(gate_up_proj, down_proj), buffer, activation_clamp
-        )
+        weights = MegaMoeBF16ExpertWeights.build(gate_up_proj, down_proj)
+        y = mega_moe_forward(x_bf16, topk_idx, topk_weights, weights, buffer, activation_clamp)
     return y.to(x.dtype)
 
 
@@ -417,7 +429,7 @@ def mega_moe_backward_op(
             x_bf16,
             topk_idx,
             topk_weights,
-            _fp8_weights(gate_up_proj, down_proj, for_backward=True),
+            MegaMoeFP8ExpertWeights.build(gate_up_proj, down_proj, for_backward=True),
             buffer,
             _dw_dtype(gate_up_proj),
             activation_clamp=activation_clamp,
@@ -428,7 +440,7 @@ def mega_moe_backward_op(
             x_bf16,
             topk_idx,
             topk_weights,
-            _bf16_weights(gate_up_proj, down_proj),
+            MegaMoeBF16ExpertWeights.build(gate_up_proj, down_proj),
             buffer,
             _dw_dtype(gate_up_proj),
             activation_clamp=activation_clamp,
@@ -478,7 +490,7 @@ def mega_moe_backward(
     x: torch.Tensor,
     topk_idx: torch.Tensor,
     topk_weights: torch.Tensor,
-    weights: MegaMoeExpertWeights,
+    weights: MegaMoeBF16ExpertWeights,
     buffer,
     dw_dtype: torch.dtype,
     activation_clamp: float | None = None,
@@ -505,10 +517,6 @@ def mega_moe_backward(
     return dx, dw1, dw2, dtopk
 
 
-def _to_local(tensor: torch.Tensor) -> torch.Tensor:
-    return tensor.to_local() if isinstance(tensor, DTensor) else tensor
-
-
 def _activation_clamp(activation: type[Activation] | Activation) -> float | None:
     if activation is Silu or isinstance(activation, Silu):
         return None
@@ -518,11 +526,15 @@ def _activation_clamp(activation: type[Activation] | Activation) -> float | None
 
 
 class MegaMoEExpertCompute:
+    """One instance serves every MoE layer: the symmetric buffer is sized once from the shared
+    expert shapes, and ``validate`` checks each layer against them."""
+
     def __init__(
         self,
-        experts: "GroupedExperts",
         num_experts: int,
         top_k: int,
+        hidden: int,
+        intermediate_hidden: int,
         group: ProcessGroup,
         max_tokens_per_rank: int,
         num_reserved_sms: int = 16,
@@ -535,15 +547,14 @@ class MegaMoEExpertCompute:
                 "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed over the public one; "
                 f"this build does not expose {kernels}."
             )
-        self.validate(experts)
-        hidden = experts.down_proj.shape[1]
+        check_mega_moe_dims(hidden, intermediate_hidden)
         reserve_sms_for_comm(num_reserved_sms)
 
-        self.precision = precision
-        self.activation_clamp = _activation_clamp(experts.activation)
+        self.hidden = hidden
+        self.intermediate_hidden = intermediate_hidden
         self.max_tokens_per_rank = max_tokens_per_rank
         self.buffer = build_mega_moe_buffer(
-            group, num_experts, max_tokens_per_rank, top_k, hidden, experts.hidden_dim, precision
+            group, num_experts, max_tokens_per_rank, top_k, hidden, intermediate_hidden, precision
         )
         # Registered once here: a registry write inside the compiled, checkpointed block is a side effect dynamo rejects.
         self.buffer_key = register_mega_moe_buffer(self.buffer)
@@ -554,7 +565,12 @@ class MegaMoEExpertCompute:
         if any(bias is not None for bias in (experts.gate_proj_bias, experts.up_proj_bias, experts.down_proj_bias)):
             raise ValueError("Mega MoE does not support expert biases.")
         _activation_clamp(experts.activation)
-        check_mega_moe_dims(experts.down_proj.shape[1], experts.hidden_dim)
+        hidden, intermediate_hidden = experts.down_proj.shape[1], experts.hidden_dim
+        if (hidden, intermediate_hidden) != (self.hidden, self.intermediate_hidden):
+            raise ValueError(
+                f"Mega MoE's buffer is sized for hidden={self.hidden}, intermediate_hidden={self.intermediate_hidden}; "
+                f"got experts with hidden={hidden}, intermediate_hidden={intermediate_hidden}."
+            )
 
     def __call__(
         self,
@@ -570,15 +586,15 @@ class MegaMoEExpertCompute:
                 "Raise `model.moe.dispatch.max_tokens_per_rank`."
             )
         if experts.gate_up_proj is not None:
-            gate_up_proj = _to_local(experts.gate_up_proj)
+            gate_up_proj = to_local(experts.gate_up_proj)
         else:
-            gate_up_proj = torch.cat([_to_local(experts.gate_proj), _to_local(experts.up_proj)], dim=1)
+            gate_up_proj = torch.cat([to_local(experts.gate_proj), to_local(experts.up_proj)], dim=1)
         return torch.ops.prime_rl.mega_moe_forward(
             x,
             selected_experts_indices.to(torch.int64),
             top_scores.to(torch.float32),
             gate_up_proj,
-            _to_local(experts.down_proj),
+            to_local(experts.down_proj),
             self.buffer_key,
-            self.activation_clamp,
+            _activation_clamp(experts.activation),
         )

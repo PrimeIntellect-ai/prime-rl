@@ -260,16 +260,19 @@ class MegaMoeMoEDispatchConfig(BaseConfig):
     (E4M3 data with 1x32 UE8M0 block scales, like the ``mxfp8`` expert compute); expert weights and
     routed activations are quantized per call, gradients stay BF16/FP32. SM100 only."""
 
-    max_tokens_per_rank: int = Field(8192, ge=1)
-    """Upper bound on routed tokens per rank per forward call, used to size Mega MoE's symmetric
-    buffer once at startup. Must be >= the largest `bs * slen` any rank will pass through a MoE
-    layer; raise it if you hit a "buffer is sized for N tokens/rank" error."""
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Upper bound on tokens per rank per MoE forward call, used to size Mega MoE's symmetric buffer
+    once at startup. Defaults to the micro batch: ``model.seq_len`` for RL (one packed sequence per
+    micro batch) and ``data.micro_batch_size * data.seq_len`` for SFT. Set it to size the buffer for
+    a different bound."""
 
-    num_reserved_sms: int = Field(16, ge=0)
+    num_reserved_sms: int = Field(16, ge=1)
     """SMs left free for concurrent NCCL kernels (FSDP all-gathers etc.). The Mega MoE kernels are
     persistent grids that synchronize across ranks; if they occupied every SM while an NCCL kernel
-    on another stream was waiting for a peer, the two would deadlock. Pair with ``NCCL_MAX_CTAS``
-    <= this value in ``env_vars`` so every NCCL kernel fits in the reserved SMs."""
+    on another stream was waiting for a peer, the two would deadlock. ``NCCL_MAX_CTAS`` caps the
+    CTAs (one per SM) a NCCL kernel launches, so set it to this value in ``env_vars``; startup fails
+    if it is unset or larger. 16 is enough for FSDP's collectives; every reserved SM is taken from
+    the GEMMs, so don't reserve more than NCCL uses."""
 
 
 MoEDispatchConfig: TypeAlias = Annotated[
@@ -707,6 +710,14 @@ class TrainerConfig(BaseConfig):
         """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = 0.0
+        return self
+
+    @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe" and dispatch.max_tokens_per_rank is None:
+            dispatch.max_tokens_per_rank = self.model.seq_len
         return self
 
     @model_validator(mode="after")

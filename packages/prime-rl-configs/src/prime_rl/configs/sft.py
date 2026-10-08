@@ -564,6 +564,14 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe" and dispatch.max_tokens_per_rank is None:
+            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            dispatch.max_tokens_per_rank = max(data.micro_batch_size * data.seq_len for data in data_configs)
+        return self
+
+    @model_validator(mode="after")
     def validate_cp_micro_batch_size(self):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:

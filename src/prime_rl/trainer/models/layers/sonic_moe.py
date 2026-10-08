@@ -3,9 +3,9 @@ from typing import TYPE_CHECKING
 import torch
 from sonicmoe import moe_general_routing_inputs
 from sonicmoe.enums import ActivationType
-from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.models.layers.activations import Silu
+from prime_rl.trainer.models.layers.expert_compute import to_local
 
 if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -27,11 +27,8 @@ class SonicMoEExpertCompute:
             raise ValueError("SonicMoE requires bias-free experts.")
 
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
-        gate_up = experts.gate_up_proj
-        down = experts.down_proj
-        if isinstance(gate_up, DTensor):
-            gate_up = gate_up.to_local()
-            down = down.to_local()
+        gate_up = to_local(experts.gate_up_proj)
+        down = to_local(experts.down_proj)
 
         token_indices = torch.arange(x.shape[0], dtype=torch.int32, device=x.device)
         offsets = num_tokens_per_expert.cumsum(0, dtype=torch.int32)

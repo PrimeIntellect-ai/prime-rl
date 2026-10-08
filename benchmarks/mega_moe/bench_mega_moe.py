@@ -2,12 +2,13 @@
 bf16 EP path (``TorchTokenDispatcher`` + ``BF16ExpertCompute``) for the same routed-expert
 workload, weights, and token counts, and check the gradients agree.
 
-Requires >=2 GPUs with symmetric-memory support (SM100/Blackwell), PyTorch >= 2.9, and the
-prime-mega-moe ``deep_gemm`` wheel from Prime Intellect installed over the public one.
-``--hidden`` must be a multiple of 256 and ``--intermediate`` a multiple of 128.
+Requires >=2 SM90+ GPUs, PyTorch >= 2.9 (CUDA symmetric memory), and the prime-mega-moe
+``deep_gemm`` wheel from Prime Intellect installed over the public one. ``NCCL_MAX_CTAS`` must be
+set to at most the SMs Mega MoE reserves for NCCL (16). ``--hidden`` must be a multiple of 256 and
+``--intermediate`` a multiple of 128.
 
 Usage:
-    torchrun --nproc_per_node=8 benchmarks/mega_moe/bench_mega_moe.py \
+    NCCL_MAX_CTAS=16 torchrun --nproc_per_node=8 benchmarks/mega_moe/bench_mega_moe.py \
         --num-experts 128 --top-k 8 --hidden 2048 --intermediate 1024 --tokens-per-rank 2048
 """
 
@@ -63,7 +64,7 @@ def main() -> None:
 
     if not mega_moe_available():
         raise RuntimeError(
-            "Mega MoE requires the prime-mega-moe deep_gemm wheel from Prime Intellect installed over the public one, on an SM100+ GPU."
+            "Mega MoE requires the prime-mega-moe deep_gemm wheel from Prime Intellect installed over the public one, on an SM90+ GPU."
         )
     if args.num_experts % world_size:
         raise ValueError(f"num_experts ({args.num_experts}) must be divisible by world_size ({world_size}).")
@@ -101,9 +102,10 @@ def main() -> None:
         bf16_compute,
     )
     mega_compute = MegaMoEExpertCompute(
-        experts,
         num_experts=args.num_experts,
         top_k=args.top_k,
+        hidden=args.hidden,
+        intermediate_hidden=args.intermediate,
         group=group,
         max_tokens_per_rank=args.tokens_per_rank,
     )
