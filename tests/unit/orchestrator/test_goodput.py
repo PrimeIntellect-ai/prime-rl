@@ -265,5 +265,6 @@ def test_unfinished_groups_do_not_make_a_distant_deadline_look_stale(clock):
         ctl.law.add_complete([500.0] * 8, [500.0] * 8)
     ctl.law.set_live([(2000.0, 8, [600.0] * 4, [600.0] * 4)] * 16)
     assert ctl.law.residual > 0.5 and ctl.law.unresolved > 0.5
-    assert ctl.eta(16, 1.0) > 0.99  # deadline far beyond every age: all fresh
-    assert ctl.eta(1e6, 1.0) < 0.5  # deadline shorter than the in-flight ages
+    assert ctl.model(16, 1.0)[2] > 0.99  # deadline far beyond every age: all fresh
+    assert ctl.model(1e6, 1.0)[2] < 0.5  # deadline shorter than the in-flight ages
+    assert ctl.eta(1e6, 1.0) == 1.0  # mostly extrapolated: no freshness verdict yet

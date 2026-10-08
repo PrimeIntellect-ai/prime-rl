@@ -56,7 +56,7 @@ BIN_RATIO = 2**0.25
 """Pool sizes form a geometric grid: one bin is ~19% more in-flight work."""
 
 MIN_SETTLE_S = 30.0
-MIN_MEASURE_S = 30.0
+MIN_MEASURE_S = 60.0
 MAX_PHASE_S = 900.0
 SETTLE_LIFETIMES = 1.0
 """Hold a new bin this many episode lifetimes before measuring: the pool's
@@ -75,10 +75,12 @@ BIN_HALF_LIFE_S = 3600.0
 bonus: as the workload drifts, stale neighbours get re-probed."""
 
 ABORT_RATIO = 0.7
-"""A probe whose goodput falls below this fraction of the incumbent's for
-``ABORT_POLLS`` consecutive polls reverts without waiting for the window."""
+"""A probe whose goodput, even at the top of its noise band, falls below this
+fraction of the incumbent's after ``ABORT_POLLS`` polls reverts without
+waiting for the window."""
 
-ABORT_POLLS = 3
+ABORT_POLLS = 6
+
 
 PENALTY = 0.5
 PENALTY_TTL_S = 1800.0
@@ -327,7 +329,6 @@ class GoodputController:
         self.last_poll: float | None = None
         self.last_rate = 0.0
         self.preempt_polls = 0
-        self.abort_polls = 0
         self.signal = "probe"
         self.now = time.monotonic()
         self.start_phase(self.now)
@@ -434,15 +435,17 @@ class GoodputController:
         self.acc_tokens += tokens
         self.acc_time += dt
         self.acc_pool += inflight * dt
+        self.rates.append(rate)
 
-        if self.prev is not None and self.prev in self.bins:
-            incumbent = self.score(self.prev, optimistic=False)
-            if self.goodput(bin_size(self.cur), rate) < ABORT_RATIO * incumbent:
-                self.abort_polls += 1
-            else:
-                self.abort_polls = 0
-            if self.abort_polls >= ABORT_POLLS:
-                self.record(self.cur, self.acc_tokens / self.acc_time)
+        if self.prev is not None and self.prev in self.bins and len(self.rates) >= ABORT_POLLS:
+            # Judge the probe on its running mean, and only when even its upper
+            # noise band falls short: single polls are noise when few episodes
+            # generate at once
+            T_probe = self.acc_tokens / self.acc_time + 2.0 * math.sqrt(self.phase_noise())
+            if self.score(self.cur, optimistic=False) * T_probe / max(self.acc_tokens / self.acc_time, 1e-9) < (
+                ABORT_RATIO * self.score(self.prev, optimistic=False)
+            ):
+                self.record(self.cur, self.acc_tokens / self.acc_time, self.phase_noise())
                 self.penalized[self.cur] = now
                 self.move(self.prev, now, reason="probe collapsed")
                 return
@@ -453,8 +456,18 @@ class GoodputController:
         pool = self.acc_pool / self.acc_time
         binding = pool >= BINDING_FRACTION * self.max_inflight
         held = self.cur if binding else bin_of(pool)
-        self.record(held, T)
+        self.record(held, T, self.phase_noise())
         self.decide(now, binding, T)
+
+    def phase_noise(self) -> float:
+        """Variance of this phase's mean throughput, from the disagreement of
+        its two halves: periodic dips (weight-update pauses) land in both and
+        cancel, genuine instability (few episodes generating) does not."""
+        n = len(self.rates)
+        if n < 4:
+            return 0.0
+        half = n // 2
+        return ((float(np.mean(self.rates[:half])) - float(np.mean(self.rates[half:]))) / 2) ** 2
 
     def follow_schedule(self, now: float, rate: float, inflight: int) -> None:
         """Pin the cap to the schedule; still measure T per level, so the log
@@ -538,10 +551,16 @@ class GoodputController:
         return self.k_eff is not None and bool(self.batch_size) and self.law.completed >= MIN_GROUPS
 
     def eta(self, P: float, T: float) -> float:
-        return self.model(P, T)[2] if self.law_ready else 1.0
+        # While the law mostly extrapolates in-flight groups, it says nothing
+        # reliable about freshness
+        if not self.law_ready or self.law.unresolved > UNRESOLVED_FRACTION:
+            return 1.0
+        return self.model(P, T)[2]
 
     def goodput(self, P: float, T: float) -> float:
-        return self.model(P, T)[3] if self.law_ready else T
+        if not self.law_ready or self.law.unresolved > UNRESOLVED_FRACTION:
+            return T
+        return self.model(P, T)[3]
 
     @property
     def train_step_s(self) -> float | None:
@@ -566,34 +585,42 @@ class GoodputController:
         if not self.bins:
             return None
         near = min(self.bins, key=lambda j: abs(j - i))
-        # Optimistic: linear scaling above the data, flat below it
-        return self.bins[near].mean * (bin_size(i) / bin_size(near) if i > near else 1.0)
+        # Optimistic above the data (linear scaling); below it, between flat
+        # (too optimistic: tool-bound workloads lose throughput in proportion)
+        # and linear (would never probe down)
+        ratio = bin_size(i) / bin_size(near)
+        return self.bins[near].mean * (ratio if i > near else math.sqrt(ratio))
 
     def score(self, i: int, *, optimistic: bool = True) -> float:
+        """Goodput, discounted by ``(eta / min_fresh_fraction) ** freshness_weight``
+        below the freshness floor: below it, staleness waste and the batch's
+        bias toward short groups trade against throughput instead of being
+        bought at any throughput cost."""
         T = self.estimate(i, optimistic=optimistic)
         if T is None:
             return 0.0
         P = bin_size(i)
         eta = self.eta(P, T)
-        if eta < self.min_fresh:
-            # Infeasible: closer to the bound ranks higher, below any feasible bin
-            return eta - self.min_fresh
+        fresh = min(1.0, eta / self.min_fresh) ** self.config.freshness_weight
         penalty = PENALTY if self.now - self.penalized.get(i, -math.inf) < PENALTY_TTL_S else 1.0
-        return self.goodput(P, T) * penalty
+        return self.goodput(P, T) * fresh * penalty
 
     # ── control loop ─────────────────────────────────────────────────────────
 
-    def record(self, i: int, T: float) -> None:
+    def record(self, i: int, T: float, noise: float = 0.0) -> None:
+        """Fold a phase's mean throughput into bin ``i``; ``noise`` is the
+        variance of that mean (few episodes generating at small caps make it
+        large, which keeps the bin's uncertainty bonus up)."""
         b = self.bins.get(i)
         if b is None:
-            self.bins[i] = _Bin(mean=T, var=(0.05 * T) ** 2, n=1.0, t=self.now)
+            self.bins[i] = _Bin(mean=T, var=max((0.05 * T) ** 2, noise), n=1.0, t=self.now)
             return
         b.n *= 0.5 ** ((self.now - b.t) / BIN_HALF_LIFE_S)
         b.t = self.now
         n = min(max(b.n, 0.0) + 1.0, BIN_MEMORY)
         d = T - b.mean
         b.mean += d / n
-        b.var = max((1 - 1 / n) * (b.var + d * d / n), (0.03 * b.mean) ** 2)
+        b.var = max((1 - 1 / n) * (b.var + d * d / n), (0.03 * b.mean) ** 2, noise)
         b.n = n
 
     def snapshot_live(self) -> None:
@@ -611,19 +638,21 @@ class GoodputController:
             get_logger().info(f"Holding concurrency at {self.max_inflight} (nothing generated)")
             return
         lo, hi = bin_of(self.floor), bin_of(self.ceiling)
-        cands = {self.cur, max(lo, self.cur - 1)}
+        # One bin down, or halve: a plateau of small per-bin gains (a stale
+        # regime far above the optimum) must not take dozens of decisions
+        cands = {self.cur, max(lo, self.cur - 1), max(lo, self.cur - MAX_CLIMB_BINS)}
+        if self.prev is not None and self.prev in self.bins:
+            cands.add(self.prev)  # the measured cap we came from is always an option
         # Growing needs evidence on staleness: enough completed groups, and the
         # fate of most of the law known rather than extrapolated
         if binding and self.growth_evidence:
             cands.add(min(hi, self.cur + self.climb))
         scores = {i: self.score(i) for i in cands}
         best = max(scores, key=scores.get)
-        if scores[best] < 0:
-            best = self.recover(lo)
-        else:
-            # Near-ties go to the smallest pool: in-flight work that buys no
-            # goodput only adds off-policyness
-            best = min(i for i in cands if scores[i] >= TIE_FRACTION * scores[best])
+        # Near-ties go to the smallest pool: in-flight work that buys no
+        # goodput only adds off-policyness
+        best = min(i for i in cands if scores[i] >= TIE_FRACTION * scores[best])
+        self.warn_if_stale(best, T)
         if best > self.cur and self.prev is not None and self.prev < self.cur and self.prev in self.bins:
             # Slow start: keep doubling the step while T scales near-linearly
             T0, T1 = self.bins[self.prev].mean, self.bins[self.cur].mean
@@ -636,42 +665,26 @@ class GoodputController:
         if best == self.cur:
             get_logger().info(
                 f"Holding concurrency at {self.max_inflight} ("
-                + ", ".join(
-                    f"{bin_size(j)}: {sc:.0f}" if sc >= 0 else f"{bin_size(j)}: eta {sc + self.min_fresh:.2f}"
-                    for j, sc in sorted(scores.items())
-                )
+                + ", ".join(f"{bin_size(j)}: {sc:.0f}" for j, sc in sorted(scores.items()))
                 + f") - T={T:.0f} eta={self.eta(bin_size(self.cur), T):.3f} binding={binding} "
                 f"law={self.law.completed}/{len(self.law)} unresolved={self.law.unresolved:.2f} "
                 f"train_step={self.train_step_s or 0:.0f}s"
             )
         self.move(best, now, reason=None, scores=scores)
 
-    def recover(self, lo: int) -> int:
-        """No neighbour meets ``min_fresh_fraction``. While the law is still
-        dominated by groups that haven't finished, it can't tell caps apart:
-        hold. Otherwise jump to the largest feasible cap below (eta falls with
-        P), or, if none is, maximize goodput and say so."""
-        if self.law.unresolved > UNRESOLVED_FRACTION:
-            return self.cur
-        a, b = lo, self.cur - 1
-        if a <= b and self.score(a) >= 0:
-            while a < b:
-                mid = (a + b + 1) // 2
-                if self.score(mid) >= 0:
-                    a = mid
-                else:
-                    b = mid - 1
-            return a
-        if not self.warned_infeasible:
-            self.warned_infeasible = True
-            get_logger().warning(
-                f"No concurrency keeps {self.min_fresh:.0%} of generated tokens fresh at max_off_policy_steps="
-                f"{self.k_eff - self.config.deadline_offset_steps:g} and batch_size={self.batch_size}: groups "
-                "routinely outlive the off-policy bound. Maximizing goodput regardless; consider raising "
-                "max_off_policy_steps or batch_size."
-            )
-        cands = range(lo, self.cur + 1, max(1, (self.cur - lo) // 16))
-        return max(cands, key=lambda i: self.goodput(bin_size(i), self.estimate(i) or 0.0))
+    def warn_if_stale(self, i: int, T: float) -> None:
+        """Say once when the chosen cap trades freshness below the floor."""
+        eta = self.eta(bin_size(i), T)
+        if eta >= self.min_fresh or self.warned_infeasible:
+            return
+        self.warned_infeasible = True
+        get_logger().warning(
+            f"Concurrency {bin_size(i)} keeps only {eta:.0%} of generated tokens fresh (floor "
+            f"{self.min_fresh:.0%}): smaller caps cost more throughput than the freshness is weighted "
+            f"(freshness_weight={self.config.freshness_weight:g}). Groups routinely outlive "
+            f"max_off_policy_steps={self.k_eff - self.config.deadline_offset_steps:g} at batch_size="
+            f"{self.batch_size}; raising either trades less."
+        )
 
     def move(self, i: int, now: float, *, reason: str | None, scores: dict | None = None) -> None:
         i = min(max(i, bin_of(self.floor)), bin_of(self.ceiling))
@@ -681,7 +694,6 @@ class GoodputController:
             i += step
         self.prev = self.cur if i != self.cur else None
         self.cur = i
-        self.abort_polls = 0
         self.start_phase(now)
         target = int(self.clamp(bin_size(i)))
         if target != self.max_inflight:
@@ -703,6 +715,7 @@ class GoodputController:
         self.settle_until = now + min(MAX_PHASE_S, max(MIN_SETTLE_S, SETTLE_LIFETIMES * life))
         self.measure_until = self.settle_until + min(MAX_PHASE_S, max(MIN_MEASURE_S, MEASURE_LIFETIMES * life))
         self.acc_tokens = self.acc_time = self.acc_pool = 0.0
+        self.rates: list[float] = []
 
     @property
     def ceiling(self) -> float:
