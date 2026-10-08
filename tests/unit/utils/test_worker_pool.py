@@ -41,26 +41,34 @@ def test_worker_pool_propagates_worker_exception(num_workers: int):
         list(workers(_fail_on_two, range(4)))
 
 
-@pytest.mark.parametrize(("num_workers", "expected_pulls"), [(0, 4), (2, 7)])
-def test_worker_pool_pulls_lazily_and_bounded(num_workers: int, expected_pulls: int):
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_worker_pool_reads_input_lazily(num_workers: int):
     pulled = []
-    processed = []
 
     def source():
         for item in itertools.count():
             pulled.append(item)
             yield item
 
-    def record_slowest_first(item: int) -> int:
-        processed.append(item)
-        return _slowest_first(item)
-
+    consumed = 4
     with WorkerPool(num_workers) as workers:
-        results = list(itertools.islice(workers(record_slowest_first, source()), 4))
+        assert list(itertools.islice(workers(lambda item: item, source()), consumed)) == list(range(consumed))
+
+    max_in_flight = 2 * num_workers
+    assert len(pulled) == (consumed + max_in_flight - 1 if num_workers else consumed)
+
+
+def test_worker_pool_stops_work_after_close():
+    processed = []
+
+    def record_slowly(item: int) -> int:
+        processed.append(item)
+        time.sleep(0.01)
+        return item
+
+    with WorkerPool(2) as workers:
+        list(itertools.islice(workers(record_slowly, itertools.count()), 4))
     processed_at_close = list(processed)
     time.sleep(0.1)
 
-    assert results == [0, 1, 2, 3]
-    assert len(pulled) == expected_pulls
-    assert set(processed) <= set(pulled)
     assert processed == processed_at_close

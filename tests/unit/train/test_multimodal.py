@@ -1,6 +1,5 @@
 import base64
 import io
-from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -78,43 +77,51 @@ def _color_refs(color: tuple[int, int, int]) -> MMRefs:
     return MMRefs(images=[MMImageRef(url=url, offset=1, length=2)])
 
 
-@pytest.mark.parametrize("num_workers", [1, 2])
-def test_prepare_micro_batch_in_worker_pool(num_workers: int):
+def _prepare(micro_batch: dict) -> dict:
     processor = SimpleNamespace(image_processor=_PixelImageProcessor())
-    adapter = get_multimodal_adapter("qwen3_vl")
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=adapter)
+    return prepare_micro_batch(micro_batch, processor=processor, mm_adapter=get_multimodal_adapter("qwen3_vl"))
 
+
+def test_prepare_micro_batch_text_only():
+    micro_batch = {"mm_refs": None, "input_ids": torch.zeros(1, 4)}
+
+    prepared = _prepare(micro_batch)
+
+    assert prepared is micro_batch
+    assert prepared["mm_kwargs"] is None and prepared["mm_forward_policy"] is None
+
+
+def test_prepare_micro_batch_materializes_images():
+    micro_batch = {"mm_refs": _color_refs((255, 0, 0)), "input_ids": torch.zeros(1, 4)}
+
+    prepared = _prepare(micro_batch)
+
+    assert prepared is micro_batch
+    assert prepared["mm_refs"] is None
+    assert set(prepared["mm_kwargs"]) == {"pixel_values", "image_grid_thw"}
+    assert prepared["mm_forward_policy"] == QwenVLAdapter.forward_policy
+    assert torch.equal(prepared["input_ids"], torch.zeros(1, 4))
+
+
+def test_prepare_micro_batch_requires_vlm_config():
+    with pytest.raises(ValueError, match=r"\[model.vlm\] is not set"):
+        prepare_micro_batch({"mm_refs": _refs(2)}, processor=None, mm_adapter=None)
+
+
+@pytest.mark.parametrize("num_workers", [1, 2])
+def test_worker_pool_prepares_micro_batches_like_main_thread(num_workers: int):
     def make_micro_batches():
         colors = [(255, 0, 0), None, (0, 255, 0), (0, 0, 255), (7, 8, 9)]
-        return [
-            {"mm_refs": None if color is None else _color_refs(color), "input_ids": torch.zeros(1, 4)}
-            for color in colors
-        ]
+        return [{"mm_refs": None if color is None else _color_refs(color)} for color in colors]
 
-    micro_batches = make_micro_batches()
     with WorkerPool(num_workers) as workers:
-        results = list(workers(prepare, micro_batches))
-    with WorkerPool(0) as workers:
-        main_thread_results = list(workers(prepare, make_micro_batches()))
+        pool_results = list(workers(_prepare, make_micro_batches()))
+    main_thread_results = [_prepare(micro_batch) for micro_batch in make_micro_batches()]
 
-    assert all(result is micro_batch for result, micro_batch in zip(results, micro_batches))
-    assert results[1] == {
-        "mm_refs": None,
-        "input_ids": results[1]["input_ids"],
-        "mm_kwargs": None,
-        "mm_forward_policy": None,
-    }
-    for result, main_thread_result in zip(results, main_thread_results):
-        assert result["mm_refs"] is None
-        assert torch.equal(result["input_ids"], torch.zeros(1, 4))
-        if result["mm_kwargs"] is None:
-            assert main_thread_result["mm_kwargs"] is None
+    for pool_result, main_thread_result in zip(pool_results, main_thread_results, strict=True):
+        if main_thread_result["mm_kwargs"] is None:
+            assert pool_result["mm_kwargs"] is None
             continue
-        assert result["mm_forward_policy"] == QwenVLAdapter.forward_policy
-        assert set(result["mm_kwargs"]) == set(main_thread_result["mm_kwargs"]) == {"pixel_values", "image_grid_thw"}
-        assert all(
-            torch.equal(result["mm_kwargs"][key], main_thread_result["mm_kwargs"][key]) for key in result["mm_kwargs"]
-        )
-    with WorkerPool(num_workers) as workers:
-        with pytest.raises(ValueError, match=r"\[model.vlm\] is not set"):
-            list(workers(partial(prepare_micro_batch, processor=None, mm_adapter=None), [{"mm_refs": _refs(2)}]))
+        assert pool_result["mm_kwargs"].keys() == main_thread_result["mm_kwargs"].keys()
+        for key, value in main_thread_result["mm_kwargs"].items():
+            assert torch.equal(pool_result["mm_kwargs"][key], value)
