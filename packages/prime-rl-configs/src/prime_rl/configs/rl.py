@@ -434,12 +434,9 @@ class RLConfig(BaseConfig):
                 extra = self.inference.vllm.model_extra or {}
                 if extra.get("speculative_config") is not None:
                     raise ValueError("modelexpress does not support speculative decoding.")
-        update = {}
-        if self.weight_broadcast.type == "modelexpress":
-            update["model_name"] = self.trainer.model.name
-        self.trainer.weight_broadcast = self.weight_broadcast.model_copy(update=update)
+        self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator = self.orchestrator.model_copy(
-            update={"weight_broadcast": self.weight_broadcast.model_copy(update=update)}
+            update={"weight_broadcast": self.weight_broadcast.model_copy()}
         )
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
