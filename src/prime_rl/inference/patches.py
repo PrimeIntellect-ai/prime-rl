@@ -28,7 +28,6 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
-    monkey_patch_deepseek_v4_request_tools_placement()
     monkey_patch_fp8_ue8m0_weight_scales()
     monkey_patch_triton_moe_swiglu_clamp()
     monkey_patch_fp8_stochastic_weight_rounding()
