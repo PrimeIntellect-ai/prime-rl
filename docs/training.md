@@ -259,7 +259,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 |---|---|
 | `data.name` | HF dataset name or local path |
 | `data.batch_size` | Tokens per trainer step (packed) |
-| `data.seq_len` | Maximum packed row length (rows are padded only to a multiple of `model.cp`) |
+| `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
