@@ -551,9 +551,7 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Compute step metrics. Rows vary in length, so count the tokens each rank trained on.
-        # CP shards the same rows across cp ranks (sequence-sharded data parallelism on the
-        # seq dim), so every row is counted cp_size times over the dp_cp group.
+        # Each cp rank holds the same rows, so the dp_cp sum counts every row cp_size times.
         global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
         dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=dp_cp_group)
         num_tokens = global_num_tokens.item() // cp_size
