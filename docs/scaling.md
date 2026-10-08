@@ -294,6 +294,8 @@ all configured inference clients complete the update request. A failed update
 keeps inference paused and does not acknowledge the broadcast to the trainer.
 ModelExpress updates use `/update_weights_from_modelexpress` with a version UID;
 the checkpoint-path `/update_weights` endpoint is unchanged.
+Initialization and update endpoints return success after the worker collective
+completes; they do not return or validate a fixed worker roster.
 Restart the trainer and inference together after an uncertain update; there is
 no rollback. ModelExpress owns layouts, transfer planning, reader leases and
 source-buffer release safety.

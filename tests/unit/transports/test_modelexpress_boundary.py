@@ -69,14 +69,13 @@ def test_modelexpress_worker_uses_stage_apply_release(fail_install):
             raise RuntimeError("installation failed")
 
     worker = ModelExpressWeightUpdateWorker()
-    worker._worker_id = "worker-0"
     worker._generator = SimpleNamespace(stage_weight=stage_weight, apply_weight=apply_weight)
     if fail_install:
         with pytest.raises(RuntimeError, match="installation failed"):
             worker.update_weights_from_modelexpress(version_uid="version-a")
     else:
         result = worker.update_weights_from_modelexpress(version_uid="version-a")
-        assert result == {"worker_id": "worker-0", "version_uid": "version-a"}
+        assert result is None
     assert calls == ["stage", "apply", "release"]
 
 
