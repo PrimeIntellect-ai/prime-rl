@@ -20,6 +20,7 @@ from verifiers.v1.configs.client import (
     resolve_headers,
 )
 
+from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.shared import ClientConfig
 from prime_rl.utils.logger import get_logger
 
@@ -228,6 +229,21 @@ async def check_inference_ready(client_config: ClientConfig, model_name: str) ->
         await admin.aclose()
 
 
+async def connect_frozen_client(
+    config: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
+) -> InferenceClient:
+    """Connect to an externally hosted frozen model and wait for it."""
+    get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={config.base_url})")
+    if renderer_config is not None:
+        clients = InferenceClient(
+            config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
+        )
+    else:
+        clients = InferenceClient(config, model_name=config.name)
+    await check_inference_ready(config, config.name)
+    return clients
+
+
 def setup_client(
     client_config: ClientConfig,
     client_type: str = "openai_chat_completions",
@@ -294,7 +310,9 @@ async def maybe_check_has_model(
                 f"{result.text[:300]}"
             )
         models = body["data"]
-        if not any(model["id"] == model_name for model in models):
+        # A LoRA server lists the model name only once the adapter is loaded; until then
+        # the base model (served as ``<model>-base``) carries it as its ``root``.
+        if not any(model_name in (model["id"], model.get("root")) for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
 

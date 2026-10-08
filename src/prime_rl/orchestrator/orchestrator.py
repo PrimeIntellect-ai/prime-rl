@@ -282,16 +282,12 @@ class Orchestrator:
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
-        await asyncio.gather(
-            *(env.generation_source.setup() for env in self.train_envs),
-            *(env.algorithm.setup() for env in self.train_envs),
-        )
+        await asyncio.gather(*(env.setup() for env in self.train_envs))
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
-        # A LoRA run's adapter is registered under the base model name: the
-        # single adapter shadows it (vLLM resolves lora_requests before the
-        # base-model match), so requests keep addressing one stable name.
+        # A LoRA run's adapter is registered under the model name clients send;
+        # the inference server serves the base model as ``<model>-base``.
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
@@ -1025,11 +1021,9 @@ class Orchestrator:
             if self.admin_plane is not None:
                 await self.admin_plane.aclose()
             if self.train_envs is not None:
-                get_logger().debug("Stopping generation source and algorithm clients")
+                get_logger().debug("Stopping train env clients")
                 for env in self.train_envs:
-                    for clients in (env.generation_source.connected, env.algorithm.connected):
-                        if clients is not None:
-                            await clients.aclose()
+                    await env.aclose()
 
         get_logger().info("Stopping orchestrator components")
         t0 = time.perf_counter()

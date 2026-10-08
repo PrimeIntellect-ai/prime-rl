@@ -6,10 +6,6 @@
 max_steps = 1000
 seq_len = 131072
 
-# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid contended shared-FS caches.
-[env_vars]
-TRITON_CACHE_DIR = "/tmp/.triton-cache"
-
 [slurm]
 job_name = "glm45air-terminal"
 partition = "all"
