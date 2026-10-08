@@ -1046,6 +1046,7 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
+    choice_ids: Int[Tensor, "batch seq choices"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
@@ -1058,6 +1059,7 @@ def forward(
         "labels": labels,
         "temperature": temperature,
         "sampling_mask": sampling_mask,
+        "choice_ids": choice_ids,
     }
 
     if mm_kwargs:
