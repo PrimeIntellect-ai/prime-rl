@@ -382,6 +382,7 @@ def train(config: SFTConfig):
             config.weight_broadcast,
             parallel_dims,
             config.model.lora,
+            model_name=config.model.name,
         )
         # Startup broadcast of the incoming policy: fails fast on a broken
         # transport and lets the evals process re-trigger at the resume step

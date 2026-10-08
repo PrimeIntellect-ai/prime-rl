@@ -29,12 +29,10 @@ INSTALLED_MARKER = ".installed"
 
 
 class ModelExpressWeightSender(WeightSender):
-    def __init__(self, output_dir: Path, config: ModelExpressWeightBroadcastConfig):
+    def __init__(self, output_dir: Path, config: ModelExpressWeightBroadcastConfig, *, model_name: str):
         super().__init__(output_dir, config.timeout)
-        if config.model_name is None:
-            raise ValueError("modelexpress requires model_name in the broadcast config")
         self.config = config
-        self.model_name = config.model_name
+        self.model_name = model_name
         self._trainer: ModelExpressTrainerClient | None = None
         self._control: ModelExpressControlClient | None = None
         self._mesh_id: str | None = None

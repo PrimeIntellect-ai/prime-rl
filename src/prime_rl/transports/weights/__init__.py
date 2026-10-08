@@ -24,6 +24,8 @@ def setup_weight_sender(
     config: WeightBroadcastConfig,
     parallel_dims: ParallelDims,
     lora_config: LoRAConfig | None = None,
+    *,
+    model_name: str | None = None,
 ) -> WeightSender:
     if config.type == "nccl":
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
@@ -36,7 +38,9 @@ def setup_weight_sender(
     elif config.type == "modelexpress":
         from prime_rl.transports.weights.modelexpress import ModelExpressWeightSender
 
-        return ModelExpressWeightSender(output_dir, config)
+        if model_name is None:
+            raise ValueError("modelexpress requires model_name")
+        return ModelExpressWeightSender(output_dir, config, model_name=model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
 
