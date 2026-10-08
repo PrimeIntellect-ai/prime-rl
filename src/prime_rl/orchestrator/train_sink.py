@@ -201,7 +201,7 @@ class TrainSink:
         """Run rollout-local algorithm work on one native episode."""
         env_name = episode_env_name(episode)
         env = self.train_envs.get(env_name)
-        if env.generation_source.uses_live_policy:
+        if env.uses_live_policy:
             # Training temperature and sampling-mask setup are owned by the source.
             expected = env.sampling.wire_args()
             for _, trace in iter_trainable_traces([episode]):
