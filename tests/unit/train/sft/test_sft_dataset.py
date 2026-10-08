@@ -481,7 +481,7 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
     assert packed["seq_lens"] == [1, 2, 2]
     assert packed["mm_kwargs"] is not None
     assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
-    assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
+    assert text_pack["input_ids"] == [5, 6, 5, 6, 5]
     assert text_pack["loss_mask"] == [True, True, False, False, False]
     assert text_pack["seq_lens"] == [5]
     assert text_pack["mm_kwargs"] is None
@@ -594,3 +594,15 @@ def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer)
     next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="schemas"))))
 
     assert seen == [[], tools]
+
+
+def test_cat_dataset_pads_text_packs_with_their_own_tokens():
+    dataset = CatDataset([_sft_sample([1, 2, 3]), _sft_sample([4, 5, 6, 7, 8, 9])], seq_len=8)
+
+    packed = next(iter(dataset))
+
+    assert packed["input_ids"] == [1, 2, 3, 1, 2, 3, 1, 2]
+    assert packed["loss_mask"] == [True] * 3 + [False] * 5
+    assert packed["target_ids"][3:] == [0] * 5
+    assert packed["position_ids"] == [0, 1, 2, 0, 1, 2, 3, 4]
+    assert packed["seq_lens"] == [8]
