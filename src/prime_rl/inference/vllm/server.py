@@ -61,10 +61,8 @@ async def update_weights(request: Request):
 @router.post("/update_weights_from_modelexpress")
 async def update_weights_from_modelexpress(request: Request):
     data = await request.json()
-    workers = await engine_client(request).collective_rpc(
-        "update_weights_from_modelexpress", args=(data["version_uid"],)
-    )
-    return {"status": "ok", "workers": workers}
+    await engine_client(request).collective_rpc("update_weights_from_modelexpress", args=(data["version_uid"],))
+    return {"status": "ok"}
 
 
 @router.post("/load_lora_adapter")
@@ -124,9 +122,7 @@ async def init_broadcaster(request: Request):
     args = (host, port, rank_offset, inference_world_size, timeout, session_id)
     if "staging_buffer_bytes" in data:
         args += (data["staging_buffer_bytes"], data["staging_buffers_count"])
-    workers = await engine_client(request).collective_rpc("init_broadcaster", args=args)
-    if "staging_buffer_bytes" in data:
-        return {"status": "ok", "workers": workers}
+    await engine_client(request).collective_rpc("init_broadcaster", args=args)
     return {"status": "ok"}
 
 
