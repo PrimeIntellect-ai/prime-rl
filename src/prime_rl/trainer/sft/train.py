@@ -484,6 +484,8 @@ def train(config: SFTConfig):
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
                 step_tokens_per_expert += tokens_per_expert
 
+        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
+        torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
