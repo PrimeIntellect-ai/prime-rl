@@ -1,0 +1,72 @@
+diff --git a/packages/prime-rl-configs/src/prime_rl/configs/sft.py b/packages/prime-rl-configs/src/prime_rl/configs/sft.py
+index 2bdb5fdba..f02547c3d 100644
+--- a/packages/prime-rl-configs/src/prime_rl/configs/sft.py
++++ b/packages/prime-rl-configs/src/prime_rl/configs/sft.py
+@@ -139,6 +139,9 @@ class SFTDataConfig(BaseDataConfig):
+     loss_mask: LossMaskConfig = LossMaskConfig()
+     """Which message types contribute to the loss."""
+ 
++    skip_invalid_samples: bool = False
++    """Skip samples the renderer cannot render."""
++
+     @model_validator(mode="after")
+     def validate_subsets_and_splits(self):
+         if self.subsets is not None or self.splits is not None:
+diff --git a/src/prime_rl/trainer/sft/data.py b/src/prime_rl/trainer/sft/data.py
+index 1b4940e3e..11050b489 100644
+--- a/src/prime_rl/trainer/sft/data.py
++++ b/src/prime_rl/trainer/sft/data.py
+@@ -269,8 +269,10 @@ class SFTDataset(StatefulIterableDataset):
+         max_epochs: int | None = None,
+         multimodal: bool = False,
+         columns: SFTColumnsConfig = SFTColumnsConfig(),
++        skip_invalid_samples: bool = False,
+     ):
+         super().__init__(non_dp_size)
++        self.skip_invalid_samples = skip_invalid_samples
+         self.logger = get_logger()
+         self.dataset = dataset
+         self.num_examples = len(self.dataset)
+@@ -454,7 +456,13 @@ class SFTDataset(StatefulIterableDataset):
+             example = dataset[(self.step - 1) % self.num_examples]
+ 
+             # Process example
+-            processed_example = self._process(cast(dict, example))
++            try:
++                processed_example = self._process(cast(dict, example))
++            except ValueError as e:
++                if not self.skip_invalid_samples:
++                    raise
++                self.logger.warning(f"Skipping example {cast(dict, example).get('__index', '')}: {e}")
++                continue
+ 
+             # If processed example is None, skip it (e.g. if tokenized sample exceeds context window)
+             if processed_example is None:
+@@ -749,6 +757,7 @@ def setup_dataset(
+             max_epochs=max_epochs,
+             multimodal=multimodal,
+             columns=config.columns,
++            skip_invalid_samples=config.skip_invalid_samples,
+         )
+     else:
+         raise ValueError(f"Invalid dataset type: {config.type}")
+diff --git a/src/prime_rl/utils/chat_template.py b/src/prime_rl/utils/chat_template.py
+index fde9f1e92..51810b432 100644
+--- a/src/prime_rl/utils/chat_template.py
++++ b/src/prime_rl/utils/chat_template.py
+@@ -23,7 +23,14 @@ def normalize_messages(messages: Any, default_role: str) -> list[dict[str, Any]]
+ 
+ 
+ def deserialize_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+-    def _deserialize_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
++    def _deserialize_tool_call(tool_call: dict[str, Any] | str) -> dict[str, Any]:
++        if isinstance(tool_call, str):
++            tool_call = json.loads(tool_call)
++        if "function" not in tool_call:
++            tool_call = {
++                **{k: tool_call[k] for k in ("id", "type") if k in tool_call},
++                "function": {k: v for k, v in tool_call.items() if k not in ("id", "type")},
++            }
+         function = tool_call.get("function", {})
+         arguments = function.get("arguments")
+         if isinstance(arguments, str):

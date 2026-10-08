@@ -29,6 +29,7 @@ seed = 0
 seq_len = 262144
 batch_size = 1
 micro_batch_size = 1
+skip_invalid_samples = true
 
 [optim]
 lr = 1e-5
