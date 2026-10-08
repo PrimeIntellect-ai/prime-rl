@@ -29,6 +29,18 @@ GIB = 1024**3
 SOURCES_ENV = "SFT_OOM_REPRO_SOURCES"
 SHUFFLE_ENV = "SFT_OOM_REPRO_SHUFFLE"
 _patched = False
+_logged_patch_calls = set()
+
+
+def log_patch_call(name: str, detail: str) -> None:
+    if name in _logged_patch_calls:
+        return
+    _logged_patch_calls.add(name)
+    from torch.utils.data import get_worker_info
+
+    worker = get_worker_info()
+    where = f"dataloader worker {worker.id}" if worker is not None else "main process"
+    print(f"[patch] {name} active in {where} (pid {os.getpid()}): {detail}", flush=True)
 
 
 def apply_patches() -> None:
@@ -41,6 +53,7 @@ def apply_patches() -> None:
     if os.environ.get(SOURCES_ENV) == "config":
 
         def base_table_unique(self, column: str) -> list:
+            log_patch_call("sources=config", f"Dataset.unique({column!r}) read the base table")
             return self._data.column(column).unique().to_pylist()
 
         datasets.Dataset.unique = base_table_unique
@@ -49,8 +62,14 @@ def apply_patches() -> None:
         original_shuffle = datasets.Dataset.shuffle
 
         def on_disk_shuffle(self, *args, **kwargs):
+            requested = kwargs.get("keep_in_memory")
             kwargs["keep_in_memory"] = False
-            return original_shuffle(self, *args, **kwargs)
+            shuffled = original_shuffle(self, *args, **kwargs)
+            log_patch_call(
+                "shuffle=disk",
+                f"keep_in_memory {requested} -> False, indices table {type(shuffled._indices).__name__}",
+            )
+            return shuffled
 
         datasets.Dataset.shuffle = on_disk_shuffle
 
