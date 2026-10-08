@@ -439,6 +439,31 @@ def test_empty_components_keep_backward_valid():
     assert torch.equal(trainer_logprobs[0].grad, torch.zeros_like(trainer_logprobs[0].grad))
 
 
+def test_compute_loss_ignores_nonfinite_masked_logprobs():
+    trainer = torch.tensor([-1.0, float("nan")], requires_grad=True)
+    sampler = torch.tensor([-1.0, float("nan")])
+    advantage = torch.tensor([1.0, float("nan")])
+    mask = torch.tensor([True, False])
+    loss_fn = setup_rl_loss_fn(IPOLossConfig())
+    loss, _ = compute_loss(
+        trainer_logprobs=[trainer],
+        inference_logprobs=[sampler],
+        ref_logprobs=None,
+        advantages=[advantage],
+        loss_mask=[mask],
+        rl_weights=None,
+        ce_weights=None,
+        ref_kl_weights=None,
+        rl_loss_fn=loss_fn,
+        rl_scale=1,
+        ce_scale=1,
+        ref_kl_scale=1,
+    )
+    torch.testing.assert_close(loss, torch.tensor(-1.0))
+    loss.backward()
+    torch.testing.assert_close(trainer.grad, torch.tensor([-1.0, 0.0]))
+
+
 def test_overlapping_components_sum():
     """Components may overlap on the same token (e.g. RL + a CE behavior-cloning
     regularizer): the total is the sum of each component computed alone, each
