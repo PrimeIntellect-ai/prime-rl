@@ -604,8 +604,29 @@ def test_single_node_auto_inference_ports_follow_server_port():
 
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size == 2
+    assert config.trainer.weight_broadcast.inference_world_size == 2
+    assert config.orchestrator.weight_broadcast.inference_world_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
+
+
+def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
+    """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
+    import json
+
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"vllm": {"tensor_parallel_size": 1}},
+            "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        }
+    )
+    path = tmp_path / "rl.json"
+    path.write_text(json.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))
+    reloaded = cli(RLConfig, args=["@", str(path)])
+    assert reloaded.trainer.weight_broadcast.inference_world_size == 2
+    assert reloaded == config
 
 
 def test_multi_node_auto_inference_parallelism():
