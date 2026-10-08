@@ -21,6 +21,7 @@ _MEGA_MOE_KERNELS: dict[str, tuple[str, ...]] = {
     "mxfp8": ("fp8_fp4_mega_moe", "fp8_mega_moe_backward"),
 }
 _MEGA_MOE_MMA_TYPE: dict[str, str] = {"bf16": "bf16xbf16", "mxfp8": "fp8xfp8"}
+_MEGA_MOE_MIN_CAPABILITY: dict[str, tuple[int, int]] = {"bf16": (9, 0), "mxfp8": (10, 0)}
 _MX_BLOCK = 32
 
 
@@ -31,7 +32,8 @@ def mega_moe_available(precision: MegaMoePrecision = "bf16") -> bool:
         return False
     if not torch.cuda.is_available():
         return False
-    if torch.cuda.get_device_capability() < (10, 0):
+
+    if torch.cuda.get_device_capability() < _MEGA_MOE_MIN_CAPABILITY[precision]:
         return False
     # Upstream DeepGEMM has no training backward - only the prime-mega-moe build exposes both kernels
     return all(hasattr(deep_gemm, name) for name in _MEGA_MOE_KERNELS[precision])
@@ -529,8 +531,9 @@ class MegaMoEExpertCompute:
         if not mega_moe_available(precision):
             kernels = " and ".join(f"`{name}`" for name in _MEGA_MOE_KERNELS[precision])
             raise RuntimeError(
-                "Mega MoE requires an SM100+/Blackwell GPU and the prime-mega-moe `deep_gemm` wheel from "
-                f"Prime Intellect installed over the public one; this build does not expose {kernels}."
+                f"Mega MoE `{precision}` requires an SM{_MEGA_MOE_MIN_CAPABILITY[precision][0]}0+ GPU and the "
+                "prime-mega-moe `deep_gemm` wheel from Prime Intellect installed over the public one; "
+                f"this build does not expose {kernels}."
             )
         self.validate(experts)
         hidden = experts.down_proj.shape[1]
