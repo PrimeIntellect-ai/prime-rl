@@ -2,9 +2,9 @@ import pytest
 import torch
 from torch import nn
 from transformers import LlamaForCausalLM as HFLlamaForCausalLM
-from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.models.llama.configuration_llama import LlamaConfig as HFLlamaConfig
 
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.llama import LlamaConfig
 from prime_rl.trainer.models.llama import LlamaForCausalLM as PrimeRLLlamaForCausalLM
 from prime_rl.utils.utils import default_dtype
 
@@ -12,7 +12,7 @@ pytestmark = [pytest.mark.gpu]
 
 
 def get_model_pairs():
-    hf_config = LlamaConfig(
+    hf_config = HFLlamaConfig(
         hidden_size=1024,
         intermediate_size=2048,
         max_position_embeddings=4096,
@@ -26,16 +26,15 @@ def get_model_pairs():
         mlp_bias=False,
     )
     hf_config._attn_implementation = "flash_attention_2"
+    prime_config = LlamaConfig.model_validate({**hf_config.to_dict(), "attn_implementation": "flash_attention_2"})
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         hf_model = HFLlamaForCausalLM._from_config(hf_config)
-        prime_model = PrimeRLLlamaForCausalLM._from_config(hf_config)
+        prime_model = PrimeRLLlamaForCausalLM(prime_config)
     with torch.no_grad():
         state_dict = hf_model.state_dict()
         prime_state_keys = prime_model.state_dict().keys()
         prime_model.convert_to_prime(state_dict)
         prime_model.load_state_dict(state_dict)
-    # Training code wraps the LM head; tests should mirror that (so forward can accept labels/temperature).
-    inject_prime_lm_head(prime_model, chunk_size=None)
     assert set(prime_state_keys) - set(state_dict.keys()) == set()
     return hf_model, prime_model
 

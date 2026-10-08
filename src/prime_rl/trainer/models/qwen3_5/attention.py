@@ -8,12 +8,12 @@ from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNorm
 
 
 class Qwen3_5Attention(FlashAttention):
-    def __init__(self, config: Qwen3_5TextConfig, attention_implementation: str) -> None:
+    def __init__(self, config: Qwen3_5TextConfig) -> None:
         flash_attn_version = {
             "flash_attention_2": 2,
             "flash_attention_3": 3,
             "flash_attention_4": 4,
-        }[attention_implementation]
+        }[config.attn_implementation]
         super().__init__(
             AttentionConfig(
                 hidden_size=config.hidden_size,

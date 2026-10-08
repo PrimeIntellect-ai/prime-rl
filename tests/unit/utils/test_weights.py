@@ -21,9 +21,6 @@ def test_resolve_wire_dtype():
         torch.float8_e4m3fn
     )
 
-    # A plain transformers model declares nothing, so every key takes the default.
-    assert resolve_wire_dtype(None, "layers.0.linear_attn.A_log", torch.bfloat16) is torch.bfloat16
-
 
 @pytest.mark.parametrize(
     ("model_cls", "fp32_key", "ordinary_key"),

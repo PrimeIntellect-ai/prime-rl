@@ -1,15 +1,13 @@
-from collections.abc import Callable
+from typing import Literal
 
 import torch
 from torch import nn
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.layers.rotary_emb import compute_rope_inv_freq
 
-# The rope types whose inverse frequencies are fixed once computed. The two left out,
-# `dynamic` and `longrope`, rescale theirs per forward against the running sequence length,
-# which the buffers below, written once in `__init__`, never do.
-SUPPORTED_ROPE_TYPES = frozenset({"default", "linear", "llama3", "proportional", "yarn"})
+RopeLabel = Literal["main", "compress"]
+ROPE_LABELS: tuple[RopeLabel, ...] = ("main", "compress")
 
 
 class DeepseekV4RotaryEmbedding(nn.Module):
@@ -25,40 +23,26 @@ class DeepseekV4RotaryEmbedding(nn.Module):
 
     Each type also keeps a static fp32 `<type>_cos_sin_cache`, `[cos | sin]` at every position in
     vLLM's layout, which the fused RoPE kernels index by position.
-
-    `rope_type` is checkpoint data rather than architecture: V4 ships `default` on `main` and
-    `default` or `yarn` on `compress`, but the config reads whatever the file says. Anything
-    outside `SUPPORTED_ROPE_TYPES` is refused at construction, rather than rotating at
-    frequencies that were meant to be rescaled and never were.
     """
 
-    def __init__(self, config: DeepseekV4Config, device: torch.device | None = None):
+    def __init__(self, config: DeepseekV4Config):
         super().__init__()
         self.config = config
-        # Only the nested per-rope-type sub-dicts are real rope types; a flat leftover
-        # `rope_type` key at the top level is not one.
-        self.layer_types = [name for name, params in config.rope_parameters.items() if isinstance(params, dict)]
-        self.rope_type: dict[str, str] = {}
-        for layer_type in self.layer_types:
-            self.rope_type[layer_type] = config.rope_parameters[layer_type]["rope_type"]
-            if self.rope_type[layer_type] not in SUPPORTED_ROPE_TYPES:
-                raise ValueError(
-                    f"rope type {self.rope_type[layer_type]!r} on {layer_type!r} is not supported; "
-                    f"the supported types are {sorted(SUPPORTED_ROPE_TYPES)}, whose inverse "
-                    "frequencies are computed once here and never rescaled per forward"
-                )
-            inv_freq, attention_scaling = self._rope_init_fn(layer_type)(config, device, layer_type=layer_type)
+        for layer_type in ROPE_LABELS:
+            inv_freq, attention_scaling = self._compute_inv_freq(layer_type, device=None)
             self.register_buffer(f"{layer_type}_inv_freq", inv_freq, persistent=False)
             setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
             self.register_buffer(
                 f"{layer_type}_cos_sin_cache", self._compute_cos_sin_cache(layer_type), persistent=False
             )
 
-    def _rope_init_fn(self, layer_type: str) -> Callable[..., tuple[torch.Tensor, float]]:
-        rope_type = self.rope_type[layer_type]
-        if rope_type == "default":
-            return self.compute_default_rope_parameters
-        return ROPE_INIT_FUNCTIONS[rope_type]
+    def _compute_inv_freq(self, layer_type: RopeLabel, device: torch.device | None) -> tuple[torch.Tensor, float]:
+        return compute_rope_inv_freq(
+            getattr(self.config.rope_parameters, layer_type),
+            self.config.head_dim,
+            self.config.max_position_embeddings,
+            device,
+        )
 
     def init_buffers_post_meta(self) -> None:
         """Re-derive the per-rope-type inverse frequencies and cos/sin caches in place.
@@ -67,34 +51,16 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         survive neither meta-device construction nor a `load_state_dict`. Re-deriving them is
         cheap and idempotent.
         """
-        for layer_type in self.layer_types:
+        for layer_type in ROPE_LABELS:
             inv_freq_buffer = getattr(self, f"{layer_type}_inv_freq")
-            inv_freq, attention_scaling = self._rope_init_fn(layer_type)(
-                self.config, inv_freq_buffer.device, layer_type=layer_type
-            )
+            inv_freq, attention_scaling = self._compute_inv_freq(layer_type, inv_freq_buffer.device)
             inv_freq_buffer.copy_(inv_freq)
             setattr(self, f"{layer_type}_attention_scaling", attention_scaling)
             getattr(self, f"{layer_type}_cos_sin_cache").copy_(self._compute_cos_sin_cache(layer_type))
 
-    @staticmethod
-    def compute_default_rope_parameters(
-        config: DeepseekV4Config,
-        device: torch.device | None = None,
-        seq_len: int | None = None,
-        layer_type: str | None = None,
-    ) -> tuple[torch.Tensor, float]:
-        """Unscaled inverse frequencies for one rope type's partial rotary slice."""
-        rope_parameters = config.rope_parameters[layer_type]
-        base = rope_parameters["rope_theta"]
-        partial_rotary_factor = rope_parameters.get("partial_rotary_factor", 1.0)
-        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
-        dim = int(head_dim * partial_rotary_factor)
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float, device=device) / dim))
-        return inv_freq, 1.0
-
     @torch.no_grad()
     def forward(
-        self, position_ids: torch.Tensor, layer_type: str, *, dtype: torch.dtype
+        self, position_ids: torch.Tensor, layer_type: RopeLabel, *, dtype: torch.dtype
     ) -> tuple[torch.Tensor, torch.Tensor]:
         device = position_ids.device
         inv_freq = getattr(self, f"{layer_type}_inv_freq")
@@ -111,7 +77,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
 
         return cos.to(dtype=dtype), sin.to(dtype=dtype)
 
-    def _compute_cos_sin_cache(self, layer_type: str) -> torch.Tensor:
+    def _compute_cos_sin_cache(self, layer_type: RopeLabel) -> torch.Tensor:
         """`(max_position_embeddings, rope_dim)` fp32 `[cos | sin]` of `layer_type` at every position."""
         inv_freq = getattr(self, f"{layer_type}_inv_freq")
         if inv_freq.is_meta:
@@ -123,7 +89,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         cos, sin = self(positions[None], layer_type, dtype=torch.float32)
         return torch.cat([cos[0], sin[0]], dim=-1)
 
-    def cos_sin_cache(self, layer_type: str) -> torch.Tensor:
+    def cos_sin_cache(self, layer_type: RopeLabel) -> torch.Tensor:
         """The fp32 `[cos | sin]` cache of `layer_type`, one row per position."""
         return getattr(self, f"{layer_type}_cos_sin_cache")
 

@@ -1,0 +1,8 @@
+[model]
+name = "unsloth/gpt-oss-20b-BF16"
+
+[trainer.model]
+ep = 4
+
+[orchestrator.renderer]
+name = "gpt-oss"

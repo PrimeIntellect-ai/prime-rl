@@ -23,17 +23,18 @@ import json
 import os
 import shutil
 import socket
-from copy import deepcopy
 from pathlib import Path
 
 import torch
 import torch.distributed as dist
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
+from transformers import GenerationConfig
 
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
+from prime_rl.trainer.models.registry import read_config_json
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
 from prime_rl.trainer.world import get_world
@@ -118,13 +119,15 @@ def setup_single_process_env() -> None:
 
 def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
-    model.config.save_pretrained(output_dir)
-    if model.generation_config:
-        # training sets use_cache=False which can conflict with cache_implementation —
-        # save with use_cache=True without mutating the model's config
-        gen_config = deepcopy(model.generation_config)
-        gen_config.use_cache = True
-        gen_config.save_pretrained(output_dir)
+    # The source config.json, with the layer count the checkpoint was trained with (debug runs truncate it).
+    config_dict = read_config_json(model_config.name)
+    text_config_dict = config_dict.get("text_config", config_dict)
+    text_config_dict["num_hidden_layers"] = getattr(model.config, "text_config", model.config).num_hidden_layers
+    (output_dir / "config.json").write_text(json.dumps(config_dict, indent=2))
+    try:
+        GenerationConfig.from_pretrained(model_config.name).save_pretrained(output_dir)
+    except OSError:
+        get_logger().info(f"{model_config.name} has no generation config")
     # Processor first: it saves its own (unmodified) tokenizer, which the configured
     # tokenizer (pad token, custom chat template) must override.
     processor = setup_processor(model_config)
@@ -165,9 +168,6 @@ def load_and_convert(ckpt_dir: Path):
 
     logger.info("Gathering and converting weights")
     state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
-    if getattr(model.config, "tie_word_embeddings", False):
-        for key in getattr(model, "_tied_weights_keys", []):
-            state_dict.pop(key, None)
     state_dict = convert_state_dict_to_hf(model, state_dict)
     return model, model_config, tokenizer_config, state_dict, step_dir
 

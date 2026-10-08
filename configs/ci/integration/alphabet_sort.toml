@@ -10,7 +10,7 @@ type = "filesystem"
 [ckpt]
 
 [model]
-name = "Qwen/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
 
 [trainer.optim]
 lr = 1e-5
@@ -42,7 +42,8 @@ env.agent.runtime.type = "subprocess"
 [inference]
 
 # Mirror of Qwen/Qwen3-0.6B; PI's template patch always re-emits prior
-# <think> blocks. Match that with renderer thinking_retention.
+# <think> blocks. Match that with renderer thinking_retention. The -untied
+# suffix misses the MODEL_RENDERER_MAP exact match, so name the renderer.
 [orchestrator.renderer]
-name = "auto"
+name = "prime-qwen3"
 thinking_retention = "all"

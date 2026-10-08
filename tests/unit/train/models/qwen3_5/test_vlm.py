@@ -3,14 +3,14 @@ import torch
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import (
+    Qwen3_5ForCausalLM,
     Qwen3_5MoeConfig,
     Qwen3_5MoeTextConfig,
     Qwen3_5VisionConfig,
 )
 from prime_rl.trainer.models.qwen3_5.rotary_embedding import build_qwen3_5_mrope_position_ids
+from prime_rl.utils.utils import default_dtype
 
 
 def get_vlm_config():
@@ -48,21 +48,15 @@ def get_vlm_config():
             out_hidden_size=256,
         ),
         image_token_id=250,
-        video_token_id=251,
-        vision_start_token_id=252,
-        vision_end_token_id=253,
     )
 
 
 def get_model(config, device="cuda"):
     runtime_config = ModelConfig()
     resolve_auto_attn(runtime_config)
-    with torch.device(device):
-        model = AutoModelForCausalLMPrimeRL.from_config(
-            config, attn_implementation=runtime_config.attn, dtype=torch.bfloat16
-        )
-    inject_prime_lm_head(model)
-    return model
+    config = type(config).model_validate({**config.model_dump(), "attn_implementation": runtime_config.attn})
+    with torch.device(device), default_dtype(torch.bfloat16):
+        return Qwen3_5ForCausalLM(config)
 
 
 def get_image_inputs(config, device="cuda", dtype=torch.bfloat16):
@@ -184,13 +178,10 @@ def test_vlm_meta_device_and_buffer_reinit():
     model.init_buffers_post_meta()
 
     lm_inv = model.model.language_model.rotary_emb.inv_freq
-    lm_original_inv = model.model.language_model.rotary_emb.original_inv_freq
     vis_inv = model.model.visual.rotary_pos_emb.inv_freq
     assert lm_inv.device.type == "cuda"
-    assert lm_original_inv.device.type == "cuda"
     assert vis_inv.device.type == "cuda"
     assert lm_inv.abs().sum() > 0
-    assert lm_original_inv.abs().sum() > 0
     assert vis_inv.abs().sum() > 0
 
 

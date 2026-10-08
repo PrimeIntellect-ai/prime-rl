@@ -11,7 +11,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
-from prime_rl.trainer.models import PreTrainedModelPrimeRL
+from prime_rl.trainer.models import PrimeModel
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
@@ -92,7 +92,7 @@ def filter_state_dict_by_layers(
 
 def resolve_dtensors(
     state_dict: dict[str, Tensor],
-    keep_in_fp32: Callable[[str], bool] | None,
+    keep_in_fp32: Callable[[str], bool],
     default_dtype: torch.dtype,
 ) -> dict[str, Tensor]:
     """Replace every sharded tensor with its full tensor, at the dtype it goes on the wire in.
@@ -110,17 +110,13 @@ def resolve_dtensors(
 
 
 def preprocess_layer_checkpoint(
-    model: nn.Module,
+    model: PrimeModel,
     layer_state_dict: dict[str, Tensor],
     layer_idx: int,
 ) -> dict[str, Tensor]:
-    if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
+    if model.is_prime_state_dict(layer_state_dict):
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
-        return layer_state_dict
-
-    from transformers.core_model_loading import revert_weight_conversion
-
-    return revert_weight_conversion(model, layer_state_dict)
+    return layer_state_dict
 
 
 class NCCLBroadcaster:
@@ -160,9 +156,8 @@ class NCCLBroadcaster:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
-        keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
-            layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
+            layer_state_dict = resolve_dtensors(layer_state_dict, model.keep_in_fp32_for_weight_transfer, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
             if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)

@@ -4,12 +4,12 @@ import pytest
 import torch
 
 from prime_rl.trainer.models.afmoe.converting_afmoe import conversion_chain as afmoe_conversion_chain
-from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoePreTrainedModel
+from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeForCausalLM
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain as laguna_conversion_chain
-from prime_rl.trainer.models.laguna.modeling_laguna import LagunaPreTrainedModel
+from prime_rl.trainer.models.laguna.modeling_laguna import LagunaForCausalLM
 from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain as minimax_conversion_chain
-from prime_rl.trainer.models.minimax_m2.modeling_minimax_m2 import MiniMaxM2PreTrainedModel
+from prime_rl.trainer.models.minimax_m2.modeling_minimax_m2 import MiniMaxM2ForCausalLM
 
 
 def _afmoe_state_dict() -> dict[str, torch.Tensor]:
@@ -60,10 +60,10 @@ def _minimax_state_dict() -> dict[str, torch.Tensor]:
 @pytest.mark.parametrize(
     ("model_cls", "operations", "hf_state_dict"),
     [
-        (AfmoePreTrainedModel, afmoe_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _afmoe_state_dict()),
-        (LagunaPreTrainedModel, laguna_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _laguna_state_dict()),
+        (AfmoeForCausalLM, afmoe_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _afmoe_state_dict()),
+        (LagunaForCausalLM, laguna_conversion_chain(SimpleNamespace(num_hidden_layers=1)), _laguna_state_dict()),
         (
-            MiniMaxM2PreTrainedModel,
+            MiniMaxM2ForCausalLM,
             minimax_conversion_chain(SimpleNamespace(num_hidden_layers=1)),
             _minimax_state_dict(),
         ),

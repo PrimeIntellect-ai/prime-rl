@@ -10,7 +10,7 @@ type = "filesystem"
 [ckpt]
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT-untied"
 
 [trainer.optim]
 lr = 3e-6

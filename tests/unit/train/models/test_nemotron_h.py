@@ -3,7 +3,6 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
 from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
 from prime_rl.utils.cp import CPContext
@@ -42,6 +41,10 @@ def _seq_lens(input_ids: torch.Tensor) -> torch.Tensor:
     return torch.tensor([input_ids.shape[1]], device=input_ids.device)
 
 
+def _position_ids(input_ids: torch.Tensor) -> torch.Tensor:
+    return torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
+
+
 def test_nemotron_h_reverse():
     """PrimeRL weights convert back to the source checkpoint layout."""
     config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
@@ -59,10 +62,9 @@ def test_nemotron_h_backward():
     prime_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)
-    inject_prime_lm_head(model)
 
     input_ids = torch.randint(0, 256, (1, 16), device="cuda")
-    output = model(input_ids, seq_lens=_seq_lens(input_ids))
+    output = model(input_ids, _position_ids(input_ids), seq_lens=_seq_lens(input_ids))
     output["logits"].sum().backward()
 
     zero_grads = []
@@ -96,8 +98,8 @@ def test_nemotron_h_layer_types():
     pattern_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     list_config = NemotronHConfig(**_BASE, layers_block_type=expected)
 
-    assert pattern_config.layer_types == expected
-    assert list_config.layer_types == expected
+    assert pattern_config.layers_block_type == expected
+    assert list_config.layers_block_type == expected
     assert pattern_config.num_hidden_layers == list_config.num_hidden_layers == 4
 
 
@@ -144,10 +146,9 @@ def test_nemotron_h_no_latent_projection():
     )
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         model = NemotronHForCausalLM(prime_config)
-    inject_prime_lm_head(model)
 
     input_ids = torch.randint(0, 256, (1, 16), device="cuda")
-    output = model(input_ids, seq_lens=_seq_lens(input_ids))
+    output = model(input_ids, _position_ids(input_ids), seq_lens=_seq_lens(input_ids))
     assert output["logits"].shape == (1, 16, 256)
 
     output["logits"].sum().backward()

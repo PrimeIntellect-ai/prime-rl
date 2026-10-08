@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import types
 from typing import TypedDict
 
 import torch
@@ -358,84 +357,12 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None
 
 
-def inject_prime_lm_head(
-    model: nn.Module,
-    chunk_size: int | None = None,
-) -> None:
-    """
-    Inject a PrimeRL LM head into a model.
-
-    This replaces the model's lm_head and overrides the forward method to use labels
-    and temperature for chunked loss computation.
-
-    Args:
-        model: The model to wrap.
-        chunk_size: When set to an int, uses FusedOutputLinear with sequence-token chunked
-            loss/logprob/entropy computation.
-    """
-    # Guards so we have nicer error messages when a non-standard model is used
-    assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"
-    assert isinstance(model.model, nn.Module), f"model.model is not a nn.Module: {type(model.model)}\n{model}"
-    assert hasattr(model, "lm_head"), f"model doesnt have lm_head in model.lm_head:\n{model}"
-    assert isinstance(model.lm_head, nn.Linear), f"model.lm_head is not a nn.Linear: {type(model.lm_head)}\n{model}"
-    assert not hasattr(model.lm_head, "bias") or model.lm_head.bias is None, (
-        f"model.lm_head.bias is not supported: {model.lm_head}\n{model}"
-    )
-
-    logger = get_logger()
-
-    # Replace the lm_head with the appropriate wrapper
+def use_fused_lm_head(model: nn.Module, chunk_size: int) -> None:
+    """Swap the model's ``VanillaOutputLinear`` LM head for a ``FusedOutputLinear`` sharing its weight."""
     old_lm_head = model.lm_head
-    if isinstance(chunk_size, int):
-        logger.info(f"Injecting chunked LM head with chunk size {chunk_size}")
-        model.lm_head = FusedOutputLinear(
-            in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
-        )
-    else:
-        logger.info("Injecting vanilla LM head")
-        model.lm_head = VanillaOutputLinear(in_features=old_lm_head.in_features, out_features=old_lm_head.out_features)
+    assert isinstance(old_lm_head, VanillaOutputLinear), f"Unexpected LM head {type(old_lm_head).__name__}"
+    get_logger().info(f"Using chunked LM head with chunk size {chunk_size}")
+    model.lm_head = FusedOutputLinear(
+        in_features=old_lm_head.in_features, out_features=old_lm_head.out_features, chunk_size=chunk_size
+    )
     model.lm_head.weight = old_lm_head.weight
-    del old_lm_head
-
-    _patch_model_forward(model)
-
-
-def _patch_model_forward(model: nn.Module) -> None:
-    # Patch the forward method to use the new lm_head with labels and temperature
-    def new_forward(
-        self: nn.Module,
-        input_ids: torch.Tensor | None = None,
-        position_ids: torch.Tensor | None = None,
-        inputs_embeds: torch.Tensor | None = None,
-        labels: torch.Tensor | None = None,
-        logits_to_keep: int = 0,
-        temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
-        **kwargs: object,
-    ) -> PrimeLmOutput:
-        # For VLM with images, don't create position_ids - let model compute MRoPE internally
-        is_multimodal = kwargs.get("pixel_values") is not None
-        if position_ids is None and not is_multimodal:
-            reference_tensor = input_ids if input_ids is not None else inputs_embeds
-            position_ids = torch.arange(reference_tensor.shape[1], device=reference_tensor.device).unsqueeze(0)
-        model_kwargs = {"input_ids": input_ids, "position_ids": position_ids, **kwargs}
-        if inputs_embeds is not None:
-            model_kwargs["inputs_embeds"] = inputs_embeds
-        outputs = self.model(**model_kwargs)
-        hidden_states = outputs.last_hidden_state
-
-        # Slice hidden states for logits_to_keep
-        slice_indices = (
-            slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
-        )
-
-        # Pass through the wrapped lm_head
-        return self.lm_head(
-            hidden_states[:, slice_indices, :],
-            labels[:, slice_indices] if labels is not None else None,
-            temperature=temperature[:, slice_indices] if temperature is not None else None,
-            sampling_mask=sampling_mask[:, slice_indices] if sampling_mask is not None else None,
-        )
-
-    # Bind the new forward to the model
-    model.forward = types.MethodType(new_forward, model)

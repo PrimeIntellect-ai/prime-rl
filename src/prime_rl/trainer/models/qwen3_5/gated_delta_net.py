@@ -1,3 +1,4 @@
+import fla.utils
 import torch
 import torch.nn.functional as F
 from fla.modules import FusedRMSNormGated
@@ -8,6 +9,11 @@ from torch import nn
 
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.utils.cp import CPContext
+
+# FLA memoizes its varlen index helpers on argument identity in a process-global cache. Activation
+# checkpointing requires the recompute to replay the forward's exact op sequence, which a cache hit in one
+# pass but not the other breaks. The cache only saves recomputing tiny index tensors, so keep it off.
+fla.utils.FLA_DISABLE_TENSOR_CACHE = True
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
 # FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
@@ -54,6 +60,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self,
         hidden_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        cu_seqlens_cpu: torch.LongTensor,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         mixed_qkv = self.in_proj_qkv(hidden_states)
@@ -69,6 +76,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
                 group=self.cp_context.cp_group,
                 conv1d_kernel_size=self.conv_kernel_size,
+                cu_seqlens_cpu=cu_seqlens_cpu,
             )
 
         convolution = causal_conv1d_with_context_parallelism if context is not None else causal_conv1d
@@ -78,6 +86,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             bias=self.conv1d.bias,
             activation=self.activation,
             cu_seqlens=cu_seqlens,
+            cu_seqlens_cpu=cu_seqlens_cpu,
             cp_context=context,
         )
 
@@ -99,6 +108,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             beta=beta,
             use_qk_l2norm_in_kernel=True,
             cu_seqlens=context.cu_seqlens if context is not None else cu_seqlens,
+            cu_seqlens_cpu=context.cu_seqlens_cpu if context is not None else cu_seqlens_cpu,
             cp_context=context,
         )
 

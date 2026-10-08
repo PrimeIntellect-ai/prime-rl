@@ -3,7 +3,11 @@ max_steps = 100
 [ckpt] # Checkpoint at the end of training
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
+
+# The -untied suffix misses the MODEL_RENDERER_MAP exact match; select the renderer explicitly.
+[renderer]
+name = "prime-qwen3"
 
 [data]
 name = "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"

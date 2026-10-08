@@ -25,6 +25,7 @@ def apply_shared_vllm_patches():
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_layerwise_reload_partial_weight_loader()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
@@ -473,6 +474,33 @@ def monkey_patch_tokenize_params_validation():
     TokenizeParams._token_len_check = _patched_token_len_check
     TokenizeParams._text_len_check = _patched_text_len_check
     TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
+
+
+def monkey_patch_layerwise_reload_partial_weight_loader():
+    """Let vLLM's layerwise weight reload wrap ``functools.partial`` weight loaders.
+
+    The reload reads ``weight_loader.__name__`` to find its own wrappers, but a ``functools.partial``
+    loader (MiniMax-M2 has them) has no ``__name__``, so every weight update to such a model failed
+    with an ``AttributeError``.
+    """
+    from vllm.model_executor.model_loader.reload import layerwise
+
+    def _get_original_loader(tensor: torch.Tensor):
+        loader = layerwise._get_weight_loader(tensor)
+        while getattr(loader, "__name__", None) == "online_process_loader":
+            loader = loader.__wrapped__
+        return loader
+
+    def _wrap_parameters_weight_loader(layer: torch.nn.Module) -> None:
+        for name, tensor in layerwise.get_layer_tensors(layer).items():
+            if name in layerwise.SKIP_LOAD_TENSORS:
+                continue
+            loader = layerwise._get_weight_loader(tensor)
+            if getattr(loader, "__name__", None) != "online_process_loader":
+                tensor.weight_loader = layerwise.make_online_process_loader(layer, name)
+
+    layerwise._get_original_loader = _get_original_loader
+    layerwise._wrap_parameters_weight_loader = _wrap_parameters_weight_loader
 
 
 def monkey_patch_minimax_m2_for_lora():

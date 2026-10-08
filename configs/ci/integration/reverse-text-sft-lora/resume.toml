@@ -6,7 +6,7 @@ max_steps = 10
 step = 5
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B"
+name = "PrimeIntellect/Qwen3-0.6B-untied"
 
 [model.lora]
 rank = 8
@@ -19,6 +19,10 @@ target_modules = [
   "up_proj",
   "down_proj",
 ]
+
+# The -untied suffix misses the MODEL_RENDERER_MAP exact match; select the renderer explicitly.
+[renderer]
+name = "prime-qwen3"
 
 [data]
 name = "PrimeIntellect/Reverse-Text-SFT"

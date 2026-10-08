@@ -24,29 +24,34 @@ METRIC_TOLERANCE = 0.15  # 15% tolerance for mfu, throughput, step_time
 MEMORY_TOLERANCE = 0.01  # 1% tolerance for peak memory
 TOKEN_CHUNK_SIZE = "1024"
 
+MODEL_NAME = "PrimeIntellect/Qwen3-0.6B-untied"
+
 # Baseline files for the Qwen3-0.6B RL benchmark
 BASELINE_FILE_1GPU = Path(
-    "benchmarks/baselines/benchmark-1xa6000-Qwen--Qwen3-0.6B-rl-full-1gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
+    "benchmarks/baselines/benchmark-1xa6000-PrimeIntellect--Qwen3-0.6B-untied-rl-full-1gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
 )
 BASELINE_FILE_4GPU = Path(
-    "benchmarks/baselines/benchmark-4xa6000-Qwen--Qwen3-0.6B-rl-full-4gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
+    "benchmarks/baselines/benchmark-4xa6000-PrimeIntellect--Qwen3-0.6B-untied-rl-full-4gpu-Recompute-flash_attention_2-65536-cp1-ep1.json"
 )
+
+
+def load_baseline_metrics(path: Path) -> dict:
+    if not path.exists():
+        pytest.skip(f"No baseline at {path}; record one on A6000s with the Trainer Benchmarks workflow (set_baselines)")
+    with open(path) as f:
+        return json.load(f)["metrics"]
 
 
 @pytest.fixture(scope="module")
 def baseline_metrics_1gpu() -> dict:
     """Load baseline metrics for 1-GPU benchmark."""
-    with open(BASELINE_FILE_1GPU) as f:
-        baseline = json.load(f)
-    return baseline["metrics"]
+    return load_baseline_metrics(BASELINE_FILE_1GPU)
 
 
 @pytest.fixture(scope="module")
 def baseline_metrics_4gpu() -> dict:
     """Load baseline metrics for 4-GPU benchmark."""
-    with open(BASELINE_FILE_4GPU) as f:
-        baseline = json.load(f)
-    return baseline["metrics"]
+    return load_baseline_metrics(BASELINE_FILE_4GPU)
 
 
 @pytest.fixture(scope="module")
@@ -79,7 +84,7 @@ def benchmark_process_1gpu(
         "--num-gpus",
         "1",
         "--model-name",
-        "Qwen/Qwen3-0.6B",
+        MODEL_NAME,
         "--seq-len",
         "65536",
         "--ac",
@@ -112,7 +117,7 @@ def benchmark_process_4gpu(
         "--num-gpus",
         "4",
         "--model-name",
-        "Qwen/Qwen3-0.6B",
+        MODEL_NAME,
         "--seq-len",
         "65536",
         "--ac",
@@ -168,7 +173,7 @@ def benchmark_metrics_4gpu(benchmark_process_4gpu: ProcessResult, benchmark_outp
 # =============================================================================
 
 
-def test_peak_memory_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_metrics_1gpu: dict):
+def test_peak_memory_within_tolerance_1gpu(baseline_metrics_1gpu: dict, benchmark_metrics_1gpu: dict):
     """Test that peak memory usage does not exceed the baseline by more than 1% (1-GPU)."""
     actual_memory = benchmark_metrics_1gpu["peak_memory"]["gib"]
     expected_memory = baseline_metrics_1gpu["peak_memory"]["gib"]
@@ -181,7 +186,7 @@ def test_peak_memory_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baselin
     )
 
 
-def test_mfu_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_metrics_1gpu: dict):
+def test_mfu_within_tolerance_1gpu(baseline_metrics_1gpu: dict, benchmark_metrics_1gpu: dict):
     """Test that MFU (Model FLOPS Utilization) is within 5% of baseline (1-GPU)."""
     actual_mfu = benchmark_metrics_1gpu["mfu"]["mean"]
     expected_mfu = baseline_metrics_1gpu["mfu"]["mean"]
@@ -195,7 +200,7 @@ def test_mfu_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_metric
     )
 
 
-def test_throughput_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_metrics_1gpu: dict):
+def test_throughput_within_tolerance_1gpu(baseline_metrics_1gpu: dict, benchmark_metrics_1gpu: dict):
     """Test that throughput is within 5% of baseline (1-GPU)."""
     actual_throughput = benchmark_metrics_1gpu["throughput"]["mean"]
     expected_throughput = baseline_metrics_1gpu["throughput"]["mean"]
@@ -209,7 +214,7 @@ def test_throughput_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline
     )
 
 
-def test_step_time_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_metrics_1gpu: dict):
+def test_step_time_within_tolerance_1gpu(baseline_metrics_1gpu: dict, benchmark_metrics_1gpu: dict):
     """Test that step time is within 5% of baseline (1-GPU)."""
     actual_step_time = benchmark_metrics_1gpu["step_time"]["mean"]
     expected_step_time = baseline_metrics_1gpu["step_time"]["mean"]
@@ -228,7 +233,7 @@ def test_step_time_within_tolerance_1gpu(benchmark_metrics_1gpu: dict, baseline_
 # =============================================================================
 
 
-def test_peak_memory_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline_metrics_4gpu: dict):
+def test_peak_memory_within_tolerance_4gpu(baseline_metrics_4gpu: dict, benchmark_metrics_4gpu: dict):
     """Test that peak memory usage does not exceed the baseline by more than 1% (4-GPU)."""
     actual_memory = benchmark_metrics_4gpu["peak_memory"]["gib"]
     expected_memory = baseline_metrics_4gpu["peak_memory"]["gib"]
@@ -241,7 +246,7 @@ def test_peak_memory_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baselin
     )
 
 
-def test_mfu_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline_metrics_4gpu: dict):
+def test_mfu_within_tolerance_4gpu(baseline_metrics_4gpu: dict, benchmark_metrics_4gpu: dict):
     """Test that MFU (Model FLOPS Utilization) is within 5% of baseline (4-GPU)."""
     actual_mfu = benchmark_metrics_4gpu["mfu"]["mean"]
     expected_mfu = baseline_metrics_4gpu["mfu"]["mean"]
@@ -255,7 +260,7 @@ def test_mfu_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline_metric
     )
 
 
-def test_throughput_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline_metrics_4gpu: dict):
+def test_throughput_within_tolerance_4gpu(baseline_metrics_4gpu: dict, benchmark_metrics_4gpu: dict):
     """Test that throughput is within 5% of baseline (4-GPU)."""
     actual_throughput = benchmark_metrics_4gpu["throughput"]["mean"]
     expected_throughput = baseline_metrics_4gpu["throughput"]["mean"]
@@ -269,7 +274,7 @@ def test_throughput_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline
     )
 
 
-def test_step_time_within_tolerance_4gpu(benchmark_metrics_4gpu: dict, baseline_metrics_4gpu: dict):
+def test_step_time_within_tolerance_4gpu(baseline_metrics_4gpu: dict, benchmark_metrics_4gpu: dict):
     """Test that step time is within 5% of baseline (4-GPU)."""
     actual_step_time = benchmark_metrics_4gpu["step_time"]["mean"]
     expected_step_time = baseline_metrics_4gpu["step_time"]["mean"]

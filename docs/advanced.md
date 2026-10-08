@@ -16,7 +16,7 @@ This page covers the specialized features layered on top of the core training st
 
 ## Custom Modeling
 
-The trainer only runs `prime-rl`'s own model implementations, selected from the HF config type. Besides dense Llama, Qwen3 and Qwen3.5, these cover the families below. Other architectures fail at trainer setup.
+The trainer only runs `prime-rl`'s own model implementations, selected by the `model_type` in the checkpoint's `config.json`. Besides dense Llama, Qwen3 and Qwen3.5, these cover the families below. Other architectures fail at trainer setup.
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
@@ -31,6 +31,8 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | ✅ |
+
+Checkpoints that tie the LM head to the input embeddings (`tie_word_embeddings: true`, e.g. small Qwen3 models) are rejected.
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.

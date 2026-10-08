@@ -7,7 +7,7 @@ num_train_gpus = 4
 num_infer_gpus = 4
 
 [model]
-name = "Qwen/Qwen3.5-4B"
+name = "PrimeIntellect/Qwen3.5-4B-untied"
 
 [model.vlm]
 vision_encoder_attr = "model.visual"
@@ -15,6 +15,10 @@ language_model_attr = "model.language_model"
 
 [orchestrator]
 batch_size = 256
+
+# The -untied suffix misses the MODEL_RENDERER_MAP exact match; select the renderer explicitly.
+[orchestrator.renderer]
+name = "qwen3.5"
 
 [orchestrator.train]
 group_size = 16

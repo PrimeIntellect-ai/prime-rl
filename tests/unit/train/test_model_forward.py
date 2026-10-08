@@ -13,9 +13,8 @@ class _CaptureModel(nn.Module):
         self.config = config
         self.kwargs = None
 
-    def forward(self, **kwargs):
-        self.kwargs = kwargs
-        input_ids = kwargs["input_ids"]
+    def forward(self, input_ids, position_ids, **kwargs):
+        self.kwargs = {"input_ids": input_ids, "position_ids": position_ids, **kwargs}
         return {"logits": torch.zeros(*input_ids.shape, 4)}
 
 
@@ -41,7 +40,7 @@ def test_forward_passes_renderer_mm_token_type_ids_through():
     )
 
     assert model.kwargs is not None
-    assert "position_ids" not in model.kwargs
+    assert model.kwargs["position_ids"] is None
     torch.testing.assert_close(model.kwargs["pixel_values"], pixel_values)
     torch.testing.assert_close(model.kwargs["image_grid_thw"], image_grid_thw)
     torch.testing.assert_close(model.kwargs["mm_token_type_ids"], mm_token_type_ids)
@@ -64,8 +63,8 @@ def test_forward_omits_mm_token_type_ids_when_renderer_does_not_supply():
     )
 
     assert model.kwargs is not None
-    assert "position_ids" not in model.kwargs
-    assert "mm_token_type_ids" not in model.kwargs
+    assert model.kwargs["position_ids"] is None
+    assert model.kwargs["mm_token_type_ids"] is None
 
 
 def test_forward_keeps_position_ids_for_non_mrope_vlm():

@@ -185,6 +185,7 @@ def train(config: TrainerConfig):
             config.output_dir,
             config.weight_broadcast,
             parallel_dims,
+            config.model.name,
             config.model.lora,
         )
         logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")

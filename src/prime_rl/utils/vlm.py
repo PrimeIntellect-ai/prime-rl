@@ -9,10 +9,15 @@ For custom models not in the registry, set overrides in config:
     language_model_attr = "model.my_lm"
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch.nn as nn
-from transformers.configuration_utils import PretrainedConfig
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.models.config import PrimeModelConfig
 
 
 @dataclass(frozen=True)
@@ -80,12 +85,12 @@ def get_language_model(model: nn.Module, override: str | None = None) -> nn.Modu
     return model.model
 
 
-def is_vlm_architecture(model_config: PretrainedConfig) -> bool:
+def is_vlm_architecture(model_config: PrimeModelConfig) -> bool:
     """Check if the model config belongs to a known VLM architecture."""
     return _get_model_info_from_config(model_config) is not None
 
 
-def get_layer_prefix(model_config: PretrainedConfig, override: str | None = None) -> str:
+def get_layer_prefix(model_config: PrimeModelConfig, override: str | None = None) -> str:
     """Return the weight key prefix for language model layers.
 
     Derived from language_model_attr + '.layers.' for registered VLMs,
@@ -109,7 +114,7 @@ def _get_model_info(model: nn.Module) -> VLMModelInfo | None:
     return VLM_REGISTRY.get(model_type) if model_type else None
 
 
-def _get_model_info_from_config(model_config: PretrainedConfig) -> VLMModelInfo | None:
+def _get_model_info_from_config(model_config: PrimeModelConfig) -> VLMModelInfo | None:
     model_type = getattr(model_config, "model_type", None)
     return VLM_REGISTRY.get(model_type) if model_type else None
 

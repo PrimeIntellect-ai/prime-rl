@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,41 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
-
 import torch
 from torch import Tensor, nn
-from transformers.cache_utils import Cache
-from transformers.generation import GenerationMixin
-from transformers.modeling_layers import (
-    GradientCheckpointingLayer,
-)
-from transformers.modeling_outputs import MoeModelOutputWithPast
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple, logging
 
-from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PrimeModel
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
-logger = logging.get_logger(__name__)
 
-
-class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
+class Qwen3MoeDecoderLayer(nn.Module):
     def __init__(self, config: Qwen3MoeConfig, layer_idx: int):
         super().__init__()
-        self.hidden_size = config.hidden_size
-
         attn_config = AttentionConfig(
             hidden_size=config.hidden_size,
-            head_dim=getattr(config, "head_dim", config.hidden_size // config.num_attention_heads),
+            head_dim=config.head_dim,
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
             is_causal=True,
@@ -56,7 +41,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             rms_norm_eps=config.rms_norm_eps,
         )
         # TODO: Sliding window support
-        self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
+        self.self_attn = ATTN_IMPL2CLASS[config.attn_implementation](attn_config)
 
         moe_args = MoEArgs(
             num_experts=config.num_experts,
@@ -90,15 +75,14 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: torch.LongTensor | None = None,
-        max_seqlen: int | None = None,
-        routed_experts: Optional[torch.LongTensor] = None,
-    ) -> torch.FloatTensor:
+        hidden_states: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
+        cu_seqlens: Tensor,
+        max_seqlen: int,
+        routed_experts: Tensor | None = None,
+    ) -> Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        # Self Attention
         hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
@@ -107,249 +91,80 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states, routed_experts=routed_experts)
-        hidden_states = residual + hidden_states
-        return hidden_states
+        return residual + hidden_states
 
 
-@auto_docstring
-class Qwen3MoePreTrainedModel(PreTrainedModelPrimeRL):
-    config: Qwen3MoeConfig
-    base_model_prefix = "model"
-    supports_gradient_checkpointing = True
-    _no_split_modules = ["Qwen3MoeDecoderLayer"]
-    _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
-    _supports_sdpa = False
-    _supports_flex_attn = True
-    _can_compile_fullgraph = False  # MoE models don't work with torch.compile (`torch.where(condition)` not supported)
-    _supports_attention_backend = True
-    _can_record_outputs = {
-        "hidden_states": Qwen3MoeDecoderLayer,
-    }
-
-    @classmethod
-    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        """Check if the state dict contains MoE layers in HuggingFace format."""
-        # Check for old per-expert format or new fused format (transformers 5.0+)
-        return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict.keys())
-
-    @classmethod
-    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        """Check if the state dict contains MoE layers in PrimeRL training format."""
-        return any("mlp.experts.gate_proj" in name for name in state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
-
-
-@auto_docstring
-class Qwen3MoeModel(Qwen3MoePreTrainedModel):
+class Qwen3MoeModel(nn.Module):
     def __init__(self, config: Qwen3MoeConfig):
-        super().__init__(config)
-        self.padding_idx = config.pad_token_id
-        self.vocab_size = config.vocab_size
-
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        super().__init__()
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList(
             [Qwen3MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.rotary_emb = RotaryEmbedding(config.rope_parameters, config.head_dim, config.max_position_embeddings)
 
-        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
-            rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
-        else:
-            rope_type = "default"
-        rotary_config = RotaryEmbeddingConfig(
-            max_position_embeddings=config.max_position_embeddings,
-            rope_type=rope_type,
-            model_config=config,
-        )
-        self.rotary_emb = RotaryEmbedding(rotary_config)
-        self.gradient_checkpointing = False
-
-        # Initialize weights and apply final processing
-        self.post_init()
-
-    @auto_docstring
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        routed_experts: Optional[torch.LongTensor] = None,
-        *,
-        seq_lens: torch.LongTensor,
+        input_ids: Tensor,
+        position_ids: Tensor,
+        seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> MoeModelOutputWithPast:
-        """
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
-            Routed experts for each token in the sequence. Only used for router replay.
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
-            Per-document lengths of the packed row (PrimeRL packed-batch contract).
-        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
-        """
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
-
+        routed_experts: Tensor | None = None,
+    ) -> Tensor:
+        """``routed_experts`` (``[batch, seq, num_layers, top_k]``) replays the inference router's choices."""
+        hidden_states = self.embed_tokens(input_ids)
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-            seq_lens.to(device=inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            seq_lens.to(device=hidden_states.device),
+            total_tokens=None if seq_lens_are_pre_shard else hidden_states.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
-
-        hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+        for layer_idx, decoder_layer in enumerate(self.layers):
+            layer_routed_experts = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
             hidden_states = decoder_layer(
-                hidden_states,
-                position_embeddings=position_embeddings,
-                cu_seqlens=cu_seqlens,
-                max_seqlen=max_seqlen,
-                routed_experts=routed_experts_layer,
+                hidden_states, position_embeddings, cu_seqlens, max_seqlen, routed_experts=layer_routed_experts
             )
-
-        hidden_states = self.norm(hidden_states)
-
-        return MoeModelOutputWithPast(last_hidden_state=hidden_states)
+        return self.norm(hidden_states)
 
 
-@auto_docstring
-class Qwen3MoeForCausalLM(Qwen3MoePreTrainedModel, GenerationMixin):
-    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
-
-    def __init__(self, config):
+class Qwen3MoeForCausalLM(PrimeModel):
+    def __init__(self, config: Qwen3MoeConfig):
         super().__init__(config)
         self.model = Qwen3MoeModel(config)
-        self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.router_aux_loss_coef = config.router_aux_loss_coef
-        self.num_experts = config.num_experts
-        self.num_experts_per_tok = config.num_experts_per_tok
+        self.lm_head = VanillaOutputLinear(config.hidden_size, config.vocab_size)
 
-        # Initialize weights and apply final processing
-        self.post_init()
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        # Per-expert keys, or the fused expert keys transformers 5 writes.
+        return any("mlp.experts.1.up_proj" in name or "mlp.experts.gate_up_proj" in name for name in state_dict)
 
-    def set_decoder(self, decoder):
-        self.model = decoder
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return any("mlp.experts.gate_proj" in name for name in state_dict)
 
-    def get_decoder(self):
-        return self.model
+    @classmethod
+    def conversion_chain(cls, config: Qwen3MoeConfig):
+        return conversion_chain(config)
 
-    @can_return_tuple
-    @auto_docstring
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_router_logits: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
-        temperature: Union[torch.Tensor, None] = None,
-        routed_experts: Optional[torch.LongTensor] = None,
+        input_ids: Tensor,
+        position_ids: Tensor,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
+        labels: Tensor | None = None,
+        temperature: Tensor | None = None,
+        sampling_mask: Tensor | None = None,
+        routed_experts: Tensor | None = None,
     ) -> PrimeLmOutput:
-        r"""
-        seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
-            Per-document lengths of the packed row (PrimeRL packed-batch contract).
-        seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Whether `seq_lens` holds pre-CP-shard (global) document boundaries.
-        cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-            Indices of input tokens in the KV cache. Accepted only for HuggingFace API
-            compatibility — prime-rl asserts `use_cache is None` since training does not
-            perform autoregressive decoding, so this argument is unused.
-        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-        temperature (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Per-token temperatures for logprobs/entropy computation.
-        routed_experts (`torch.LongTensor` of shape `(batch_size, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
-            Routed experts for each token in the sequence. Only used for router replay.
+        hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
+        return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, Qwen3MoeForCausalLM
-
-        >>> model = Qwen3MoeForCausalLM.from_pretrained("Qwen/Qwen3-MoE-15B-A2B")
-        >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-MoE-15B-A2B")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-        output_router_logits = (
-            output_router_logits if output_router_logits is not None else self.config.output_router_logits
-        )
-        assert use_cache is None, "use_cache is not supported for custom glm4_moe for now"
-        assert past_key_values is None, "past_key_values is not supported for custom glm4_moe for now"
-
-        if position_ids is None:
-            if inputs_embeds is not None:
-                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-            else:
-                position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs: MoeModelOutputWithPast = self.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
-            routed_experts=routed_experts,
-            seq_lens=seq_lens,
-            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-        )
-
-        hidden_states = outputs.last_hidden_state
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        return self.lm_head(
-            hidden_states[:, slice_indices, :],
-            labels[:, slice_indices] if labels is not None else None,
-            temperature=temperature,
-        )
-
-    def init_buffers_post_meta(self):
-        buffer_names = [name for name, _ in self.named_buffers()]
-        # HF standard transformer model
-        if "model.rotary_emb.inv_freq" in buffer_names:
-            rotary_emb = self.model.rotary_emb
-            inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(
-                rotary_emb.config, rotary_emb.inv_freq.device
-            )
-            rotary_emb.inv_freq.copy_(inv_freq)
-
-        # TODO: Init TT MoE buffers
-        # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
-
-
-__all__ = [
-    "Qwen3MoeForCausalLM",
-    "Qwen3MoeModel",
-    "Qwen3MoePreTrainedModel",
-]
+    def init_buffers_post_meta(self) -> None:
+        self.model.rotary_emb.reset_parameters()

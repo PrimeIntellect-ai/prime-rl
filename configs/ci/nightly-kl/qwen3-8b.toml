@@ -1,0 +1,5 @@
+[model]
+name = "Qwen/Qwen3-8B"
+
+[orchestrator.renderer]
+name = "qwen3"

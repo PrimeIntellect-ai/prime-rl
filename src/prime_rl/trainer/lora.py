@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from prime_rl.configs.trainer import LoRAConfig
+from prime_rl.trainer.models.base import PrimeModel
 from prime_rl.trainer.models.layers.lora import (
     MultiLoRALinear,
     MultiLoRAModule,
@@ -207,7 +208,7 @@ def freeze_all_except_lora_and_specified(model: nn.Module, config: LoRAConfig) -
             param.requires_grad = False
 
 
-def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
+def apply_lora_to_model(model: PrimeModel, config: LoRAConfig) -> None:
     """
     Apply LoRA to target modules in the model and freeze non-LoRA parameters.
 
@@ -219,14 +220,9 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         config: LoRA configuration
     """
     logger = get_logger()
-    from prime_rl.trainer.models import PreTrainedModelPrimeRL
-
     lora_state = setup_lora_state(config, torch.device("cuda", get_world().local_rank))
-    if isinstance(model, PreTrainedModelPrimeRL):
-        lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
-    uses_gpt_oss_moe_adapter = (
-        isinstance(model, PreTrainedModelPrimeRL) and getattr(model.config, "model_type", None) == "gpt_oss"
-    )
+    lora_state.register_adapter_state_dict_converter(type(model).convert_adapter_to_hf)
+    uses_gpt_oss_moe_adapter = model.config.model_type == "gpt_oss"
 
     from torch.distributed.fsdp import FSDPModule
 
@@ -311,13 +307,16 @@ def has_lora_layers(model: nn.Module) -> bool:
     return False
 
 
-def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropout: float) -> None:
+def save_lora_config(
+    model: nn.Module, save_path, base_model_name: str, rank: int, alpha: float, dropout: float
+) -> None:
     """
     Save LoRA configuration as JSON for adapter portability.
 
     Args:
         model: Model with LoRA layers to introspect
         save_path: Path object or string pointing to directory where adapter_config.json will be saved
+        base_model_name: HF repo id or path of the base model
         rank: LoRA rank
         alpha: LoRA alpha scaling parameter
         dropout: LoRA dropout rate
@@ -344,7 +343,7 @@ def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropo
     adapter_config = {
         "peft_type": "LORA",
         "task_type": "CAUSAL_LM",
-        "base_model_name_or_path": model.config._name_or_path,
+        "base_model_name_or_path": base_model_name,
         "r": rank,
         "lora_alpha": alpha,
         "lora_dropout": dropout,

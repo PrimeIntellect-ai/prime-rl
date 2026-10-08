@@ -1,13 +1,13 @@
 import torch
 from torch import Tensor, nn
-from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PrimeModel
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import (
+    Qwen3_5Config,
     Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
 )
@@ -49,7 +49,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         if self.layer_type == "linear_attention":
             self.linear_attn = Qwen3_5GatedDeltaNet(config)
         elif self.layer_type == "full_attention":
-            self.self_attn = Qwen3_5Attention(config, config._attn_implementation)
+            self.self_attn = Qwen3_5Attention(config)
 
         if isinstance(config, Qwen3_5MoeTextConfig):
             router = TokenChoiceTopKRouter(
@@ -92,16 +92,14 @@ class Qwen3_5DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
+        cu_seqlens_cpu: torch.LongTensor,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(
-                hidden_states,
-                cu_seqlens,
-            )
+            hidden_states = self.linear_attn(hidden_states, cu_seqlens, cu_seqlens_cpu)
         else:
             hidden_states, _ = self.self_attn(
                 hidden_states,
@@ -116,73 +114,37 @@ class Qwen3_5DecoderLayer(nn.Module):
         return residual + self.mlp(hidden_states, routed_experts=routed_experts)
 
 
-class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
-    config_class = Qwen3_5TextConfig
-
-    @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        # VLM configs nest the layer schedule under `text_config`.
-        text_config = getattr(config, "text_config", config)
-        if "linear_attention" in (getattr(text_config, "layer_types", None) or ()):
-            return CPSupport(
-                frozenset({"ulysses"}),
-                "DeltaNet layers require Ulysses sequence sharding with FLA boundary-state exchange",
-            )
-        return CPSupport(ALL_CP_STYLES)
-
-    @classmethod
-    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
-
-    @classmethod
-    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return is_hf_state_dict(state_dict)
-
-    @classmethod
-    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
-        return is_prime_state_dict(state_dict)
-
-    @classmethod
-    def conversion_chain(cls, config):
-        return conversion_chain(config)
-
-
-class Qwen3_5Model(Qwen3_5PreTrainedModel):
+class Qwen3_5Model(nn.Module):
     def __init__(self, config: Qwen3_5TextConfig) -> None:
-        super().__init__(config)
+        super().__init__()
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, config.pad_token_id)
         self.layers = nn.ModuleList(
             Qwen3_5DecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)
         )
         self.norm = Qwen3_5RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.rotary_emb = Qwen3_5RotaryEmbedding(config)
-
-    def get_input_embeddings(self) -> nn.Embedding:
-        return self.embed_tokens
-
-    def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
-        self.embed_tokens = embeddings
+        self.rotary_emb = Qwen3_5RotaryEmbedding(
+            config.rope_parameters, config.head_dim, config.max_position_embeddings
+        )
 
     def forward(
         self,
-        input_ids: torch.LongTensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        inputs_embeds: torch.Tensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
-        *,
-        seq_lens: torch.LongTensor,
+        inputs_embeds: Tensor,
+        position_ids: Tensor,
+        seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
-        if position_ids is None:
-            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-
+        routed_experts: Tensor | None = None,
+    ) -> Tensor:
+        """``position_ids`` is ``[batch, seq]`` for text or ``[3, batch, seq]`` MRoPE positions;
+        ``routed_experts`` (``[batch, seq, num_layers, top_k]``) replays the inference router's choices."""
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(inputs_embeds.device),
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        # Copied to the host here, outside the activation-checkpointed layers: checkpointing replays saved
+        # device-to-host copies in call order, and FLA would otherwise copy inside the layer only on the
+        # first (uncached) call, shifting every later saved copy during the recompute.
+        cu_seqlens_cpu = cu_seqlens.cpu()
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
@@ -192,35 +154,30 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 hidden_states,
                 position_embeddings,
                 cu_seqlens,
+                cu_seqlens_cpu,
                 max_seqlen,
                 routed_experts=layer_routed_experts,
             )
-        return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
+        return self.norm(hidden_states)
 
 
 class Qwen3_5VLMModel(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self, config: Qwen3_5Config) -> None:
         super().__init__()
         self.config = config
         self.visual = Qwen3_5VisionModel(config.vision_config)
         self.language_model = Qwen3_5Model(config.text_config)
         self.cp_context = CPContext()
 
-    def get_input_embeddings(self) -> nn.Embedding:
-        return self.language_model.get_input_embeddings()
-
-    def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
-        self.language_model.set_input_embeddings(embeddings)
-
     def prepare_inputs(
         self,
-        input_ids: torch.LongTensor,
-        position_ids: torch.LongTensor | None,
-        pixel_values: torch.Tensor | None,
-        image_grid_thw: torch.LongTensor | None,
-        mm_token_type_ids: torch.LongTensor | None,
-        seq_lens: torch.LongTensor,
-    ) -> tuple[torch.Tensor, torch.LongTensor]:
+        input_ids: Tensor,
+        position_ids: Tensor | None,
+        pixel_values: Tensor | None,
+        image_grid_thw: Tensor | None,
+        mm_token_type_ids: Tensor | None,
+        seq_lens: Tensor,
+    ) -> tuple[Tensor, Tensor]:
         inputs_embeds = self.language_model.embed_tokens(input_ids)
         has_images = pixel_values is not None
         vision_grid = image_grid_thw
@@ -242,7 +199,7 @@ class Qwen3_5VLMModel(nn.Module):
             )
             vision_grid = torch.tensor([[1, merge_size, merge_size]], device=inputs_embeds.device)
 
-        image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
+        image_embeds = self.visual(pixel_values, vision_grid).to(inputs_embeds.dtype)
         if has_images:
             image_mask = (input_ids == self.config.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
@@ -267,16 +224,15 @@ class Qwen3_5VLMModel(nn.Module):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
-        position_ids: torch.LongTensor | None = None,
-        pixel_values: torch.Tensor | None = None,
-        image_grid_thw: torch.LongTensor | None = None,
-        mm_token_type_ids: torch.LongTensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
-        *,
-        seq_lens: torch.LongTensor,
+        input_ids: Tensor,
+        position_ids: Tensor | None,
+        seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
-    ) -> BaseModelOutput:
+        routed_experts: Tensor | None = None,
+        pixel_values: Tensor | None = None,
+        image_grid_thw: Tensor | None = None,
+        mm_token_type_ids: Tensor | None = None,
+    ) -> Tensor:
         inputs_embeds, position_ids = self.prepare_inputs(
             input_ids,
             position_ids,
@@ -299,78 +255,84 @@ class Qwen3_5VLMModel(nn.Module):
                 routed_experts = shard_for_cp(routed_experts, cp_rank=rank, cp_world_size=world_size)
             seq_lens_are_pre_shard = True
 
-        return self.language_model(
-            inputs_embeds=inputs_embeds,
-            position_ids=position_ids,
-            routed_experts=routed_experts,
-            seq_lens=seq_lens,
-            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-        )
+        return self.language_model(inputs_embeds, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
 
 
-class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
-    def __init__(self, config) -> None:
+class Qwen3_5ForCausalLM(PrimeModel):
+    """Qwen3.5 causal LM, text-only (``Qwen3_5TextConfig``) or vision-language (``Qwen3_5Config``)."""
+
+    def __init__(self, config: Qwen3_5TextConfig | Qwen3_5Config) -> None:
         super().__init__(config)
-        self.is_vlm = hasattr(config, "vision_config")
-        text_config = config.text_config if self.is_vlm else config
-
+        self.is_vlm = isinstance(config, Qwen3_5Config)
         if self.is_vlm:
             self.model = Qwen3_5VLMModel(config)
+            text_config = config.text_config
         else:
             self.model = Qwen3_5Model(config)
+            text_config = config
 
         self.supports_packed_multimodal_training = self.is_vlm
         self.lm_head = VanillaOutputLinear(text_config.hidden_size, text_config.vocab_size)
 
-    def get_input_embeddings(self) -> nn.Embedding:
-        return self.model.get_input_embeddings()
+    @classmethod
+    def cp_support(cls, config: Qwen3_5TextConfig | Qwen3_5Config) -> CPSupport:
+        text_config = config.text_config if isinstance(config, Qwen3_5Config) else config
+        if "linear_attention" in text_config.layer_types:
+            return CPSupport(
+                frozenset({"ulysses"}),
+                "DeltaNet layers require Ulysses sequence sharding with FLA boundary-state exchange",
+            )
+        return CPSupport(ALL_CP_STYLES)
 
-    def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
-        self.model.set_input_embeddings(embeddings)
+    @classmethod
+    def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+
+    @classmethod
+    def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return is_hf_state_dict(state_dict)
+
+    @classmethod
+    def is_prime_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
+        return is_prime_state_dict(state_dict)
+
+    @classmethod
+    def conversion_chain(cls, config: Qwen3_5TextConfig | Qwen3_5Config):
+        return conversion_chain(config)
 
     def forward(
         self,
-        input_ids: torch.LongTensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        inputs_embeds: torch.Tensor | None = None,
-        labels: torch.LongTensor | None = None,
-        temperature: torch.Tensor | None = None,
-        sampling_mask: torch.Tensor | None = None,
-        routed_experts: torch.LongTensor | None = None,
-        pixel_values: torch.Tensor | None = None,
-        image_grid_thw: torch.LongTensor | None = None,
-        mm_token_type_ids: torch.LongTensor | None = None,
+        input_ids: Tensor,
+        position_ids: Tensor | None = None,
         *,
-        seq_lens: torch.LongTensor,
+        seq_lens: Tensor,
         seq_lens_are_pre_shard: bool = False,
+        labels: Tensor | None = None,
+        temperature: Tensor | None = None,
+        sampling_mask: Tensor | None = None,
+        routed_experts: Tensor | None = None,
+        pixel_values: Tensor | None = None,
+        image_grid_thw: Tensor | None = None,
+        mm_token_type_ids: Tensor | None = None,
     ) -> PrimeLmOutput:
+        """``position_ids`` may be None only for a VLM, which then computes MRoPE positions from the
+        image inputs. The image inputs (``pixel_values``, ``image_grid_thw``, ``mm_token_type_ids``) are VLM-only."""
         if self.is_vlm:
-            outputs = self.model(
-                input_ids=input_ids,
-                position_ids=position_ids,
+            hidden_states = self.model(
+                input_ids,
+                position_ids,
+                seq_lens,
+                seq_lens_are_pre_shard,
+                routed_experts,
                 pixel_values=pixel_values,
                 image_grid_thw=image_grid_thw,
                 mm_token_type_ids=mm_token_type_ids,
-                routed_experts=routed_experts,
-                seq_lens=seq_lens,
-                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
             )
         else:
-            outputs = self.model(
-                input_ids=input_ids,
-                position_ids=position_ids,
-                inputs_embeds=inputs_embeds,
-                routed_experts=routed_experts,
-                seq_lens=seq_lens,
-                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            hidden_states = self.model(
+                self.model.embed_tokens(input_ids), position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts
             )
-
-        return self.lm_head(
-            outputs.last_hidden_state,
-            labels,
-            temperature=temperature,
-            sampling_mask=sampling_mask,
-        )
+        return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
     def init_buffers_post_meta(self) -> None:
         language_model = self.model.language_model if self.is_vlm else self.model
@@ -390,5 +352,4 @@ __all__ = [
     "Qwen3_5DecoderLayer",
     "Qwen3_5ForCausalLM",
     "Qwen3_5Model",
-    "Qwen3_5PreTrainedModel",
 ]

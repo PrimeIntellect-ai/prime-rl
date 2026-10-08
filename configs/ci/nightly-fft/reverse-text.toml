@@ -12,7 +12,7 @@ name = "reverse-text"
 [ckpt]
 
 [model]
-name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT-untied"
 
 [orchestrator]
 batch_size = 128
