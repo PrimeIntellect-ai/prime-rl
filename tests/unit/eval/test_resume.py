@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import orjson
 import pytest
 import verifiers.v1 as vf
+from pydantic import ValidationError
 from verifiers.v1.utils.eval import plan_rollouts
 
 from prime_rl.eval import resume
@@ -117,18 +118,20 @@ def test_take_landed_reads_every_attempt_once(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("ok", [True, False])
-def test_resume_counts_only_successful_episodes(tmp_path, ok) -> None:
-    record = {**_record("math", "m0", ok=ok), "id": "saved"}
+@pytest.mark.parametrize("traces,valid", [([], True), (None, False), ([{}], False)])
+def test_resume_validates_saved_episodes(tmp_path, ok, traces, valid) -> None:
+    record = {**_record("math", "m0", ok=ok), "id": "saved", "traces": traces}
     stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
-    for row in [
-        None,
-        [],
-        {key: value for key, value in record.items() if key != "traces"},
-        {**record, "traces": None},
-        record,
-    ]:
+    for row in [{key: value for key, value in record.items() if key != "traces"}, record]:
         stream.append(orjson.dumps(row, option=orjson.OPT_APPEND_NEWLINE))
     stream.close()
+
+    if not valid:
+        with pytest.raises(ValidationError):
+            resume.take_landed(tmp_path)
+        assert get_file_monitor_dir(tmp_path).is_dir()
+        assert resume.archives(tmp_path) == []
+        return
 
     landed = resume.take_landed(tmp_path)
     source = EvalSource([_env("math", ["m0"], group_size=2)])

@@ -18,7 +18,6 @@ from pathlib import Path
 
 import orjson
 import verifiers.v1 as vf
-from pydantic import ValidationError
 
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
@@ -65,11 +64,7 @@ def take_landed(run_dir: Path) -> list[vf.WireEpisode]:
     for directory in [*archives(run_dir), current]:
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
-                try:
-                    episode = vf.WireEpisode.model_validate(record)
-                except ValidationError:
-                    # A malformed record does not satisfy a rollout.
-                    continue
+                episode = vf.WireEpisode.model_validate(record)
                 if episode.ok and "traces" in record:
                     landed.append(episode)
     if current.is_dir():
