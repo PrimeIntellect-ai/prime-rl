@@ -10,7 +10,6 @@ from prime_rl.trainer.models.layers.lora import (
     LoRAGroupedExperts,
     LoRALinear,
     LoRAModule,
-    LoRANonGatedGroupedExperts,
 )
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.utils.logger import get_logger
@@ -74,24 +73,6 @@ def strip_lora_from_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str,
             continue
         new_state_dict[key] = value
     return new_state_dict
-
-
-def _get_module_by_name(model: nn.Module, module_name: str) -> nn.Module:
-    """Get a module by its fully qualified name."""
-    parts = module_name.split(".")
-    module = model
-    for part in parts:
-        module = getattr(module, part)
-    return module
-
-
-def _set_module_by_name(model: nn.Module, module_name: str, new_module: nn.Module) -> None:
-    """Replace a module by its fully qualified name."""
-    parts = module_name.split(".")
-    parent = model
-    for part in parts[:-1]:
-        parent = getattr(parent, part)
-    setattr(parent, parts[-1], new_module)
 
 
 def _has_regex_metacharacters(pattern: str) -> bool:
@@ -185,63 +166,28 @@ def apply_lora_to_model(model: nn.Module, config: LoRAConfig) -> None:
         raise ValueError(f"No LoRA target modules found for patterns {config.target_modules}.")
 
     for module_name in target_modules:
-        base_module = _get_module_by_name(model, module_name)
-
-        # Handle Linear layers
+        base_module = model.get_submodule(module_name)
         if isinstance(base_module, nn.Linear):
-            lora_module = LoRALinear(
-                base_layer=base_module,
-                rank=config.rank,
-                alpha=config.alpha,
-                dropout=config.dropout,
-            )
-        # Handle GroupedExperts (MoE)
-        elif isinstance(base_module, GroupedExperts):
-            if uses_gpt_oss_moe_adapter:
-                wrapper = LoRAGptOssGroupedExperts
-            elif base_module.gate_proj is not None:
-                wrapper = LoRAGroupedExperts
-            else:
-                wrapper = LoRANonGatedGroupedExperts
-            lora_module = wrapper(
-                base_layer=base_module,
-                rank=config.rank,
-                alpha=config.alpha,
-                dropout=config.dropout,
-            )
+            wrapper = LoRALinear
+        elif uses_gpt_oss_moe_adapter:
+            wrapper = LoRAGptOssGroupedExperts
         else:
-            logger.warning(
-                f"Module {module_name} is type {type(base_module).__name__}, "
-                "expected nn.Linear or GroupedExperts. Skipping."
-            )
-            continue
-
+            wrapper = LoRAGroupedExperts
+        lora_module = wrapper(base_module, rank=config.rank, alpha=config.alpha, dropout=config.dropout)
         lora_state.register_module(module_name, lora_module)
-        _set_module_by_name(model, module_name, lora_module)
+        model.set_submodule(module_name, lora_module)
 
     freeze_all_except_lora(model)
 
-    lora_adapter_params = 0
-    lora_adapted_params = 0
-    for module in model.modules():
-        if isinstance(module, LoRAModule):
-            adapter_params, adapted_params = module.get_lora_param_counts()
-            lora_adapter_params += adapter_params
-            lora_adapted_params += adapted_params
+    adapter_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
-
     logger.info(
-        f"LoRA enabled: {lora_adapter_params:,} adapter params adapting {lora_adapted_params:,} "
-        f"of {total_params:,} parameters"
+        f"LoRA enabled: {adapter_params:,} adapter params on {len(target_modules)} modules ({total_params:,} total)"
     )
 
 
 def has_lora_layers(model: nn.Module) -> bool:
-    """Check if model has LoRA layers."""
-    for module in model.modules():
-        if isinstance(module, LoRAModule):
-            return True
-    return False
+    return any(isinstance(module, LoRAModule) for module in model.modules())
 
 
 def save_lora_config(model: nn.Module, save_path, rank: int, alpha: float, dropout: float) -> None:
