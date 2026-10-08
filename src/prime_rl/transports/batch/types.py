@@ -26,6 +26,14 @@ class SamplingMask(msgspec.Struct, array_like=True, gc=False, omit_defaults=True
     counts: bytes
 
 
+class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    """Flat int32 ids, float32 logprobs and int32 row counts (zero for context)."""
+
+    ids: bytes
+    logprobs: bytes
+    counts: bytes
+
+
 # Produced by the orchestrator's train sink; consumed in-process by
 # ``prepare_batch``, which packs samples into per-rank ``MicroBatch``es.
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -78,6 +86,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # samples (e.g. fake data).
     trace_id: str | None = None
     branch_index: int | None = None
+    top_logprobs: TopLogprobs | None = None
 
 
 # Orchestrator -> Trainer
@@ -115,3 +124,4 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
+    top_logprobs: TopLogprobs | None = None

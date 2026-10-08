@@ -475,6 +475,20 @@ class IPOLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering: bool = False
+    """Center the IPO-weighted score. Without score_centering_topk, integrate exactly
+    over the complete bounded sampling mask."""
+
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Use an untruncated sampler head and proportional tail for IPO centering.
+    Fails if the modeled tail cannot be proven to lie inside IPO's trust region."""
+
+    @model_validator(mode="after")
+    def validate_score_centering_topk(self):
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        return self
+
 
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
@@ -530,6 +544,13 @@ class CISPOLossConfig(BaseConfig):
     """Temperature for the advantage term."""
 
 
+class ScoreCenteringLossConfig(BaseConfig):
+    type: Literal["score_centering"] = "score_centering"
+
+    topk: int = Field(128, ge=1)
+    """Number of sampler top-k probabilities to retain, without renormalizing the head."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -541,7 +562,8 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | ScoreCenteringLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
