@@ -95,7 +95,7 @@ def test_prepare_micro_batch_in_worker_pool(num_workers: int):
     with WorkerPool(num_workers) as workers:
         results = list(workers(prepare, micro_batches))
     with WorkerPool(0) as workers:
-        inline_results = list(workers(prepare, make_micro_batches()))
+        main_thread_results = list(workers(prepare, make_micro_batches()))
 
     assert all(result is micro_batch for result, micro_batch in zip(results, micro_batches))
     assert results[1] == {
@@ -104,16 +104,16 @@ def test_prepare_micro_batch_in_worker_pool(num_workers: int):
         "mm_kwargs": None,
         "mm_forward_policy": None,
     }
-    for result, inline_result in zip(results, inline_results):
+    for result, main_thread_result in zip(results, main_thread_results):
         assert result["mm_refs"] is None
         assert torch.equal(result["input_ids"], torch.zeros(1, 4))
         if result["mm_kwargs"] is None:
-            assert inline_result["mm_kwargs"] is None
+            assert main_thread_result["mm_kwargs"] is None
             continue
         assert result["mm_forward_policy"] == QwenVLAdapter.forward_policy
-        assert set(result["mm_kwargs"]) == set(inline_result["mm_kwargs"]) == {"pixel_values", "image_grid_thw"}
+        assert set(result["mm_kwargs"]) == set(main_thread_result["mm_kwargs"]) == {"pixel_values", "image_grid_thw"}
         assert all(
-            torch.equal(result["mm_kwargs"][key], inline_result["mm_kwargs"][key]) for key in result["mm_kwargs"]
+            torch.equal(result["mm_kwargs"][key], main_thread_result["mm_kwargs"][key]) for key in result["mm_kwargs"]
         )
     with WorkerPool(num_workers) as workers:
         with pytest.raises(ValueError, match=r"\[model.vlm\] is not set"):

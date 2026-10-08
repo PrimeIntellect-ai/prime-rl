@@ -8,7 +8,7 @@ R = TypeVar("R")
 
 
 class WorkerPool:
-    """Persistent background threads that map a function over an iterator in order, or inline when ``num_workers`` is 0.
+    """Persistent background threads that map a function over an iterator in order, or the calling thread when ``num_workers`` is 0.
 
     ``map_fn`` runs concurrently on up to ``num_workers`` threads, so it must be thread-safe.
     """
