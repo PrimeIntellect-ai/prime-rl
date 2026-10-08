@@ -12,6 +12,7 @@ import triton.language as tl
 FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
+KEY_ALIGNMENT = 16
 
 
 @triton.jit
@@ -189,7 +190,7 @@ def fp8_indexer(
 
     q_flat = q.reshape(S_q * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True)
-    S_k_aligned = triton.cdiv(S_k, 16) * 16
+    S_k_aligned = triton.cdiv(S_k, KEY_ALIGNMENT) * KEY_ALIGNMENT
     k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
     k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True)
 
