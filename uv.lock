@@ -5186,7 +5186,7 @@ requires-dist = [
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
     { name = "prime-rl-configs", editable = "packages/prime-rl-configs" },
-    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.3" },
+    { name = "prime-runs", extras = ["train"], specifier = ">=0.1.4" },
     { name = "prometheus-client", specifier = ">=0.20.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pybase64", specifier = ">=1.4.2" },
