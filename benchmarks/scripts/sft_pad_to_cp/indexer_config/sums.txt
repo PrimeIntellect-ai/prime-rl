@@ -1,7 +1,0 @@
-stock per-shape best sum 849.3 ms
-M64_N64_w4_s2    stock sum  1219.2 (worst +43.97 ms)  padded sum   915.5 (worst +21.94 ms vs padded best, worst ratio vs stock best 1.319)
-M64_N128_w4_s2   stock sum   905.2 (worst + 1.93 ms)  padded sum   770.1 (worst + 0.35 ms vs padded best, worst ratio vs stock best 1.028)
-M128_N64_w8_s2   stock sum  1429.1 (worst +58.17 ms)  padded sum  1328.4 (worst +56.73 ms vs padded best, worst ratio vs stock best 1.830)
-M128_N128_w8_s2  stock sum  1042.0 (worst +13.29 ms)  padded sum   814.2 (worst + 4.99 ms vs padded best, worst ratio vs stock best 1.081)
-M64_N64_w8_s3    stock sum   999.7 (worst +20.45 ms)  padded sum   911.0 (worst +18.91 ms vs padded best, worst ratio vs stock best 1.271)
-M64_N128_w8_s3   stock sum   871.4 (worst + 3.03 ms)  padded sum   797.1 (worst + 1.62 ms vs padded best, worst ratio vs stock best 1.177)
