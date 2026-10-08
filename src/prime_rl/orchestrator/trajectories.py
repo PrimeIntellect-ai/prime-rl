@@ -48,14 +48,8 @@ def _image_runs(token_types: list[int]) -> list[tuple[int, int]]:
     return runs
 
 
-def _build_mm_refs(urls: list[str], token_types: list[int]) -> MMRefs | None:
+def _build_mm_refs(urls: list[str], token_types: list[int]) -> MMRefs:
     runs = _image_runs(token_types)
-    if len(urls) != len(runs):
-        raise ValueError(
-            f"Inline image count does not match expanded placeholder runs: images={len(urls)}, runs={len(runs)}"
-        )
-    if not urls:
-        return None
     return MMRefs(
         images=[
             MMImageRef(url=url, offset=offset, length=length) for url, (offset, length) in zip(urls, runs, strict=True)
@@ -105,7 +99,8 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
 def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
     """Yield each branch that yields a training sample, with its trainable-token mask.
 
-    Branches excluded by trace semantics are skipped before shared-node accounting.
+    Branches excluded by trace semantics, or whose image placeholder runs do not match their
+    inline images, are skipped before shared-node accounting.
     The mask is `branch.sampled_mask` except that a sampled node shared by several branches
     (a mid-trajectory fork) is trainable only in the first branch containing it; later
     branches carry its tokens as context (mask False). Branches left with no trainable
@@ -115,6 +110,15 @@ def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[b
     trained_nodes: set[int] = set()
     for branch in trace.branches:
         if not branch.trainable:
+            continue
+        num_images = len(_image_urls(branch))
+        num_runs = len(_image_runs(branch.mm_token_type_ids or []))
+        if num_images != num_runs:
+            # e.g. the policy sampled an image placeholder token, which the trainer would read as an image
+            get_logger().warning(
+                f"Skipping branch {branch.index} of trace {trace.id}: {num_images} inline images "
+                f"but {num_runs} image placeholder runs."
+            )
             continue
         mask: list[bool] = []
         for node in branch.nodes:
@@ -166,8 +170,6 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
         image_urls = _image_urls(branch)
         if image_urls:
             mm_token_type_ids = branch.mm_token_type_ids
-            if mm_token_type_ids is None:
-                raise ValueError("Inline images have no expanded multimodal prompt tokens")
             mm_refs = _build_mm_refs(image_urls, mm_token_type_ids)
         samples.append(
             TrainingSample(
