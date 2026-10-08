@@ -343,11 +343,11 @@ def train(config: TrainerConfig):
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
             score_centering = config.loss.type == "score_centering" or (
-                config.loss.type == "ipo" and config.loss.score_centering
+                config.loss.type in ("ipo", "ipo_tis") and config.loss.score_centering
             )
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-                exact_centering = config.loss.type == "ipo" and config.loss.score_centering_topk is None
+                exact_centering = config.loss.type in ("ipo", "ipo_tis") and config.loss.score_centering_topk is None
                 validate_score_centering_data(micro_batch, vocab_size=vocab_size, exact=exact_centering)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")

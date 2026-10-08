@@ -6,11 +6,13 @@ from prime_rl.configs.trainer import (
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
+    IPOTISLossConfig,
     PPOLossConfig,
     ScoreCenteringLossConfig,
 )
 from prime_rl.trainer.rl.loss import (
     IcePopLoss,
+    IPOTISLoss,
     LossInputs,
     LossOutputs,
     _mismatch_kl_from_log_ratio,
@@ -57,10 +59,14 @@ def test_score_centering_matches_full_modeled_sampler_gradient(head_size):
 
 @pytest.mark.parametrize("eps,cap", [(0.1, 2.0), (1.0, 1.1)])
 @pytest.mark.parametrize("topk", [None, 4])
-def test_ipo_score_centering_cancels_constant_advantage_drift(eps, cap, topk):
-    logits = torch.tensor([0.4, -0.7, 0.1, -1.0], device="cuda", requires_grad=True)
+@pytest.mark.parametrize(
+    "config_cls,cap_field", [(IPOLossConfig, "max_importance_ratio"), (IPOTISLossConfig, "ratio_cap")]
+)
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_ipo_score_centering_cancels_constant_advantage_drift(eps, cap, topk, config_cls, cap_field, device):
+    logits = torch.tensor([0.4, -0.7, 0.1, -1.0], device=device, requires_grad=True)
     logp = logits.log_softmax(-1)
-    q = torch.tensor([0.7, 0.1, 0.15, 0.05], device="cuda")
+    q = torch.tensor([0.7, 0.1, 0.15, 0.05], device=device)
     # Enumerate every possible sampled action, weighted by its sampler probability.
     inputs = LossInputs(
         logp,
@@ -71,13 +77,15 @@ def test_ipo_score_centering_cancels_constant_advantage_drift(eps, cap, topk):
         q,
         logp.expand(4, -1),
         q.log().expand(4, -1),
-        torch.ones((4, 4), device="cuda", dtype=torch.bool),
+        torch.ones((4, 4), device=device, dtype=torch.bool),
     )
-    plain = setup_rl_loss_fn(IPOLossConfig(eps=eps, max_importance_ratio=cap)).loss(inputs).loss
+    config = config_cls(eps=eps, **{cap_field: cap})
+    plain_loss = setup_rl_loss_fn(config)
+    if config_cls is IPOTISLossConfig:
+        assert isinstance(plain_loss, IPOTISLoss)
+    plain = plain_loss.loss(inputs).loss
     centered = (
-        setup_rl_loss_fn(
-            IPOLossConfig(eps=eps, max_importance_ratio=cap, score_centering=True, score_centering_topk=topk)
-        )
+        setup_rl_loss_fn(config_cls(eps=eps, **{cap_field: cap}, score_centering=True, score_centering_topk=topk))
         .loss(inputs)
         .loss
     )
@@ -88,21 +96,25 @@ def test_ipo_score_centering_cancels_constant_advantage_drift(eps, cap, topk):
 
 
 @pytest.mark.parametrize("q_head,cap", [([0.45, 0.4], 2.0), ([0.6, 0.38], 1.1)])
-def test_ipo_score_centering_topk_matches_full_modeled_sampler(q_head, cap):
-    logits = torch.tensor([1.5, 0.3, -1.0, -2.0, -3.0], device="cuda", requires_grad=True)
+@pytest.mark.parametrize(
+    "config_cls,cap_field", [(IPOLossConfig, "max_importance_ratio"), (IPOTISLossConfig, "ratio_cap")]
+)
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_ipo_score_centering_topk_matches_full_modeled_sampler(q_head, cap, config_cls, cap_field, device):
+    logits = torch.tensor([1.5, 0.3, -1.0, -2.0, -3.0], device=device, requires_grad=True)
     logp = logits.log_softmax(-1)
     p = logp.exp().detach()
-    q_head = torch.tensor(q_head, device="cuda")
+    q_head = torch.tensor(q_head, device=device)
     q = torch.cat([q_head, (1 - q_head.sum()) * p[2:] / p[2:].sum()])
-    sampled = torch.tensor([0, 3, 4], device="cuda")
-    mask = torch.tensor([True, True, False], device="cuda")
-    advantage = torch.tensor([1.3, -0.7, float("nan")], device="cuda")
-    weights = torch.tensor([0.4, 2.0, 0.0], device="cuda")
+    sampled = torch.tensor([0, 3, 4], device=device)
+    mask = torch.tensor([True, True, False], device=device)
+    advantage = torch.tensor([1.3, -0.7, float("nan")], device=device)
+    weights = torch.tensor([0.4, 2.0, 0.0], device=device)
     head = torch.cat([logp[:2], logp.new_zeros(1)]).expand(3, -1)
     sampler = torch.cat([q_head.log(), q_head.new_zeros(1)]).expand(3, -1)
-    valid = torch.tensor([[True, True, False]], device="cuda").expand(3, -1)
+    valid = torch.tensor([[True, True, False]], device=device).expand(3, -1)
     inputs = LossInputs(logp[sampled], q[sampled].log(), None, advantage, mask, weights, head, sampler, valid)
-    config = IPOLossConfig(eps=0.1, max_importance_ratio=cap, score_centering=True, score_centering_topk=2)
+    config = config_cls(eps=0.1, **{cap_field: cap}, score_centering=True, score_centering_topk=2)
     result = setup_rl_loss_fn(config).loss(inputs)
     actual = result.loss
     w = (p / q).clamp_max(cap) * ((p - q).abs() <= config.eps)
