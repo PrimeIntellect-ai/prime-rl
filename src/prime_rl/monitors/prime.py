@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import fcntl
 import os
 import time
@@ -251,7 +252,12 @@ class PrimeEvalMonitor(Monitor):
     evaluation per env and step, opened when the epoch starts (``log_eval_plan``), fed
     every episode as it lands (``log_episodes``) and finished with the epoch's aggregates
     (``log_eval_epoch``), so the platform page follows the run from its first episode.
-    Metrics are not forwarded; the evaluation is the epoch."""
+
+    Under a managed launch ($RUN_ID) the epoch's ``eval/{env}/...`` metrics ALSO go to
+    the parent training run, which is what the run dashboard groups into its `eval`
+    section. The orchestrator's in-process evals reach it through the train monitor, but
+    an eval process of its own (SFT online evals) has no other way there, so without
+    this the run shows every metric group except the one its evals produced."""
 
     config: PrimeEvalMonitorConfig
 
@@ -268,6 +274,7 @@ class PrimeEvalMonitor(Monitor):
         # (env, step) -> its open evaluation; None once opening it failed, so the epoch's
         # episodes do not retry the platform on every arrival
         self.runs: dict[tuple[str, int], pr.Run | None] = {}
+        self.parent: pr.Run | None = None
         self._lock = asyncio.Lock()
         self.evaluation_id = os.getenv(EVAL_ID_VAR)
         if self.evaluation_id and len(self.sources) != 1:
@@ -277,6 +284,7 @@ class PrimeEvalMonitor(Monitor):
             )
         if self.mode == "online":
             self.logger.info("Streaming eval epochs to the Prime platform")
+            self.parent = await asyncio.to_thread(self._attach_parent)
             if output_dir is not None:
                 # Merge, not overwrite: when the eval process shares the
                 # trainer's run dir (SFT online evals), the train record's
@@ -294,8 +302,39 @@ class PrimeEvalMonitor(Monitor):
         else:
             self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
 
+    def _attach_parent(self) -> pr.Run | None:
+        """The parent training run this eval process belongs to, for metrics only.
+        Blocking: runs in a worker thread.
+
+        Attaching is a local handle, not a request, so a run that turns out to be
+        unreachable costs the eval nothing. The caller owns the run's lifecycle: we
+        drop the SDK's atexit crash hook, because an eval process that exits while the
+        trainer is still going would otherwise report the WHOLE run failed."""
+        run_id = os.getenv("RUN_ID")
+        if not run_id:
+            return None
+        run = pr.init(
+            kind="train",
+            mode=self.mode,
+            base_url=_base_url(),
+            id=run_id,
+            finish_timeout=FINISH_TIMEOUT,
+        )
+        atexit.unregister(run._atexit_hook)  # the SDK's own unregister handle
+        self.logger.info(f"Logging eval metrics to parent training run {run.id}")
+        return run
+
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
-        pass
+        """An epoch's aggregates (``eval/{env}/...``) onto the parent training run.
+        Only there: a standalone eval has no parent, and the per-epoch evaluation
+        carries its own aggregates through ``log_eval_epoch``."""
+        if self.parent is None:
+            return
+        metrics, dropped = sanitize(metrics)
+        if dropped:
+            self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
+        # A queue put that can block briefly under backpressure - off the loop.
+        await asyncio.to_thread(self.parent.log_metrics, metrics, step=step)
 
     def open(self, env_name: str, step: int, expected: int | None) -> pr.Run:
         """Open the platform evaluation of one epoch. Blocking: runs in a worker thread."""
@@ -400,3 +439,7 @@ class PrimeEvalMonitor(Monitor):
                 await asyncio.to_thread(run.finish, status=pr.RunStatus.CANCELLED, error="interrupted")
             except Exception as e:
                 self.logger.warning(f"Failed to close the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
+        if self.parent is not None:
+            # Drain only. The parent run belongs to the trainer and the platform: an
+            # eval process must never report its status, not even a clean completion.
+            await asyncio.to_thread(self.parent.flush, FINISH_TIMEOUT)
