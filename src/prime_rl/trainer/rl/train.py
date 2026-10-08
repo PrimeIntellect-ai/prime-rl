@@ -629,10 +629,10 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # Each cp rank holds the same rows, so the dp_cp sum counts every row cp_size times.
+        # The dp mesh excludes cp, whose ranks hold the same rows.
         global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        num_tokens = global_num_tokens.item() // cp_size
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)

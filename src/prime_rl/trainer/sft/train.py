@@ -551,10 +551,10 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Each cp rank holds the same rows, so the dp_cp sum counts every row cp_size times.
+        # The dp mesh excludes cp, whose ranks hold the same rows.
         global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        num_tokens = global_num_tokens.item() // cp_size
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
