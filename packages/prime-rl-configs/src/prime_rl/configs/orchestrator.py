@@ -61,6 +61,9 @@ class TrainSamplingConfig(BaseConfig):
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
 
+    logprobs: int | None = Field(None, ge=1)
+    """Record this many top sampler probabilities per token, in addition to its sampled logprob."""
+
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
     extra_body: dict[str, Any] = {}
@@ -95,7 +98,7 @@ class TrainSamplingConfig(BaseConfig):
         args: dict[str, Any] = {
             "temperature": self.temperature,
             "top_p": self.top_p,
-            "logprobs": True,
+            "logprobs": self.logprobs if self.logprobs is not None else True,
         }
         if self.max_completion_tokens is not None:
             args["max_completion_tokens"] = self.max_completion_tokens

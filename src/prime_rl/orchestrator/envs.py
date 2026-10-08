@@ -162,6 +162,8 @@ class TrainEnv(Env):
             config.sampling.truncates_distribution() and config.algo.sampling.source == "policy"
         )
 
+        self.requires_top_logprobs = config.sampling.logprobs is not None and config.algo.sampling.source == "policy"
+
 
 class EvalEnv(Env):
     config: EvalSourceConfig

@@ -9,6 +9,99 @@ from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shi
 from prime_rl.utils.utils import default_dtype
 
 
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("head_only", [False, True])
+def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
+    from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask, selective_topk_log_softmax
+
+    torch.manual_seed(7)
+    hidden = torch.randn(1, 7, 16, device="cuda", dtype=dtype, requires_grad=True)
+    lm = FusedOutputLinear(16, 8203, chunk_size=3).to(device="cuda", dtype=dtype)
+    labels = torch.tensor([[3, 8199, 12, 99, 0, 17, 8192]], device="cuda")
+    head_ids = torch.stack([labels, (labels + 1) % 8203, (labels + 2) % 8203, torch.full_like(labels, -1)], dim=-1)
+    head_ids[:, 2] = -1
+    sampling_mask = head_ids if replay else None
+    temperature = torch.linspace(0.6, 1.4, 7, device="cuda").unsqueeze(0)
+    coefficient = torch.randn_like(head_ids, dtype=torch.float32)
+    out = lm(hidden, labels, temperature, sampling_mask, head_ids)
+    loss = (out["topk_logprobs"] * coefficient).sum()
+    if not head_only:
+        loss = loss + out["logprobs"].sum()
+    actual = torch.autograd.grad(loss, (hidden, lm.weight))
+    logits = (hidden @ lm.weight.t()).float() / temperature.unsqueeze(-1)
+    head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels)
+    reference = (head * coefficient).sum()
+    if not head_only:
+        sampled = (
+            selective_log_softmax_with_sampling_mask(logits, labels, sampling_mask)
+            if replay
+            else selective_log_softmax(logits, labels)
+        )
+        reference = reference + sampled.sum()
+    expected = torch.autograd.grad(reference, (hidden, lm.weight))
+    torch.testing.assert_close(out["topk_logprobs"], head, atol=3e-6, rtol=1e-6)
+    for grad, ref in zip(actual, expected, strict=True):
+        atol, rtol = (1e-2, 3e-2) if dtype == torch.bfloat16 else (5e-6, 1e-4)
+        torch.testing.assert_close(grad, ref, atol=atol, rtol=rtol)
+
+
+@pytest.mark.gpu
+def test_ipo_score_centering_replay_matches_dense_support_gradient():
+    from prime_rl.configs.trainer import IPOLossConfig
+    from prime_rl.trainer.rl.loss import LossInputs, setup_rl_loss_fn
+
+    hidden = torch.eye(2, device="cuda").unsqueeze(0).requires_grad_()
+    lm = FusedOutputLinear(2, 7, chunk_size=1).cuda()
+    # Large excluded logits expose accidental full-vocabulary normalization.
+    lm.weight = torch.nn.Parameter(
+        torch.tensor(
+            [[9.0, 0.4], [0.4, 9.0], [8.0, -0.7], [-0.7, 8.0], [7.0, 7.0], [0.1, 6.0], [6.0, 0.1]], device="cuda"
+        )
+    )
+    support = torch.tensor([[[1, 3, 5, -1], [0, 2, 6, -1]]], device="cuda")
+    labels = torch.tensor([[1, 2]], device="cuda")
+    temperature = torch.tensor([[0.7, 1.3]], device="cuda")
+    q = torch.tensor([[[0.7, 0.2, 0.1, 0.0], [0.6, 0.3, 0.1, 0.0]]], device="cuda")
+    q_sampled = torch.tensor([[0.7, 0.3]], device="cuda")
+    advantage = torch.tensor([[1.3, -0.7]], device="cuda")
+    weights = torch.tensor([[0.4, 2.0]], device="cuda")
+    config = IPOLossConfig(eps=0.1, max_importance_ratio=1.2, score_centering=True)
+    out = lm(hidden, labels, temperature, support, support)
+    actual = setup_rl_loss_fn(config).loss(
+        LossInputs(
+            out["logprobs"],
+            q_sampled.log(),
+            None,
+            advantage,
+            torch.ones_like(labels, dtype=torch.bool),
+            weights,
+            out["topk_logprobs"],
+            q.log().masked_fill(support < 0, 0.0),
+            support >= 0,
+        )
+    )
+
+    logits = (hidden @ lm.weight.t()) / temperature.unsqueeze(-1)
+    dense_logp = torch.stack([logits[0, i, support[0, i, :3]].log_softmax(-1) for i in range(2)])
+    p = dense_logp.exp().detach()
+    q_dense = q[0, :, :3]
+    w = (p / q_dense).clamp_max(config.max_importance_ratio) * ((p - q_dense).abs() <= config.eps)
+    sampled_logp = dense_logp[[0, 1], [0, 1]]
+    sampled_w = w[[0, 1], [0, 1]]
+    assert sampled_w[0] == 0
+    center = (q_dense * w * dense_logp).sum(-1)
+    reference = (-advantage[0] * weights[0] * (sampled_w * sampled_logp - center)).sum()
+    grads = torch.autograd.grad(actual.loss, (hidden, lm.weight), retain_graph=True)
+    expected = torch.autograd.grad(reference, (hidden, lm.weight))
+    for grad, ref in zip(grads, expected, strict=True):
+        torch.testing.assert_close(grad, ref, atol=2e-7, rtol=2e-6)
+    # No path through logits outside each frozen support, including the centering term.
+    assert torch.count_nonzero(grads[1][[0, 2, 4, 6], 0]) == 0
+    assert torch.count_nonzero(grads[1][[1, 3, 4, 5], 1]) == 0
+
+
 def _baseline_logprobs_and_entropy(
     hidden: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor, *, temperature: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:

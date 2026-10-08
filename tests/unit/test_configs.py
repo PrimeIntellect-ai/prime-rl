@@ -119,6 +119,35 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+@pytest.mark.parametrize("loss_type", ["score_centering", "ipo"])
+def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
+    from prime_rl.entrypoints.rl import write_config
+
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "examples/basic/reverse-text/rl.toml",
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--run.name",
+            "roundtrip",
+            "--trainer.loss.type",
+            loss_type,
+            *(["--trainer.loss.score-centering"] if loss_type == "ipo" else []),
+            "--trainer.loss.score-centering-topk" if loss_type == "ipo" else "--trainer.loss.topk",
+            "4",
+        ],
+    )
+    write_config(config, tmp_path, exclude={"slurm", "dry_run", "clean"})
+    reloaded = cli(RLConfig, args=["@", str(tmp_path / "rl.json")])
+    assert reloaded.run_dir == config.run_dir
+    assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
+    assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
+    assert reloaded.inference.vllm.max_logprobs >= 6
+    assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})

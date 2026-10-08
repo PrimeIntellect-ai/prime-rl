@@ -14,6 +14,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Loss](#loss)
   - [Loss Components](#loss-components)
   - [IPO Loss](#ipo-loss)
+  - [Score Centering](#score-centering)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
@@ -202,11 +203,14 @@ $$
 
 $\mu$ is the policy that generated the rollout. $\pi$ is the current trainer policy. $\hat{A}_t$ is the token-level advantage. The trust region uses the sampled token probabilities, not their ratio.
 
+The implementation also caps the accepted token's importance weight at `max_importance_ratio` (default 10,000). The detached surrogate preserves a policy-gradient coefficient of `min(pi / mu, max_importance_ratio)`, including above the cap; it does not zero gradients above the cap. The equation above describes the uncapped regime.
+
 The knobs under `[trainer.loss]` are:
 
 | Knob | Default | What it does |
 |---|---|---|
 | `eps` | 0.3 | Maximum absolute probability change before a token is masked. |
+| `max_importance_ratio` | 10000 | Maximum accepted-token importance weight, with a preserved policy-gradient coefficient. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
@@ -239,6 +243,63 @@ ratio_high = 5.0
 | `ratio_low` | 0.2 | Lower accepted trainer-to-inference probability ratio. |
 | `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
+
+### Score Centering
+
+[Score centering](https://arxiv.org/abs/2609.20807) subtracts the sampler-expected score from the policy-gradient update to reduce training/inference drift. To use the paper's top-k estimator with untruncated sampling:
+
+```toml
+[trainer.loss]
+type = "score_centering"
+topk = 128
+```
+
+The sampler records its top-k probabilities without renormalizing the head. The trainer models the remaining sampler mass as proportional to its own tail, flooring the trainer-tail mass denominator at `1e-6` for stability. The correction's coefficients are detached; the trainer head logprobs remain differentiable. Metrics `score_centering/head_mass` and `score_centering/rho` report captured sampler mass and the tail rescaling factor. This is an approximation to full-distribution centering.
+
+IPO supports score centering with untruncated sampling:
+
+```toml
+[trainer.loss]
+type = "ipo"
+score_centering = true
+score_centering_topk = 128
+```
+
+This centers the IPO-weighted score, using the exact head and a proportional sampler tail. Let `P_tail` and `Q_tail` be the remaining masses and `rho = Q_tail / max(P_tail, 1e-6)`. The loss checks that `abs(1-rho) * P_tail <= eps`, which proves every modeled tail action passes IPO's absolute-probability mask. Its tail scale is then `min(1, rho * max_importance_ratio)`. If that sufficient condition fails for a nonzero sampler tail, training raises an error; increase the head size or use complete sampling-support centering. No tail restriction is needed when sampler tail mass is zero. This is an approximation to the unknown sampler tail, not a change to sampling. Metrics report `score_centering/head_mass`, `score_centering/residual_l1`, `score_centering/tail_change_bound`, and `score_centering/tail_scale`. `score_centering/logit_correction_l1` reports the full-vocabulary L1 norm of the centering baseline's gradient with respect to the softmax logits, before advantage scaling.
+
+For a fixed prefix, let p be the trainer distribution, q the sampler distribution, and s the trainer score. The centered ascent update uses detached coefficients:
+
+$$
+s_v = \nabla_\theta\log p_v,\qquad
+w_v = \mathbf{1}\{|p_v-q_v|\le\epsilon\}\min(p_v/q_v,C),\qquad
+b = \sum_v q_v w_v s_v,\qquad
+g(a) = A_a(w_a s_a-b).
+$$
+
+If **every action** passes the probability mask and no ratio is capped, then b is zero because
+
+$$
+b = \sum_v p_v\nabla_\theta\log p_v = \nabla_\theta\sum_v p_v = 0.
+$$
+
+Exact IPO+SC then has the same per-sample gradient as IPO, even when p differs from q. Acceptance of the sampled action alone does not imply this: rejected or capped alternatives can produce a nonzero baseline. Each candidate is masked separately; one rejected alternative does not disable the whole position. If the sampled action is rejected, its direct IPO term vanishes but the SC correction can still contribute. The proportional-tail estimator also reduces to IPO when every head action is accepted and uncapped and its tail scale is one. The unweighted baseline in standalone SC generally does not vanish when p differs from q.
+
+Omitting `score_centering_topk` selects exact centering over a bounded sampling mask:
+
+```toml
+[trainer.loss]
+type = "ipo"
+score_centering = true
+
+[orchestrator.train.sampling]
+top_k = 128
+```
+
+The correction integrates IPO's capped importance weight and absolute-probability trust region over every action in the sampling mask. It applies to every RL token, including tokens whose sampled action IPO rejects. Both trainer and sampler probabilities use the replayed support. All support probabilities must be present; incomplete evidence fails explicitly. The renderer selects the complete recorded support, including top-k cutoff ties. If ties widen the support beyond the capture budget, increase `orchestrator.train.sampling.logprobs` to cover it. Sampling replay needs only support IDs; exact score centering additionally requires all sampler probabilities on that support. No proportional-tail approximation is used in this mode.
+
+The `rl` entrypoint configures probability capture and the inference `max_logprobs` limit automatically. Standalone servers must use `processed_logprobs` and allow at least `sampling.logprobs + 2` entries. The renderer requests two extra candidates because vLLM lists the sampled action first. For untruncated sampling, it recovers the top k+1 and excludes ties at the head boundary, keeping the head independent of the sampled action. If ties leave an empty head, increase `sampling.logprobs`. Stochastic sampling (`temperature > 0`) is required. With exact sampling-support IPO centering, evals sharing the server must also use positive temperature and bounded top-k sampling, as required by sampling replay.
+
+SC probability-head requests opt into compact HTTP logprobs on `/inference/v1/generate`. The server packs uint32 token IDs and float32 logprobs into base64 buffers with row offsets, avoiding per-candidate JSON objects. The renderer applies the same head and support validation to compact and native responses. Plain IPO, including sampling replay without SC, keeps sampled-only logprobs and the native HTTP path unless probability-head capture is explicitly requested. Sampling masks retain their native representation. To compare SC with native JSON, set `extra_body.extra_args.prl_compact_logprobs = false` on the applicable train sampling configuration. Clients also accept native responses from servers without compact-logprob support.
 
 ### Custom Loss
 
