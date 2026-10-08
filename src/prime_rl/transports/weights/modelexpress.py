@@ -93,7 +93,8 @@ class ModelExpressWeightSender(WeightSender):
         self._trainer.publish_version(version=version)
 
         # Installation acknowledgment is a PrimeRL outcome, not MX retirement.
-        installation_error: list[Exception | None] = [None]
+        installation_failed = [False]
+        installation_error = None
         if self.world.is_master:
             try:
                 installed = step_dir / INSTALLED_MARKER
@@ -107,10 +108,13 @@ class ModelExpressWeightSender(WeightSender):
                 if installed.read_text() != version.version_id:
                     raise RuntimeError("Inference acknowledged a different weight version")
             except Exception as exc:
-                installation_error[0] = exc
-        dist.broadcast_object_list(installation_error, src=0)
-        if installation_error[0] is not None:
-            raise installation_error[0]
+                installation_failed[0] = True
+                installation_error = exc
+        dist.broadcast_object_list(installation_failed, src=0)
+        if installation_failed[0]:
+            if installation_error is not None:
+                raise installation_error
+            raise RuntimeError("Inference weight installation failed on trainer rank zero")
         self._trainer.release_version(version=version)
         dist.barrier()
 
