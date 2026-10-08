@@ -89,7 +89,21 @@ def prepare(s_q, s_k, ks, ke, k_pad_to: int):
 def time_configs(s_q, s_k, ks, ke, k_pad_to):
     q_fp8, k_fp8, k_sc, w, out, s_k_run = prepare(s_q, s_k, ks, ke, k_pad_to)
     grid = lambda meta: (triton.cdiv(s_q, meta["BLOCK_M"]), triton.cdiv(s_k_run, meta["BLOCK_N"]))
-    args = (q_fp8, k_fp8, k_sc, w, out, ks, ke, s_q, s_k_run, q_fp8.stride(0), q_fp8.stride(1), k_fp8.stride(0), w.stride(0))
+    args = (
+        q_fp8,
+        k_fp8,
+        k_sc,
+        w,
+        out,
+        ks,
+        ke,
+        s_q,
+        s_k_run,
+        q_fp8.stride(0),
+        q_fp8.stride(1),
+        k_fp8.stride(0),
+        w.stride(0),
+    )
     meta = dict(H=H, D=D, S_Q_BUCKET=triton.next_power_of_2(s_q), S_K_BUCKET=triton.next_power_of_2(s_k_run))
     res, wall = {}, {}
     try:
@@ -123,13 +137,33 @@ def main():
                 frac = active_fraction(ks, ke, s_k)
                 for pad in map(int, args.pads.split(",")):
                     ms, wall = time_configs(s_q, s_k, ks, ke, pad)
-                    row = dict(layout=layout, total=total, rank=rank, s_q=s_q, s_k=s_k, k_pad_to=pad,
-                               n_docs=len(lens), mean_doc=total / len(lens), max_doc=max(lens),
-                               active_frac=frac, ms=ms, do_bench_wall_s=wall)
+                    row = dict(
+                        layout=layout,
+                        total=total,
+                        rank=rank,
+                        s_q=s_q,
+                        s_k=s_k,
+                        k_pad_to=pad,
+                        n_docs=len(lens),
+                        mean_doc=total / len(lens),
+                        max_doc=max(lens),
+                        active_frac=frac,
+                        ms=ms,
+                        do_bench_wall_s=wall,
+                    )
                     rows.append(row)
                     best = min(ms.values())
-                    print(layout, total, rank, s_q, s_k, pad, f"frac={frac:.3f} best={best:.2f}",
-                          " ".join(f"{k}:{v / best:.2f}" for k, v in ms.items()), flush=True)
+                    print(
+                        layout,
+                        total,
+                        rank,
+                        s_q,
+                        s_k,
+                        pad,
+                        f"frac={frac:.3f} best={best:.2f}",
+                        " ".join(f"{k}:{v / best:.2f}" for k, v in ms.items()),
+                        flush=True,
+                    )
                 args.out.write_text(json.dumps(rows, indent=1))
 
 

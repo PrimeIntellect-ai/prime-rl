@@ -8,11 +8,10 @@ from pathlib import Path
 
 import torch
 import triton
+from grid import ALL_CONFIGS, D, H, doc_lens, kernel, name, windows
+from padded_op import padded_indexer
 
 from prime_rl.trainer.models.kernels import fp8_indexer as mod
-
-from grid import ALL_CONFIGS, H, D, doc_lens, kernel, name, windows
-from padded_op import padded_indexer
 
 PRUNED = [c for c in ALL_CONFIGS if name(c) in ("M64_N64_w4_s2", "M64_N128_w4_s2", "M64_N128_w8_s3")]
 BENCHES = {
@@ -44,9 +43,17 @@ def main():
                             kernel.__dict__["do_bench"] = lambda fn, quantiles, b=bench: b(fn)
                         op(q, k, w, ks, ke, 512)
                         torch.cuda.synchronize()
-                        row = dict(layout=layout, total=total, rank=rank, op=op_name, configs=cfg_name,
-                                   bench=bench_name, trial=trial, bench_time_s=kernel.bench_time,
-                                   chosen=name(kernel.best_config))
+                        row = dict(
+                            layout=layout,
+                            total=total,
+                            rank=rank,
+                            op=op_name,
+                            configs=cfg_name,
+                            bench=bench_name,
+                            trial=trial,
+                            bench_time_s=kernel.bench_time,
+                            chosen=name(kernel.best_config),
+                        )
                         rows.append(row)
                         print(json.dumps(row), flush=True)
     kernel.configs = ALL_CONFIGS

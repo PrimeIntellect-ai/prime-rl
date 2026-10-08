@@ -7,10 +7,9 @@ from pathlib import Path
 
 import torch
 import triton
+from grid import ALL_CONFIGS, D, H, doc_lens, kernel, name, windows
 
 from prime_rl.trainer.models.kernels import fp8_indexer as mod
-
-from grid import ALL_CONFIGS, H, D, doc_lens, kernel, name, windows
 
 TOPK = 512
 
@@ -29,9 +28,23 @@ def padded_indexer(q, k, w, ks, ke, topk, pad_to=16):
     logits = torch.empty(S_q, S_k_pad, dtype=torch.float32, device=q.device)
     grid = lambda meta: (triton.cdiv(S_q, meta["BLOCK_M"]), triton.cdiv(S_k_pad, meta["BLOCK_N"]))
     kernel[grid](
-        q_fp8, k_fp8, k_scales, w, logits, ks, ke, S_q, S_k_pad,
-        q_fp8.stride(0), q_fp8.stride(1), k_fp8.stride(0), w.stride(0),
-        H=H_, D=D_, S_Q_BUCKET=triton.next_power_of_2(S_q), S_K_BUCKET=triton.next_power_of_2(S_k_pad),
+        q_fp8,
+        k_fp8,
+        k_scales,
+        w,
+        logits,
+        ks,
+        ke,
+        S_q,
+        S_k_pad,
+        q_fp8.stride(0),
+        q_fp8.stride(1),
+        k_fp8.stride(0),
+        w.stride(0),
+        H=H_,
+        D=D_,
+        S_Q_BUCKET=triton.next_power_of_2(S_q),
+        S_K_BUCKET=triton.next_power_of_2(S_k_pad),
     )
     actual_topk = min(topk, S_k)
     _, indices = torch.topk(logits, actual_topk, dim=-1)
@@ -46,8 +59,14 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     args = p.parse_args()
     rows = []
-    cases = [("one", 252408, 7), ("fixed16384", 252408, 7), ("fixed4096", 252408, 7), ("mixed", 228776, 3),
-             ("fixed4096", 80984, 0), ("one", 262144, 7)]
+    cases = [
+        ("one", 252408, 7),
+        ("fixed16384", 252408, 7),
+        ("fixed4096", 252408, 7),
+        ("mixed", 228776, 3),
+        ("fixed4096", 80984, 0),
+        ("one", 262144, 7),
+    ]
     for layout, total, rank in cases:
         lens = doc_lens(layout, total, random.Random(total))
         s_q, s_k, ks, ke = windows(lens, rank)
@@ -61,10 +80,18 @@ def main():
                 kernel.configs = [c]
                 ref = mod.fp8_indexer(q, k, w, ks, ke, TOPK)
                 new = padded_indexer(q, k, w, ks, ke, TOPK)
-                t_ref = triton.testing.do_bench(lambda: mod.fp8_indexer(q, k, w, ks, ke, TOPK), warmup=25, rep=200, return_mode="median")
-                t_new = triton.testing.do_bench(lambda: padded_indexer(q, k, w, ks, ke, TOPK), warmup=25, rep=200, return_mode="median")
-                per_config[name(c)] = dict(bitwise_equal=bool(torch.equal(ref, new)),
-                                           rows_differ=int((ref != new).any(-1).sum()), stock_ms=t_ref, padded_ms=t_new)
+                t_ref = triton.testing.do_bench(
+                    lambda: mod.fp8_indexer(q, k, w, ks, ke, TOPK), warmup=25, rep=200, return_mode="median"
+                )
+                t_new = triton.testing.do_bench(
+                    lambda: padded_indexer(q, k, w, ks, ke, TOPK), warmup=25, rep=200, return_mode="median"
+                )
+                per_config[name(c)] = dict(
+                    bitwise_equal=bool(torch.equal(ref, new)),
+                    rows_differ=int((ref != new).any(-1).sum()),
+                    stock_ms=t_ref,
+                    padded_ms=t_new,
+                )
         finally:
             kernel.configs = ALL_CONFIGS
         row = dict(layout=layout, total=total, rank=rank, s_q=s_q, s_k=s_k, per_config=per_config)
