@@ -61,6 +61,14 @@ def env_server_names(config: RLConfig, split: str) -> list[str]:
     return [source.resolved_name for source_split, source in env_servers(config) if source_split == split]
 
 
+def wandb_shared_finisher(config: RLConfig) -> str:
+    """The process that marks the shared W&B run finished. It must be the last one writing
+    to the run: W&B marks the run crashed when another process keeps writing after it.
+    The trainer saves its final checkpoint after the last weight broadcast, so with
+    checkpointing on it outlives the orchestrator."""
+    return "trainer" if config.trainer.ckpt is not None else "orchestrator"
+
+
 def write_config(config: RLConfig, output_dir: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -150,6 +158,7 @@ def rl_local(config: RLConfig):
     wandb_shared_env: dict[str, str] = {
         "WANDB_SHARED_MODE": "1",
         "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
+        "WANDB_SHARED_FINISHER": wandb_shared_finisher(config),
     }
 
     # Validate client port matches inference server port
@@ -339,6 +348,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=True,
             run_name=config.run.name,
+            wandb_shared_finisher=wandb_shared_finisher(config),
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -384,6 +394,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=False,
             run_name=config.run.name,
+            wandb_shared_finisher=wandb_shared_finisher(config),
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
