@@ -50,6 +50,9 @@ dist_timeout_seconds = 14400
 
 [trainer.model]
 freeze_moe_router = false
+# Compiled DeepSeek V4 blocks crash in activation-checkpoint recompute on main and, with that fixed,
+# raise mismatch KL about 30x from the second step on, so the trainer runs eager.
+compile = "None"
 ep = 8
 
 [trainer.model.moe.dispatch]

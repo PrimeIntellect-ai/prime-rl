@@ -65,6 +65,9 @@ enable_router_replay = true
 
 [trainer.model]
 freeze_moe_router = false
+# Compiled DeepSeek V4 blocks crash in activation-checkpoint recompute on main and, with that fixed,
+# raise mismatch KL about 30x from the second step on, so the trainer runs eager.
+compile = "None"
 ep = 8
 # Ring is the default and the only supported style: DeepSeek V4 declares ring-only CP support and
 # dispatches unconditionally to the TileLang sparse-attention kernel, so cp_style = "ulysses" is a
@@ -77,8 +80,6 @@ freq = 1
 
 [trainer.model.ac_offloading]
 max_inflight_activations = 5
-
-[trainer.model.compile]
 
 [trainer.model.moe.dispatch]
 type = "torch"
