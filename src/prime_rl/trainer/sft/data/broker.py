@@ -49,7 +49,7 @@ class RenderedDataset(Dataset):
             value
             for column in ("__subset", "__split")
             if column in dataset.dataset.column_names
-            for value in dataset.dataset.unique(column)
+            for value in dataset.dataset.data.column(column).unique().to_pylist()
             if value is not None
         }
         self.sources = [None, *sorted(sources)]
@@ -167,7 +167,7 @@ class PackedDataLoader:
             num_workers=config.num_workers,
             prefetch_factor=2,
             in_order=True,
-            multiprocessing_context="spawn",
+            multiprocessing_context="fork",
             timeout=timeout_seconds,
             generator=torch.Generator().manual_seed(config.seed),
         )
