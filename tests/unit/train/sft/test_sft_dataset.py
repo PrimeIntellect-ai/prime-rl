@@ -668,3 +668,15 @@ def test_sft_rejects_invalid_message_selection(dummy_renderer, mask):
     dataset = SFTDataset(Dataset.from_list([row]), lambda _: dummy_renderer)
     with pytest.raises(ValueError, match="message_loss_mask"):
         dataset._process(row)
+
+
+def test_cat_dataset_pads_text_packs_with_their_own_tokens():
+    dataset = CatDataset([_sft_sample([1, 2, 3]), _sft_sample([4, 5, 6, 7, 8, 9])], seq_len=8, pad_to_multiple_of=8)
+
+    packed = next(iter(dataset))
+
+    assert packed["input_ids"] == [1, 2, 3, 1, 2, 3, 1, 2]
+    assert packed["loss_mask"] == [True] * 3 + [False] * 5
+    assert packed["target_ids"][3:] == [0] * 5
+    assert packed["position_ids"] == [0, 1, 2, 0, 1, 2, 3, 4]
+    assert packed["seq_lens"] == [8]
