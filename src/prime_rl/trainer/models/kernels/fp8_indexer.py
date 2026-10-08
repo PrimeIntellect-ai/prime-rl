@@ -97,7 +97,7 @@ def per_token_group_quant_fp8(
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=3),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=8, num_stages=3),
     ],
-    key=["S_Q", "S_K_BUCKET", "H", "D"],
+    key=["S_Q_BUCKET", "S_K_BUCKET", "H", "D"],
 )
 @triton.jit
 def _triton_fp8_indexer_kernel(
@@ -116,6 +116,7 @@ def _triton_fp8_indexer_kernel(
     stride_ws,
     H: tl.constexpr,
     D: tl.constexpr,
+    S_Q_BUCKET: tl.constexpr,
     S_K_BUCKET: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -231,8 +232,9 @@ def fp8_indexer(
         w.stride(0),
         H=H,
         D=D,
-        # Packed document tails change S_k between batches. Reuse tuning within
-        # a size bucket; exact S_k still controls strides and all bounds masks.
+        # Packed rows change S_q and S_k between batches. Reuse tuning within a
+        # size bucket; exact S_q and S_k still control the grid, strides and bounds masks.
+        S_Q_BUCKET=triton.next_power_of_2(S_q),
         S_K_BUCKET=triton.next_power_of_2(S_k),
     )
 
