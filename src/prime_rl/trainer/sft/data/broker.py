@@ -167,7 +167,7 @@ class PackedDataLoader:
             num_workers=config.num_workers,
             prefetch_factor=2,
             in_order=True,
-            multiprocessing_context="spawn",
+            multiprocessing_context="fork",
             timeout=timeout_seconds,
             generator=torch.Generator().manual_seed(config.seed),
         )
