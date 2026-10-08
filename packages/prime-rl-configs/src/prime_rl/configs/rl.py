@@ -705,7 +705,7 @@ class RLConfig(BaseConfig):
                     not self.inference.vllm.enable_lora
                     and self.inference.vllm.api_server_count == self.inference.vllm.data_parallel_size
                 ):
-                    self.inference.vllm.api_server_count = inferred_dp_local
+                    self.inference.vllm.api_server_count = max(4, inferred_dp_local)
 
             # Auto-infer DP and api_server_count for standard multi-node inference.
             # Without EP, vLLM only creates api_server_count * tp workers per node,
