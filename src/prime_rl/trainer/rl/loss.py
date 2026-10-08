@@ -138,7 +138,8 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 def _mismatch_kl_from_log_ratio(log_importance_ratio: Tensor) -> Tensor:
     # Keep headroom for FP32 reductions across tokens and ranks.
     metric_limit = log_importance_ratio.new_tensor(1e30)
-    mismatch_kl = torch.expm1(log_importance_ratio.clamp(max=metric_limit.log())) - log_importance_ratio
+    bounded_log_ratio = log_importance_ratio.clamp(max=metric_limit.log())
+    mismatch_kl = torch.expm1(bounded_log_ratio) - bounded_log_ratio
     return mismatch_kl.clamp(max=metric_limit)
 
 
