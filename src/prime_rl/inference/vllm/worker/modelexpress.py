@@ -39,7 +39,7 @@ class ModelExpressWeightUpdateWorker(Worker):
 
         hf_config = self.model_runner.model_config.hf_config
         chain = get_custom_causal_lm_cls(hf_config).conversion_chain(hf_config)
-        self._worker_id = f"{session_id}:{rank_offset + self.rank}"
+        worker_id = f"{session_id}:{rank_offset + self.rank}"
         self._generator = ModelExpressGeneratorClient.initialize(
             ModelExpressGeneratorConfig(
                 engine_context=VllmGeneratorContext(
@@ -50,16 +50,15 @@ class ModelExpressWeightUpdateWorker(Worker):
                 model_name=self.model_runner.model_config.model,
                 server_url=f"{host}:{port}",
                 source_order=(WeightSource.TRAINER,),
-                worker_id=self._worker_id,
+                worker_id=worker_id,
                 staging_buffer_bytes=staging_buffer_bytes,
                 staging_buffers_count=staging_buffers_count,
             )
         )
         atexit.register(self._generator.close)
-        return self._worker_id
 
     @torch.no_grad()
-    def update_weights_from_modelexpress(self, version_uid: str):
+    def update_weights_from_modelexpress(self, version_uid: str) -> None:
         if not version_uid:
             raise ValueError("modelexpress requires version_uid")
         version = WeightVersionRef(version_uid)
@@ -68,4 +67,3 @@ class ModelExpressWeightUpdateWorker(Worker):
             self._generator.apply_weight(staged)
         finally:
             staged.release()
-        return {"worker_id": self._worker_id, "version_uid": version_uid}
