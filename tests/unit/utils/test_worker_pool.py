@@ -20,16 +20,19 @@ def _fail_on_two(item: int) -> int:
 
 @pytest.mark.parametrize("num_workers", [0, 2])
 def test_worker_pool_preserves_order(num_workers: int):
-    offset = 100
+    with WorkerPool(num_workers) as workers:
+        assert list(workers(_slowest_first, range(6))) == list(range(6))
+
+
+def test_worker_pool_runs_items_concurrently():
     both_workers_busy = threading.Barrier(2, timeout=5)
 
-    def add_offset_slowest_first(item: int) -> int:
-        if num_workers == 2:
-            both_workers_busy.wait()
-        return _slowest_first(item) + offset
+    def wait_for_other_worker(item: int) -> int:
+        both_workers_busy.wait()
+        return item
 
-    with WorkerPool(num_workers) as workers:
-        assert list(workers(add_offset_slowest_first, range(6))) == [100, 101, 102, 103, 104, 105]
+    with WorkerPool(2) as workers:
+        assert list(workers(wait_for_other_worker, range(4))) == list(range(4))
 
 
 @pytest.mark.parametrize("num_workers", [0, 2])
