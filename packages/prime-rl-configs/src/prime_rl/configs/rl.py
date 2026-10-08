@@ -433,8 +433,6 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if "inference_world_size" in self.weight_broadcast.model_fields_set:
-            raise ValueError("weight_broadcast.inference_world_size is set automatically by rl; remove it.")
         self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
         self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
