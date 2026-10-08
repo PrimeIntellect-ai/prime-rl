@@ -670,9 +670,15 @@ class Dispatcher:
             episode.errors.append(vf.Error(type="EmptyEpisode", message="Episode returned with no traces"))
 
         for trace in episode.traces:
-            if trace.is_timeout and not trace.has_error and meta.kind == "train":
-                # Training keeps a timed-out rollout out of the batch: an error,
-                # like any other failure. Eval keeps it as a scored outcome.
+            termination = getattr(trace, "termination", None)
+            scored_termination = (
+                getattr(termination, "valid_sample", False)
+                and getattr(termination, "reward", None) is not None
+                and trace.reward == termination.reward
+            )
+            if trace.is_timeout and not trace.has_error and meta.kind == "train" and not scored_termination:
+                # An explicit execution policy may retain a timeout as a scored
+                # training sample. Unclassified timeouts remain errors.
                 trace.errors.append(vf.Error(type="Timeout", message=f"Trace stopped by {trace.stop_condition}"))
                 trace.ok = False
                 episode.ok = False
