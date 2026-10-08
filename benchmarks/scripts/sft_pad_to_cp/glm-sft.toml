@@ -1,0 +1,41 @@
+max_steps = 20
+
+[model]
+name = "/home/huggingface/hub/models--zai-org--GLM-4.5-Air/snapshots/a24ceef6ce4f3536971efe9b778bdaa1bab18daa"
+attn = "flash_attention_3"
+cp = 2
+ep = 8
+optim_cpu_offload = false
+fsdp_cpu_offload = false
+ac_offloading = "None"
+
+[model.debug]
+num_layers = 8
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "glm-4.5"
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+splits = ["math"]
+seed = 0
+seq_len = 131072
+batch_size = 8
+micro_batch_size = 1
+skip_invalid_samples = true
+
+[optim]
+lr = 1e-5
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "feat-sft-pad-to-cp-multiple"
+group = "glm-4.5-air-8L"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
