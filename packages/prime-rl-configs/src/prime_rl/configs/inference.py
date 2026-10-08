@@ -96,7 +96,7 @@ class VllmConfig(BaseConfig):
     """RPC port for data parallel communication."""
 
     api_server_count: int = Field(1, ge=0)
-    """API servers to run. Set to 0 for headless mode."""
+    """API servers to run. Set to 0 for headless mode. If unset, defaults to the local data parallel size, or to 4 when that is 1 (1 with LoRA)."""
 
     seed: int = 0
     """Seed the inference components."""
@@ -199,17 +199,17 @@ class VllmConfig(BaseConfig):
     def auto_setup_api_server_count(self):
         """
         Ensures that we have at least as many API servers as data parallel
-        size. Unless LoRA is enabled, in which case only one API server is
-        supported (vLLM limitation).
+        size, and 4 with a single engine so request handling does not stall
+        on one process. Unless LoRA is enabled, in which case only one API
+        server is supported (vLLM limitation).
         """
         if self.model_extra and self.model_extra.get("headless", False):
             self.api_server_count = 0
             return self
 
         if "api_server_count" not in self.model_fields_set:
-            min_api_server_count = self.data_parallel_size_local or self.data_parallel_size
-            if self.api_server_count < min_api_server_count:
-                self.api_server_count = min_api_server_count
+            dp_local = self.data_parallel_size_local or self.data_parallel_size
+            self.api_server_count = dp_local if dp_local > 1 else 4
 
         if self.enable_lora:
             self.api_server_count = 1  # LoRA requires only one API server
@@ -559,7 +559,7 @@ class InferenceConfig(BaseConfig):
                 self.vllm.data_parallel_size_local = dp_per_node
             if self.vllm.data_parallel_size == 1:
                 self.vllm.data_parallel_size = dp_per_node
-            if self.vllm.api_server_count == 1:
+            if self.vllm.api_server_count < dp_per_node:
                 self.vllm.api_server_count = dp_per_node
         return self
 

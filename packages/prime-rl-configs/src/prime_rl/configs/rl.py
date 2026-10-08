@@ -503,6 +503,7 @@ class RLConfig(BaseConfig):
 
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True
+                self.inference.vllm.api_server_count = 1
                 self.inference.vllm.max_lora_rank = self.trainer.model.lora.rank
             else:
                 warnings.warn(
@@ -720,7 +721,7 @@ class RLConfig(BaseConfig):
                     self.inference.vllm.data_parallel_size = dp_per_node
                 if self.inference.vllm.data_parallel_size_local is None and dp_per_node > 1:
                     self.inference.vllm.data_parallel_size_local = dp_per_node
-                if self.inference.vllm.api_server_count == 1 and dp_per_node > 1:
+                if self.inference.vllm.api_server_count < dp_per_node:
                     self.inference.vllm.api_server_count = dp_per_node
 
             if self.weight_broadcast is not None and self.weight_broadcast.type in ("nccl", "nixl"):
