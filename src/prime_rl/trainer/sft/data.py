@@ -474,12 +474,13 @@ class SFTDataset(StatefulIterableDataset):
 
 
 class CatDataset(StatefulIterableDataset):
-    """Concatenate text and multimodal samples into one fixed-length row."""
+    """Pack samples into rows of at most `seq_len` tokens, padded to a multiple of `pad_to_multiple_of`."""
 
-    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
+    def __init__(self, dataset: StatefulIterableDataset, seq_len: int, pad_to_multiple_of: int):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
+        self.pad_to_multiple_of = pad_to_multiple_of
         self.pending_sample: Sample | None = None
 
     def state_dict(self) -> dict:
@@ -583,7 +584,7 @@ class CatDataset(StatefulIterableDataset):
             if kept > 0:
                 result["seq_lens"].append(kept)
             remaining -= kept
-        pad_len = seq_len - len(result["input_ids"])
+        pad_len = -len(result["input_ids"]) % self.pad_to_multiple_of
         if pad_len > 0:
             result["input_ids"].extend([0] * pad_len)
             result["position_ids"].extend(range(pad_len))
@@ -753,8 +754,8 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
+def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig, cp: int) -> StatefulDataLoader:
+    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size, pad_to_multiple_of=cp)
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,
