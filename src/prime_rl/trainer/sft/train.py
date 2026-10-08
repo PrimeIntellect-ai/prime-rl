@@ -113,7 +113,7 @@ def train(config: SFTConfig):
     resolve_ep(config.model)
 
     # Initialize parallel dimensions
-    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+    parallel_dims = get_parallel_dims(config.model)
 
     total_micro_batches = config.data.batch_size * config.model.cp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size

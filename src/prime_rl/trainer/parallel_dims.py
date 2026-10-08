@@ -264,13 +264,6 @@ class ParallelDims:
         return self.cp * self.pp
 
     @cached_property
-    def seq_len_divisor(self):
-        # Context Parallel requires that seq_len be divisible by 2 * CP degree,
-        # when load balancing is enabled (by default).
-        # https://github.com/pytorch/pytorch/blob/4f62dcc/torch/distributed/tensor/experimental/_attention.py#L1246
-        return self.cp * 2
-
-    @cached_property
     def logger(self):
         return get_logger()
 
@@ -309,7 +302,7 @@ def resolve_ep(config: ModelConfig) -> None:
     get_logger().info(f"EP auto: world_size={world_size}, dp_replicate={dp_replicate} -> resolved ep={resolved_ep}")
 
 
-def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> ParallelDims:
+def get_parallel_dims(config: ModelConfig) -> ParallelDims:
     assert isinstance(config.ep, int), (
         f"config.ep must be resolved to an int before get_parallel_dims; got {config.ep!r}. "
         "Call resolve_ep(config) first."
@@ -324,13 +317,5 @@ def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> Parall
         ep=config.ep,
         world_size=dist.get_world_size(),
     )
-
-    # Validate sequence length against parallel dimensions requirements
-    if seq_len is not None and seq_len % parallel_dims.seq_len_divisor != 0:
-        raise ValueError(
-            f"Sequence length ({seq_len}) must be divisible by "
-            f"seq_len_divisor ({parallel_dims.seq_len_divisor}) for the given parallel dimensions. "
-            f"This requirement comes from context parallel (CP={config.cp})."
-        )
 
     return parallel_dims
