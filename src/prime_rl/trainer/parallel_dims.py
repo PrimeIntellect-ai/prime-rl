@@ -33,12 +33,108 @@ device_type = _get_available_device_type() or "cuda"
 __all__ = ["ParallelDims"]
 
 
+"""
+[ParallelDims Mesh Breakdown]
+
+The trainer's ranks are organized into nested groups (sets of ranks) and laid out on one device
+mesh. The mesh's dims are the innermost group (cp) and the quotients between consecutive groups.
+Every process group the trainer communicates over is the set of ranks along one or more mesh dims.
+All of these are defined below.
+
+# Notation and mesh operations
+
+Mesh names double as their sizes. Three operations build one mesh from two dims A and B. Write a and
+b for local ranks on A and B (as in DeviceMesh.get_local_rank), so 0 <= a < A and 0 <= b < B:
+  - A x B (merge): one dim of size A * B, row-major with B fastest: local rank a * B + b.
+  - A_mod_B (split): the row-major split of A into (A_mod_B, B), so A = A_mod_B x B; B must divide A.
+    Local rank a on A becomes a % B on B, its position within its group of B ranks, and a // B on
+    A_mod_B, which of the A / B such groups it is in.
+  - (A, B) (stack): a 2-D mesh that keeps A and B as separate dims.
+
+# Nested groups
+
+The groups are hierarchically nested, cp ⊂ ep ⊂ fsdp ⊂ world (ep only with EP), and each is a
+contiguous block of ranks inside the next:
+  - cp: ranks that split each sequence into chunks (context parallelism).
+  - ep (EP only): ranks that split the routed experts. The expert all-to-all group.
+  - fsdp: ranks that together hold one sharded copy of the params, except the routed experts when EP
+    is on (see expert_hsdp below).
+  - world: every rank.
+
+This nesting is a design choice, not a requirement; see Design choices.
+
+# Mesh dims
+
+The device mesh has one dim per step in the nesting, so each nested group is a merge of the
+fastest dims. Slowest-varying first:
+
+  without EP:  dp_replicate, fsdp_mod_cp,            cp
+  with EP:     dp_replicate, fsdp_mod_ep, ep_mod_cp, cp
+
+The local ranks on these dims can be chosen independently, and together they determine the global
+rank. Each entry says what the local rank on that dim identifies.
+  - cp: which chunk of each sequence the rank holds.
+  - ep_mod_cp (EP): which cp group the rank is in, within its EP group.
+  - fsdp_mod_cp (no EP): which cp group the rank is in, within its fsdp group.
+  - fsdp_mod_ep (EP): which EP group the rank is in, within its fsdp group.
+  - dp_replicate = world_mod_fsdp: which fsdp replica the rank is in.
+
+In addition to the nested groups, two derived groups are named:
+  - dp = world_mod_cp = dp_replicate x fsdp_mod_cp, or dp_replicate x fsdp_mod_ep x ep_mod_cp with EP:
+    ranks with distinct data.
+  - vocab = fsdp: the group NGramEmbedding's table is vocab-parallel over.
+
+# 2-D FSDP meshes
+
+Each FSDP mesh is of the form (dp_replicate, shard dim) when dp_replicate > 1, and just the 1-D
+shard dim otherwise. Params are sharded along the shard dim and replicated along dp_replicate, which
+all three use by choice, not necessity; see Design choices.
+  - expert_hsdp = (dp_replicate, fsdp_mod_ep): for routed expert params when EP is on.
+  - vocab_hsdp = (dp_replicate, fsdp_mod_vocab): for NGramEmbedding when vocab > 1. Since
+    fsdp_mod_vocab = fsdp / vocab = 1, FSDP only replicates the table, which is already vocab-sharded.
+  - hsdp = (dp_replicate, fsdp): for all other params.
+
+# Example
+
+With EP: 16 GPUs, dp_replicate=2, cp=2, ep=4, so fsdp=8, fsdp_mod_ep=2, and ep_mod_cp=2.
+
+                             dp_replicate=0                               dp_replicate=1
+               +--------------------------------------+  +--------------------------------------+
+               |  fsdp_mod_ep=0      fsdp_mod_ep=1    |  |  fsdp_mod_ep=0      fsdp_mod_ep=1    |
+               |  +-------------+    +-------------+  |  |  +-------------+    +-------------+  |
+               |  | +---------+ |    | +---------+ |  |  |  | +---------+ |    | +---------+ |  |
+  ep_mod_cp=0  |  | |  0    1 | |    | |  4    5 | |  |  |  | |  8    9 | |    | | 12   13 | |  |
+               |  | +---------+ |    | +---------+ |  |  |  | +---------+ |    | +---------+ |  |
+               |  | +---------+ |    | +---------+ |  |  |  | +---------+ |    | +---------+ |  |
+  ep_mod_cp=1  |  | |  2    3 | |    | |  6    7 | |  |  |  | | 10   11 | |    | | 14   15 | |  |
+               |  | +---------+ |    | +---------+ |  |  |  | +---------+ |    | +---------+ |  |
+               |  +-------------+    +-------------+  |  |  +-------------+    +-------------+  |
+               +--------------------------------------+  +--------------------------------------+
+
+Boxes nest as cp ⊂ ep ⊂ fsdp: outer boxes are fsdp groups, middle boxes EP groups, inner boxes cp groups
+(left rank cp=0, right cp=1). Non-expert params shard across each outer box. Ranks at the same position
+in different EP groups own the same expert slice: they shard it along fsdp_mod_ep ({0, 4}) and replicate
+it along dp_replicate ({0, 8}), so expert_hsdp for that slice is {0, 4, 8, 12}.
+Without EP, erase the middle boxes: fsdp_mod_ep x ep_mod_cp becomes the single dim fsdp_mod_cp.
+
+# Design choices
+
+The nesting cp ⊂ ep ⊂ fsdp ⊂ world spreads every param evenly over the full fsdp group, keeps the
+expert all-to-all within one replica, and makes the expert shard group a single dim (fsdp_mod_ep).
+Valid alternatives each give one of these up:
+  - cp outside fsdp: lets cp and FSDP traffic use different links (e.g. cp intra-node, FSDP
+    inter-node), but params shard over only fsdp / cp ranks and cp ranks hold identical copies.
+  - ep spanning replicas: the expert all-to-all crosses the slowest dim.
+  - ep not containing cp: the expert shard group spans part of cp, so it is no longer one dim.
+  - per-mesh replication: each 2-D FSDP mesh could use its own replicate degree instead of
+    dp_replicate; experts or the NGramEmbedding then get a different share per rank.
+"""
+
+
 @dataclass
 class ParallelDims:
     dp_replicate: int
-    dp_shard: int
     cp: int
-    pp: int
     ep: int
     world_size: int
 
@@ -50,58 +146,60 @@ class ParallelDims:
         self._validate()
 
     def _validate(self):
-        dp_replicate, dp_shard, cp, pp, ep = (
-            self.dp_replicate,
-            self.dp_shard,
-            self.cp,
-            self.pp,
-            self.ep,
-        )
-        for d in (dp_replicate, cp, pp, ep):
-            assert d >= 1, "Parallelism degree should be >= 1, except for dp_shard"
+        for name, degree in (("dp_replicate", self.dp_replicate), ("cp", self.cp), ("ep", self.ep)):
+            if degree < 1:
+                raise ValueError(f"{name} ({degree}) must be >= 1")
 
-        assert dp_shard == -1 or dp_shard >= 1, " dp_shard must -1 or >=1."
-        if dp_shard < 0:
-            self.dp_shard = dp_shard = self.world_size // (dp_replicate * cp * pp)
-        assert dp_shard >= 1
+        if self.world_size % (self.dp_replicate * self.cp) != 0:
+            raise ValueError(
+                f"world_size ({self.world_size}) must be divisible by "
+                f"dp_replicate ({self.dp_replicate}) * cp ({self.cp})"
+            )
 
-        assert dp_replicate * dp_shard * cp * pp == self.world_size, (
-            f"Invalid parallel dims: dp_replicate({dp_replicate}) * dp_shard({dp_shard}) * "
-            f"cp({cp}) * pp({pp}) != WORLD_SIZE({self.world_size})"
-        )
-
-        if ep > 1:
-            # EP would borrow all cp and some dp_shard degree
-            assert ep % cp == 0 and (dp_shard * cp) % ep == 0
+        if self.ep > 1:
+            if self.ep % self.cp != 0:
+                raise NotImplementedError(
+                    f"ep ({self.ep}) must be a multiple of cp ({self.cp}): EP groups that do not contain whole cp "
+                    "groups are a valid layout but not implemented. See [ParallelDims Mesh Breakdown]."
+                )
+            if self.fsdp % self.ep != 0:
+                raise NotImplementedError(
+                    f"world_size / dp_replicate ({self.fsdp}) must be a multiple of ep ({self.ep}): EP groups that "
+                    "span replicas are a valid layout but not implemented. See [ParallelDims Mesh Breakdown]."
+                )
 
     def build_mesh(self) -> DeviceMesh:
         mesh = self._build_mesh_with_ep() if self.ep > 1 else self._build_mesh_without_ep()
-        self._submeshes["head"] = self._submeshes["dp_shard_cp"]
+        self._submeshes["vocab"] = self._submeshes["fsdp"]
+        if "fsdp_mod_vocab" in mesh.mesh_dim_names:
+            self._submeshes["vocab_hsdp"] = self._slice_hsdp(mesh, "fsdp_mod_vocab")
         return mesh
 
+    def _slice_hsdp(self, mesh: DeviceMesh, shard_dim_name: str) -> DeviceMesh:
+        if self.dp_replicate_enabled:
+            return mesh["dp_replicate", shard_dim_name]
+        return mesh[shard_dim_name]
+
     def _build_mesh_with_ep(self) -> DeviceMesh:
-        # With ep, dp_shard and ep are derived submeshes:
-        # dp_shard = dp_shard_mod_ep * dp_shard_in_ep
-        # ep = dp_shard_in_ep * cp
-        dp_shard_mod_ep = self.dp_shard * self.cp // self.ep
-        dp_shard_in_ep = self.ep // self.cp
+        # See [ParallelDims Mesh Breakdown].
+        fsdp_mod_ep = self.fsdp // self.ep
+        ep_mod_cp = self.ep // self.cp
 
         dims = []
         names = []
         for d, name in zip(
             [
-                self.pp,
                 self.dp_replicate,
-                dp_shard_mod_ep,
-                dp_shard_in_ep,
+                fsdp_mod_ep,
+                ep_mod_cp,
                 self.cp,
                 1,
             ],
-            ["pp", "dp_replicate", "dp_shard_mod_ep", "dp_shard_in_ep", "cp", "dp_shard_mod_head"],
+            ["dp_replicate", "fsdp_mod_ep", "ep_mod_cp", "cp", "fsdp_mod_vocab"],
         ):
-            # dp_shard_mod_ep is needed even if it's 1, whose FSDP wrapping
+            # fsdp_mod_ep is needed even if it's 1, whose FSDP wrapping
             # helps the MoE layers do mixed precision training
-            if d > 1 or name in ("dp_shard_mod_ep", "dp_shard_mod_head"):
+            if d > 1 or name in ("fsdp_mod_ep", "fsdp_mod_vocab"):
                 dims.append(d)
                 names.append(name)
 
@@ -112,56 +210,56 @@ class ParallelDims:
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
-        # Mesh for data loading (no communication on this mesh)
         dp_mesh_dim_names = []
-        # Mesh for param sharding
-        dp_shard_cp_mesh_dim_names = []
-        # Mesh for loss all-reduce
-        dp_cp_mesh_dim_names = []
-        # Mesh for ep
+        fsdp_mesh_dim_names = []
+        world_mesh_dim_names = []
         ep_mesh_dim_names = []
 
         if self.dp_replicate_enabled:
             dp_mesh_dim_names.append("dp_replicate")
-            dp_cp_mesh_dim_names.append("dp_replicate")
-        # dp_shard_mod_ep is always needed, even if it's 1
-        dp_mesh_dim_names.append("dp_shard_mod_ep")
-        dp_shard_cp_mesh_dim_names.append("dp_shard_mod_ep")
-        dp_cp_mesh_dim_names.append("dp_shard_mod_ep")
-        if "dp_shard_in_ep" in names:
-            dp_mesh_dim_names.append("dp_shard_in_ep")
-            dp_shard_cp_mesh_dim_names.append("dp_shard_in_ep")
-            dp_cp_mesh_dim_names.append("dp_shard_in_ep")
-            ep_mesh_dim_names.append("dp_shard_in_ep")
+            world_mesh_dim_names.append("dp_replicate")
+        # fsdp_mod_ep is always needed, even if it's 1
+        dp_mesh_dim_names.append("fsdp_mod_ep")
+        fsdp_mesh_dim_names.append("fsdp_mod_ep")
+        world_mesh_dim_names.append("fsdp_mod_ep")
+        if "ep_mod_cp" in names:
+            dp_mesh_dim_names.append("ep_mod_cp")
+            fsdp_mesh_dim_names.append("ep_mod_cp")
+            world_mesh_dim_names.append("ep_mod_cp")
+            ep_mesh_dim_names.append("ep_mod_cp")
         if self.cp_enabled:
-            dp_shard_cp_mesh_dim_names.append("cp")
-            dp_cp_mesh_dim_names.append("cp")
+            fsdp_mesh_dim_names.append("cp")
+            world_mesh_dim_names.append("cp")
             ep_mesh_dim_names.append("cp")
 
         self._submeshes["dp"] = mesh[tuple(dp_mesh_dim_names)]._flatten(mesh_dim_name="dp")
-        self._submeshes["dp_shard_cp"] = mesh[tuple(dp_shard_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_shard_cp")
-        self._submeshes["dp_cp"] = mesh[tuple(dp_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_cp")
+        self._submeshes["fsdp"] = mesh[tuple(fsdp_mesh_dim_names)]._flatten(mesh_dim_name="fsdp")
+        self._submeshes["world"] = mesh[tuple(world_mesh_dim_names)]._flatten(mesh_dim_name="world")
         self._submeshes["ep"] = mesh[tuple(ep_mesh_dim_names)]._flatten(mesh_dim_name="ep")
 
         if self.dp_replicate_enabled:
-            parent = mesh[tuple(["dp_replicate"] + dp_shard_cp_mesh_dim_names)]
+            parent = mesh[tuple(["dp_replicate"] + fsdp_mesh_dim_names)]
             hsdp_tensor = parent.mesh.reshape(self.dp_replicate, -1)
-            self._submeshes["hsdp"] = DeviceMesh(
-                device_type, hsdp_tensor, mesh_dim_names=("dp_replicate", "dp_shard_cp")
-            )
+            self._submeshes["hsdp"] = DeviceMesh(device_type, hsdp_tensor, mesh_dim_names=("dp_replicate", "fsdp"))
         else:
-            self._submeshes["hsdp"] = self._submeshes["dp_shard_cp"]
+            self._submeshes["hsdp"] = self._submeshes["fsdp"]
+
+        self._submeshes["expert_hsdp"] = self._slice_hsdp(mesh, "fsdp_mod_ep")
+        assert self.ep * self._submeshes["expert_hsdp"].size() == self.world_size
 
         return mesh
 
     def _build_mesh_without_ep(self) -> DeviceMesh:
+        # See [ParallelDims Mesh Breakdown].
+        fsdp_mod_cp = self.fsdp // self.cp
+
         dims = []
         names = []
         for d, name in zip(
-            [self.pp, self.dp_replicate, self.dp_shard, self.cp, 1],
-            ["pp", "dp_replicate", "dp_shard", "cp", "dp_shard_mod_head"],
+            [self.dp_replicate, fsdp_mod_cp, self.cp, 1],
+            ["dp_replicate", "fsdp_mod_cp", "cp", "fsdp_mod_vocab"],
         ):
-            if d > 1 or name == "dp_shard" or (name == "dp_shard_mod_head" and self.dp_shard * self.cp > 1):
+            if d > 1 or name == "fsdp_mod_cp" or (name == "fsdp_mod_vocab" and self.fsdp > 1):
                 dims.append(d)
                 names.append(name)
 
@@ -172,40 +270,30 @@ class ParallelDims:
 
         # Create all the submesh here to ensure all required process groups are
         # initialized:
-        # Mesh for data loading (no communication on this mesh)
         dp_mesh_dim_names = []
-        # Mesh for param sharding
-        dp_shard_cp_mesh_dim_names = []
-        # Mesh for loss all-reduce
-        dp_cp_mesh_dim_names = []
+        fsdp_mesh_dim_names = []
+        world_mesh_dim_names = []
 
         if self.dp_replicate_enabled:
             dp_mesh_dim_names.append("dp_replicate")
-            dp_cp_mesh_dim_names.append("dp_replicate")
-        dp_mesh_dim_names.append("dp_shard")
-        dp_shard_cp_mesh_dim_names.append("dp_shard")
-        dp_cp_mesh_dim_names.append("dp_shard")
+            world_mesh_dim_names.append("dp_replicate")
+        dp_mesh_dim_names.append("fsdp_mod_cp")
+        fsdp_mesh_dim_names.append("fsdp_mod_cp")
+        world_mesh_dim_names.append("fsdp_mod_cp")
         if self.cp_enabled:
-            dp_shard_cp_mesh_dim_names.append("cp")
-            dp_cp_mesh_dim_names.append("cp")
+            fsdp_mesh_dim_names.append("cp")
+            world_mesh_dim_names.append("cp")
 
-        if dp_mesh_dim_names != []:
-            self._submeshes["dp"] = mesh[tuple(dp_mesh_dim_names)]._flatten(mesh_dim_name="dp")
-        if dp_shard_cp_mesh_dim_names != []:
-            self._submeshes["dp_shard_cp"] = mesh[tuple(dp_shard_cp_mesh_dim_names)]._flatten(
-                mesh_dim_name="dp_shard_cp"
-            )
-        if dp_cp_mesh_dim_names != []:
-            self._submeshes["dp_cp"] = mesh[tuple(dp_cp_mesh_dim_names)]._flatten(mesh_dim_name="dp_cp")
+        self._submeshes["dp"] = mesh[tuple(dp_mesh_dim_names)]._flatten(mesh_dim_name="dp")
+        self._submeshes["fsdp"] = mesh[tuple(fsdp_mesh_dim_names)]._flatten(mesh_dim_name="fsdp")
+        self._submeshes["world"] = mesh[tuple(world_mesh_dim_names)]._flatten(mesh_dim_name="world")
 
         if self.dp_replicate_enabled:
-            parent = mesh[tuple(["dp_replicate"] + dp_shard_cp_mesh_dim_names)]
+            parent = mesh[tuple(["dp_replicate"] + fsdp_mesh_dim_names)]
             hsdp_tensor = parent.mesh.reshape(self.dp_replicate, -1)
-            self._submeshes["hsdp"] = DeviceMesh(
-                device_type, hsdp_tensor, mesh_dim_names=("dp_replicate", "dp_shard_cp")
-            )
+            self._submeshes["hsdp"] = DeviceMesh(device_type, hsdp_tensor, mesh_dim_names=("dp_replicate", "fsdp"))
         else:
-            self._submeshes["hsdp"] = self._submeshes["dp_shard_cp"]
+            self._submeshes["hsdp"] = self._submeshes["fsdp"]
 
         return mesh
 
@@ -224,44 +312,24 @@ class ParallelDims:
         return mesh[name]
 
     @property
-    def dp_enabled(self):
-        return self.dp_replicate > 1 or self.dp_shard > 1
+    def fsdp(self) -> int:
+        return self.world_size // self.dp_replicate
 
     @property
     def dp_replicate_enabled(self):
         return self.dp_replicate > 1
 
     @property
-    def dp_shard_enabled(self):
-        return self.dp_shard > 1
-
-    @property
     def cp_enabled(self):
         return self.cp > 1
 
     @property
-    def dp_cp_enabled(self):
-        return self.dp_enabled or self.cp_enabled
-
-    @property
     def fsdp_enabled(self):
-        return self.dp_shard_enabled or self.cp_enabled
-
-    @property
-    def pp_enabled(self):
-        return self.pp > 1
+        return self.fsdp > 1
 
     @property
     def ep_enabled(self):
         return self.ep > 1
-
-    @cached_property
-    def fsdp_gradient_divide_factor(self) -> int:
-        return self.dp_replicate * self.dp_shard * self.cp
-
-    @cached_property
-    def non_data_parallel_size(self):
-        return self.cp * self.pp
 
     @cached_property
     def seq_len_divisor(self):
@@ -302,7 +370,7 @@ def resolve_ep(config: ModelConfig) -> None:
         return
 
     dp_replicate = config.dp_replicate
-    fsdp_island_size = world_size // dp_replicate  # pp is always 1
+    fsdp_island_size = world_size // dp_replicate
     resolved_ep = min(fsdp_island_size, 8)
 
     config.ep = resolved_ep
@@ -318,9 +386,7 @@ def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> Parall
     # Initialize parallel dimensions
     parallel_dims = ParallelDims(
         dp_replicate=config.dp_replicate,
-        dp_shard=-1,
         cp=config.cp,
-        pp=1,
         ep=config.ep,
         world_size=dist.get_world_size(),
     )

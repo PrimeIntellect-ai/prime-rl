@@ -49,7 +49,7 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([torch.nn.Identity(), moe])
     config = ModelConfig.model_validate({"moe": {"compute": {**compute, "apply_to": selection}}})
-    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+    dims = ParallelDims(dp_replicate=1, cp=1, ep=1, world_size=1)
 
     configure_moe_runtime(model, config, dims)
 

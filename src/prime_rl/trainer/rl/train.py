@@ -296,11 +296,11 @@ def train(config: TrainerConfig):
         forward_backward_start_time = time.perf_counter()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
-        # Normalize each loss component by its own global (dp_cp) denominator, so every rank
+        # Normalize each loss component by its own global (world) denominator, so every rank
         # divides by the same value. With a per-rank denominator, ranks with fewer loss
         # tokens implicitly upweight their per-token gradient contribution after FSDP averaging.
-        # FSDP's per-rank divide is undone after the microbatch loop via
-        # fsdp_gradient_divide_factor. One batched collective keeps every rank issuing the same
+        # FSDP's per-rank divide is undone after the microbatch loop by multiplying by
+        # world_size. One batched collective keeps every rank issuing the same
         # op regardless of which components its samples carry. rl divides by the sum of its
         # weights (the token count for 0/1 weights; the group count under prompt-mean
         # aggregation); ce and ref_kl divide by their token counts, so a fractional ce weight
@@ -319,12 +319,12 @@ def train(config: TrainerConfig):
         global_scales = torch.tensor(
             [local_rl_scale, local_ce_scale, local_ref_kl_scale], dtype=torch.float64, device="cuda"
         )
-        dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-        dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        world_group = parallel_dims.get_mesh("world").get_group()
+        dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=world_group)
         rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
         prepare_gradient_offload(
             gradient_manager,
-            parallel_dims.fsdp_gradient_divide_factor,
+            parallel_dims.world_size,
             overlap_optimizer=True,
         )
 
@@ -551,7 +551,7 @@ def train(config: TrainerConfig):
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
-                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, world_group)
                 for name, value in moe_stats.items():
                     tensors[name].append(value.reshape(1))
                 step_tokens_per_expert += tokens_per_expert
@@ -569,9 +569,9 @@ def train(config: TrainerConfig):
         annotation_writer.flush()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
-        # across dp_cp so the final gradient is the true per-token mean over the global batch.
+        # across world so the final gradient is the true per-token mean over the global batch.
         if gradient_manager is None:
-            scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
+            scale_gradients_(None, model, parallel_dims.world_size)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
@@ -629,7 +629,7 @@ def train(config: TrainerConfig):
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
         if is_moe_model:
-            tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
+            tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, world_group))
 
         # Compute step metrics
         num_local_tokens = seq_len * batch_size
