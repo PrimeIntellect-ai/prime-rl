@@ -200,25 +200,7 @@ class TrainSink:
     async def process_episode(self, episode: vf.Episode) -> None:
         """Run rollout-local algorithm work on one native episode."""
         env_name = episode_env_name(episode)
-        env = self.train_envs.get(env_name)
-        if env.uses_live_policy:
-            # Training temperature and sampling-mask setup are owned by the source.
-            expected = env.sampling.wire_args()
-            for _, trace in iter_trainable_traces([episode]):
-                sampling = trace.agent.config.sampling
-                actual = sampling.wire_args() if sampling is not None else {}
-                changed = [
-                    name
-                    for name in ("temperature", "top_p", "top_k", "min_p")
-                    if actual.get(name) != expected.get(name)
-                ]
-                if changed:
-                    raise ValueError(
-                        f"Trainable agent '{trace.agent.name}' in source '{env_name}' changes sampling "
-                        f"{changed} from the source settings. Set these on the source's sampling config "
-                        "instead; agent overrides are not supported for policy training."
-                    )
-        await env.algorithm.finalize_episode(episode)
+        await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
 
     async def process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])

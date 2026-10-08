@@ -173,6 +173,10 @@ env.agent.runtime.type = "subprocess"
 
 Each source group — `[orchestrator.train]`, `[orchestrator.eval]`, the `[eval]` block of `sft` and the top level of `eval` — holds defaults for its sources. Every field that a group and its sources both have is a default: `env`, `sampling`, `select` and `group_size`, plus `algo` on the train group and `interval` on the eval groups of a training run. Each source inherits the fields that its group sets. One rule applies to all of them: nested blocks merge key by key, a source's own values win, and a block whose `type` (e.g. of `algo`) differs from the group's is the source's alone.
 
+Sampling parameters use Verifiers' shared normalization: `max_tokens` and `max_completion_tokens` name the same limit, and `extra_body` parameters merge like top-level parameters. Agent overrides apply after source defaults; an explicit null clears an inherited parameter. Resolved sampling is recorded on each trace.
+
+For live-policy training, set distribution parameters (`temperature`, `top_p`, `top_k`) on the source's `sampling` block. Every agent in that source, including non-trainable roles, may override only `max_tokens`, `reasoning_effort`, and `chat_template_kwargs`. These rules are checked when loading the config; evaluation and frozen-model sources allow general agent sampling overrides.
+
 ```toml
 [orchestrator.train]
 group_size = 16

@@ -18,6 +18,7 @@ from prime_rl.configs.orchestrator import (
     RLOnlineEvalConfig,
     ScheduledEvalConfig,
     TrainConfig,
+    TrainSourceConfig,
 )
 from prime_rl.configs.orchestrator import (
     ModelConfig as OrchestratorModelConfig,
@@ -466,7 +467,11 @@ def test_env_algo_inherits_the_group_algo():
 @pytest.mark.parametrize("group_token_key", ["max_tokens", "max_completion_tokens"])
 @pytest.mark.parametrize("source_token_key", ["max_tokens", "max_completion_tokens"])
 @pytest.mark.parametrize("source_token_limit", [200, None])
-def test_sources_inherit_the_group_fields_they_leave_unset(group_token_key, source_token_key, source_token_limit):
+@pytest.mark.parametrize("nested_sampling", [False, True])
+def test_sources_inherit_the_group_fields_they_leave_unset(
+    group_token_key, source_token_key, source_token_limit, nested_sampling
+):
+    overrides = {source_token_key: source_token_limit, "top_k": 20}
     config = EvalConfig.model_validate(
         {
             "r": 4,
@@ -487,10 +492,9 @@ def test_sources_inherit_the_group_fields_they_leave_unset(group_token_key, sour
                     "env": {"taskset": {"id": "gsm8k"}},
                     "group_size": 2,
                     "sampling": {
-                        source_token_key: source_token_limit,
+                        **({} if nested_sampling else overrides),
                         "reasoning_effort": "max",
-                        "top_k": 20,
-                        "extra_body": {"b": 2},
+                        "extra_body": {"b": 2, **(overrides if nested_sampling else {})},
                     },
                     "select": {"include": {"names": ["x"]}},
                 },
@@ -501,8 +505,8 @@ def test_sources_inherit_the_group_fields_they_leave_unset(group_token_key, sour
     assert (a.group_size, b.group_size) == (4, 2)
     assert isinstance(a.sampling, vf.SamplingConfig) and isinstance(b.sampling, vf.SamplingConfig)
     assert a.sampling.max_tokens == 100 and b.sampling.max_tokens == source_token_limit
-    assert a.sampling.reasoning_effort == "xhigh" and a.sampling.wire_args()["top_k"] == 40
-    assert b.sampling.wire_args() == {
+    assert a.sampling.reasoning_effort == "xhigh" and a.sampling.top_k == 40
+    assert b.sampling.model_dump(exclude_none=True) == {
         **({"max_tokens": source_token_limit} if source_token_limit is not None else {}),
         "temperature": 3.0,
         "reasoning_effort": "max",
@@ -589,6 +593,39 @@ def test_policy_sources_accept_different_top_p_values():
         )
 
     assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+@pytest.mark.parametrize(
+    "sampling,agent_sampling,rejected",
+    [
+        ({}, {}, False),
+        ({"top_p": 0.9}, {"max_completion_tokens": 200, "reasoning_effort": "high"}, False),
+        ({}, {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}, False),
+        ({}, {"temperature": 1.0}, True),
+        ({}, {"temperature": None}, True),
+        ({}, {"extra_body": {"top_k": 20}}, True),
+        ({}, {"frequency_penalty": 0.5}, True),
+        ({}, {"extra_body": {"frequency_penalty": 0.5}}, True),
+        ({"extra_body": {"frequency_penalty": 0.5}}, {}, True),
+    ],
+)
+def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, rejected, frozen):
+    source = {
+        "env": {"taskset": {"id": "reverse-text"}, "agent": {"sampling": agent_sampling}},
+        "sampling": sampling,
+    }
+    if frozen:
+        source["algo"] = {
+            "type": "sft",
+            "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8000/v1"}},
+        }
+    if rejected and not frozen:
+        with pytest.raises(ValidationError, match="sampling"):
+            TrainSourceConfig.model_validate(source)
+    else:
+        config = TrainSourceConfig.model_validate(source)
+        assert TrainSourceConfig.model_validate_json(config.model_dump_json()) == config
 
 
 def test_policy_sources_reject_mixed_top_k_capture():

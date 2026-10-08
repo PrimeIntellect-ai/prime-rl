@@ -112,8 +112,7 @@ class Env:
     def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
         sampling = self.sampling
         if cache_salt is not None:
-            extra_body = {**(getattr(sampling, "extra_body", None) or {}), "cache_salt": cache_salt}
-            sampling = sampling.model_copy(update={"extra_body": extra_body})
+            sampling = sampling.model_copy(update={"cache_salt": cache_salt})
         return sampling
 
     async def run(
@@ -166,12 +165,7 @@ class TrainEnv(Env):
         self.algorithm = algorithm
         self.uses_live_policy = config.algo.sampling.source == "policy"
         self.sampling = vf.SamplingConfig(
-            **config.sampling.model_dump(exclude_none=True, exclude={"top_k", "extra_body"}),
-            # Keep top_k nested so an agent's extra_body can override it.
-            extra_body={
-                **config.sampling.extra_body,
-                **config.sampling.model_dump(exclude_none=True, include={"top_k"}),
-            },
+            **config.sampling.model_dump(exclude_none=True),
             # Only policy rollouts need sampling logprobs for importance ratios.
             logprobs=True if self.uses_live_policy else None,
         )

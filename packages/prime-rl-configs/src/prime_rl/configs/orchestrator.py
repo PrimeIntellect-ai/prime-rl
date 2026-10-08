@@ -6,6 +6,7 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -143,9 +144,6 @@ def inherit_defaults(defaults: dict[str, Any], source: dict) -> dict:
         own = source.get(name)
         if isinstance(value, BaseModel):
             if own is None or isinstance(own, dict):
-                if isinstance(value, vf.SamplingConfig):
-                    # Merge aliases under the same canonical keys as the group defaults.
-                    own = vf.SamplingConfig.model_validate(own or {}).model_dump(exclude_unset=True)
                 merged[name] = vf.merge_defaults(value, own)
         elif name not in source:
             merged[name] = value
@@ -254,6 +252,34 @@ class TrainSourceConfig(EnvConfig):
     curriculum: CurriculumConfig | None = None
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
+
+    @model_validator(mode="after")
+    def validate_policy_sampling(self):
+        if self.algo.sampling.source != "policy":
+            return self
+        # The source owns the distribution replayed by the trainer; agents may
+        # change generation limits and rendering without changing that distribution.
+        agent_options = {"max_tokens", "reasoning_effort", "chat_template_kwargs"}
+        supported = (
+            agent_options
+            | TrainSamplingConfig.model_fields.keys()
+            | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
+        )
+        sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
+        if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
+            raise ValueError(
+                f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
+            )
+        for name, agent in agent_config_fields(self.env).items():
+            if agent.sampling is None:
+                continue
+            if unsupported := agent.sampling.model_dump(exclude_unset=True).keys() - agent_options:
+                raise ValueError(
+                    f"Agent '{name}' in policy source '{self.resolved_name}' sets sampling {sorted(unsupported)}. "
+                    "Set distribution parameters on the source's sampling config; agent sampling only supports "
+                    f"{sorted(agent_options)}."
+                )
+        return self
 
 
 class EvalSourceConfig(EnvConfig):
