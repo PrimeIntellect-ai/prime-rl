@@ -816,12 +816,16 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     )
 
 
-# Int args whose value changes between calls. torch.compile treats an int arg as a constant and recompiles
+# Ints whose value changes between calls. torch.compile treats an int as a constant and recompiles
 # whenever it changes, and every other rank waits in collectives until that rank finishes recompiling. Listed
-# here, an arg is symbolic from the first compile instead.
+# here, an int is symbolic from the first compile instead.
 DYNAMIC_INT_ARGS = (
     # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
     "max_seqlen",
+    # Ring CP reads these from ring_flash_attn's DATA_PARAMS inside the compiled block.
+    "max_seqlen_q",
+    "max_seqlen_k",
+    "local_k_slice",
 )
 
 
@@ -829,7 +833,8 @@ def mark_dynamic_int_args() -> None:
     """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
     for arg in DYNAMIC_INT_ARGS:
-        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
+        # Matches the arg passed directly (L['max_seqlen']), through a wrapper's kwargs (L['kwargs']['max_seqlen']),
+        # or read from a global dict (G[...].DATA_PARAMS['local_k_slice'].start).
         pattern = rf".*\['{arg}'\]"
         if pattern not in sources:
             sources.append(pattern)
