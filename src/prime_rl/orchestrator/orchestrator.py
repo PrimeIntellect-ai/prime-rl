@@ -191,9 +191,6 @@ class Orchestrator:
         self.clients = InferenceClient(
             config.model.client,
             model_name=config.model.name,
-            train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
-            renderer_config=config.renderer,
         )
         self.admin_plane = setup_admin_plane(config.model.client, config.model.name)
 
@@ -224,7 +221,6 @@ class Orchestrator:
             config.env_addresses,
             config_dir,
             clients=self.clients,
-            renderer_config=config.renderer,
         )
         if config.eval is not None:
             self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
@@ -282,7 +278,7 @@ class Orchestrator:
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
-        await asyncio.gather(*(env.setup() for env in self.train_envs))
+        await asyncio.gather(*(env.setup(self.tokenizer) for env in self.train_envs))
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()

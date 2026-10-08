@@ -22,19 +22,22 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import verifiers.v1 as vf
-from renderers import RendererConfig
 from verifiers.v1.serve import EnvClient
 
 from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
-from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
+from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client, setup_admin_clients
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
+
+if TYPE_CHECKING:
+    from transformers.tokenization_utils import PreTrainedTokenizer
 
 # Max wait for the env server to answer health. Generous because the launcher spawns
 # servers concurrently with the orchestrator, and a server imports its env package
@@ -153,14 +156,12 @@ class TrainEnv(Env):
         address: str | None,
         address_file: Path,
         clients: InferenceClient,
-        renderer_config: RendererConfig | None,
         algorithm: Algorithm,
     ):
         super().__init__(config, address, address_file)
         # Train rollouts are generated from `clients`: the policy, or the frozen
-        # `sampling.source` connected in setup() with the renderer (token-in/out) client.
+        # `sampling.source` connected in setup().
         self.clients = clients
-        self.renderer_config = renderer_config
         self.connected: InferenceClient | None = None
         self.algorithm = algorithm
         self.uses_live_policy = config.algo.sampling.source == "policy"
@@ -168,15 +169,48 @@ class TrainEnv(Env):
         if not self.uses_live_policy:
             # Logprobs only feed importance ratios on policy-sampled tokens; frozen endpoints may reject the knob.
             self.sampling_args.pop("logprobs", None)
+            self.sampling_args.pop("top_logprobs", None)
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
 
-    async def setup(self) -> None:
+    async def setup(self, tokenizer: PreTrainedTokenizer) -> None:
         async def connect_source() -> None:
             source = self.config.algo.sampling.source
             if isinstance(source, FrozenModelConfig):
-                self.connected = await connect_frozen_client(source, renderer_config=self.renderer_config)
-                self.clients = self.connected
+                clients = await connect_frozen_client(source)
+                try:
+                    async with AsyncExitStack() as stack:
+                        admin_clients = [
+                            await stack.enter_async_context(client) for client in setup_admin_clients(source)
+                        ]
+                        # Frozen samples train their native IDs directly, so every ID must retain its meaning.
+                        policy_vocab = tokenizer.get_vocab()
+                        for client in admin_clients:
+                            response = await client.get("/v1/tokenizer", timeout=source.wait_for_ready_timeout)
+                            if response.status_code != 200:
+                                raise ValueError(
+                                    f"Frozen generation requires GET /v1/tokenizer; {client.base_url} returned "
+                                    f"HTTP {response.status_code}. If the router does not forward this endpoint, "
+                                    "set admin_base_url to the inference engine URLs."
+                                )
+                            vocab = response.json()
+                            if (
+                                not isinstance(vocab, dict)
+                                or not vocab
+                                or any(type(index) is not int for index in vocab.values())
+                            ):
+                                raise ValueError(
+                                    f"Frozen generation endpoint {client.base_url} returned an invalid vocabulary"
+                                )
+                            if vocab != policy_vocab:
+                                raise ValueError(
+                                    f"Frozen generation endpoint {client.base_url} must use the same token-to-ID mapping "
+                                    "as the policy tokenizer; training across different tokenizers is not supported."
+                                )
+                except BaseException:
+                    await clients.aclose()
+                    raise
+                self.clients = self.connected = clients
 
         await asyncio.gather(connect_source(), self.algorithm.setup())
 
@@ -251,7 +285,6 @@ class TrainEnvs(Envs[TrainEnv]):
         config_dir: Path,
         *,
         clients,
-        renderer_config=None,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
@@ -261,7 +294,6 @@ class TrainEnvs(Envs[TrainEnv]):
                 addresses[("train", config.resolved_name)],
                 env_address_file(config_dir, "train", config.resolved_name),
                 clients,
-                renderer_config,
                 build_algorithm(config.algo, clients),
             )
             self._envs[env.name] = env
