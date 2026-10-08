@@ -49,8 +49,8 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Replaced by mm_kwargs and mm_forward_policy in prepare_micro_batch, ahead of this microbatch's forward
-    # pass when using workers.
+    # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
+    # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
     mm_refs: MMRefs | None
     mm_kwargs: NotRequired[dict[str, Tensor] | None]
     mm_forward_policy: NotRequired[ForwardPolicy | None]
