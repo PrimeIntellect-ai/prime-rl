@@ -54,13 +54,17 @@ async def resume(request: Request):
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
-    if data.get("version_uid") is not None:
-        workers = await engine_client(request).collective_rpc(
-            "update_weights_from_path", args=(data.get("weight_dir"), data["version_uid"])
-        )
-        return {"status": "ok", "workers": workers}
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
     return {"status": "ok"}
+
+
+@router.post("/update_weights_from_modelexpress")
+async def update_weights_from_modelexpress(request: Request):
+    data = await request.json()
+    workers = await engine_client(request).collective_rpc(
+        "update_weights_from_modelexpress", args=(data["version_uid"],)
+    )
+    return {"status": "ok", "workers": workers}
 
 
 @router.post("/load_lora_adapter")

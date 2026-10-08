@@ -59,8 +59,8 @@ class ModelExpressWeightUpdateWorker(Worker):
         return self._worker_id
 
     @torch.no_grad()
-    def update_weights_from_path(self, weight_dir: str | None = None, version_uid: str | None = None):
-        if version_uid is None:
+    def update_weights_from_modelexpress(self, version_uid: str):
+        if not version_uid:
             raise ValueError("modelexpress requires version_uid")
         version = WeightVersionRef(version_uid)
         staged = self._generator.stage_weight(version=version)

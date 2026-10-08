@@ -223,7 +223,7 @@ class AdminPlane:
 
             async def install(client):
                 response = await client.post(
-                    "/update_weights",
+                    "/update_weights_from_modelexpress",
                     json={"version_uid": version_uid},
                     timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
                 )

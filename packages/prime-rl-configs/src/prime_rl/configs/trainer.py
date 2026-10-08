@@ -761,12 +761,6 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_modelexpress_model_name(self):
-        if self.weight_broadcast.type == "modelexpress":
-            self.weight_broadcast.model_name = self.model.name
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
             self.tokenizer.name = self.model.name

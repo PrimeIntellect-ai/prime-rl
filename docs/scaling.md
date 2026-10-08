@@ -243,6 +243,9 @@ server must use matching revisions with TrainerMesh, per-tensor wire dtypes and
 bounded streaming support. This integration targets MX revision `8512b8c`,
 including the TrainerMesh API from ai-dynamo/modelexpress#835.
 
+The trainer supplies the model identity from `model.name` when constructing the
+weight sender; it is not a separate field in `[weight_broadcast]`.
+
 The GPU extra includes `modelexpress>=0.7.0`, but the published 0.7.0 package does
 not contain the APIs required by this transport. Install the compatible client
 revision into the same environment:
@@ -289,6 +292,8 @@ and engine-owned workspaces.
 PrimeRL waits for publication before pausing inference, and resumes only after
 all configured inference clients complete the update request. A failed update
 keeps inference paused and does not acknowledge the broadcast to the trainer.
+ModelExpress updates use `/update_weights_from_modelexpress` with a version UID;
+the checkpoint-path `/update_weights` endpoint is unchanged.
 Restart the trainer and inference together after an uncertain update; there is
 no rollback. ModelExpress owns layouts, transfer planning, reader leases and
 source-buffer release safety.
