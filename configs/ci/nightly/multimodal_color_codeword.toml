@@ -10,8 +10,6 @@ num_infer_gpus = 4
 name = "Qwen/Qwen3.5-4B"
 
 [model.vlm]
-vision_encoder_attr = "model.visual"
-language_model_attr = "model.language_model"
 
 [orchestrator]
 batch_size = 256

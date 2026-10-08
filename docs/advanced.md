@@ -142,10 +142,12 @@ The experimental `shard_fused_on_dim1 = true` shards fused 2-D weights along dim
 
 The built-in VLM registry covers:
 
-| Family | `model_type` | Vision attr | LM attr |
-|---|---|---|---|
-| Qwen3.5 | `qwen3_5` | `model.visual` | `model.language_model` |
-| Qwen3.5-MoE | `qwen3_5_moe` | `model.visual` | `model.language_model` |
+| Family | `model_type` |
+|---|---|
+| Qwen3.5 | `qwen3_5` |
+| Qwen3.5-MoE | `qwen3_5_moe` |
+
+The trainer finds the vision encoder at `model.visual` and the language model at `model.language_model`.
 
 ### Enabling VLM Mode
 
@@ -158,12 +160,8 @@ optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 
 [model.vlm]
-vision_encoder_attr = "model.visual"
-language_model_attr = "model.language_model"
 # freeze_vision_encoder = true  # default; set false to fine-tune the encoder
 ```
-
-The weight-broadcast key prefix is derived as `{language_model_attr}.layers.` automatically.
 
 VLM training requires a registered custom PrimeRL implementation.
 
