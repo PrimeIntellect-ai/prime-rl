@@ -132,6 +132,10 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_fp8_kv_cache import (
+    dsv4_fp8_compressed_kv_round_trip,
+    dsv4_fp8_swa_kv_round_trip,
+)
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
@@ -679,6 +683,7 @@ class DeepseekV4Attention(nn.Module):
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
+        self.simulate_fp8_kv_cache = getattr(config, "simulate_fp8_kv_cache", False)
 
         self.cp_context = CPContext()
 
@@ -705,6 +710,8 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
+        if self.simulate_fp8_kv_cache:
+            kv = dsv4_fp8_swa_kv_round_trip(kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
             kv = torch.ops._c10d_functional.all_gather_into_tensor(
@@ -731,6 +738,8 @@ class DeepseekV4Attention(nn.Module):
             else None
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
+        if self.simulate_fp8_kv_cache and compressed_kv is not None:
+            compressed_kv = dsv4_fp8_compressed_kv_round_trip(compressed_kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)

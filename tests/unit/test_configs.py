@@ -183,6 +183,12 @@ def test_cli_overrides_toml(tmp_path):
     assert config.nested.weight_decay == 0.01
 
 
+def test_simulate_fp8_kv_cache_is_opt_in():
+    assert TrainerModelConfig().simulate_fp8_kv_cache is False
+    config = cli(TrainerConfig, args=["--model.simulate-fp8-kv-cache", "true"])
+    assert config.model.simulate_fp8_kv_cache is True
+
+
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():
     with pytest.raises(ValidationError, match="fused_lm_head_chunk_size"):
         TrainerModelConfig.model_validate({"fused_lm_head_chunk_size": "auto"})
