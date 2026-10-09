@@ -1,0 +1,21 @@
+# Same ignore list as the DSV4 FP8 RL configs in #3627: the eight defaults (the list replaces them)
+# plus `o_a_proj`, whose grouped bmm forward the dense FP8 rewrite breaks, and the indexer and
+# compressor projections, which vLLM serves in bf16.
+[model.quantization]
+type = "fp8"
+ignore_patterns = [
+  "lm_head",
+  "router",
+  'mlp\.gate\.',
+  'shared_expert\.output_gate',
+  "eh_proj",
+  "weights_proj",
+  "in_proj_a",
+  "in_proj_b",
+  "o_a_proj",
+  'indexer\.',
+  'compressor\.',
+]
+
+[model.moe.compute]
+type = "deepgemm_fp8"
