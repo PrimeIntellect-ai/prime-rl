@@ -356,6 +356,12 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if config.simulate_fp8_kv_cache:
+        if model_config.model_type != "deepseek_v4":
+            raise ValueError(
+                f"simulate_fp8_kv_cache is only implemented for DeepSeek V4, not {model_config.model_type!r}."
+            )
+        model_config.simulate_fp8_kv_cache = True
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
