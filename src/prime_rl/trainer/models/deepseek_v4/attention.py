@@ -143,7 +143,7 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
-INDEXER_FP8_AMAX_FLOOR = 1e-4
+VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
 """The floor vLLM puts on each DeepSeek V4 indexer key's and query head's absolute maximum before taking its FP8 scale."""
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
@@ -534,7 +534,13 @@ class DeepseekV4Indexer(nn.Module):
 
         # fp8_indexer has no batch axis
         top_k_indices = fp8_indexer(
-            q[0], compressed_kv[0], w[0], entry_start, entry_stop, self.index_topk, amax_floor=INDEXER_FP8_AMAX_FLOOR
+            q[0],
+            compressed_kv[0],
+            w[0],
+            entry_start,
+            entry_stop,
+            self.index_topk,
+            amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
         ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
