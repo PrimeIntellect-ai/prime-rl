@@ -679,8 +679,14 @@ class Dispatcher:
                         f"Trace failed in group {meta.group_id} ({meta.env_name}) — "
                         f"{trace.last_error.type}: {trace.last_error.message}"
                     )
-        if not episode.ok and not episode.traces:
-            self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+        if not episode.ok:
+            if not any(trace.has_error for trace in episode.traces):
+                self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            error = episode.last_error
+            get_logger().warning(
+                f"Episode failed in group {meta.group_id} ({meta.env_name})"
+                + (f" — {error.type}: {error.message}" if error is not None else "")
+            )
         if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(episode.num_total_tokens)
         await self.emit_episode(meta, group, episode)
