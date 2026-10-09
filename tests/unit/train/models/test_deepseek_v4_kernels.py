@@ -19,6 +19,7 @@ from prime_rl.trainer.models.layers.fp8_linear import (
     Float8BlockwiseGroupedLinear,
     replace_linear_with_fp8_blockwise_linear,
 )
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
@@ -1454,9 +1455,7 @@ def _fp8_o_a_proj() -> nn.Module:
     where the trainer's scale floor and vLLM's amax floor would round differently.
     """
     with torch.device("cuda"), default_dtype(torch.bfloat16):
-        model = nn.ModuleDict(
-            {"o_a_proj": dsv4_attention.DeepseekV4GroupedLinear(O_A_IN_FEATURES, O_A_OUT_FEATURES, O_GROUPS)}
-        )
+        model = nn.ModuleDict({"o_a_proj": GroupedLinear(O_A_IN_FEATURES, O_A_OUT_FEATURES, O_GROUPS)})
     nn.init.normal_(model["o_a_proj"].weight, std=0.02)
     replace_linear_with_fp8_blockwise_linear(model, ignore_modules=[])
     assert type(model["o_a_proj"]) is Float8BlockwiseGroupedLinear

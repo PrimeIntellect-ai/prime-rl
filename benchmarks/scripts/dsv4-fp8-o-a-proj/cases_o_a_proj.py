@@ -1,7 +1,7 @@
 import torch
 
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4GroupedLinear
 from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseGroupedLinear
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 
 GROUPS, IN_FEATURES, OUT_PER_GROUP = 8, 4096, 1024
 TOKENS_PER_GPU = (4096, 14336)
@@ -26,7 +26,7 @@ def _fwd_bwd(module, x, grad):
 def cases():
     out = []
     for tokens in TOKENS_PER_GPU:
-        bf16 = DeepseekV4GroupedLinear(IN_FEATURES, GROUPS * OUT_PER_GROUP, GROUPS).cuda().to(torch.bfloat16)
+        bf16 = GroupedLinear(IN_FEATURES, GROUPS * OUT_PER_GROUP, GROUPS).cuda().to(torch.bfloat16)
         torch.nn.init.normal_(bf16.weight, std=0.02)
         fp8 = Float8BlockwiseGroupedLinear.from_grouped_linear(bf16)
         x = torch.randn(1, tokens, GROUPS, IN_FEATURES, device="cuda", dtype=torch.bfloat16, requires_grad=True)
