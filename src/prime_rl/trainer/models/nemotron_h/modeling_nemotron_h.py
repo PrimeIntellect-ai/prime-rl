@@ -192,7 +192,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
-            layer_routed_experts = routed_experts[:, :, layer_idx] if routed_experts is not None else None
+            layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
                 cu_seqlens,

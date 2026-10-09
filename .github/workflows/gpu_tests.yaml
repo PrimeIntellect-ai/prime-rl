@@ -69,13 +69,6 @@ jobs:
               - 'tests/integration/test_alphabet_sort.py'
               - 'configs/ci/integration/reverse-text{,-lora,-moe,-rl-opd,-rl-sft}/**'
               - 'configs/ci/integration/alphabet_sort.toml'
-            benchmark:
-              - *runtime
-              - 'packages/prime-rl-configs/src/prime_rl/configs/{sft,monitors}.py'
-              - 'src/prime_rl/entrypoints/{trainer,sft}.py'
-              - 'src/prime_rl/monitors/**'
-              - 'benchmarks/{baselines,scripts}/**'
-              - 'tests/integration/test_benchmark_regression.py'
             eval:
               - *runtime
               - 'packages/prime-rl-configs/src/prime_rl/configs/{eval,orchestrator,inference,env_server,algorithm,monitors}.py'
@@ -90,16 +83,13 @@ jobs:
           RUN_ALL: ${{ github.event_name != 'pull_request' }}
           SFT: ${{ steps.filter.outputs.sft || 'false' }}
           RL: ${{ steps.filter.outputs.rl || 'false' }}
-          BENCHMARK: ${{ steps.filter.outputs.benchmark || 'false' }}
         run: |
-          tests=$(jq -cn --argjson all "$RUN_ALL" --argjson sft "$SFT" --argjson rl "$RL" \
-            --argjson benchmark "$BENCHMARK" '[
+          tests=$(jq -cn --argjson all "$RUN_ALL" --argjson sft "$SFT" --argjson rl "$RL" '[
               if $all or $sft then "reverse_text_sft", "reverse_text_sft_lora" else empty end,
               if $all or $rl then
                 "reverse_text", "reverse_text_rl_opd", "reverse_text_rl_sft",
                 "alphabet_sort", "reverse_text_lora", "reverse_text_moe"
-              else empty end,
-              if $all or $benchmark then "benchmark_regression" else empty end
+              else empty end
             ]')
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
 
@@ -129,6 +119,9 @@ jobs:
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
+            with:
+              enable-cache: true
+              cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
       - name: Run unit tests
@@ -145,7 +138,7 @@ jobs:
   integration-tests:
     name: Integration tests (${{ matrix.test }})
     needs: changes
-    runs-on: ${{ matrix.test == 'benchmark_regression' && '4xa6000' || 'prime-rl-2xh200' }}
+    runs-on: prime-rl-2xh200
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
@@ -153,6 +146,9 @@ jobs:
     if: needs.changes.outputs.integration != '[]'
     strategy:
       fail-fast: false
+      # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
+      # i.e. 6 h200 pods per PR. Tune together with the ARC scale set maxRunners.
+      max-parallel: 5
       matrix:
         test: ${{ fromJSON(needs.changes.outputs.integration) }}
     steps:
@@ -172,6 +168,9 @@ jobs:
               git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
           - name: Install uv
             uses: astral-sh/setup-uv@v10.0.1
+            with:
+              enable-cache: true
+              cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
       - name: Run integration tests
