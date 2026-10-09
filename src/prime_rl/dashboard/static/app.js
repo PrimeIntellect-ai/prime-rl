@@ -495,7 +495,7 @@ function ingestInto(store, rows, meta) {
     }
     const producer = isTime ? "infer" : rowProducer(row, meta);
     for (const [key, value] of Object.entries(row)) {
-      if (key === "step" || key === "time" || key === "_timestamp" || key === "producer" || typeof value !== "number") continue;
+      if (key === "step" || key === "rollout/window" || key === "time" || key === "_timestamp" || key === "producer" || typeof value !== "number") continue;
       let producers = store.byKey.get(key);
       if (!producers) store.byKey.set(key, (producers = new Map()));
       let series = producers.get(producer);

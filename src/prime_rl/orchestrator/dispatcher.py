@@ -790,13 +790,27 @@ class Dispatcher:
         if tasks:
             await safe_cancel_all(tasks)
 
-    async def cancel_inflight_train_episodes(self) -> int:
+    async def cancel_inflight_train_episodes(self) -> list[GroupCancellation]:
         """Cancel in-flight train episodes, leaving eval alone. Used by the
         orchestrator at ``max_steps`` so triggered eval can still complete
-        through the pipeline while wasted train inference is short-circuited."""
+        through the pipeline while wasted train inference is short-circuited.
+        Return terminal markers directly to the consumer, which cannot enqueue
+        them onto its own bounded result queue while it is draining."""
         train_tasks: list[asyncio.Task] = []
-        train_group_ids: set[uuid.UUID] = set()
-        cancelled = 0
+        cancelled_by_group: dict[uuid.UUID, GroupCancellation] = {}
+        for gid, group in list(self.groups.items()):
+            if group.kind != "train":
+                continue
+            self.groups.pop(gid)
+            cancelled_by_group[gid] = GroupCancellation(
+                kind="train",
+                env_name=group.env_name,
+                group_id=str(gid),
+                step=group.step,
+                count=group.episodes_to_schedule,
+                reason="shutdown",
+            )
+            self.metrics.record_cancellation(kind="train", env_name=group.env_name, n=group.episodes_to_schedule)
         for task, meta in list(self.inflight.items()):
             if meta.kind != "train":
                 continue
@@ -804,14 +818,20 @@ class Dispatcher:
             self.release()
             self.retire(meta)
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
-            cancelled += 1
             train_tasks.append(task)
-            train_group_ids.add(meta.group_id)
-        for gid in train_group_ids:
-            self.groups.pop(gid, None)
+            if meta.group_id not in cancelled_by_group:
+                cancelled_by_group[meta.group_id] = GroupCancellation(
+                    kind="train",
+                    env_name=meta.env_name,
+                    group_id=str(meta.group_id),
+                    step=meta.step,
+                    count=0,
+                    reason="shutdown",
+                )
+            cancelled_by_group[meta.group_id].count += 1
         if train_tasks:
             await safe_cancel_all(train_tasks)
-        return cancelled
+        return [cancellation for cancellation in cancelled_by_group.values() if cancellation.count]
 
     async def cancel_eval_step(self, step: int) -> int:
         """Cancel queued and active eval groups for a superseded checkpoint.

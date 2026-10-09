@@ -217,14 +217,15 @@ class TrainSink:
         n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
         # A stale drop voids the whole group: every member shares the dispatch
         # version, so the arrived episodes are exactly as stale as the
-        # cancelled tail. Stale groups bypass the curriculum — a pipeline
-        # decision is not a task result.
-        if cancellation is not None and cancellation.reason == "stale":
+        # cancelled tail. Stale and shutdown groups bypass the curriculum — a
+        # pipeline decision is not a task result.
+        if cancellation is not None and cancellation.reason in ("stale", "shutdown"):
             self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
-                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason=cancelled (stale)"
+                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
+                f"reason=cancelled ({cancellation.reason})"
             )
             return
 

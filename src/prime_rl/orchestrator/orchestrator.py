@@ -575,7 +575,8 @@ class Orchestrator:
             "rollout/discarded": window.discarded,
             "rollout/stale": window.stale,
             "rollout/errored": window.errored,
-            "rollout/no_signal": window.discarded - window.stale - window.errored,
+            "rollout/cancelled": window.cancelled,
+            "rollout/no_signal": window.discarded - window.stale - window.errored - window.cancelled,
             "progress/tokens": window.tokens,
             "progress/rollouts": window.traces,
             "progress/tasks": window.groups,
@@ -588,7 +589,8 @@ class Orchestrator:
             get_logger().warning(
                 f"Discarded {window.discarded}/{window.attempts} episodes "
                 f"({window.discarded / window.attempts:.1%}): stale={window.stale}, "
-                f"errored={window.errored}, no_signal={window.discarded - window.stale - window.errored}. "
+                f"errored={window.errored}, cancelled={window.cancelled}, "
+                f"no_signal={window.discarded - window.stale - window.errored - window.cancelled}. "
                 "Review max_off_policy_steps, episode errors, and reward signal."
             )
         if self.heart is not None:
@@ -617,6 +619,7 @@ class Orchestrator:
         # A resume can start past the end (checkpoint written at the final
         # step, or a lowered ``max_steps``): never ship beyond the budget.
         if config.max_steps is not None and step > config.max_steps:
+            self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
             await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
             return
 
@@ -737,9 +740,12 @@ class Orchestrator:
         self.draining = True
         self.train_sink.discard_queued()
         self.dispatcher.disable_train_scheduling()
-        n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
+        cancellations = await self.dispatcher.cancel_inflight_train_episodes()
+        for cancellation in cancellations:
+            await self.handle_train_result(await self.train_sink.cancel(cancellation))
+        n_cancelled = sum(cancellation.count for cancellation in cancellations)
         get_logger().info(
-            f"{reason} — draining pipeline (cancelled {n_cancelled} in-flight "
+            f"{reason} — draining pipeline (cancelled {n_cancelled} outstanding "
             f"train episode(s); any in-flight evals will complete)"
         )
 

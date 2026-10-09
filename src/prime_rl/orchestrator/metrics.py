@@ -596,6 +596,7 @@ class RolloutWindow:
     discarded: int = 0
     stale: int = 0
     errored: int = 0
+    cancelled: int = 0
 
     def observe(
         self,
@@ -615,9 +616,10 @@ class RolloutWindow:
         self.attempts += attempts
         discarded = [episode for episode in episodes if not any(t.id in queued_trace_ids for t in episode.traces)]
         self.discarded += len(discarded) + len(failures) + cancelled
-        self.stale += sum(episode.id in episodes.cancelled for episode in discarded)
-        if cancellation is not None and cancellation.reason == "stale":
-            self.stale += cancelled
+        if cancellation is not None and cancellation.reason != "stale":
+            self.cancelled += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled
+        else:
+            self.stale += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled
         self.errored += len(failures) + sum(
             episode.id not in episodes.cancelled
             and (not episode.ok or any(trace.has_error for trace in episode.traces))
