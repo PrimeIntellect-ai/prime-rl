@@ -151,3 +151,22 @@ def test_validate_source_renderer_args_rejects_unknown_kwargs():
     validate_source_renderer_args(
         DeepSeekV4RendererConfig(), HFDatasetConfig(source=[{"dataset": "org/a"}]).resolved_sources()
     )
+
+
+def test_source_only_renderer_columns_reach_the_resolver(hub):
+    hub[("org/a", None, "train")] = Dataset.from_list([{"messages": _messages("a0"), "d": 16}])
+    hub[("org/b", None, "train")] = Dataset.from_list([{"messages": _messages("b0")}])
+    config = HFDatasetConfig.model_validate(
+        {"source": [{"dataset": "org/a", "columns": {"renderer": {"depth": "d"}}}, {"dataset": "org/b"}]}
+    )
+    rows = list(load_sft_dataset(config))
+    assert [row["depth"] for row in rows] == [16, None]
+
+    resolver = RendererResolver(
+        tokenizer=None,
+        config=DeepSeekV4RendererConfig(),
+        columns={"depth": "depth", **config.columns.renderer},
+    )
+    with pytest.raises(ValueError, match="depth"):
+        resolver.resolve_config(rows[0])
+    assert resolver.resolve_config(rows[1]) == DeepSeekV4RendererConfig()

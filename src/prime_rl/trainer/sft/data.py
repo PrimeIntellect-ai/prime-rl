@@ -701,7 +701,7 @@ def load_sft_source(source: ResolvedHFDatasetSource, columns: SFTColumnsConfig) 
             )
     for field, column in source.columns.renderer.items():
         if column in dataset.column_names:
-            renames[column] = columns.renderer.get(field, column)
+            renames[column] = columns.renderer.get(field, field)
     shared = sorted({name for name in renames.values() if list(renames.values()).count(name) > 1})
     if shared:
         raise ValueError(f"Source {source.name} maps several columns to {shared}; map each field once")
@@ -809,11 +809,14 @@ def setup_dataset(
         raw_dataset = load_sft_dataset(config)
     sources = config.resolved_sources()
     validate_source_renderer_args(renderer_config, sources)
+    # A field only a source maps lands in a column named after the field.
+    renderer_columns = {field: field for source in sources for field in source.columns.renderer}
+    renderer_columns.update(config.columns.renderer)
     renderers = RendererResolver(
         tokenizer,
         renderer_config,
         processor=processor,
-        columns=config.columns.renderer,
+        columns=renderer_columns,
         source_kwargs={source.name: source.renderer for source in sources},
     )
     return SFTDataset(
