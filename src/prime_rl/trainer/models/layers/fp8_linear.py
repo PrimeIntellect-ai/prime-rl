@@ -212,6 +212,7 @@ def _fp8_blockwise_bmm_backward(
                 grad_weight_fp32[out_rows],
                 c=grad_weight_fp32[out_rows],
                 recipe=(1, 1, 128),
+                compiled_dims="mn",
             )
         grad_weight = grad_weight_fp32.to(weight.dtype)
     else:
