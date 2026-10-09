@@ -58,9 +58,26 @@ def _load_image(data_url: str) -> Image.Image:
         return image.convert("RGB")
 
 
-def materialize_mm_refs(refs: MMRefs, processor: Any, adapter: MultimodalAdapter) -> MaterializedMM:
+def materialize_mm_refs(
+    refs: MMRefs, processor: Any, adapter: MultimodalAdapter, cache: ImageCache | None = None
+) -> MaterializedMM:
     image_processor = getattr(processor, "image_processor", None)
     if image_processor is None:
         raise ValueError("Multimodal samples require a model image processor")
-    images = [_load_image(ref.url) for ref in refs.images]
-    return adapter.materialize(image_processor, images, [ref.length for ref in refs.images])
+    if cache is None:
+        images = [_load_image(ref.url) for ref in refs.images]
+        return adapter.materialize(image_processor, images, [ref.length for ref in refs.images])
+    per_image: list[dict[str, torch.Tensor]] = []
+    for ref in refs.images:
+        key = (ref.url, ref.length)
+        kwargs = cache.get(key)
+        if kwargs is None:
+            kwargs = adapter.materialize(image_processor, [_load_image(ref.url)], [ref.length]).kwargs
+            cache.put(key, kwargs)
+        per_image.append(kwargs)
+    # torch.cat copies, so cached tensors are never handed to training loop
+    kwargs = {name: torch.cat([item[name] for item in per_image]) for name in per_image[0]}
+    return MaterializedMM(kwargs=kwargs, forward_policy=adapter.forward_policy)
+
+
+
