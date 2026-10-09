@@ -317,6 +317,7 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         group: ProcessGroup,
         num_sms: int,
         token_chunk_size: int | None,
+        hidden_size: int,
     ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.num_local_experts = num_experts // group.size()
@@ -328,6 +329,9 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         self._concatenate_stream: torch.cuda.Stream | None = None
         self._output_event: torch.cuda.Event | None = None
         configure_num_sms(num_sms)
+        # Create the buffer before any forward: its constructor runs collectives that dynamo cannot
+        # trace and that would shift the op order activation checkpointing replays in the recompute.
+        get_buffer(group, hidden_size * 2)
 
     def _finalize_dispatch(
         self, pending_state: _PendingDispatchState
@@ -412,6 +416,8 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
             event.current_stream_wait()
         self._pending_combine_events.clear()
 
+    # DeepEP handles live in module-level dicts keyed by a fresh id per call; dynamo would guard on each key.
+    @torch.compiler.disable()
     def run(
         self,
         x: torch.Tensor,

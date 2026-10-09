@@ -699,17 +699,6 @@ class TrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
         if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
