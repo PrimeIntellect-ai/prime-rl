@@ -30,7 +30,7 @@ def hub(monkeypatch):
 
 def test_sources_read_data_name_unless_they_set_a_dataset():
     config = HFDatasetConfig(name="org/data", revision="abc", source=[{}, {"dataset": "org/other"}])
-    first, second = config.resolved_sources()
+    first, second = config.source
     assert (first.name, first.dataset, first.revision, first.split) == ("org/data/train", "org/data", "abc", "train")
     assert (second.name, second.dataset, second.revision) == ("org/other/train", "org/other", None)
 
@@ -47,7 +47,7 @@ def test_sources_inherit_data_defaults():
             ],
         }
     )
-    first, second = config.resolved_sources()
+    first, second = config.source
     assert (first.name, first.dataset, first.revision, first.columns.messages) == (
         "org/data/a/train",
         "org/data",
@@ -147,10 +147,8 @@ def test_renderer_precedence_is_global_then_source_then_sample():
 def test_validate_source_renderer_args_rejects_unknown_kwargs():
     config = HFDatasetConfig.model_validate({"source": [{"dataset": "org/a", "renderer": {"budget": 16}}]})
     with pytest.raises(ValueError, match="budget"):
-        validate_source_renderer_args(PrimeQwen3RendererConfig(), config.resolved_sources())
-    validate_source_renderer_args(
-        DeepSeekV4RendererConfig(), HFDatasetConfig(source=[{"dataset": "org/a"}]).resolved_sources()
-    )
+        validate_source_renderer_args(PrimeQwen3RendererConfig(), config.source)
+    validate_source_renderer_args(DeepSeekV4RendererConfig(), HFDatasetConfig(source=[{"dataset": "org/a"}]).source)
 
 
 def test_source_only_renderer_columns_reach_the_resolver(hub):

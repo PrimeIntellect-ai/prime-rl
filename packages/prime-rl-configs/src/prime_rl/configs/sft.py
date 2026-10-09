@@ -140,19 +140,6 @@ class HFDatasetSourceConfig(SourceConfig):
     """Chat-template kwargs for this source, applied over ``[renderer]`` and under a row's mapped columns, e.g. ``{ reasoning_effort = "high" }``."""
 
 
-class ResolvedHFDatasetSource(BaseConfig):
-    """An ``HFDatasetSourceConfig`` with every field resolved against ``[data]``."""
-
-    name: str
-    dataset: str
-    revision: str | None
-    subset: str | None
-    split: str
-    weight: float | None
-    columns: SFTColumnsConfig
-    renderer: dict[str, Any]
-
-
 class HFDatasetConfig(BaseDataConfig):
     """Train on one or more ``[[data.source]]`` tables, each a ``(dataset, subset, split)`` of a HF dataset."""
 
@@ -185,39 +172,25 @@ class HFDatasetConfig(BaseDataConfig):
 
     @model_validator(mode="after")
     def validate_sources(self):
+        """Fill each source's unset fields from ``[data]``, so the trainer reads sources as they are."""
         weighted = [source.weight is not None for source in self.source]
         if any(weighted) and not all(weighted):
             raise ValueError("Set weight on every data.source or on none.")
-        unnamed = [index for index, source in enumerate(self.source) if source.dataset is None]
-        if unnamed and self.name is None:
-            raise ValueError(f"data.source[{unnamed[0]}] sets no dataset and data.name is unset.")
-        names = [source.name for source in self.resolved_sources()]
+        for index, source in enumerate(self.source):
+            if source.dataset is None:
+                if self.name is None:
+                    raise ValueError(f"data.source[{index}] sets no dataset and data.name is unset.")
+                source.dataset = self.name
+                # A revision pins one repo, so only sources that read data.name inherit it.
+                source.revision = source.revision or self.revision
+            source.name = source.name or _source_name(source.dataset, source.subset, source.split)
+            overrides = source.columns.model_dump(exclude_unset=True) if source.columns is not None else {}
+            source.columns = SFTColumnsConfig.model_validate({**self.columns.model_dump(), **overrides})
+        names = [source.name for source in self.source]
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
             raise ValueError(f"data.source names must be unique; repeated: {duplicates}. Set name to tell them apart.")
         return self
-
-    def resolved_sources(self) -> list[ResolvedHFDatasetSource]:
-        """Every source with its dataset, revision, columns, and renderer settings resolved."""
-        resolved = []
-        for source in self.source:
-            dataset = source.dataset or self.name
-            assert dataset is not None
-            overrides = source.columns.model_dump(exclude_unset=True) if source.columns is not None else {}
-            resolved.append(
-                ResolvedHFDatasetSource(
-                    name=source.name or _source_name(dataset, source.subset, source.split),
-                    dataset=dataset,
-                    # A revision pins one repo, so only the default dataset inherits it.
-                    revision=source.revision or (self.revision if dataset == self.name else None),
-                    subset=source.subset,
-                    split=source.split,
-                    weight=source.weight,
-                    columns=SFTColumnsConfig.model_validate({**self.columns.model_dump(), **overrides}),
-                    renderer=source.renderer,
-                )
-            )
-        return resolved
 
 
 def _source_name(dataset: str, subset: str | None, split: str) -> str:

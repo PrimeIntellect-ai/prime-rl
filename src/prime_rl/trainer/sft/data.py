@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, HFDatasetConfig, LossMaskConfig, ResolvedHFDatasetSource, SFTColumnsConfig
+from prime_rl.configs.sft import DataConfig, HFDatasetConfig, HFDatasetSourceConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -652,8 +652,8 @@ def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
     if not isinstance(data, HFDatasetConfig):
         return
     snapshots: dict[tuple[str, str | None], str] = {}
-    resolved = data.resolved_sources()
-    for source in resolved:
+    for source in data.source:
+        assert source.dataset is not None
         key = (source.dataset, source.revision)
         if key in snapshots or Path(source.dataset).exists():
             continue
@@ -669,17 +669,14 @@ def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
             f"Finished pre-downloading data {source.dataset} to {snapshots[key]} in "
             f"{format_time(time.perf_counter() - t0)}"
         )
-    for source, resolved_source in zip(data.source, resolved, strict=True):
-        key = (resolved_source.dataset, resolved_source.revision)
-        if key in snapshots:
-            # Pin the name first, so metrics keep the repo id rather than the snapshot path.
-            source.name = resolved_source.name
-            source.dataset = snapshots[key]
+    for source in data.source:
+        # The name is already pinned, so metrics keep the repo id rather than the snapshot path.
+        source.dataset = snapshots.get((source.dataset, source.revision), source.dataset)
     if (data.name, data.revision) in snapshots:
         data.name = snapshots[(data.name, data.revision)]
 
 
-def load_sft_source(source: ResolvedHFDatasetSource, columns: SFTColumnsConfig) -> Dataset:
+def load_sft_source(source: HFDatasetSourceConfig, columns: SFTColumnsConfig) -> Dataset:
     """Load one source and rename its columns to the names every source shares.
 
     ``columns`` is the run-wide ``data.columns``: a source whose column names
@@ -690,16 +687,17 @@ def load_sft_source(source: ResolvedHFDatasetSource, columns: SFTColumnsConfig) 
     logger = get_logger()
     logger.debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
     dataset = cast(Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision))
+    source_columns = source.columns or columns
     renames: dict[str, str] = {}
     for field in ("messages", "prompt", "completion", "tools", "message_loss_mask"):
-        column = getattr(source.columns, field)
+        column = getattr(source_columns, field)
         if column in dataset.column_names:
             renames[column] = getattr(columns, field)
         elif column != field:
             raise ValueError(
                 f"Source {source.name} reads {field} from {column!r}, but it has only {dataset.column_names}"
             )
-    for field, column in source.columns.renderer.items():
+    for field, column in source_columns.renderer.items():
         if column in dataset.column_names:
             renames[column] = columns.renderer.get(field, field)
     shared = sorted({name for name in renames.values() if list(renames.values()).count(name) > 1})
@@ -758,7 +756,7 @@ def _align_columns(datasets: list[Dataset]) -> list[Dataset]:
 
 def load_sft_dataset(config: HFDatasetConfig) -> Dataset:
     """Load and interleave the raw HF dataset. This is the expensive I/O step."""
-    sources = config.resolved_sources()
+    sources = config.source
     datasets = _align_columns([load_sft_source(source, config.columns) for source in sources])
     if len(datasets) == 1:
         return datasets[0]
@@ -770,7 +768,7 @@ def load_sft_dataset(config: HFDatasetConfig) -> Dataset:
     )
 
 
-def validate_source_renderer_args(config: RendererConfig, sources: list[ResolvedHFDatasetSource]) -> None:
+def validate_source_renderer_args(config: RendererConfig, sources: list[HFDatasetSourceConfig]) -> None:
     """Fail before training when a source sets a kwarg the renderer doesn't have."""
     for source in sources:
         if not source.renderer:
@@ -807,10 +805,10 @@ def setup_dataset(
         raise ValueError("SFT data requires a renderer config.")
     if raw_dataset is None:
         raw_dataset = load_sft_dataset(config)
-    sources = config.resolved_sources()
+    sources = config.source
     validate_source_renderer_args(renderer_config, sources)
     # A field only a source maps lands in a column named after the field.
-    renderer_columns = {field: field for source in sources for field in source.columns.renderer}
+    renderer_columns = {field: field for source in sources for field in (source.columns or config.columns).renderer}
     renderer_columns.update(config.columns.renderer)
     renderers = RendererResolver(
         tokenizer,
