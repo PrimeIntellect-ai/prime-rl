@@ -1,4 +1,4 @@
-"""Training-side group finalization, bounded accounting, and batch assembly.
+"""Training-side group finalization, scalar accounting, and batch assembly.
 
 ``add()`` takes one completed episode, ``fail()`` a request that produced no
 episode, and ``cancel()`` a dropped group's ``GroupCancellation``. Before every
@@ -6,7 +6,7 @@ readiness check the sink sweeps ``pending_batch`` for traces past
 ``max_off_policy_steps`` — this sweep, not the dispatcher's in-flight cancel,
 is what guarantees nothing stale ships. Completed groups become numeric
 observations; only queued traces retain verifier objects. The consumer drains
-``take_rollout_window()`` after each result, independently of batch readiness."""
+``take_rollout_window(force=True)`` before shipping a batch or at shutdown."""
 
 from __future__ import annotations
 
@@ -306,13 +306,8 @@ class TrainSink:
         )
 
     def take_rollout_window(self, *, force: bool = False) -> RolloutWindow | None:
-        """Transfer numeric accounting to the reporter at a finite work threshold.
-
-        Complete groups stay together; a single large group can exceed the
-        threshold. Call after each result, and force a partial flush at shutdown
-        or before checkpointing a training batch.
-        """
-        if not force and self.rollout_window.units < self.batch_size:
+        """Transfer accumulated step statistics before shipment or at shutdown."""
+        if not force:
             return None
         if not self.rollout_window.groups and not self.rollout_window.metrics.counts:
             return None

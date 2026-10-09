@@ -88,10 +88,9 @@ def sink(*, constant=True, admitted=True, batch_size=100):
 
 
 @pytest.mark.parametrize("constant,admitted", [(True, True), (False, True), (True, False)])
-def test_zero_output_finalization_releases_objects_and_bounds_metrics(constant, admitted):
+def test_zero_output_finalization_releases_objects_without_reporting(constant, admitted):
     async def run():
         s = sink(constant=constant, admitted=admitted, batch_size=4)
-        windows = []
         refs = []
         for i in range(40):
             t = trace(advantage=0)
@@ -101,23 +100,22 @@ def test_zero_output_finalization_releases_objects_and_bounds_metrics(constant, 
             batch = await s.add(ep)
             assert batch is None or not batch.samples
             assert msgspec.msgpack.encode(trace_to_samples(t, env_name="test")) == before
-            window = s.take_rollout_window()
-            if window is not None:
-                windows.append(window)
-            assert s.rollout_window.units < s.batch_size
+            assert s.take_rollout_window() is None
+            assert s.rollout_window.attempts == i + 1
             del t, ep, batch
         gc.collect()
         assert all(ref() is None for ref in refs)
         assert not s.pending_groups and not s.pending_group_failures and not s.episode_by_trace
         assert not s.pending_batch
-        assert len(windows) == 10
-        assert sum(w.attempts for w in windows) == 40
-        assert sum(w.traces for w in windows) == 40
+        window = s.take_rollout_window(force=True)
+        assert window.attempts == 40
+        assert window.traces == 40
+        assert s.take_rollout_window(force=True) is None
         assert s.progress.step == 1
         if constant:
-            assert sum(w.discarded for w in windows) == 40
+            assert window.discarded == 40
         else:
-            assert sum(w.metrics.to_dict().get("rollout/queued/pruned", 0) for w in windows) == 40
+            assert window.metrics.to_dict()["rollout/queued/pruned"] == 40
 
     asyncio.run(run())
 
@@ -184,7 +182,7 @@ def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
     asyncio.run(run())
 
 
-def test_failures_and_cancellations_close_reporting_windows():
+def test_failures_and_cancellations_accumulate_until_reporting():
     async def run():
         s = sink(batch_size=4)
         for i in range(8):
@@ -200,16 +198,16 @@ def test_failures_and_cancellations_close_reporting_windows():
                 error=vf.Error(type="TransportError", message="large" * 1000),
             )
             assert await s.fail(failure) is None
-            if i % 4 == 3:
-                window = s.take_rollout_window()
-                assert window.attempts == window.errored == window.discarded == 4
-                assert window.metrics.to_dict()["train/agg/all/dispatch_failure/mean"] == 1
-                assert not s.pending_group_failures
+            assert s.take_rollout_window() is None
+            assert not s.pending_group_failures
         for i in range(4):
             await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "stale"))
-        window = s.take_rollout_window()
-        assert window.attempts == window.stale == window.discarded == 4
-        assert window.errored == 0
+        assert s.take_rollout_window() is None
+        window = s.take_rollout_window(force=True)
+        assert window.attempts == window.discarded == 12
+        assert window.stale == 4
+        assert window.errored == 8
+        assert window.metrics.to_dict()["train/agg/all/dispatch_failure/mean"] == 1
         assert not s.pending_group_cancellations
 
     asyncio.run(run())

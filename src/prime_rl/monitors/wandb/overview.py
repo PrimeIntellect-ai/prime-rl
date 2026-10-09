@@ -100,8 +100,6 @@ def line_panels(metrics: Sequence[str], regexes: Sequence[str]) -> list[wr.LineP
     def axis(metric: str) -> str:
         if metric.startswith("inference/"):
             return "RelativeTime(Wall)"
-        if re.match(r"^train/[^/]+/all/", metric):
-            return "rollout/window"
         return "step"
 
     # Explicit panel axes override the metric definitions in W&B.

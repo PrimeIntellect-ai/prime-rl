@@ -541,6 +541,8 @@ class Orchestrator:
             await self.handle_train_result(train_batch)
 
     async def handle_train_result(self, batch: TrainBatch | None) -> None:
+        if self.heart is not None:
+            self.heart.beat()
         # Flush before shipping so checkpointed totals include this batch's arrivals.
         await self.report_rollouts(force=batch is not None and bool(batch.samples))
         while batch is not None and not self.draining and not self.stopped.is_set():
@@ -570,7 +572,6 @@ class Orchestrator:
             "rollout/queued/cancelled": 0.0,
         } | window.metrics.to_dict()
         metrics |= {
-            "rollout/window": self.progress.rollout_window,
             "rollout/attempts": window.attempts,
             "rollout/discarded": window.discarded,
             "rollout/stale": window.stale,
@@ -593,8 +594,6 @@ class Orchestrator:
                 f"no_signal={window.discarded - window.stale - window.errored - window.cancelled}. "
                 "Review max_off_policy_steps, episode errors, and reward signal."
             )
-        if self.heart is not None:
-            self.heart.beat()
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
