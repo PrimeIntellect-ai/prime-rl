@@ -418,8 +418,14 @@ class Dispatcher:
         async with self.scheduling_lock:
             pass
 
-        if self.train_envs is None or self.progress is None:
-            return
+        await self.cancel_stale_live_groups()
+
+    async def cancel_stale_live_groups(self) -> int:
+        """Drop live train groups that can no longer train. Frees their permits
+        so a later, fresh-enough rollout can take the slot."""
+
+        if self.progress is None or self.train_envs is None:
+            return 0
         min_version = min_fresh_version(self.progress.step, self.max_off_policy_steps)
         stale_groups = [
             gid
@@ -437,6 +443,7 @@ class Dispatcher:
                 f"Cancelled {cancelled} train episodes past max_off_policy_steps={self.max_off_policy_steps}. "
                 "Consider increasing it to avoid this."
             )
+        return cancelled
 
     async def on_new_version(self, step: int) -> None:
         """Resume rollout scheduling after inference applies the new policy."""
@@ -451,6 +458,10 @@ class Dispatcher:
         while True:
             if self.policy_update_pending:
                 return
+            # Drop known-dead live groups so their permits free;
+            # let the scheduling branches below handle admissions.
+            if await self.cancel_stale_live_groups():
+                continue
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 

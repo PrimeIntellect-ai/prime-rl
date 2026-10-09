@@ -81,11 +81,6 @@ from prime_rl.utils.utils import clean_exit
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Maximum batches the orchestrator may run ahead of the trainer. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
-# resumed when the watcher advances ``policy.version``.
-TARGET_LAG = 1
-
 # Default wait for the trainer's startup weight broadcast when no ckpt block
 # configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
 # broadcast is always coming, so wait rather than fail immediately.
@@ -127,6 +122,7 @@ class Orchestrator:
     eval_source: EvalSource | None
     receiver: WeightReceiver
     resume_step: int | None
+    last_shipped_step: int
     lag_task: asyncio.Task | None
 
     def __init__(self, config: OrchestratorConfig) -> None:
@@ -153,6 +149,7 @@ class Orchestrator:
         # Pulsed after inference applies a policy so held work can re-check it.
         self.version_advanced = asyncio.Event()
         self.wait_for_policy_time = 0.0
+        self.last_shipped_step = 0
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
 
@@ -245,6 +242,7 @@ class Orchestrator:
         # trainer. The curricula themselves are restored below, once the envs are loaded.
         if self.resume_step is not None:
             self.progress.step = self.resume_step + 1
+            self.last_shipped_step = self.resume_step
             get_logger().info(f"Resuming from step {self.resume_step}")
         else:
             get_logger().info("Starting from scratch")
@@ -471,12 +469,12 @@ class Orchestrator:
             get_logger().warning(f"Inference did not apply policy v{version} within {timeout}s — proceeding anyway")
 
     async def wait_for_final_broadcast(self) -> None:
-        """Stay alive for the trainer's last broadcast. Every broadcast is a
+        """Stay alive for every broadcast the trainer will make. Every broadcast is a
         blocking rendezvous — tearing down the watcher before it would strand
         the trainer inside the handshake."""
-        if self.config.max_steps is None:
+        if self.last_shipped_step == 0:
             return
-        await self.wait_for_version(self.config.max_steps, reason="before shutdown")
+        await self.wait_for_version(self.last_shipped_step, reason="before shutdown")
 
     async def main_loop(self) -> None:
         """Consume dispatcher results and route them to the train / eval sink.
@@ -590,26 +588,6 @@ class Orchestrator:
                 f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
-        # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}.
-        # Without this, fast envs fill batches from buffered rollouts and the
-        # orchestrator races arbitrarily far ahead of the trainer. Always
-        # satisfiable: the trainer broadcasts every version, and
-        # ``wait_for_final_broadcast`` keeps the watcher alive through the last
-        # rendezvous after the pipeline drains.
-        required_version = step - 1 - TARGET_LAG
-        if self.policy.version < required_version:
-            get_logger().info(
-                f"Holding batch {step} until inference applies policy v{required_version} "
-                f"(currently v{self.policy.version})"
-            )
-            hold_start = time.perf_counter()
-            while True:
-                self.version_advanced.clear()
-                if self.policy.version >= required_version:
-                    break
-                await self.version_advanced.wait()
-            self.wait_for_policy_time += time.perf_counter() - hold_start
-
         # The effective (clean, trained-on) subset is logged at ship time as annotation
         # records against each trace's arrival record - membership, advantages, the step
         # it shipped at - never a second episode copy.
@@ -620,6 +598,7 @@ class Orchestrator:
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
         await self.sender.send(micro_batch_grid)
+        self.last_shipped_step = step
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -961,20 +940,23 @@ class Orchestrator:
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:
-        """Pause/resume the dispatcher based on how far the in-flight batch runs
-        ahead of ``policy.version``. ``progress.step`` is always the batch being
-        collected — advanced right after shipping — so both call sites (ship time
-        here, policy update in ``on_new_version``) share one lead formula. Steps
-        are 1-indexed while policy versions stay 0-indexed, so the shipped-batch
-        count is ``progress.step - 1``."""
+        """Pause train dispatch when a new live rollout cannot train, and reopen once it can.
+
+        A live rollout starting on the current weights is not started once it
+        would already be past ``max_off_policy_steps``. Inference waits, and
+        the gate reopens when those weights are fresh enough. Frozen-only
+        runs never age out, so they are not paused for staleness."""
+        max_off_policy_steps = self.config.max_off_policy_steps
         lead = (self.progress.step - 1) - self.policy.version
         gate = self.dispatcher.dispatch_allowed
         was_set = gate.is_set()
-        if lead > TARGET_LAG:
+        uses_live_policy = any(env.generation_source.uses_live_policy for env in self.train_envs)
+        if lead > max_off_policy_steps and uses_live_policy:
             if was_set:
+                required_version = (self.progress.step - 1) - max_off_policy_steps
                 get_logger().info(
-                    f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - TARGET_LAG} "
-                    f"(currently v{self.policy.version})"
+                    f"Pausing dispatcher: a rollout on v{self.policy.version} would exceed "
+                    f"max_off_policy_steps={max_off_policy_steps} (need v{required_version})"
                 )
                 self.gate_closed_at = time.perf_counter()
             gate.clear()
