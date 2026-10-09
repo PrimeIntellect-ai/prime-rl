@@ -5,7 +5,9 @@ import re
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4GroupedLinear
 from prime_rl.trainer.models.kernels.fp8_utils import (
+    grouped_per_block_cast_to_fp8_triton,
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
     per_token_cast_to_fp8_tp_triton,
@@ -120,6 +122,149 @@ _fp8_blockwise_mm.register_autograd(
 )
 
 
+def _fp8_einsum_recipe(use_ue8m0: bool, block_size: int) -> tuple[int, int, int]:
+    return (1, 1, block_size) if use_ue8m0 else (1, block_size, block_size)
+
+
+@torch.library.custom_op("prime_rl::fp8_blockwise_bmm", mutates_args=())
+def _fp8_blockwise_bmm(x: torch.Tensor, weight: torch.Tensor, n_groups: int, block_size: int) -> torch.Tensor:
+    import deep_gemm
+
+    in_features = x.shape[-1]
+    out_features_per_group = weight.size(0) // n_groups
+    x_2d = x.reshape(-1, in_features)
+    num_tokens = x_2d.size(0) // n_groups
+    use_ue8m0 = ue8m0_for_device(x.device)
+    x_fp8, x_sf = per_token_cast_to_fp8_triton(x_2d, use_ue8m0=True, gran_k=block_size)
+    weight_fp8, weight_sf = per_block_cast_to_fp8_triton(weight, use_ue8m0, block_size)
+
+    out = torch.empty((num_tokens, n_groups, out_features_per_group), device=x.device, dtype=torch.bfloat16)
+    deep_gemm.fp8_einsum(
+        "bhr,hdr->bhd",
+        (x_fp8.view(num_tokens, n_groups, in_features), x_sf.view(num_tokens, n_groups, -1)),
+        (
+            weight_fp8.view(n_groups, out_features_per_group, in_features),
+            weight_sf.view(n_groups, -1, weight_sf.size(-1)),
+        ),
+        out,
+        recipe=_fp8_einsum_recipe(use_ue8m0, block_size),
+    )
+    return out.reshape(*x.shape[:-1], out_features_per_group)
+
+
+@_fp8_blockwise_bmm.register_fake
+def _fp8_blockwise_bmm_fake(x: torch.Tensor, weight: torch.Tensor, n_groups: int, block_size: int) -> torch.Tensor:
+    return x.new_empty((*x.shape[:-1], weight.shape[0] // n_groups), dtype=torch.bfloat16)
+
+
+@torch.library.custom_op("prime_rl::fp8_blockwise_bmm_backward", mutates_args=())
+def _fp8_blockwise_bmm_backward(
+    grad_output: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    n_groups: int,
+    block_size: int,
+    needs_grad_x: bool,
+    needs_grad_weight: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    import deep_gemm
+
+    in_features = x.shape[-1]
+    out_features_per_group = weight.size(0) // n_groups
+    grad_output_2d = grad_output.reshape(-1, n_groups * out_features_per_group).contiguous()
+    num_tokens = grad_output_2d.size(0)
+    use_ue8m0 = ue8m0_for_device(grad_output.device)
+
+    if needs_grad_x:
+        grad_output_fp8, grad_output_sf = per_token_cast_to_fp8_triton(
+            grad_output_2d.view(-1, out_features_per_group), use_ue8m0, block_size
+        )
+        weight_t_fp8, weight_t_sf = grouped_per_block_cast_to_fp8_triton(
+            weight.view(n_groups, out_features_per_group, in_features).transpose(1, 2), use_ue8m0, block_size
+        )
+        grad_x = torch.empty((num_tokens, n_groups, in_features), device=x.device, dtype=x.dtype)
+        deep_gemm.fp8_einsum(
+            "bhr,hdr->bhd",
+            (
+                grad_output_fp8.view(num_tokens, n_groups, out_features_per_group),
+                grad_output_sf.view(num_tokens, n_groups, -1),
+            ),
+            (weight_t_fp8, weight_t_sf),
+            grad_x,
+            recipe=_fp8_einsum_recipe(use_ue8m0, block_size),
+        )
+        grad_x = grad_x.view(x.shape)
+    else:
+        grad_x = x.new_empty(x.shape)
+
+    if needs_grad_weight:
+        x_2d = x.reshape(num_tokens, n_groups * in_features)
+        padded_tokens = (num_tokens + block_size - 1) // block_size * block_size
+        if padded_tokens != num_tokens:
+            pad_rows = padded_tokens - num_tokens
+            grad_output_2d = torch.nn.functional.pad(grad_output_2d, (0, 0, 0, pad_rows))
+            x_2d = torch.nn.functional.pad(x_2d, (0, 0, 0, pad_rows))
+        grad_output_t_fp8, grad_output_t_sf = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
+        x_t_fp8, x_t_sf = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
+        grad_weight_fp32 = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
+        for group in range(n_groups):
+            out_rows = slice(group * out_features_per_group, (group + 1) * out_features_per_group)
+            in_rows = slice(group * in_features, (group + 1) * in_features)
+            deep_gemm.fp8_gemm_nt(
+                (grad_output_t_fp8[out_rows], grad_output_t_sf[out_rows]),
+                (x_t_fp8[in_rows], x_t_sf[in_rows]),
+                grad_weight_fp32[out_rows],
+                c=grad_weight_fp32[out_rows],
+                recipe=(1, 1, 128),
+            )
+        grad_weight = grad_weight_fp32.to(weight.dtype)
+    else:
+        grad_weight = weight.new_empty(weight.shape)
+
+    return grad_x, grad_weight
+
+
+@_fp8_blockwise_bmm_backward.register_fake
+def _fp8_blockwise_bmm_backward_fake(
+    grad_output: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    n_groups: int,
+    block_size: int,
+    needs_grad_x: bool,
+    needs_grad_weight: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return x.new_empty(x.shape), weight.new_empty(weight.shape)
+
+
+def _fp8_blockwise_bmm_setup_context(ctx, inputs, output) -> None:
+    x, weight, n_groups, block_size = inputs
+    ctx.save_for_backward(x, weight)
+    ctx.n_groups = n_groups
+    ctx.block_size = block_size
+
+
+def _fp8_blockwise_bmm_autograd_backward(ctx, grad_output: torch.Tensor):
+    x, weight = ctx.saved_tensors
+    needs_grad_x, needs_grad_weight, _, _ = ctx.needs_input_grad
+    grad_x, grad_weight = _fp8_blockwise_bmm_backward(
+        grad_output,
+        x.detach(),
+        weight.detach(),
+        ctx.n_groups,
+        ctx.block_size,
+        needs_grad_x,
+        needs_grad_weight,
+    )
+    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None, None
+
+
+_fp8_blockwise_bmm.register_autograd(
+    _fp8_blockwise_bmm_autograd_backward,
+    setup_context=_fp8_blockwise_bmm_setup_context,
+)
+
+
 class Float8BlockwiseLinear(nn.Linear):
     """nn.Linear replacement that uses FP8 blockwise matmul via DeepGEMM.
 
@@ -151,9 +296,30 @@ class Float8BlockwiseLinear(nn.Linear):
         return new_mod
 
 
+class Float8BlockwiseGroupedLinear(DeepseekV4GroupedLinear):
+    """DeepseekV4GroupedLinear replacement that runs all groups in one DeepGEMM FP8 einsum, as vLLM serves `wo_a`."""
+
+    def __init__(self, *args, block_size: int = 128, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.block_size = block_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _fp8_blockwise_bmm(x, self.weight, self.n_groups, self.block_size)
+
+    @classmethod
+    def from_grouped_linear(cls, mod: DeepseekV4GroupedLinear) -> "Float8BlockwiseGroupedLinear":
+        """Convert an existing DeepseekV4GroupedLinear to Float8BlockwiseGroupedLinear."""
+        with torch.device("meta"):
+            new_mod = cls(mod.in_features, mod.out_features, mod.n_groups, bias=mod.bias is not None)
+        new_mod.weight = mod.weight
+        new_mod.bias = mod.bias
+        return new_mod
+
+
 def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str]) -> None:
-    """Replace nn.Linear in `model` with Float8BlockwiseLinear, skipping any
-    module whose qualified name matches an ignore pattern (substring or regex).
+    """Replace nn.Linear in `model` with Float8BlockwiseLinear (DeepseekV4GroupedLinear with
+    Float8BlockwiseGroupedLinear), skipping any module whose qualified name matches an ignore
+    pattern (substring or regex).
 
     The default ignore list covers layers that should never be quantized:
     - lm_head
@@ -188,7 +354,11 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
             continue
         parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
         parent = model.get_submodule(parent_name) if parent_name else model
-        setattr(parent, attr_name, Float8BlockwiseLinear.from_linear(module))
+        if isinstance(module, DeepseekV4GroupedLinear):
+            fp8_module = Float8BlockwiseGroupedLinear.from_grouped_linear(module)
+        else:
+            fp8_module = Float8BlockwiseLinear.from_linear(module)
+        setattr(parent, attr_name, fp8_module)
         replaced_modules.append(name)
 
     logger.info(
