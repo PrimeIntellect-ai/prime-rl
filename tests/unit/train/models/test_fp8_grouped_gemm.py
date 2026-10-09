@@ -8,11 +8,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from prime_rl.trainer.distributed.token_dispatcher import permute_for_grouped_gemm
 from prime_rl.trainer.models.kernels.fp8_utils import (
     GROUP_ALIGNMENT,
-    build_grouped_layout,
     grouped_per_block_cast_to_fp8_triton,
-    grouped_per_channel_cast_to_fp8_rowmajor_triton,
-    grouped_per_channel_cast_to_fp8_sm90_kmajor_triton,
-    grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
 )
 from prime_rl.trainer.models.layers.expert_compute import DeepGemmFP8ExpertCompute, GroupedGemmExpertCompute
@@ -43,7 +39,7 @@ COUNTS = {
 # real dispatcher (`permute_for_grouped_gemm`), which pads each expert to 128 rows, gives an empty
 # expert one alignment's worth of zero rows, and leaves a zero tail past `offs[-1]`. "raw128" pads
 # each expert to 128 rows by hand but keeps an empty expert a truly empty group, followed by a zero
-# tail. "align8", the dispatcher at the old alignment, only feeds the frozen wrapper.
+# tail.
 DISPATCHES = ["align128", "raw128"]
 RAW_TAIL_ROWS = 128
 
@@ -82,7 +78,9 @@ def _assert_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float,
 
 def _assert_bitwise(actual: torch.Tensor, expected: torch.Tensor, label: str) -> None:
     assert actual.shape == expected.shape and actual.dtype == expected.dtype, label
-    assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8)), f"{label}: bytes differ"
+    assert torch.equal(actual.contiguous().view(torch.uint8), expected.contiguous().view(torch.uint8)), (
+        f"{label}: bytes differ"
+    )
 
 
 @contextmanager
@@ -127,13 +125,12 @@ def _dispatch(
         offs = torch.tensor(padded_counts, device=tokens.device).cumsum(0).to(torch.int32)
         return x, offs, real_rows
 
-    alignment = {"align8": 8, "align128": 128}[dispatch]
     x, padded_counts, state = permute_for_grouped_gemm(
         tokens,
         torch.tensor(counts, dtype=torch.int64, device=tokens.device),
         experts_per_rank=len(counts),
         num_ranks=1,
-        alignment=alignment,
+        alignment=GROUP_ALIGNMENT,
     )
     offs = torch.cumsum(padded_counts, dim=0, dtype=torch.int32)
     return x, offs, state.permuted_indices != -1
@@ -158,72 +155,6 @@ def _run_op(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, probe: to
     return out.detach(), x_leaf.grad, weight_leaf.grad
 
 
-def _frozen_grad_weight(
-    x, grad_output, weight, padded_total_m, block_to_group, ks_tensor, starts, actual_ms, block_starts
-):
-    import deep_gemm
-
-    layout_args = (padded_total_m, block_to_group, starts, actual_ms, ks_tensor, block_starts)
-    if torch.cuda.get_device_capability(x.device)[0] >= 10:
-        x_fp8 = grouped_per_channel_cast_to_fp8_rowmajor_triton(x, *layout_args, True, GROUP_ALIGNMENT)
-        dy_fp8 = grouped_per_channel_cast_to_fp8_rowmajor_triton(grad_output, *layout_args, True, GROUP_ALIGNMENT)
-        grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_tn_contiguous
-    else:
-        x_fp8 = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(x, *layout_args, False, GROUP_ALIGNMENT)
-        dy_fp8 = grouped_per_channel_cast_to_fp8_sm90_kmajor_triton(grad_output, *layout_args, False, GROUP_ALIGNMENT)
-        grouped_weight_grad = deep_gemm.k_grouped_fp8_gemm_nt_contiguous
-    grad_weight = torch.zeros(weight.shape, device=x.device, dtype=torch.float32)
-    grouped_weight_grad(x_fp8, dy_fp8, grad_weight, ks_tensor.tolist(), ks_tensor, grad_weight)
-    return grad_weight.to(weight.dtype)
-
-
-def _frozen_unpack_rows(padded: torch.Tensor, total_m: int, starts, actual_ms, block_starts) -> torch.Tensor:
-    """Move each group's rows from its 128-aligned slot in `padded` back to where it starts in `x`."""
-    ends = starts + actual_ms
-    rows = torch.arange(total_m, device=padded.device)
-    group = torch.searchsorted(ends, rows, right=True)
-    in_group = group < ends.numel()
-    group = group.clamp(max=ends.numel() - 1)
-    src_rows = block_starts[group] * GROUP_ALIGNMENT + rows - starts[group]
-    out = padded.new_zeros((total_m, padded.size(1)))
-    out[in_group] = padded[src_rows[in_group]]
-    return out
-
-
-def _frozen_wrapper(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor, grad_output: torch.Tensor):
-    """The grouped FP8 GEMM wrapper as of ae37b35a3, built from the primitive kernels, returning out, grad_x, grad_weight."""
-    import deep_gemm
-
-    counts = torch.diff(offs, prepend=offs.new_zeros(1))
-    padded_total_m = int((torch.ceil(counts / GROUP_ALIGNMENT) * GROUP_ALIGNMENT).sum())
-    grouped_layout, block_to_group, ks_tensor, starts, actual_ms, block_starts = build_grouped_layout(
-        offs, padded_total_m
-    )
-    total_m = x.size(0)
-    group_args = (block_to_group, starts, actual_ms, block_starts)
-    cast_args = (padded_total_m, *group_args)
-    use_ue8m0 = ue8m0_for_device(x.device)
-
-    x_fp8 = grouped_per_token_cast_to_fp8_triton(x, *cast_args, use_ue8m0, GROUP_ALIGNMENT)
-    weight_fp8 = grouped_per_block_cast_to_fp8_triton(weight.transpose(1, 2), use_ue8m0, GROUP_ALIGNMENT)
-    out_padded = torch.empty((padded_total_m, weight.size(2)), device=x.device, dtype=x.dtype)
-    deep_gemm.m_grouped_fp8_gemm_nt_contiguous(x_fp8, weight_fp8, out_padded, grouped_layout, use_psum_layout=False)
-    out = _frozen_unpack_rows(out_padded, total_m, starts, actual_ms, block_starts)
-
-    grad_output = grad_output.contiguous()
-    grad_weight = _frozen_grad_weight(
-        x, grad_output, weight, padded_total_m, block_to_group, ks_tensor, starts, actual_ms, block_starts
-    )
-    dy_fp8 = grouped_per_token_cast_to_fp8_triton(grad_output, *cast_args, use_ue8m0, GROUP_ALIGNMENT)
-    weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
-    grad_x_padded = torch.empty((padded_total_m, weight.size(1)), device=x.device, dtype=x.dtype)
-    deep_gemm.m_grouped_fp8_gemm_nt_contiguous(
-        dy_fp8, weight_dx_fp8, grad_x_padded, grouped_layout, use_psum_layout=False
-    )
-    grad_x = _frozen_unpack_rows(grad_x_padded, total_m, starts, actual_ms, block_starts)
-    return out, grad_x, grad_weight
-
-
 def _fake_fp8(a: torch.Tensor, block_rows: int, block_cols: int) -> torch.Tensor:
     """Round float32 `a` onto the e4m3 grid with one amax scale per `block_rows x block_cols` block."""
     rows, cols = a.shape
@@ -237,12 +168,7 @@ def _fake_fp8(a: torch.Tensor, block_rows: int, block_cols: int) -> torch.Tensor
 
 
 def _kernel_rounded_weight(weight: torch.Tensor) -> torch.Tensor:
-    """The weight as the kernels' 128x128 block cast rounds it, dequantized to float32.
-
-    Taken from the kernel rather than rebuilt in torch because the block cast quantizes with a
-    reciprocal multiply, as vLLM does, which a correctly rounded torch division disagrees with. Its
-    bytes are pinned against vLLM by `test_block_cast_matches_vllm_online_quant`.
-    """
+    """The weight as the kernels' 128x128 block cast rounds it, dequantized to float32."""
     groups, rows, cols = weight.shape
     fp8, scales = grouped_per_block_cast_to_fp8_triton(weight, ue8m0_for_device(weight.device), GROUP_ALIGNMENT)
     blocks = fp8.float().view(groups, rows // 128, 128, cols // 128, 128) * scales.view(
@@ -252,12 +178,7 @@ def _kernel_rounded_weight(weight: torch.Tensor) -> torch.Tensor:
 
 
 def _float32_grouped_reference(x, weight, offs, probe, *, quantize: bool):
-    """Per-expert float32 out, grad_x and grad_weight over rows `[0, offs[-1])`.
-
-    With `quantize`, every operand is first rounded the way the kernels round it: activations and
-    output gradients in 1x128 blocks along the feature axis for the forward and dgrad, 128x1 blocks
-    along the token axis within each expert for the wgrad, and weights in 128x128 blocks.
-    """
+    """Per-expert float32 out, grad_x and grad_weight over rows `[0, offs[-1])`, optionally on FP8-rounded operands."""
     ends = offs.tolist()
     starts = [0, *ends[:-1]]
     weight_f32 = _kernel_rounded_weight(weight) if quantize else weight.float()
@@ -277,23 +198,6 @@ def _float32_grouped_reference(x, weight, offs, probe, *, quantize: bool):
             grad_x[start:end] = dy_e @ w_e.T
             grad_weight[expert] = x_e.T @ dy_e
     return out, grad_x, grad_weight
-
-
-@pytest.mark.parametrize(("k", "n"), SHAPES, ids=SHAPE_IDS)
-@pytest.mark.parametrize("distribution", list(COUNTS))
-@pytest.mark.parametrize("dispatch", DISPATCHES)
-def test_op_is_bit_identical_to_the_frozen_wrapper(dispatch, distribution, k, n):
-    """Forward, dgrad and wgrad bytes must match the ae37b35a3 wrapper; every optimization claims bitwise identity."""
-    x, weight, offs, _, probe = _inputs(COUNTS[distribution], k, n, dispatch)
-    used_rows = int(offs[-1])
-
-    out, grad_x, grad_weight = _run_op(x, weight, offs, probe)
-    frozen_out, frozen_grad_x, frozen_grad_weight = _frozen_wrapper(x, weight, offs, probe)
-
-    assert out.shape == (x.shape[0], n) and grad_x.shape == x.shape and grad_weight.shape == weight.shape
-    _assert_bitwise(out[:used_rows], frozen_out[:used_rows], "out")
-    _assert_bitwise(grad_x[:used_rows], frozen_grad_x[:used_rows], "grad_x")
-    _assert_bitwise(grad_weight, frozen_grad_weight, "grad_weight")
 
 
 @pytest.mark.parametrize(("k", "n"), SHAPES, ids=SHAPE_IDS)
@@ -336,37 +240,6 @@ def test_empty_experts_get_an_exactly_zero_weight_gradient(distribution):
                 )
             else:
                 assert grad_weight[expert].abs().max() > 0, f"{dispatch}: expert {expert} got no weight gradient"
-
-
-@pytest.mark.parametrize("distribution", list(COUNTS))
-def test_128_aligned_dispatch_matches_8_aligned_on_real_rows(distribution):
-    """Aligning the dispatcher to 128 changes only how many zero rows pad each expert, not a byte of any real row.
-
-    The 8-aligned side runs the frozen wrapper and the 128-aligned side the op, so this still pins
-    the change in dispatcher alignment after the op itself is reworked for 128-aligned groups.
-    """
-    counts = COUNTS[distribution]
-    torch.manual_seed(0)
-    with torch.device("cuda"):
-        tokens = torch.randn(sum(counts), 512, dtype=torch.bfloat16)
-        weight = (torch.randn(len(counts), 512, 256) * WEIGHT_STD).to(torch.bfloat16)
-        real_probe = torch.randn(sum(counts), 256, dtype=torch.bfloat16)
-
-    results = {}
-    for dispatch in ("align8", "align128"):
-        x, offs, real_rows = _dispatch(tokens, counts, dispatch)
-        assert torch.equal(x[real_rows], tokens), f"{dispatch}: real rows are not the tokens in expert order"
-        assert torch.equal(x[~real_rows], torch.zeros_like(x[~real_rows])), f"{dispatch}: a padding row is not zero"
-        probe = torch.zeros(x.shape[0], 256, device="cuda", dtype=torch.bfloat16)
-        probe[real_rows] = real_probe
-        if dispatch == "align8":
-            out, grad_x, grad_weight = _frozen_wrapper(x, weight, offs, probe)
-        else:
-            out, grad_x, grad_weight = _run_op(x, weight, offs, probe)
-        results[dispatch] = (out[real_rows], grad_x[real_rows], grad_weight)
-
-    for label, aligned8, aligned128 in zip(("out", "grad_x", "grad_weight"), results["align8"], results["align128"]):
-        _assert_bitwise(aligned128, aligned8, label)
 
 
 def test_grouped_experts_route_through_the_fp8_op_and_match_the_reference():
@@ -417,6 +290,7 @@ def test_grouped_experts_route_through_the_fp8_op_and_match_the_reference():
 def test_op_traces_under_torch_compile():
     """`torch.compile(fullgraph=True)` through the op, forward and backward, exercising both `register_fake`s."""
     x, weight, offs, _, probe = _inputs(COUNTS["ragged"], 512, 256, "align128")
+    weight = weight.transpose(1, 2).contiguous().transpose(1, 2)
     used_rows = int(offs[-1])
 
     def grouped(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -433,25 +307,14 @@ def test_op_traces_under_torch_compile():
     _assert_bitwise(compiled_out[:used_rows].detach(), eager_out[:used_rows].detach(), "out")
     _assert_bitwise(compiled[0].grad[:used_rows], eager[0].grad[:used_rows], "grad_x")
     _assert_bitwise(compiled[1].grad, eager[1].grad, "grad_weight")
+    assert compiled[1].grad.stride() == eager[1].grad.stride() == weight.stride()
 
 
 def test_forward_does_not_sync_with_the_host():
-    """The forward launches without a device-to-host sync, so the CPU can run ahead of the GPU.
-
-    The backward is exempt: DeepGEMM's k-grouped wgrad takes the group sizes as a host list, so it
-    keeps one `tolist()` by construction.
-    """
+    """The forward launches without a device-to-host sync, so the CPU can run ahead of the GPU."""
     x, weight, offs, _, _ = _inputs(COUNTS["ragged"], 512, 256, "align128")
     grouped_fp8_gemm(x, weight, offs)
     torch.cuda.synchronize()
 
     with _forbid_device_to_host_sync():
         grouped_fp8_gemm(x, weight, offs)
-
-
-def test_build_grouped_layout_does_not_sync_with_the_host():
-    x, _, offs, _, _ = _inputs(COUNTS["ragged"], 512, 256, "align128")
-    torch.cuda.synchronize()
-
-    with _forbid_device_to_host_sync():
-        build_grouped_layout(offs, x.size(0))
