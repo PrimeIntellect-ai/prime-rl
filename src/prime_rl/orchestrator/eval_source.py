@@ -9,15 +9,18 @@ pulled off the env's ``TaskFeed`` as they become ready, until the taskset ends."
 
 from __future__ import annotations
 
-from collections import deque
+import uuid
+from collections import defaultdict, deque
+from collections.abc import Iterable
 from itertools import zip_longest
 from typing import TYPE_CHECKING
+
+import verifiers.v1 as vf
+from verifiers.v1.utils.eval import plan_rollouts
 
 from prime_rl.orchestrator.types import TaskRequest
 
 if TYPE_CHECKING:
-    import verifiers.v1 as vf
-
     from prime_rl.orchestrator.envs import EvalEnvs
     from prime_rl.orchestrator.task_feed import TaskFeed
 
@@ -51,59 +54,74 @@ class EvalSource:
             self.intervals[env.name] = intervals[env.name] if intervals is not None else 1
 
         self.queue: deque[TaskRequest] = deque()
-        self.streams: dict[str, tuple[int, dict[str, int]]] = {}
-        """Fired streaming envs: their step and the rollouts each landed task key still owes."""
-        self.owed: dict[str, dict[str, int]] | None = None
-        self.groups: dict[str, dict[str, str]] = {}
+        self.streams: dict[str, tuple[int, dict[str, tuple[int, str]]]] = {}
+        """Fired streaming envs: their step, and per task hash with restored episodes the
+        rollouts it still owes and the group they join."""
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
         self.first_trigger = not is_resumed
 
-    def restore(self, owed: dict[str, dict[str, int]], groups: dict[str, dict[str, str]]) -> None:
-        """Rollouts the next trigger still owes per env and task key, the rest having
-        landed before a resume; a task without an entry is complete. ``groups`` is the
-        group id the landed rollouts of a task carry, which the owed ones join."""
-        self.owed = owed
-        self.groups = groups
-
-    def trigger(self, step: int, *, force: bool = False) -> list[str]:
-        """Fire eligible envs for ``step`` and return their names. On resume
+    def trigger(
+        self, step: int, *, force: bool = False, completed: Iterable[vf.WireEpisode] = ()
+    ) -> tuple[list[str], list[vf.WireEpisode]]:
+        """Fire eligible envs and return their names and matched saved episodes. On resume
         ``first_trigger`` is False, so the startup/base eval doesn't re-run.
         ``force`` fires every env regardless of interval (e.g. the evals process's
         final-checkpoint eval)."""
         is_first, self.first_trigger = self.first_trigger, False
         if is_first and self.skip_first_step:
-            return []
+            return [], []
         fired = [
             name
             for name, interval in self.intervals.items()
             if (is_first or force or step % interval == 0) and (self.tasks_by_env[name] or name in self.feeds)
         ]
-        owed, self.owed = self.owed, None
+        saved: dict[str, list[vf.WireEpisode]] = defaultdict(list)
+        for episode in completed:
+            saved[episode.env.name or episode.env.id].append(episode)
+        restored: list[vf.WireEpisode] = []
         for name in fired:
             if name in self.feeds:
-                self.streams[name] = (step, dict(owed[name]) if owed is not None else {})
+                self.streams[name] = (step, self.restore_stream(saved[name], self.group_sizes[name], restored))
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
         # rollouts back-to-back, so per-example prefix-cache locality holds
-        iters = [iter(self.tasks_by_env[name]) for name in fired]
+        iters = [iter(plan_rollouts(self.tasks_by_env[name], self.group_sizes[name], saved[name])) for name in fired]
         for round_tasks in zip_longest(*iters):
-            for env_name, task in zip(fired, round_tasks, strict=True):
-                if task is None:
+            for env_name, planned in zip(fired, round_tasks, strict=True):
+                if planned is None:
                     continue
-                rollouts = self.group_sizes[env_name]
-                if owed is not None:
-                    # duplicate tasks share a key: each takes up to a group of what the key owes
-                    rollouts = min(rollouts, owed[env_name].get(task.key, 0))
-                    owed[env_name][task.key] = owed[env_name].get(task.key, 0) - rollouts
+                task, kept, rollouts = planned
+                # Each selected occurrence owns one group, including its restored episodes.
+                group = vf.GroupInfo(id=str(uuid.uuid4()))
+                for episode in kept:
+                    episode.group = group
+                restored.extend(kept)
                 if rollouts > 0:
-                    group_id = self.groups.get(env_name, {}).get(task.key)
                     self.queue.append(
-                        TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
+                        TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group.id)
                     )
-        return fired
+        return fired, restored
+
+    @staticmethod
+    def restore_stream(
+        saved: list[vf.WireEpisode], group_size: int, restored: list[vf.WireEpisode]
+    ) -> dict[str, tuple[int, str]]:
+        """A stream's tasks are not known up front: restore up to a group of each task's
+        saved episodes, as ``plan_rollouts`` does, and return what each task hash still owes."""
+        by_hash: dict[str, list[vf.WireEpisode]] = defaultdict(list)
+        for episode in {episode.id: episode for episode in saved}.values():
+            by_hash[episode.task.hash or vf.Task(episode.task.data).hash].append(episode)
+        owed: dict[str, tuple[int, str]] = {}
+        for task_hash, episodes in by_hash.items():
+            group = vf.GroupInfo(id=str(uuid.uuid4()))
+            for episode in episodes[:group_size]:
+                episode.group = group
+                restored.append(episode)
+            owed[task_hash] = (group_size - len(episodes[:group_size]), group.id)
+        return owed
 
     def next_task(self) -> TaskRequest | None:
         """Pop the next eval task, or ``None`` when the queue is empty and no stream has a
@@ -112,10 +130,8 @@ class EvalSource:
             return self.queue.popleft()
         for env_name, (step, owed) in self.streams.items():
             while (task := self.feeds[env_name].poll()) is not None:
-                # a key that landed before a resume owes only the rest of its group
-                rollouts = owed.pop(task.key, self.group_sizes[env_name])
+                rollouts, group_id = owed.pop(task.hash, (self.group_sizes[env_name], None))
                 if rollouts > 0:
-                    group_id = self.groups.get(env_name, {}).get(task.key)
                     return TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
         return None
 
