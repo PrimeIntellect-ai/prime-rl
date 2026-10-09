@@ -38,6 +38,7 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.multimodal import get_multimodal_adapter
+from prime_rl.trainer.multimodal import ImageCache
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -143,12 +144,15 @@ def train(config: TrainerConfig):
 
     processor = None
     mm_adapter = None
+    image_cache = None
     if config.model.vlm is not None:
         processor = setup_processor(config.model)
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+        if config.data.image_cache_gb > 0:
+            image_cache = ImageCache(config.data.image_cache_gb)
+    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter, image_cache=image_cache)
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):

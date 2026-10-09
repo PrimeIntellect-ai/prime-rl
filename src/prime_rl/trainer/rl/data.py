@@ -8,7 +8,7 @@ from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
+from prime_rl.trainer.multimodal import ImageCache, materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -178,7 +178,10 @@ class FakeDataLoader:
 
 
 def prepare_micro_batch(
-    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+    micro_batch: TensorMicroBatch, 
+    processor: Any | None, 
+    mm_adapter: MultimodalAdapter | None,
+    image_cache: ImageCache | None,
 ) -> TensorMicroBatch:
     """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
     micro_batch["mm_kwargs"] = None
@@ -187,7 +190,7 @@ def prepare_micro_batch(
     if mm_refs is not None:
         if processor is None or mm_adapter is None:
             raise ValueError("Received multimodal samples but [model.vlm] is not set")
-        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter, image_cache)
         micro_batch["mm_kwargs"] = materialized.kwargs
         micro_batch["mm_forward_policy"] = materialized.forward_policy
         micro_batch["mm_refs"] = None
