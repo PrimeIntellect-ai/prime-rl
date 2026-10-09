@@ -17,6 +17,7 @@ import triton.language as tl
 
 FP8_MAX = 448.0
 QUANT_TILE = 64
+# vLLM's two cache writers clamp tiny tiles inconsistently (amax vs scale floor), and we mirror both.
 SWA_KV_MIN_AMAX = 1e-4
 COMPRESSED_KV_MIN_SCALE = 1e-4
 
