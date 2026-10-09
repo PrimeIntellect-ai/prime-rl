@@ -509,22 +509,6 @@ class MixedDataset(StatefulIterableDataset):
         self.epoch_start = {name: 0 for name in sources}
 
     @property
-    def num_samples(self) -> dict[str, int]:
-        return {name: sum(source.num_samples.values()) for name, source in self.sources.items()}
-
-    @num_samples.setter
-    def num_samples(self, _: Any) -> None:
-        pass
-
-    @property
-    def num_tokens(self) -> dict[str, int]:
-        return {name: sum(source.num_tokens.values()) for name, source in self.sources.items()}
-
-    @num_tokens.setter
-    def num_tokens(self, _: Any) -> None:
-        pass
-
-    @property
     def source_sizes(self) -> dict[str, int]:
         return {name: source.num_examples for name, source in self.sources.items()}
 
@@ -552,6 +536,8 @@ class MixedDataset(StatefulIterableDataset):
             rng = np.random.default_rng([self.seed, self.step])
             name = self.names[rng.choice(len(self.names), p=self.probabilities)]
             sample = next(iterators[name])
+            self.num_samples[name] += 1
+            self.num_tokens[name] += len(sample.get("input_ids", []))
             passes = [source.epoch > self.epoch_start[name] for name, source in self.sources.items()]
             if all(passes) if self.stopping_strategy == "all_exhausted" else any(passes):
                 self.epoch += 1
