@@ -5,6 +5,8 @@ routing and the hash routing of the bootstrap layers, which replaces the learned
 selection with a frozen token-id lookup but keeps the learned gating weights.
 """
 
+import os
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -67,7 +69,17 @@ class DeepseekV4Router(TokenChoiceTopKRouter):
         elif self.force_balanced:
             num_tokens = scores.shape[0]
             arange = torch.arange(num_tokens * self.top_k, device=scores.device)
-            selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
+            # A stride coprime with the expert count keeps every expert's load equal while spreading
+            # a token's experts over the expert-parallel ranks (and nodes), as real routing does;
+            # consecutive experts would put all of a token's experts on one rank.
+            selected_experts_indices = (arange * 97 % self.num_experts).view(num_tokens, self.top_k)
+            if os.environ.get("PRL_NODE_LIMIT"):  # EXPERIMENT: each token's experts on at most m of 8 nodes
+                m, per_node = int(os.environ["PRL_NODE_LIMIT"]), self.num_experts // 8
+                t = torch.arange(num_tokens, device=scores.device)[:, None]
+                k = torch.arange(self.top_k, device=scores.device)[None, :]
+                node = (t + (k % m) * (8 // m)) % 8
+                local = ((t // 8) * self.top_k + k) % per_node
+                selected_experts_indices = node * per_node + local
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
         else:
             selection_scores = scores

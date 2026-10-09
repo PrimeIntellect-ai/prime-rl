@@ -1,4 +1,5 @@
 import time
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -9,12 +10,13 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
+from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.parallel import parallelize_module
 from transformers import AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -44,13 +46,14 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import use_fused_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.models.registry import get_model_cls, load_model_config
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.pipeline import prune_to_pipeline_stage
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import default_dtype, format_time
@@ -559,20 +562,23 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         or getattr(language_model, "hyper_connection_mixer", None)
     )
 
+    # A pipeline stage holds the embedding only if it is the first stage, and the head only if it is the last.
     embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-    fully_shard(
-        embed_module,
-        mesh=hsdp_mesh,
-        **fsdp_config,
-    )
-    fully_shard(
-        [model.lm_head, final_module],
-        mesh=hsdp_mesh,
-        mp_policy=mp_policy,
-        offload_policy=offload_policy,
-        reshard_after_forward=False,
-        shard_placement_fn=shard_placement_fn,
-    )
+    if embed_module is not None:
+        fully_shard(
+            embed_module,
+            mesh=hsdp_mesh,
+            **fsdp_config,
+        )
+    if model.lm_head is not None:
+        fully_shard(
+            [model.lm_head, final_module],
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            offload_policy=offload_policy,
+            reshard_after_forward=False,
+            shard_placement_fn=shard_placement_fn,
+        )
 
     fully_shard(
         model,
@@ -583,6 +589,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         shard_placement_fn=shard_placement_fn,
         ignored_params=ignored_params,
     )
+
+    # FP8 experts accumulate their weight gradients straight into FSDP's fp32 buffers.
+    for module in model.modules():
+        if isinstance(module, FSDPModule):
+            for group in module._get_fsdp_state()._fsdp_param_groups:
+                for fsdp_param in group.fsdp_params:
+                    info = fsdp_param._module_info
+                    if isinstance(info.module, GroupedExperts):
+                        info.module.__dict__.setdefault("fsdp_params", {})[info.param_name] = fsdp_param
 
     if not parallel_dims.ep_enabled:
         return
@@ -641,6 +656,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        _random_init_(model)
         _move_buffers_to_cuda(model, config)
         return
 
@@ -750,8 +766,29 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     )
 
 
+# Int args whose value changes between calls. torch.compile treats an int arg as a constant and recompiles
+# whenever it changes, and every other rank waits in collectives until that rank finishes recompiling. Listed
+# here, an arg is symbolic from the first compile instead.
+DYNAMIC_INT_ARGS = (
+    # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
+    "max_seqlen",
+)
+
+
+def mark_dynamic_int_args() -> None:
+    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+    sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
+    for arg in DYNAMIC_INT_ARGS:
+        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
+        pattern = rf".*\['{arg}'\]"
+        if pattern not in sources:
+            sources.append(pattern)
+    torch.compiler.config.dynamic_sources = ",".join(sources)
+
+
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    mark_dynamic_int_args()
     # Expert-parallel dispatch sizes its all-to-all outputs from routing counts; without this, the
     # resulting graph break inside a checkpointed block sends the whole block back to eager.
     torch._dynamo.config.capture_dynamic_output_shape_ops = True
@@ -762,8 +799,16 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._inductor.config.reorder_for_compute_comm_overlap_passes = ["sink_waits", "raise_comms"]
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
+        layer = language_model.layers[layer_id]
+        if isinstance(layer, CheckpointWrapper) and any(
+            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
+        ):
+            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
+            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
+            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
+            layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -802,6 +847,28 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
+
+
+@torch.no_grad()
+def _random_init_(model: nn.Module, std: float = 0.02) -> None:
+    """Draw every parameter shard: matrices from N(0, std), norm weights and scales one, the rest zero.
+
+    `to_empty` leaves whatever the allocator hands back, so without this a debug run computes on
+    arbitrary values, and kernels whose speed depends on them (top-k selection, routing) time
+    differently from run to run. Each shard is drawn from a seed of its parameter's name and its
+    place in the parameter's mesh, so layouts that shard a parameter alike draw it alike.
+    """
+    for name, param in model.named_parameters():
+        local = param.to_local() if isinstance(param, DTensor) else param
+        if local.ndim >= 2:
+            coordinate = param.device_mesh.get_coordinate() if isinstance(param, DTensor) else []
+            generator = torch.Generator(device=local.device)
+            generator.manual_seed(zlib.crc32(f"{name}:{coordinate}".encode()))
+            local.normal_(mean=0.0, std=std, generator=generator)
+        elif "norm" in name or name.endswith("scale"):
+            local.fill_(1.0)
+        else:
+            local.zero_()
 
 
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
@@ -865,6 +932,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    pp_stage: int | None = None,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -880,6 +948,9 @@ def setup_model(
 
     # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    if parallel_dims.pp_enabled:
+        num_stages = parallel_dims.pp * config.pp_stages_per_rank
+        prune_to_pipeline_stage(model, pp_stage, num_stages, config.pp_layers_per_stage)
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
@@ -887,7 +958,7 @@ def setup_model(
         applied = apply_model_fusions(model, config.fusions.enabled)
         logger.info(f"Applied runtime model fusions: {applied}")
 
-    if isinstance(config.fused_lm_head_token_chunk_size, int):
+    if isinstance(config.fused_lm_head_token_chunk_size, int) and model.lm_head is not None:
         use_fused_lm_head(model, chunk_size=config.fused_lm_head_token_chunk_size)
 
     apply_quantization(model, config)
@@ -910,10 +981,13 @@ def setup_model(
     # No-op for models without a sparse indexer.
     freeze_sparse_indexer(model)
 
-    if config.debug.force_balanced_routing:
+    # A pipeline stage can hold no decoder layers (the head alone), and then no MoE.
+    has_layers = len(get_language_model(model).layers) > 0
+    if config.debug.force_balanced_routing and has_layers:
         apply_force_balanced_routing(model)
 
-    configure_moe_runtime(model, config, parallel_dims)
+    if has_layers:
+        configure_moe_runtime(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
@@ -926,13 +1000,14 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> Compile -> FSDP
+    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile is not None:
-        apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
+
+    if config.compile is not None:
+        apply_compile(model, config.compile)
 
     if loading_from_checkpoint_later:
         logger.warning(

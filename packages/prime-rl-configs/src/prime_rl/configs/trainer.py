@@ -269,11 +269,42 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     fp8: bool = False
     """Send tokens to the experts as FP8 (1 x 128 blocks, power-of-two scales), halving the forward
     dispatch traffic and the received tokens kept for backward. Requires FP8 expert compute, which
-    quantizes its input the same way; gradients travel in bf16."""
+    quantizes its input the same way; gradients travel in bf16 unless ``fp8_grad`` is set."""
+
+    fp8_grad: bool = False
+    """Also send the output gradient to the experts as FP8 in backward (the DeepSeek-V3 recipe), halving
+    that traffic. The experts' backward quantizes it the same way for its data-gradient GEMM, but the
+    router's gradient and the weight-gradient quantization then read the FP8 values. Requires ``fp8``."""
+
+    keep_expert_activations: bool = False
+    """Keep the routed experts' forward activations (their output and what the FP8 expert backward
+    reads) instead of recomputing the expert forward in backward. Costs ~2.5 GB per layer at 16k
+    tokens per GPU; requires prime-kernels' FP8 expert compute."""
+
+    weight_grads_after_combine: bool = False
+    """In backward, send each token chunk's input gradient back (combine) before running its experts'
+    weight-gradient GEMMs, so those GEMMs hide the combine instead of delaying it. Same numerics.
+    Takes effect with prime-kernels' FP8 expert compute when the expert gradients accumulate into
+    FSDP's fp32 buffers."""
+
+
+class MegaMoEDispatchConfig(BaseConfig):
+    """Run each MoE layer as prime-mega-moe's fused BF16 Mega MoE kernel: dispatch, the routed experts'
+    clamped SwiGLU, the shared expert and the combine in one kernel over NVLink symmetric memory.
+    Replaces the expert compute backend for those layers; expert parallelism must stay within a node."""
+
+    type: Literal["mega_moe"] = "mega_moe"
+
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Tokens per rank the symmetric buffer is sized for. Defaults to ``model.seq_len``."""
+
+    num_sms: int | None = Field(None, ge=1)
+    """SMs the Mega MoE kernels run on. Defaults to every SM; fewer leaves room for collectives that
+    overlap them (the kernel's blocks wait on other ranks, so it needs all of its blocks resident)."""
 
 
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -284,11 +315,19 @@ class MoERuntimeConfig(BaseConfig):
     compute: MoEComputeConfig = BF16MoEComputeConfig()
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
+    reduce_local_expert_grads_once: bool = False
+    """When expert parallelism spans every data-parallel rank, so each expert's FSDP group holds one
+    rank, reduce and reshard the expert parameters only after the last micro-batch's backward instead
+    of after every one: their gradients keep accumulating in FSDP's fp32 buffer, and later micro-batches
+    reuse the bf16 copy the first one cast. Same values up to fp32 summation order."""
+
     @model_validator(mode="after")
     def fp8_dispatch_requires_fp8_compute(self):
         if isinstance(self.dispatch, DeepEPMoEDispatchConfig) and self.dispatch.fp8:
             if not isinstance(self.compute, DeepGemmFP8MoEComputeConfig):
                 raise ValueError("dispatch.fp8 requires compute.type = 'deepgemm_fp8'")
+        if isinstance(self.dispatch, DeepEPMoEDispatchConfig) and self.dispatch.fp8_grad and not self.dispatch.fp8:
+            raise ValueError("dispatch.fp8_grad requires dispatch.fp8")
         return self
 
 
@@ -337,6 +376,20 @@ class ModelConfig(BaseModelConfig):
 
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
+
+    pp: int = 1
+    """Pipeline parallelism degree. 1 disables PP. The decoder layers are split into ``pp * pp_stages_per_rank`` stages of consecutive layers; each stage is FSDP-sharded (and expert-parallel) over its pipeline rank's devices."""
+
+    pp_schedule: Literal["1F1B", "Async1F1B", "GPipe", "Interleaved1F1B", "InterleavedZeroBubble", "ZBVZeroBubble"] = (
+        "1F1B"
+    )
+    """Pipeline schedule. The step's micro-batches are the pipeline's micro-batches. ``1F1B`` and ``GPipe`` run one stage per rank; the interleaved schedules loop ``pp_stages_per_rank`` stages over the ranks; ``ZBVZeroBubble`` places two stages per rank in a V."""
+
+    pp_stages_per_rank: int = Field(1, ge=1)
+    """Pipeline stages each pipeline rank holds."""
+
+    pp_layers_per_stage: list[int] | None = None
+    """Decoder layers of each stage, in stage order. Defaults to an even split, earlier stages taking the remainder."""
 
     cp_style: Literal["ring", "ulysses"] = "ring"
     """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
@@ -411,7 +464,7 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif dispatch.transport == "mxfp8":
+        elif isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self

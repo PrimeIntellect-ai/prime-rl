@@ -227,7 +227,10 @@ class TokenChoiceTopKRouter(nn.Module):
         elif self.force_balanced:
             num_tokens = scores.shape[0]
             arange = torch.arange(num_tokens * self.top_k, device=scores.device)
-            selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
+            # A stride coprime with the expert count keeps every expert's load equal while spreading
+            # a token's experts over the expert-parallel ranks (and nodes), as real routing does;
+            # consecutive experts would put all of a token's experts on one rank.
+            selected_experts_indices = (arange * 97 % self.num_experts).view(num_tokens, self.top_k)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
         else:
             selection_scores = scores
@@ -391,6 +394,13 @@ class MoE(nn.Module):
                 num_tokens_per_expert,
                 routing_confidence_sum,
             )
+
+        if getattr(self.token_dispatcher, "fuses_shared_expert", False):
+            assert not self.score_before_experts, "a fused MoE kernel weights the experts' outputs"
+            output = self.token_dispatcher.run_fused(
+                x, top_scores, selected_experts_indices, self.experts, self.shared_expert
+            )
+            return output.reshape(bs, slen, dim)
 
         routed_output = self.token_dispatcher.run(
             self.prepare_expert_input(x),

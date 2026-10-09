@@ -19,7 +19,10 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
+from prime_rl.trainer.models.layers.expert_compute import invalidate_quantized_expert_weights
+from prime_rl.trainer.moe_runtime import set_local_expert_grad_sync
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.pipeline import build_pipeline_schedule, local_stage_ids, queue_seq_lens, stack_micro_batches
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
@@ -117,7 +120,8 @@ def train(config: SFTConfig):
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
     total_micro_batches = config.data.batch_size * config.model.cp
-    micro_batches_per_step = world.world_size * config.data.micro_batch_size
+    # Every stage of a pipeline runs the same micro-batches.
+    micro_batches_per_step = world.world_size // config.model.pp * config.data.micro_batch_size
     assert total_micro_batches % micro_batches_per_step == 0, (
         f"batch_size * cp ({total_micro_batches}) must be divisible by "
         f"world_size * micro_batch_size ({micro_batches_per_step})"
@@ -143,7 +147,16 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    if parallel_dims.pp_enabled:
+        pp_rank = parallel_dims.world_mesh["pp"].get_local_rank()
+        stage_ids = local_stage_ids(
+            pp_rank, parallel_dims.pp, config.model.pp_schedule, config.model.pp_stages_per_rank
+        )
+        model_parts = [setup_model(config.model, parallel_dims, loading_from_ckpt_later, stage) for stage in stage_ids]
+    else:
+        model_parts = [setup_model(config.model, parallel_dims, loading_from_ckpt_later)]
+    # Single-model code paths (logging, MoE stats, checkpoints) see the first part.
+    model = model_parts[0]
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -161,7 +174,7 @@ def train(config: SFTConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
-        list(model.named_parameters()),
+        [named for part in model_parts for named in part.named_parameters()],
         parallel_dims,
         cpu_offload=config.model.optim_cpu_offload,
         full_offload_config=config.model.full_offload,
@@ -197,6 +210,7 @@ def train(config: SFTConfig):
         tokenizer,
         config.data,
         config.model.cp,
+        pp_size=config.model.pp,
         renderer_config=config.renderer,
         processor=processor,
         multimodal=multimodal,
@@ -248,6 +262,18 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
+
+    pp_schedule = None
+    pp_enabled = parallel_dims.pp_enabled
+    if pp_enabled:
+        if config.val is not None or cp_enabled:
+            raise ValueError("pipeline parallelism supports neither validation nor CP yet")
+        if len(model_parts) > 1 and config.ckpt is not None:
+            raise ValueError("checkpoints support one pipeline stage per rank only")
+        pp_group = parallel_dims.world_mesh["pp"].get_group()
+        num_stages = parallel_dims.pp * config.model.pp_stages_per_rank
+        pp_first, pp_last = 0 in stage_ids, num_stages - 1 in stage_ids
+        pp_schedule = None  # built at the first step, from its first micro-batch
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
@@ -462,6 +488,43 @@ def train(config: SFTConfig):
             )
 
         step_tokens_per_expert = 0
+        if pp_enabled:
+            micro_batches = list(micro_batches)
+            # Only the first stage's micro-batches enter the pipeline.
+            local_token_count = torch.tensor(
+                sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches), device="cuda"
+            )
+            dist.broadcast(local_token_count, group_src=0, group=pp_group)
+            if gradient_manager is None:
+                step_local_token_count += local_token_count
+            stage_inputs = stack_micro_batches(micro_batches) if pp_first else ()
+            if pp_schedule is None:
+                queue_seq_lens(model_parts, micro_batches[:1])
+                pp_schedule = build_pipeline_schedule(
+                    model_parts,
+                    parallel_dims,
+                    config.model.pp_schedule,
+                    config.model.pp_stages_per_rank,
+                    grad_accum_steps,
+                    loss_fn=lambda loss_sum, _target: loss_sum.sum() / grad_accum_steps,
+                    first_inputs=tuple(t[:1] for t in stage_inputs) if pp_first else None,
+                )
+            queue_seq_lens(model_parts, micro_batches)
+            losses = [] if pp_last else None
+            # The last stage computes the loss itself; the schedule still splits a target per micro-batch.
+            target = torch.zeros(grad_accum_steps, 1, device="cuda") if pp_last else None
+            with maybe_record_function("pipeline"):
+                pp_schedule.step(*stage_inputs, target=target, losses=losses)
+            if pp_last:
+                step_loss_sum += torch.stack(losses).sum().detach() * grad_accum_steps
+            dist.broadcast(step_loss_sum, group_src=parallel_dims.pp - 1, group=pp_group)
+            if is_moe_model:
+                moe_stats_step, step_tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in moe_stats_step.items():
+                    moe_stats[f"{name}/mean"] += value
+                    if name == "max_vio":
+                        moe_stats["max_vio/max"] = value
+            micro_batches = []
         for micro_step, micro_batch in enumerate(micro_batches):
             if config.log.log_data:
                 print_sample(
@@ -483,6 +546,8 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
+                if config.model.moe.reduce_local_expert_grads_once:
+                    set_local_expert_grad_sync(model, final_micro_batch=micro_step == grad_accum_steps - 1)
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
                 finish_backward(gradient_manager)
@@ -504,7 +569,8 @@ def train(config: SFTConfig):
             global_token_count_val = global_step_token_count.item()
             if global_token_count_val > 0:
                 grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+                for part in model_parts:
+                    scale_gradients_(None, part, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -530,10 +596,13 @@ def train(config: SFTConfig):
             grad_norm = in_backward.grad_norm(grad_scale if global_token_count_val > 0 else 0.0)
         elif config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            grad_norm = clip_grad_norm_(
+                gradient_manager, model, config.optim.max_norm, pp_group if pp_enabled else None
+            )
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
+        invalidate_quantized_expert_weights()
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]

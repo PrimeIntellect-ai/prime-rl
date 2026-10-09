@@ -2,12 +2,14 @@ import importlib.util
 
 import torch
 from torch import nn
+from torch.distributed.fsdp import FSDPModule
 from torch.distributed.tensor.parallel import parallelize_module
 
 from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
     DeepEPMoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
+    MegaMoEDispatchConfig,
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
@@ -27,7 +29,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     FusedSwigluExpertCompute,
     MXFP8ExpertCompute,
 )
-from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
@@ -102,7 +104,26 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
         moe.experts.set_compute(compute)
-        if ep_mesh is None:
+        if isinstance(dispatch, MegaMoEDispatchConfig):
+            if ep_mesh is None:
+                raise ValueError("model.moe.dispatch.type='mega_moe' requires expert parallelism (model.ep > 1).")
+            from prime_rl.trainer.distributed.mega_moe import MegaMoETokenDispatcher
+
+            num_experts, hidden_size, intermediate_size = moe.experts.down_proj.shape
+            shared_limit = getattr(moe.shared_expert, "limit", moe.experts.activation.limit)
+            assert shared_limit == moe.experts.activation.limit, "Mega MoE applies one clamp to both expert kinds"
+            token_dispatcher = MegaMoETokenDispatcher(
+                num_experts=num_experts,
+                top_k=moe.router.top_k,
+                hidden_size=hidden_size,
+                intermediate_size=intermediate_size,
+                num_shared_experts=int(moe.shared_expert is not None),
+                activation_clamp=moe.experts.activation.limit,
+                group=ep_mesh.get_group(),
+                max_tokens_per_rank=dispatch.max_tokens_per_rank or config.seq_len,
+                num_sms=dispatch.num_sms,
+            )
+        elif ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
                 top_k=moe.router.top_k,
@@ -142,6 +163,9 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 token_chunk_size=dispatch.token_chunk_size,
                 hidden_size=moe.experts.down_proj.shape[1],
                 fp8=dispatch.fp8,
+                fp8_grad=dispatch.fp8_grad,
+                keep_expert_activations=dispatch.keep_expert_activations,
+                weight_grads_after_combine=dispatch.weight_grads_after_combine,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
@@ -154,3 +178,27 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
         f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )
+
+
+def set_local_expert_grad_sync(model: nn.Module, final_micro_batch: bool) -> None:
+    """Call before each micro-batch's backward. Expert parameters in single-rank FSDP groups reduce
+    their gradients and reshard only after the final micro-batch; before that FSDP keeps accumulating
+    their fp32 gradients and keeps the unsharded bf16 parameters for the next forward."""
+    for group in _local_expert_param_groups(model):
+        group.reduce_grads = final_micro_batch
+        group.reshard_after_backward = final_micro_batch
+
+
+def _local_expert_param_groups(model: nn.Module) -> list:
+    groups = model.__dict__.get("_local_expert_param_groups")
+    if groups is None:
+        groups = [
+            group
+            for module in model.modules()
+            if isinstance(module, FSDPModule)
+            for group in module._get_fsdp_state()._fsdp_param_groups
+            if group.mesh_info.mesh.size() == 1
+            and all(isinstance(p._module_info.module, GroupedExperts) for p in group.fsdp_params)
+        ]
+        model.__dict__["_local_expert_param_groups"] = groups
+    return groups

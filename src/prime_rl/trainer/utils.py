@@ -88,6 +88,7 @@ def clip_grad_norm_(
     manager: "GradientOffloadManager | None",
     model: nn.Module,
     max_norm: float,
+    pp_group: dist.ProcessGroup | None = None,
 ) -> Tensor:
     if manager is not None:
         grad_norm = manager.clip_grad_norm_(max_norm)
@@ -104,6 +105,11 @@ def clip_grad_norm_(
             norm = torch.nn.utils.get_total_norm([param.grad for param in parameters])
             norms.append(norm.full_tensor() if isinstance(norm, DTensor) else norm)
         grad_norm = torch.linalg.vector_norm(torch.stack(norms)) if norms else torch.tensor(0.0)
+        if pp_group is not None:
+            # Each pipeline stage holds different parameters.
+            grad_norm = grad_norm.cuda().square()
+            dist.all_reduce(grad_norm, group=pp_group)
+            grad_norm = grad_norm.sqrt()
         for parameters in mesh_parameters.values():
             torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
     return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm

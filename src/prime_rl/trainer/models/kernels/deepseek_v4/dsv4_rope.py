@@ -120,9 +120,7 @@ def _triton_rope_inplace_kernel(
     tl.store(X + offsets, y.to(X.dtype.element_ty), mask=mask)
 
 
-@torch.library.custom_op("prime_rl::dsv4_rope_", mutates_args=("x",))
-def _dsv4_rope_(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool) -> None:
-    """`dsv4_rope` in place on contiguous `x`, reading and writing only the rotary channels."""
+def _triton_rope_inplace(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool):
     if x.numel() == 0:
         return
     num_heads, head_dim = x.shape[-2:]
@@ -136,6 +134,12 @@ def _dsv4_rope_(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torc
         cos_sin_cache.shape[-1],
         INVERSE=inverse,
     )
+
+
+@torch.library.custom_op("prime_rl::dsv4_rope_", mutates_args=("x",))
+def _dsv4_rope_(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool) -> None:
+    """`dsv4_rope` in place on contiguous `x`, reading and writing only the rotary channels."""
+    _triton_rope_inplace(x, cos_sin_cache, position_ids, inverse)
 
 
 @_dsv4_rope_.register_fake
@@ -156,7 +160,8 @@ class _DSV4RopeInPlace(torch.autograd.Function):
         ctx.save_for_backward(cos_sin_cache, position_ids)
         ctx.inverse = inverse
         if not in_place_forward:
-            return _triton_rope(x, cos_sin_cache, position_ids, inverse)
+            # Through the registered op, so selective checkpointing can save the rotated tensor.
+            return dsv4_rope(x, cos_sin_cache, position_ids, inverse=inverse)
         out = _rope_in_place_or_copy(x, cos_sin_cache, position_ids, inverse)
         if out is x:
             ctx.mark_dirty(x)
@@ -230,6 +235,66 @@ def _dsv4_rope_autograd_backward(ctx, grad: torch.Tensor):
 
 
 dsv4_rope.register_autograd(_dsv4_rope_autograd_backward, setup_context=_dsv4_rope_setup_context)
+
+
+@torch.library.custom_op("prime_rl::dsv4_linear_rope", mutates_args=())
+def dsv4_linear_rope(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    position_ids: torch.Tensor,
+    head_dim: int,
+    fp8_block_size: int,
+) -> torch.Tensor:
+    """`dsv4_rope` of the projection `x @ weight.T` split into `head_dim`-wide heads, as one op.
+
+    The projection's output is rotated in place: only the rotary channels are rewritten. As a single
+    op it is also what selective checkpointing saves, so no unrotated copy is kept for backward.
+    `fp8_block_size` > 0 projects with `Float8BlockwiseLinear`'s blockwise FP8 GEMM, 0 in `x`'s dtype.
+    """
+    if fp8_block_size:
+        out = torch.ops.prime_rl.fp8_blockwise_mm(x, weight, fp8_block_size)
+    else:
+        out = torch.nn.functional.linear(x, weight)
+    out = out.unflatten(-1, (-1, head_dim))
+    _triton_rope_inplace(out, cos_sin_cache, position_ids, False)
+    return out
+
+
+@dsv4_linear_rope.register_fake
+def _dsv4_linear_rope_fake(x, weight, cos_sin_cache, position_ids, head_dim, fp8_block_size):
+    return x.new_empty(*x.shape[:-1], weight.shape[0] // head_dim, head_dim)
+
+
+def _dsv4_linear_rope_setup_context(ctx, inputs, output) -> None:
+    x, weight, cos_sin_cache, position_ids, _, fp8_block_size = inputs
+    ctx.save_for_backward(x, weight, cos_sin_cache, position_ids)
+    ctx.fp8_block_size = fp8_block_size
+
+
+def _dsv4_linear_rope_autograd_backward(ctx, grad: torch.Tensor):
+    x, weight, cos_sin_cache, position_ids = ctx.saved_tensors
+    # The output feeds attention alone, whose query gradient is fresh: rotate it in place.
+    grad = _rope_in_place_or_copy(grad, cos_sin_cache, position_ids, True).flatten(-2)
+    needs_grad_x, needs_grad_weight = ctx.needs_input_grad[:2]
+    if ctx.fp8_block_size:
+        grad_x, grad_weight = torch.ops.prime_rl.fp8_blockwise_mm_backward(
+            grad, x, weight, ctx.fp8_block_size, needs_grad_x, needs_grad_weight
+        )
+    else:
+        grad_x = grad @ weight if needs_grad_x else None
+        grad_weight = grad.flatten(0, -2).t() @ x.flatten(0, -2) if needs_grad_weight else None
+    return (
+        grad_x if needs_grad_x else None,
+        grad_weight if needs_grad_weight else None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+dsv4_linear_rope.register_autograd(_dsv4_linear_rope_autograd_backward, setup_context=_dsv4_linear_rope_setup_context)
 
 
 @torch.library.custom_op("prime_rl::dsv4_q_norm_rope", mutates_args=())
