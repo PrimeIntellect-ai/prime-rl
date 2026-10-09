@@ -278,6 +278,17 @@ class CheckpointManager:
     ) -> None:
         """Save the full checkpoint state for a specified step."""
         ckpt_path = self.get_ckpt_path(step)
+        if self.config.prune_before_save:
+            assert self.config.keep_last is not None
+            num_to_prune = max(0, len(self.ckpt_steps) - self.config.keep_last + 1)
+            if self.world.is_master:
+                for old_step in self.ckpt_steps[:num_to_prune]:
+                    old_path = self.get_ckpt_path(old_step).parent
+                    self.logger.info(f"Removing checkpoint for step {old_step} before saving step {step}: {old_path}")
+                    shutil.rmtree(old_path)
+            torch.distributed.barrier()
+            self.ckpt_steps = self.ckpt_steps[num_to_prune:]
+
         # Master-only mkdir + barrier: concurrent mkdir from every rank can
         # re-raise FileExistsError on a parallel FS (see save_to_path).
         if self.world.is_master:

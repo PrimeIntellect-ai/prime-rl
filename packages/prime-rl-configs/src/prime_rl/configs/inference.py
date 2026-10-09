@@ -314,6 +314,9 @@ class VllmRouterConfig(BaseConfig):
     request_timeout_secs: int = Field(14400, ge=1)
     """Maximum lifetime of a routed request, including streamed completions."""
 
+    health_check_timeout_secs: int = Field(5, ge=1)
+    """Timeout for a worker health response; large logprob responses can occupy API workers."""
+
     policy: str = "sticky_least_loaded"
     """Routing policy. Defaults to session-affine least-loaded routing; alternatives include ``consistent_hash`` and ``round_robin``."""
 

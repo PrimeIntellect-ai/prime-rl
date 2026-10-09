@@ -49,6 +49,9 @@ class CheckpointManager:
     def load(self, progress: Progress, train_source: TrainSource, step: int, path: Path | None = None) -> None:
         """``path`` overrides where the checkpoint is read from (an external run's
         ``step_<N>/orchestrator``)."""
+        if self.config.skip_progress:
+            get_logger().info("Skipping progress and train source loading from checkpoint")
+            return
         ckpt_path = path if path is not None else self.get_ckpt_path(step)
         state_file = ckpt_path / "progress.pt"
         if not state_file.exists():

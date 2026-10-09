@@ -509,6 +509,9 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    prune_before_save: bool = False
+    """Remove the oldest checkpoint before writing a new one to avoid needing space for an extra copy."""
+
     skip_scheduler: bool = False
     """Skip loading the scheduler from checkpoint."""
 
@@ -517,6 +520,12 @@ class CheckpointConfig(BaseConfig):
 
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
+
+    @model_validator(mode="after")
+    def validate_prune_before_save(self):
+        if self.prune_before_save and (self.keep_last is None or self.keep_last < 2 or self.keep_interval is not None):
+            raise ValueError("prune_before_save requires keep_last >= 2 and keep_interval = None")
+        return self
 
 
 class IPOLossConfig(BaseConfig):
