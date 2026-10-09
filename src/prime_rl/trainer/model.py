@@ -358,7 +358,7 @@ def get_model(
             raise ValueError(
                 f"dsv4_kv_precision='fp8' is only implemented for DeepSeek V4, not {model_config.model_type!r}."
             )
-        model_config.simulate_fp8_kv_cache = True
+        model_config.kv_precision = "fp8"
     if config.index_cache is not None:
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq

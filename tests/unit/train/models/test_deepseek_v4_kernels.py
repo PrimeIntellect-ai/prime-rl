@@ -1713,16 +1713,16 @@ def test_fp8_kv_round_trip_passes_the_gradient_straight_through_eager_and_compil
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
 @pytest.mark.parametrize("layer_idx", [V4FLASH_CSA_LAYER, V4FLASH_HCA_LAYER], ids=["csa", "hca"])
-def test_simulated_fp8_kv_cache_rounds_exactly_what_attention_reads(layer_idx, monkeypatch):
-    """With `simulate_fp8_kv_cache`, the kernel reads the sliding-window and compressed KV as the cache returns them.
+def test_fp8_kv_precision_rounds_exactly_what_attention_reads(layer_idx, monkeypatch):
+    """With `kv_precision="fp8"`, the kernel reads the sliding-window and compressed KV as the cache returns them.
 
-    Same weights and inputs with the flag off and on: the token half of the buffer the kernel reads must be
-    the sliding-window round trip of the flag-off buffer, the compressed half its compressor round trip.
+    Same weights and inputs at `bf16` and `fp8`: the token half of the buffer the kernel reads must be
+    the sliding-window round trip of the `bf16` buffer, the compressed half its compressor round trip.
     """
     doc_lens = (300, 517)
     plain = v4flash_attention(layer_idx, dtype=torch.bfloat16)
     simulated_config = copy.deepcopy(V4FLASH_CONFIG)
-    simulated_config.simulate_fp8_kv_cache = True
+    simulated_config.kv_precision = "fp8"
     with torch.device("cuda"), default_dtype(torch.bfloat16):
         simulated = DeepseekV4Attention(simulated_config, layer_idx, DeepseekV4RotaryEmbedding(simulated_config))
     simulated.load_state_dict(plain.state_dict())

@@ -688,7 +688,7 @@ class DeepseekV4Attention(nn.Module):
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
-        self.simulate_fp8_kv_cache = getattr(config, "simulate_fp8_kv_cache", False)
+        self.kv_precision = config.kv_precision
 
         self.cp_context = CPContext()
 
@@ -715,7 +715,7 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
-        if self.simulate_fp8_kv_cache:
+        if self.kv_precision == "fp8":
             kv = dsv4_fp8_swa_kv_round_trip(kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
@@ -743,7 +743,7 @@ class DeepseekV4Attention(nn.Module):
             else None
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
-        if self.simulate_fp8_kv_cache and compressed_kv is not None:
+        if self.kv_precision == "fp8" and compressed_kv is not None:
             compressed_kv = dsv4_fp8_compressed_kv_round_trip(compressed_kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
