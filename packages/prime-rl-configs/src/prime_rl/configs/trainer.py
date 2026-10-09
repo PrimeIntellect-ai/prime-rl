@@ -290,8 +290,8 @@ class ModelConfig(BaseModelConfig):
     dsa_backend: DSABackend = "tilelang"
     """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
 
-    dsv4_kv_cache_type: Literal["bf16", "fp8"] = "bf16"
-    """KV cache format DeepSeek V4 attention reads keys and values from. ``bf16`` uses them as computed. ``fp8`` round-trips them through vLLM's ``fp8_ds_mla`` KV cache format (straight-through gradient), so the trainer scores tokens against the same keys and values as an inference server running ``kv_cache_dtype=fp8``. DeepSeek V4 only."""
+    dsv4_kv_precision: Literal["bf16", "fp8"] = "bf16"
+    """Precision DeepSeek V4 attention reads keys and values at. ``bf16`` uses them as computed. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them (straight-through gradient), so the trainer scores tokens against the same keys and values as an inference server running ``kv_cache_dtype=fp8``. Set it to match the inference server. DeepSeek V4 only."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
