@@ -113,7 +113,7 @@ def train(config: SFTConfig):
     resolve_ep(config.model)
 
     # Initialize parallel dimensions
-    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+    parallel_dims = get_parallel_dims(config.model)
 
     total_micro_batches = config.data.batch_size * config.model.cp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size
@@ -192,7 +192,7 @@ def train(config: SFTConfig):
         processor=processor,
         multimodal=multimodal,
     )
-    dataloader = setup_dataloader(dataset, config.data)
+    dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
     val_raw_dataset = None
     if config.val is not None:
@@ -257,7 +257,7 @@ def train(config: SFTConfig):
 
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
-            # pads every pack to seq_len; shard_for_cp raises on violations.
+            # pads every pack to a multiple of it; shard_for_cp raises on violations.
             defer_vlm_cp_to_model = (
                 mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
@@ -345,7 +345,7 @@ def train(config: SFTConfig):
             processor=processor,
             multimodal=multimodal,
         )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data)
+        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count = run_eval_loop(val_dataloader)
@@ -451,7 +451,9 @@ def train(config: SFTConfig):
             )
 
         step_tokens_per_expert = 0
+        step_local_num_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batches):
+            step_local_num_tokens += micro_batch["input_ids"].shape[1]
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
@@ -549,14 +551,10 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Compute step metrics. CP shards the same sequences across cp ranks
-        # (sequence-sharded data parallelism on the seq dim), so the unique
-        # training tokens per step is dp_size * (batch_per_dp_rank * seq).
-        # The `dp` mesh excludes cp by construction (parallel_dims.py), mirroring
-        # the RL trainer's accounting (rl/train.py).
-        dp_size = parallel_dims.get_mesh("dp").size()
-        num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
-        num_tokens = dp_size * num_local_tokens
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]

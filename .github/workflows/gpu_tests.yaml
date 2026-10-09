@@ -5,20 +5,103 @@ on:
     branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    name: Select tests
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    permissions:
+      pull-requests: read
+    outputs:
+      unit: ${{ github.event_name != 'pull_request' || steps.filter.outputs.unit == 'true' }}
+      integration: ${{ steps.matrix.outputs.tests }}
+      eval: ${{ github.event_name != 'pull_request' || steps.filter.outputs.eval == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            unit:
+              - &runtime
+                - '.github/workflows/gpu_tests.yaml'
+                - '{pyproject.toml,uv.lock,.python-version,.gitmodules}'
+                - 'deps/**'
+                - 'packages/**/pyproject.toml'
+                - 'packages/prime-rl-configs/src/prime_rl/configs/{trainer,shared,__init__}.py'
+                - 'packages/prime-rl-configs/src/prime_rl/utils/**'
+                - 'src/prime_rl/*.py'
+                - 'src/prime_rl/{trainer,multimodal,transports,utils}/**'
+                - 'tests/{__init__.py,conftest.py,utils.py}'
+                - 'tests/integration/{__init__.py,conftest.py}'
+              - 'tests/unit/{train,inference}/**'
+              - 'src/prime_rl/inference/**'
+            sft:
+              - *runtime
+              - 'tools/convert_{dcp_to_bf16,dcp_to_fp8,bf16_to_fp8,fp8_to_bf16}.py'
+              - 'src/prime_rl/dashboard/**'
+              - 'tests/integration/dashboard_smoke.py'
+              - 'packages/prime-rl-configs/src/prime_rl/configs/{sft,eval,monitors}.py'
+              - 'src/prime_rl/entrypoints/{sft,dashboard}.py'
+              - 'src/prime_rl/monitors/**'
+              - 'src/prime_rl/eval/{online,runner}.py'
+              - 'tests/integration/test_reverse_text_sft{,_lora}.py'
+              - 'configs/ci/integration/reverse-text-sft{,-lora}/**'
+            rl:
+              - *runtime
+              - 'tools/convert_{dcp_to_bf16,dcp_to_fp8,bf16_to_fp8,fp8_to_bf16}.py'
+              - 'src/prime_rl/dashboard/**'
+              - 'tests/integration/dashboard_smoke.py'
+              - 'packages/prime-rl-configs/src/prime_rl/configs/{rl,orchestrator,inference,env_server,algorithm,eval,monitors}.py'
+              - 'src/prime_rl/entrypoints/{rl,trainer,inference,orchestrator,env_server,dashboard}.py'
+              - 'src/prime_rl/{inference,orchestrator,monitors}/**'
+              - 'src/prime_rl/eval/{online,runner}.py'
+              - 'tests/integration/test_reverse_text{,_lora,_moe,_rl_opd,_rl_sft}.py'
+              - 'tests/integration/test_alphabet_sort.py'
+              - 'configs/ci/integration/reverse-text{,-lora,-moe,-rl-opd,-rl-sft}/**'
+              - 'configs/ci/integration/alphabet_sort.toml'
+            eval:
+              - *runtime
+              - 'packages/prime-rl-configs/src/prime_rl/configs/{eval,orchestrator,inference,env_server,algorithm,monitors}.py'
+              - 'src/prime_rl/{eval,orchestrator,monitors}/**'
+              - 'src/prime_rl/entrypoints/{eval,env_server}.py'
+              - 'tests/integration/test_gsm8k_eval.py'
+              - 'configs/ci/integration/gsm8k-eval.toml'
+      - name: Build integration matrix
+        id: matrix
+        env:
+          # Main and manual runs retain the full suite.
+          RUN_ALL: ${{ github.event_name != 'pull_request' }}
+          SFT: ${{ steps.filter.outputs.sft || 'false' }}
+          RL: ${{ steps.filter.outputs.rl || 'false' }}
+        run: |
+          tests=$(jq -cn --argjson all "$RUN_ALL" --argjson sft "$SFT" --argjson rl "$RL" '[
+              if $all or $sft then "reverse_text_sft", "reverse_text_sft_lora" else empty end,
+              if $all or $rl then
+                "reverse_text", "reverse_text_rl_opd", "reverse_text_rl_sft",
+                "alphabet_sort", "reverse_text_lora", "reverse_text_moe"
+              else empty end
+            ]')
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+
   unit-tests:
     name: Unit tests
+    needs: changes
     runs-on: prime-rl-2xh200
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
     timeout-minutes: 45
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: needs.changes.outputs.unit == 'true'
     steps:
       - name: Install Git
         run: |
@@ -29,12 +112,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
-      - name: Init public submodules
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - parallel:
+          - name: Init public submodules
+            run: |
+              git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
+            with:
+              enable-cache: true
+              cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
       - name: Run unit tests
@@ -50,46 +137,20 @@ jobs:
 
   integration-tests:
     name: Integration tests (${{ matrix.test }})
-    runs-on: ${{ matrix.runner }}
+    needs: changes
+    runs-on: prime-rl-2xh200
     container:
       image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
       options: --gpus all
     timeout-minutes: 60
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: needs.changes.outputs.integration != '[]'
     strategy:
       fail-fast: false
+      # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
+      # i.e. 6 h200 pods per PR. Tune together with the ARC scale set maxRunners.
+      max-parallel: 5
       matrix:
-        include:
-          - test: reverse_text_sft
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_reverse_text_sft.py"
-          - test: reverse_text_sft_lora
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_reverse_text_sft_lora.py"
-          - test: reverse_text
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_reverse_text.py"
-          - test: reverse_text_rl_opd
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_reverse_text_rl_opd.py"
-          - test: reverse_text_rl_sft
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_reverse_text_rl_sft.py"
-          - test: alphabet_sort
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_alphabet_sort.py"
-          - test: reverse_text_lora
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_reverse_text_lora.py"
-          - test: reverse_text_moe
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_reverse_text_moe.py"
-          - test: benchmark_regression
-            runner: 4xa6000
-            pytest_args: "tests/integration/test_benchmark_regression.py"
-          - test: gsm8k_eval
-            runner: prime-rl-2xh200
-            pytest_args: "tests/integration/test_gsm8k_eval.py"
+        test: ${{ fromJSON(needs.changes.outputs.integration) }}
     steps:
       - name: Install Git
         run: |
@@ -100,12 +161,16 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: false
-      - name: Init public submodules
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - parallel:
+          - name: Init public submodules
+            run: |
+              git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
+            with:
+              enable-cache: true
+              cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
       - name: Run integration tests
@@ -120,12 +185,56 @@ jobs:
           GITHUB_HEAD_REF: ${{ github.head_ref }}
           PYTEST_OUTPUT_DIR: /tmp/outputs
           VLLM_WORKER_MULTIPROC_METHOD: spawn
-        run: uv run pytest -vvs ${{ matrix.pytest_args }}
+        run: uv run pytest -vvs tests/integration/test_${{ matrix.test }}.py
       - name: Upload run logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.test }}-logs
+          path: /tmp/outputs/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  eval-tests:
+    name: Integration tests (gsm8k_eval)
+    needs: changes
+    if: needs.changes.outputs.eval == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - parallel:
+          - name: Init public submodules
+            run: |
+              git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
+            with:
+              enable-cache: true
+              cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync --all-extras --all-packages --locked
+      - name: Run eval tests
+        env:
+          USERNAME_CI: CI_RUNNER
+          WANDB_MODE: offline
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+          PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          PYTEST_OUTPUT_DIR: /tmp/outputs
+        run: uv run pytest -vvs tests/integration/test_gsm8k_eval.py
+      - name: Upload run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gsm8k_eval-logs
           path: /tmp/outputs/**/*.log
           retention-days: 7
           if-no-files-found: ignore

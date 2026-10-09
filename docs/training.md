@@ -159,6 +159,10 @@ messages = "conversation"
 tools = "schemas"
 ```
 
+**Per-message loss selection.** An optional `message_loss_mask` column contains one boolean or integer 0/1 per message. For example, `[0, 0, 0, 1]` on a user/assistant/user/assistant conversation trains only the final assistant turn while retaining the full context. For prompt-completion rows, the mask covers the concatenated prompt and completion messages. Zero excludes a message; one preserves the normal role and renderer loss settings. A missing or null mask leaves those settings unchanged. The renderer applies selection without changing token IDs, including ownership of assistant closing tokens. Invalid mask lengths or entries raise an error.
+
+To read a differently named column, set `data.columns.message_loss_mask = "selection"`.
+
 **Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list.
 
 Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:

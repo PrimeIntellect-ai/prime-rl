@@ -9,6 +9,10 @@ on:
     # This will trigger the workflow for pull requests to any branch
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   ruff:
     name: Ruff
