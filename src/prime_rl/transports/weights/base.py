@@ -153,7 +153,7 @@ class WeightReceiver(ABC):
         while not sender_ready.exists():
             if cancelled is not None and cancelled():
                 raise asyncio.CancelledError
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
 
     def _ack(self, step: int) -> None:
         """Acknowledge the offered version — unblocks the waiting trainer."""
