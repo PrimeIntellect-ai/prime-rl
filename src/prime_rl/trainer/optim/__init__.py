@@ -149,6 +149,8 @@ def _create_muon_optimizer(
             return False
         if "embed_tokens" in n:
             return False
+        if "ngram_embedding" in n:
+            return False
         return True
 
     muon_params = []
