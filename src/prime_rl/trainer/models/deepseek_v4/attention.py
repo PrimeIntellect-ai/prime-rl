@@ -750,6 +750,7 @@ class DeepseekV4Attention(nn.Module):
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
         if self.kv_precision == "fp8" and compressed_kv is not None:
+            # Not the sliding-window round trip: vLLM's compressor store floors the scale, not the amax.
             compressed_kv = dsv4_fp8_compressed_kv_round_trip(compressed_kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
