@@ -361,7 +361,7 @@ def get_model(
             raise ValueError(
                 f"dsv4_kv_precision='fp8' is only implemented for DeepSeek V4, not {model_config.model_type!r}."
             )
-        model_config.simulate_fp8_kv_cache = True
+        model_config.kv_precision = "fp8"
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)

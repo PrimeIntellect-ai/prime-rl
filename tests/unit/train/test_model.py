@@ -89,7 +89,7 @@ def test_dsv4_fp8_kv_cache_reaches_every_deepseek_v4_attention_layer():
     model = get_model(config, device=torch.device("meta"))
     attention_layers = [layer.self_attn for layer in model.model.layers]
     assert len(attention_layers) == 4
-    assert all(attention.simulate_fp8_kv_cache for attention in attention_layers)
+    assert all(attention.kv_precision == "fp8" for attention in attention_layers)
 
 
 def test_dsv4_fp8_kv_cache_rejects_models_without_support():
