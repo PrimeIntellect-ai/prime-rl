@@ -116,8 +116,6 @@ num_sms = 20
 token_chunk_size = 4096
 ```
 
-With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
-
 ### Runtime Fusions
 
 `model.fusions` packs parameters that are always computed together into one tensor, turning several GEMMs into one. Both fusions are on by default:
