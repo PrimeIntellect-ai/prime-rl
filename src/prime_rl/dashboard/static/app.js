@@ -4120,7 +4120,7 @@ function toolDefinitionsHtml(trace) {
 
 const TASK_SCAFFOLD_FIELDS = new Set([
   "idx", "name", "description", "prompt", "system_prompt", "image", "workdir",
-  "network_allow", "network_block", "artifacts", "timeout", "resources",
+  "network", "artifacts", "timeout", "resources",
 ]);
 const TASK_EVIDENCE_FIELD_ORDER = new Map([["question", 0], ["answer", 1]]);
 
