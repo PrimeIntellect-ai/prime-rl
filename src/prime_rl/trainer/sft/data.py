@@ -249,6 +249,13 @@ class RendererResolver:
             renderer = create_renderer(self.tokenizer, config)
             if self.processor is not None and hasattr(renderer, "_processor"):
                 renderer._processor = self.processor
+            if not getattr(renderer, "is_prefix_stable", False):
+                get_logger().warning(
+                    f"SFT renderer {type(renderer).__name__} does not guarantee prefix stability. "
+                    "SFT renders each conversation once to produce one training sample; "
+                    "it does not expand N assistant turns into N samples. Depending on the template, "
+                    "reasoning from earlier turns may be omitted from the training sample."
+                )
             self.renderers[config] = renderer
         return renderer
 

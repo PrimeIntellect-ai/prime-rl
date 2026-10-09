@@ -510,6 +510,10 @@ class EffortRenderer:
     def __init__(self, tokenizer, config):
         self.config = config
 
+    @property
+    def is_prefix_stable(self):
+        return self.config.reasoning_effort == "low"
+
     def render(self, messages, **kwargs):
         return RenderedTokens(token_ids=[0, 1], message_indices=[-1, 0], sampled_mask=[False, True])
 
@@ -530,8 +534,21 @@ def custom_renderer_config(tmp_path):
 def test_renderer_resolver_applies_renderer_columns_to_custom_renderer(custom_renderer_config):
     resolver = sft_data.RendererResolver(tokenizer=None, config=custom_renderer_config)
 
-    default = resolver({"messages": [], "reasoning_effort": None})
-    high = resolver({"messages": [], "reasoning_effort": "high"})
+    warnings = []
+    logger = sft_data.get_logger()
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING", format="{message}")
+    try:
+        default = resolver({"messages": [], "reasoning_effort": None})
+        assert warnings == []
+        high = resolver({"messages": [], "reasoning_effort": "high"})
+        assert resolver({"reasoning_effort": "high"}) is high
+        assert len(warnings) == 1
+        assert "does not guarantee prefix stability" in warnings[0]
+        assert "one training sample" in warnings[0]
+        assert "does not expand N assistant turns into N samples" in warnings[0]
+        assert "reasoning from earlier turns may be omitted" in warnings[0]
+    finally:
+        logger.remove(sink)
 
     assert default.config.reasoning_effort == "low"
     assert high.config.reasoning_effort == "high"
