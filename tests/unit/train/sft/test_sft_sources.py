@@ -113,15 +113,15 @@ def test_configured_source_column_must_exist(hub):
 
 
 def test_conflicting_column_types_interleave_as_json(hub):
-    hub[("org/a", None, "train")] = Dataset.from_list([{"messages": _messages("a0"), "depth": 16}])
+    hub[("org/a", None, "train")] = Dataset.from_list([{"messages": _messages("a0"), "budget": 16}])
     hub[("org/b", None, "train")] = Dataset.from_list(
-        [{"messages": [{**message, "tool_calls": None} for message in _messages("b0")], "depth": "max"}]
+        [{"messages": [{**message, "tool_calls": None} for message in _messages("b0")], "budget": "max"}]
     )
     config = HFDatasetConfig.model_validate(
-        {"columns": {"renderer": {"depth": "depth"}}, "source": [{"dataset": "org/a"}, {"dataset": "org/b"}]}
+        {"columns": {"renderer": {"budget": "budget"}}, "source": [{"dataset": "org/a"}, {"dataset": "org/b"}]}
     )
     rows = [decode_json_columns(row) for row in load_sft_dataset(config)]
-    assert [row["depth"] for row in rows] == [16, "max"]
+    assert [row["budget"] for row in rows] == [16, "max"]
     assert [row["messages"][0]["content"] for row in rows] == ["a0", "b0"]
 
 
@@ -145,8 +145,8 @@ def test_renderer_precedence_is_global_then_source_then_sample():
 
 
 def test_validate_source_renderer_args_rejects_unknown_kwargs():
-    config = HFDatasetConfig.model_validate({"source": [{"dataset": "org/a", "renderer": {"depth": 16}}]})
-    with pytest.raises(ValueError, match="depth"):
+    config = HFDatasetConfig.model_validate({"source": [{"dataset": "org/a", "renderer": {"budget": 16}}]})
+    with pytest.raises(ValueError, match="budget"):
         validate_source_renderer_args(PrimeQwen3RendererConfig(), config.resolved_sources())
     validate_source_renderer_args(
         DeepSeekV4RendererConfig(), HFDatasetConfig(source=[{"dataset": "org/a"}]).resolved_sources()
@@ -157,16 +157,16 @@ def test_source_only_renderer_columns_reach_the_resolver(hub):
     hub[("org/a", None, "train")] = Dataset.from_list([{"messages": _messages("a0"), "d": 16}])
     hub[("org/b", None, "train")] = Dataset.from_list([{"messages": _messages("b0")}])
     config = HFDatasetConfig.model_validate(
-        {"source": [{"dataset": "org/a", "columns": {"renderer": {"depth": "d"}}}, {"dataset": "org/b"}]}
+        {"source": [{"dataset": "org/a", "columns": {"renderer": {"budget": "d"}}}, {"dataset": "org/b"}]}
     )
     rows = list(load_sft_dataset(config))
-    assert [row["depth"] for row in rows] == [16, None]
+    assert [row["budget"] for row in rows] == [16, None]
 
     resolver = RendererResolver(
         tokenizer=None,
         config=DeepSeekV4RendererConfig(),
-        columns={"depth": "depth", **config.columns.renderer},
+        columns={"budget": "budget", **config.columns.renderer},
     )
-    with pytest.raises(ValueError, match="depth"):
+    with pytest.raises(ValueError, match="budget"):
         resolver.resolve_config(rows[0])
     assert resolver.resolve_config(rows[1]) == DeepSeekV4RendererConfig()
