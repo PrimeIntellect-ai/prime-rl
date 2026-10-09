@@ -580,12 +580,15 @@ def per_block_cast_to_fp8_tp_triton(
 def per_token_cast_to_fp8_tp_triton(
     x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Per-token fp8 cast of ``x.T`` without materializing the transpose."""
+    """Per-token fp8 cast of ``x.T`` without materializing the transpose, with scales in DeepGEMM's MN-major TMA layout."""
     assert x.dim() == 2
     assert gran_k == GROUP_ALIGNMENT
     rows, cols = x.shape
     out = torch.empty((cols, rows), device=x.device, dtype=torch.float8_e4m3fn)
-    sf = torch.empty((cols, ceil_div(rows, gran_k)), device=x.device, dtype=torch.float32)
+    tma_aligned_cols = ceil_div(cols, 4) * 4
+    sf = torch.empty_strided(
+        (cols, ceil_div(rows, gran_k)), (1, tma_aligned_cols), device=x.device, dtype=torch.float32
+    )
     grid = lambda meta: (ceil_div(cols, meta["BLOCK_M"]), ceil_div(rows, meta["BLOCK_K"]))
     _per_token_fp8_kernel[grid](
         x,
