@@ -279,8 +279,5 @@ def grouped_fp8_gemm(
 
     Returns:
         (M, N) output tensor in bfloat16. Rows past offs[-1] are left uninitialized.
-
-    The forward never syncs with the host. The backward reads the group sizes back once, because
-    DeepGEMM's k-grouped weight-gradient GEMM takes them as a host list.
     """
     return _grouped_fp8_gemm(x, weight, offs)
