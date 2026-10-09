@@ -151,7 +151,8 @@ def train(config: TrainerConfig):
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
         if config.data.image_cache_gb > 0:
-            image_cache = ImageCache(config.data.image_cache_gb)
+            # setup_fsdp sets bf16 for all module including vision encoder
+            image_cache = ImageCache(config.data.image_cache_gb, dtype=torch.bfloat16)
     prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter, image_cache=image_cache)
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
