@@ -615,6 +615,9 @@ class DataLoaderConfig(BaseConfig):
     num_workers: int = Field(0, ge=0)
     """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
 
+    image_cache_gb: float = Field(0.0, ge=0)
+    """Size of the in memory cache per trainer process. 0 disables the image cache."""
+
 
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
