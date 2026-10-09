@@ -30,11 +30,7 @@ def ue8m0_for_device(device: torch.device | None = None) -> bool:
 
 
 def build_grouped_layout(offs: torch.Tensor, padded_total_m: int):
-    """Map groups ending at `offs` onto 128-row blocks of a `padded_total_m`-row buffer, without a host sync.
-
-    Rows and blocks past the last group are marked -1, so DeepGEMM and the grouped casts skip them.
-    `padded_total_m` must cover every group rounded up to 128 rows; a device-side assert checks it.
-    """
+    """Map groups ending at `offs` onto 128-row blocks of a `padded_total_m`-row buffer, marking rows past them -1."""
     assert offs.dim() == 1
     assert offs.dtype == torch.int32
     assert padded_total_m % GROUP_ALIGNMENT == 0

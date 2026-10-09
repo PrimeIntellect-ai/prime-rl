@@ -122,7 +122,7 @@ def permute_for_grouped_gemm(
 
 
 class _GatherPermutedRows(torch.autograd.Function):
-    """`x[permuted_indices]` with a gather backward, since autograd's scatter-add serializes the padding slots on the zero row."""
+    """`x[permuted_indices]` whose backward gathers, instead of scatter-adding every padding slot into the zero row."""
 
     @staticmethod
     def forward(ctx, x: torch.Tensor, permuted_indices: torch.Tensor) -> torch.Tensor:
