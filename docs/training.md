@@ -163,7 +163,7 @@ tools = "schemas"
 
 To read a differently named column, set `data.columns.message_loss_mask = "selection"`.
 
-**Sources.** `[[data.source]]` tables name what a run trains on; at least one is required, and each is a `(dataset, subset, split)` of a HF dataset. `data.name` and `data.revision` are shared defaults for sources that set no `dataset` of their own. A source carries a relative `weight` (set on every source or on none), overrides single `columns`, and can set renderer chat-template kwargs that apply to its rows under `[renderer]` and above a row's mapped columns. Sources with different extra columns or column types still interleave. Progress metrics are keyed by the source `name`, which defaults to `dataset/subset/split`. `[data] type = "fake"` trains on synthetic token sequences instead, for throughput and plumbing tests:
+**Sources.** `[[data.source]]` tables name what a run trains on; at least one is required, and each is a `(dataset, subset, split)` of a HF dataset. `data.name` and `data.revision` are shared defaults for sources that set no `dataset` of their own. A source carries a relative `weight` (set on every source or on none), overrides single `columns`, and can set renderer chat-template kwargs that apply to its rows under `[renderer]` and above a row's mapped columns. Sources with different extra columns still interleave; a column must have the same type in every source that has it. Progress metrics are keyed by the source `name`, which defaults to `dataset/subset/split`. `[data] type = "fake"` trains on synthetic token sequences instead, for throughput and plumbing tests:
 
 ```toml
 [data]

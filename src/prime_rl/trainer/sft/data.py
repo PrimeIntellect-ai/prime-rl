@@ -209,21 +209,6 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
     return MultiModalData(mm_hashes=new_hashes, mm_placeholders=new_placeholders, mm_items=new_items)
 
 
-JSON_COLUMN_PREFIX = "__json."
-"""Prefix of columns stored as JSON strings because sources disagree on their type."""
-
-
-def decode_json_columns(example: dict) -> dict:
-    """Restore the columns that ``load_sft_dataset`` stored as JSON strings."""
-    decoded = {}
-    for key, value in example.items():
-        if key.startswith(JSON_COLUMN_PREFIX):
-            decoded[key.removeprefix(JSON_COLUMN_PREFIX)] = None if value is None else json.loads(value)
-        else:
-            decoded[key] = value
-    return decoded
-
-
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
@@ -326,8 +311,6 @@ class SFTDataset(StatefulIterableDataset):
             self.dataset = self.dataset.take(self.max_examples)
 
     def _process(self, example: dict) -> dict | None:
-        example = decode_json_columns(example)
-
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
@@ -492,14 +475,14 @@ class SFTDataset(StatefulIterableDataset):
 
             # Yield the example
             example = cast(dict, example)
-            subset_or_split = example.get("__source") or example.get("__subset") or example.get("__split")
+            source = example.get("__source")
             self.logger.debug(
                 f"Yield example {example.get('__index', '')}"
-                + (f" from {subset_or_split} " if subset_or_split else " ")
+                + (f" from {source} " if source else " ")
                 + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
             )
-            self.num_samples[subset_or_split] += 1
-            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
+            self.num_samples[source] += 1
+            self.num_tokens[source] += len(processed_example.get("input_ids", []))
             yield processed_example
 
 
@@ -708,8 +691,6 @@ def load_sft_source(source: HFDatasetSourceConfig, columns: SFTColumnsConfig) ->
     num_examples = len(dataset)
     for name, values in (
         ("__source", [source.name] * num_examples),
-        ("__subset", [source.subset] * num_examples),
-        ("__split", [source.split] * num_examples),
         ("__index", list(range(num_examples))),
     ):
         dataset = dataset.add_column(name, values, new_fingerprint=str(uuid.uuid4()))
@@ -720,8 +701,7 @@ def _align_columns(datasets: list[Dataset]) -> list[Dataset]:
     """Give every source the same columns, so they interleave.
 
     A column only some sources have is added to the others as nulls with the
-    same feature. A column whose type differs between sources is stored as a
-    JSON string under ``__json.<name>`` and decoded again per row.
+    same feature. A column must have the same type in every source that has it.
     """
     features: dict[str, dict[str, Any]] = defaultdict(dict)
     for dataset in datasets:
@@ -729,27 +709,16 @@ def _align_columns(datasets: list[Dataset]) -> list[Dataset]:
             features[name][repr(feature)] = feature
     conflicting = sorted(name for name, by_repr in features.items() if len(by_repr) > 1)
     if conflicting:
-        get_logger().info(f"Storing columns {conflicting} as JSON because their types differ between sources")
-
-    def encode(batch: dict) -> dict:
-        return {
-            JSON_COLUMN_PREFIX + name: [None if value is None else json.dumps(value) for value in batch[name]]
-            for name in conflicting
-            if name in batch
-        }
-
+        raise ValueError(
+            f"Columns {conflicting} have different types across data.source entries; align them in the datasets"
+        )
     aligned = []
     for dataset in datasets:
-        present = [name for name in conflicting if name in dataset.column_names]
-        if present:
-            dataset = dataset.map(encode, batched=True, remove_columns=present)
         for name, by_repr in features.items():
-            target = JSON_COLUMN_PREFIX + name if name in conflicting else name
-            if target in dataset.column_names:
+            if name in dataset.column_names:
                 continue
-            dataset = dataset.add_column(target, [None] * len(dataset), new_fingerprint=str(uuid.uuid4()))
-            if name not in conflicting:
-                dataset = dataset.cast(Features({**dataset.features, name: next(iter(by_repr.values()))}))
+            dataset = dataset.add_column(name, [None] * len(dataset), new_fingerprint=str(uuid.uuid4()))
+            dataset = dataset.cast(Features({**dataset.features, name: next(iter(by_repr.values()))}))
         aligned.append(dataset)
     return aligned
 

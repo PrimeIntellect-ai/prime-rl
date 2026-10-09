@@ -183,7 +183,9 @@ class HFDatasetConfig(BaseDataConfig):
                 source.dataset = self.name
                 # A revision pins one repo, so only sources that read data.name inherit it.
                 source.revision = source.revision or self.revision
-            source.name = source.name or _source_name(source.dataset, source.subset, source.split)
+            source.name = source.name or "/".join(
+                part for part in (source.dataset, source.subset, source.split) if part
+            )
             overrides = source.columns.model_dump(exclude_unset=True) if source.columns is not None else {}
             source.columns = SFTColumnsConfig.model_validate({**self.columns.model_dump(), **overrides})
         names = [source.name for source in self.source]
@@ -191,10 +193,6 @@ class HFDatasetConfig(BaseDataConfig):
         if duplicates:
             raise ValueError(f"data.source names must be unique; repeated: {duplicates}. Set name to tell them apart.")
         return self
-
-
-def _source_name(dataset: str, subset: str | None, split: str) -> str:
-    return "/".join(part for part in (dataset, subset, split) if part)
 
 
 class SFTValConfig(BaseConfig):

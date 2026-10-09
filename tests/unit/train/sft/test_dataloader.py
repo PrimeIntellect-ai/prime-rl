@@ -176,7 +176,7 @@ def test_dataloader_shards_across_ranks_and_workers(
                 [
                     {
                         "messages": [{"role": "assistant", "content": str(index) * 6}],
-                        "__split": "fake",
+                        "__source": "fake",
                     }
                     for index in range(num_examples)
                 ]
