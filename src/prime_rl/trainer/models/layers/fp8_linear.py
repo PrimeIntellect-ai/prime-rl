@@ -122,10 +122,6 @@ _fp8_blockwise_mm.register_autograd(
 )
 
 
-def _fp8_einsum_recipe(use_ue8m0: bool, block_size: int) -> tuple[int, int, int]:
-    return (1, 1, block_size) if use_ue8m0 else (1, block_size, block_size)
-
-
 @torch.library.custom_op("prime_rl::fp8_blockwise_bmm", mutates_args=())
 def _fp8_blockwise_bmm(x: torch.Tensor, weight: torch.Tensor, n_groups: int, block_size: int) -> torch.Tensor:
     import deep_gemm
@@ -147,7 +143,7 @@ def _fp8_blockwise_bmm(x: torch.Tensor, weight: torch.Tensor, n_groups: int, blo
             weight_sf.view(n_groups, -1, weight_sf.size(-1)),
         ),
         out,
-        recipe=_fp8_einsum_recipe(use_ue8m0, block_size),
+        recipe=(1, block_size, block_size),
     )
     return out.reshape(*x.shape[:-1], out_features_per_group)
 
@@ -191,7 +187,7 @@ def _fp8_blockwise_bmm_backward(
             ),
             (weight_t_fp8, weight_t_sf),
             grad_x,
-            recipe=_fp8_einsum_recipe(use_ue8m0, block_size),
+            recipe=(1, block_size, block_size),
         )
         grad_x = grad_x.view(x.shape)
     else:
