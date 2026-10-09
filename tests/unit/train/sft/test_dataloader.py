@@ -173,13 +173,7 @@ def test_dataloader_shards_across_ranks_and_workers(
 
         def setup_epoch_dataloader():
             raw_dataset = Dataset.from_list(
-                [
-                    {
-                        "messages": [{"role": "assistant", "content": str(index) * 6}],
-                        "__source": "fake",
-                    }
-                    for index in range(num_examples)
-                ]
+                [{"messages": [{"role": "assistant", "content": str(index) * 6}]} for index in range(num_examples)]
             )
             dataset = SFTDataset(
                 raw_dataset,
@@ -187,6 +181,7 @@ def test_dataloader_shards_across_ranks_and_workers(
                 shuffle=False,
                 seq_len=config.seq_len,
                 non_dp_size=non_dp_size,
+                name="fake",
             )
             return setup_dataloader(dataset, config, cp=1)
 

@@ -194,10 +194,10 @@ def train(config: SFTConfig):
     )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
-    val_raw_dataset = None
+    val_raw_datasets = None
     if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
+        val_raw_datasets = load_sft_dataset(config.val.data)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -340,7 +340,7 @@ def train(config: SFTConfig):
             config.val.data,
             config.model.cp,
             max_epochs=1,
-            raw_dataset=val_raw_dataset,
+            raw_datasets=val_raw_datasets,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,

@@ -1,13 +1,13 @@
 import json
 import time
 import uuid
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, Features, interleave_datasets, load_dataset
+from datasets import Dataset, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, HFDatasetConfig, HFDatasetSourceConfig, LossMaskConfig, SFTColumnsConfig
+from prime_rl.configs.sft import DataConfig, HFDatasetConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -212,11 +212,10 @@ def _truncate_mm_data(mm: MultiModalData, cut: int) -> MultiModalData:
 class RendererResolver:
     """Picks the renderer for a dataset row.
 
-    Chat-template kwargs apply in order: the ``[renderer]`` config, then the
-    row's source (``data.source[].renderer``, looked up by ``__source``), then
-    the row's non-null mapped columns. Renderer configs are frozen, so
-    renderers are cached per config and rows that resolve to the same config
-    share one instance.
+    ``columns`` maps renderer fields to dataset columns; a row's non-null
+    values override the configured renderer's fields, validated as
+    chat-template kwargs. Renderer configs are frozen, so renderers are cached
+    per config and rows that resolve to the same config share one instance.
     """
 
     def __init__(
@@ -225,25 +224,20 @@ class RendererResolver:
         config: RendererConfig,
         processor: Any | None = None,
         columns: dict[str, str] | None = None,
-        source_kwargs: dict[str, dict[str, Any]] | None = None,
     ):
         self.tokenizer = tokenizer
         self.config = config
         self.processor = processor
         self.columns = SFTColumnsConfig().renderer if columns is None else columns
-        self.source_kwargs = source_kwargs or {}
         self.renderers: dict[RendererConfig, Renderer] = {}
 
     def resolve_config(self, example: dict) -> RendererConfig:
-        kwargs = dict(self.source_kwargs.get(example.get("__source"), {}))
-        kwargs.update(
-            {field: example[column] for field, column in self.columns.items() if example.get(column) is not None}
-        )
+        kwargs = {field: example[column] for field, column in self.columns.items() if example.get(column) is not None}
         if not kwargs:
             return self.config
         if isinstance(self.config, AutoRendererConfig):
             raise ValueError(
-                f"Per-source or per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
+                f"Per-sample renderer arguments {sorted(kwargs)} require a typed renderer config "
                 "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
             )
         return merge_chat_template_kwargs(self.config, kwargs)
@@ -282,6 +276,7 @@ class SFTDataset(StatefulIterableDataset):
         max_epochs: int | None = None,
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
+        name: str = "sft",
     ):
         super().__init__(non_dp_size)
         self.logger = get_logger()
@@ -289,7 +284,7 @@ class SFTDataset(StatefulIterableDataset):
         self.num_examples = len(self.dataset)
         self.renderers = renderers
         self.columns = columns
-        self.source_sizes = dict(Counter(dataset["__source"])) if "__source" in dataset.column_names else {}
+        self.name = name
         # Default names are optional: a dataset carries either messages or
         # prompt/completion, and tools only for tool use. A name set in the
         # config must exist.
@@ -475,15 +470,93 @@ class SFTDataset(StatefulIterableDataset):
 
             # Yield the example
             example = cast(dict, example)
-            source = example.get("__source")
             self.logger.debug(
-                f"Yield example {example.get('__index', '')}"
-                + (f" from {source} " if source else " ")
-                + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
+                f"Yield example {example.get('__index', '')} from {self.name} "
+                f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
             )
-            self.num_samples[source] += 1
-            self.num_tokens[source] += len(processed_example.get("input_ids", []))
+            self.num_samples[self.name] += 1
+            self.num_tokens[self.name] += len(processed_example.get("input_ids", []))
             yield processed_example
+
+
+class MixedDataset(StatefulIterableDataset):
+    """Draw samples from several datasets, one at a time, by weight.
+
+    Every rank draws the same source at the same step, from a generator seeded
+    by the step, so the schedule is identical across ranks and after a resume
+    while each source shards and shuffles its own rows. An epoch ends when
+    every source has finished a pass (``all_exhausted``, smaller sources
+    repeat) or when the first one has (``first_exhausted``).
+    """
+
+    def __init__(
+        self,
+        sources: dict[str, SFTDataset],
+        weights: list[float] | None = None,
+        stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted",
+        seed: int = 0,
+        max_epochs: int | None = None,
+        non_dp_size: int = 1,
+    ):
+        super().__init__(non_dp_size)
+        self.sources = sources
+        self.names = list(sources)
+        weights = weights or [1.0] * len(sources)
+        self.probabilities = [weight / sum(weights) for weight in weights]
+        self.stopping_strategy = stopping_strategy
+        self.seed = seed
+        self.max_epochs = max_epochs
+        self.epoch_start = {name: 0 for name in sources}
+
+    @property
+    def num_samples(self) -> dict[str, int]:
+        return {name: sum(source.num_samples.values()) for name, source in self.sources.items()}
+
+    @num_samples.setter
+    def num_samples(self, _: Any) -> None:
+        pass
+
+    @property
+    def num_tokens(self) -> dict[str, int]:
+        return {name: sum(source.num_tokens.values()) for name, source in self.sources.items()}
+
+    @num_tokens.setter
+    def num_tokens(self, _: Any) -> None:
+        pass
+
+    @property
+    def source_sizes(self) -> dict[str, int]:
+        return {name: source.num_examples for name, source in self.sources.items()}
+
+    def state_dict(self) -> dict:
+        return {
+            "step": self.step,
+            "epoch": self.epoch,
+            "epoch_start": dict(self.epoch_start),
+            "sources": {name: source.state_dict() for name, source in self.sources.items()},
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        self.step = state_dict["step"]
+        self.epoch = state_dict["epoch"]
+        self.epoch_start = dict(state_dict["epoch_start"])
+        for name, source in self.sources.items():
+            source.load_state_dict(state_dict["sources"][name])
+
+    def __iter__(self):
+        iterators = {name: iter(source) for name, source in self.sources.items()}
+        while True:
+            if self.max_epochs is not None and self.epoch >= self.max_epochs:
+                break
+            self.step += 1
+            rng = np.random.default_rng([self.seed, self.step])
+            name = self.names[rng.choice(len(self.names), p=self.probabilities)]
+            sample = next(iterators[name])
+            passes = [source.epoch > self.epoch_start[name] for name, source in self.sources.items()]
+            if all(passes) if self.stopping_strategy == "all_exhausted" else any(passes):
+                self.epoch += 1
+                self.epoch_start = {name: source.epoch for name, source in self.sources.items()}
+            yield sample
 
 
 class CatDataset(StatefulIterableDataset):
@@ -659,95 +732,18 @@ def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
         data.name = snapshots[(data.name, data.revision)]
 
 
-def load_sft_source(source: HFDatasetSourceConfig, columns: SFTColumnsConfig) -> Dataset:
-    """Load one source and rename its columns to the names every source shares.
-
-    ``columns`` is the run-wide ``data.columns``: a source whose column names
-    differ moves them to the run-wide names, so ``SFTDataset`` reads one name
-    per field. Unmapped columns are dropped so sources with different extra
-    columns interleave.
-    """
-    logger = get_logger()
-    logger.debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
-    dataset = cast(Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision))
-    source_columns = source.columns or columns
-    renames: dict[str, str] = {}
-    for field in ("messages", "prompt", "completion", "tools", "message_loss_mask"):
-        column = getattr(source_columns, field)
-        if column in dataset.column_names:
-            renames[column] = getattr(columns, field)
-        elif column != field:
-            raise ValueError(
-                f"Source {source.name} reads {field} from {column!r}, but it has only {dataset.column_names}"
-            )
-    for field, column in source_columns.renderer.items():
-        if column in dataset.column_names:
-            renames[column] = columns.renderer.get(field, field)
-    shared = sorted({name for name in renames.values() if list(renames.values()).count(name) > 1})
-    if shared:
-        raise ValueError(f"Source {source.name} maps several columns to {shared}; map each field once")
-    dataset = dataset.select_columns(list(renames))
-    dataset = dataset.rename_columns({old: new for old, new in renames.items() if old != new})
-    num_examples = len(dataset)
-    for name, values in (
-        ("__source", [source.name] * num_examples),
-        ("__index", list(range(num_examples))),
-    ):
-        dataset = dataset.add_column(name, values, new_fingerprint=str(uuid.uuid4()))
-    return dataset
-
-
-def _align_columns(datasets: list[Dataset]) -> list[Dataset]:
-    """Give every source the same columns, so they interleave.
-
-    A column only some sources have is added to the others as nulls with the
-    same feature. A column must have the same type in every source that has it.
-    """
-    features: dict[str, dict[str, Any]] = defaultdict(dict)
-    for dataset in datasets:
-        for name, feature in dataset.features.items():
-            features[name][repr(feature)] = feature
-    conflicting = sorted(name for name, by_repr in features.items() if len(by_repr) > 1)
-    if conflicting:
-        raise ValueError(
-            f"Columns {conflicting} have different types across data.source entries; align them in the datasets"
+def load_sft_dataset(config: HFDatasetConfig) -> dict[str, Dataset]:
+    """Load every source. This is the expensive I/O step."""
+    datasets = {}
+    for source in config.source:
+        get_logger().debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
+        dataset = cast(
+            Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision)
         )
-    aligned = []
-    for dataset in datasets:
-        for name, by_repr in features.items():
-            if name in dataset.column_names:
-                continue
-            dataset = dataset.add_column(name, [None] * len(dataset), new_fingerprint=str(uuid.uuid4()))
-            dataset = dataset.cast(Features({**dataset.features, name: next(iter(by_repr.values()))}))
-        aligned.append(dataset)
-    return aligned
-
-
-def load_sft_dataset(config: HFDatasetConfig) -> Dataset:
-    """Load and interleave the raw HF dataset. This is the expensive I/O step."""
-    sources = config.source
-    datasets = _align_columns([load_sft_source(source, config.columns) for source in sources])
-    if len(datasets) == 1:
-        return datasets[0]
-    weights = [source.weight for source in sources if source.weight is not None]
-    probabilities = [weight / sum(weights) for weight in weights] if weights else None
-    get_logger().debug(f"Interleaving sources with {probabilities=} and {config.stopping_strategy=}")
-    return interleave_datasets(
-        datasets, probabilities=probabilities, stopping_strategy=config.stopping_strategy, seed=0
-    )
-
-
-def validate_source_renderer_args(config: RendererConfig, sources: list[HFDatasetSourceConfig]) -> None:
-    """Fail before training when a source sets a kwarg the renderer doesn't have."""
-    for source in sources:
-        if not source.renderer:
-            continue
-        if isinstance(config, AutoRendererConfig):
-            raise ValueError(
-                f"Source {source.name} sets renderer arguments, which require a typed renderer config "
-                "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
-            )
-        merge_chat_template_kwargs(config, source.renderer)
+        datasets[source.name] = dataset.add_column(
+            "__index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4())
+        )
+    return datasets
 
 
 def setup_dataset(
@@ -756,7 +752,7 @@ def setup_dataset(
     non_dp_size: int = 1,
     *,
     max_epochs: int | None = None,
-    raw_dataset: Dataset | None = None,
+    raw_datasets: dict[str, Dataset] | None = None,
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
     multimodal: bool = False,
@@ -772,31 +768,40 @@ def setup_dataset(
         )
     if renderer_config is None:
         raise ValueError("SFT data requires a renderer config.")
-    if raw_dataset is None:
-        raw_dataset = load_sft_dataset(config)
-    sources = config.source
-    validate_source_renderer_args(renderer_config, sources)
-    # A field only a source maps lands in a column named after the field.
-    renderer_columns = {field: field for source in sources for field in (source.columns or config.columns).renderer}
-    renderer_columns.update(config.columns.renderer)
-    renderers = RendererResolver(
-        tokenizer,
-        renderer_config,
-        processor=processor,
-        columns=renderer_columns,
-        source_kwargs={source.name: source.renderer for source in sources},
-    )
-    return SFTDataset(
-        raw_dataset,
-        renderers,
-        shuffle=config.shuffle,
+    if raw_datasets is None:
+        raw_datasets = load_sft_dataset(config)
+    sources: dict[str, SFTDataset] = {}
+    for source in config.source:
+        source_renderer_config = renderer_config
+        if source.renderer:
+            if isinstance(renderer_config, AutoRendererConfig):
+                raise ValueError(
+                    f"Source {source.name} sets renderer arguments, which require a typed renderer config "
+                    "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+                )
+            source_renderer_config = merge_chat_template_kwargs(renderer_config, source.renderer)
+        columns = source.columns or config.columns
+        renderers = RendererResolver(tokenizer, source_renderer_config, processor=processor, columns=columns.renderer)
+        sources[source.name] = SFTDataset(
+            raw_datasets[source.name],
+            renderers,
+            shuffle=config.shuffle,
+            seed=config.seed,
+            seq_len=config.seq_len,
+            loss_mask_config=config.loss_mask,
+            non_dp_size=non_dp_size,
+            multimodal=multimodal,
+            columns=columns,
+            name=source.name,
+        )
+    weights = [source.weight for source in config.source] if config.source[0].weight is not None else None
+    return MixedDataset(
+        sources,
+        weights=weights,
+        stopping_strategy=config.stopping_strategy,
         seed=config.seed,
-        seq_len=config.seq_len,
-        loss_mask_config=config.loss_mask,
-        non_dp_size=non_dp_size,
         max_epochs=max_epochs,
-        multimodal=multimodal,
-        columns=config.columns,
+        non_dp_size=non_dp_size,
     )
 
 
