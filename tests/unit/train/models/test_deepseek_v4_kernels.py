@@ -1446,6 +1446,10 @@ requires_fp8_einsum = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (9, 10),
     reason="DeepGEMM's fp8_einsum runs on Hopper (SM90) and Blackwell (SM100) only",
 )
+requires_sm90 = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="vLLM serves wo_a with fp32 scales on Hopper only, Blackwell packs them as INT32 ue8m0",
+)
 
 
 def _fp8_o_a_proj() -> nn.Module:
@@ -1475,7 +1479,7 @@ def _assert_frobenius_relative(actual: torch.Tensor, reference: torch.Tensor, rt
     assert error <= rtol, f"{label}: relative error {error} exceeds {rtol}"
 
 
-@requires_fp8_einsum
+@requires_sm90
 def test_fp8_o_a_proj_quantizes_and_multiplies_like_vllm_wo_a(monkeypatch):
     """The FP8 o_a_proj hands DeepGEMM bit for bit what vLLM's online-FP8 `wo_a` does, and gets its output.
 
@@ -1517,12 +1521,11 @@ def test_fp8_o_a_proj_quantizes_and_multiplies_like_vllm_wo_a(monkeypatch):
     vllm_weight_sf = vllm_weight_sf.view(O_GROUPS, -1, vllm_weight_sf.size(-1))
 
     assert expr == "bhr,hdr->bhd"
-    assert recipe == ((1, 128, 128) if torch.cuda.get_device_capability()[0] == 9 else (1, 1, 128))
+    assert recipe == (1, 128, 128)
     assert torch.equal(x_fp8.view(torch.uint8), vllm_x_fp8.view(torch.uint8))
     assert torch.equal(x_sf, vllm_x_sf)
-    if torch.cuda.get_device_capability()[0] == 9:
-        assert torch.equal(weight_fp8.view(torch.uint8), vllm_weight_fp8.view(torch.uint8))
-        assert torch.equal(weight_sf, vllm_weight_sf)
+    assert torch.equal(weight_fp8.view(torch.uint8), vllm_weight_fp8.view(torch.uint8))
+    assert torch.equal(weight_sf, vllm_weight_sf)
 
     vllm_out = torch.empty(O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS, device="cuda", dtype=torch.bfloat16)
     real_fp8_einsum(expr, (vllm_x_fp8, vllm_x_sf), (vllm_weight_fp8, vllm_weight_sf), vllm_out, recipe=recipe)
