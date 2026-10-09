@@ -5,7 +5,6 @@ import re
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4GroupedLinear
 from prime_rl.trainer.models.kernels.fp8_utils import (
     grouped_per_block_cast_to_fp8_triton,
     per_block_cast_to_fp8_tp_triton,
@@ -14,6 +13,7 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     per_token_cast_to_fp8_triton,
     ue8m0_for_device,
 )
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.logger import get_logger
 
 
@@ -296,8 +296,8 @@ class Float8BlockwiseLinear(nn.Linear):
         return new_mod
 
 
-class Float8BlockwiseGroupedLinear(DeepseekV4GroupedLinear):
-    """DeepseekV4GroupedLinear replacement that runs all groups in one DeepGEMM FP8 einsum, as vLLM serves `wo_a`."""
+class Float8BlockwiseGroupedLinear(GroupedLinear):
+    """GroupedLinear replacement that runs all groups in one DeepGEMM FP8 einsum, as vLLM serves `wo_a`."""
 
     def __init__(self, *args, block_size: int = 128, **kwargs):
         super().__init__(*args, **kwargs)
@@ -307,17 +307,16 @@ class Float8BlockwiseGroupedLinear(DeepseekV4GroupedLinear):
         return _fp8_blockwise_bmm(x, self.weight, self.n_groups, self.block_size)
 
     @classmethod
-    def from_grouped_linear(cls, mod: DeepseekV4GroupedLinear) -> "Float8BlockwiseGroupedLinear":
-        """Convert an existing DeepseekV4GroupedLinear to Float8BlockwiseGroupedLinear."""
+    def from_grouped_linear(cls, mod: GroupedLinear) -> "Float8BlockwiseGroupedLinear":
+        """Convert an existing GroupedLinear to Float8BlockwiseGroupedLinear."""
         with torch.device("meta"):
-            new_mod = cls(mod.in_features, mod.out_features, mod.n_groups, bias=mod.bias is not None)
+            new_mod = cls(mod.in_features, mod.out_features, mod.n_groups)
         new_mod.weight = mod.weight
-        new_mod.bias = mod.bias
         return new_mod
 
 
 def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str]) -> None:
-    """Replace nn.Linear in `model` with Float8BlockwiseLinear (DeepseekV4GroupedLinear with
+    """Replace nn.Linear in `model` with Float8BlockwiseLinear (GroupedLinear with
     Float8BlockwiseGroupedLinear), skipping any module whose qualified name matches an ignore
     pattern (substring or regex).
 
@@ -354,7 +353,7 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
             continue
         parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
         parent = model.get_submodule(parent_name) if parent_name else model
-        if isinstance(module, DeepseekV4GroupedLinear):
+        if isinstance(module, GroupedLinear):
             fp8_module = Float8BlockwiseGroupedLinear.from_grouped_linear(module)
         else:
             fp8_module = Float8BlockwiseLinear.from_linear(module)
