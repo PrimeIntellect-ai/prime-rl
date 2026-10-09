@@ -353,10 +353,10 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
-    if config.simulate_fp8_kv_cache:
+    if config.dsv4_kv_cache_type == "fp8":
         if model_config.model_type != "deepseek_v4":
             raise ValueError(
-                f"simulate_fp8_kv_cache is only implemented for DeepSeek V4, not {model_config.model_type!r}."
+                f"dsv4_kv_cache_type='fp8' is only implemented for DeepSeek V4, not {model_config.model_type!r}."
             )
         model_config.simulate_fp8_kv_cache = True
     if config.index_cache is not None:

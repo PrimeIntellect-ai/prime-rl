@@ -183,10 +183,10 @@ def test_cli_overrides_toml(tmp_path):
     assert config.nested.weight_decay == 0.01
 
 
-def test_simulate_fp8_kv_cache_is_opt_in():
-    assert TrainerModelConfig().simulate_fp8_kv_cache is False
-    config = cli(TrainerConfig, args=["--model.simulate-fp8-kv-cache", "true"])
-    assert config.model.simulate_fp8_kv_cache is True
+def test_dsv4_kv_cache_type_defaults_to_bf16():
+    assert TrainerModelConfig().dsv4_kv_cache_type == "bf16"
+    config = cli(TrainerConfig, args=["--model.dsv4-kv-cache-type", "fp8"])
+    assert config.model.dsv4_kv_cache_type == "fp8"
 
 
 def test_removed_fused_lm_head_chunk_size_field_is_rejected():

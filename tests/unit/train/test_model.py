@@ -83,8 +83,8 @@ def test_moe_custom_impl():
         assert logits.shape == (BS, SEQ_LEN, model.config.vocab_size)
 
 
-def test_simulate_fp8_kv_cache_reaches_every_deepseek_v4_attention_layer():
-    config = ModelConfig(name="PrimeIntellect/DeepSeek-V4-Flash-0731-bf16", simulate_fp8_kv_cache=True)
+def test_dsv4_fp8_kv_cache_reaches_every_deepseek_v4_attention_layer():
+    config = ModelConfig(name="PrimeIntellect/DeepSeek-V4-Flash-0731-bf16", dsv4_kv_cache_type="fp8")
     config.debug.num_layers = 4
     model = get_model(config, device=torch.device("meta"))
     attention_layers = [layer.self_attn for layer in model.model.layers]
@@ -92,7 +92,7 @@ def test_simulate_fp8_kv_cache_reaches_every_deepseek_v4_attention_layer():
     assert all(attention.simulate_fp8_kv_cache for attention in attention_layers)
 
 
-def test_simulate_fp8_kv_cache_rejects_models_without_support():
-    config = ModelConfig(name="Qwen/Qwen3-0.6B", simulate_fp8_kv_cache=True)
+def test_dsv4_fp8_kv_cache_rejects_models_without_support():
+    config = ModelConfig(name="Qwen/Qwen3-0.6B", dsv4_kv_cache_type="fp8")
     with pytest.raises(ValueError, match="only implemented for DeepSeek V4"):
         get_model(config, device=torch.device("meta"))

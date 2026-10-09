@@ -332,8 +332,8 @@ class ModelConfig(BaseModelConfig):
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
-    simulate_fp8_kv_cache: bool = False
-    """Round-trip the attention keys and values through vLLM's ``fp8_ds_mla`` KV cache format (straight-through gradient), so the trainer scores tokens against the same keys and values as an inference server running ``kv_cache_dtype=fp8``. DeepSeek V4 only."""
+    dsv4_kv_cache_type: Literal["bf16", "fp8"] = "bf16"
+    """KV cache format DeepSeek V4 attention reads keys and values from. ``bf16`` uses them as computed. ``fp8`` round-trips them through vLLM's ``fp8_ds_mla`` KV cache format (straight-through gradient), so the trainer scores tokens against the same keys and values as an inference server running ``kv_cache_dtype=fp8``. DeepSeek V4 only."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
