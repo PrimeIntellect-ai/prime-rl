@@ -28,6 +28,25 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    # Last, so a failing local plugin cannot skip the patches above.
+    load_vllm_plugins()
+
+
+def load_vllm_plugins():
+    """Run the ``inference.vllm_plugins`` callables exported in ``$PRIME_VLLM_PLUGINS``."""
+    import json
+
+    targets = json.loads(os.environ.get("PRIME_VLLM_PLUGINS") or "[]")
+    if not targets:
+        return
+
+    from renderers.custom import load_target
+    from vllm.logger import init_logger
+
+    logger = init_logger("vllm.prime_rl.plugins")
+    for target in targets:
+        load_target(target)()
+        logger.info(f"Loaded vLLM plugin {target}")
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():

@@ -1091,6 +1091,25 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
 
+def test_vllm_plugins_resolve_file_paths_and_run(tmp_path, monkeypatch):
+    from prime_rl.inference.patches import load_vllm_plugins
+    from prime_rl.inference.server import setup_vllm_env
+
+    marker = tmp_path / "loaded"
+    (tmp_path / "plugin.py").write_text(f"def register():\n    open({str(marker)!r}, 'w').close()\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PRIME_VLLM_PLUGINS", "")
+
+    config = InferenceConfig(vllm_plugins=["plugin.py:register", "json:dumps"])
+    assert config.vllm_plugins == [f"{tmp_path / 'plugin.py'}:register", "json:dumps"]
+
+    config.vllm_plugins = config.vllm_plugins[:1]
+    setup_vllm_env(config)
+    load_vllm_plugins()
+
+    assert marker.exists()
+
+
 CUSTOM_RENDERER_SOURCE = """
 from typing import Literal
 
