@@ -90,9 +90,6 @@ type = "torch"
 # Trainer-side FP8 with the same recipe vLLM uses online (128x128 weight blocks, 1x128 activation
 # groups, amax / 448 fp32 scales on H200), so both forwards see the same FP8 weights. The list
 # restates the eight defaults; `ignore_patterns` replaces rather than extends them.
-#   o_a_proj: `DeepseekV4GroupedLinear` has a block-diagonal bmm forward that the dense FP8 rewrite
-#   would break on shapes. vLLM keeps `wo_a` in FP8, so this is a known asymmetry.
-#   TODO: give o_a_proj a grouped FP8 path (8 groups of 1024x4096) so the trainer matches vLLM's wo_a
 #   indexer\.: the indexer's projection weights stay bf16 on vLLM (`quantization_config.ignore`), so
 #   they must stay bf16 here too; the in-kernel e4m3 q/k quantization is unaffected on both sides.
 #   compressor\.: vLLM builds the attention compressor's projections with `quant_config=None`, so
@@ -108,7 +105,6 @@ ignore_patterns = [
   "weights_proj",
   "in_proj_a",
   "in_proj_b",
-  "o_a_proj",
   'indexer\.',
   'compressor\.',
 ]
