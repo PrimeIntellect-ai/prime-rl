@@ -72,10 +72,46 @@ def dequantize_state_dict_(state_dict: StateDict) -> None:
     `layers.0.ffn.experts.0.w1.weight`), before any renaming. Keys with no `.scale` sibling
     (plain `bfloat16`/`float32` params, the `int64` `tid2eid` routing table) have no sibling
     to pop and are left untouched.
+
+    `load_state_dict` (`prime_rl.utils.weights`) always loads to CPU -- the full checkpoint is
+    ~155GB, too large to hold GPU-resident all at once -- so every weight here starts on CPU
+    regardless of whether a GPU is available. When CUDA is present, each `(weight, scale)` pair
+    is streamed through it one at a time (`.cuda()` in, fused Triton kernel, `.cpu()` out)
+    rather than computed in place, trading a per-tensor transfer for a much faster kernel than
+    the CPU-only path. Triton has nothing to run on CPU, so it's imported lazily rather than at
+    module load, keeping this module importable in the CPU-only test job
+    (`tests/unit/train/models/test_deepseek_v4_cpu.py`).
+
+    The device-to-host leg of that transfer copies into a pinned-memory tensor rather than
+    plain `.cpu()`: nsys profiling (2048x4096-element outputs, real checkpoint shapes) showed
+    the kernel itself takes ~174us but a plain `.cpu()` -- landing in pageable host memory --
+    took ~6.86ms, ~2.4 GB/s effective, well under normal PCIe bandwidth. `cudaMemcpy` from a
+    pageable destination has to stage through an internal pinned buffer first; allocating the
+    destination pinned once avoids that extra hop and measured ~390us, ~17.6x faster.
+
+    A shared pinned staging buffer per unique output shape (there are only ~27 per layer, so
+    the same buffer would be reused across all 256 experts) was tried to amortize the pinned
+    allocation itself, on top of this. Measured worse, not better: the extra CPU-side clone
+    needed to get each key its own persistent tensor out of the shared buffer cost more than
+    the allocation it was meant to save (589us/tensor device-to-host vs 390us/tensor here,
+    real H100 measurement, not a guess). Reverted; a fresh pinned allocation per key wins.
     """
+    triton_dequantize_weight = None
+    if torch.cuda.is_available():
+        from prime_rl.trainer.models.deepseek_v4.dequantize_triton import dequantize_weight_triton
+
+        triton_dequantize_weight = dequantize_weight_triton
+
     for key in [k for k in state_dict if k.endswith(".weight")]:
         scale_key = key.removesuffix(".weight") + ".scale"
         scale = state_dict.pop(scale_key, None)
         if scale is None:
             continue
-        state_dict[key] = dequantize_weight(state_dict[key], scale)
+        weight = state_dict[key]
+        if triton_dequantize_weight is None:
+            state_dict[key] = dequantize_weight(weight, scale)
+        else:
+            gpu_result = triton_dequantize_weight(weight.cuda(), scale.cuda())
+            pinned_result = torch.empty_like(gpu_result, device="cpu", pin_memory=True)
+            pinned_result.copy_(gpu_result)
+            state_dict[key] = pinned_result
