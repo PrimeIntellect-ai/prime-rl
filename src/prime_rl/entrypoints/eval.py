@@ -138,7 +138,7 @@ def main():
     os.environ["PRL_RUN_NAME"] = config.run.name
 
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
-    validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=config.resume, clean=clean)
+    validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=config.resume is not None, clean=clean)
     config.run_dir.mkdir(parents=True, exist_ok=True)
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)

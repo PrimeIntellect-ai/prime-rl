@@ -6,9 +6,9 @@ so the rebuilt stream, the epoch's metrics and the platform upload cover the
 whole epoch - and only the rollouts still owed run. Failed episodes and the in-flight
 ones the interruption cut off are owed again.
 
-The shared Verifiers rollout planner matches these episodes to the current tasks
-by content hash. The resumed config is not checked against the interrupted one:
-any of it may be overridden.
+The shared Verifiers rollout planner matches episodes to tasks by content hash.
+Each attempt's saved resolved config must match, except for ``resume``, before its
+episodes are reused. Intentional changes require ``--resume.skip-checks``.
 """
 
 from __future__ import annotations
@@ -19,8 +19,10 @@ from pathlib import Path
 import orjson
 import verifiers.v1 as vf
 
+from prime_rl.configs.eval import EvalConfig
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_file_monitor_dir
 
 CONFIG_NAME = "eval.json"
@@ -54,14 +56,44 @@ def archives(run_dir: Path) -> list[Path]:
     return sorted(monitors.glob("file.attempt_*"), key=lambda path: int(path.name.rsplit("_", 1)[1]))
 
 
-def take_landed(run_dir: Path) -> list[vf.WireEpisode]:
+def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
     """Successful episodes from every attempt; the planner deduplicates them.
     The current file monitor directory joins the archives so the resumed attempt writes a
     fresh stream, plan and metrics; nothing is deleted."""
     current = get_file_monitor_dir(run_dir)
     stream = get_trace_stream(run_dir).relative_to(current)
+    directories = archives(run_dir)
+    if current.is_dir() or not directories:
+        directories.append(current)
+    # Enabling resume necessarily differs from the original launch.
+    expected = config.model_dump(mode="json", exclude={"resume"})
+    skip_checks = config.resume is not None and config.resume.skip_checks
+    if skip_checks:
+        get_logger().warning(
+            "Skipping resume compatibility checks; saved episodes may use different experiment settings."
+        )
     landed: list[vf.WireEpisode] = []
-    for directory in [*archives(run_dir), current]:
+    for directory in directories:
+        if not skip_checks:
+            saved_path = directory / CONFIG_NAME
+            if not saved_path.is_file():
+                raise ValueError(
+                    f"--resume: no saved config at {saved_path}. "
+                    "Set --resume.skip-checks to reuse episodes without a saved config."
+                )
+            # Snapshots are resolved configs: re-validating would fill missing fields with new defaults.
+            previous = orjson.loads(saved_path.read_bytes())
+            previous.pop("resume", None)
+            changed = sorted(
+                key
+                for key in expected.keys() | previous.keys()
+                if key not in expected or key not in previous or expected[key] != previous[key]
+            )
+            if changed:
+                raise ValueError(
+                    f"--resume: config differs from {saved_path} in [{', '.join(changed)}]. "
+                    "Use the saved config, start a fresh run, or set --resume.skip-checks if the changes are intentional."
+                )
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
                 episode = vf.WireEpisode.model_validate(record)
