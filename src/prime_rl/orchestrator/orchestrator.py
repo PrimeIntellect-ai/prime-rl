@@ -26,6 +26,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
@@ -47,7 +48,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
+from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics, eval_batch_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -888,11 +889,11 @@ class Orchestrator:
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors."""
-        if not batch.episodes and not batch.failures:
+        if not batch.episodes and not batch.failures and not batch.cancelled:
             get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
             return
 
-        # The non-errored subset is logged on epoch completion (multiple eval envs share the
+        # The effective subset is logged on epoch completion (multiple eval envs share the
         # step's trace file — each epoch appends its cohort once, and every record carries
         # ``env_name``); the full returned cohort already streamed into ``all`` on arrival.
         if batch.episodes.effective:
@@ -903,35 +904,29 @@ class Orchestrator:
             raise ValueError(f"Eval {batch.env_name} step {batch.step} is missing policy provenance")
         policy_versions = {span.start for span in policy_spans if span is not None}
         policy_versions.update(failure.policy_version for failure in batch.failures)
-        policy_version = min(policy_versions)
+        policy_version = min(policy_versions) if policy_versions else None
         # Episode metrics over {all,effective} (eval batches are per-env, so no `agg` axis).
-        # ``effective`` = non-errored; pass@k / pass^k only over the effective set.
+        # Infrastructure-invalid episodes are excluded only from the effective set.
         episodes = batch.episodes
         effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures)
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
-        metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
+        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+        metrics = eval_batch_metrics(batch, list(agent_config_fields(self.eval_envs.get(batch.env_name).config.env)))
+        if policy_version is not None:
+            metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
 
-        # Success line — quality metrics over the effective set, error rate over the full returned
-        # cohort. ``Stat.mean()`` is 0.0 for an empty set.
         eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
-        get_logger().success(
+        reward = f"{eff.reward.mean():.4f}" if effective else "unavailable"
+        log = get_logger().warning if batch.cancelled or not effective else get_logger().success
+        log(
             f"Evaluated {batch.env_name} | "
-            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+            f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {reward} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
-            f"Timeout {full.is_timeout.mean():.1%}"
+            f"Error {metrics[f'eval/{batch.env_name}/all/has_error/mean']:.1%} | Truncation {eff.is_truncated.mean():.1%} | "
+            f"Timeout {full.is_timeout.mean():.1%} | Coverage {len(effective)}/{total_attempts}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:
