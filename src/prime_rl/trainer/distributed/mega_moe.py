@@ -394,11 +394,17 @@ def mega_moe_fp8(
         fast_math=True,
         num_sms=dispatcher.num_sms,
     )
-    # The weight-gradient operand of `x`, on a side stream beside the next layers; the backward waits for it
+    # The weight-gradient operand of `x`, on a side stream beside the next layers; the backward waits for it.
+    # Allocated on the compute stream, so the backward's free returns it to the pool every activation draws from.
+    C, H = pools.x.shape
+    x_t = torch.empty(C * H, dtype=torch.float8_e4m3fn, device=x.device)
+    x_t_sf = torch.empty(
+        C // 128, H // 128 if dispatcher.wgrad_tile_scales else H, dtype=torch.float32, device=x.device
+    )
     side_stream = _side_stream()
     side_stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(side_stream):
-        x_t, x_t_sf = dispatcher.kernels.x_weight_grad_operand(pools, dispatcher.wgrad_tile_scales)
+        dispatcher.kernels.column_quant(pools.x, pools.x_sf, pools.counts, x_t, x_t_sf)
         _x_t_ready[x_t.data_ptr()] = side_stream.record_event()
     for t in (pools.x, pools.x_sf, pools.counts, x_t, x_t_sf):
         t.record_stream(side_stream)
