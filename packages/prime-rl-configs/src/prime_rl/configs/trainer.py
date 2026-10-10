@@ -22,7 +22,7 @@ from prime_rl.utils.config import BaseConfig, default_output_dir
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
 AttnImplementation: TypeAlias = Literal["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]
-DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla"]
+DSABackend: TypeAlias = Literal["tilelang", "cudnn_flashmla", "cute", "cute_ws"]
 
 
 class GCConfig(BaseConfig):
@@ -327,7 +327,7 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "tilelang"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU. For GLM-5, SM100/SM103 are wired up but untested; DeepSeek V4 refuses anything but SM90."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU. For GLM-5, SM100/SM103 are wired up but untested; DeepSeek V4 refuses anything but SM90. ``cute`` (DeepSeek V4 only) runs a CuTe DSL sparse attention forward with the TileLang backward; it needs an SM90 GPU. ``cute_ws`` (DeepSeek V4 only) is the same with a warp-specialized CuTe DSL forward, structured like FlashMLA's."""
 
     index_cache: IndexCacheConfig | None = None
     """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""

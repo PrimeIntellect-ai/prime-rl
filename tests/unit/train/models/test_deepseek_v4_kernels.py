@@ -218,7 +218,7 @@ requires_cudnn_flashmla = pytest.mark.skipif(
     reason="the cudnn_flashmla backend needs the `flash-mla` extra, the cuDNN frontend and an SM90 GPU",
 )
 
-DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
+DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla), "cute", "cute_ws"]
 
 # What a real query with a short window or a saturated top-k looks like; a masked slot still
 # costs a GEMM column.

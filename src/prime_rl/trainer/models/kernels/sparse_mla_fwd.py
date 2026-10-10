@@ -21,6 +21,7 @@ from tilelang import language as T
 
 from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels.sparse_mla_bwd import (
+    SPARSE_MLA_BACKENDS,
     flat_kv_indices,
     sparse_mla_backward,
 )
@@ -238,6 +239,9 @@ def sparse_mla(
     ``tilelang`` is TileLang for both; ``cudnn_flashmla`` is FlashMLA forward + cuDNN backward
     (SM90; SM100 / SM103 untested).
     """
+    assert backend in SPARSE_MLA_BACKENDS, (
+        f"sparse MLA has no {backend!r} backend, expected one of {SPARSE_MLA_BACKENDS}"
+    )
     assert q.is_contiguous() and kv.is_contiguous() and indices.is_contiguous()
     batch, seq_len, heads, dim_plus_tail_dim = q.shape
     _, seq_len_kv, kv_group, _ = kv.shape
