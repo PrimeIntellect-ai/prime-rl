@@ -814,8 +814,9 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         layer = language_model.layers[layer_id]
-        if isinstance(layer, CheckpointWrapper) and any(
-            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
+        if isinstance(layer, CheckpointWrapper) and (
+            compile_config.inside_checkpoint
+            or any(isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules())
         ):
             # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
             # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626

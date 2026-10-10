@@ -131,6 +131,13 @@ class CompileConfig(BaseConfig):
     mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
     """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
 
+    inside_checkpoint: bool = False
+    """Compile each transformer block inside its activation-checkpoint wrapper instead of around it. A graph break in
+    a compiled checkpoint (e.g. the expert dispatch, which dynamo cannot trace) sends the whole block back to eager, so
+    with checkpointing and such a break the block does not compile at all; inside an eager checkpoint the code around
+    the break compiles. Works with every checkpoint mode and with pipeline stages that cut a layer. Changes numerics
+    slightly (Inductor's fused kernels round differently from eager)."""
+
 
 class FusionsConfig(BaseConfig):
     enabled: list[Literal["gate_up", "qkv"]] = ["gate_up", "qkv"]
