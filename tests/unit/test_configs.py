@@ -714,6 +714,24 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference.vllm.data_parallel_size == 2
 
 
+def test_disaggregated_inference_inherits_deployment_gpus_per_node():
+    config = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": {"tensor_parallel_size": 2}, "deployment": {"type": "disaggregated"}},
+        "deployment": {"type": "multi_node", "gpus_per_node": 4, "num_train_nodes": 1},
+        "slurm": {},
+    }
+    resolved = RLConfig.model_validate(config)
+    assert resolved.inference.deployment.gpus_per_node == 4
+    assert resolved.inference.vllm.data_parallel_size_local == 2
+
+    config["deployment"].pop("gpus_per_node")
+    config["inference"]["deployment"]["gpus_per_node"] = 4
+    with pytest.raises(ValidationError, match="gpus_per_node must match"):
+        RLConfig.model_validate(config)
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(

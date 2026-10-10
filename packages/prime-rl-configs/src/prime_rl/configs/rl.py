@@ -361,6 +361,13 @@ class RLConfig(BaseConfig):
         # must match the trainer whose weights the external server receives.
         if inference is not None:
             require_equal(
+                "deployment.gpus_per_node",
+                {
+                    "deployment.gpus_per_node": self.deployment.gpus_per_node,
+                    "inference.deployment.gpus_per_node": inference.deployment.gpus_per_node,
+                },
+            )
+            require_equal(
                 "model.name",
                 {"inference.vllm.model": inference.vllm.model, "orchestrator.model.name": orchestrator.model.name},
             )
