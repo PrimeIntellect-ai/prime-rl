@@ -5,6 +5,7 @@ trainer rank reads the rows of its window."""
 
 import math
 import os
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -80,9 +81,23 @@ def _read_segments(segments: list[PayloadSegment]) -> list[bytes]:
     return data
 
 
-def _read_file(segments: list[PayloadSegment]) -> list[bytes]:
-    fd = os.open(segments[0].file, os.O_RDONLY)
-    try:
-        return [os.pread(fd, segment.rows * segment.row_bytes, segment.offset) for segment in segments]
-    finally:
-        os.close(fd)
+def _read_file(segments: list[PayloadSegment], attempts: int = 5) -> list[bytes]:
+    """The segments' bytes from their one file. A shared filesystem can briefly serve a short
+    read of a file another node just wrote, so a short read reopens the file and retries with
+    backoff."""
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(0.05 * 2**attempt)
+        fd = os.open(segments[0].file, os.O_RDONLY)
+        try:
+            data = [os.pread(fd, segment.rows * segment.row_bytes, segment.offset) for segment in segments]
+        finally:
+            os.close(fd)
+        short = [(s, len(d)) for s, d in zip(segments, data) if len(d) != s.rows * s.row_bytes]
+        if not short:
+            return data
+    segment, got = short[0]
+    raise OSError(
+        f"Payload file {segment.file} returned {got} of {segment.rows * segment.row_bytes} bytes at offset "
+        f"{segment.offset} after {attempts} reads ({segment.field})"
+    )

@@ -16,11 +16,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+import msgspec
 import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
 from prime_rl.transports.batch.types import RoutedExperts, SamplingMask
+from prime_rl.transports.payload import PayloadSegment, clip_segments
 from prime_rl.utils.logger import get_logger
 
 
@@ -100,6 +102,28 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
         ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
         counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
     )
+
+
+def _sample_payload(branch: vf.Branch, num_tokens: int) -> list[PayloadSegment] | None:
+    """The branch's by-handle segments for a `num_tokens` sample. No forward pass reaches the
+    final token, so its routing row repeats the one before it, as `Branch.routed_experts` does.
+    Routing with any other gap is dropped, like a missing inline payload."""
+    segments = clip_segments((PayloadSegment(**s.model_dump()) for s in branch.payload), 0, num_tokens)
+    routing = [segment for segment in segments if segment.field == "routed_experts"]
+    if not routing:
+        return segments or None
+    covered = np.zeros(num_tokens, dtype=bool)
+    for segment in routing:
+        covered[segment.pos : segment.end] = True
+    if num_tokens > 1 and covered[-2] and not covered[-1]:
+        source = next(segment for segment in reversed(routing) if segment.pos <= num_tokens - 2 < segment.end)
+        (row,) = clip_segments([source], num_tokens - 2, num_tokens - 1)
+        segments.append(msgspec.structs.replace(row, pos=num_tokens - 1))
+        covered[-1] = True
+    if not covered.all():
+        get_logger().warning(f"Dropping router-replay payload with gaps (branch {branch.index}, {num_tokens} tokens)")
+        segments = [segment for segment in segments if segment.field != "routed_experts"]
+    return segments or None
 
 
 def iter_trainable_branches(trace: vf.Trace) -> Iterator[tuple[vf.Branch, list[bool]]]:
@@ -187,6 +211,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 sampling_mask=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
                 trace_id=trace.id,
                 branch_index=branch.index,
+                payload=_sample_payload(branch, len(token_ids)),
             )
         )
     if not samples:

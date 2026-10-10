@@ -143,6 +143,8 @@ class TrainBatch:
     cancelled_attempts: int = 0
     # Stale attempts are a subset of cancelled_attempts.
     stale_attempts: int = 0
+    # By-handle payload files of every selected trace, shipped or pruned.
+    payload_files: set[str] = field(default_factory=set)
 
 
 @dataclass
