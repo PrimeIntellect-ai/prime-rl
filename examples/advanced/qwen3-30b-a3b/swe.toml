@@ -31,7 +31,6 @@ cp = 2
 [trainer.model.compile]
 
 [trainer.model.ac_offloading]
-max_inflight_activations = 5
 
 [trainer.model.ac]
 freq = 1

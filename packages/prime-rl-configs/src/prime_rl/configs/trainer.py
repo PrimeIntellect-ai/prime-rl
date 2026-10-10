@@ -42,11 +42,7 @@ class ActivationCheckpointConfig(BaseConfig):
 
 
 class ActivationOffloadingConfig(BaseConfig):
-    pin_memory: bool = True
-    """Pin offloaded activations to CPU memory."""
-
-    max_inflight_activations: int = Field(5, ge=1)
-    """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+    """Offload tensors saved for backward to pinned CPU memory during the forward pass."""
 
 
 class OptimizerInBackwardOffloadConfig(BaseConfig):

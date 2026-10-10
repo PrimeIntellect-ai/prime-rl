@@ -102,7 +102,6 @@ freq = 1
 [trainer.model.compile]
 
 [trainer.model.ac_offloading]
-max_inflight_activations = 1
 
 [trainer.optim]
 type = "adamw"

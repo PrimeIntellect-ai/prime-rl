@@ -15,7 +15,6 @@ dsa_backend = "cudnn_flashmla"
 freq = 1
 
 [model.ac_offloading]
-max_inflight_activations = 5
 
 [optim]
 type = "sign_sgd"
