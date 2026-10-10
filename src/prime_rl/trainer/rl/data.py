@@ -308,8 +308,7 @@ class DataLoader:
         if routed_experts is not None:
             routed_experts = torch.from_numpy(routed_experts).unsqueeze(0)
         if sampling_mask is not None:
-            width = max(int((sampling_mask >= 0).sum(-1).max(initial=0)), 1)
-            sampling_mask = torch.from_numpy(np.ascontiguousarray(sampling_mask[:, :width])).unsqueeze(0)
+            sampling_mask = torch.from_numpy(sampling_mask).unsqueeze(0)
         return routed_experts, sampling_mask, cp_window
 
 

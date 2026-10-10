@@ -46,20 +46,62 @@ def clip_segments(segments: Iterable[PayloadSegment], lo: int, hi: int) -> list[
     return clipped
 
 
+RAGGED_FIELDS = frozenset({"sampling_mask"})
+"""Fields whose rows vary in width (a few kept ids per sampled token), stored as CSR
+(``ragged_bytes``): the segment's rows are the uint32 file offsets where each row's int32
+values start, followed in the file by one more offset where the last row's values end, so
+clipping a segment needs no knowledge of the row widths. Other fields store the rows
+themselves."""
+
+
+def ragged_bytes(counts: np.ndarray, values: np.ndarray, offset: int) -> bytes:
+    """CSR rows (``counts[i]`` values for token ``i``) laid out to be written at byte ``offset``
+    of a file: ``len(counts) + 1`` uint32 start offsets, then the int32 values."""
+    values = np.ascontiguousarray(values, dtype=np.int32)
+    starts = offset + 4 * (len(counts) + 1) + values.itemsize * np.concatenate([[0], np.cumsum(counts)])
+    assert starts[-1] <= np.iinfo(np.uint32).max
+    return starts.astype(np.uint32).tobytes() + values.tobytes()
+
+
 def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int, fill: int) -> np.ndarray | None:
     """Rows ``[lo, hi)`` of ``field`` as int32, ``fill`` where no segment covers a position;
-    None when no segment carries ``field``. Rows narrower than the field's widest segment
-    fill the leading entries (sampling masks are written at each request's own width).
-    Later segments win."""
+    None when no segment carries ``field``. Ragged rows are padded to the widest row of all of
+    the field's segments, as inline masks are padded to the micro batch's widest row, so every
+    CP rank gets the same width. Later segments win."""
     field_segments = [segment for segment in segments if segment.field == field]
     if not field_segments:
         return None
+    if field in RAGGED_FIELDS:
+        return _read_ragged(field_segments, lo, hi, fill)
     shape = [max(dims) for dims in zip(*(segment.shape for segment in field_segments))]
     out = np.full((hi - lo, *shape), fill, dtype=np.int32)
     segments = clip_segments(field_segments, lo, hi)
-    for segment, data in zip(segments, _read_segments(segments)):
+    for segment, data in zip(segments, _pread([(s.file, s.offset, s.rows * s.row_bytes) for s in segments])):
         rows = np.frombuffer(data, dtype=segment.dtype).reshape(segment.rows, *segment.shape)
         out[(slice(segment.pos - lo, segment.end - lo), *(slice(0, dim) for dim in segment.shape))] = rows
+    return out
+
+
+def _read_ragged(segments: list[PayloadSegment], lo: int, hi: int, fill: int) -> np.ndarray:
+    segments = [segment for segment in segments if segment.rows]
+    # Every segment's offsets (4 bytes per row) set the width; only the window's values are read.
+    starts = [
+        np.frombuffer(data, dtype=np.uint32).astype(np.int64)
+        for data in _pread([(s.file, s.offset, 4 * (s.rows + 1)) for s in segments])
+    ]
+    width = max([int(np.diff(s).max()) // 4 for s in starts] + [1])
+    out = np.full((hi - lo, width), fill, dtype=np.int32)
+    window = []
+    for segment, segment_starts in zip(segments, starts):
+        a, b = max(segment.pos, lo) - segment.pos, min(segment.end, hi) - segment.pos
+        if a < b:
+            window.append((segment.file, segment.pos + a - lo, segment_starts[a : b + 1]))
+    values = _pread([(file, int(w[0]), int(w[-1] - w[0])) for file, _, w in window])
+    for (_, row, w), data in zip(window, values):
+        counts = np.diff(w) // 4
+        rows = out[row : row + len(counts)]
+        rows[:] = fill
+        rows[np.arange(width) < counts[:, None]] = np.frombuffer(data, dtype=np.int32)
     return out
 
 
@@ -68,36 +110,34 @@ def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int, fil
 _READ_POOL = ThreadPoolExecutor(32, thread_name_prefix="payload-read")
 
 
-def _read_segments(segments: list[PayloadSegment]) -> list[bytes]:
-    """Each segment's bytes, in order. Each file is opened once."""
+def _pread(reads: list[tuple[str, int, int]]) -> list[bytes]:
+    """The bytes of each ``(file, offset, size)``, in order. Each file is opened once."""
     by_file: dict[str, list[int]] = defaultdict(list)
-    for i, segment in enumerate(segments):
-        by_file[segment.file].append(i)
-    data: list[bytes] = [b""] * len(segments)
-    files = _READ_POOL.map(_read_file, ([segments[i] for i in indices] for indices in by_file.values()))
+    for i, (file, _, _) in enumerate(reads):
+        by_file[file].append(i)
+    data: list[bytes] = [b""] * len(reads)
+    files = _READ_POOL.map(_pread_file, ([reads[i] for i in indices] for indices in by_file.values()))
     for indices, chunks in zip(by_file.values(), files):
         for i, chunk in zip(indices, chunks):
             data[i] = chunk
     return data
 
 
-def _read_file(segments: list[PayloadSegment], attempts: int = 5) -> list[bytes]:
-    """The segments' bytes from their one file. A shared filesystem can briefly serve a short
-    read of a file another node just wrote, so a short read reopens the file and retries with
-    backoff."""
+def _pread_file(reads: list[tuple[str, int, int]], attempts: int = 5) -> list[bytes]:
+    """The bytes of each ``(file, offset, size)`` of one file. A shared filesystem can briefly
+    serve a short read of a file another node just wrote, so a short read reopens the file
+    and retries with backoff."""
+    file = reads[0][0]
     for attempt in range(attempts):
         if attempt:
             time.sleep(0.05 * 2**attempt)
-        fd = os.open(segments[0].file, os.O_RDONLY)
+        fd = os.open(file, os.O_RDONLY)
         try:
-            data = [os.pread(fd, segment.rows * segment.row_bytes, segment.offset) for segment in segments]
+            data = [os.pread(fd, size, offset) for _, offset, size in reads]
         finally:
             os.close(fd)
-        short = [(s, len(d)) for s, d in zip(segments, data) if len(d) != s.rows * s.row_bytes]
+        short = [(offset, size, len(chunk)) for (_, offset, size), chunk in zip(reads, data) if len(chunk) != size]
         if not short:
             return data
-    segment, got = short[0]
-    raise OSError(
-        f"Payload file {segment.file} returned {got} of {segment.rows * segment.row_bytes} bytes at offset "
-        f"{segment.offset} after {attempts} reads ({segment.field})"
-    )
+    offset, size, got = short[0]
+    raise OSError(f"Payload file {file} returned {got} of {size} bytes at offset {offset} after {attempts} reads")
