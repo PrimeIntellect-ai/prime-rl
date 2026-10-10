@@ -646,7 +646,7 @@ def train(config: SFTConfig):
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time
-        perf_counter = get_perf_counter(model, config.data.seq_len)
+        perf_counter = get_perf_counter(model)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_tokens, step_time)

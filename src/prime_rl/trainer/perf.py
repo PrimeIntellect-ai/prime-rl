@@ -12,7 +12,7 @@ from prime_rl.utils.logger import get_logger
 
 class PerfCounter:
     """
-    Computes throughput (tokens/s) and MFU.
+    Computes throughput (tokens/s) and MFU (6ND over active matmul parameters).
 
     Two modes:
     - Sliding window over full-step wall time: `count_tokens(tokens)` each step,
@@ -24,7 +24,7 @@ class PerfCounter:
     Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
 
-    def __init__(self, model: nn.Module, seq_len: int, window_size: int = 10):
+    def __init__(self, model: nn.Module, window_size: int = 10):
         self.window_size = window_size
         self.tokens: list[int] = []
         self.times: list[float] = []
@@ -37,7 +37,7 @@ class PerfCounter:
             self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         else:
             self.gpu_peak_flops = 0
-        self.num_flop_per_token = self._get_num_flop_per_token(model.config, seq_len=seq_len)
+        self.num_flop_per_token = self._get_num_flop_per_token(model.config)
 
     def count_tokens(self, tokens: int) -> None:
         """Push a step into the sliding window. Time is recorded internally."""
@@ -178,51 +178,17 @@ class PerfCounter:
         ## Total
         return q_params + kv_params + o_params + dense_mlp_params + sparse_mlp_params + lm_head_params
 
-    def _get_num_flop_per_token(self, model_config: PrimeModelConfig, seq_len: int) -> int:
-        # Handle VLM models with nested text_config (e.g., Qwen3-VL)
-        if hasattr(model_config, "text_config"):
-            model_config = model_config.text_config
-
-        l, h, t = (  # noqa: E741
-            model_config.num_hidden_layers,
-            model_config.num_attention_heads,
-            seq_len,
-        )
-        # Head dims as torchtitan's quadratic_attention_flops_per_token: the real head_dim (e.g. 128 for
-        # Qwen3-235B, whose hidden_size / num_attention_heads is 64), or the MLA qk / v head dims.
-        if hasattr(model_config, "qk_head_dim") and hasattr(model_config, "v_head_dim"):
-            qk_head_dim, v_head_dim = model_config.qk_head_dim, model_config.v_head_dim
-        else:
-            qk_head_dim = v_head_dim = (
-                getattr(model_config, "head_dim", None) or model_config.hidden_size // model_config.num_attention_heads
-            )
-        # Reasoning behind the factor of 6 for the self-attention part of the formula:
-        # 1. each self-attention has 2 matmul in the forward and 4 in the backward (6)
-        #    (q @ K^T over qk_head_dim, then scores @ V over v_head_dim, per head and attended token)
-        # 2. the flash attention does 1 more matmul recomputation in the backward
-        #    but recomputation should not be counted in calculating MFU           (+0)
-        # 3. each matmul performs 1 multiplication and 1 addition                 (*2)
-        # 4. we follow the convention and do not account for sparsity in causal attention
-        attention_flops = 6 * l * h * (qk_head_dim + v_head_dim) * t
-
+    def _get_num_flop_per_token(self, model_config: PrimeModelConfig) -> int:
+        # 6ND: every active matmul parameter costs 2 FLOPs in the forward and 4 in the backward.
+        # Attention score/value matmuls and recomputation are not counted.
+        active_mm_params = self.get_active_mm_params(model_config)
         if has_lora_layers(self.model):
-            # LoRA case:
-            # - Frozen base matmuls still incur dX in backward: 2×, plus forward: 2× => 4× active_mm
-            # - Fully trainable non-LoRA params (modules_to_save) cost 6×
-            # - LoRA adapter params cost 6×
-            # Combined (to avoid double counting): 4*active_mm + 2*fully_trainable + 6*lora_adapters + attention
-            active_mm_params = self.get_active_mm_params(model_config)
+            # Frozen base matmuls still incur dX in backward (4x); fully trainable non-LoRA params
+            # (modules_to_save) and LoRA adapters cost 6x. Combined without double counting.
             lora_adapter_params = self._count_lora_adapter_params()
             fully_trainable_params = self._count_fully_trainable_params_excluding_lora()
-
-            flop_per_token = (
-                4 * active_mm_params + 2 * fully_trainable_params + 6 * lora_adapter_params + attention_flops
-            )
-        else:
-            # standard case: full fine-tuning, all params participate in forward (2×) and backward (4×)
-            flop_per_token = 6 * self.get_active_mm_params(model_config) + attention_flops
-
-        return flop_per_token
+            return 4 * active_mm_params + 2 * fully_trainable_params + 6 * lora_adapter_params
+        return 6 * active_mm_params
 
     def _count_lora_adapter_params(self) -> int:
         """Count LoRA adapter parameters (sum of lora_A and lora_B across all MultiLoRAModules)."""
@@ -249,9 +215,9 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module, seq_len: int, window_size: int = 10) -> PerfCounter:
+def get_perf_counter(model: nn.Module, window_size: int = 10) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model, seq_len, window_size)
+        _PERF_COUNTER = PerfCounter(model, window_size)
 
     return _PERF_COUNTER

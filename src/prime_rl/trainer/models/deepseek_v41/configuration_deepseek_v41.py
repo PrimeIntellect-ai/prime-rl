@@ -126,8 +126,7 @@ class DeepseekV41TextConfig(PrimeModelConfig):
 
         The generic count in `perf.py` would read V4.1's low-rank query and grouped low-rank output
         projections as full-rank `hidden x heads x head_dim` matrices and miss the compressors,
-        indexers, mHC projections and engram projections, so the architecture counts its own. The
-        attention term on top of it is `perf.py`'s usual one.
+        indexers, mHC projections and engram projections, so the architecture counts its own.
         """
         h, hd, nh = self.hidden_size, self.head_dim, self.num_attention_heads
         mix = (2 + self.hc_mult) * self.hc_mult
