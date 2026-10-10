@@ -321,8 +321,13 @@ class TrainSink:
             f"({windows} zero-output batch equivalents)"
         )
 
+    def _policy_start(self, trace_id: str) -> float:
+        policy = train_work(self.episode_by_trace[trace_id]).policy
+        return policy.start if policy is not None else float("inf")
+
     def process_batch(self) -> TrainBatch:
-        selected = list(self.pending_batch.items())[: self.batch_size]
+        # Oldest policy version first, so leftovers are the traces with the most staleness budget left.
+        selected = sorted(self.pending_batch.items(), key=lambda item: self._policy_start(item[0]))[: self.batch_size]
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
