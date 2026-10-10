@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any
 
 import verifiers.v1 as vf
@@ -34,8 +34,12 @@ class TrainSource:
         self.weights = [float(env.config.ratio) for env in self.envs]
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
+        self.resumed: deque[TaskRequest] = deque()
+        """Groups left open by a restart, handed out before any new task."""
 
     def next_task(self, *, step: int) -> TaskRequest:
+        if self.resumed:
+            return self.resumed.popleft()
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
         return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
 
