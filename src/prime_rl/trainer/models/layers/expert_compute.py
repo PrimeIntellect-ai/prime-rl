@@ -204,6 +204,9 @@ def _quantized_expert_weights(compute: FusedSwigluExpertCompute, experts: "Group
     cached = _quantized_weights.get(id(experts))
     if cached is None or cached[0] != _weight_generation:
         gate_proj, up_proj, down_proj = compute._weights(experts)
+        assert all(w is None or w.untyped_storage().size() > 0 for w in (gate_proj, up_proj, down_proj)), (
+            "the bf16 expert weights were freed after an earlier quantization and not all-gathered again"
+        )
         quantized = torch.ops.prime_kernels.moe_experts_fp8_quantize_weights(gate_proj, up_proj, down_proj)
         cached = (_weight_generation, quantized)
         _quantized_weights[id(experts)] = cached

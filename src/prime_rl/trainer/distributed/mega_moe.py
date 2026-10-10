@@ -1,9 +1,8 @@
-"""MoE layers as prime-mega-moe's fused BF16 Mega MoE kernel (SM90, NVLink).
+"""MoE layers as prime-mega-moe's fused Mega MoE kernels (SM90, NVLink): BF16 (routed + shared experts, the
+backward recomputes the forward) or FP8 (routed experts, the backward reads the forward's kept rows).
 
-One kernel per direction runs the whole layer: it pulls each rank's tokens through NVLink symmetric
-memory, runs the local experts' clamped SwiGLU and the shared expert, and combines the weighted
-outputs back. The backward kernel recomputes the forward from the same inputs, so the forward keeps
-nothing but its inputs.
+One kernel per direction runs the layer: it pulls each rank's tokens through NVLink symmetric memory, runs the
+local experts' clamped SwiGLU and combines the weighted outputs back.
 
 prime-mega-moe is a DeepGEMM fork whose package is also named `deep_gemm`. The trainer's FP8 linears
 need the upstream `deep_gemm`, so the fork is imported as `prime_mega_moe` (its `deep_gemm` package
@@ -188,3 +187,258 @@ def _mega_moe_backward(ctx, grad_y: torch.Tensor):
 
 
 mega_moe.register_autograd(_mega_moe_backward, setup_context=_mega_moe_setup_context)
+
+
+class MegaMoEFP8TokenDispatcher:
+    """Routed experts of a MoE layer as prime-mega-moe's SM90 FP8 Mega MoE kernels (the shared expert stays with
+    the layer).
+
+    Forward: one kernel dispatches FP8 tokens over NVLink, runs the experts' blockwise-FP8 clamped SwiGLU and combines
+    the weighted outputs. It keeps each routed row's FP8 input, bf16 gate/up output, routing weight and source as the
+    op's outputs, so activation checkpointing saves them. Backward: one kernel gathers `dy`, computes the data
+    gradients from the kept rows (no forward recompute) and returns `dx` and the top-k weight gradients; DeepGEMM's
+    K-grouped FP8 GEMMs then add the weight gradients into FSDP's fp32 accumulators.
+
+    Pools hold `capacity_factor * tokens * top_k` routed rows per rank (plus a partial block per expert); a rank
+    receiving more traps in the kernel.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_experts: int,
+        top_k: int,
+        hidden_size: int,
+        intermediate_size: int,
+        activation_clamp: float,
+        group: ProcessGroup,
+        max_tokens_per_rank: int,
+        capacity_factor: float,
+        num_sms: int | None = None,
+        wgrad_tile_scales: bool = False,
+        free_bf16_weights: bool = False,
+    ) -> None:
+        import prime_mega_moe.mega.fp8 as fp8_kernels
+
+        self.kernels = fp8_kernels
+        self.activation_clamp = activation_clamp
+        self.max_tokens_per_rank = max_tokens_per_rank
+        self.hidden_size, self.intermediate_size = hidden_size, intermediate_size
+        self.num_local_experts = num_experts // group.size()
+        self.capacity = fp8_kernels.pool_capacity(max_tokens_per_rank, top_k, self.num_local_experts, capacity_factor)
+        self.num_sms = num_sms or torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+        self.wgrad_tile_scales = wgrad_tile_scales
+        self.free_bf16_weights = free_bf16_weights
+        # Created up front: inside the first checkpointed forward, its collectives would desync recompute.
+        self.buffer = _get_fp8_buffer(group, num_experts, max_tokens_per_rank, top_k, hidden_size)
+        self._experts: GroupedExperts | None = None
+        self._id = id(self)
+        _dispatchers[self._id] = self
+
+    def synchronize(self) -> None:
+        return None
+
+    @torch.compiler.disable()
+    def run(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        experts: GroupedExperts,
+        *,
+        score_before_experts: bool,
+    ) -> torch.Tensor:
+        assert not score_before_experts, "the FP8 Mega MoE kernel weights the experts' outputs"
+        assert experts.gate_up_proj is not None, "the FP8 Mega MoE reads the packed [gate | up] expert weight"
+        assert x.shape[0] <= self.max_tokens_per_rank, (
+            f"{x.shape[0]} tokens exceed the Mega MoE buffer's {self.max_tokens_per_rank} per rank"
+        )
+        self._experts = experts
+        topk_idx = selected_experts_indices.masked_fill(top_scores == 0, -1)
+        outputs = torch.ops.prime_rl.mega_moe_fp8(x.bfloat16().contiguous(), topk_idx, top_scores.float(), self._id)
+        return outputs[0].type_as(x)
+
+    def quantized_weights(self) -> list[torch.Tensor]:
+        """The experts' FP8 weights `[w13, w13 scales, w2, w2 scales, w13^T, its scales, w2^T, its scales]`,
+        quantized once per optimizer step (shared with the prime-kernels expert path's cache)."""
+        from prime_rl.trainer.models.layers.expert_compute import FusedSwigluExpertCompute, _quantized_expert_weights
+
+        weights = _quantized_expert_weights(FusedSwigluExpertCompute, self._experts)
+        if self.free_bf16_weights:
+            # Only the quantization reads the bf16 copy. FSDP keeps the parameters unsharded for the rest of
+            # the step, so its next reshard finds the storage already freed and its next unshard reallocates it.
+            # Without FSDP the parameters are the master weights and stay.
+            for fsdp_param in getattr(self._experts, "fsdp_params", {}).values():
+                fsdp_param.free_unsharded_param()
+        return weights
+
+    def load(self, x: torch.Tensor | None, topk_idx: torch.Tensor, topk_weights: torch.Tensor | None) -> None:
+        from prime_rl.trainer.models.kernels.fp8_utils import per_token_cast_to_fp8_triton
+
+        num_tokens = topk_idx.shape[0]
+        if x is not None:
+            # 1x128 FP8 with power-of-two scales, DeepEP's FP8 dispatch format
+            x_q, x_sf = per_token_cast_to_fp8_triton(x, use_ue8m0=True)
+            self.buffer.x[:num_tokens].copy_(x_q)
+            self.buffer.x_sf[:num_tokens].copy_(x_sf)
+        self.buffer.topk_idx[:num_tokens].copy_(topk_idx)
+        if topk_weights is not None:
+            self.buffer.topk_weights[:num_tokens].copy_(topk_weights)
+
+    def l2_operand(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """The L2 operand pool (FP8 `h` and its scales), shared by every layer of the group."""
+        key = (id(self.buffer), self.capacity, self.intermediate_size)
+        if key not in _l2_operands:
+            I, C = self.intermediate_size, self.capacity
+            _l2_operands[key] = (
+                torch.empty(C, I, dtype=torch.float8_e4m3fn, device="cuda"),
+                torch.empty(I // 64, C, dtype=torch.float32, device="cuda"),
+            )
+        return _l2_operands[key]
+
+
+_fp8_buffers: dict[int, object] = {}
+# Forward-side events: the weight-gradient operand of `x` is ready, by its data pointer
+_x_t_ready: dict[int, torch.cuda.Event] = {}
+_side_streams: dict[int, torch.cuda.Stream] = {}
+
+
+def _side_stream() -> torch.cuda.Stream:
+    """This device's stream for the column quantizations that overlap other work."""
+    device = torch.cuda.current_device()
+    if device not in _side_streams:
+        _side_streams[device] = torch.cuda.Stream()
+    return _side_streams[device]
+
+
+_l2_operands: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _get_fp8_buffer(group: ProcessGroup, num_experts: int, max_tokens: int, top_k: int, hidden: int):
+    """The group's one FP8 symmetric buffer, allocated by the first layer."""
+    import prime_mega_moe.mega.fp8 as fp8_kernels
+
+    key = id(group)
+    if key not in _fp8_buffers:
+        _fp8_buffers[key] = fp8_kernels.FP8SymmBuffer(group, num_experts, max_tokens, top_k, hidden)
+    buffer = _fp8_buffers[key]
+    assert (buffer.num_experts, buffer.num_max_tokens_per_rank, buffer.num_topk, buffer.hidden) == (
+        num_experts,
+        max_tokens,
+        top_k,
+        hidden,
+    ), "every Mega MoE layer of a group must share one buffer shape"
+    return buffer
+
+
+@torch.library.custom_op("prime_rl::mega_moe_fp8", mutates_args=())
+def mega_moe_fp8(
+    x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor, dispatcher_id: int
+) -> list[torch.Tensor]:
+    """Routed experts of one MoE layer, combined and weighted by `topk_weights`, then what the backward reads: the
+    FP8 inputs quantized per column for the gate/up weight gradient (and their scales), the bf16 gate/up, routing
+    weights, sources and per-expert row counts of the pool rows."""
+    dispatcher = _dispatchers[dispatcher_id]
+    w13_q, w13_sf, w2_q, w2_sf, *_ = dispatcher.quantized_weights()
+    h, h_sf = dispatcher.l2_operand()
+    pools = dispatcher.kernels.FP8Pools.allocate(
+        dispatcher.capacity, dispatcher.hidden_size, dispatcher.intermediate_size, dispatcher.num_local_experts, h, h_sf
+    )
+    dispatcher.load(x, topk_idx, topk_weights)
+    y = torch.empty_like(x)
+    dispatcher.kernels.fp8_mega_moe(
+        y,
+        (w13_q, w13_sf),
+        (w2_q, w2_sf),
+        pools,
+        dispatcher.buffer,
+        activation_clamp=dispatcher.activation_clamp,
+        fast_math=True,
+        num_sms=dispatcher.num_sms,
+    )
+    # The weight-gradient operand of `x`, on a side stream beside the next layers; the backward waits for it
+    side_stream = _side_stream()
+    side_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side_stream):
+        x_t, x_t_sf = dispatcher.kernels.x_weight_grad_operand(pools, dispatcher.wgrad_tile_scales)
+        _x_t_ready[x_t.data_ptr()] = side_stream.record_event()
+    for t in (pools.x, pools.x_sf, pools.counts, x_t, x_t_sf):
+        t.record_stream(side_stream)
+    return [y, x_t, x_t_sf, pools.z, pools.weights, pools.meta, pools.counts]
+
+
+@mega_moe_fp8.register_fake
+def _mega_moe_fp8_fake(x, topk_idx, topk_weights, dispatcher_id):
+    dispatcher = _dispatchers[dispatcher_id]
+    C, H, I = dispatcher.capacity, dispatcher.hidden_size, dispatcher.intermediate_size
+    return [
+        torch.empty_like(x),
+        x.new_empty(C * H, dtype=torch.float8_e4m3fn),
+        x.new_empty(C // 128, H // 128 if dispatcher.wgrad_tile_scales else H, dtype=torch.float32),
+        x.new_empty(C, 2 * I),
+        x.new_empty(C, dtype=torch.float32),
+        x.new_empty(C, 3, dtype=torch.int32),
+        x.new_empty(dispatcher.num_local_experts, dtype=torch.int32),
+    ]
+
+
+def _mega_moe_fp8_setup_context(ctx, inputs, output) -> None:
+    x, topk_idx, topk_weights, dispatcher_id = inputs
+    ctx.dispatcher_id = dispatcher_id
+    ctx.weights_dtype = topk_weights.dtype
+    ctx.save_for_backward(topk_idx, *output[1:])
+    # Only `y` carries gradient; the pools are returned only to be saved.
+    ctx.set_materialize_grads(False)
+
+
+def _mega_moe_fp8_backward(ctx, grads):
+    from prime_rl.trainer.models.layers.expert_compute import _fp32_grad_accumulator
+
+    grad_y = grads[0]
+    topk_idx, x_t, x_t_sf, z, weights, meta, counts = ctx.saved_tensors
+    torch.cuda.current_stream().wait_event(_x_t_ready.pop(x_t.data_ptr()))
+    dispatcher = _dispatchers[ctx.dispatcher_id]
+    kernels = dispatcher.kernels
+    _, _, _, _, w13_t, w13_t_sf, w2_t, w2_t_sf = dispatcher.quantized_weights()
+    # The backward kernel reads every pool but `x`
+    pools = kernels.FP8Pools(None, None, z, weights, meta, counts)
+    bufs = kernels.FP8BackwardBuffers(dispatcher.capacity, dispatcher.hidden_size, dispatcher.intermediate_size)
+    num_tokens = topk_idx.shape[0]
+    dispatcher.buffer.dy[:num_tokens].copy_(grad_y)
+    dispatcher.load(None, topk_idx, None)
+    grad_x = torch.empty_like(grad_y, dtype=torch.bfloat16)
+    grad_weights = torch.empty(topk_idx.shape, dtype=torch.float32, device=grad_y.device)
+    kernels.fp8_mega_moe_backward(
+        grad_x,
+        grad_weights,
+        (w13_t, w13_t_sf),
+        (w2_t, w2_t_sf),
+        pools,
+        bufs,
+        dispatcher.buffer,
+        activation_clamp=dispatcher.activation_clamp,
+        fast_math=True,
+        num_sms=dispatcher.num_sms,
+    )
+    experts = dispatcher._experts
+    fsdp_params = getattr(experts, "fsdp_params", None)
+    if fsdp_params is not None:
+        dw13 = _fp32_grad_accumulator(fsdp_params["gate_up_proj"])
+        dw2 = _fp32_grad_accumulator(fsdp_params["down_proj"])
+        kernels.fp8_mega_moe_weight_grads(
+            counts, bufs, (x_t, x_t_sf), dw13, dw2, _side_stream(), dispatcher.wgrad_tile_scales
+        )
+    else:
+        # Without FSDP the experts' plain parameters take the gradients.
+        params = (experts.gate_up_proj, experts.down_proj)
+        accumulators = [torch.zeros(_to_local(p).shape, dtype=torch.float32, device=grad_y.device) for p in params]
+        kernels.fp8_mega_moe_weight_grads(
+            counts, bufs, (x_t, x_t_sf), *accumulators, _side_stream(), dispatcher.wgrad_tile_scales
+        )
+        for param, accumulator in zip(params, accumulators):
+            grad = accumulator.to(param.dtype)
+            param.grad = grad if param.grad is None else param.grad + grad
+    return grad_x, None, grad_weights.to(ctx.weights_dtype), None
+
+
+mega_moe_fp8.register_autograd(_mega_moe_fp8_backward, setup_context=_mega_moe_fp8_setup_context)

@@ -107,22 +107,37 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         if isinstance(dispatch, MegaMoEDispatchConfig):
             if ep_mesh is None:
                 raise ValueError("model.moe.dispatch.type='mega_moe' requires expert parallelism (model.ep > 1).")
-            from prime_rl.trainer.distributed.mega_moe import MegaMoETokenDispatcher
+            from prime_rl.trainer.distributed.mega_moe import MegaMoEFP8TokenDispatcher, MegaMoETokenDispatcher
 
             num_experts, hidden_size, intermediate_size = moe.experts.down_proj.shape
-            shared_limit = getattr(moe.shared_expert, "limit", moe.experts.activation.limit)
-            assert shared_limit == moe.experts.activation.limit, "Mega MoE applies one clamp to both expert kinds"
-            token_dispatcher = MegaMoETokenDispatcher(
-                num_experts=num_experts,
-                top_k=moe.router.top_k,
-                hidden_size=hidden_size,
-                intermediate_size=intermediate_size,
-                num_shared_experts=int(moe.shared_expert is not None),
-                activation_clamp=moe.experts.activation.limit,
-                group=ep_mesh.get_group(),
-                max_tokens_per_rank=dispatch.max_tokens_per_rank or config.seq_len,
-                num_sms=dispatch.num_sms,
-            )
+            if dispatch.fp8:
+                token_dispatcher = MegaMoEFP8TokenDispatcher(
+                    num_experts=num_experts,
+                    top_k=moe.router.top_k,
+                    hidden_size=hidden_size,
+                    intermediate_size=intermediate_size,
+                    activation_clamp=moe.experts.activation.limit,
+                    group=ep_mesh.get_group(),
+                    max_tokens_per_rank=dispatch.max_tokens_per_rank or config.seq_len,
+                    capacity_factor=dispatch.capacity_factor,
+                    num_sms=dispatch.num_sms,
+                    wgrad_tile_scales=dispatch.wgrad_tile_scales,
+                    free_bf16_weights=dispatch.free_bf16_expert_weights,
+                )
+            else:
+                shared_limit = getattr(moe.shared_expert, "limit", moe.experts.activation.limit)
+                assert shared_limit == moe.experts.activation.limit, "Mega MoE applies one clamp to both expert kinds"
+                token_dispatcher = MegaMoETokenDispatcher(
+                    num_experts=num_experts,
+                    top_k=moe.router.top_k,
+                    hidden_size=hidden_size,
+                    intermediate_size=intermediate_size,
+                    num_shared_experts=int(moe.shared_expert is not None),
+                    activation_clamp=moe.experts.activation.limit,
+                    group=ep_mesh.get_group(),
+                    max_tokens_per_rank=dispatch.max_tokens_per_rank or config.seq_len,
+                    num_sms=dispatch.num_sms,
+                )
         elif ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,

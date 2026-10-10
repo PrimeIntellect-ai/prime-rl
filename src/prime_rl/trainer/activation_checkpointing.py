@@ -36,6 +36,7 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
         "prime_rl::dsv41_index_topk",
         "prime_rl::deepep_moe",
         "prime_rl::mega_moe",
+        "prime_rl::mega_moe_fp8",
         "prime_kernels::dsv41_index_topk",
         "prime_kernels::select_indexed_blocks",
         "prime_rl::record_moe_routing_statistics",

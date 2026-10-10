@@ -302,6 +302,25 @@ class MegaMoEDispatchConfig(BaseConfig):
     """SMs the Mega MoE kernels run on. Defaults to every SM; fewer leaves room for collectives that
     overlap them (the kernel's blocks wait on other ranks, so it needs all of its blocks resident)."""
 
+    fp8: bool = False
+    """Use the SM90 FP8 Mega MoE instead: the routed experts in blockwise FP8 (prime-kernels' recipe), with
+    the forward keeping each routed row's FP8 input and bf16 gate/up output so the backward does not
+    recompute it. The shared expert stays with the layer."""
+
+    capacity_factor: float = Field(1.25, gt=0)
+    """FP8 only: routed rows per rank the kept pools hold, as a multiple of ``max_tokens_per_rank * top_k``
+    (plus one partial block per local expert). A rank receiving more rows stops with a device-side error."""
+
+    wgrad_tile_scales: bool = False
+    """FP8 only: quantize the weight gradients' ``x`` and ``dy`` operands per 128 x 128 tile instead of per column
+    over each 128 rows, so the K-grouped GEMMs promote with one FFMA per element (the other operand keeps per-column
+    scales). Changes numerics; ~0.5 ms less per layer in the weight-gradient GEMMs on H200."""
+
+    free_bf16_expert_weights: bool = False
+    """FP8 only: free the local experts' unsharded bf16 weights once they are quantized for the step, so only the
+    FP8 copies the kernels read stay resident (2 bytes less per local expert parameter: 3.4 GB per V4.1 layer at EP8).
+    FSDP all-gathers them again at the next step's first forward. Same numerics."""
+
 
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoEDispatchConfig,
@@ -328,6 +347,9 @@ class MoERuntimeConfig(BaseConfig):
                 raise ValueError("dispatch.fp8 requires compute.type = 'deepgemm_fp8'")
         if isinstance(self.dispatch, DeepEPMoEDispatchConfig) and self.dispatch.fp8_grad and not self.dispatch.fp8:
             raise ValueError("dispatch.fp8_grad requires dispatch.fp8")
+        if isinstance(self.dispatch, MegaMoEDispatchConfig) and self.dispatch.free_bf16_expert_weights:
+            if not self.dispatch.fp8:
+                raise ValueError("dispatch.free_bf16_expert_weights requires dispatch.fp8")
         return self
 
 
