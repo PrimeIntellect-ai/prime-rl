@@ -148,7 +148,13 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+    prepare = partial(
+        prepare_micro_batch,
+        processor=processor,
+        mm_adapter=mm_adapter,
+        cp_rank=parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0,
+        cp_size=parallel_dims.cp,
+    )
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
@@ -235,8 +241,6 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
-            cp_rank=parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0,
-            cp_size=parallel_dims.cp,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 

@@ -560,7 +560,7 @@ def test_payload_by_handle_matches_inline(tmp_path):
     tensors as the inline path, through truncation, packing, padding and CP windows."""
     import torch
 
-    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.trainer.rl.data import DataLoader, prepare_micro_batch
     from prime_rl.trainer.rl.loss import shift_tensor_left
     from prime_rl.transports.batch.types import SamplingMask
     from prime_rl.transports.payload import PayloadSegment, clip_segments, ragged_bytes
@@ -611,14 +611,13 @@ def test_payload_by_handle_matches_inline(tmp_path):
     for cp_size in (1, 2):
         inline_batches = prepare_batch(inline, 32, 2, bin_cost, pad_to_multiple_of=cp_size)
         handle_batches = prepare_batch(by_handle, 32, 2, bin_cost, pad_to_multiple_of=cp_size)
+        loader = object.__new__(DataLoader)
         for cp_rank in range(cp_size):
-            loader = object.__new__(DataLoader)
-            loader.cp_rank, loader.cp_size = cp_rank, cp_size
             for expected_mb, actual_mb in zip(
                 _flatten_batches(inline_batches), _flatten_batches(handle_batches), strict=True
             ):
                 expected = loader._micro_batch_to_tensor(expected_mb)
-                actual = loader._micro_batch_to_tensor(actual_mb)
+                actual = prepare_micro_batch(loader._micro_batch_to_tensor(actual_mb), None, None, cp_rank, cp_size)
                 assert actual["payload_cp_window"]
                 routed = shard_for_cp(expected["routed_experts"], cp_rank, cp_size)
                 sampling = expected["sampling_mask"]
@@ -634,7 +633,7 @@ def test_payload_by_handle_matches_inline(tmp_path):
 def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
     """An inline-mask sample and a by-handle-mask sample never share a micro batch, so
     reading the payload cannot overwrite the inline mask."""
-    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.trainer.rl.data import DataLoader, prepare_micro_batch
     from prime_rl.transports.batch.types import SamplingMask
     from prime_rl.transports.payload import PayloadSegment, ragged_bytes
 
@@ -649,9 +648,11 @@ def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
     by_handle = TrainingSample(**sample, payload=[PayloadSegment("sampling_mask", path, 0, 1, 1, "uint32", [])])
 
     loader = object.__new__(DataLoader)
-    loader.cp_rank, loader.cp_size = 0, 1
     batches = _flatten_batches(prepare_batch([inline, by_handle], 32, 1, build_bin_cost(None)))
-    masks = {mb.payload is None: loader._micro_batch_to_tensor(mb)["sampling_mask"][0] for mb in batches}
+    masks = {
+        mb.payload is None: prepare_micro_batch(loader._micro_batch_to_tensor(mb), None, None, 0, 1)["sampling_mask"][0]
+        for mb in batches
+    }
     # Inline masks sit at the sampled position; by-handle ones are read shifted onto the labels.
     assert masks[True][1].tolist() == [5, 6]
     assert masks[False][0].tolist() == [5, 6]
