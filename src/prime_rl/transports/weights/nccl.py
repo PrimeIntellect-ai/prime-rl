@@ -319,6 +319,7 @@ class NCCLWeightReceiver(WeightReceiver):
             on_membership_change=self.on_membership_change,
             abort_marker=lambda: self.step_dir(step) / f".abort_{self.port}",
             resend=lambda: self._resend(step),
+            checksum=self.config.checksum,
         )
 
     async def _resend(self, step: int) -> bool:

@@ -17,7 +17,7 @@ from modelexpress.client import MxClient
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import update_mla_absorbed_weights
+from prime_rl.inference.vllm.worker.weight_transfer import collect_weight_checksums, update_mla_absorbed_weights
 from prime_rl.transports.weights.nixl.agent import (
     MemDesc,
     NixlAgent,
@@ -90,6 +90,9 @@ class NIXLWeightUpdateWorker(Worker):
 
     def liveness_probe(self) -> None:
         return None
+
+    def weight_checksums(self) -> dict:
+        return collect_weight_checksums(self.raw_model, self.parallel_config)
 
     def init_broadcaster(
         self,

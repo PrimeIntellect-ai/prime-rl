@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal
@@ -22,7 +23,7 @@ from verifiers.v1.configs.client import (
 )
 
 from prime_rl.configs.algorithm import FrozenModelConfig
-from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
+from prime_rl.configs.shared import ClientConfig, PolicyClientConfig, WeightChecksumConfig
 from prime_rl.orchestrator.inference_metrics import parse_prometheus_text
 from prime_rl.utils.logger import get_logger
 
@@ -114,6 +115,9 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
+    last_checksum_time: float = 0.0
+    checksum_mismatches: int = 0
+
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
@@ -198,6 +202,7 @@ class AdminPlane:
         transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        checksum: WeightChecksumConfig | None = None,
         on_membership_change: Callable[[list[AsyncClient], int], Awaitable[None]] | None = None,
         abort_marker: Callable[[], Path] | None = None,
         resend: Callable[[], Awaitable[bool]] | None = None,
@@ -233,6 +238,8 @@ class AdminPlane:
                     members, retry = await self._transfer(members, weight_dir_posix, abort_marker, resend)
                     if not retry:
                         break
+                if checksum is not None:
+                    members = await self.verify_weight_checksums(members, step, fail_on_mismatch=checksum.fail_on_mismatch)
             finally:
                 resumed = await self._each(members, "/resume")
         finally:
@@ -436,9 +443,58 @@ class AdminPlane:
                 succeeded.append(client)
         return succeeded
 
+    async def verify_weight_checksums(
+        self, members: list[AsyncClient], step: int, *, fail_on_mismatch: bool
+    ) -> list[AsyncClient]:
+        """Compare the weight checksums of the engine workers among ``members`` that hold the same
+        shard. While eviction runs, an engine that fails to answer is evicted like any admin op.
+        Returns the members still standing."""
+        start = time.perf_counter()
+        checksums: dict[AsyncClient, list[dict]] = {}
+
+        async def post(client: AsyncClient, op: str, **kwargs) -> None:
+            checksums[client] = (await _admin_post(client, op, **kwargs)).json()["checksums"]
+
+        members = await self._each(members, "/weight_checksums", post=post, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S)
+        engines = [checksums[client] for client in members]
+        mismatches = find_checksum_mismatches(engines)
+        self.last_checksum_time = time.perf_counter() - start
+        get_logger().debug(f"Computed weight checksums for policy v{step} in {self.last_checksum_time:.2f}s")
+        shards = Counter(worker["shard"] for workers in engines for worker in workers)
+        if not shards or max(shards.values()) < 2:
+            # A misconfiguration at launch, or every other holder of a shard was evicted
+            get_logger().warning("Weight checksums need at least two engines that hold the same weight shards")
+            return members
+        if not mismatches:
+            return members
+        self.checksum_mismatches += 1
+        message = (
+            f"Weight checksums of policy v{step} mismatch for {len(mismatches)} tensors: {', '.join(mismatches[:10])}"
+        )
+        if fail_on_mismatch:
+            raise RuntimeError(message)
+        get_logger().warning(message)
+        return members
+
     async def aclose(self) -> None:
         for client in self.clients + self.evicted + self._router_clients:
             await client.aclose()
+
+
+def find_checksum_mismatches(engines: list[list[dict]]) -> list[str]:
+    """Compare every worker with the first worker that holds the same shard.
+
+    ``engines[engine]`` lists that engine's workers as ``{"shard": str, "checksums": {param: int}}``."""
+    reference: dict[str, tuple[int, dict[str, int]]] = {}
+    mismatches = []
+    for engine, workers in enumerate(engines):
+        for worker in workers:
+            ref_engine, expected = reference.setdefault(worker["shard"], (engine, worker["checksums"]))
+            actual = worker["checksums"]
+            for name in sorted(expected.keys() | actual.keys()):
+                if expected.get(name) != actual.get(name):
+                    mismatches.append(f"engine{engine}/{worker['shard']}/{name} != engine{ref_engine}")
+    return mismatches
 
 
 def setup_admin_plane(client_config: PolicyClientConfig, model_name: str) -> AdminPlane:
@@ -638,7 +694,9 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs
+) -> httpx.Response:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
@@ -656,6 +714,7 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
                 **kwargs,
             )
             response.raise_for_status()
+            return response
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:

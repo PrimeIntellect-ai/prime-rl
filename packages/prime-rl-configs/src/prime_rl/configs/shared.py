@@ -38,11 +38,23 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
 
+class WeightChecksumConfig(BaseConfig):
+    fail_on_mismatch: bool = False
+    """Raise instead of logging a warning when the engines' weight checksums disagree."""
+
+
 class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 3600
     """Timeout in seconds for the broadcast handshake and transfer, including the orchestrator's wait
     for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
     offered version in time. Raise it for large models on slow shared filesystems."""
+
+    checksum: WeightChecksumConfig | None = None
+    """After every full weight update (not LoRA adapters), checksum each inference engine's parameters while the
+    engines are paused and compare the engines that have the same parallel layout (TP, PP, and with EP the DP
+    size). Needs at least two engines per layout (in P/D, two replicas of each role) and EPLB off; otherwise a
+    warning is logged instead. Only DP rank 0 of each engine is checked. Not compared against the trainer: vLLM stores
+    fused/converted parameters that differ from the trainer's HF tensors."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
