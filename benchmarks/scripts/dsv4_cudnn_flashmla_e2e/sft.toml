@@ -1,0 +1,49 @@
+# End-to-end A/B of `model.dsa_backend` (tilelang vs cudnn_flashmla) on the DeepSeek V4 Flash 6-layer proxy:
+# one 8xH200 node, cp 8, ep 8, real weights, long real SFT documents. `launch.sh` sets the backend, the run
+# name, the W&B name and tags, and the per-run caches; everything that must match across arms is here.
+
+max_steps = 20
+dist_timeout_seconds = 14400
+
+[model]
+name = "deepseek-ai/DeepSeek-V4-Flash-0731"
+cp = 8
+ep = 8
+dsa_backend = "tilelang"
+optim_cpu_offload = false
+fsdp_cpu_offload = false
+ac_offloading = "None"
+
+[model.debug]
+num_layers = 6
+
+[model.moe.dispatch]
+type = "torch"
+
+[model.ac]
+freq = 1
+
+[renderer]
+name = "deepseek-v4"
+enable_thinking = true
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-4-SFT"
+revision = "4c7951d04202eb4d428631d18697402c2b8b1871"
+subsets = ["swerebench-v2--bash--max", "scaleswe--bash--max"]
+seed = 0
+seq_len = 65536
+batch_size = 4
+micro_batch_size = 1
+
+[optim]
+lr = 1e-5
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "deepseek-v4-flash"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
