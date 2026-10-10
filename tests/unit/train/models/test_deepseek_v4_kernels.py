@@ -209,7 +209,7 @@ SM_SCALE = DIM**-0.5
 SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
 SHAPE_IDS = ["aligned", "misaligned", "batched"]
 
-DSV4_BACKENDS = ["tilelang"]
+DSV4_BACKENDS = ["tilelang", "cute"]
 
 # What a real query with a short window or a saturated top-k looks like; a masked slot still
 # costs a GEMM column.

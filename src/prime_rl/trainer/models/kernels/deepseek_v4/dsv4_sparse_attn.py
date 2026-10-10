@@ -129,7 +129,29 @@ def _tilelang_forward(
     return out, lse
 
 
-FORWARD_BACKENDS = {"tilelang": _tilelang_forward}
+def _cute_forward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float | None,
+    block_I: int,
+    num_stages: int,
+    threads: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    # Imported here so that the TileLang path never pays CuTe DSL's multi-second import.
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd_cute import dsv4_sparse_attn_fwd_cute
+
+    assert (block_I, num_stages, threads) == (SLOT_TILE, 2, 256), (
+        f"the CuTe forward is fixed at block_I={SLOT_TILE}, num_stages=2, threads=256, "
+        f"got {block_I}, {num_stages}, {threads}"
+    )
+    indices = _pad_slots_to_tile(indices)
+    tile_counts = num_tiles_covering_valid_slots(indices, SLOT_TILE)
+    return dsv4_sparse_attn_fwd_cute(q, kv, indices, sinks.float().contiguous(), tile_counts, sm_scale)
+
+
+FORWARD_BACKENDS = {"tilelang": _tilelang_forward, "cute": _cute_forward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn", mutates_args=())
@@ -209,7 +231,7 @@ def _tilelang_backward(
     return dq, dkv, delta
 
 
-BACKWARD_BACKENDS = {"tilelang": _tilelang_backward}
+BACKWARD_BACKENDS = {"tilelang": _tilelang_backward, "cute": _tilelang_backward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn_backward", mutates_args=())
