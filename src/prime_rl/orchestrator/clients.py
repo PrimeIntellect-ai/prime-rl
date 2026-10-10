@@ -123,6 +123,12 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
+        # Engine eviction (``monitor_health``): engines that failed a health check or an
+        # admin op leave ``clients`` for ``evicted``; ``recovered`` are evicted engines that
+        # answer again and rejoin at the next weight update.
+        self.evicted: list[AsyncClient] = []
+        self.recovered: set[AsyncClient] = set()
+        self.evicting = False
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -185,6 +191,9 @@ class AdminPlane:
     ) -> None:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
+        if self.evicting:
+            await self._update_weights_evicting(weight_dir_posix, step=step, on_paused=on_paused)
+            return
 
         await _pause_engines(self.clients, step=step)
         try:
@@ -204,8 +213,98 @@ class AdminPlane:
         finally:
             await _resume_engines(self.clients)
 
+    async def monitor_health(self, interval: float = 10.0, failures: int = 3) -> None:
+        """Keep running on the surviving engines when one dies, instead of failing the run.
+        Only for transports whose sender does not track the receiving engines (filesystem).
+        While this runs, an engine is evicted after ``failures`` consecutive failed
+        ``/liveness`` probes or a failed admin op and removed from the router. Once it answers
+        again (e.g. after a relaunch), it gets the next weight update and is re-added."""
+        self.evicting = True
+        consecutive: dict[AsyncClient, int] = {}
+        while True:
+            await asyncio.sleep(interval)
+            clients = self.clients + self.evicted
+            live = await asyncio.gather(*(_is_live(client) for client in clients))
+            for client, ok in zip(clients, live):
+                if client in self.evicted:
+                    if ok and client not in self.recovered:
+                        get_logger().info(
+                            f"Evicted inference engine {client.base_url} answers again; it rejoins at the next weight update"
+                        )
+                        self.recovered.add(client)
+                    elif not ok:
+                        self.recovered.discard(client)
+                    continue
+                consecutive[client] = 0 if ok else consecutive.get(client, 0) + 1
+                if consecutive[client] >= failures:
+                    consecutive[client] = 0
+                    await self._evict(client, f"{failures} failed /liveness probes")
+
+    async def _evict(self, client: AsyncClient, reason: str) -> None:
+        if client not in self.clients:
+            return
+        self.clients.remove(client)
+        self.evicted.append(client)
+        self.recovered.discard(client)
+        get_logger().warning(f"Evicted inference engine {client.base_url} ({reason}); {len(self.clients)} engines left")
+        if not self.clients:
+            raise RuntimeError("Every inference engine was evicted")
+        await self._set_routed(client, False)
+
+    async def _set_routed(self, client: AsyncClient, routed: bool) -> None:
+        """Add or remove an engine from the client-facing vllm-router. Best effort: the router's
+        own health check also ejects an engine that stops answering."""
+        url = str(client.base_url).rstrip("/")
+        for router in self._router_clients:
+            try:
+                await _admin_post(
+                    router, "/add_worker" if routed else "/remove_worker", timeout_s=10.0, params={"url": url}
+                )
+            except Exception as error:
+                get_logger().warning(
+                    f"Could not {'add' if routed else 'remove'} {url} on router {router.base_url}: {error!r}"
+                )
+
+    async def _each(self, clients: list[AsyncClient], op: str, **kwargs) -> list[AsyncClient]:
+        """Run one admin op on every client; evict the ones that fail and return the rest."""
+        results = await asyncio.gather(
+            *(_admin_post(client, op, **kwargs) for client in clients), return_exceptions=True
+        )
+        succeeded = []
+        for client, result in zip(clients, results):
+            if isinstance(result, Exception):
+                if client in self.clients:
+                    await self._evict(client, f"{op} failed: {result!r}")
+                else:
+                    self.recovered.discard(client)
+            else:
+                succeeded.append(client)
+        return succeeded
+
+    async def _update_weights_evicting(
+        self, weight_dir: str | None, *, step: int, on_paused: Callable[[], None] | None
+    ) -> None:
+        rejoining = [client for client in self.evicted if client in self.recovered]
+        get_logger().debug(f"Pausing inference engines to update weights to policy v{step}")
+        paused = await self._each(self.clients + rejoining, "/pause", params={"mode": "keep", "clear_cache": "false"})
+        try:
+            if on_paused is not None:
+                on_paused()
+            updated = await self._each(
+                paused, "/update_weights", json={"weight_dir": weight_dir}, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S
+            )
+        finally:
+            resumed = await self._each(paused, "/resume")
+        for client in rejoining:
+            if client in updated and client in resumed:
+                self.evicted.remove(client)
+                self.recovered.discard(client)
+                self.clients.append(client)
+                await self._set_routed(client, True)
+                get_logger().info(f"Inference engine {client.base_url} rejoined at policy v{step}")
+
     async def aclose(self) -> None:
-        for client in self.clients + self._router_clients:
+        for client in self.clients + self.evicted + self._router_clients:
             await client.aclose()
 
 
@@ -353,6 +452,14 @@ async def check_health(
         raise TimeoutError(msg)
 
     await asyncio.gather(*[_check_health(admin_client) for admin_client in admin_clients])
+
+
+async def _is_live(client: AsyncClient) -> bool:
+    try:
+        response = await client.get("/liveness", timeout=60.0)
+    except httpx.HTTPError:
+        return False
+    return response.status_code in (200, 404)
 
 
 def _is_retryable_admin_error(exception: BaseException) -> bool:

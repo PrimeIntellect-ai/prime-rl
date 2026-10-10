@@ -396,6 +396,14 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
+        # Filesystem broadcast does not track the receiving engines, so a dead engine can be
+        # evicted and the run continues on the others (one engine has nothing to fall back to).
+        if (
+            self.config.weight_broadcast.type == "filesystem"
+            and type(self.admin_plane) is AdminPlane
+            and len(self.admin_plane.clients) > 1
+        ):
+            self.component_tasks.append(asyncio.create_task(self.admin_plane.monitor_health(), name="inference_health"))
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
