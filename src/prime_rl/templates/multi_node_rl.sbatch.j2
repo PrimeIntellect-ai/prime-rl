@@ -599,17 +599,25 @@ while true; do
 done
 
 REMAINING_PIDS=$(jobs -p)
-{%- if cleanup_grace_period %}
+{%- if cleanup_grace_period and ckpt_dir %}
 # Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer
 # tasks only once a task *exits* non-zero. So on a non-zero exit (crash, SIGTERM,
-# wall-time) we stay alive for the grace period and signal nothing: this lets an
-# in-flight trainer checkpoint on this node finish, and — because the task has
-# not exited yet — keeps --kill-on-bad-exit from reaping checkpointing trainers
-# on peer nodes. We then propagate the exit code so the allocation tears down. A
-# clean (zero) exit cannot trip --kill-on-bad-exit, so we tear down immediately.
+# wall-time) we stay alive and signal nothing while the newest trainer checkpoint
+# is still being written (no DCP `.metadata` yet), up to the grace period: this lets
+# it finish on this node, and — because the task has not exited yet — keeps
+# --kill-on-bad-exit from reaping checkpointing trainers on peer nodes. We then
+# propagate the exit code so the allocation tears down. A clean (zero) exit cannot
+# trip --kill-on-bad-exit, so we tear down immediately.
 if [ "$EXIT_CODE" -ne 0 ]; then
-    echo "[$(hostname)] component exited with code $EXIT_CODE - waiting up to {{ cleanup_grace_period }}s for in-flight checkpoints to flush before teardown"
-    sleep {{ cleanup_grace_period }}
+    echo "[$(hostname)] component exited with code $EXIT_CODE - waiting up to {{ cleanup_grace_period }}s for an in-flight trainer checkpoint to finish before teardown"
+    GRACE_DEADLINE=$((SECONDS + {{ cleanup_grace_period }}))
+    while [ "$SECONDS" -lt "$GRACE_DEADLINE" ]; do
+        LATEST_CKPT=$(ls -d {{ ckpt_dir }}/step_*/trainer 2>/dev/null | sort -V | tail -n 1)
+        if [ -z "$LATEST_CKPT" ] || [ -f "$LATEST_CKPT/.metadata" ]; then
+            break
+        fi
+        sleep 10
+    done
 fi
 {%- endif %}
 echo "[$(hostname)] tearing down (exit code $EXIT_CODE) - terminating remaining processes"

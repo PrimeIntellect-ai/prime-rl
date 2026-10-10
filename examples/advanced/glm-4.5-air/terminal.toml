@@ -22,10 +22,6 @@ num_infer_replicas = 4
 project = "terminal-ablations"
 name = "glm45air-terminal"
 
-[weight_broadcast]
-type = "nccl"
-timeout = 3600
-
 [ckpt]
 interval = 50
 keep_last = 1

@@ -86,11 +86,6 @@ SHUTDOWN_TIMEOUT_S = 300
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
-# Default wait for the trainer's startup weight broadcast when no ckpt block
-# configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
-# broadcast is always coming, so wait rather than fail immediately.
-STARTUP_WEIGHT_WAIT_TIMEOUT_S = 1200
-
 
 class Orchestrator:
     # Set in ``__init__``
@@ -302,9 +297,6 @@ class Orchestrator:
         # scratch). The startup broadcast is always coming, so wait for it rather
         # than failing immediately when it is not there yet.
         sync_version = self.resume_step if self.resume_step is not None else 0
-        wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
-            STARTUP_WEIGHT_WAIT_TIMEOUT_S
-        )
 
         self.eval_source: EvalSource | None = (
             EvalSource(
@@ -330,7 +322,7 @@ class Orchestrator:
             progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            tasks_per_minute=config.tasks_per_minute,
+            dispatch_per_minute=config.dispatch_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
@@ -383,7 +375,7 @@ class Orchestrator:
 
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
-        await self.watcher.sync_startup(sync_version, timeout=wait_timeout)
+        await self.watcher.sync_startup(sync_version, timeout=config.weight_broadcast.timeout)
         get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
 
     async def start(self) -> None:

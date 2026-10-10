@@ -320,6 +320,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         "modelexpress_redis_port": 6380 if nixl_broadcast is not None and nixl_broadcast.port == 6379 else 6379,
     }
 
+    ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
@@ -342,6 +344,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
@@ -387,6 +390,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
