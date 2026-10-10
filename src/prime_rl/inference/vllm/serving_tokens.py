@@ -12,7 +12,7 @@ raw bytes (the form the PD router can merge and the renderers parse),
 ``logprobs.content``, and ``sampling_mask`` as CSR ``{ids, counts}`` int32 arrays
 instead of one list per token. A request whose ``sampling_params.extra_args``
 carries a ``payload_dir`` (the orchestrator's train rollouts on multi-node runs)
-gets its ``routed_experts`` and ``sampling_mask`` written to one file there and
+gets its per-token side arrays (``PAYLOAD_FIELDS``) written to one file there and
 returned as ``payload`` segments instead.
 
 Per-token Python objects are what makes the API server slow under RL load:
@@ -49,7 +49,7 @@ from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
 from prime_rl.inference.vllm.routed_experts import compact_routed_experts, serialize_routed_experts
-from prime_rl.transports.payload import RAGGED_FIELDS, ragged_bytes
+from prime_rl.transports.payload import PAYLOAD_FIELDS, ragged_bytes
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
@@ -158,9 +158,9 @@ def _write_payload(directory: Path, arrays: list[tuple[str, int, Any]]) -> list[
     offset = 0
     with open(path, "wb") as f:
         for field, pos, rows in arrays:
-            if field in RAGGED_FIELDS:
+            if PAYLOAD_FIELDS[field].ragged:
                 counts, values = rows
-                data = ragged_bytes(counts, values, offset)
+                data = ragged_bytes(field, counts, values, offset)
                 segment = dict(rows=len(counts), dtype="uint32", shape=[])
             else:
                 data = memoryview(rows).cast("B")
