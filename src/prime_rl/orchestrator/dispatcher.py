@@ -321,6 +321,10 @@ class Dispatcher:
             if meta.kind == "train" and self.train_envs.get(meta.env_name).uses_live_policy
         ]
 
+    def open_train_groups(self) -> dict[str, tuple[str, vf.Task]]:
+        """Env and task of each train group that has not emitted all its episodes."""
+        return {str(gid): (group.env_name, group.task) for gid, group in self.groups.items() if group.kind == "train"}
+
     # ── lifecycle ──────────────────────────────────────────────────────────
 
     async def start(self) -> None:
