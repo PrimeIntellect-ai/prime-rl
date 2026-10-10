@@ -102,7 +102,7 @@ The RL entrypoint supports several training algorithms, switched via `[orchestra
 
 A new algorithm is a named class in code, not a config — see [Algorithms § Authoring an Algorithm](algorithms.md#authoring-an-algorithm).
 
-Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.train.algo.teacher]` for `opd` (the frozen model scored against), `[orchestrator.train.algo.sampling.source]` for `sft` (the model it samples from) — each with `name` + `base_url`. `opsd` declares no frozen model: it self-distills against the live policy. The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
+Frozen models are declared inline on the algorithm, named where the model is used — `[orchestrator.train.algo.teacher]` for `opd` (the frozen model scored against), `[orchestrator.train.algo.teacher]` for `sft` (the model it samples from) — each with `name` + `base_url`. `opsd` declares no frozen model: it self-distills against the live policy. The `rl` entrypoint only manages policy inference — start frozen-model servers yourself and point `base_url` at them:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run inference \

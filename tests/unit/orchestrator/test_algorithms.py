@@ -31,14 +31,14 @@ def _ref_kind(ref):
 
 # The vetted default of each algorithm: which model it samples from and which
 # loss component its action tokens feed. opd alone names a frozen ``teacher``;
-# sft samples from a frozen ``sampling.source``; the rest run on the policy.
+# sft samples from its frozen ``teacher``; the rest run on the policy.
 @pytest.mark.parametrize(
     ("algorithm_type", "build_kwargs", "source", "action_loss_type"),
     [
         ("grpo", {}, "policy", "rl"),
         ("max_rl", {}, "policy", "rl"),
         ("opd", {"teacher": FROZEN}, "policy", "ref_kl"),
-        ("sft", {"sampling": {"source": FROZEN}}, "frozen", "ce"),
+        ("sft", {"teacher": FROZEN}, "frozen", "ce"),
         ("opsd", {}, "policy", "ref_kl"),
         ("echo", {}, "policy", "rl"),
     ],
@@ -46,7 +46,7 @@ def _ref_kind(ref):
 def test_type_defaults_are_the_vetted_algorithms(algorithm_type, build_kwargs, source, action_loss_type):
     algo = _build(type=algorithm_type, **build_kwargs)
     assert algo.type == algorithm_type
-    assert _ref_kind(algo.sampling.source) == source
+    assert _ref_kind(algo.rollout_model) == source
     assert algo.action_loss_type == action_loss_type
 
 
@@ -79,13 +79,8 @@ def test_opd_teacher_must_be_a_frozen_endpoint():
 
 
 def test_sft_requires_teacher():
-    with pytest.raises(ValueError, match="needs a teacher to sample rollouts from"):
+    with pytest.raises(ValueError, match="Field required"):
         _build(type="sft")
-
-
-def test_rl_loss_type_incompatible_with_frozen_sampling():
-    with pytest.raises(ValueError, match="sampling.source is a frozen model"):
-        _build(type="grpo", sampling={"source": FROZEN})
 
 
 # --------------------------------------------------------------------------
