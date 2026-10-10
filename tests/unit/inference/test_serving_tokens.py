@@ -33,6 +33,7 @@ from prime_rl.inference.vllm.serving_tokens import (
     _PackedOutputs,
     pack_sampled_logprobs,
 )
+from prime_rl.transports.payload import PayloadSegment, read_field
 
 
 def _decode_routed_experts(encoded: dict) -> np.ndarray:
@@ -141,11 +142,8 @@ def test_payload_dir_writes_routing_and_masks_by_handle(tmp_path):
     # 4 prompt + 3 completion tokens; the last token is never forwarded, so rows end at position 6.
     assert (routing["field"], routing["pos"], routing["rows"], routing["shape"]) == ("routed_experts", 2, 4, [2, 3])
     assert (mask_segment["field"], mask_segment["pos"], mask_segment["rows"]) == ("sampling_mask", 4, 3)
-    data = open(routing["file"], "rb").read()
+    segments = [PayloadSegment(**routing), PayloadSegment(**mask_segment)]
+    np.testing.assert_array_equal(read_field(segments, "routed_experts", 2, 6, 0), routed_experts)
     np.testing.assert_array_equal(
-        np.frombuffer(data[: mask_segment["offset"]], dtype=routing["dtype"]).reshape(4, 2, 3), routed_experts
-    )
-    np.testing.assert_array_equal(
-        np.frombuffer(data[mask_segment["offset"] :], dtype=np.int32).reshape(3, 3),
-        [[7, -1, -1], [8, 9, 10], [-1, -1, -1]],
+        read_field(segments, "sampling_mask", 4, 7, -1), [[7, -1, -1], [8, 9, 10], [-1, -1, -1]]
     )
