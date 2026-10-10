@@ -61,13 +61,13 @@ BAR_WG1_MAX_READY = 2
 BAR_S0_READY = 3
 BAR_S1_READY = 4
 BAR_SUM_READY = 5
-BAR_WG0_O_STAGED = 6
+BAR_Q_READY = 6
+BAR_WG0_O_STAGED = 7
 
 MBAR_K_READY = 0
 MBAR_K_FREE = 4
 MBAR_VALID_READY = 8
-MBAR_Q_READY = 9
-NUM_MBARS = 10
+NUM_MBARS = 9
 
 
 def _k_half_index(buf: int, half: int) -> int:
@@ -157,23 +157,22 @@ def _gather_half(
 
 @cute.kernel
 def _fwd_kernel(
-    tma_atom_q: cute.CopyAtom,
-    tma_q: cute.Tensor,
+    mQ: cute.Tensor,
     mKV: cute.Tensor,
     mIndices: cute.Tensor,
     mSinks: cute.Tensor,
     mTileCounts: cute.Tensor,
-    tma_atom_o: cute.CopyAtom,
-    tma_o: cute.Tensor,
+    mOut: cute.Tensor,
     mLse: cute.Tensor,
     scale_log2: Float32,
     sQ_layout: cute.ComposedLayout,
-    sO_layout: cute.ComposedLayout,
     sK_layout: cute.ComposedLayout,
     sS_layout: cute.ComposedLayout,
     tiled_mma_qk: cute.TiledMma,
     tiled_mma_pv_rs: cute.TiledMma,
     tiled_mma_pv_ss: cute.TiledMma,
+    tiled_copy_q: cute.TiledCopy,
+    tiled_store_o: cute.TiledCopy,
 ):
     tidx, _, _ = cute.arch.thread_idx()
     s_i, b_i, _ = cute.arch.block_idx()
@@ -194,23 +193,8 @@ def _fwd_kernel(
             cute.arch.mbarrier_init(mbars + MBAR_K_READY + i, WARPGROUP_THREADS)
             cute.arch.mbarrier_init(mbars + MBAR_K_FREE + i, WARPGROUP_THREADS)
         cute.arch.mbarrier_init(mbars + MBAR_VALID_READY, NUM_GROUPS)
-        cute.arch.mbarrier_init(mbars + MBAR_Q_READY, 1)
         cute.arch.mbarrier_init_fence()
     cute.arch.sync_threads()
-
-    if tidx // cute.arch.WARP_SIZE == 0:
-        cpasync.prefetch_descriptor(tma_atom_q)
-        cpasync.prefetch_descriptor(tma_atom_o)
-        tQsQ, tQgQ = cpasync.tma_partition(
-            tma_atom_q,
-            0,
-            cute.make_layout(1),
-            cute.group_modes(sQ, 0, 2),
-            cute.group_modes(tma_q[None, None, s_i, b_i], 0, 2),
-        )
-        if tidx == 0:
-            cute.arch.mbarrier_arrive_and_expect_tx(mbars + MBAR_Q_READY, cute.size_in_bytes(BFloat16, sQ_layout))
-        cute.copy(tma_atom_q, tQgQ, tQsQ, tma_bar_ptr=mbars + MBAR_Q_READY)
 
     n_tiles = mIndices.shape[3] // BLOCK_I
     tile_count = cutlass.min(mTileCounts[b_i, s_i, 0], n_tiles)
@@ -238,6 +222,10 @@ def _fwd_kernel(
             free_phase ^= 1
     else:
         cute.arch.setmaxregister_increase(CONSUMER_REGS)
+        thr_copy_q = tiled_copy_q.get_slice(tidx)
+        cute.copy(tiled_copy_q, thr_copy_q.partition_S(mQ[b_i, s_i, None, None]), thr_copy_q.partition_D(sQ))
+        cute.arch.cp_async_commit_group()
+
         sQ_halves = [cute.local_tile(sQ, (HEADS, HALF), (0, half)) for half in range(2)]
         sK_halves = [
             [cute.local_tile(sK[None, None, buf], (BLOCK_I, HALF), (0, half)) for half in range(2)] for buf in range(2)
@@ -291,7 +279,9 @@ def _fwd_kernel(
             rM[r] = mSinks[head_of[r]] * LOG2E
             rL[r] = Float32(1.0) if wg_idx == 0 and cute.arch.lane_idx() % 4 == 0 else Float32(0.0)
 
-        cute.arch.mbarrier_wait(mbars + MBAR_Q_READY, 0)
+        cute.arch.cp_async_wait_group(0)
+        cute.arch.fence_view_async_shared()
+        cute.arch.barrier(barrier_id=BAR_Q_READY, number_of_threads=CONSUMER_THREADS)
 
         ready_phase = Int32(0)
         if wg_idx == 0:
@@ -395,22 +385,19 @@ def _fwd_kernel(
             rO_rows[r, None].store(rO_rows[r, None].load() * inv_sum)
         rOb = cute.make_fragment_like(rO, BFloat16)
         rOb.store(rO.load().to(BFloat16))
-        sO = cute.make_tensor(sQ.iterator, sO_layout.outer)[None, None, wg_idx]
+        sO = cute.local_tile(sQ, (HEADS, HALF), (0, wg_idx))
         smem_copy_o = cute.make_tiled_copy_C(
             cute.make_copy_atom(warp.StMatrix8x8x16bOp(transpose=False, num_matrices=4), BFloat16), tiled_mma_pv_rs
         )
         thr_copy_o = smem_copy_o.get_slice(idx_in_wg)
         cute.copy(smem_copy_o, thr_copy_o.retile(rOb), thr_copy_o.partition_D(sO))
-        cute.arch.fence_view_async_shared()
         cute.arch.barrier(barrier_id=BAR_WG0_O_STAGED + wg_idx, number_of_threads=WARPGROUP_THREADS)
-        if idx_in_wg // cute.arch.WARP_SIZE == 0:
-            gO = cute.local_tile(tma_o[None, None, s_i, b_i], (HEADS, HALF), (0, wg_idx))
-            tOsO, tOgO = cpasync.tma_partition(
-                tma_atom_o, 0, cute.make_layout(1), cute.group_modes(sO, 0, 2), cute.group_modes(gO, 0, 2)
-            )
-            cute.copy(tma_atom_o, tOsO, tOgO)
-            cute.arch.cp_async_bulk_commit_group()
-            cute.arch.cp_async_bulk_wait_group(0, read=True)
+        thr_store_o = tiled_store_o.get_slice(idx_in_wg)
+        gO = cute.local_tile(mOut[b_i, s_i, None, None], (HEADS, HALF), (0, wg_idx))
+        tOsO = thr_store_o.partition_S(sO)
+        tOrO = cute.make_fragment_like(tOsO)
+        cute.copy(tiled_store_o, tOsO, tOrO)
+        cute.copy(tiled_store_o, tOrO, thr_store_o.partition_D(gO))
         if lane % 4 == 0 and wg_idx == 0:
             for r in cutlass.range_constexpr(n_rows):
                 mLse[b_i, s_i, head_of[r]] = cute.math.log2(rL[r], fastmath=True) + rM[r]
@@ -459,19 +446,17 @@ def _fwd(
         atom_layout_mnk=(1, 1, 1),
         tiler_mn=(HEADS, HALF),
     )
-    sO_layout = _smem_layout((HEADS, HALF, 2))
-    heads_by_dim = [2, 3, 1, 0]
-    tma_atom_q, tma_q = cpasync.make_tiled_tma_atom(
-        cpasync.CopyBulkTensorTileG2SOp(),
-        cute.make_tensor(mQ.iterator, cute.select(mQ.layout, mode=heads_by_dim)),
-        sQ_layout,
-        (HEADS, DIM),
+    tiled_copy_q = cute.make_tiled_copy_tv(
+        cute.make_copy_atom(
+            cpasync.CopyG2SOp(cache_mode=cute.nvgpu.LoadCacheMode.GLOBAL), BFloat16, num_bits_per_copy=128
+        ),
+        cute.make_ordered_layout((CONSUMER_THREADS // (DIM // CHUNK), DIM // CHUNK), order=(1, 0)),
+        cute.make_layout((1, CHUNK)),
     )
-    tma_atom_o, tma_o = cpasync.make_tiled_tma_atom(
-        cpasync.CopyBulkTensorTileS2GOp(),
-        cute.make_tensor(mOut.iterator, cute.select(mOut.layout, mode=heads_by_dim)),
-        cute.slice_(sO_layout, (None, None, 0)),
-        (HEADS, HALF),
+    tiled_store_o = cute.make_tiled_copy_tv(
+        cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), BFloat16, num_bits_per_copy=128),
+        cute.make_ordered_layout((WARPGROUP_THREADS // (HALF // CHUNK), HALF // CHUNK), order=(1, 0)),
+        cute.make_layout((1, CHUNK)),
     )
     smem_bytes = (
         sum(cute.size_in_bytes(BFloat16, layout) for layout in (sQ_layout, sK_layout, sS_layout))
@@ -481,23 +466,22 @@ def _fwd(
     )
     _fwd_kernel.set_name_prefix("dsv4_sparse_attn_fwd_cute_ws", remove_cutlass_symbol=True, keep_mangled_name=False)
     _fwd_kernel(
-        tma_atom_q,
-        tma_q,
+        mQ,
         mKV,
         mIndices,
         mSinks,
         mTileCounts,
-        tma_atom_o,
-        tma_o,
+        mOut,
         mLse,
         scale_log2,
         sQ_layout,
-        sO_layout,
         sK_layout,
         sS_layout,
         tiled_mma_qk,
         tiled_mma_pv_rs,
         tiled_mma_pv_ss,
+        tiled_copy_q,
+        tiled_store_o,
     ).launch(grid=(mQ.shape[1], mQ.shape[0], 1), block=(THREADS, 1, 1), smem=smem_bytes, stream=stream)
 
 
