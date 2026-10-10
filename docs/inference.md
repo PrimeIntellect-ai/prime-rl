@@ -12,6 +12,7 @@ This page covers the inference configuration and the supported features/deployme
 - [P/D Disaggregation](#pd-disaggregation)
 - [Router](#router)
     - [Routing policies](#routing-policies)
+    - [Dead engines](#dead-engines)
 - [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
@@ -197,6 +198,17 @@ The policies you might want to configure are:
 
 - `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
 
+
+### Dead engines
+
+With more than one engine behind the router and NCCL or filesystem weight broadcast, the orchestrator keeps training when an engine dies.
+- **Eviction.** An engine is evicted after three failed `/liveness` probes (10 s apart) or a failed weight-update call. It leaves the router and the weight updates, and its in-flight rollouts fail like any other request.
+- **NCCL.** The broadcast group is rebuilt without the evicted engine at the next weight update.
+- **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update and only then returns to the router.
+- **Still fatal:**
+  - an engine that dies in the middle of an NCCL transfer (the SLURM step watchdog covers that hang);
+  - the last engine dying;
+  - NIXL broadcast, which pins its receivers.
 
 ## Adaptive Concurrency
 
