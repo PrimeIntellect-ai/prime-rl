@@ -136,4 +136,6 @@ class WeightWatcher:
             "watcher/update_count": float(self.update_count),
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,
+            "watcher/last_weight_checksum_time": self.receiver.admin_plane.last_checksum_time,
+            "watcher/weight_checksum_mismatches": float(self.receiver.admin_plane.checksum_mismatches),
         }

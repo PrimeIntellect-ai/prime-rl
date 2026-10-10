@@ -219,4 +219,5 @@ class NCCLWeightReceiver(WeightReceiver):
             transport="nccl",
             step=step,
             on_paused=lambda: self._ack(step),
+            checksum=self.config.checksum,
         )

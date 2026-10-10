@@ -38,11 +38,23 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 """A per-component `env_vars` mapping, validated to not clobber `PROTECTED_ENV_VARS`."""
 
 
+class WeightChecksumConfig(BaseConfig):
+    fail_on_mismatch: bool = False
+    """Raise instead of logging a warning when the engines' weight checksums disagree."""
+
+
 class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 3600
     """Timeout in seconds for the broadcast handshake and transfer, including the orchestrator's wait
     for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
     offered version in time. Raise it for large models on slow shared filesystems."""
+
+    checksum: WeightChecksumConfig | None = None
+    """After every full weight update (not LoRA adapters), checksum each inference engine's parameters on GPU while
+    the engines are paused and compare engines that hold the same weight shard. An engine is one admin URL: multi-node
+    deployments run one per DP rank, a single-node deployment is a single engine. Fails if no two engines hold the
+    same shard (e.g. one engine, or one expert-parallel replica). Requires EPLB off. Engines are not compared against
+    the trainer: vLLM stores fused/converted parameters that differ from the trainer's HF tensors."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
