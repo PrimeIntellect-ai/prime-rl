@@ -151,7 +151,7 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
         assert s.take_rollout_window(force=True).attempts == 1
         del old
         s.progress.step = 4
-        assert s.take_batch() is None
+        assert await s.take_batch() is None
         gc.collect()
         assert ref() is None
         window = s.take_rollout_window(force=True)
@@ -173,7 +173,7 @@ def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
         assert len(batch.cohort) == 1 and batch.cohort.episodes[0].id == ep_id
         assert sibling.id in s.pending_batch
         assert zero.nodes[2].token_ids == [3, 4]
-        batch = s.take_batch()
+        batch = await s.take_batch()
         assert len(batch.samples) == 2
         assert len(batch.cohort) == 1 and batch.cohort.num_traces == 2
         assert batch.cohort.episodes[0].id == ep_id

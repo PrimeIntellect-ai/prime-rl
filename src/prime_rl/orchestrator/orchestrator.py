@@ -24,6 +24,7 @@ import asyncio
 import os
 import time
 import uuid
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
@@ -64,6 +65,7 @@ from prime_rl.orchestrator.utils import (
     episode_staleness,
     eval_work,
     intercept_vf_logging,
+    release_and_trim,
     set_default_executor,
     trim_process_memory,
 )
@@ -155,6 +157,7 @@ class Orchestrator:
         self.wait_for_policy_time = 0.0
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
+        self.release_future: asyncio.Future | None = None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -424,7 +427,9 @@ class Orchestrator:
             if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                await asyncio.to_thread(
+                    self.ckpt_manager.save, replace(self.progress), self.train_source.state_dict(), self.progress.step
+                )
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -443,7 +448,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced)")
-            trim_process_memory()
+            await asyncio.to_thread(trim_process_memory)
 
     async def wait_for_version(self, version: int, reason: str) -> None:
         """Bounded wait until the watcher has applied v{version}."""
@@ -676,7 +681,6 @@ class Orchestrator:
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
-        trim_process_memory()
 
         def shipped_metrics() -> dict[str, float]:
             metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
@@ -739,7 +743,11 @@ class Orchestrator:
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
-        trim_process_memory()
+        # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
+        if self.release_future is not None:
+            await asyncio.shield(self.release_future)
+        payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
+        self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
     async def start_draining(self, reason: str) -> None:
         """Stop scheduling train work and let the pipeline empty; triggered
@@ -942,9 +950,8 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Synchronous on purpose: the payload is tiny, and snapshotting on the
-        # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        # Snapshot before yielding; only the file write runs in the worker.
+        await asyncio.to_thread(self.ckpt_manager.save, replace(self.progress), self.train_source.state_dict(), step)
         return time.perf_counter() - t
 
     def update_dispatch_gate(self) -> None:
@@ -986,6 +993,8 @@ class Orchestrator:
         async def teardown() -> None:
             get_logger().debug("Closing micro batch sender")
             self.sender.close()
+            if self.release_future is not None:
+                await self.release_future
             if self.dispatcher is not None:
                 get_logger().debug("Stopping dispatcher")
                 await self.dispatcher.stop()

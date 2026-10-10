@@ -65,6 +65,7 @@ class TrainSource:
         return metrics
 
     def state_dict(self) -> dict[str, Any]:
+        """Snapshot sampler state; nested state dictionaries must own their containers."""
         return {
             "rng": self.rng.getstate(),
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
