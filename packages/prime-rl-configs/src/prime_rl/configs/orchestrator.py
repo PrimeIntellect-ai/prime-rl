@@ -19,9 +19,9 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
+    PolicyClientConfig,
     ResumeConfig,
     TransportConfig,
-    VLLMClientConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -29,19 +29,8 @@ from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
-class LoRAConfig(BaseConfig):
-    rank: int | None = Field(None, ge=1)
-    """LoRA rank for this run. Must be ≤ trainer's max rank. If None, uses the trainer's rank."""
-
-    alpha: float | None = Field(None, ge=0)
-    """LoRA alpha for this run. If None, uses the trainer's alpha."""
-
-
 class ModelConfig(BaseModelConfig):
-    lora: LoRAConfig | None = None
-    """Per-run LoRA configuration. If None, LoRA is disabled."""
-
-    client: VLLMClientConfig = Field(default_factory=VLLMClientConfig)
+    client: PolicyClientConfig = Field(default_factory=PolicyClientConfig)
     """Client of the live deployment (``[orchestrator.model.client]``)."""
 
 
@@ -439,12 +428,6 @@ class CheckpointConfig(BaseConfig):
 
     wait_for_weights_timeout: int | None = Field(None, ge=1)
     """Wait up to this many seconds for the startup weight directory to appear (the trainer broadcasts the incoming policy — v0 from scratch, the resumed step's version on resume — before the first step). If None, fall back to a default timeout. Raise this for large models on slow shared filesystems."""
-
-    keep_last: int | None = Field(None, ge=1)
-    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
-
-    keep_interval: int | None = Field(None, ge=1)
-    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
 
 class ConcurrencyConfig(BaseConfig):

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.shared import PolicyClientConfig
 from prime_rl.inference.dynamo import (
     DynamoAdminPlane,
     DynamoDiscoveryPending,
@@ -42,7 +42,7 @@ def parsed(*workers: dict):
 
 
 def admin_for(*workers: dict) -> DynamoAdminPlane:
-    config = ClientConfig(
+    config = PolicyClientConfig(
         base_url="http://worker:8000/v1",
         skip_model_check=True,
         wait_for_ready_timeout=2,
@@ -96,7 +96,7 @@ def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
     discovered_worker = parsed(worker(1))
     discover = AsyncMock(side_effect=[discovered_worker, discovered_worker])
     admin = setup_admin_plane(
-        ClientConfig(
+        PolicyClientConfig(
             base_url="http://worker:8000/v1",
             skip_model_check=True,
             wait_for_ready_timeout=2,
@@ -124,7 +124,7 @@ def test_dynamo_admin_plane_factory_pins_two_identical_snapshots():
 def test_dynamo_worker_client_propagates_admin_headers(monkeypatch, api_key, authorization):
     monkeypatch.setenv("DYNAMO_HEADER", "from-env")
     monkeypatch.setenv("DYNAMO_API_KEY", api_key)
-    config = ClientConfig(
+    config = PolicyClientConfig(
         base_url="http://worker:8000/v1",
         headers={"X-Static": "static"},
         headers_from_env={"X-Environment": "DYNAMO_HEADER"},
@@ -144,7 +144,7 @@ def test_dynamo_worker_client_propagates_admin_headers(monkeypatch, api_key, aut
 
 def test_dynamo_admin_plane_derives_discovery_url_from_client_port():
     admin = setup_admin_plane(
-        ClientConfig(
+        PolicyClientConfig(
             base_url="http://worker:8000/v1",
             dynamo={"enabled": True},
         ),
@@ -158,7 +158,7 @@ def test_dynamo_admin_plane_derives_discovery_url_from_client_port():
 
 def test_dynamo_admin_plane_can_be_disabled():
     admin = setup_admin_plane(
-        ClientConfig(
+        PolicyClientConfig(
             base_url="http://worker:8000/v1",
             dynamo={"enabled": False},
         ),
@@ -172,7 +172,7 @@ def test_dynamo_admin_plane_can_be_disabled():
 def test_dynamo_discovery_url_derivation_requires_an_explicit_port():
     with pytest.raises(ValueError, match="Set dynamo.discovery_url"):
         setup_admin_plane(
-            ClientConfig(
+            PolicyClientConfig(
                 base_url="http://worker/v1",
                 dynamo={"enabled": True},
             ),
