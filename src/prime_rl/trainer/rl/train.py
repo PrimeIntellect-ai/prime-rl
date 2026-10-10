@@ -37,7 +37,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_left,
     shift_tensor_right,
 )
-from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -46,9 +45,9 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     is_tt_moe_model,
     setup_model,
-    setup_processor,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -142,13 +141,11 @@ def train(config: TrainerConfig):
     logger.debug(f"Initialized model in {format_time(time.perf_counter() - t0)}")
 
     processor = None
-    mm_adapter = None
     if config.model.vlm is not None:
         processor = setup_processor(config.model)
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
-        mm_adapter = get_multimodal_adapter(model.config.model_type)
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+    prepare = partial(prepare_micro_batch, processor=processor)
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
@@ -373,7 +370,6 @@ def train(config: TrainerConfig):
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
                 mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
-            mm_forward_policy = micro_batch.pop("mm_forward_policy")
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -391,9 +387,8 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
-                defer_vlm_cp_to_model = bool(
-                    mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
-                )
+                # The VLM shards image inputs itself, after building their positions.
+                defer_vlm_cp_to_model = mm_kwargs is not None
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(
                         input_ids,
@@ -446,7 +441,6 @@ def train(config: TrainerConfig):
                     labels=labels,
                     temperature=temperatures,
                     mm_kwargs=mm_kwargs,
-                    mm_forward_policy=mm_forward_policy,
                     mm_token_type_ids=mm_token_type_ids,
                     seq_lens=seq_lens,
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,

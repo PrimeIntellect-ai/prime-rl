@@ -250,19 +250,19 @@ class Qwen3_5VLMModel(nn.Module):
             # Every rank must retain the vision graph so FSDP collectives stay symmetric.
             inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
 
-        if position_ids is None:
-            if image_grid_thw is None:
-                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-            else:
-                if mm_token_type_ids is None:
-                    raise ValueError("mm_token_type_ids are required with Qwen3.5 image inputs")
-                position_ids = build_qwen3_5_mrope_position_ids(
-                    input_ids=input_ids,
-                    mm_token_type_ids=mm_token_type_ids,
-                    image_grid_thw=image_grid_thw,
-                    spatial_merge_size=self.config.vision_config.spatial_merge_size,
-                    seq_lens=seq_lens,
-                )
+        if image_grid_thw is not None:
+            # Image inputs get MRoPE positions; text-only inputs keep the caller's positions.
+            if mm_token_type_ids is None:
+                raise ValueError("mm_token_type_ids are required with Qwen3.5 image inputs")
+            position_ids = build_qwen3_5_mrope_position_ids(
+                input_ids=input_ids,
+                mm_token_type_ids=mm_token_type_ids,
+                image_grid_thw=image_grid_thw,
+                spatial_merge_size=self.config.vision_config.spatial_merge_size,
+                seq_lens=seq_lens,
+            )
+        elif position_ids is None:
+            position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
         return inputs_embeds, position_ids
 
     def forward(

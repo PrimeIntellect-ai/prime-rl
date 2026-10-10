@@ -413,9 +413,7 @@ def _patch_model_forward(model: nn.Module) -> None:
         sampling_mask: torch.Tensor | None = None,
         **kwargs: object,
     ) -> PrimeLmOutput:
-        # For VLM with images, don't create position_ids - let model compute MRoPE internally
-        is_multimodal = kwargs.get("pixel_values") is not None
-        if position_ids is None and not is_multimodal:
+        if position_ids is None:
             reference_tensor = input_ids if input_ids is not None else inputs_embeds
             position_ids = torch.arange(reference_tensor.shape[1], device=reference_tensor.device).unsqueeze(0)
         model_kwargs = {"input_ids": input_ids, "position_ids": position_ids, **kwargs}

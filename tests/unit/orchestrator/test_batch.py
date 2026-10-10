@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 from prime_rl.orchestrator.batch import (
-    _is_multimodal_sample,
     build_bin_cost,
     pad_micro_batch,
     prepare_batch,
@@ -525,7 +524,7 @@ def test_split_to_align_splits_multimodal_bins():
 
     batches = _flatten_batches(batches_per_gpu)
     assert len(batches) == 2
-    assert all(_has_loss_tokens(batch) and _is_multimodal_sample(batch) for batch in batches)
+    assert all(_has_loss_tokens(batch) and batch.mm_refs is not None for batch in batches)
 
 
 def test_prepare_sample_none_routed_experts():
