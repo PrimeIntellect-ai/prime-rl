@@ -213,7 +213,8 @@ def get_buffer(group: ProcessGroup, hidden_bytes: int) -> Buffer:
         or _buffer.num_nvl_bytes < num_nvl_bytes
         or _buffer.num_rdma_bytes < num_rdma_bytes
     ):
-        _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes)
+        # Internode kernels need at least one RDMA queue pair per SM.
+        _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes, num_qps_per_rank=Buffer.num_sms)
 
     return _buffer
 
