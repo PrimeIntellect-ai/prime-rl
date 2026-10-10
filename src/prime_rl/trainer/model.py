@@ -51,7 +51,8 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
-from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
+from prime_rl.trainer.models.layers.expert_compute import _fp32_grad_accumulator
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear, replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import use_fused_lm_head
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
@@ -597,7 +598,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         ignored_params=ignored_params,
     )
 
-    # FP8 experts accumulate their weight gradients straight into FSDP's fp32 buffers.
+    # FP8 experts (and, with `accumulate_wgrad_fp32`, dense FP8 linears) accumulate their weight gradients straight
+    # into FSDP's fp32 buffers.
+    accumulate_dense_wgrad = isinstance(config.quantization, FP8Config) and config.quantization.accumulate_wgrad_fp32
     for module in model.modules():
         if isinstance(module, FSDPModule):
             for group in module._get_fsdp_state()._fsdp_param_groups:
@@ -605,6 +608,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                     info = fsdp_param._module_info
                     if isinstance(info.module, GroupedExperts):
                         info.module.__dict__.setdefault("fsdp_params", {})[info.param_name] = fsdp_param
+                    elif accumulate_dense_wgrad and isinstance(info.module, Float8BlockwiseLinear):
+                        info.module.accumulate_wgrad_fp32(partial(_fp32_grad_accumulator, fsdp_param))
 
     if not parallel_dims.ep_enabled:
         return

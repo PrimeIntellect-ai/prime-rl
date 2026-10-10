@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 import torch
 from torch import nn
@@ -14,9 +15,13 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
 )
 from prime_rl.utils.logger import get_logger
 
+# Module key -> callable returning the fp32 buffer its weight gradient accumulates into
+# (`Float8BlockwiseLinear.accumulate_wgrad_fp32`).
+_wgrad_accumulators: dict[int, Callable[[], torch.Tensor]] = {}
+
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_mm", mutates_args=())
-def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) -> torch.Tensor:
+def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int, wgrad_key: int = 0) -> torch.Tensor:
     import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
@@ -30,7 +35,7 @@ def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) ->
 
 
 @_fp8_blockwise_mm.register_fake
-def _fp8_blockwise_mm_fake(x: torch.Tensor, weight: torch.Tensor, block_size: int) -> torch.Tensor:
+def _fp8_blockwise_mm_fake(x: torch.Tensor, weight: torch.Tensor, block_size: int, wgrad_key: int = 0) -> torch.Tensor:
     return x.new_empty((*x.shape[:-1], weight.shape[0]), dtype=torch.bfloat16)
 
 
@@ -42,7 +47,10 @@ def _fp8_blockwise_mm_backward(
     block_size: int,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    wgrad_key: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """With an fp32 accumulator registered for `wgrad_key`, the weight gradient is added straight into it and the
+    returned weight gradient is empty."""
     import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
@@ -62,7 +70,12 @@ def _fp8_blockwise_mm_backward(
         # The transposed casts zero-pad the token dimension, as DeepGEMM's (1, 1, 128) recipe requires.
         grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
         x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
-        grad_weight_fp32 = torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
+        accumulator = _wgrad_accumulators.get(wgrad_key)
+        grad_weight_fp32 = (
+            accumulator()
+            if accumulator is not None
+            else torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
+        )
         deep_gemm.fp8_gemm_nt(
             grad_output_t_fp8,
             x_t_fp8,
@@ -70,7 +83,7 @@ def _fp8_blockwise_mm_backward(
             c=grad_weight_fp32,
             recipe=(1, 1, 128),
         )
-        grad_weight = grad_weight_fp32.to(weight.dtype)
+        grad_weight = weight.new_empty(0) if accumulator is not None else grad_weight_fp32.to(weight.dtype)
 
     return grad_x, grad_weight
 
@@ -83,19 +96,22 @@ def _fp8_blockwise_mm_backward_fake(
     block_size: int,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    wgrad_key: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return x.new_empty(x.shape), weight.new_empty(weight.shape)
+    accumulates = needs_grad_weight and wgrad_key in _wgrad_accumulators
+    return x.new_empty(x.shape), weight.new_empty(0) if accumulates else weight.new_empty(weight.shape)
 
 
 def _fp8_blockwise_mm_setup_context(ctx, inputs, output) -> None:
-    x, weight, block_size = inputs
+    x, weight, block_size, wgrad_key = inputs
     ctx.save_for_backward(x, weight)
     ctx.block_size = block_size
+    ctx.wgrad_key = wgrad_key
 
 
 def _fp8_blockwise_mm_autograd_backward(ctx, grad_output: torch.Tensor):
     x, weight = ctx.saved_tensors
-    needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
+    needs_grad_x, needs_grad_weight, *_ = ctx.needs_input_grad
     grad_x, grad_weight = _fp8_blockwise_mm_backward(
         grad_output,
         x.detach(),
@@ -103,8 +119,11 @@ def _fp8_blockwise_mm_autograd_backward(ctx, grad_output: torch.Tensor):
         ctx.block_size,
         needs_grad_x,
         needs_grad_weight,
+        ctx.wgrad_key,
     )
-    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
+    # A weight gradient accumulated in fp32 is not returned.
+    keep_grad_weight = needs_grad_weight and ctx.wgrad_key not in _wgrad_accumulators
+    return grad_x if needs_grad_x else None, grad_weight if keep_grad_weight else None, None, None
 
 
 _fp8_blockwise_mm.register_autograd(
@@ -126,9 +145,15 @@ class Float8BlockwiseLinear(nn.Linear):
     def __init__(self, *args, block_size: int = 128, dtype=torch.bfloat16, **kwargs):
         super().__init__(*args, **kwargs)
         self.block_size = block_size
+        self.wgrad_key = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _fp8_blockwise_mm(x, self.weight, self.block_size)
+        return _fp8_blockwise_mm(x, self.weight, self.block_size, self.wgrad_key)
+
+    def accumulate_wgrad_fp32(self, accumulator: Callable[[], torch.Tensor]) -> None:
+        """Add the weight-gradient GEMM straight into `accumulator()` (fp32) instead of returning a bf16 gradient."""
+        self.wgrad_key = id(self)
+        _wgrad_accumulators[self.wgrad_key] = accumulator
 
     @classmethod
     def from_linear(cls, mod: nn.Linear) -> "Float8BlockwiseLinear":

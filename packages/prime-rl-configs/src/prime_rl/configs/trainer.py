@@ -211,6 +211,11 @@ class FP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
+    accumulate_wgrad_fp32: bool = False
+    """Add each dense FP8 linear's weight-gradient GEMM straight into FSDP's fp32 gradient accumulator instead of
+    rounding every micro-batch's gradient to bf16 first. Changes numerics (no per-micro-batch bf16 rounding of the
+    dense weight gradients); skips the zero fill, the bf16 cast and the separate fp32 accumulation."""
+
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
