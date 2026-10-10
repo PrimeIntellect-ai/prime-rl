@@ -138,7 +138,8 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 def _mismatch_kl_from_log_ratio(log_importance_ratio: Tensor) -> Tensor:
     # Keep headroom for FP32 reductions across tokens and ranks.
     metric_limit = log_importance_ratio.new_tensor(1e30)
-    mismatch_kl = torch.expm1(log_importance_ratio.clamp(max=metric_limit.log())) - log_importance_ratio
+    bounded_log_ratio = log_importance_ratio.clamp(max=metric_limit.log())
+    mismatch_kl = torch.expm1(bounded_log_ratio) - bounded_log_ratio
     return mismatch_kl.clamp(max=metric_limit)
 
 
@@ -445,7 +446,7 @@ def compute_loss(
     # truncated distillation sample, whose stamped streams survive as all-zero
     # prefixes) must still return a backward-able loss so every rank runs
     # backward and FSDP collectives stay in sync.
-    rl_loss = trainer_logprobs[0].sum() * 0.0
+    rl_loss = trainer_logprobs[0][:0].sum()
     ce_loss = 0.0
     ref_kl_loss = 0.0
     for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
