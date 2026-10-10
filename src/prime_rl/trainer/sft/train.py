@@ -194,10 +194,10 @@ def train(config: SFTConfig):
     )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
-    val_raw_dataset = None
+    val_raw_datasets = None
     if config.val is not None:
         logger.info(f"Loading validation dataset ({config.val.data})")
-        val_raw_dataset = load_sft_dataset(config.val.data)
+        val_raw_datasets = load_sft_dataset(config.val.data)
 
     # Optionally, resume training from a checkpoint
     progress = Progress()
@@ -340,7 +340,7 @@ def train(config: SFTConfig):
             config.val.data,
             config.model.cp,
             max_epochs=1,
-            raw_dataset=val_raw_dataset,
+            raw_datasets=val_raw_datasets,
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
@@ -591,18 +591,15 @@ def train(config: SFTConfig):
             "progress/num_tokens": progress.total_tokens,
             "step": progress.step,
         }
-        # At least two subsets/splits
-        if len(samples_by_source) > 1:
-            progress_metrics.update(
-                **{
-                    f"progress/{subset_or_split}/ratio_samples": num_samples / total_samples
-                    for subset_or_split, num_samples in samples_by_source.items()
-                },
-                **{
-                    f"progress/{subset_or_split}/ratio_tokens": num_tokens / total_tokens
-                    for subset_or_split, num_tokens in tokens_by_source.items()
-                },
-            )
+        source_sizes = dataset_progress.get("source_sizes", {})
+        for source, num_samples in samples_by_source.items():
+            num_tokens = tokens_by_source.get(source, 0)
+            progress_metrics[f"progress/{source}/num_samples"] = num_samples
+            progress_metrics[f"progress/{source}/num_tokens"] = num_tokens
+            progress_metrics[f"progress/{source}/ratio_samples"] = num_samples / total_samples
+            progress_metrics[f"progress/{source}/ratio_tokens"] = num_tokens / total_tokens
+            if source in source_sizes:
+                progress_metrics[f"progress/{source}/epoch"] = num_samples / source_sizes[source]
         asyncio.run(monitors.log(progress_metrics, step=progress.step))
 
         # Log performance metrics

@@ -64,16 +64,19 @@ def test_load_configs(config_file: Path):
 
     A file that no class parses standalone is an overlay — a checked-in config that only carries
     the deltas over a shared base (e.g. the glm-4.5-air budget variants over
-    `swe-budget.toml`). Retry those composed with each sibling TOML as the base: the
-    documented `@ base.toml @ overlay.toml` left-to-right merge (docs/configuration.md,
-    "TOML Composition").
+    `swe-budget.toml`). Retry those composed with one or two sibling TOMLs as the base: the
+    documented `@ base.toml @ data.toml @ overlay.toml` left-to-right merge
+    (docs/configuration.md, "TOML Composition").
     """
     could_parse = [can_parse(config_cls, ["@", config_file.as_posix()]) for config_cls in CONFIG_CLASSES]
     if not any(could_parse):
-        sibling_bases = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
+        siblings = sorted(p for p in config_file.parent.glob("*.toml") if p != config_file)
+        bases = [[base] for base in siblings] + [
+            [first, second] for first in siblings for second in siblings if first != second
+        ]
         could_parse = [
-            can_parse(config_cls, ["@", base.as_posix(), "@", config_file.as_posix()])
-            for base in sibling_bases
+            can_parse(config_cls, [arg for base in [*prefix, config_file] for arg in ("@", base.as_posix())])
+            for prefix in bases
             for config_cls in CONFIG_CLASSES
         ]
     assert any(could_parse), f"No config class could be parsed from {config_file}"
@@ -1204,7 +1207,7 @@ def test_sft_config_accepts_custom_renderer(tmp_path, custom_renderer_import_pat
         tomli_w.dumps(
             {
                 "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
-                "data": {"name": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"},
+                "data": {"source": [{"dataset": "willcb/R1-reverse-wikipedia-paragraphs-v1-1000"}]},
                 "renderer": {"name": "custom", "import_path": custom_renderer_import_path, "instruction": "Be brief."},
             }
         )

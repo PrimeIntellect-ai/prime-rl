@@ -7,7 +7,7 @@ from typing import Any, Callable, Literal, TypedDict, cast
 
 import numpy as np
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
@@ -18,7 +18,7 @@ from torch.utils.data import IterableDataset, get_worker_info
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import DataConfig, LossMaskConfig, SFTColumnsConfig, SFTDataConfig
+from prime_rl.configs.sft import DataConfig, HFDatasetConfig, LossMaskConfig, SFTColumnsConfig
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messages
 from prime_rl.utils.logger import get_logger
@@ -276,6 +276,7 @@ class SFTDataset(StatefulIterableDataset):
         max_epochs: int | None = None,
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
+        name: str = "sft",
     ):
         super().__init__(non_dp_size)
         self.logger = get_logger()
@@ -283,6 +284,7 @@ class SFTDataset(StatefulIterableDataset):
         self.num_examples = len(self.dataset)
         self.renderers = renderers
         self.columns = columns
+        self.name = name
         # Default names are optional: a dataset carries either messages or
         # prompt/completion, and tools only for tool use. A name set in the
         # config must exist.
@@ -468,15 +470,79 @@ class SFTDataset(StatefulIterableDataset):
 
             # Yield the example
             example = cast(dict, example)
-            subset_or_split = example.get("__subset") or example.get("__split")
             self.logger.debug(
-                f"Yield example {example.get('__index', '')}"
-                + (f" from {subset_or_split} " if subset_or_split else " ")
-                + f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
+                f"Yield example {example.get('__index', '')} from {self.name} "
+                f"with {len(processed_example.get('input_ids', []))} tokens ({sum(processed_example.get('loss_mask', []))} trainable tokens)"
             )
-            self.num_samples[subset_or_split] += 1
-            self.num_tokens[subset_or_split] += len(processed_example.get("input_ids", []))
+            self.num_samples[self.name] += 1
+            self.num_tokens[self.name] += len(processed_example.get("input_ids", []))
             yield processed_example
+
+
+class MixedDataset(StatefulIterableDataset):
+    """Draw samples from several datasets, one at a time, by weight.
+
+    Every rank draws the same source at the same step, from a generator seeded
+    by the step, so the schedule is identical across ranks and after a resume
+    while each source shards and shuffles its own rows. An epoch ends when
+    every source has finished a pass (``all_exhausted``, smaller sources
+    repeat) or when the first one has (``first_exhausted``).
+    """
+
+    def __init__(
+        self,
+        sources: dict[str, SFTDataset],
+        weights: list[float] | None = None,
+        stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted",
+        seed: int = 0,
+        max_epochs: int | None = None,
+        non_dp_size: int = 1,
+    ):
+        super().__init__(non_dp_size)
+        self.sources = sources
+        self.names = list(sources)
+        weights = weights or [1.0] * len(sources)
+        self.probabilities = [weight / sum(weights) for weight in weights]
+        self.stopping_strategy = stopping_strategy
+        self.seed = seed
+        self.max_epochs = max_epochs
+        self.epoch_start = {name: 0 for name in sources}
+
+    @property
+    def source_sizes(self) -> dict[str, int]:
+        return {name: source.num_examples for name, source in self.sources.items()}
+
+    def state_dict(self) -> dict:
+        return {
+            "step": self.step,
+            "epoch": self.epoch,
+            "epoch_start": dict(self.epoch_start),
+            "sources": {name: source.state_dict() for name, source in self.sources.items()},
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        self.step = state_dict["step"]
+        self.epoch = state_dict["epoch"]
+        self.epoch_start = dict(state_dict["epoch_start"])
+        for name, source in self.sources.items():
+            source.load_state_dict(state_dict["sources"][name])
+
+    def __iter__(self):
+        iterators = {name: iter(source) for name, source in self.sources.items()}
+        while True:
+            if self.max_epochs is not None and self.epoch >= self.max_epochs:
+                break
+            self.step += 1
+            rng = np.random.default_rng([self.seed, self.step])
+            name = self.names[rng.choice(len(self.names), p=self.probabilities)]
+            sample = next(iterators[name])
+            self.num_samples[name] += 1
+            self.num_tokens[name] += len(sample.get("input_ids", []))
+            passes = [source.epoch > self.epoch_start[name] for name, source in self.sources.items()]
+            if all(passes) if self.stopping_strategy == "all_exhausted" else any(passes):
+                self.epoch += 1
+                self.epoch_start = {name: source.epoch for name, source in self.sources.items()}
+            yield sample
 
 
 class CatDataset(StatefulIterableDataset):
@@ -495,6 +561,7 @@ class CatDataset(StatefulIterableDataset):
             "progress": {
                 "num_samples": dict(self.dataset.num_samples),
                 "num_tokens": dict(self.dataset.num_tokens),
+                "source_sizes": getattr(self.dataset, "source_sizes", {}),
             },
         }
         if self.pending_sample is not None:
@@ -624,98 +691,45 @@ def cat_collate(samples: list[Sample]) -> Batch:
 
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
-    if not isinstance(data, SFTDataConfig):
+    if not isinstance(data, HFDatasetConfig):
         return
-    if Path(data.name).exists():
-        get_logger().info(f"Data {data.name} found at local path, skipping download")
-        return
-
-    dataset_name = data.name
-    t0 = time.perf_counter()
-    get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
-    snapshot = snapshot_download(
-        repo_id=dataset_name,
-        repo_type="dataset",
-        revision=data.revision,
-        cache_dir=env_vars.get("HF_HUB_CACHE"),
-    )
-    data.name = snapshot
-    get_logger().debug(
-        f"Finished pre-downloading data {dataset_name} to {snapshot} in {format_time(time.perf_counter() - t0)}"
-    )
-
-
-def setup_and_interleave_datasets(
-    dataset_name: str,
-    subsets_and_splits: list[tuple[str | None, str]],
-    probabilities: list[float] | None,
-    stopping_strategy: Literal["first_exhausted", "all_exhausted"],
-    seed: int = 0,
-    revision: str | None = None,
-) -> Dataset:
-    logger = get_logger()
-    datasets = []
-    for subset, split in subsets_and_splits:
-        logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
-        num_examples = len(dataset)
-        dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
-        dataset = dataset.add_column("__index", list(range(num_examples)), new_fingerprint=str(uuid.uuid4()))
-        datasets.append(dataset)
-    if len(datasets) > 1:
-        logger.debug(f"Interleaving datasets with {probabilities=} and {stopping_strategy=}")
-        dataset = interleave_datasets(
-            datasets,
-            probabilities=probabilities,
-            stopping_strategy=stopping_strategy,
-            seed=seed,
+    snapshots: dict[tuple[str, str | None], str] = {}
+    for source in data.source:
+        assert source.dataset is not None
+        key = (source.dataset, source.revision)
+        if key in snapshots or Path(source.dataset).exists():
+            continue
+        t0 = time.perf_counter()
+        get_logger().info(f"Pre-downloading data {source.dataset} at revision {source.revision or 'main'}")
+        snapshots[key] = snapshot_download(
+            repo_id=source.dataset,
+            repo_type="dataset",
+            revision=source.revision,
+            cache_dir=env_vars.get("HF_HUB_CACHE"),
         )
-    else:
-        dataset = datasets[0]
+        get_logger().debug(
+            f"Finished pre-downloading data {source.dataset} to {snapshots[key]} in "
+            f"{format_time(time.perf_counter() - t0)}"
+        )
+    for source in data.source:
+        # The name is already pinned, so metrics keep the repo id rather than the snapshot path.
+        source.dataset = snapshots.get((source.dataset, source.revision), source.dataset)
+    if (data.name, data.revision) in snapshots:
+        data.name = snapshots[(data.name, data.revision)]
 
-    return dataset
 
-
-def load_sft_dataset(config: SFTDataConfig) -> Dataset:
-    """Load and interleave the raw HF dataset. This is the expensive I/O step."""
-    logger = get_logger()
-    if config.subsets is None and config.splits is None:
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, "train")],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
+def load_sft_dataset(config: HFDatasetConfig) -> dict[str, Dataset]:
+    """Load every source. This is the expensive I/O step."""
+    datasets = {}
+    for source in config.source:
+        get_logger().debug(f"Loading source {source.name}: {source.dataset} {source.subset=} {source.split=}")
+        dataset = cast(
+            Dataset, load_dataset(source.dataset, source.subset, split=source.split, revision=source.revision)
         )
-    elif config.subsets is not None and config.splits is None:
-        logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(subset, "train") for subset in config.subsets],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
+        datasets[source.name] = dataset.add_column(
+            "__index", list(range(len(dataset))), new_fingerprint=str(uuid.uuid4())
         )
-    elif config.subsets is None and config.splits is not None:
-        logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=[(None, split) for split in config.splits],
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
-    else:
-        assert config.subsets is not None and config.splits is not None
-        logger.debug(f"Loading datasets for subsets {config.subsets} with splits {config.splits}")
-        return setup_and_interleave_datasets(
-            dataset_name=config.name,
-            subsets_and_splits=list(zip(config.subsets, config.splits)),
-            probabilities=config.probabilities,
-            stopping_strategy=config.stopping_strategy,
-            revision=config.revision,
-        )
+    return datasets
 
 
 def setup_dataset(
@@ -724,7 +738,7 @@ def setup_dataset(
     non_dp_size: int = 1,
     *,
     max_epochs: int | None = None,
-    raw_dataset: Dataset | None = None,
+    raw_datasets: dict[str, Dataset] | None = None,
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
     multimodal: bool = False,
@@ -738,26 +752,43 @@ def setup_dataset(
             seed=config.seed,
             non_dp_size=non_dp_size,
         )
-    elif config.type == "sft":
-        if renderer_config is None:
-            raise ValueError("SFT data requires a renderer config.")
-        if raw_dataset is None:
-            raw_dataset = load_sft_dataset(config)
-        renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
-        return SFTDataset(
-            raw_dataset,
+    if renderer_config is None:
+        raise ValueError("SFT data requires a renderer config.")
+    if raw_datasets is None:
+        raw_datasets = load_sft_dataset(config)
+    sources: dict[str, SFTDataset] = {}
+    for source in config.source:
+        source_renderer_config = renderer_config
+        if source.renderer:
+            if isinstance(renderer_config, AutoRendererConfig):
+                raise ValueError(
+                    f"Source {source.name} sets renderer arguments, which require a typed renderer config "
+                    "(e.g. [renderer] name = 'qwen3.8'), not renderer.name = 'auto'"
+                )
+            source_renderer_config = merge_chat_template_kwargs(renderer_config, source.renderer)
+        columns = source.columns or config.columns
+        renderers = RendererResolver(tokenizer, source_renderer_config, processor=processor, columns=columns.renderer)
+        sources[source.name] = SFTDataset(
+            raw_datasets[source.name],
             renderers,
             shuffle=config.shuffle,
             seed=config.seed,
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
-            max_epochs=max_epochs,
             multimodal=multimodal,
-            columns=config.columns,
+            columns=columns,
+            name=source.name,
         )
-    else:
-        raise ValueError(f"Invalid dataset type: {config.type}")
+    weights = [source.weight for source in config.source] if config.source[0].weight is not None else None
+    return MixedDataset(
+        sources,
+        weights=weights,
+        stopping_strategy=config.stopping_strategy,
+        seed=config.seed,
+        max_epochs=max_epochs,
+        non_dp_size=non_dp_size,
+    )
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig, cp: int) -> StatefulDataLoader:
@@ -791,14 +822,17 @@ def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
     furthest = max(positions, key=lambda position: position["step"])
     num_samples = defaultdict(int)
     num_tokens = defaultdict(int)
+    source_sizes: dict[str, int] = {}
     for worker_snapshot in worker_snapshots.values():
         progress = worker_snapshot["dataset_state"].get("progress", {})
         for name, count in progress.get("num_samples", {}).items():
             num_samples[name] += count
         for name, count in progress.get("num_tokens", {}).items():
             num_tokens[name] += count
+        source_sizes.update(progress.get("source_sizes", {}))
     return {
         **furthest,
         "num_samples": dict(num_samples),
         "num_tokens": dict(num_tokens),
+        "source_sizes": source_sizes,
     }
