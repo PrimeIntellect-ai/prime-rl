@@ -19,9 +19,8 @@ LAYOUTS = {
     "ep2": (2, ["--model.ep", "2"]),
     "cp2_ep2": (4, ["--model.cp", "2", "--model.ep", "2"]),
 }
-# Step-1 metrics that must not depend on the layout. `loss/mean` is left out: under CP each rank
-# logs its shard's share of the loss.
-METRICS = {"optim/grad_norm": 0.02, "entropy/all/mean": 1e-3, "mismatch_kl/all/mean": 1e-3}
+# Step-1 metrics that must not depend on the layout
+METRICS = {"optim/grad_norm": 0.02, "loss/mean": 0.02, "entropy/all/mean": 1e-3, "mismatch_kl/all/mean": 1e-3}
 
 
 def step_metrics(output_dir: Path, step: int) -> dict:
