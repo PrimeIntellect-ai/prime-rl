@@ -508,7 +508,9 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+            # Every CP rank computes the whole sequence's loss, and the global normalizers count each
+            # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
+            tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
             masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
