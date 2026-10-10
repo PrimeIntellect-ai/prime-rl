@@ -15,9 +15,9 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_fp8_kv_cache import (
-    dsv4_fp8_compressed_kv_round_trip,
-    dsv4_fp8_swa_kv_round_trip,
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
+    dsv4_compressed_kv_fake_quant,
+    dsv4_swa_kv_fake_quant,
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.layers.fp8_linear import (
@@ -1691,7 +1691,7 @@ def _fp8_ds_mla_block_stride(entries_per_block: int) -> int:
 
 
 @requires_fp8_indexer
-def test_fp8_swa_kv_round_trip_matches_vllm_cache_insert():
+def test_swa_kv_fake_quant_matches_vllm_cache_insert():
     """Bit for bit with what vLLM's fused sliding-window insert writes into an `fp8_ds_mla` cache.
 
     The CUDA op is the one vLLM serves DeepSeek V4 with. Its source is not shipped, so this is the only check
@@ -1708,12 +1708,12 @@ def test_fp8_swa_kv_round_trip_matches_vllm_cache_insert():
     )
 
     expected = _decode_fp8_ds_mla(cache, block_size, n_tokens)
-    assert torch.equal(dsv4_fp8_swa_kv_round_trip(kv, ROPE_DIM).view(torch.int16), expected.view(torch.int16))
-    assert not torch.equal(dsv4_fp8_compressed_kv_round_trip(kv, ROPE_DIM), expected)
+    assert torch.equal(dsv4_swa_kv_fake_quant(kv, ROPE_DIM).view(torch.int16), expected.view(torch.int16))
+    assert not torch.equal(dsv4_compressed_kv_fake_quant(kv, ROPE_DIM), expected)
 
 
 @requires_fp8_indexer
-def test_fp8_compressed_kv_round_trip_matches_vllm_compressor_store():
+def test_compressed_kv_fake_quant_matches_vllm_compressor_store():
     """Bit for bit with what vLLM's CuTeDSL compressor store writes into an `fp8_ds_mla` cache.
 
     The store normalizes before it quantizes, so its input is steered to a known bf16 row: every pooled channel
@@ -1750,22 +1750,22 @@ def test_fp8_compressed_kv_round_trip_matches_vllm_compressor_store():
         normed = (signs * weight.float()).to(torch.bfloat16)
 
         expected = _decode_fp8_ds_mla(flat.view(-1, block_stride), entries_per_block, n_entries)
-        actual = dsv4_fp8_compressed_kv_round_trip(normed, ROPE_DIM)
+        actual = dsv4_compressed_kv_fake_quant(normed, ROPE_DIM)
         assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
 
 
 @requires_fp8_indexer
-def test_fp8_kv_round_trip_passes_the_gradient_straight_through_eager_and_compiled():
+def test_kv_fake_quant_passes_the_gradient_straight_through_eager_and_compiled():
     """The backward hands the upstream gradient back untouched, and `fullgraph` tracing changes no bit either way."""
-    kv = _kv_rows_with_edge_case_tiles(4096).view(1, 4096, 1, -1)
+    kv = torch.randn(1, 4096, 1, V4FLASH_MODEL["head_dim"], device="cuda", dtype=torch.bfloat16)
     upstream = torch.randn_like(kv)
 
-    def round_trips(kv: torch.Tensor) -> torch.Tensor:
-        return torch.cat([dsv4_fp8_swa_kv_round_trip(kv, ROPE_DIM), dsv4_fp8_compressed_kv_round_trip(kv, ROPE_DIM)])
+    def fake_quants(kv: torch.Tensor) -> torch.Tensor:
+        return torch.cat([dsv4_swa_kv_fake_quant(kv, ROPE_DIM), dsv4_compressed_kv_fake_quant(kv, ROPE_DIM)])
 
     eager_leaf, compiled_leaf = _leaves(kv, kv)
-    eager = round_trips(eager_leaf)
-    compiled = torch.compile(round_trips, fullgraph=True)(compiled_leaf)
+    eager = fake_quants(eager_leaf)
+    compiled = torch.compile(fake_quants, fullgraph=True)(compiled_leaf)
     for out, leaf in ((eager, eager_leaf), (compiled, compiled_leaf)):
         torch.autograd.backward(out, torch.cat([upstream, 2 * upstream]))
         assert torch.equal(leaf.grad, 3 * upstream)
@@ -1782,7 +1782,7 @@ def test_fp8_kv_precision_rounds_exactly_what_attention_reads(layer_idx, monkeyp
     """With `kv_precision="fp8"`, the kernel reads the sliding-window and compressed KV as the cache returns them.
 
     Same weights and inputs at `bf16` and `fp8`: the token half of the buffer the kernel reads must be
-    the sliding-window round trip of the `bf16` buffer, the compressed half its compressor round trip.
+    the sliding-window fake quant of the `bf16` buffer, the compressed half its compressor fake quant.
     """
     doc_lens = (300, 517)
     plain = v4flash_attention(layer_idx, dtype=torch.bfloat16)
@@ -1803,8 +1803,8 @@ def test_fp8_kv_precision_rounds_exactly_what_attention_reads(layer_idx, monkeyp
 
     assert torch.equal(recorded["indices"], plain_indices)
     assert plain_buf.shape[1] > n_tokens
-    assert torch.equal(recorded["kv_buf"][:, :n_tokens], dsv4_fp8_swa_kv_round_trip(plain_buf[:, :n_tokens], ROPE_DIM))
+    assert torch.equal(recorded["kv_buf"][:, :n_tokens], dsv4_swa_kv_fake_quant(plain_buf[:, :n_tokens], ROPE_DIM))
     assert torch.equal(
-        recorded["kv_buf"][:, n_tokens:], dsv4_fp8_compressed_kv_round_trip(plain_buf[:, n_tokens:], ROPE_DIM)
+        recorded["kv_buf"][:, n_tokens:], dsv4_compressed_kv_fake_quant(plain_buf[:, n_tokens:], ROPE_DIM)
     )
     assert not torch.equal(recorded["kv_buf"], plain_buf)
