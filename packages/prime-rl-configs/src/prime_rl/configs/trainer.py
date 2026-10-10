@@ -358,9 +358,9 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def ac_offloading_requires_ac(self):
-        """Automatically enable activation checkpointing when activation offloading is enabled."""
-        if self.ac_offloading is not None and self.ac is None:
-            self.ac = ActivationCheckpointConfig()
+        """Activation offloading requires activation checkpointing, so ``ac = None`` disables both."""
+        if self.ac is None:
+            self.ac_offloading = None
         return self
 
     @model_validator(mode="after")
