@@ -61,6 +61,8 @@ type = "single_node"
 
 The launcher starts a `vllm-router` on `inference.server.port` (default `8000`) fronting the vLLM engine on `inference.backend_port` (default `8100`). Clients connect to the router URL; admin operations (weight updates, health checks) bypass the router and hit the engine port directly — the RL entrypoint wires `orchestrator.model.client.admin_base_url` accordingly.
 
+By default the server runs `max(4, local DP size)` API server processes (`inference.vllm.api_server_count`), so request parsing and serialization don't stall on one process. With LoRA it runs one.
+
 This deployment shape runs the inference server on a single node, if configured with NVLink enabled, it allows you more freedom in terms of parallelism configurations.
 
 ```toml

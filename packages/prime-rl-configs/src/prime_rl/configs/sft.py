@@ -421,6 +421,7 @@ class SFTConfig(BaseConfig):
         if self.model.lora is not None:
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True
+                self.inference.vllm.api_server_count = 1
                 self.inference.vllm.max_lora_rank = self.model.lora.rank
             else:
                 warnings.warn(
