@@ -475,23 +475,72 @@ class IPOLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering: bool = False
+    """Center the IPO-weighted score. Without score_centering_topk, integrate exactly
+    over the complete bounded sampling mask."""
+
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Use an untruncated sampler head and proportional tail for IPO centering.
+    Fails if the modeled tail cannot be proven to lie inside IPO's trust region."""
+
+    @model_validator(mode="after")
+    def validate_score_centering_topk(self):
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        return self
+
+
+class IPOTISLossConfig(BaseConfig):
+    type: Literal["ipo_tis"] = "ipo_tis"
+
+    eps: float = Field(0.2, ge=0, allow_inf_nan=False)
+    """Maximum absolute probability change before a token is masked."""
+
+    ratio_cap: float = Field(2.0, ge=1, allow_inf_nan=False)
+    """Upper policy-gradient coefficient for accepted tokens; no lower ratio floor."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    score_centering: bool = False
+    """Center the masked, truncated importance-weighted score under the sampler."""
+
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Approximate an untruncated sampler with a captured head and proportional tail.
+    None selects exact centering over the complete replayed sampling support."""
+
+    @model_validator(mode="after")
+    def validate_score_centering_topk(self):
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        return self
+
 
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
 
-    ratio_low: float = Field(0.2, gt=0)
+    ratio_low: float = Field(0.2, gt=0, allow_inf_nan=False)
     """Lower accepted trainer-to-inference probability ratio."""
 
-    ratio_high: float = Field(5.0, gt=0)
+    ratio_high: float = Field(5.0, gt=0, allow_inf_nan=False)
     """Upper accepted trainer-to-inference probability ratio."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering: bool = False
+    """Center the ratio-masked importance-weighted score under the sampler."""
+
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Captured head size for an untruncated sampler with a proportional tail.
+    None selects exact centering over the complete replayed sampling support."""
+
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
         return self
 
 
@@ -530,6 +579,13 @@ class CISPOLossConfig(BaseConfig):
     """Temperature for the advantage term."""
 
 
+class ScoreCenteringLossConfig(BaseConfig):
+    type: Literal["score_centering"] = "score_centering"
+
+    topk: int = Field(128, ge=1)
+    """Number of sampler top-k probabilities to retain, without renormalizing the head."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -541,7 +597,14 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig
+    | IPOTISLossConfig
+    | IcePopLossConfig
+    | PPOLossConfig
+    | CISPOLossConfig
+    | ScoreCenteringLossConfig
+    | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
