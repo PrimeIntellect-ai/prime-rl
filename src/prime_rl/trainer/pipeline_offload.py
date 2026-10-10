@@ -41,6 +41,7 @@ class PipelineActivationOffloader:
         # Per offloaded micro-batch: (storage, pinned host copy) pairs, and the event of their return
         self._host: dict[Key, list[tuple[torch.UntypedStorage, Tensor]]] = {}
         self._returned: dict[Key, tuple[torch.cuda.Event, list[Tensor]]] = {}
+        self._last_swap_out: torch.cuda.Event | None = None
         for part in model_parts:
             part.register_forward_pre_hook(self._collect, with_kwargs=True)
             language_model = get_language_model(part)
@@ -95,7 +96,13 @@ class PipelineActivationOffloader:
                 flat.record_stream(self._d2h)
                 storage.resize_(0)
                 pairs.append((storage, host))
+            self._last_swap_out = self._d2h.record_event()
         self._host[key] = pairs
+
+    def pace(self) -> None:
+        """Make the compute stream wait until the last swapped-out micro-batch is in host memory."""
+        if self._last_swap_out is not None:
+            torch.cuda.current_stream().wait_event(self._last_swap_out)
 
     def prefetch(self, key: Key) -> None:
         """Start copying the micro-batch's activations back into their storages."""
@@ -110,15 +117,16 @@ class PipelineActivationOffloader:
         if pairs is None:
             return
         device = torch.device("cuda", torch.cuda.current_device())
+        # Allocated from the compute stream's pool, where the backward frees them: a pool of the copy stream's
+        # own would keep their memory cached out of the compute stream's reach.
         flats = []
-        # Allocated from the copy stream's own pool, which only ever holds these few same-sized buffers, so the
-        # compute stream's pool does not fragment around them.
+        for storage, host in pairs:
+            storage.resize_(host.numel())
+            flats.append(_bytes_view(storage, device))
+        self._h2d.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self._h2d):
-            for storage, host in pairs:
-                storage.resize_(host.numel())
-                flat = _bytes_view(storage, device)
+            for flat, (_, host) in zip(flats, pairs):
                 flat.copy_(host, non_blocking=True)
-                flats.append(flat)
         self._returned[key] = (self._h2d.record_event(), flats)
 
     def wait(self, key: Key) -> None:
@@ -127,11 +135,8 @@ class PipelineActivationOffloader:
             self.prefetch(key)
         returned = self._returned.pop(key, None)
         if returned is not None:
-            event, flats = returned
+            event, _ = returned
             torch.cuda.current_stream().wait_event(event)
-            # Freed after the backward that reads them: the copy stream's pool reuses them only after it.
-            for flat in flats:
-                flat.record_stream(torch.cuda.current_stream())
 
 
 class _Collecting:
@@ -203,14 +208,14 @@ def _dequantize_fp8(q: Tensor, sf: Tensor, out: Tensor) -> None:
     _dequantize_fp8_kernel[grid](q, sf, out, groups, GROUP=_FP8_GROUP, GROUPS=_GROUPS_PER_PROGRAM)
 
 
-def offload_plan(run_ops: list[tuple[str, int, int]], stages: set[int] | None, prefetch_ahead: int):
+def offload_plan(run_ops: list[tuple[str, int, int]], stages: set[int] | None, prefetch_ahead: int, every: int = 1):
     """For a rank's run ops in order: the forwards whose activations go to host memory (their backward is
-    more than `prefetch_ahead` ops later, on an offloading stage), and for each op position the backwards
-    to prefetch before it."""
+    more than `prefetch_ahead` ops later, on an offloading stage, micro-batch a multiple of `every`), and for
+    each op position the backwards to prefetch before it."""
     position = {op: i for i, op in enumerate(run_ops)}
     offloaded, prefetch_at = set(), {}
     for (kind, stage, mb), i in position.items():
-        if kind != "F" or (stages is not None and stage not in stages):
+        if kind != "F" or (stages is not None and stage not in stages) or mb % every:
             continue
         backward = position.get(("B", stage, mb))
         if backward is not None and backward - i > prefetch_ahead:

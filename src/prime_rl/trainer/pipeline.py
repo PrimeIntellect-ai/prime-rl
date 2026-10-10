@@ -615,7 +615,10 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
             )
             run_ops = [op for action, op in actions if action == "run"]
             stages_set = None if offload.stages is None else set(offload.stages)
-            self._offloaded, self._prefetch_at = offload_plan(run_ops, stages_set, offload.prefetch_ahead)
+            self._offloaded, self._prefetch_at = offload_plan(
+                run_ops, stages_set, offload.prefetch_ahead, offload.every
+            )
+            self._offload_paced = offload.paced
         self.stage_index_to_group_rank = dict(owners)
         for stage in stages:
             stage.stage_index_to_group_rank = self.stage_index_to_group_rank
@@ -713,6 +716,8 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
                 masters = None if blocking else self._masters
                 with torch.profiler.record_function(f"pp.{kind}.stage{idx}.mb{mb}"):
                     if kind == "F":
+                        if offload and self._offload_paced:
+                            offloader.pace()
                         with offloader.forward((idx, mb)) if offload else nullcontext():
                             output = stage.forward_one_chunk(
                                 mb, arg_mbs[mb], kwarg_mbs[mb], save_forward_output=return_outputs

@@ -87,6 +87,12 @@ class PipelineActivationOffloadConfig(BaseConfig):
     bf16 tensors whose last dimension is a multiple of 128 are compressed. Changes numerics: the backward (and
     activation checkpointing's recompute) reads the dequantized values."""
 
+    every: int = Field(1, ge=1)
+    """Offload only the micro-batches whose index is a multiple of ``every``, to keep the copies within the host link's bandwidth (a stage moves one micro-batch's activations each way per offloaded micro-batch)."""
+
+    paced: bool = False
+    """Before the forward of a micro-batch it offloads, the stage's GPU waits until the previous offloaded micro-batch has reached host memory, so back-to-back forwards (pipeline warmup) cannot outrun the copies and pile up memory that is not freed yet. In 1F1B a stage's warmup forwards wait for the first backward anyway."""
+
 
 class OptimizerInBackwardOffloadConfig(BaseConfig):
     """Full CPU optimizer offload: FP32 masters, optimizer state (AdamW moments; SignSGD is
