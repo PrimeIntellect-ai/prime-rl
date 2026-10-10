@@ -439,8 +439,11 @@ class SFTConfig(BaseConfig):
                     "LoRA training is not yet supported with in-memory weight broadcast. "
                     "Set weight_broadcast.type = 'filesystem'."
                 )
-            if self.eval.retrigger_on_resume:
-                raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
+            # retrigger_on_resume works over an in-memory transport too: the evals
+            # process rendezvouses with the trainer's startup broadcast before it
+            # re-fires (``sync_startup`` waits for v{resume_step} and then receives
+            # it), so the served weights are the resume checkpoint's and the
+            # re-fired epoch needs no second reload. NIXL is already rejected above.
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
