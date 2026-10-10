@@ -166,7 +166,8 @@ jobs:
               - 'src/prime_rl/entrypoints/{rl,trainer,inference,orchestrator,env_server,dashboard}.py'
               - 'src/prime_rl/{inference,orchestrator,monitors}/**'
               - 'src/prime_rl/eval/{online,runner}.py'
-              - 'tests/integration/test_reverse_text{,_lora,_moe,_rl_opd,_rl_sft}.py'
+              - 'tests/integration/test_reverse_text{,_lora,_moe,_rl_opd,_rl_sft,_modelexpress}.py'
+              - 'scripts/install_modelexpress.sh'
               - 'tests/integration/test_alphabet_sort.py'
               - 'configs/ci/integration/reverse-text{,-lora,-moe,-rl-opd,-rl-sft}/**'
               - 'configs/ci/integration/alphabet_sort.toml'
@@ -196,7 +197,8 @@ jobs:
                 {test: "reverse_text_rl_sft", name: "Reverse Text RL SFT"},
                 {test: "alphabet_sort", name: "Alphabet Sort"},
                 {test: "reverse_text_lora", name: "Reverse Text LoRA"},
-                {test: "reverse_text_moe", name: "Reverse Text MoE"}
+                {test: "reverse_text_moe", name: "Reverse Text MoE"},
+                {test: "reverse_text_modelexpress", name: "Reverse Text ModelExpress"}
               else empty end
             ]')
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
@@ -281,6 +283,11 @@ jobs:
               cache-dependency-glob: "uv.lock"
       - name: Install dependencies
         run: uv sync --all-extras --all-packages --locked
+      - name: Install ModelExpress server
+        if: matrix.test == 'reverse_text_modelexpress'
+        run: |
+          apt-get install -y curl make gcc
+          bash scripts/install_modelexpress.sh
       - name: Run integration tests
         env:
           USERNAME_CI: CI_RUNNER
