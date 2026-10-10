@@ -100,10 +100,10 @@ def train(config: SFTConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+        enable_gloo=config.model.offload in ("fsdp", "full"),
     )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
+    if config.model.offload == "full":
+        setup_full_cpu_optimizer_offload(numa_bind=config.model.offload_numa_bind)
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -162,11 +162,10 @@ def train(config: SFTConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
+        offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
     )
 

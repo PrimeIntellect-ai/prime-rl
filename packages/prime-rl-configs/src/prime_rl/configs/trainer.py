@@ -3,7 +3,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BeforeValidator, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -49,34 +49,7 @@ class ActivationOffloadingConfig(BaseConfig):
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
 
 
-class OptimizerInBackwardOffloadConfig(BaseConfig):
-    """Full CPU optimizer offload: FP32 masters, optimizer state (AdamW moments; SignSGD is
-    stateless), and accumulated gradients live in CPU RAM, each optimizer chunk runs on CPU as
-    soon as its last gradient arrives, and the refreshed BF16 weights stream back while backward
-    is still executing.
-
-    Gradient numerics: gradients are reduced across ranks in FP32 (``reduce_dtype``) but FSDP2
-    materializes them in the sharded parameter's dtype, which is BF16 for the offload compute
-    model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters,
-    moments, accumulation, and optimizer arithmetic remain FP32. For gradient numerics
-    bit-faithful to that path, disable offloading.
-    """
-
-    numa_bind: bool = True
-    """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
-
-
-def _normalize_optimizer_in_backward_offload(value: Any) -> Any:
-    if value is True:
-        return {}
-    if value is False:
-        return None
-    return value
-
-
-OptimizerInBackwardOffload = Annotated[
-    OptimizerInBackwardOffloadConfig | None, BeforeValidator(_normalize_optimizer_in_backward_offload)
-]
+OffloadMode: TypeAlias = Literal["none", "optimizer", "full", "fsdp"]
 
 
 class CompileConfig(BaseConfig):
@@ -288,14 +261,11 @@ class ModelConfig(BaseModelConfig):
     ac_offloading: ActivationOffloadingConfig | None = ActivationOffloadingConfig()
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
-    fsdp_cpu_offload: bool = False
-    """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
+    offload: OffloadMode = "optimizer"
+    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU, avoiding the H2D all-gather overhead of ``fsdp`` while still saving GPU memory. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``fsdp`` offloads parameters, gradients, and optimizer states through FSDP with pinned memory. ``none`` keeps everything on GPU."""
 
-    optim_cpu_offload: bool = True
-    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
-
-    full_offload: OptimizerInBackwardOffload = None
-    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or a ``[model.full_offload]`` section; disabled by default."""
+    offload_numa_bind: bool = True
+    """With ``offload = "full"``, pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -361,17 +331,6 @@ class ModelConfig(BaseModelConfig):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
             self.ac = ActivationCheckpointConfig()
-        return self
-
-    @model_validator(mode="after")
-    def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and (self.optim_cpu_offload or self.full_offload):
-            raise ValueError("Cannot combine fsdp_cpu_offload with optimizer CPU offloading.")
-        if self.optim_cpu_offload and self.full_offload:
-            raise ValueError(
-                "Cannot enable both optim_cpu_offload and full_offload. "
-                "Set optim_cpu_offload=false when enabling full optimizer offload."
-            )
         return self
 
     @model_validator(mode="after")
@@ -711,13 +670,13 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
-        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
+        if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
         return self
 
     @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
-        if self.model.full_offload and self.optim.max_norm is not None:
+        if self.model.offload == "full" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
@@ -753,7 +712,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
+        if self.optim.type == "muon" and self.model.offload == "fsdp":
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
         return self
 

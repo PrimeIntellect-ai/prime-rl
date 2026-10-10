@@ -331,8 +331,7 @@ def test_removed_moe_runtime_fields_are_rejected(removed):
 def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     config = config_cls.model_validate({})
 
-    assert config.model.optim_cpu_offload is True
-    assert config.model.full_offload is None
+    assert config.model.offload == "optimizer"
 
 
 def test_moe_router_dtype_auto_resolves_per_trainer():
@@ -360,7 +359,7 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
         config = config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"max_norm": 1.0},
             }
         )
@@ -373,7 +372,7 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
     with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
         config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"type": "muon", "max_norm": None},
             }
         )
@@ -383,11 +382,11 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
 def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
     config = config_cls.model_validate(
         {
-            "model": {"optim_cpu_offload": False, "full_offload": True},
+            "model": {"offload": "full"},
             "optim": {"type": "sign_sgd", "max_norm": None},
         }
     )
-    assert config.model.full_offload is not None
+    assert config.model.offload == "full"
     assert config.optim.type == "sign_sgd"
 
 

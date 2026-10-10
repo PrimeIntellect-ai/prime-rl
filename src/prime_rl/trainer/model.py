@@ -509,7 +509,7 @@ def _expert_shard_placement_fn(
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
+    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.offload == "fsdp" else OffloadPolicy()
 
     fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
@@ -695,7 +695,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    device = "cpu" if config.fsdp_cpu_offload else "cuda"
+    device = "cpu" if config.offload == "fsdp" else "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
 
@@ -893,7 +893,7 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
 
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
     """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
-    if not config.fsdp_cpu_offload:
+    if config.offload != "fsdp":
         return
     for _, buffer in model.named_buffers():
         if buffer.device.type == "cpu":
@@ -1024,7 +1024,7 @@ def setup_model(
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
         )
-        device = "cpu" if config.fsdp_cpu_offload else "cuda"
+        device = "cpu" if config.offload == "fsdp" else "cuda"
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()

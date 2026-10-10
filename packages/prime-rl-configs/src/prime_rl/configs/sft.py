@@ -388,13 +388,13 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
-        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
+        if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
         return self
 
     @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
-        if self.model.full_offload and self.optim.max_norm is not None:
+        if self.model.offload == "full" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
@@ -623,7 +623,7 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
+        if self.optim.type == "muon" and self.model.offload == "fsdp":
             raise ValueError("Muon optimizer does not support FSDP CPU offload")
         return self
 

@@ -21,7 +21,6 @@ from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
 
 if TYPE_CHECKING:
-    from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
     from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
@@ -176,8 +175,8 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig") -> None:
-    if config.numa_bind:
+def setup_full_cpu_optimizer_offload(numa_bind: bool) -> None:
+    if numa_bind:
         bind_process_to_gpu_numa_node()
     configure_cpu_optimizer_threads()
 
