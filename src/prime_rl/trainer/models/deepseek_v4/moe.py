@@ -113,7 +113,7 @@ class DeepseekV4MoE(MoE):
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
         """
-        if self.is_hash and routed_experts is None:
+        if self.is_hash and routed_experts is None and not self.router.force_balanced:
             assert input_ids is not None, f"layer {self.layer_idx} is hash-routed and needs input_ids"
             # `(vocab_size, top_k)` indexed by `(bs, slen)` token ids gives `(bs, slen, top_k)`.
             routed_experts = self.router.tid2eid[input_ids]
