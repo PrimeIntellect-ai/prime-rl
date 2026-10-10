@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Tuple
 
 import torch
@@ -701,6 +702,48 @@ def per_block_cast_to_fp8_triton(
         gran_k,
     )
     return out[0], sf[0]
+
+
+def stacked_per_block_cast_to_fp8_triton(
+    weights: Sequence[torch.Tensor], use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """``per_block_cast_to_fp8_triton`` of the row-wise concatenation of ``weights``, without materializing it.
+
+    Each weight's row count must be a multiple of ``gran_k``, so no block straddles two weights and the result
+    equals the separate casts stacked."""
+    assert gran_k == GROUP_ALIGNMENT
+    cols = weights[0].shape[1]
+    assert all(w.dim() == 2 and w.shape[1] == cols and w.shape[0] % gran_k == 0 for w in weights)
+    rows = sum(w.shape[0] for w in weights)
+    out = torch.empty((rows, cols), device=weights[0].device, dtype=torch.float8_e4m3fn)
+    sf = torch.empty((rows // gran_k, ceil_div(cols, gran_k)), device=weights[0].device, dtype=torch.float32)
+    row = 0
+    for w in weights:
+        w_rows = w.shape[0]
+        out_w, sf_w = out[row : row + w_rows], sf[row // gran_k : (row + w_rows) // gran_k]
+        _grouped_per_block_fp8_kernel[(1, w_rows // gran_k, ceil_div(cols, gran_k))](
+            w,
+            out_w,
+            sf_w,
+            1,
+            w_rows,
+            cols,
+            0,
+            w.stride(0),
+            w.stride(1),
+            0,
+            out_w.stride(0),
+            out_w.stride(1),
+            0,
+            sf_w.stride(0),
+            sf_w.stride(1),
+            USE_UE8M0=use_ue8m0,
+            BLOCK_M=gran_k,
+            BLOCK_N=gran_k,
+            num_warps=8,
+        )
+        row += w_rows
+    return out, sf
 
 
 def per_block_cast_to_fp8_tp_triton(

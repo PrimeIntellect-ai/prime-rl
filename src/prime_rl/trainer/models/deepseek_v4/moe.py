@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear, fp8_clamped_swiglu_mlp
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 
@@ -181,6 +182,8 @@ class DeepseekV4MLP(FeedForward):
         self.limit = config.swiglu_limit
 
     def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+        if all(isinstance(proj, Float8BlockwiseLinear) for proj in (self.gate_proj, self.up_proj, self.down_proj)):
+            return fp8_clamped_swiglu_mlp(x, self.gate_proj, self.up_proj, self.down_proj, self.limit)
         gate = self.gate_proj(x).clamp(max=self.limit)
         up = self.up_proj(x).clamp(min=-self.limit, max=self.limit)
         return self.down_proj(F.silu(gate) * up)
@@ -252,7 +255,9 @@ class DeepseekV4MoE(MoE):
         x: torch.Tensor,
         input_ids: torch.Tensor | None = None,
         routed_experts: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        *,
+        split_shared_output: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
@@ -260,6 +265,7 @@ class DeepseekV4MoE(MoE):
                 Required by a hash layer, ignored by a standard one.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape
                 ``(bs, slen, top_k)``. Replayed expert indices take precedence over the table.
+            split_shared_output (bool): Return the routed and shared experts' outputs unsummed (see `MoE.forward`).
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -268,4 +274,4 @@ class DeepseekV4MoE(MoE):
             assert input_ids is not None, f"layer {self.layer_idx} is hash-routed and needs input_ids"
             # `(vocab_size, top_k)` indexed by `(bs, slen)` token ids gives `(bs, slen, top_k)`.
             routed_experts = self.router.tid2eid[input_ids]
-        return super().forward(x, routed_experts=routed_experts)
+        return super().forward(x, routed_experts=routed_experts, split_shared_output=split_shared_output)

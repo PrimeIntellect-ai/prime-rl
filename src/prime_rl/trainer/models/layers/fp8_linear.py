@@ -6,11 +6,13 @@ from collections.abc import Callable
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.kernels.clamped_swiglu_fp8 import clamped_swiglu_fp8, clamped_swiglu_fp8_backward
 from prime_rl.trainer.models.kernels.fp8_utils import (
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
     per_token_cast_to_fp8_tp_triton,
     per_token_cast_to_fp8_triton,
+    stacked_per_block_cast_to_fp8_triton,
     ue8m0_for_device,
 )
 from prime_rl.utils.logger import get_logger
@@ -21,12 +23,24 @@ _wgrad_accumulators: dict[int, Callable[[], torch.Tensor]] = {}
 
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_mm", mutates_args=())
-def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int, wgrad_key: int = 0) -> torch.Tensor:
+def _fp8_blockwise_mm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: int,
+    wgrad_key: int = 0,
+    x_fp8: torch.Tensor | None = None,
+    x_sf: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """`x @ weight.T` in FP8. `x_fp8` / `x_sf`, when given, are `x`'s per-token cast as its producer stored it (scales
+    `[K / 128, >= tokens]`, see `clamped_swiglu_fp8`); the backward still reads the bf16 `x`."""
     import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     use_ue8m0 = ue8m0_for_device(x.device)
-    x_fp8 = per_token_cast_to_fp8_triton(x_2d, use_ue8m0, block_size)
+    if x_fp8 is None:
+        x_fp8 = per_token_cast_to_fp8_triton(x_2d, use_ue8m0, block_size)
+    else:
+        x_fp8 = (x_fp8.reshape(x_2d.shape), x_sf[:, : x_2d.size(0)].T)
     weight_fp8 = per_block_cast_to_fp8_triton(weight, use_ue8m0, block_size)
 
     out = torch.empty((x_2d.size(0), weight.size(0)), device=x.device, dtype=torch.bfloat16)
@@ -35,7 +49,14 @@ def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int, wg
 
 
 @_fp8_blockwise_mm.register_fake
-def _fp8_blockwise_mm_fake(x: torch.Tensor, weight: torch.Tensor, block_size: int, wgrad_key: int = 0) -> torch.Tensor:
+def _fp8_blockwise_mm_fake(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: int,
+    wgrad_key: int = 0,
+    x_fp8: torch.Tensor | None = None,
+    x_sf: torch.Tensor | None = None,
+) -> torch.Tensor:
     return x.new_empty((*x.shape[:-1], weight.shape[0]), dtype=torch.bfloat16)
 
 
@@ -103,7 +124,7 @@ def _fp8_blockwise_mm_backward_fake(
 
 
 def _fp8_blockwise_mm_setup_context(ctx, inputs, output) -> None:
-    x, weight, block_size, wgrad_key = inputs
+    x, weight, block_size, wgrad_key, *_ = inputs
     ctx.save_for_backward(x, weight)
     ctx.block_size = block_size
     ctx.wgrad_key = wgrad_key
@@ -123,13 +144,189 @@ def _fp8_blockwise_mm_autograd_backward(ctx, grad_output: torch.Tensor):
     )
     # A weight gradient accumulated in fp32 is not returned.
     keep_grad_weight = needs_grad_weight and ctx.wgrad_key not in _wgrad_accumulators
-    return grad_x if needs_grad_x else None, grad_weight if keep_grad_weight else None, None, None
+    return grad_x if needs_grad_x else None, grad_weight if keep_grad_weight else None, None, None, None, None
 
 
 _fp8_blockwise_mm.register_autograd(
     _fp8_blockwise_mm_autograd_backward,
     setup_context=_fp8_blockwise_mm_setup_context,
 )
+
+
+@torch.library.custom_op("prime_rl::fp8_gate_up_mm", mutates_args=())
+def _fp8_gate_up_mm(
+    x: torch.Tensor, gate_weight: torch.Tensor, up_weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    """`[x @ gate_weight.T | x @ up_weight.T]` (2-D `x`) as one FP8 GEMM: `x` is cast once, the weights blockwise in
+    place, so each half equals `_fp8_blockwise_mm` of its weight."""
+    import deep_gemm
+
+    use_ue8m0 = ue8m0_for_device(x.device)
+    x_fp8 = per_token_cast_to_fp8_triton(x, use_ue8m0, block_size)
+    weight_fp8 = stacked_per_block_cast_to_fp8_triton((gate_weight, up_weight), use_ue8m0, block_size)
+    out = torch.empty((x.size(0), gate_weight.size(0) + up_weight.size(0)), device=x.device, dtype=torch.bfloat16)
+    deep_gemm.fp8_gemm_nt(x_fp8, weight_fp8, out)
+    return out
+
+
+@_fp8_gate_up_mm.register_fake
+def _fp8_gate_up_mm_fake(
+    x: torch.Tensor, gate_weight: torch.Tensor, up_weight: torch.Tensor, block_size: int
+) -> torch.Tensor:
+    return x.new_empty((x.size(0), gate_weight.size(0) + up_weight.size(0)), dtype=torch.bfloat16)
+
+
+@torch.library.custom_op("prime_rl::fp8_clamped_swiglu", mutates_args=())
+def _fp8_clamped_swiglu(gate_up: torch.Tensor, limit: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return clamped_swiglu_fp8(gate_up, limit, ue8m0_for_device(gate_up.device))
+
+
+@_fp8_clamped_swiglu.register_fake
+def _fp8_clamped_swiglu_fake(gate_up: torch.Tensor, limit: float) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    rows, I = gate_up.size(0), gate_up.size(1) // 2
+    return (
+        gate_up.new_empty((rows, I)),
+        gate_up.new_empty((rows, I), dtype=torch.float8_e4m3fn),
+        gate_up.new_empty((I // 128, (rows + 3) // 4 * 4), dtype=torch.float32),
+    )
+
+
+@torch.library.custom_op("prime_rl::fp8_gate_up_clamped_swiglu_backward", mutates_args=())
+def _fp8_gate_up_clamped_swiglu_backward(
+    grad_h: torch.Tensor,
+    x: torch.Tensor,
+    gate_weight: torch.Tensor,
+    up_weight: torch.Tensor,
+    gate_up: torch.Tensor,
+    limit: float,
+    block_size: int,
+    needs_grad_x: bool,
+    needs_grad_weight: bool,
+    gate_wgrad_key: int = 0,
+    up_wgrad_key: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The gate and up projections' backward from `d[gate | up]`'s fused casts: two data-gradient GEMMs summed in
+    bf16 (as autograd sums the two projections' gradients of `x`), one transposed cast of `x`, two weight-gradient
+    GEMMs. A weight with an fp32 accumulator registered for its key gets its gradient added there (and an empty one
+    returned)."""
+    import deep_gemm
+
+    use_ue8m0 = ue8m0_for_device(x.device)
+    rows = x.size(0)
+    q, sf, qt, sft = clamped_swiglu_fp8_backward(grad_h.contiguous(), gate_up, limit, use_ue8m0)
+    weights = (gate_weight, up_weight)
+    grad_x = x.new_empty(x.shape)
+    grad_weights = [w.new_empty(w.shape) for w in weights]
+
+    if needs_grad_x:
+        grad_x_halves = []
+        for half, weight in enumerate(weights):
+            weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, use_ue8m0, block_size)
+            grad_x_half = torch.empty_like(x)
+            deep_gemm.fp8_gemm_nt((q[half], sf[half][:, :rows].T), weight_dx_fp8, grad_x_half)
+            grad_x_halves.append(grad_x_half)
+        grad_x = grad_x_halves[0] + grad_x_halves[1]
+
+    if needs_grad_weight:
+        x_t_fp8 = per_token_cast_to_fp8_tp_triton(x, use_ue8m0, block_size)
+        for half, (weight, key) in enumerate(zip(weights, (gate_wgrad_key, up_wgrad_key))):
+            accumulator = _wgrad_accumulators.get(key)
+            grad_weight_fp32 = (
+                accumulator()
+                if accumulator is not None
+                else torch.zeros(weight.shape, device=weight.device, dtype=torch.float32)
+            )
+            deep_gemm.fp8_gemm_nt(
+                (qt[half], sft[half].T), x_t_fp8, grad_weight_fp32, c=grad_weight_fp32, recipe=(1, 1, 128)
+            )
+            grad_weights[half] = weight.new_empty(0) if accumulator is not None else grad_weight_fp32.to(weight.dtype)
+
+    return grad_x, grad_weights[0], grad_weights[1]
+
+
+@_fp8_gate_up_clamped_swiglu_backward.register_fake
+def _fp8_gate_up_clamped_swiglu_backward_fake(
+    grad_h,
+    x,
+    gate_weight,
+    up_weight,
+    gate_up,
+    limit,
+    block_size,
+    needs_grad_x,
+    needs_grad_weight,
+    gate_wgrad_key=0,
+    up_wgrad_key=0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    grad_weights = [
+        w.new_empty(0) if needs_grad_weight and key in _wgrad_accumulators else w.new_empty(w.shape)
+        for w, key in ((gate_weight, gate_wgrad_key), (up_weight, up_wgrad_key))
+    ]
+    return x.new_empty(x.shape), *grad_weights
+
+
+class _FP8GateUpClampedSwiglu(torch.autograd.Function):
+    """`h = silu(clamp(x @ gate.T, max=limit)) * clamp(x @ up.T, -limit, limit)` with `h`'s per-token FP8 cast.
+
+    One autograd node, so the backward's fused kernel hands the cast `d[gate | up]` to the projections' GEMMs.
+    Activation checkpointing sees the GEMM (`fp8_gate_up_mm`, saved where `fp8_blockwise_mm` is) and the SwiGLU
+    (`fp8_clamped_swiglu`, recomputed), as it saw the two projections and the elementwise SwiGLU."""
+
+    @staticmethod
+    def forward(ctx, x, gate_weight, up_weight, limit, block_size, gate_wgrad_key, up_wgrad_key):
+        gate_up = torch.ops.prime_rl.fp8_gate_up_mm(x, gate_weight, up_weight, block_size)
+        h, h_fp8, h_sf = torch.ops.prime_rl.fp8_clamped_swiglu(gate_up, limit)
+        ctx.save_for_backward(x, gate_weight, up_weight, gate_up)
+        ctx.limit, ctx.block_size = limit, block_size
+        ctx.wgrad_keys = (gate_wgrad_key, up_wgrad_key)
+        ctx.mark_non_differentiable(h_fp8, h_sf)
+        return h, h_fp8, h_sf
+
+    @staticmethod
+    def backward(ctx, grad_h, _grad_h_fp8, _grad_h_sf):
+        x, gate_weight, up_weight, gate_up = ctx.saved_tensors
+        needs_grad_x, needs_grad_gate, needs_grad_up = ctx.needs_input_grad[:3]
+        grad_x, grad_gate, grad_up = torch.ops.prime_rl.fp8_gate_up_clamped_swiglu_backward(
+            grad_h,
+            x,
+            gate_weight,
+            up_weight,
+            gate_up,
+            ctx.limit,
+            ctx.block_size,
+            needs_grad_x,
+            needs_grad_gate or needs_grad_up,
+            *ctx.wgrad_keys,
+        )
+        # A weight gradient accumulated in fp32 is not returned.
+        keep_gate, keep_up = (key not in _wgrad_accumulators for key in ctx.wgrad_keys)
+        return (
+            grad_x if needs_grad_x else None,
+            grad_gate if needs_grad_gate and keep_gate else None,
+            grad_up if needs_grad_up and keep_up else None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+
+def fp8_clamped_swiglu_mlp(
+    x: torch.Tensor,
+    gate_proj: Float8BlockwiseLinear,
+    up_proj: Float8BlockwiseLinear,
+    down_proj: Float8BlockwiseLinear,
+    limit: float,
+) -> torch.Tensor:
+    """`down_proj(silu(clamp(gate_proj(x), max=limit)) * clamp(up_proj(x), -limit, limit))`, bitwise, with one
+    gate/up GEMM, one fused SwiGLU + FP8 cast kernel each way and the down projection reading that cast."""
+    assert gate_proj.block_size == up_proj.block_size == down_proj.block_size
+    x_2d = x.reshape(-1, x.shape[-1])
+    h, h_fp8, h_sf = _FP8GateUpClampedSwiglu.apply(
+        x_2d, gate_proj.weight, up_proj.weight, limit, gate_proj.block_size, gate_proj.wgrad_key, up_proj.wgrad_key
+    )
+    out = _fp8_blockwise_mm(h, down_proj.weight, down_proj.block_size, down_proj.wgrad_key, h_fp8, h_sf)
+    return out.reshape(*x.shape[:-1], out.size(-1))
 
 
 class Float8BlockwiseLinear(nn.Linear):

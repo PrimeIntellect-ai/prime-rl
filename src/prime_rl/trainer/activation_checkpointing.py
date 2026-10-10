@@ -94,7 +94,11 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
 # target matches every operation registered in that namespace.
 DEFAULT_SELECTIVE_TARGETS = DEFAULT_SELECTIVE_SAVE_NAMESPACES | DEFAULT_SELECTIVE_SAVE_OPERATIONS
 # Fused operations that run in place of a target operation: naming the target saves them too.
-FUSED_OPERATIONS = {"prime_rl::dsv41_sparse_attn": frozenset({"prime_rl::dsv41_sparse_attn_rope"})}
+FUSED_OPERATIONS = {
+    "prime_rl::dsv41_sparse_attn": frozenset({"prime_rl::dsv41_sparse_attn_rope"}),
+    # The shared expert's gate and up projections as one GEMM.
+    "prime_rl::fp8_blockwise_mm": frozenset({"prime_rl::fp8_gate_up_mm"}),
+}
 
 
 # The levels between `full` and `selective`, each retaining more than the one before (see the

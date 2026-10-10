@@ -90,9 +90,11 @@ class DeepseekV41DecoderLayer(nn.Module):
             return (self.attn_hc.update_states(post, comb, attn_out, streams), attn_pre, *state.as_tuple())
         if self.pipeline_part == "moe":
             ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, pre_mix)
-            mlp_out = self.mlp(self.post_attention_layernorm(ffn_in), routed_experts=routed_experts)
+            mlp_out, shared_out = self.mlp(
+                self.post_attention_layernorm(ffn_in), routed_experts=routed_experts, split_shared_output=True
+            )
             return (
-                self.dense_after_mlp(post, comb, mlp_out, streams),
+                self.dense_after_mlp(post, comb, mlp_out, shared_out, streams),
                 ffn_pre,
                 compressed_kv,
                 index_k,
@@ -102,8 +104,8 @@ class DeepseekV41DecoderLayer(nn.Module):
         ffn_in, ffn_pre, post, comb, streams, *state = self.dense_before_mlp(
             mhc_states, pre_mix, compressed_kv, index_k, top_k_indices, candidates, packed=packed
         )
-        mlp_out = self.mlp(ffn_in, routed_experts=routed_experts)
-        return (self.dense_after_mlp(post, comb, mlp_out, streams), ffn_pre, *state)
+        mlp_out, shared_out = self.mlp(ffn_in, routed_experts=routed_experts, split_shared_output=True)
+        return (self.dense_after_mlp(post, comb, mlp_out, shared_out, streams), ffn_pre, *state)
 
     def dense_before_mlp(
         self,
@@ -124,9 +126,12 @@ class DeepseekV41DecoderLayer(nn.Module):
         ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
         return (self.post_attention_layernorm(ffn_in), ffn_pre, post, comb, streams, *state.as_tuple())
 
-    def dense_after_mlp(self, post: Tensor, comb: Tensor, mlp_out: Tensor, streams: Tensor) -> Tensor:
-        """Writes the MoE output back into the residual streams."""
-        return self.ffn_hc.update_states(post, comb, mlp_out, streams)
+    def dense_after_mlp(
+        self, post: Tensor, comb: Tensor, mlp_out: Tensor, shared_out: Tensor | None, streams: Tensor
+    ) -> Tensor:
+        """Writes the MoE output (routed plus shared experts, summed by the write-back kernel) back into the
+        residual streams."""
+        return self.ffn_hc.update_states(post, comb, mlp_out, streams, shared_out)
 
 
 # fp32 in the published checkpoint; mirrors V4's list.

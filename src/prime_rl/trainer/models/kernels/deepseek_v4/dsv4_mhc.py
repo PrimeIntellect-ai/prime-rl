@@ -190,6 +190,7 @@ def _triton_hpb_fwd_kernel(
     orig_ptr,
     hp_ptr,
     x_ptr,
+    x2_ptr,
     bias_ptr,
     out_ptr,
     sb,
@@ -204,11 +205,12 @@ def _triton_hpb_fwd_kernel(
     stride_out_s,
     stride_out_n,
     stride_out_c,
+    HAS_X2: tl.constexpr,
     HAS_BIAS: tl.constexpr,
     BLOCK_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
 ):
-    """out = hr.T @ orig + hp * (x + bias)."""
+    """out = hr.T @ orig + hp * (x + bias), with x = bf16(x + x2) when the sublayer output comes in two parts."""
     pid_s = tl.program_id(0)
     pid_c = tl.program_id(1)
     offs_s = pid_s * BLOCK_S + tl.arange(0, BLOCK_S)
@@ -218,6 +220,9 @@ def _triton_hpb_fwd_kernel(
     mask_2d = mask_s[:, None] & mask_c[None, :]
 
     x_tile = tl.load(x_ptr + offs_s[:, None] * C + offs_c[None, :], mask=mask_2d, other=0.0).to(tl.float32)
+    if HAS_X2:
+        x2_tile = tl.load(x2_ptr + offs_s[:, None] * C + offs_c[None, :], mask=mask_2d, other=0.0).to(tl.float32)
+        x_tile = (x_tile + x2_tile).to(x_ptr.dtype.element_ty).to(tl.float32)
     if HAS_BIAS:
         bias_tile = tl.load(bias_ptr + offs_c, mask=mask_c, other=0.0).to(tl.float32)
         x_tile += bias_tile[None, :]
@@ -247,7 +252,11 @@ def _triton_hpb_fwd_kernel(
 
 
 def _triton_h_post_bda_fwd(
-    h_res: torch.Tensor, original_residual: torch.Tensor, h_post: torch.Tensor, x: torch.Tensor
+    h_res: torch.Tensor,
+    original_residual: torch.Tensor,
+    h_post: torch.Tensor,
+    x: torch.Tensor,
+    x2: torch.Tensor | None = None,
 ) -> torch.Tensor:
     s, b, n, C = original_residual.shape
     sb = s * b
@@ -257,6 +266,7 @@ def _triton_h_post_bda_fwd(
     orig_flat = original_residual.contiguous().view(sb, n, C)
     hp_flat = h_post.contiguous().view(sb, n)
     x_flat = x.contiguous().view(sb, C)
+    x2_flat = x_flat if x2 is None else x2.contiguous().view(sb, C)
 
     grid = lambda META: (triton.cdiv(sb, META["BLOCK_S"]), triton.cdiv(C, META["BLOCK_C"]))
     _triton_hpb_fwd_kernel[grid](
@@ -264,6 +274,7 @@ def _triton_h_post_bda_fwd(
         orig_flat,
         hp_flat,
         x_flat,
+        x2_flat,
         x_flat,
         out,
         sb,
@@ -278,6 +289,7 @@ def _triton_h_post_bda_fwd(
         out.stride(0),
         out.stride(1),
         out.stride(2),
+        HAS_X2=x2 is not None,
         HAS_BIAS=False,
     )
     return out.view(s, b, n, C)
@@ -297,6 +309,7 @@ def _triton_hpb_bwd_kernel(
     go_ptr,
     orig_ptr,
     x_ptr,
+    x2_ptr,
     bias_ptr,
     hr_ptr,
     hp_ptr,
@@ -316,6 +329,7 @@ def _triton_hpb_bwd_kernel(
     stride_hr_s,
     stride_hr_i,
     stride_hr_j,
+    HAS_X2: tl.constexpr,
     HAS_BIAS: tl.constexpr,
     BLOCK_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
@@ -370,6 +384,9 @@ def _triton_hpb_bwd_kernel(
 
         # The gates' gradients: per-token sums over the chunk, accumulated chunk by chunk.
         x_tile = tl.load(x_ptr + offs_s[:, None] * C + offs_c[None, :], mask=mask_2d, other=0.0).to(tl.float32)
+        if HAS_X2:
+            x2_tile = tl.load(x2_ptr + offs_s[:, None] * C + offs_c[None, :], mask=mask_2d, other=0.0)
+            x_tile = (x_tile + x2_tile.to(tl.float32)).to(x_ptr.dtype.element_ty).to(tl.float32)
         if HAS_BIAS:
             bias_tile = tl.load(bias_ptr + offs_c, mask=mask_c, other=0.0).to(tl.float32)
             x_tile += bias_tile[None, :]
@@ -425,6 +442,7 @@ def _triton_h_post_bda_bwd(
     original_residual: torch.Tensor,
     h_post: torch.Tensor,
     x: torch.Tensor,
+    x2: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     s, b, n, C = original_residual.shape
     sb = s * b
@@ -440,12 +458,14 @@ def _triton_h_post_bda_bwd(
     orig_flat = original_residual.contiguous().view(sb, n, C)
     hp_flat = h_post.contiguous().view(sb, n)
     x_flat = x.contiguous().view(sb, C)
+    x2_flat = x_flat if x2 is None else x2.contiguous().view(sb, C)
 
     grid = lambda META: (triton.cdiv(sb, META["BLOCK_S"]),)
     _triton_hpb_bwd_kernel[grid](
         go_flat,
         orig_flat,
         x_flat,
+        x2_flat,
         x_flat,
         hr_flat,
         hp_flat,
@@ -465,6 +485,7 @@ def _triton_h_post_bda_bwd(
         g_hr.stride(0),
         g_hr.stride(1),
         g_hr.stride(2),
+        HAS_X2=x2 is not None,
         HAS_BIAS=False,
     )
 
@@ -524,14 +545,22 @@ def fused_sinkhorn(logits: torch.Tensor, num_iterations: int, eps: float) -> tor
 
 @torch.library.custom_op("prime_rl::dsv4_mhc_post_bda", mutates_args=())
 def _mhc_post_bda(
-    h_res: torch.Tensor, original_residual: torch.Tensor, h_post: torch.Tensor, x: torch.Tensor
+    h_res: torch.Tensor,
+    original_residual: torch.Tensor,
+    h_post: torch.Tensor,
+    x: torch.Tensor,
+    x2: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    return _triton_h_post_bda_fwd(h_res, original_residual, h_post, x)
+    return _triton_h_post_bda_fwd(h_res, original_residual, h_post, x, x2)
 
 
 @_mhc_post_bda.register_fake
 def _mhc_post_bda_fake(
-    h_res: torch.Tensor, original_residual: torch.Tensor, h_post: torch.Tensor, x: torch.Tensor
+    h_res: torch.Tensor,
+    original_residual: torch.Tensor,
+    h_post: torch.Tensor,
+    x: torch.Tensor,
+    x2: torch.Tensor | None = None,
 ) -> torch.Tensor:
     return torch.empty_like(original_residual, dtype=h_res.dtype)
 
@@ -543,8 +572,9 @@ def _mhc_post_bda_backward(
     original_residual: torch.Tensor,
     h_post: torch.Tensor,
     x: torch.Tensor,
+    x2: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    return _triton_h_post_bda_bwd(grad_output, h_res, original_residual, h_post, x)
+    return _triton_h_post_bda_bwd(grad_output, h_res, original_residual, h_post, x, x2)
 
 
 @_mhc_post_bda_backward.register_fake
@@ -554,6 +584,7 @@ def _mhc_post_bda_backward_fake(
     original_residual: torch.Tensor,
     h_post: torch.Tensor,
     x: torch.Tensor,
+    x2: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return (
         torch.empty_like(h_res),
@@ -564,30 +595,39 @@ def _mhc_post_bda_backward_fake(
 
 
 def _mhc_post_bda_setup_context(ctx, inputs, output) -> None:
-    h_res, original_residual, h_post, x = inputs
-    ctx.save_for_backward(h_res, original_residual, h_post, x)
+    # `x2` is absent from `inputs` when the caller leaves it at its default.
+    ctx.split_sublayer_output = len(inputs) == 5 and inputs[4] is not None
+    ctx.save_for_backward(*inputs[:5])
 
 
 def _mhc_post_bda_autograd_backward(ctx, grad_output: torch.Tensor):
-    h_res, original_residual, h_post, x = ctx.saved_tensors
+    h_res, original_residual, h_post, x, *x2 = ctx.saved_tensors
+    x2 = x2[0] if ctx.split_sublayer_output else None
     needs = ctx.needs_input_grad
-    g_hr, g_res, g_hp, g_x = _mhc_post_bda_backward(grad_output, h_res, original_residual, h_post, x)
-    return (
+    g_hr, g_res, g_hp, g_x = _mhc_post_bda_backward(grad_output, h_res, original_residual, h_post, x, x2)
+    grads = (
         g_hr if needs[0] else None,
         g_res if needs[1] else None,
         g_hp if needs[2] else None,
         g_x if needs[3] else None,
     )
+    # The two parts of a split sublayer output share its gradient, as an add's inputs do.
+    return (*grads, g_x if ctx.split_sublayer_output and needs[4] else None)[: len(needs)]
 
 
 _mhc_post_bda.register_autograd(_mhc_post_bda_autograd_backward, setup_context=_mhc_post_bda_setup_context)
 
 
 def fused_post_bda(
-    h_res: torch.Tensor, original_residual: torch.Tensor, h_post: torch.Tensor, x: torch.Tensor
+    h_res: torch.Tensor,
+    original_residual: torch.Tensor,
+    h_post: torch.Tensor,
+    x: torch.Tensor,
+    x2: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Fused stream write-back `h_res.T @ original_residual + h_post * x`.
+    """Fused stream write-back `h_res.T @ original_residual + h_post * x`, with `x = x + x2` (rounded to `x`'s
+    dtype, as a separate add would) when the sublayer output comes in two parts.
 
     The kernel applies the transpose internally, so `h_res` is passed untransposed.
     """
-    return _mhc_post_bda(h_res, original_residual, h_post, x)
+    return _mhc_post_bda(h_res, original_residual, h_post, x, x2)

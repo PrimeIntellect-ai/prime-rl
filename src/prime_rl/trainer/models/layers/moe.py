@@ -359,11 +359,15 @@ class MoE(nn.Module):
         self,
         x: torch.Tensor,
         routed_experts: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        *,
+        split_shared_output: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs, slen, top_k)``.
+            split_shared_output (bool): Return the routed and the shared experts' outputs unsummed, for a
+                consumer that adds them itself (the shared one is ``None`` without a separate shared expert).
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -399,8 +403,8 @@ class MoE(nn.Module):
             assert not self.score_before_experts, "a fused MoE kernel weights the experts' outputs"
             output = self.token_dispatcher.run_fused(
                 x, top_scores, selected_experts_indices, self.experts, self.shared_expert
-            )
-            return output.reshape(bs, slen, dim)
+            ).reshape(bs, slen, dim)
+            return (output, None) if split_shared_output else output
 
         routed_output = self.token_dispatcher.run(
             self.prepare_expert_input(x),
@@ -417,6 +421,11 @@ class MoE(nn.Module):
         self.token_dispatcher.synchronize()
 
         routed_output = self.prepare_expert_output(routed_output)
+
+        if split_shared_output:
+            if shared_output is not None:
+                shared_output = shared_output.reshape(bs, slen, dim)
+            return routed_output.reshape(bs, slen, dim), shared_output
 
         if shared_output is not None:
             routed_output = routed_output + shared_output
