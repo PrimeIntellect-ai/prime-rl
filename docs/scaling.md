@@ -212,7 +212,6 @@ type = "multi_node"
 num_train_nodes = 2
 num_infer_nodes = 1              # optional when inference.deployment defines the node topology
 gpus_per_node = 8                # default
-nodes_per_fsdp_group = 1         # optional — controls FSDP island size
 ```
 
 SFT multi-node:
