@@ -279,10 +279,13 @@ class Orchestrator:
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
         self.train_source = TrainSource(self.train_envs)
+        sink_state = None
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
+            sink_state = self.ckpt_manager.load(
+                self.progress, self.train_source, step=self.resume_step, path=resume_path
+            )
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
@@ -371,6 +374,8 @@ class Orchestrator:
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
         )
+        if sink_state is not None:
+            self.train_source.resumed.extend(self.train_sink.load_state_dict(sink_state))
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -434,7 +439,7 @@ class Orchestrator:
             if self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                await self.save_ckpt(self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -968,10 +973,14 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Synchronous on purpose: the payload is tiny, and snapshotting on the
-        # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        await self.save_ckpt(step)
         return time.perf_counter() - t
+
+    async def save_ckpt(self, step: int) -> None:
+        await self.ckpt_manager.save(
+            self.progress, self.train_source, self.train_sink, self.dispatcher.open_train_groups(), step
+        )
+        self.delete_payloads(self.train_sink.pin_snapshot())
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs
@@ -1010,12 +1019,13 @@ class Orchestrator:
         self.delete_payloads(set().union(*(self.unread_payloads.pop(s) for s in read)))
         # Orphans (in-flight episodes that were cancelled or failed, files from before a resume):
         # unread batches only hold rollouts dispatched at min_fresh_version(step + 1) or later.
-        oldest = min_fresh_version(step + 1, self.config.max_off_policy_steps)
+        oldest = min(min_fresh_version(step + 1, self.config.max_off_policy_steps), self.train_sink.pinned_version)
         asyncio.get_running_loop().run_in_executor(None, delete_payloads_before, self.config.payload_root, oldest)
 
     def delete_payloads(self, files: set[str]) -> None:
         """Delete payload files in the background: on a shared filesystem, unlinking a step's
         ~10^4-10^5 files must not hold up the weight update this runs under."""
+        files = self.train_sink.releasable(files)
         if files:
             asyncio.get_running_loop().run_in_executor(None, delete_files, files)
 

@@ -303,7 +303,7 @@ Checkpointing is split across processes because the orchestrator and trainer can
 | Process | What's saved | Where |
 |---|---|---|
 | Trainer | FSDP-sharded model (DCP), optimizer, scheduler, progress | `<run_dir>/checkpoints/step_{n}/trainer/` |
-| Orchestrator | Progress, per-env data state | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
+| Orchestrator | Progress, per-env data state, queued samples and open rollout groups | `<run_dir>/checkpoints/step_{n}/orchestrator/` |
 | Inference | _nothing_ — re-pushed from the latest checkpoint on restart | n/a |
 
 ### Enabling Checkpoints
@@ -335,6 +335,8 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
+
+The orchestrator checkpoint keeps the work a restart would otherwise redo, in the same file as the data state. A resume ships the samples that were queued for the next batch first. Every train group that was still running is resumed with the same task: its finished rollouts are kept and only the missing ones run. Saved rollouts that would exceed `max_off_policy_steps` at the resumed step are dropped (their group reruns them). Queued samples restored this way train normally but are left out of the first steps' rollout metrics.
 
 ### Exporting Checkpoints
 
