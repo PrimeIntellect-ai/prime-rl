@@ -6,6 +6,7 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -89,70 +90,6 @@ class TrainSamplingConfig(BaseConfig):
                 "sampling config instead (they drive sampling replay)."
             )
         return self
-
-    def to_sampling_args(self) -> dict[str, Any]:
-        """Convert to OAI-compatible sampling args dict, omitting None values."""
-        args: dict[str, Any] = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "logprobs": True,
-        }
-        if self.max_completion_tokens is not None:
-            args["max_completion_tokens"] = self.max_completion_tokens
-
-        # top_k rides extra_body (like EvalSamplingConfig), overriding the sentinel.
-        extra_body = dict(self.extra_body)
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if extra_body:
-            args["extra_body"] = extra_body
-
-        return args
-
-
-class EvalSamplingConfig(BaseConfig):
-    temperature: float | None = Field(None, ge=0, le=2.0)
-    """Sampling temperature. None defers to the inference server default."""
-
-    top_p: float | None = None
-    """Nucleus sampling threshold. None defers to the inference server default."""
-
-    top_k: int | None = None
-    """Top-k sampling. None defers to the inference server default."""
-
-    min_p: float | None = Field(None, ge=0)
-    """Min-p sampling threshold. None defers to the inference server default."""
-
-    max_completion_tokens: int | None = None
-    """Maximum output tokens per turn. None defers to the inference server default."""
-
-    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
-    """Reasoning effort constraint for reasoning models."""
-
-    extra_body: dict[str, Any] = {}
-    """Extra body parameters forwarded to the inference server."""
-
-    def to_sampling_args(self) -> dict[str, Any]:
-        """Convert to OAI-compatible sampling args dict. Only includes non-None fields."""
-        args: dict[str, Any] = {}
-        if self.temperature is not None:
-            args["temperature"] = self.temperature
-        if self.top_p is not None:
-            args["top_p"] = self.top_p
-        if self.max_completion_tokens is not None:
-            args["max_completion_tokens"] = self.max_completion_tokens
-        if self.reasoning_effort is not None:
-            args["reasoning_effort"] = self.reasoning_effort
-
-        extra_body = dict(self.extra_body)
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if self.min_p is not None:
-            extra_body["min_p"] = self.min_p
-        if extra_body:
-            args["extra_body"] = extra_body
-
-        return args
 
 
 class EnvConfig(BaseConfig):
@@ -316,9 +253,37 @@ class TrainSourceConfig(EnvConfig):
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
 
+    @model_validator(mode="after")
+    def validate_policy_sampling(self):
+        if self.algo.sampling.source != "policy":
+            return self
+        # The source owns the distribution replayed by the trainer; agents may
+        # change generation limits and rendering without changing that distribution.
+        agent_options = {"max_tokens", "reasoning_effort", "chat_template_kwargs"}
+        supported = (
+            agent_options
+            | TrainSamplingConfig.model_fields.keys()
+            | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
+        )
+        sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
+        if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
+            raise ValueError(
+                f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
+            )
+        for name, agent in agent_config_fields(self.env).items():
+            if agent.sampling is None:
+                continue
+            if unsupported := agent.sampling.model_dump(exclude_unset=True).keys() - agent_options:
+                raise ValueError(
+                    f"Agent '{name}' in policy source '{self.resolved_name}' sets sampling {sorted(unsupported)}. "
+                    "Set distribution parameters on the source's sampling config; agent sampling only supports "
+                    f"{sorted(agent_options)}."
+                )
+        return self
+
 
 class EvalSourceConfig(EnvConfig):
-    sampling: EvalSamplingConfig = EvalSamplingConfig()
+    sampling: vf.SamplingConfig = vf.SamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
     group_size: int = Field(1, ge=1)
@@ -409,7 +374,7 @@ class EvalSourcesConfig(SourceGroupConfig):
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
-    sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
+    sampling: vf.SamplingConfig = Field(default_factory=vf.SamplingConfig)
     """Sampling that every eval source inherits; can differ from training sampling."""
 
     select: vf.SelectConfig = vf.SelectConfig()
