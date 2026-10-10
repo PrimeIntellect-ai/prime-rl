@@ -43,9 +43,9 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
         if importlib.util.find_spec("deep_gemm") is None:
             raise RuntimeError("DeepGEMM FP8 expert compute requires the deep-gemm package.")
         capability = torch.cuda.get_device_capability()
-        if capability < (9, 0):
+        if capability[0] not in (9, 10):
             raise RuntimeError(
-                f"DeepGEMM FP8 expert compute requires SM90 or newer, but this device is SM{capability[0]}{capability[1]}."
+                f"DeepGEMM FP8 expert compute requires SM90 or SM100, but this device is SM{capability[0]}{capability[1]}."
             )
         return DeepGemmFP8ExpertCompute()
     if isinstance(compute, MXFP8MoEComputeConfig):

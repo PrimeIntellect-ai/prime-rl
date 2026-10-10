@@ -866,6 +866,11 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         return
 
     if isinstance(quant, FP8Config):
+        capability = torch.cuda.get_device_capability()
+        if capability[0] not in (9, 10):
+            raise ValueError(
+                f"FP8 blockwise quantization (DeepGEMM) requires SM90 or SM100, but device is SM{capability[0]}{capability[1]}."
+            )
         replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
