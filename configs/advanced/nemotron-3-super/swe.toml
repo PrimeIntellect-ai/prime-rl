@@ -36,7 +36,6 @@ keep_last = 1
 name = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
 
 [trainer]
-dist_timeout_seconds = 3600
 enable_router_replay = true
 
 [trainer.model]
@@ -53,9 +52,6 @@ fused_lm_head_token_chunk_size = 1024
 max_inflight_activations = 1
 
 [trainer.model.compile]
-
-[trainer.ckpt]
-skip_optimizer = true
 
 [trainer.optim]
 type = "adamw"
@@ -110,4 +106,3 @@ max_model_len = 131072
 tensor_parallel_size = 8
 enable_prefix_caching = true
 enable_expert_parallel = true
-enable_return_routed_experts = true
