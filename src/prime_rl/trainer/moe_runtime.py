@@ -127,6 +127,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     wgrad_tile_scales=dispatch.wgrad_tile_scales,
                     free_bf16_weights=dispatch.free_bf16_expert_weights,
                     transposed_on_demand=transposed_on_demand,
+                    fused_wgrad_micro_batches=dispatch.fused_wgrad_micro_batches,
                 )
             else:
                 shared_limit = getattr(moe.shared_expert, "limit", moe.experts.activation.limit)

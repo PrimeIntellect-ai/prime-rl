@@ -384,6 +384,16 @@ class MegaMoEDispatchConfig(BaseConfig):
     FP8 copies the kernels read stay resident (2 bytes less per local expert parameter: 3.4 GB per V4.1 layer at EP8).
     FSDP all-gathers them again at the next step's first forward. Same numerics."""
 
+    fused_wgrad_micro_batches: int = Field(1, ge=1, le=4)
+    """FP8 only: n > 1 holds up to n - 1 micro-batches' expert weight-gradient operands (~1.2 GB each per V4.1 layer
+    at EP8 and 8k tokens) until the n-th micro-batch's backward of the same layer, which adds all n gradients with
+    one K-grouped GEMM launch per weight: bitwise the same as one launch per micro-batch, while each fp32
+    accumulator tile's later read-modify-writes hit L2. The step's last micro-batch never holds; the trainer marks it
+    with ``set_expert_wgrad_final_micro_batch``. At most 2 with ``wgrad_tile_scales``. 1 (default) adds each
+    micro-batch's gradient in its own backward. Memory: n - 1 held micro-batches' operands per MoE layer of the
+    stage (~1.2 GB each at 8k tokens); measured on one EP8 stage: 2 -> -0.77 ms per layer, 4 -> -1.51 ms per layer.
+    Needs prime-mega-moe with ``k_grouped_fp8_gemm_nt_contiguous_multi`` (125a11a) for n > 1."""
+
 
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoEDispatchConfig,
@@ -414,6 +424,9 @@ class MoERuntimeConfig(BaseConfig):
             for flag in ("free_bf16_expert_weights", "fp8_transposed_on_demand"):
                 if getattr(self.dispatch, flag):
                     raise ValueError(f"dispatch.{flag} requires dispatch.fp8")
+        if isinstance(self.dispatch, MegaMoEDispatchConfig) and self.dispatch.wgrad_tile_scales:
+            if self.dispatch.fused_wgrad_micro_batches > 2:
+                raise ValueError("dispatch.wgrad_tile_scales supports fused_wgrad_micro_batches <= 2")
         return self
 
 

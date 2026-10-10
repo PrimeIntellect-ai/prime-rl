@@ -21,6 +21,7 @@ from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_se
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.expert_compute import invalidate_quantized_expert_weights
+from prime_rl.trainer.distributed.mega_moe import flush_pending_expert_wgrads, set_expert_wgrad_final_micro_batch
 from prime_rl.trainer.moe_runtime import set_local_expert_grad_sync
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.pipeline import build_pipeline_schedule, local_stage_ids, queue_seq_lens, stack_micro_batches
@@ -566,6 +567,7 @@ def train(config: SFTConfig):
             with maybe_record_function("backward"):
                 if config.model.moe.reduce_local_expert_grads_once:
                     set_local_expert_grad_sync(model, final_micro_batch=micro_step == grad_accum_steps - 1)
+                    set_expert_wgrad_final_micro_batch(micro_step == grad_accum_steps - 1)
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
                 finish_backward(gradient_manager)
@@ -578,6 +580,9 @@ def train(config: SFTConfig):
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
                 step_tokens_per_expert += tokens_per_expert
 
+        # The final micro-batch's backward adds every held expert weight gradient; a leftover is added here, or
+        # raises if FSDP already reduced its accumulator.
+        flush_pending_expert_wgrads()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 

@@ -21,6 +21,29 @@ from torch.distributed.tensor import DTensor
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 _dispatchers: dict[int, "MegaMoETokenDispatcher"] = {}
+# Whether the coming backward is the last micro-batch's of the step (see `set_expert_wgrad_final_micro_batch`)
+_final_micro_batch = True
+
+
+def set_expert_wgrad_final_micro_batch(final: bool) -> None:
+    """Call before each micro-batch's backward when FP8 Mega MoE layers may hold their expert weight gradients
+    (`fused_wgrad_micro_batches > 1`): a layer holds a backward's operands only while this is false, and the backward
+    of the final micro-batch adds any held gradient into the fp32 accumulators before FSDP reduces them. Holding is
+    only valid while those accumulators persist across micro-batches (FSDP does not reduce them before the final
+    micro-batch); a held gradient whose accumulator was reduced in between raises. Defaults to true (never hold)."""
+    global _final_micro_batch
+    _final_micro_batch = final
+
+
+def flush_pending_expert_wgrads() -> int:
+    """Add every held expert weight gradient into its accumulator now; returns how many layers held any. The
+    trainer's step should find none (the final micro-batch's backward adds them)."""
+    flushed = 0
+    for dispatcher in _dispatchers.values():
+        if isinstance(dispatcher, MegaMoEFP8TokenDispatcher) and dispatcher.held_wgrads:
+            dispatcher.flush_held_wgrads()
+            flushed += 1
+    return flushed
 
 
 def _to_local(tensor: torch.Tensor) -> torch.Tensor:
@@ -222,6 +245,7 @@ class MegaMoEFP8TokenDispatcher:
         wgrad_tile_scales: bool = False,
         free_bf16_weights: bool = False,
         transposed_on_demand: bool = False,
+        fused_wgrad_micro_batches: int = 1,
     ) -> None:
         import prime_mega_moe.mega.fp8 as fp8_kernels
 
@@ -235,6 +259,10 @@ class MegaMoEFP8TokenDispatcher:
         self.wgrad_tile_scales = wgrad_tile_scales
         self.free_bf16_weights = free_bf16_weights
         self.transposed_on_demand = transposed_on_demand
+        assert 1 <= fused_wgrad_micro_batches <= (2 if wgrad_tile_scales else 4)
+        self.fused_wgrad_micro_batches = fused_wgrad_micro_batches
+        # Held backwards' weight-gradient operands (oldest first) and the accumulators they belong to
+        self.held_wgrads: list[_PendingWgrad] = []
         # Created up front: inside the first checkpointed forward, its collectives would desync recompute.
         self.buffer = _get_fp8_buffer(group, num_experts, max_tokens_per_rank, top_k, hidden_size)
         self._experts: GroupedExperts | None = None
@@ -302,6 +330,12 @@ class MegaMoEFP8TokenDispatcher:
         if topk_weights is not None:
             self.buffer.topk_weights[:num_tokens].copy_(topk_weights)
 
+    def flush_held_wgrads(self) -> None:
+        held, self.held_wgrads = self.held_wgrads, []
+        for h in held:
+            dw13, dw2 = h.accumulators()
+            self.kernels.fp8_mega_moe_weight_grads_add(h.operands, dw13, dw2, self.wgrad_tile_scales)
+
     def l2_operand(self) -> tuple[torch.Tensor, torch.Tensor]:
         """The L2 operand pool (FP8 `h` and its scales), shared by every layer of the group."""
         key = (id(self.buffer), self.capacity, self.intermediate_size)
@@ -333,6 +367,28 @@ def _transpose_last2(t: torch.Tensor) -> torch.Tensor:
     out = torch.empty(E, C, R, dtype=torch.uint8, device=t.device)
     _transpose_bytes_kernel[(E, R // block, C // block)](t.view(torch.uint8), out, R, C, BLOCK=block, num_warps=8)
     return out.view(torch.float8_e4m3fn)
+
+
+class _PendingWgrad:
+    """A held backward's weight-gradient operands, with the FSDP parameters whose fp32 accumulators take them."""
+
+    def __init__(self, operands, fsdp_params: dict):
+        self.operands, self.fsdp_params = operands, fsdp_params
+        # FSDP's accumulator objects when held: a reduce in between replaces them
+        self._raw = tuple(fsdp_params[name].unsharded_accumulated_grad for name in ("gate_up_proj", "down_proj"))
+
+    def accumulators(self) -> tuple[torch.Tensor, torch.Tensor]:
+        from prime_rl.trainer.models.layers.expert_compute import _fp32_grad_accumulator
+
+        raw = tuple(self.fsdp_params[name].unsharded_accumulated_grad for name in ("gate_up_proj", "down_proj"))
+        if any(a is not b for a, b in zip(raw, self._raw)):
+            raise RuntimeError(
+                "An expert weight gradient was held past an FSDP gradient reduction: mark the step's last "
+                "micro-batch with set_expert_wgrad_final_micro_batch(True) before its backward."
+            )
+        return _fp32_grad_accumulator(self.fsdp_params["gate_up_proj"]), _fp32_grad_accumulator(
+            self.fsdp_params["down_proj"]
+        )
 
 
 _fp8_buffers: dict[int, object] = {}
@@ -471,14 +527,7 @@ def _mega_moe_fp8_backward(ctx, grads):
         dw13 = _fp32_grad_accumulator(fsdp_params["gate_up_proj"])
         dw2 = _fp32_grad_accumulator(fsdp_params["down_proj"])
         weight_grads = partial(
-            kernels.fp8_mega_moe_weight_grads,
-            counts,
-            bufs,
-            (x_t, x_t_sf),
-            dw13,
-            dw2,
-            _side_stream(),
-            dispatcher.wgrad_tile_scales,
+            _expert_weight_grads, dispatcher, counts, bufs, (x_t, x_t_sf), fsdp_params, dw13, dw2, _final_micro_batch
         )
         if expert_compute._deferred_weight_grads is not None:
             expert_compute._deferred_weight_grads.append(weight_grads)
@@ -495,6 +544,30 @@ def _mega_moe_fp8_backward(ctx, grads):
             grad = accumulator.to(param.dtype)
             param.grad = grad if param.grad is None else param.grad + grad
     return grad_x, None, grad_weights.to(ctx.weights_dtype), None
+
+
+def _expert_weight_grads(dispatcher, counts, bufs, x_t, fsdp_params, dw13, dw2, final_micro_batch: bool) -> None:
+    """Add one backward's expert weight gradients into the fp32 accumulators, or hold its operands (see
+    `fused_wgrad_micro_batches`). Runs in the backward's micro-batch order, inside it or deferred after it."""
+    held = dispatcher.held_wgrads
+    for h in held:
+        assert all(a.data_ptr() == b.data_ptr() for a, b in zip(h.accumulators(), (dw13, dw2)))
+    # Hold this backward's operands until `fused_wgrad_micro_batches` are held or the step's last micro-batch: that
+    # backward adds them all with one launch per weight
+    hold = len(held) < dispatcher.fused_wgrad_micro_batches - 1 and not final_micro_batch
+    # Only fusing needs prime-mega-moe's `pending` / `defer` arguments; without them any build works.
+    fusion = (
+        {}
+        if dispatcher.fused_wgrad_micro_batches == 1
+        else {"pending": None if hold else [h.operands for h in held], "defer": hold}
+    )
+    operands = dispatcher.kernels.fp8_mega_moe_weight_grads(
+        counts, bufs, x_t, dw13, dw2, _side_stream(), dispatcher.wgrad_tile_scales, **fusion
+    )
+    if hold:
+        held.append(_PendingWgrad(operands, fsdp_params))
+    else:
+        held.clear()
 
 
 mega_moe_fp8.register_autograd(_mega_moe_fp8_backward, setup_context=_mega_moe_fp8_setup_context)

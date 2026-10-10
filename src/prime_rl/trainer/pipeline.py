@@ -30,6 +30,7 @@ from torch.distributed.pipelining.schedules import (
 )
 
 from prime_rl.configs.trainer import PipelineActivationOffloadConfig
+from prime_rl.trainer.distributed.mega_moe import set_expert_wgrad_final_micro_batch
 from prime_rl.trainer.models.layers.expert_compute import defer_weight_grads
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -736,6 +737,7 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
                         if offload:
                             offloader.wait((idx, mb))
                         defer = self._defer_expert_weight_grads and not blocking and mb != n - 1
+                        set_expert_wgrad_final_micro_batch(mb == n - 1)
                         with defer_weight_grads() if defer else nullcontext([]) as deferred:
                             stage.backward_one_chunk(mb, loss=loss, last_backward=mb == n - 1)
                             weight_grads.extend(deferred)
