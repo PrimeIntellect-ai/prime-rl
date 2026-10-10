@@ -414,13 +414,16 @@ class SparseAttnInputs:
         compressed_kv: Tensor | None = None,  # (batch, 1, n_entries, head_dim)
         top_k_indices: Tensor | None = None,  # (batch, n_queries, n_picks) int64, IGNORE_SLOT (-1) marks a surplus pick
         window_indices: Tensor,  # (n_queries, sliding_window) int32, IGNORE_SLOT marks an invalid slot
+        indices: Tensor | None = None,  # (batch, n_queries, 1, n_slots) int32, an earlier build's `indices`
     ) -> "SparseAttnInputs":
         """Lay out one layer's gather slots: the local window first, then any compressed picks.
 
         A layer with no entries passes neither `compressed_kv` nor `top_k_indices`, receiving only
-        the local sliding window.
+        the local sliding window. A layer that reads the same window and picks as an earlier one may
+        pass that layer's `indices` in place of `top_k_indices`, which depend only on those.
         """
-        assert (compressed_kv is None) == (top_k_indices is None), (
+        assert top_k_indices is None or indices is None, "pass top_k_indices or indices, not both"
+        assert (compressed_kv is None) == (top_k_indices is None and indices is None), (
             "compressed_kv and top_k_indices describe the same entries: pass both or neither"
         )
         # The two counts differ under CP: the keys are global and the queries are this rank's.
@@ -432,6 +435,8 @@ class SparseAttnInputs:
 
         positions = kv if compressed_kv is None else torch.cat([kv, compressed_kv], dim=2)
         kv_buf = positions.transpose(1, 2).contiguous()  # (b, S + E, 1, d)
+        if indices is not None:
+            return cls(kv_buf=kv_buf, indices=indices)
 
         window = window_indices[None, :, None, :].expand(batch, n_queries, 1, -1)
         if top_k_indices is None:

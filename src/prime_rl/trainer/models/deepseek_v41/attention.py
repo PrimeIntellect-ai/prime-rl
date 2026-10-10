@@ -142,7 +142,9 @@ class SharedAttnState:
 
     compressed_kv: Tensor | None = None  # (1, 1, n_entries, head_dim) rotated entries
     index_k: Tensor | None = None  # (n_entries, index_head_dim) rotated index keys
-    top_k_indices: Tensor | None = None  # (1, n_queries, index_topk) entry index, IGNORE_SLOT if none
+    # The index source layer's picks as the full gather slot list it built (`SparseAttnInputs.indices`,
+    # window then picks, (1, n_queries, 1, sliding_window + index_topk) int32): its consumers reuse it.
+    top_k_indices: Tensor | None = None
     candidates: Tensor | None = None  # (n_queries, candidate_topk_blocks) int32 doc-local block, -1 if unused
 
     def as_tuple(self) -> tuple[Tensor | None, ...]:
@@ -342,12 +344,16 @@ class DeepseekV41Attention(nn.Module):
 
         if cp.cp_enabled:
             kv = wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
+        picked_here = self.compress_ratio and self.indexer is not None
         inputs = SparseAttnInputs.build(
             kv=kv.transpose(1, 2),
             compressed_kv=state.compressed_kv if self.compress_ratio else None,
-            top_k_indices=state.top_k_indices if self.compress_ratio else None,
+            top_k_indices=state.top_k_indices if picked_here else None,
             window_indices=packed.window_indices,
+            indices=state.top_k_indices if self.compress_ratio and not picked_here else None,
         )
+        if picked_here:
+            state = SharedAttnState(state.compressed_kv, state.index_k, inputs.indices, state.candidates)
         # Values are the rotated keys; the conjugate rotation at the query position cancels that.
         if self.sparse_attn is dsv41_sparse_attn:
             # One op that rotates the output in place, keeping only the channels its backward needs unrotated.
