@@ -3,9 +3,11 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
-from prime_rl.trainer.models.layers.mlp import FeedForward
+from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import (
     Qwen3_5MoeTextConfig,
@@ -16,8 +18,6 @@ from prime_rl.trainer.models.qwen3_5.converting_qwen3_5 import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
-from prime_rl.trainer.models.qwen3_5.gated_delta_net import Qwen3_5GatedDeltaNet
-from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNorm
 from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     Qwen3_5RotaryEmbedding,
     build_qwen3_5_mrope_position_ids,
@@ -27,27 +27,22 @@ from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
-class Qwen3_5SharedExpert(FeedForward):
-    def __init__(self, config: Qwen3_5MoeTextConfig) -> None:
-        super().__init__(
-            dim=config.hidden_size,
-            hidden_dim=config.shared_expert_intermediate_size,
-            expert_type="gated",
-            activation=config.hidden_act,
-        )
-        self.output_gate = nn.Linear(config.hidden_size, 1, bias=False)
-
-    def forward(self, hidden_states: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
-        output = super().forward(hidden_states, routed_experts)
-        return output * self.output_gate(hidden_states).sigmoid()
-
-
 class Qwen3_5DecoderLayer(nn.Module):
     def __init__(self, config: Qwen3_5TextConfig, layer_index: int) -> None:
         super().__init__()
         self.layer_type = config.layer_types[layer_index]
         if self.layer_type == "linear_attention":
-            self.linear_attn = Qwen3_5GatedDeltaNet(config)
+            self.linear_attn = GatedDeltaNet(
+                hidden_size=config.hidden_size,
+                num_key_heads=config.linear_num_key_heads,
+                num_value_heads=config.linear_num_value_heads,
+                key_head_dim=config.linear_key_head_dim,
+                value_head_dim=config.linear_value_head_dim,
+                conv_kernel_size=config.linear_conv_kernel_dim,
+                norm_eps=config.rms_norm_eps,
+                activation=config.hidden_act,
+                output_gate_activation=config.output_gate_type,
+            )
         elif self.layer_type == "full_attention":
             self.self_attn = Qwen3_5Attention(config, config._attn_implementation)
 
@@ -72,7 +67,9 @@ class Qwen3_5DecoderLayer(nn.Module):
             self.mlp = MoE(
                 router=router,
                 experts=experts,
-                shared_expert=Qwen3_5SharedExpert(config),
+                shared_expert=SigmoidGatedFeedForward(
+                    config.hidden_size, config.shared_expert_intermediate_size, config.hidden_act
+                ),
                 score_before_experts=False,
                 load_balance_coeff=config.load_balance_coeff,
             )
@@ -84,8 +81,8 @@ class Qwen3_5DecoderLayer(nn.Module):
                 activation=config.hidden_act,
             )
 
-        self.input_layernorm = Qwen3_5RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen3_5RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.input_layernorm = ZeroCenteredRMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.post_attention_layernorm = ZeroCenteredRMSNorm(config.hidden_size, config.rms_norm_eps)
 
     def forward(
         self,
@@ -154,7 +151,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         self.layers = nn.ModuleList(
             Qwen3_5DecoderLayer(config, layer_index) for layer_index in range(config.num_hidden_layers)
         )
-        self.norm = Qwen3_5RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.norm = ZeroCenteredRMSNorm(config.hidden_size, config.rms_norm_eps)
         self.rotary_emb = Qwen3_5RotaryEmbedding(config)
 
     def get_input_embeddings(self) -> nn.Embedding:
