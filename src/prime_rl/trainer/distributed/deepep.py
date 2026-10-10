@@ -6,6 +6,7 @@ import torch
 from deep_ep import Buffer
 from torch.distributed import ProcessGroup
 
+from prime_rl.trainer.distributed.handles import get_handle, store_handle
 from prime_rl.trainer.distributed.token_dispatcher import (
     LocalDispatchState,
     TokenDispatcherBase,
@@ -15,27 +16,6 @@ from prime_rl.trainer.distributed.token_dispatcher import (
 )
 
 _buffer: Buffer | None = None
-# DeepEP handles are tuples of tensors, so the custom ops carry them as a one-element CPU tensor ID.
-_handles: dict[int, tuple] = {}
-_next_handle_id = 0
-
-
-class _HandleOwner(bytearray):
-    """Storage of a handle ID tensor. The handle lives exactly as long as some tensor shares that storage."""
-
-    def __del__(self) -> None:
-        _handles.pop(int.from_bytes(self, "little"), None)
-
-
-def _store_handle(handle: tuple) -> torch.Tensor:
-    global _next_handle_id
-    _next_handle_id += 1
-    _handles[_next_handle_id] = handle
-    return torch.frombuffer(_HandleOwner(_next_handle_id.to_bytes(8, "little")), dtype=torch.int64)
-
-
-def _get_handle(handle_id: torch.Tensor) -> tuple:
-    return _handles[handle_id.item()]
 
 
 @torch.library.custom_op("deepep::dispatch", mutates_args=())
@@ -66,7 +46,7 @@ def _dispatch(
     recv_num_tokens_per_expert = torch.tensor(recv_num_tokens_per_expert, pin_memory=True).to(
         x.device, non_blocking=True
     )
-    return recv_x, recv_topk_weights, expert_order, recv_num_tokens_per_expert, _store_handle(handle)
+    return recv_x, recv_topk_weights, expert_order, recv_num_tokens_per_expert, store_handle(handle)
 
 
 @_dispatch.register_fake
@@ -84,7 +64,7 @@ def _(x, topk_idx, topk_weights, num_experts):
 
 @torch.library.custom_op("deepep::combine", mutates_args=())
 def _combine(x: torch.Tensor, handle_id: torch.Tensor, num_tokens: int) -> torch.Tensor:
-    combined, _, _ = _buffer.combine(x, _get_handle(handle_id))
+    combined, _, _ = _buffer.combine(x, get_handle(handle_id))
     return combined
 
 
@@ -97,7 +77,7 @@ def _(x, handle_id, num_tokens):
 def _dispatch_backward_op(
     grad_x: torch.Tensor, grad_topk_weights: torch.Tensor, handle_id: torch.Tensor, num_tokens: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    grad_x, grad_topk_weights, _ = _buffer.combine(grad_x, _get_handle(handle_id), topk_weights=grad_topk_weights)
+    grad_x, grad_topk_weights, _ = _buffer.combine(grad_x, get_handle(handle_id), topk_weights=grad_topk_weights)
     return grad_x, grad_topk_weights
 
 
@@ -110,7 +90,7 @@ def _(grad_x, grad_topk_weights, handle_id, num_tokens):
 
 @torch.library.custom_op("deepep::combine_backward", mutates_args=())
 def _combine_backward_op(grad: torch.Tensor, handle_id: torch.Tensor, num_recv_tokens: int) -> torch.Tensor:
-    grad_x, _, _, _, _, _ = _buffer.dispatch(grad, handle=_get_handle(handle_id))
+    grad_x, _, _, _, _, _ = _buffer.dispatch(grad, handle=get_handle(handle_id))
     return grad_x
 
 

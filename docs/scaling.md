@@ -105,7 +105,7 @@ type = "torch"
 transport = "bf16"
 ```
 
-For DeepEP, set `type = "deepep"` and tune `num_sms` in the same dispatch table. Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
+For DeepEP, set `type = "deepep"` and tune `num_sms` in the same dispatch table. When the EP group fits in one node, `type = "deepep_v2"` uses DeepEP V2 (see [Expert Parallelism Backends](advanced.md#expert-parallelism-backends)). Routed-expert precision is selected separately with `[trainer.model.moe.compute]` (`bf16`, `deepgemm_fp8`, or `mxfp8`).
 
 ### Context Parallelism
 

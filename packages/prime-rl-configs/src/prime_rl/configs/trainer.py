@@ -250,8 +250,16 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """SMs allocated to DeepEP communication kernels."""
 
 
+class DeepEPV2MoEDispatchConfig(BaseConfig):
+    """Dispatch and combine routed tokens with DeepEP V2 (`deep_ep_v2`). The expert-parallel group must fit in one node."""
+
+    type: Literal["deepep_v2"] = "deepep_v2"
+    num_sms: int = Field(0, ge=0)
+    """SMs allocated to DeepEP V2 communication kernels. 0 lets DeepEP choose."""
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | DeepEPV2MoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -378,7 +386,7 @@ class ModelConfig(BaseModelConfig):
 
         compute = self.moe.compute
         dispatch = self.moe.dispatch
-        if isinstance(dispatch, DeepEPMoEDispatchConfig):
+        if isinstance(dispatch, DeepEPMoEDispatchConfig | DeepEPV2MoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
         elif dispatch.transport == "mxfp8":
