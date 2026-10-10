@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
+    ceil_div,
     grouped_per_block_cast_to_fp8_triton,
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
@@ -153,6 +154,14 @@ def _fp8_blockwise_bmm_fake(x: torch.Tensor, weight: torch.Tensor, n_groups: int
     return x.new_empty((*x.shape[:-1], weight.shape[0] // n_groups), dtype=torch.bfloat16)
 
 
+def _mn_major_tma_aligned_copy(sf: torch.Tensor) -> torch.Tensor:
+    channels, token_blocks = sf.shape
+    out = torch.empty_strided(
+        (channels, token_blocks), (1, ceil_div(channels, 4) * 4), device=sf.device, dtype=sf.dtype
+    )
+    return out.copy_(sf)
+
+
 @torch.library.custom_op("prime_rl::fp8_blockwise_bmm_backward", mutates_args=())
 def _fp8_blockwise_bmm_backward(
     grad_output: torch.Tensor,
@@ -207,8 +216,8 @@ def _fp8_blockwise_bmm_backward(
             out_rows = slice(group * out_features_per_group, (group + 1) * out_features_per_group)
             in_rows = slice(group * in_features, (group + 1) * in_features)
             deep_gemm.fp8_gemm_nt(
-                (grad_output_t_fp8[out_rows], grad_output_t_sf[out_rows]),
-                (x_t_fp8[in_rows], x_t_sf[in_rows]),
+                (grad_output_t_fp8[out_rows], _mn_major_tma_aligned_copy(grad_output_t_sf[out_rows])),
+                (x_t_fp8[in_rows], _mn_major_tma_aligned_copy(x_t_sf[in_rows])),
                 grad_weight_fp32[out_rows],
                 c=grad_weight_fp32[out_rows],
                 recipe=(1, 1, 128),
