@@ -134,12 +134,7 @@ def _gather_half(
     buf: cutlass.Constexpr,
     half: cutlass.Constexpr,
 ):
-    """Issue the producer's `cp.async` copies of one channel half of one key buffer.
-
-    The destination address is formed by hand because a raw pointer drops the swizzle that `sK`'s
-    pointer carries: in the 128-byte swizzle, the 16-byte chunk `c` of row `row` sits at chunk
-    `c ^ (row % 8)`, and every row this thread writes has `row % 8 == group % 8`.
-    """
+    """Issue one key half's `cp.async` copies to hand-swizzled addresses (chunk `c` of row `r` at `c ^ (r % 8)`)."""
     seq_len_kv = mKV.shape[1]
     sK_base = cute.recast_ptr(sK.iterator, None, BFloat16)
     swizzled_chunk = idx_in_group ^ (group % 8)
