@@ -6,6 +6,7 @@ from fla.ops.cp import build_cp_context
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
+from prime_rl.trainer.models.layers.attn import delta_rule_flops_per_token
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.utils.cp import CPContext
 
@@ -49,6 +50,11 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.in_proj_b = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
         self.in_proj_a = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
         self.cp_context = CPContext()
+
+    def attention_flops_per_token(self, seq_len: int) -> int:
+        return delta_rule_flops_per_token(
+            num_heads=self.num_value_heads, key_head_dim=self.key_head_dim, v_head_dim=self.value_head_dim
+        )
 
     def forward(
         self,

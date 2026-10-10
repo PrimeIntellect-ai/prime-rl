@@ -18,6 +18,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
     flash_attn_3_varlen_op,
     flash_attn_4_varlen_op,
+    quadratic_attention_flops_per_token,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -81,6 +82,15 @@ class AfmoeAttentionBase(nn.Module):
         # QK normalization
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+
+    def attention_flops_per_token(self, seq_len: int) -> int:
+        return quadratic_attention_flops_per_token(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            sliding_window=self.sliding_window,
+        )
 
 
 class AfmoeFlashAttention(AfmoeAttentionBase):
