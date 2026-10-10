@@ -80,64 +80,6 @@ Each field a source sets in its `select` overrides the same field of the top-lev
 
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
 
-## Reward denominators and infrastructure errors
-
-Standalone and online evals report `eval/<env>/all/<agent>/reward/mean` over the
-planned episode slots (`selected tasks × group_size`). Every slot counts once;
-dispatch failures, cancelled slots, and failed episodes contribute zero. Multiple
-traces from the same agent in one episode are averaged before averaging episodes.
-Named rewards (`rewards/<name>/mean`) use the same denominator, with absent and
-null values contributing zero. Reward names are discovered across the returned
-cohort; a component absent from every trace has no named series.
-
-`effective` excludes infrastructure-invalid episodes and slots that returned no
-episode. Wrong answers, agent time-budget exhaustion, and unclassified failures
-(including `HarnessError`) remain in its denominator. Failed episodes score zero,
-even if they contain a partial reward. Evaluation includes non-trainable agent
-roles as well. Training's `all` and `effective` selection is independent of this
-eval policy.
-
-Default infrastructure rules match `InterceptionError`, `TunnelError`, provider
-or sandbox HTTP statuses 429/500/502/503/504, and sandbox messages containing
-`Failed to route request to sandbox`. Setup, finalization, scoring, and episode
-deadline expirations also invalidate the evaluation; the agent's own time limit
-is a scored outcome. Successful retries stay effective even with recorded error
-history. An error's class names its execution boundary, so `HarnessError` alone
-does not establish an infrastructure failure.
-
-Inspect `all/expected/count`, `all/returned/count`, `effective/count`,
-`effective/coverage/mean`, `all/infra_error/count`, `all/unclassified_error/count`,
-`all/retry_recovered/count`, and `all/cancelled/count` alongside reward. Counts are
-episodes, not error events or retry attempts. No effective reward mean is emitted
-when the effective count is zero. `pass@k` and `pass^k` use the effective episode
-scores; their surviving-task population can be biased when infrastructure fails.
-
-Override the classification with `infra_errors` on the eval group or a source.
-The list replaces the defaults; every field in a rule must match. For example,
-to recognize a specific harness installation fault in an RL online eval:
-
-```toml
-[[orchestrator.eval.infra_errors]]
-type = "HarnessError"
-message = "install download unavailable"
-```
-
-Classification and retries are separate. Existing `env.retries` reruns an episode;
-`env.<agent>.retries` reruns one agent. Both are disabled by default. Use bounded
-rules for identified transient faults, not ordinary wrong answers or arbitrary
-harness failures. This online-eval rule permits three additional attempts for a
-sandbox gateway failure:
-
-```toml
-[[orchestrator.eval.env.retries.rules]]
-type = "SandboxError"
-message = "Failed to route request to sandbox"
-max_retries = 3
-```
-
-Standalone eval uses `[[infra_errors]]` and `[[env.retries.rules]]`. Dispatch
-failures outside the env server are counted but are not retried by `env.retries`.
-
 ## Resume
 
 An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: saved episodes with `episode.ok` rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch), and only the rollouts still owed run. Failed episodes and the ones the interruption cut off run again. Saved records that fail schema validation stop the resume before the current stream is archived.
