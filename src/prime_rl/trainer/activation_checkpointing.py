@@ -1,6 +1,7 @@
 """Whole-block activation checkpointing with an operator-based policy."""
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, contextmanager
 from functools import partial
 
 import torch
@@ -126,8 +127,36 @@ def get_activation_checkpoint_wrapper(config: ActivationCheckpointConfig) -> Cal
     return partial(
         checkpoint_wrapper,
         checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-        context_fn=partial(create_selective_checkpoint_contexts, policy),
+        context_fn=partial(_checkpoint_contexts, policy),
     )
+
+
+def _checkpoint_contexts(
+    policy: Callable[..., CheckpointPolicy],
+) -> tuple[AbstractContextManager, AbstractContextManager]:
+    forward_context, recompute_context = create_selective_checkpoint_contexts(policy)
+    if torch.compiler.is_compiling():
+        return forward_context, recompute_context
+    # Dynamo settings are thread-local, and backward recomputes on the autograd thread. A compiled block under
+    # this eager checkpoint recompiles there, so it must use the forward's settings: with the defaults it
+    # specializes on every new int and falls back to eager after 8 recompiles, which breaks the replay.
+    dynamo_settings = {
+        "recompile_limit": torch._dynamo.config.recompile_limit,
+        "capture_scalar_outputs": torch._dynamo.config.capture_scalar_outputs,
+    }
+    return forward_context, _with_dynamo_settings(
+        recompute_context, dynamo_settings, torch.compiler.config.dynamic_sources
+    )
+
+
+@contextmanager
+def _with_dynamo_settings(context: AbstractContextManager, dynamo_settings: dict, dynamic_sources: str):
+    with (
+        torch._dynamo.config.patch(dynamo_settings),
+        torch.compiler.config.patch(dynamic_sources=dynamic_sources),
+        context,
+    ):
+        yield
 
 
 __all__ = [
