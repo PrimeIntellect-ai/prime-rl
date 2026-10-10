@@ -1,0 +1,4465 @@
+{
+ "label": "main-repeat",
+ "provenance": {
+  "hostname": "prime-nebius-puku-h200-gpu-059",
+  "git": {
+   "sha": "6d5cf018049c2a66069a67e21c73749b6d56ef9f",
+   "dirty": false
+  },
+  "corpus_hash": "b5b289171983c8c69e97e98158943d702b13ec7f1399a0c1af6ff4e1bdfda57b",
+  "gpu": {
+   "uuid": "GPU-3a9fd966-94f2-9acb-4d75-d9c998cab826",
+   "name": "NVIDIA H200",
+   "capability": [
+    9,
+    0
+   ],
+   "query": {
+    "name": "NVIDIA H200",
+    "driver_version": "580.173.02",
+    "clocks.sm": "345 MHz",
+    "clocks.max.sm": "1980 MHz",
+    "clocks.mem": "3201 MHz",
+    "clocks.max.mem": "3201 MHz",
+    "power.limit": "700.00 W",
+    "power.max_limit": "700.00 W"
+   },
+   "nvidia_smi_clock_power": "==============NVSMI LOG==============\n\nTimestamp                                              : Sat Oct 10 04:36:57 2026\nDriver Version                                         : 580.173.02\nCUDA Version                                           : 13.0\n\nAttached GPUs                                          : 8\nGPU 00000000:8D:00.0\n    GPU Power Readings\n        Average Power Draw                             : 77.76 W\n        Instantaneous Power Draw                       : 77.80 W\n        Current Power Limit                            : 700.00 W\n        Requested Power Limit                          : 700.00 W\n        Default Power Limit                            : 700.00 W\n        Min Power Limit                                : 200.00 W\n        Max Power Limit                                : 700.00 W\n    Power Samples\n        Duration                                       : 2.36 sec\n        Number of Samples                              : 119\n        Max                                            : 78.69 W\n        Min                                            : 77.39 W\n        Avg                                            : 77.80 W\n    GPU Memory Power Readings \n        Average Power Draw                             : 40.57 W\n        Instantaneous Power Draw                       : N/A\n    Module Power Readings\n        Average Power Draw                             : N/A\n        Instantaneous Power Draw                       : N/A\n        Current Power Limit                            : N/A\n        Requested Power Limit                          : N/A\n        Default Power Limit                            : N/A\n        Min Power Limit                                : N/A\n        Max Power Limit                                : N/A\n    Clocks\n        Graphics                                       : 345 MHz\n        SM                                             : 345 MHz\n        Memory                                         : 3201 MHz\n        Video                                          : 765 MHz\n    Applications Clocks\n        Graphics                                       : 1980 MHz\n        Memory                                         : 3201 MHz\n    Default Applications Clocks\n        Graphics                                       : 1980 MHz\n        Memory                                         : 3201 MHz\n    Deferred Clocks\n        Memory                                         : N/A\n    Max Clocks\n        Graphics                                       : 1980 MHz\n        SM                                             : 1980 MHz\n        Memory                                         : 3201 MHz\n        Video                                          : 1545 MHz\n    Max Customer Boost Clocks\n        Graphics                                       : 1980 MHz\n    SM Clock Samples\n        Duration                                       : Not Found\n        Number of Samples                              : Not Found\n        Max                                            : Not Found\n        Min                                            : Not Found\n        Avg                                            : Not Found\n    Memory Clock Samples\n        Duration                                       : Not Found\n        Number of Samples                              : Not Found\n        Max                                            : Not Found\n        Min                                            : Not Found\n        Avg                                            : Not Found\n    Clock Policy\n        Auto Boost                                     : N/A\n        Auto Boost Default                             : N/A"
+  },
+  "versions": {
+   "torch": "2.13.0+cu130",
+   "tilelang": "0.1.12"
+  },
+  "argv": [
+   "benchmarks/scripts/dsv4_sparse_attn/bench.py",
+   "--backends",
+   "tilelang",
+   "flashmla_fwd_ref",
+   "--label",
+   "main-repeat",
+   "--items",
+   "*-65536-*-cp1",
+   "*-4096-*-cp8r4",
+   "--out",
+   "benchmarks/scripts/dsv4_sparse_attn/results/main_repeat_subset.json"
+  ]
+ },
+ "settings": {
+  "label": "main-repeat",
+  "items": [
+   "*-65536-*-cp1",
+   "*-4096-*-cp8r4"
+  ],
+  "backends": [
+   "tilelang",
+   "flashmla_fwd_ref"
+  ],
+  "rounds": 7,
+  "iters": 10,
+  "warmup": 3,
+  "profile_iters": 5,
+  "host_trace": null
+ },
+ "corpus": "/home/garrett/tmp/dsv4-sparse-attn-bench/corpus",
+ "backends": {
+  "tilelang": "tilelang",
+  "flashmla_fwd_ref": "flashmla_fwd_ref (reference, not a backend)"
+ },
+ "skipped_backends": {},
+ "peak_dense_bf16_tflops": 989.5,
+ "peak_source": "https://www.nvidia.com/en-us/data-center/h200/ (H200 SXM BF16 1,979 TFLOPS with sparsity, halved)",
+ "items": {
+  "single-4096-csa-cp8r4": {
+   "id": "single-4096-csa-cp8r4",
+   "total_len": 4096,
+   "layer_type": "csa",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 5120,
+   "n_slots": 640,
+   "max_doc_len": 4096,
+   "sum_valid": 327680,
+   "useful_flops": {
+    "fwd": 42949672960,
+    "bwd": 107374182400,
+    "fwd_bwd": 150323855360
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002186502330005169,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 1.8066067752897652e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.004336937330663204,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.003185768611729145,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0032081790268421173,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 42949672960,
+      "bwd": 107374182400
+     },
+     "executed_over_useful": {
+      "fwd": 1.0,
+      "bwd": 1.0
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 840.9600257873535,
+        "p20": 829.1328012943268,
+        "p80": 864.2847776412964
+       },
+       "op_us_rounds": [
+        852.3679971694946,
+        867.2639727592468,
+        840.9600257873535,
+        828.8159966468811,
+        830.4000198841095,
+        902.8480052947998,
+        825.4400193691254
+       ],
+       "gpu": {
+        "us": {
+         "median": 192.60999999999999,
+         "p20": 192.5296,
+         "p80": 192.98539999999997
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2282.6080322265625,
+        "p20": 2280.4511308670044,
+        "p80": 2309.1039896011353
+       },
+       "op_us_rounds": [
+        2311.6639852523804,
+        2280.9759378433228,
+        2271.0559368133545,
+        2280.319929122925,
+        2282.6080322265625,
+        2335.312008857727,
+        2298.864006996155
+       ],
+       "gpu": {
+        "us": {
+         "median": 863.8369999999999,
+         "p20": 862.8344000000001,
+         "p80": 865.1258000000001
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 79.376953125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0021739129442721605,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002186502330005169,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 42949672960,
+      "bwd": 107374182400
+     },
+     "executed_over_useful": {
+      "fwd": 1.0,
+      "bwd": 1.0
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 210.87999641895294,
+        "p20": 209.37600284814835,
+        "p80": 215.8688023686409
+       },
+       "op_us_rounds": [
+        216.48000180721283,
+        209.32800322771072,
+        216.5279984474182,
+        209.56800132989883,
+        213.42400461435318,
+        210.87999641895294,
+        209.23199504613876
+       ],
+       "gpu": {
+        "us": {
+         "median": 110.208,
+         "p20": 109.68299999999999,
+         "p80": 110.3232
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 34.7548828125
+      }
+     }
+    }
+   }
+  },
+  "single-4096-hca-cp8r4": {
+   "id": "single-4096-hca-cp8r4",
+   "total_len": 4096,
+   "layer_type": "hca",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4128,
+   "n_slots": 160,
+   "max_doc_len": 4096,
+   "sum_valid": 74500,
+   "useful_flops": {
+    "fwd": 9764864000,
+    "bwd": 24412160000,
+    "fwd_bwd": 34177024000
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0021040388382971287,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 3.227988258913683e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0029641399160027504,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.00279639451764524,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.001529269153252244,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 12884901888,
+      "bwd": 26843545600
+     },
+     "executed_over_useful": {
+      "fwd": 1.31951677852349,
+      "bwd": 1.0995973154362415
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 814.111977815628,
+        "p20": 802.0192086696625,
+        "p80": 819.183999300003
+       },
+       "op_us_rounds": [
+        817.3920214176178,
+        814.111977815628,
+        819.6319937705994,
+        830.9439718723297,
+        800.1440167427063,
+        809.5199763774872,
+        799.6959984302521
+       ],
+       "gpu": {
+        "us": {
+         "median": 107.136,
+         "p20": 107.027,
+         "p80": 107.6176
+        },
+        "launches_per_call": 10
+       },
+       "peak_mib": 32.501953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2105.407953262329,
+        "p20": 2092.083191871643,
+        "p80": 2117.1072006225586
+       },
+       "op_us_rounds": [
+        2116.9919967651367,
+        2117.136001586914,
+        2083.7119817733765,
+        2143.6320543289185,
+        2091.5679931640625,
+        2094.1439867019653,
+        2105.407953262329
+       ],
+       "gpu": {
+        "us": {
+         "median": 370.43899999999996,
+         "p20": 370.369,
+         "p80": 372.2248
+        },
+        "launches_per_call": 30
+       },
+       "peak_mib": 76.845703125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0020491802133619785,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0021040388382971287,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 17179869184,
+      "bwd": 42949672960
+     },
+     "executed_over_useful": {
+      "fwd": 1.7593557046979866,
+      "bwd": 1.7593557046979866
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 217.8879976272583,
+        "p20": 205.88480085134506,
+        "p80": 235.90719997882843
+       },
+       "op_us_rounds": [
+        217.8879976272583,
+        205.72800189256668,
+        242.73599684238434,
+        239.6479994058609,
+        220.94400227069855,
+        206.5119966864586,
+        204.03199642896652
+       ],
+       "gpu": {
+        "us": {
+         "median": 69.69500000000001,
+         "p20": 69.107,
+         "p80": 69.9072
+        },
+        "launches_per_call": 14
+       },
+       "peak_mib": 33.25341796875
+      }
+     }
+    }
+   }
+  },
+  "single-4096-sliding-cp8r4": {
+   "id": "single-4096-sliding-cp8r4",
+   "total_len": 4096,
+   "layer_type": "sliding",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4096,
+   "n_slots": 128,
+   "max_doc_len": 4096,
+   "sum_valid": 65536,
+   "useful_flops": {
+    "fwd": 8589934592,
+    "bwd": 21474836480,
+    "fwd_bwd": 30064771072
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002136477269232273,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 3.2548993544878613e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.004100424237549305,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0035772970877587795,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.003780986415222287,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 8589934592,
+      "bwd": 21474836480
+     },
+     "executed_over_useful": {
+      "fwd": 1.0,
+      "bwd": 1.0
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 775.8239805698395,
+        "p20": 766.6655957698822,
+        "p80": 810.8959972858429
+       },
+       "op_us_rounds": [
+        790.2239859104156,
+        866.1440014839172,
+        816.0640001296997,
+        775.8239805698395,
+        762.8799974918365,
+        771.5040147304535,
+        765.4559910297394
+       ],
+       "gpu": {
+        "us": {
+         "median": 92.51400000000001,
+         "p20": 92.3456,
+         "p80": 93.28
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2012.511968612671,
+        "p20": 2003.7407636642456,
+        "p80": 2016.5568828582764
+       },
+       "op_us_rounds": [
+        2056.015968322754,
+        2012.511968612671,
+        2003.3279657363892,
+        2016.9121026992798,
+        1990.6400442123413,
+        2005.3919553756714,
+        2015.1360034942627
+       ],
+       "gpu": {
+        "us": {
+         "median": 328.21799999999996,
+         "p20": 326.79060000000004,
+         "p80": 328.50039999999996
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 76.376953125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0021008404437452555,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002136477269232273,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 8589934592,
+      "bwd": 21474836480
+     },
+     "executed_over_useful": {
+      "fwd": 1.0,
+      "bwd": 1.0
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 194.97599452733994,
+        "p20": 191.75680130720139,
+        "p80": 197.9103997349739
+       },
+       "op_us_rounds": [
+        194.97599452733994,
+        191.20000302791595,
+        205.6799978017807,
+        193.02400201559067,
+        197.9679986834526,
+        191.44000113010406,
+        197.6800039410591
+       ],
+       "gpu": {
+        "us": {
+         "median": 54.528,
+         "p20": 53.749,
+         "p80": 54.67100000000001
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 32.7529296875
+      }
+     }
+    }
+   }
+  },
+  "short-4096-csa-cp8r4": {
+   "id": "short-4096-csa-cp8r4",
+   "total_len": 4096,
+   "layer_type": "csa",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 5119,
+   "n_slots": 640,
+   "max_doc_len": 1252,
+   "sum_valid": 97263,
+   "useful_flops": {
+    "fwd": 12748455936,
+    "bwd": 31871139840,
+    "fwd_bwd": 44619595776
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0022957194596529007,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 3.0708437748216966e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.003644123673439026,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0029809274710714817,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0031912722624838352,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 15485370368,
+      "bwd": 36029071360
+     },
+     "executed_over_useful": {
+      "fwd": 1.214685954576766,
+      "bwd": 1.130460709622364
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 804.0800094604492,
+        "p20": 803.4335851669312,
+        "p80": 812.880003452301
+       },
+       "op_us_rounds": [
+        803.7919998168945,
+        813.8560056686401,
+        795.3759729862213,
+        820.8799958229065,
+        803.3439815044403,
+        808.9759945869446,
+        804.0800094604492
+       ],
+       "gpu": {
+        "us": {
+         "median": 115.168,
+         "p20": 115.1368,
+         "p80": 115.55140000000002
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2019.7280645370483,
+        "p20": 1990.4063940048218,
+        "p80": 2049.062395095825
+       },
+       "op_us_rounds": [
+        2021.6319561004639,
+        2000.8639097213745,
+        1987.7920150756836,
+        1975.4559993743896,
+        2019.7280645370483,
+        2061.2319707870483,
+        2055.9200048446655
+       ],
+       "gpu": {
+        "us": {
+         "median": 434.91400000000004,
+         "p20": 433.73459999999994,
+         "p80": 435.06720000000007
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 79.3740234375
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0018656715983524919,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0022957194596529007,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 42949672960,
+      "bwd": 107374182400
+     },
+     "executed_over_useful": {
+      "fwd": 3.369009798176079,
+      "bwd": 3.369009798176079
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 206.7520022392273,
+        "p20": 205.0592005252838,
+        "p80": 208.19839537143707
+       },
+       "op_us_rounds": [
+        219.4560021162033,
+        206.7520022392273,
+        208.15999805927277,
+        204.6400010585785,
+        208.20799469947815,
+        199.3440017104149,
+        206.7359983921051
+       ],
+       "gpu": {
+        "us": {
+         "median": 73.503,
+         "p20": 72.6408,
+         "p80": 73.6284
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 34.7548828125
+      }
+     }
+    }
+   }
+  },
+  "short-4096-hca-cp8r4": {
+   "id": "short-4096-hca-cp8r4",
+   "total_len": 4096,
+   "layer_type": "hca",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4126,
+   "n_slots": 137,
+   "max_doc_len": 1252,
+   "sum_valid": 61675,
+   "useful_flops": {
+    "fwd": 8083865600,
+    "bwd": 20209664000,
+    "fwd_bwd": 28293529600
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0022494501899927855,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 4.4698441570290015e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0034817918203771114,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0032355322036892176,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.00189294689334929,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 11785994240,
+      "bwd": 24756879360
+     },
+     "executed_over_useful": {
+      "fwd": 1.4579651398459668,
+      "bwd": 1.2250020267531414
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 819.8399841785431,
+        "p20": 811.379200220108,
+        "p80": 830.2015960216522
+       },
+       "op_us_rounds": [
+        852.4799942970276,
+        826.9120156764984,
+        815.423995256424,
+        819.8399841785431,
+        810.368001461029,
+        831.0239911079407,
+        807.0079982280731
+       ],
+       "gpu": {
+        "us": {
+         "median": 101.696,
+         "p20": 101.3632,
+         "p80": 101.8688
+        },
+        "launches_per_call": 10
+       },
+       "peak_mib": 32.501953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2113.1999492645264,
+        "p20": 2101.2447595596313,
+        "p80": 2115.6896352767944
+       },
+       "op_us_rounds": [
+        2151.7919301986694,
+        2115.936040878296,
+        2114.7040128707886,
+        2099.5999574661255,
+        2107.823967933655,
+        2113.1999492645264,
+        2099.4240045547485
+       ],
+       "gpu": {
+        "us": {
+         "median": 355.13399999999996,
+         "p20": 355.036,
+         "p80": 355.44440000000003
+        },
+        "launches_per_call": 30
+       },
+       "peak_mib": 76.83984375
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.003816793905571103,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0022494501899927855,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 17179869184,
+      "bwd": 42949672960
+     },
+     "executed_over_useful": {
+      "fwd": 2.1252047020672884,
+      "bwd": 2.1252047020672884
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 204.0800005197525,
+        "p20": 200.2591997385025,
+        "p80": 204.99840080738068
+       },
+       "op_us_rounds": [
+        211.71200275421143,
+        203.21600139141083,
+        204.57600057125092,
+        199.51999932527542,
+        205.10400086641312,
+        198.57599586248398,
+        204.0800005197525
+       ],
+       "gpu": {
+        "us": {
+         "median": 64.831,
+         "p20": 64.53779999999999,
+         "p80": 65.4008
+        },
+        "launches_per_call": 14
+       },
+       "peak_mib": 33.25341796875
+      }
+     }
+    }
+   }
+  },
+  "short-4096-sliding-cp8r4": {
+   "id": "short-4096-sliding-cp8r4",
+   "total_len": 4096,
+   "layer_type": "sliding",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4096,
+   "n_slots": 128,
+   "max_doc_len": 1252,
+   "sum_valid": 60783,
+   "useful_flops": {
+    "fwd": 7966949376,
+    "bwd": 19917373440,
+    "fwd_bwd": 27884322816
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0026264579501003027,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 4.4595006443159946e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.004523186944425106,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0033269920386373997,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.001497298595495522,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 8304721920,
+      "bwd": 20405288960
+     },
+     "executed_over_useful": {
+      "fwd": 1.0423967227678792,
+      "bwd": 1.0244969810637843
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 766.1119997501373,
+        "p20": 755.20960688591,
+        "p80": 770.5471992492676
+       },
+       "op_us_rounds": [
+        769.0240144729614,
+        773.1199860572815,
+        757.6160132884979,
+        766.1119997501373,
+        752.9760003089905,
+        770.9279954433441,
+        754.6080052852631
+       ],
+       "gpu": {
+        "us": {
+         "median": 90.783,
+         "p20": 90.3616,
+         "p80": 90.835
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2011.4719867706299,
+        "p20": 1989.564824104309,
+        "p80": 2029.849648475647
+       },
+       "op_us_rounds": [
+        2011.4719867706299,
+        1984.4800233840942,
+        1986.3840341567993,
+        2002.2879838943481,
+        2033.8400602340698,
+        2013.8880014419556,
+        2038.3360385894775
+       ],
+       "gpu": {
+        "us": {
+         "median": 321.88800000000003,
+         "p20": 321.23519999999996,
+         "p80": 322.91839999999996
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 76.376953125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0019920319318771362,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0026264579501003027,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 8589934592,
+      "bwd": 21474836480
+     },
+     "executed_over_useful": {
+      "fwd": 1.078196206176069,
+      "bwd": 1.078196206176069
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 195.72800397872925,
+        "p20": 190.49599915742874,
+        "p80": 197.93919920921326
+       },
+       "op_us_rounds": [
+        198.09599965810776,
+        190.031997859478,
+        195.72800397872925,
+        188.00000101327896,
+        197.31199741363525,
+        192.35200434923172,
+        201.23200118541718
+       ],
+       "gpu": {
+        "us": {
+         "median": 54.07900000000001,
+         "p20": 53.8366,
+         "p80": 54.839999999999996
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 32.7529296875
+      }
+     }
+    }
+   }
+  },
+  "heavy-4096-csa-cp8r4": {
+   "id": "heavy-4096-csa-cp8r4",
+   "total_len": 4096,
+   "layer_type": "csa",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 5116,
+   "n_slots": 640,
+   "max_doc_len": 1119,
+   "sum_valid": 99252,
+   "useful_flops": {
+    "fwd": 13009158144,
+    "bwd": 32522895360,
+    "fwd_bwd": 45532053504
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0019092945149168372,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 3.6217221577317105e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.003572173183783889,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0031736434902995825,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0008400770020671189,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 15636365312,
+      "bwd": 36406558720
+     },
+     "executed_over_useful": {
+      "fwd": 1.2019505904163141,
+      "bwd": 1.1194132108169106
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 802.0640015602112,
+        "p20": 788.5792076587677,
+        "p80": 811.7824018001556
+       },
+       "op_us_rounds": [
+        874.5920062065125,
+        802.5279939174652,
+        802.0640015602112,
+        791.9839918613434,
+        787.7280116081238,
+        814.0960037708282,
+        783.0080091953278
+       ],
+       "gpu": {
+        "us": {
+         "median": 115.134,
+         "p20": 114.859,
+         "p80": 115.1996
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2028.3360481262207,
+        "p20": 2012.6528024673462,
+        "p80": 2066.0255670547485
+       },
+       "op_us_rounds": [
+        2015.9040689468384,
+        2129.199981689453,
+        2072.9119777679443,
+        2007.9840421676636,
+        2028.3360481262207,
+        2011.8399858474731,
+        2038.4799242019653
+       ],
+       "gpu": {
+        "us": {
+         "median": 436.85900000000004,
+         "p20": 435.9352,
+         "p80": 437.81140000000005
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 79.365234375
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0018939394503831863,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0019092945149168372,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 42949672960,
+      "bwd": 107374182400
+     },
+     "executed_over_useful": {
+      "fwd": 3.3014951839761415,
+      "bwd": 3.3014951839761415
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 206.03199303150177,
+        "p20": 200.52480250597,
+        "p80": 207.7824041247368
+       },
+       "op_us_rounds": [
+        216.92799776792526,
+        206.65600150823593,
+        208.064004778862,
+        199.3120014667511,
+        206.03199303150177,
+        199.37600195407867,
+        205.1200047135353
+       ],
+       "gpu": {
+        "us": {
+         "median": 73.24600000000001,
+         "p20": 72.9196,
+         "p80": 73.63199999999999
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 34.7548828125
+      }
+     }
+    }
+   }
+  },
+  "heavy-4096-hca-cp8r4": {
+   "id": "heavy-4096-hca-cp8r4",
+   "total_len": 4096,
+   "layer_type": "hca",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4123,
+   "n_slots": 136,
+   "max_doc_len": 1119,
+   "sum_valid": 62548,
+   "useful_flops": {
+    "fwd": 8198291456,
+    "bwd": 20495728640,
+    "fwd_bwd": 28694020096
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0024223614018410444,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 3.2672613770046155e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.003596773836761713,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0030293490272015333,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.006889975629746914,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 11936989184,
+      "bwd": 25060966400
+     },
+     "executed_over_useful": {
+      "fwd": 1.45603376606766,
+      "bwd": 1.2227409349619491
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 822.8960037231445,
+        "p20": 813.9200150966644,
+        "p80": 825.9552001953125
+       },
+       "op_us_rounds": [
+        823.9840269088745,
+        826.447993516922,
+        801.0720014572144,
+        821.9200074672699,
+        811.9200170040131,
+        835.0719809532166,
+        822.8960037231445
+       ],
+       "gpu": {
+        "us": {
+         "median": 102.656,
+         "p20": 102.08,
+         "p80": 102.9698
+        },
+        "launches_per_call": 10
+       },
+       "peak_mib": 32.501953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2097.7280139923096,
+        "p20": 2090.6432151794434,
+        "p80": 2114.9983406066895
+       },
+       "op_us_rounds": [
+        2104.207992553711,
+        2117.695927619934,
+        2119.887948036194,
+        2097.0559120178223,
+        2089.0400409698486,
+        2078.6560773849487,
+        2097.7280139923096
+       ],
+       "gpu": {
+        "us": {
+         "median": 358.078,
+         "p20": 356.9508000000001,
+         "p80": 358.25820000000004
+        },
+        "launches_per_call": 30
+       },
+       "peak_mib": 76.8310546875
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.002747252816334367,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0024223614018410444,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 17179869184,
+      "bwd": 42949672960
+     },
+     "executed_over_useful": {
+      "fwd": 2.0955426232653322,
+      "bwd": 2.0955426232653322
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 205.23199439048767,
+        "p20": 204.71679866313934,
+        "p80": 209.0303972363472
+       },
+       "op_us_rounds": [
+        209.85599607229233,
+        205.21600544452667,
+        205.72800189256668,
+        200.8959949016571,
+        205.23199439048767,
+        204.5919969677925,
+        213.55199813842773
+       ],
+       "gpu": {
+        "us": {
+         "median": 65.599,
+         "p20": 65.003,
+         "p80": 65.9026
+        },
+        "launches_per_call": 14
+       },
+       "peak_mib": 33.25341796875
+      }
+     }
+    }
+   }
+  },
+  "heavy-4096-sliding-cp8r4": {
+   "id": "heavy-4096-sliding-cp8r4",
+   "total_len": 4096,
+   "layer_type": "sliding",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4096,
+   "n_slots": 128,
+   "max_doc_len": 1119,
+   "sum_valid": 61620,
+   "useful_flops": {
+    "fwd": 8076656640,
+    "bwd": 20191641600,
+    "fwd_bwd": 28268298240
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0026292360853403807,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 3.2741286304371897e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0037913168780505657,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.003435137216001749,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.004784129094332457,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 8380219392,
+      "bwd": 20615004160
+     },
+     "executed_over_useful": {
+      "fwd": 1.037585199610516,
+      "bwd": 1.020967218435573
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 784.0319871902466,
+        "p20": 773.4943807125092,
+        "p80": 789.3504023551941
+       },
+       "op_us_rounds": [
+        790.6720042228699,
+        799.7919917106628,
+        784.063994884491,
+        781.0719907283783,
+        771.5999782085419,
+        784.0319871902466,
+        770.3199982643127
+       ],
+       "gpu": {
+        "us": {
+         "median": 90.88,
+         "p20": 90.7956,
+         "p80": 91.5904
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2058.8639974594116,
+        "p20": 2034.3968152999878,
+        "p80": 2081.8560361862183
+       },
+       "op_us_rounds": [
+        2058.8639974594116,
+        2090.8000469207764,
+        2086.8160724639893,
+        2051.792025566101,
+        2062.0158910751343,
+        2030.0480127334595,
+        2020.8320617675781
+       ],
+       "gpu": {
+        "us": {
+         "median": 322.8809999999999,
+         "p20": 322.7578,
+         "p80": 326.3302
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 76.376953125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0024509804788976908,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0026292360853403807,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 8589934592,
+      "bwd": 21474836480
+     },
+     "executed_over_useful": {
+      "fwd": 1.0635507951963648,
+      "bwd": 1.0635507951963648
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 197.02400267124176,
+        "p20": 193.86239647865295,
+        "p80": 199.35040175914764
+       },
+       "op_us_rounds": [
+        212.76799589395523,
+        199.5360031723976,
+        198.60799610614777,
+        193.27999651432037,
+        197.02400267124176,
+        189.2319992184639,
+        196.19199633598328
+       ],
+       "gpu": {
+        "us": {
+         "median": 53.948,
+         "p20": 53.892399999999995,
+         "p80": 54.924200000000006
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 32.7529296875
+      }
+     }
+    }
+   }
+  },
+  "tiny-4096-csa-cp8r4": {
+   "id": "tiny-4096-csa-cp8r4",
+   "total_len": 4096,
+   "layer_type": "csa",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 5102,
+   "n_slots": 640,
+   "max_doc_len": 127,
+   "sum_valid": 32843,
+   "useful_flops": {
+    "fwd": 4304797696,
+    "bwd": 10761994240,
+    "fwd_bwd": 15066791936
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002479180693626404,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 4.435875951003254e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.004359324928373098,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.002934866352006793,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.004561804234981537,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 12582912000,
+      "bwd": 26088570880
+     },
+     "executed_over_useful": {
+      "fwd": 2.922997290137929,
+      "bwd": 2.424139085954389
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 785.1999998092651,
+        "p20": 782.313597202301,
+        "p80": 795.932799577713
+       },
+       "op_us_rounds": [
+        800.1599907875061,
+        797.21599817276,
+        782.7360033988953,
+        790.800005197525,
+        782.2079956531525,
+        785.1999998092651,
+        777.1199941635132
+       ],
+       "gpu": {
+        "us": {
+         "median": 104.8,
+         "p20": 104.17739999999999,
+         "p80": 104.96
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2019.007921218872,
+        "p20": 2001.4016151428223,
+        "p80": 2030.358386039734
+       },
+       "op_us_rounds": [
+        2048.7359762191772,
+        2016.0319805145264,
+        1997.7440237998962,
+        2020.3360319137573,
+        2019.007921218872,
+        1981.7759990692139,
+        2032.863974571228
+       ],
+       "gpu": {
+        "us": {
+         "median": 346.467,
+         "p20": 345.60260000000005,
+         "p80": 347.13000000000005
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 79.32421875
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.004166666883975267,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002479180693626404,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 42949672960,
+      "bwd": 107374182400
+     },
+     "executed_over_useful": {
+      "fwd": 9.977164083670797,
+      "bwd": 9.977164083670797
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 207.7600061893463,
+        "p20": 205.33759593963623,
+        "p80": 211.29280030727386
+       },
+       "op_us_rounds": [
+        207.7600061893463,
+        205.1359936594963,
+        213.85600417852402,
+        201.664000749588,
+        211.88800036907196,
+        206.14400506019592,
+        208.91200006008148
+       ],
+       "gpu": {
+        "us": {
+         "median": 67.646,
+         "p20": 67.55820000000001,
+         "p80": 67.8212
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 34.7548828125
+      }
+     }
+    }
+   }
+  },
+  "tiny-4096-hca-cp8r4": {
+   "id": "tiny-4096-hca-cp8r4",
+   "total_len": 4096,
+   "layer_type": "hca",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4096,
+   "n_slots": 128,
+   "max_doc_len": 127,
+   "sum_valid": 26429,
+   "useful_flops": {
+    "fwd": 3464101888,
+    "bwd": 8660254720,
+    "fwd_bwd": 12124356608
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0035659640561789274,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 4.563880793284625e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.003985988441854715,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.004396849311888218,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0013023854698985815,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 5762973696,
+      "bwd": 11418992640
+     },
+     "executed_over_useful": {
+      "fwd": 1.6636270763176813,
+      "bwd": 1.31855159105528
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 771.0559964179993,
+        "p20": 760.8959972858429,
+        "p80": 785.3792011737823
+       },
+       "op_us_rounds": [
+        790.3680205345154,
+        771.0559964179993,
+        758.432000875473,
+        776.6880095005035,
+        770.7519829273224,
+        787.551999092102,
+        753.279983997345
+       ],
+       "gpu": {
+        "us": {
+         "median": 84.352,
+         "p20": 84.256,
+         "p80": 84.64739999999999
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2016.8960094451904,
+        "p20": 2006.0223579406738,
+        "p80": 2037.0752096176147
+       },
+       "op_us_rounds": [
+        2037.5360250473022,
+        2001.3920664787292,
+        2061.0560178756714,
+        2012.8960609436035,
+        2016.8960094451904,
+        2004.3039321899414,
+        2035.2319478988647
+       ],
+       "gpu": {
+        "us": {
+         "median": 267.74399999999997,
+         "p20": 267.4034,
+         "p80": 268.53920000000005
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 76.376953125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0018248175038024783,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.0035659640561789274,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 8589934592,
+      "bwd": 21474836480
+     },
+     "executed_over_useful": {
+      "fwd": 2.479700329183851,
+      "bwd": 2.479700329183851
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 191.42400473356247,
+        "p20": 189.1519993543625,
+        "p80": 196.55680358409882
+       },
+       "op_us_rounds": [
+        203.68000119924545,
+        190.17599523067474,
+        197.34400510787964,
+        193.40799748897552,
+        188.89600038528442,
+        186.87999993562698,
+        191.42400473356247
+       ],
+       "gpu": {
+        "us": {
+         "median": 53.282,
+         "p20": 53.139199999999995,
+         "p80": 53.86899999999999
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 32.7529296875
+      }
+     }
+    }
+   }
+  },
+  "tiny-4096-sliding-cp8r4": {
+   "id": "tiny-4096-sliding-cp8r4",
+   "total_len": 4096,
+   "layer_type": "sliding",
+   "cp": 8,
+   "cp_rank": 4,
+   "n_queries": 512,
+   "n_positions": 4096,
+   "n_slots": 128,
+   "max_doc_len": 127,
+   "sum_valid": 26429,
+   "useful_flops": {
+    "fwd": 3464101888,
+    "bwd": 8660254720,
+    "fwd_bwd": 12124356608
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002681639278307557,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 6.185008487591404e-07,
+        "rtol": 1e-06,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.003756448859348893,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0030559985898435116,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.002249718178063631,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 5762973696,
+      "bwd": 11418992640
+     },
+     "executed_over_useful": {
+      "fwd": 1.6636270763176813,
+      "bwd": 1.31855159105528
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 772.271990776062,
+        "p20": 759.881591796875,
+        "p80": 852.9279887676239
+       },
+       "op_us_rounds": [
+        884.2079937458038,
+        765.4240131378174,
+        758.4959864616394,
+        782.9760015010834,
+        870.415985584259,
+        772.271990776062,
+        756.0159862041473
+       ],
+       "gpu": {
+        "us": {
+         "median": 84.385,
+         "p20": 83.8022,
+         "p80": 84.7892
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 32.126953125
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 2014.0479803085327,
+        "p20": 2007.4783563613892,
+        "p80": 2035.683274269104
+       },
+       "op_us_rounds": [
+        2036.6880893707275,
+        2006.2079429626465,
+        2031.6640138626099,
+        2014.0479803085327,
+        2012.5600099563599,
+        2036.7679595947266,
+        1983.7759733200073
+       ],
+       "gpu": {
+        "us": {
+         "median": 267.423,
+         "p20": 267.2068,
+         "p80": 268.8128
+        },
+        "launches_per_call": 26
+       },
+       "peak_mib": 76.376953125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.002369668334722519,
+        "rtol": 0.01,
+        "ok": true
+       }
+      },
+      "vs_dense_fp32": {
+       "out": {
+        "relative_error": 0.002681639278307557,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 8589934592,
+      "bwd": 21474836480
+     },
+     "executed_over_useful": {
+      "fwd": 2.479700329183851,
+      "bwd": 2.479700329183851
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 194.75200027227402,
+        "p20": 188.0128026008606,
+        "p80": 196.19199633598328
+       },
+       "op_us_rounds": [
+        196.52799516916275,
+        187.00800091028214,
+        194.84800100326538,
+        187.6640021800995,
+        210.25599539279938,
+        189.40800428390503,
+        194.75200027227402
+       ],
+       "gpu": {
+        "us": {
+         "median": 53.790000000000006,
+         "p20": 53.1774,
+         "p80": 53.888400000000004
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 32.7529296875
+      }
+     }
+    }
+   }
+  },
+  "single-65536-csa-cp1": {
+   "id": "single-65536-csa-cp1",
+   "total_len": 65536,
+   "layer_type": "csa",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 81920,
+   "n_slots": 640,
+   "max_doc_len": 65536,
+   "sum_valid": 41410112,
+   "useful_flops": {
+    "fwd": 5427706200064,
+    "bwd": 13569265500160,
+    "fwd_bwd": 18996971700224
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 5437202104320,
+      "bwd": 13582236385280
+     },
+     "executed_over_useful": {
+      "fwd": 1.0017495243673815,
+      "bwd": 1.000955901785535
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 21777.95124053955,
+        "p20": 21731.71501159668,
+        "p80": 21877.54554748535
+       },
+       "op_us_rounds": [
+        21777.95124053955,
+        21886.96002960205,
+        21741.968154907227,
+        21938.27247619629,
+        21717.35954284668,
+        21839.887619018555,
+        21729.151725769043
+       ],
+       "gpu": {
+        "us": {
+         "median": 21591.002999999997,
+         "p20": 21372.442,
+         "p80": 22500.422
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 95346.78268432617,
+        "p20": 95252.28042602539,
+        "p80": 95413.99841308594
+       },
+       "op_us_rounds": [
+        95378.47900390625,
+        95422.87826538086,
+        95446.57516479492,
+        95346.78268432617,
+        95279.37698364258,
+        95245.5062866211,
+        95236.91177368164
+       ],
+       "gpu": {
+        "us": {
+         "median": 94646.08399999997,
+         "p20": 94612.94939999997,
+         "p80": 94732.25979999999
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8480.25
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0021276595070958138,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 5497558138880,
+      "bwd": 13743895347200
+     },
+     "executed_over_useful": {
+      "fwd": 1.0128695136105887,
+      "bwd": 1.0128695136105887
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 11282.256126403809,
+        "p20": 11138.176155090332,
+        "p80": 11353.804588317871
+       },
+       "op_us_rounds": [
+        11220.288276672363,
+        11358.783721923828,
+        11333.888053894043,
+        11363.791942596436,
+        10998.36778640747,
+        11282.256126403809,
+        11117.648124694824
+       ],
+       "gpu": {
+        "us": {
+         "median": 10699.966,
+         "p20": 10267.4486,
+         "p80": 11141.63
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4448.2529296875
+      }
+     }
+    }
+   }
+  },
+  "single-65536-hca-cp1": {
+   "id": "single-65536-hca-cp1",
+   "total_len": 65536,
+   "layer_type": "hca",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 66048,
+   "n_slots": 640,
+   "max_doc_len": 65536,
+   "sum_valid": 25125440,
+   "useful_flops": {
+    "fwd": 3293241671680,
+    "bwd": 8233104179200,
+    "fwd_bwd": 11526345850880
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 3564353093632,
+      "bwd": 8566614261760
+     },
+     "executed_over_useful": {
+      "fwd": 1.0823235732389165,
+      "bwd": 1.040508424927086
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 16555.136680603027,
+        "p20": 16482.470321655273,
+        "p80": 16578.69472503662
+       },
+       "op_us_rounds": [
+        16584.0482711792,
+        16652.976036071777,
+        16459.471702575684,
+        16555.136680603027,
+        16476.431846618652,
+        16557.28054046631,
+        16506.624221801758
+       ],
+       "gpu": {
+        "us": {
+         "median": 16362.289,
+         "p20": 16235.6254,
+         "p80": 16791.970400000002
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 64341.11785888672,
+        "p20": 64324.62692260742,
+        "p80": 64369.29244995117
+       },
+       "op_us_rounds": [
+        64396.45004272461,
+        64351.36032104492,
+        64337.50534057617,
+        64373.775482177734,
+        64299.522399902344,
+        64321.407318115234,
+        64341.11785888672
+       ],
+       "gpu": {
+        "us": {
+         "median": 63691.986999999994,
+         "p20": 63608.5828,
+         "p80": 63733.29959999999
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8433.75
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0026881720405071974,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 5497558138880,
+      "bwd": 13743895347200
+     },
+     "executed_over_useful": {
+      "fwd": 1.6693454920590445,
+      "bwd": 1.6693454920590445
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 8263.328075408936,
+        "p20": 8145.510482788086,
+        "p80": 8381.145572662354
+       },
+       "op_us_rounds": [
+        7970.016002655029,
+        8384.624004364014,
+        8137.0720863342285,
+        8410.223960876465,
+        8179.264068603516,
+        8367.231845855713,
+        8263.328075408936
+       ],
+       "gpu": {
+        "us": {
+         "median": 7962.795,
+         "p20": 7957.207,
+         "p80": 8043.491799999999
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4448.2529296875
+      }
+     }
+    }
+   }
+  },
+  "single-65536-sliding-cp1": {
+   "id": "single-65536-sliding-cp1",
+   "total_len": 65536,
+   "layer_type": "sliding",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 65536,
+   "n_slots": 128,
+   "max_doc_len": 65536,
+   "sum_valid": 8380480,
+   "useful_flops": {
+    "fwd": 1098446274560,
+    "bwd": 2746115686400,
+    "fwd_bwd": 3844561960960
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 1098974756864,
+      "bwd": 2746765803520
+     },
+     "executed_over_useful": {
+      "fwd": 1.0004811180266524,
+      "bwd": 1.0002367406162893
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 9614.303588867188,
+        "p20": 9609.66100692749,
+        "p80": 9647.491455078125
+       },
+       "op_us_rounds": [
+        9835.392475128174,
+        9643.280029296875,
+        9609.216213226318,
+        9648.544311523438,
+        9614.303588867188,
+        9611.440181732178,
+        9609.024047851562
+       ],
+       "gpu": {
+        "us": {
+         "median": 9001.417000000001,
+         "p20": 8985.4636,
+         "p80": 9006.537999999999
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 30096.367835998535,
+        "p20": 30085.222625732422,
+        "p80": 30108.822059631348
+       },
+       "op_us_rounds": [
+        30089.984893798828,
+        30082.624435424805,
+        30084.03205871582,
+        30101.55200958252,
+        30096.367835998535,
+        30117.87223815918,
+        30110.639572143555
+       ],
+       "gpu": {
+        "us": {
+         "median": 29297.770999999997,
+         "p20": 29292.6126,
+         "p80": 29304.677200000006
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8432.25
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0025380710139870644,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 1099511627776,
+      "bwd": 2748779069440
+     },
+     "executed_over_useful": {
+      "fwd": 1.0009698728473786,
+      "bwd": 1.0009698728473786
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 4105.072021484375,
+        "p20": 4095.664072036743,
+        "p80": 4109.5648765563965
+       },
+       "op_us_rounds": [
+        4107.120037078857,
+        4099.37596321106,
+        4113.8880252838135,
+        4094.559907913208,
+        4110.176086425781,
+        4094.736099243164,
+        4105.072021484375
+       ],
+       "gpu": {
+        "us": {
+         "median": 4077.9320000000002,
+         "p20": 4075.9156000000003,
+         "p80": 4089.6875999999997
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4192.2509765625
+      }
+     }
+    }
+   }
+  },
+  "short-65536-csa-cp1": {
+   "id": "short-65536-csa-cp1",
+   "total_len": 65536,
+   "layer_type": "csa",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 81903,
+   "n_slots": 640,
+   "max_doc_len": 4145,
+   "sum_valid": 24435743,
+   "useful_flops": {
+    "fwd": 3202841706496,
+    "bwd": 8007104266240,
+    "fwd_bwd": 11209945972736
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 3474301386752,
+      "bwd": 8397332152320
+     },
+     "executed_over_useful": {
+      "fwd": 1.0847558840343017,
+      "bwd": 1.048735207274033
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 16221.10366821289,
+        "p20": 16188.342475891113,
+        "p80": 16327.449226379395
+       },
+       "op_us_rounds": [
+        16332.847595214844,
+        16441.1039352417,
+        16175.888061523438,
+        16305.855751037598,
+        16211.7280960083,
+        16221.10366821289,
+        16182.496070861816
+       ],
+       "gpu": {
+        "us": {
+         "median": 16320.739,
+         "p20": 16011.3754,
+         "p80": 16626.1738
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 63124.03106689453,
+        "p20": 63120.0984954834,
+        "p80": 63141.78276062012
+       },
+       "op_us_rounds": [
+        63235.74447631836,
+        63144.304275512695,
+        63131.696701049805,
+        63118.255615234375,
+        63119.82345581055,
+        63121.198654174805,
+        63124.03106689453
+       ],
+       "gpu": {
+        "us": {
+         "median": 62531.636,
+         "p20": 62509.433600000004,
+         "p80": 62539.7124
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8480.2001953125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0019379844889044762,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 5497558138880,
+      "bwd": 13743895347200
+     },
+     "executed_over_useful": {
+      "fwd": 1.716462642449628,
+      "bwd": 1.716462642449628
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 8125.296115875244,
+        "p20": 8022.147083282471,
+        "p80": 8325.471782684326
+       },
+       "op_us_rounds": [
+        8125.296115875244,
+        8317.344188690186,
+        7786.479949951172,
+        8327.503681182861,
+        8052.688121795654,
+        8330.28793334961,
+        8014.511823654175
+       ],
+       "gpu": {
+        "us": {
+         "median": 7804.105,
+         "p20": 7795.450599999999,
+         "p80": 7811.046400000001
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4448.2529296875
+      }
+     }
+    }
+   }
+  },
+  "short-65536-hca-cp1": {
+   "id": "short-65536-hca-cp1",
+   "total_len": 65536,
+   "layer_type": "hca",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 66023,
+   "n_slots": 160,
+   "max_doc_len": 4145,
+   "sum_valid": 8567261,
+   "useful_flops": {
+    "fwd": 1122928033792,
+    "bwd": 2807320084480,
+    "fwd_bwd": 3930248118272
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 1573962907648,
+      "bwd": 3278760837120
+     },
+     "executed_over_useful": {
+      "fwd": 1.401659643613052,
+      "bwd": 1.167932668328886
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 10926.86414718628,
+        "p20": 10897.107315063477,
+        "p80": 10953.798198699951
+       },
+       "op_us_rounds": [
+        11066.447734832764,
+        10922.719955444336,
+        10890.704154968262,
+        10958.831787109375,
+        10933.663845062256,
+        10926.86414718628,
+        10880.656242370605
+       ],
+       "gpu": {
+        "us": {
+         "median": 10302.228000000001,
+         "p20": 10299.1424,
+         "p80": 10307.813999999998
+        },
+        "launches_per_call": 10
+       },
+       "peak_mib": 4160.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 33517.16613769531,
+        "p20": 33501.15852355957,
+        "p80": 33529.71839904785
+       },
+       "op_us_rounds": [
+        33522.897720336914,
+        33531.423568725586,
+        33500.736236572266,
+        33517.16613769531,
+        33536.415100097656,
+        33502.84767150879,
+        33497.488021850586
+       ],
+       "gpu": {
+        "us": {
+         "median": 32733.124000000007,
+         "p20": 32713.550399999996,
+         "p80": 32738.373600000003
+        },
+        "launches_per_call": 31
+       },
+       "peak_mib": 8481.6767578125
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0019920319318771362,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 2199023255552,
+      "bwd": 5497558138880
+     },
+     "executed_over_useful": {
+      "fwd": 1.9582940218583278,
+      "bwd": 1.9582940218583278
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 5382.719993591309,
+        "p20": 5366.687870025635,
+        "p80": 5387.635278701782
+       },
+       "op_us_rounds": [
+        5401.296138763428,
+        5387.824058532715,
+        5382.719993591309,
+        5358.304023742676,
+        5386.880159378052,
+        5365.599870681763,
+        5371.039867401123
+       ],
+       "gpu": {
+        "us": {
+         "median": 5385.51,
+         "p20": 5362.7444,
+         "p80": 5390.3272
+        },
+        "launches_per_call": 14
+       },
+       "peak_mib": 4256.25146484375
+      }
+     }
+    }
+   }
+  },
+  "short-65536-sliding-cp1": {
+   "id": "short-65536-sliding-cp1",
+   "total_len": 65536,
+   "layer_type": "sliding",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 65536,
+   "n_slots": 128,
+   "max_doc_len": 4145,
+   "sum_valid": 8006592,
+   "useful_flops": {
+    "fwd": 1049440026624,
+    "bwd": 2623600066560,
+    "fwd_bwd": 3673040093184
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 1074278694912,
+      "bwd": 2654155571200
+     },
+     "executed_over_useful": {
+      "fwd": 1.0236684971583416,
+      "bwd": 1.0116464033636283
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 9584.192276000977,
+        "p20": 9577.404689788818,
+        "p80": 9603.382396697998
+       },
+       "op_us_rounds": [
+        9735.264301300049,
+        9584.192276000977,
+        9577.055931091309,
+        9605.072021484375,
+        9574.25594329834,
+        9578.799724578857,
+        9596.62389755249
+       ],
+       "gpu": {
+        "us": {
+         "median": 8961.205,
+         "p20": 8957.4032,
+         "p80": 8980.0776
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 29621.216773986816,
+        "p20": 29609.43012237549,
+        "p80": 29625.77304840088
+       },
+       "op_us_rounds": [
+        29643.600463867188,
+        29608.351707458496,
+        29621.216773986816,
+        29624.35245513916,
+        29592.080116271973,
+        29626.12819671631,
+        29613.743782043457
+       ],
+       "gpu": {
+        "us": {
+         "median": 28819.958,
+         "p20": 28798.061599999997,
+         "p80": 28830.5402
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8432.25
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0019607844296842813,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 1099511627776,
+      "bwd": 2748779069440
+     },
+     "executed_over_useful": {
+      "fwd": 1.0477126847477678,
+      "bwd": 1.0477126847477678
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 4107.232093811035,
+        "p20": 4097.996807098389,
+        "p80": 4111.923170089722
+       },
+       "op_us_rounds": [
+        4122.25604057312,
+        4112.607955932617,
+        4099.584102630615,
+        4088.992118835449,
+        4109.18402671814,
+        4097.599983215332,
+        4107.232093811035
+       ],
+       "gpu": {
+        "us": {
+         "median": 4092.046,
+         "p20": 4090.2918,
+         "p80": 4103.6188
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4192.2509765625
+      }
+     }
+    }
+   }
+  },
+  "heavy-65536-csa-cp1": {
+   "id": "heavy-65536-csa-cp1",
+   "total_len": 65536,
+   "layer_type": "csa",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 81889,
+   "n_slots": 640,
+   "max_doc_len": 29128,
+   "sum_valid": 27869445,
+   "useful_flops": {
+    "fwd": 3652903895040,
+    "bwd": 9132259737600,
+    "fwd_bwd": 12785163632640
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 3896063819776,
+      "bwd": 9525012725760
+     },
+     "executed_over_useful": {
+      "fwd": 1.066566198214568,
+      "bwd": 1.0430072073555825
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 17375.328063964844,
+        "p20": 17342.844200134277,
+        "p80": 17449.79476928711
+       },
+       "op_us_rounds": [
+        17523.42414855957,
+        17363.375663757324,
+        17375.328063964844,
+        17432.39974975586,
+        17324.70417022705,
+        17454.143524169922,
+        17337.711334228516
+       ],
+       "gpu": {
+        "us": {
+         "median": 17486.76,
+         "p20": 17104.8458,
+         "p80": 18158.1282
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 69636.9743347168,
+        "p20": 69619.1909790039,
+        "p80": 69653.6506652832
+       },
+       "op_us_rounds": [
+        69668.30444335938,
+        69615.52047729492,
+        69643.4211730957,
+        69614.31884765625,
+        69636.9743347168,
+        69633.87298583984,
+        69656.20803833008
+       ],
+       "gpu": {
+        "us": {
+         "median": 69014.24799999999,
+         "p20": 69000.37739999997,
+         "p80": 69047.166
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8480.1591796875
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0038759689778089523,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 5497558138880,
+      "bwd": 13743895347200
+     },
+     "executed_over_useful": {
+      "fwd": 1.5049829661121705,
+      "bwd": 1.5049829661121705
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 8829.343795776367,
+        "p20": 8732.444858551025,
+        "p80": 8939.151859283447
+       },
+       "op_us_rounds": [
+        8754.703998565674,
+        9025.871753692627,
+        8829.343795776367,
+        8939.695835113525,
+        8726.880073547363,
+        8936.975955963135,
+        8669.551849365234
+       ],
+       "gpu": {
+        "us": {
+         "median": 8430.355,
+         "p20": 8417.712,
+         "p80": 8590.019199999999
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4448.2529296875
+      }
+     }
+    }
+   }
+  },
+  "heavy-65536-hca-cp1": {
+   "id": "heavy-65536-hca-cp1",
+   "total_len": 65536,
+   "layer_type": "hca",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 66020,
+   "n_slots": 355,
+   "max_doc_len": 29128,
+   "sum_valid": 11206633,
+   "useful_flops": {
+    "fwd": 1468875800576,
+    "bwd": 3672189501440,
+    "fwd_bwd": 5141065302016
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 1835402264576,
+      "bwd": 4087779164160
+     },
+     "executed_over_useful": {
+      "fwd": 1.249528560451654,
+      "bwd": 1.1131721722304995
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 11755.536079406738,
+        "p20": 11678.464126586914,
+        "p80": 11766.812801361084
+       },
+       "op_us_rounds": [
+        11760.400295257568,
+        11660.352230072021,
+        11652.735710144043,
+        11794.528007507324,
+        11768.415927886963,
+        11755.536079406738,
+        11750.911712646484
+       ],
+       "gpu": {
+        "us": {
+         "median": 11199.905,
+         "p20": 11186.553199999998,
+         "p80": 11212.7424
+        },
+        "launches_per_call": 10
+       },
+       "peak_mib": 4208.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 38236.59324645996,
+        "p20": 38223.686599731445,
+        "p80": 38245.1847076416
+       },
+       "op_us_rounds": [
+        38263.00811767578,
+        38221.58432006836,
+        38239.16816711426,
+        38246.68884277344,
+        38232.09571838379,
+        38236.59324645996,
+        38219.88868713379
+       ],
+       "gpu": {
+        "us": {
+         "median": 37609.08899999999,
+         "p20": 37604.7756,
+         "p80": 37624.6442
+        },
+        "launches_per_call": 31
+       },
+       "peak_mib": 8529.66796875
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0032051282469183207,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 3298534883328,
+      "bwd": 8246337208320
+     },
+     "executed_over_useful": {
+      "fwd": 2.2456186438870622,
+      "bwd": 2.2456186438870622
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 5681.455850601196,
+        "p20": 5667.449617385864,
+        "p80": 5696.902561187744
+       },
+       "op_us_rounds": [
+        5673.5680103302,
+        5689.568042755127,
+        5658.84804725647,
+        5721.360206604004,
+        5681.455850601196,
+        5665.92001914978,
+        5698.736190795898
+       ],
+       "gpu": {
+        "us": {
+         "median": 5708.655,
+         "p20": 5696.4673999999995,
+         "p80": 5714.9148000000005
+        },
+        "launches_per_call": 14
+       },
+       "peak_mib": 4320.251953125
+      }
+     }
+    }
+   }
+  },
+  "heavy-65536-sliding-cp1": {
+   "id": "heavy-65536-sliding-cp1",
+   "total_len": 65536,
+   "layer_type": "sliding",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 65536,
+   "n_slots": 128,
+   "max_doc_len": 29128,
+   "sum_valid": 7722112,
+   "useful_flops": {
+    "fwd": 1012152664064,
+    "bwd": 2530381660160,
+    "fwd_bwd": 3542534324224
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 1055488212992,
+      "bwd": 2583691264000
+     },
+     "executed_over_useful": {
+      "fwd": 1.0428152298231366,
+      "bwd": 1.0210678115002736
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 9573.999881744385,
+        "p20": 9562.531185150146,
+        "p80": 9585.48469543457
+       },
+       "op_us_rounds": [
+        9715.888023376465,
+        9573.999881744385,
+        9560.751914978027,
+        9558.495998382568,
+        9579.7119140625,
+        9586.927890777588,
+        9569.648265838623
+       ],
+       "gpu": {
+        "us": {
+         "median": 8942.677000000001,
+         "p20": 8931.3686,
+         "p80": 8944.738399999998
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 29226.04751586914,
+        "p20": 29225.455856323242,
+        "p80": 29228.33251953125
+       },
+       "op_us_rounds": [
+        29226.04751586914,
+        29228.00064086914,
+        29228.415489196777,
+        29225.584030151367,
+        29225.42381286621,
+        29212.432861328125,
+        29228.511810302734
+       ],
+       "gpu": {
+        "us": {
+         "median": 28422.662,
+         "p20": 28416.21180000001,
+         "p80": 28443.334000000003
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8432.25
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0037878789007663727,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 1099511627776,
+      "bwd": 2748779069440
+     },
+     "executed_over_useful": {
+      "fwd": 1.0863100664688623,
+      "bwd": 1.0863100664688623
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 4111.056089401245,
+        "p20": 4107.065439224243,
+        "p80": 4116.2049770355225
+       },
+       "op_us_rounds": [
+        4118.191957473755,
+        4116.416215896606,
+        4106.367826461792,
+        4111.056089401245,
+        4115.3600215911865,
+        4109.855890274048,
+        4099.247932434082
+       ],
+       "gpu": {
+        "us": {
+         "median": 4100.207,
+         "p20": 4085.3230000000003,
+         "p80": 4102.3
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4192.2509765625
+      }
+     }
+    }
+   }
+  },
+  "tiny-65536-csa-cp1": {
+   "id": "tiny-65536-csa-cp1",
+   "total_len": 65536,
+   "layer_type": "csa",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 81540,
+   "n_slots": 640,
+   "max_doc_len": 127,
+   "sum_valid": 3533991,
+   "useful_flops": {
+    "fwd": 463207268352,
+    "bwd": 1158018170880,
+    "fwd_bwd": 1621225439232
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 1599254560768,
+      "bwd": 3310941634560
+     },
+     "executed_over_useful": {
+      "fwd": 3.4525679324027707,
+      "bwd": 2.859144802575898
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 10882.176399230957,
+        "p20": 10864.726448059082,
+        "p80": 10914.361572265625
+       },
+       "op_us_rounds": [
+        10916.656017303467,
+        10882.176399230957,
+        10863.55209350586,
+        10863.024234771729,
+        10905.183792114258,
+        10869.423866271973,
+        10933.568000793457
+       ],
+       "gpu": {
+        "us": {
+         "median": 10413.182999999999,
+         "p20": 10409.312,
+         "p80": 10425.6022
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 31767.807960510254,
+        "p20": 31757.60898590088,
+        "p80": 31769.231605529785
+       },
+       "op_us_rounds": [
+        31774.55997467041,
+        31769.295692443848,
+        31757.26318359375,
+        31758.992195129395,
+        31768.975257873535,
+        31767.807960510254,
+        31745.807647705078
+       ],
+       "gpu": {
+        "us": {
+         "median": 31163.894000000004,
+         "p20": 31156.0102,
+         "p80": 31175.644
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8479.13671875
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.003086419776082039,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 5497558138880,
+      "bwd": 13743895347200
+     },
+     "executed_over_useful": {
+      "fwd": 11.868462596537455,
+      "bwd": 11.868462596537455
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 5672.624111175537,
+        "p20": 5663.08479309082,
+        "p80": 5682.585525512695
+       },
+       "op_us_rounds": [
+        5697.232007980347,
+        5680.255889892578,
+        5683.167934417725,
+        5661.231994628906,
+        5670.495986938477,
+        5672.624111175537,
+        5658.672094345093
+       ],
+       "gpu": {
+        "us": {
+         "median": 5686.191000000001,
+         "p20": 5671.5462,
+         "p80": 5709.9978
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4448.2529296875
+      }
+     }
+    }
+   }
+  },
+  "tiny-65536-hca-cp1": {
+   "id": "tiny-65536-hca-cp1",
+   "total_len": 65536,
+   "layer_type": "hca",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 65536,
+   "n_slots": 128,
+   "max_doc_len": 127,
+   "sum_valid": 2846908,
+   "useful_flops": {
+    "fwd": 373149925376,
+    "bwd": 932874813440,
+    "fwd_bwd": 1306024738816
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 690256609280,
+      "bwd": 1293848412160
+     },
+     "executed_over_useful": {
+      "fwd": 1.8498103907818588,
+      "bwd": 1.3869475234183894
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 8645.503997802734,
+        "p20": 8631.63833618164,
+        "p80": 8668.057441711426
+       },
+       "op_us_rounds": [
+        8776.495933532715,
+        8660.799980163574,
+        8645.503997802734,
+        8638.383865356445,
+        8629.95195388794,
+        8669.871807098389,
+        8621.600151062012
+       ],
+       "gpu": {
+        "us": {
+         "median": 8029.173,
+         "p20": 8027.6394,
+         "p80": 8034.6644
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 21958.38451385498,
+        "p20": 21945.18394470215,
+        "p80": 21970.211601257324
+       },
+       "op_us_rounds": [
+        21957.47184753418,
+        22002.24018096924,
+        21939.040184020996,
+        21970.44849395752,
+        21958.38451385498,
+        21942.11196899414,
+        21969.264030456543
+       ],
+       "gpu": {
+        "us": {
+         "median": 21152.792,
+         "p20": 21150.374600000006,
+         "p80": 21162.5794
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8432.25
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0033112582750618458,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 1099511627776,
+      "bwd": 2748779069440
+     },
+     "executed_over_useful": {
+      "fwd": 2.946567995874823,
+      "bwd": 2.946567995874823
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 4158.6878299713135,
+        "p20": 4156.940746307373,
+        "p80": 4175.315189361572
+       },
+       "op_us_rounds": [
+        4158.6878299713135,
+        4154.000043869019,
+        4178.800106048584,
+        4158.463954925537,
+        4169.888019561768,
+        4176.671981811523,
+        4156.559944152832
+       ],
+       "gpu": {
+        "us": {
+         "median": 4137.817,
+         "p20": 4124.5466,
+         "p80": 4142.171
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4192.2509765625
+      }
+     }
+    }
+   }
+  },
+  "tiny-65536-sliding-cp1": {
+   "id": "tiny-65536-sliding-cp1",
+   "total_len": 65536,
+   "layer_type": "sliding",
+   "cp": 1,
+   "cp_rank": 0,
+   "n_queries": 65536,
+   "n_positions": 65536,
+   "n_slots": 128,
+   "max_doc_len": 127,
+   "sum_valid": 2846908,
+   "useful_flops": {
+    "fwd": 373149925376,
+    "bwd": 932874813440,
+    "fwd_bwd": 1306024738816
+   },
+   "backends": {
+    "tilelang": {
+     "label": "tilelang",
+     "forward_only": false,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "lse": {
+        "relative_error": 0.0,
+        "rtol": 5e-07,
+        "ok": true
+       },
+       "dq": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dkv": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       },
+       "dsink": {
+        "relative_error": 0.0,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "tiles {'fwd': 64, 'bwd': 32}",
+     "executed": {
+      "fwd": 690256609280,
+      "bwd": 1293848412160
+     },
+     "executed_over_useful": {
+      "fwd": 1.8498103907818588,
+      "bwd": 1.3869475234183894
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 8706.89582824707,
+        "p20": 8641.00513458252,
+        "p80": 8747.446346282959
+       },
+       "op_us_rounds": [
+        8855.36003112793,
+        8706.89582824707,
+        8710.544109344482,
+        8637.920379638672,
+        8633.72802734375,
+        8756.671905517578,
+        8653.34415435791
+       ],
+       "gpu": {
+        "us": {
+         "median": 8033.777,
+         "p20": 8033.5542000000005,
+         "p80": 8035.698399999999
+        },
+        "launches_per_call": 8
+       },
+       "peak_mib": 4112.25
+      },
+      "fwd_bwd": {
+       "op_us": {
+        "median": 21982.88059234619,
+        "p20": 21951.87473297119,
+        "p80": 22067.76008605957
+       },
+       "op_us_rounds": [
+        21925.9672164917,
+        21961.23218536377,
+        22024.751663208008,
+        22078.51219177246,
+        21982.88059234619,
+        21949.535369873047,
+        22346.208572387695
+       ],
+       "gpu": {
+        "us": {
+         "median": 21176.947000000004,
+         "p20": 21173.3362,
+         "p80": 21188.3992
+        },
+        "launches_per_call": 27
+       },
+       "peak_mib": 8432.25
+      }
+     }
+    },
+    "flashmla_fwd_ref": {
+     "label": "flashmla_fwd_ref (reference, not a backend)",
+     "forward_only": true,
+     "correctness": {
+      "vs_tilelang": {
+       "out": {
+        "relative_error": 0.003144653979688883,
+        "rtol": 0.01,
+        "ok": true
+       }
+      }
+     },
+     "passed": true,
+     "failed": [],
+     "executed_basis": "padded slots (proxy)",
+     "executed": {
+      "fwd": 1099511627776,
+      "bwd": 2748779069440
+     },
+     "executed_over_useful": {
+      "fwd": 2.946567995874823,
+      "bwd": 2.946567995874823
+     },
+     "timing": {
+      "fwd": {
+       "op_us": {
+        "median": 4164.86382484436,
+        "p20": 4160.863924026489,
+        "p80": 4169.372653961182
+       },
+       "op_us_rounds": [
+        4164.86382484436,
+        4160.415887832642,
+        4167.952060699463,
+        4169.727802276611,
+        4162.65606880188,
+        4149.136066436768,
+        4216.799974441528
+       ],
+       "gpu": {
+        "us": {
+         "median": 4122.862,
+         "p20": 4115.400199999999,
+         "p80": 4125.7482
+        },
+        "launches_per_call": 13
+       },
+       "peak_mib": 4192.2509765625
+      }
+     }
+    }
+   }
+  }
+ }
+}

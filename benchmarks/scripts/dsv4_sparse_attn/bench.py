@@ -24,12 +24,13 @@ time with the profiling skill's `trace_events.py --include-python`. Python traci
 as relative cost.
 
 Results go to a JSON with provenance (GPU, driver, clocks, power limit, host, git SHA, corpus hash), and the
-markdown tables are printed. `--compare` prints the tables for several result files and refuses files built
-on different corpora. Items default to the grid, excluding the dynamic stream's items.
+markdown tables are printed. `--compare` prints the tables for several result files, restricted to `--items`
+if given, and refuses files built on different corpora. Items default to the grid, excluding the dynamic stream's items.
 """
 
 import argparse
 import bisect
+import fnmatch
 import json
 import statistics
 import tempfile
@@ -315,7 +316,7 @@ def baseline_time(run: dict, item_id: str, mode: str, key: str) -> float | None:
     return None if timing is None else (timing["op_us"]["median"] if key == "op" else timing["gpu"]["us"]["median"])
 
 
-def print_tables(runs: list[dict]) -> None:
+def print_tables(runs: list[dict], patterns: list[str] | None = None) -> None:
     hashes = {run["provenance"]["corpus_hash"] for run in runs}
     if len(hashes) > 1:
         raise SystemExit(f"refusing to compare results built on different corpora: {sorted(hashes)}")
@@ -331,6 +332,8 @@ def print_tables(runs: list[dict]) -> None:
     print("  trained indexer favors recent and neighboring entries, so CSA gather locality here is pessimistic.\n")
 
     item_ids = list(dict.fromkeys(item_id for run in runs for item_id in run["items"]))
+    if patterns:
+        item_ids = [item_id for item_id in item_ids if any(fnmatch.fnmatch(item_id, pattern) for pattern in patterns)]
     multiple = len(runs) > 1
 
     def rows():
@@ -421,7 +424,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.compare:
-        print_tables([json.loads(path.read_text()) for path in args.compare])
+        print_tables([json.loads(path.read_text()) for path in args.compare], args.items)
         return
     if args.out is None:
         parser.error("--out is required unless --compare is given")
