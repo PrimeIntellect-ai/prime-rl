@@ -174,6 +174,8 @@ At step $n = 1, 2, 3, \dots$:
 
 Step indices are 1-indexed; policy versions are 0-indexed, with $\pi_0$ the base model. At step 1 inference samples from $\pi_0$.
 
+For how the orchestrator enforces this overlap (run-ahead, staleness bounds, and throttles), see [RL Pipeline](rl_pipeline.md).
+
 ## Loss
 
 ### Loss Components

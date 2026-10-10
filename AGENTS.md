@@ -40,6 +40,7 @@ Namespaces are one honking great idea -- let's do more of those!
 ## Docs
 
 - **Docs reflect `main`, not history**: `docs/` describes the current state of the codebase only. Don't mention removed/legacy fields, migration paths, or "this used to be X" anecdotes.
+- **RL pipeline changes must match `docs/rl_pipeline.md` (required)**: any change to the systems side of the RL loop (dispatcher, orchestrator main loop and batch shipping, train sink, concurrency control, weight watcher, batch transports, the trainer's data intake) must be checked against the goals and invariants in `docs/rl_pipeline.md`. Either the change is consistent with them, or it changes them on purpose and updates the page in the same change. A change that fixes a listed known gap removes its entry. Never leave the page and the code disagreeing.
 
 ## Skills
 
