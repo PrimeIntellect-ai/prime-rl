@@ -35,6 +35,7 @@ from prime_rl.configs.trainer import (
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
+from prime_rl.utils.validation import set_derived
 
 
 class BaseDataConfig(BaseConfig):
@@ -646,7 +647,12 @@ class SFTConfig(BaseConfig):
                         f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
                         f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
                     )
-                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
+                set_derived(
+                    self.model,
+                    "dp_replicate",
+                    self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group,
+                    "model.dp_replicate",
+                )
         return self
 
     @model_validator(mode="after")

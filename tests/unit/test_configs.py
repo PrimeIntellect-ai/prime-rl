@@ -693,6 +693,28 @@ def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
     assert reloaded == config
 
 
+@pytest.mark.parametrize(
+    "overrides, match",
+    [
+        ({"orchestrator": {"pad_to_multiple_of": 4}}, "orchestrator.pad_to_multiple_of"),
+        ({"orchestrator": {"num_train_workers": 3}}, "orchestrator.num_train_workers"),
+        ({"orchestrator": {"weight_broadcast": {"type": "filesystem"}}}, "orchestrator.weight_broadcast"),
+        ({"trainer": {"weight_broadcast": {"type": "nccl", "timeout": 60}}}, "trainer.weight_broadcast"),
+    ],
+)
+def test_rl_rejects_conflicting_launcher_owned_fields(overrides, match):
+    data = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": {"tensor_parallel_size": 1}},
+        "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+    }
+    for key, value in overrides.items():
+        data[key] = value
+    with pytest.raises(ValidationError, match=match):
+        RLConfig.model_validate(data)
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
