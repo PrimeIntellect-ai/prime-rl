@@ -1,5 +1,7 @@
 import msgspec
 
+from prime_rl.transports.payload import PayloadSegment
+
 
 class MMImageRef(msgspec.Struct, array_like=True, gc=False):
     url: str
@@ -79,6 +81,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
 
+    # By-handle routed_experts / sampling_mask rows, positions relative to ``token_ids``.
+    payload: list[PayloadSegment] | None = None
+
 
 # Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -115,3 +120,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
+
+    # Positions relative to ``input_ids``.
+    payload: list[PayloadSegment] | None = None
