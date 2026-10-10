@@ -759,7 +759,8 @@ def reshard_module(model: nn.Module):
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     language_model = get_language_model(model)
     layers = dict(language_model.layers.named_children())
-    modes = get_layer_modes(ac_config, list(layers), language_model.config.num_hidden_layers)
+    parts = [getattr(layer, "pipeline_part", None) for layer in layers.values()]
+    modes = get_layer_modes(ac_config, list(layers), language_model.config.num_hidden_layers, parts)
     for (layer_name, transformer_block), mode in zip(layers.items(), modes):
         if mode != "none":
             language_model.layers.register_module(

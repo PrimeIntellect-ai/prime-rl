@@ -43,8 +43,15 @@ class ActivationCheckpointConfig(BaseConfig):
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
 
-    layer_modes: list[ActivationCheckpointMode | Literal["none"]] | None = None
-    """Mode of each decoder layer, one entry per layer of the full model (pipeline stages keep the full model's layer indices); ``none`` leaves a layer unchecked. Replaces ``mode`` and ``freq``. Early pipeline stages hold activations for more micro-batches, so they can retain less than later ones."""
+    layer_modes: (
+        list[
+            ActivationCheckpointMode
+            | Literal["none"]
+            | tuple[ActivationCheckpointMode | Literal["none"], ActivationCheckpointMode | Literal["none"]]
+        ]
+        | None
+    ) = None
+    """Mode of each decoder layer, one entry per layer of the full model (pipeline stages keep the full model's layer indices); ``none`` leaves a layer unchecked. Replaces ``mode`` and ``freq``. Early pipeline stages hold activations for more micro-batches, so they can retain less than later ones. A layer that a pipeline stage boundary cuts in half may take a pair ``[attention half, MoE half]``, one mode for each stage's half."""
 
     recompute_engram: bool = False
     """Engram layers (DeepSeek-V4.1) whose decoder layer runs ``full`` or ``full_moe`` also recompute their value/key projection and gate in backward, keeping only their inputs instead of the projection's output (51 KB per token)."""

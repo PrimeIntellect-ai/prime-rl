@@ -177,16 +177,32 @@ def _selective_checkpoint_policy(
     return CheckpointPolicy.PREFER_RECOMPUTE
 
 
-def get_layer_modes(config: ActivationCheckpointConfig, layer_names: list[str], num_layers: int) -> list[str]:
+def get_layer_modes(
+    config: ActivationCheckpointConfig,
+    layer_names: list[str],
+    num_layers: int,
+    parts: list[str | None] | None = None,
+) -> list[str]:
     """The checkpointing mode of each named decoder layer (`none` for an unchecked one).
 
     `layer_names` are the layers' indices in the full model, as a pipeline stage keeps them; `freq`
-    counts the layers this rank holds."""
+    counts the layers this rank holds. `parts` is the half each layer keeps when a pipeline stage boundary
+    cuts it (`"attention"` or `"moe"`, else `None`), which picks the half's mode from a pair."""
     if config.layer_modes is None:
         return [config.mode if position % config.freq == 0 else "none" for position in range(len(layer_names))]
     if len(config.layer_modes) != num_layers:
         raise ValueError(f"model.ac.layer_modes has {len(config.layer_modes)} entries for {num_layers} decoder layers")
-    return [config.layer_modes[int(name)] for name in layer_names]
+    parts = parts or [None] * len(layer_names)
+    modes = []
+    for name, part in zip(layer_names, parts):
+        mode = config.layer_modes[int(name)]
+        if isinstance(mode, str):
+            modes.append(mode)
+        elif part is None:
+            raise ValueError(f"model.ac.layer_modes gives layer {name} a mode per half, but no stage boundary cuts it")
+        else:
+            modes.append(mode[0] if part == "attention" else mode[1])
+    return modes
 
 
 def get_checkpoint_context_fn(config: ActivationCheckpointConfig, mode: str | None = None) -> Callable:
