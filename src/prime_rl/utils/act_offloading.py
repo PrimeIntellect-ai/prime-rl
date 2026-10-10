@@ -1,6 +1,7 @@
 # Adapted/copied from https://github.com/meta-pytorch/torchtune/blob/10c31c0abadf51dfa2bf606637cd81e812e3f8c9/torchtune/training/_activation_offloading.py
 
 from contextlib import nullcontext
+from functools import cache
 
 import psutil
 import torch
@@ -9,6 +10,13 @@ from torch.autograd.graph import saved_tensors_hooks
 from prime_rl.configs.trainer import ActivationOffloadingConfig
 
 from .logger import get_logger
+
+
+# One side stream per process: the caching allocator pools blocks per stream, so a new stream
+# per micro-batch never reuses the previous stream's prefetch buffers and reserved memory grows.
+@cache
+def _offload_stream() -> torch.Stream:
+    return torch.Stream()
 
 
 class OffloadActivations(saved_tensors_hooks):
@@ -59,9 +67,7 @@ class OffloadActivations(saved_tensors_hooks):
         max_fwd_stash_size: int = 5,
         min_offload_size: int = 1024,
     ) -> None:
-        # We don't use streams as they can result in memory leaks/non-matching loss curves and other issues, response to this from torchtune repo is:
-        # `if it's related to streams, the fix is gonna be non-trivial...`
-        self.use_streams: bool = False
+        self.use_streams: bool = True
 
         self.min_tensor_size_bytes = min_offload_size  # we don't want to bother with small tensors
         self.tracker = {}  # tensor_id => (new_tensor, if_modified)  ---> track what saved/offloaded tensors are where
@@ -81,7 +87,7 @@ class OffloadActivations(saved_tensors_hooks):
 
         # for streaming
         if self.use_streams:
-            self.s1 = torch.Stream()  # comms stream
+            self.s1 = _offload_stream()  # comms stream
             self.fwd_stash = {}  # tensor_id => (activation, ev1)
             if max_fwd_stash_size < 1:
                 raise ValueError(f"max_fwd_stash_size should be at least 1 but is {max_fwd_stash_size}")
