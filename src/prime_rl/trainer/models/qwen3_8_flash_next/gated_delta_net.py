@@ -10,6 +10,8 @@ from prime_rl.utils.cp import CPContext
 
 # FLA's context carries a process group that Dynamo cannot trace through the convolution.
 causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
+# CP setup searchsorts tensor-valued sequence boundaries; keep it outside the compiled graph.
+build_cp_context_eager = torch.compiler.disable(build_cp_context)
 
 
 class GatedDeltaNet(nn.Module):
@@ -75,7 +77,7 @@ class GatedDeltaNet(nn.Module):
 
         context = None
         if self.cp_context.cp_enabled:
-            context = build_cp_context(
+            context = build_cp_context_eager(
                 cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
                 group=self.cp_context.cp_group,
                 conv1d_kernel_size=self.conv_kernel_size,
