@@ -318,7 +318,7 @@ def pipeline_edge_groups(
     and both ends post it in micro-batch order. Every rank creates the same number of groups in the same
     order (a singleton where it has no neighbour), as locally synchronized groups need, and the
     communicators are connected in one global order so their lazy initialization cannot deadlock.
-    `copy_engine` gives the groups NCCL's zero-CTA policy (see `CopyEngineEdge`); `ctas` pins the number
+    `copy_engine` gives the groups NCCL's zero-CTA policy (see `CopyEngineEdge` and `PutEdge`); `ctas` pins the number
     of CTAs (SMs) a send/recv kernel takes."""
     options = None
     if copy_engine or ctas is not None:
@@ -422,16 +422,24 @@ class CopyEngineEdge:
 
 
 class _WaitSignalDesc(ctypes.Structure):
+    """NCCL's `ncclWaitSignalDesc_t`."""
+
     _fields_ = [("opCnt", ctypes.c_int), ("peer", ctypes.c_int), ("sigIdx", ctypes.c_int), ("ctx", ctypes.c_int)]
 
 
 _NCCL_UINT8 = 1
 _NCCL_WIN_COLL_SYMMETRIC = 1
+_NCCL_MIN_PUT_VERSION = 23000
 
 
 def _nccl_lib() -> ctypes.CDLL:
-    # Resolves to the libnccl torch already loaded (also when another build is preloaded).
-    return ctypes.CDLL("libnccl.so.2")
+    """The libnccl torch loaded (dlopen returns the already loaded library, also when one is preloaded)."""
+    lib = ctypes.CDLL("libnccl.so.2")
+    version = ctypes.c_int()
+    _nccl_check(lib, lib.ncclGetVersion(ctypes.byref(version)), "ncclGetVersion")
+    if version.value < _NCCL_MIN_PUT_VERSION:
+        raise RuntimeError(f"pp_transport='put' needs NCCL >= 2.30, the loaded NCCL is {version.value}")
+    return lib
 
 
 def _nccl_check(lib: ctypes.CDLL, rc: int, what: str) -> None:
@@ -442,12 +450,14 @@ def _nccl_check(lib: ctypes.CDLL, rc: int, what: str) -> None:
 
 class PutEdge:
     """One transfer edge (one direction between two neighbouring ranks) carried by NCCL's one-sided
-    `ncclPutSignal`: the sender packs a micro-batch into its window and puts it into the receiver's window,
-    the receiver waits for the put's signal, copies the micro-batch out and returns a credit with `ncclSignal`;
-    the sender waits for that credit before its next put. On a group with the zero-CTA policy NCCL >= 2.30 runs
-    puts and signals from a CPU proxy, so a transfer in flight holds no SM. Both ends register a window of one
-    micro-batch (the sender's is its pack buffer, the receiver's its landing buffer). Puts need no matching
-    order between edges, unlike the copy-engine all-gathers."""
+    `ncclPutSignal` on a two-rank group with the zero-CTA policy, which NCCL >= 2.30 drives from a CPU
+    proxy: a transfer in flight holds no SM.
+
+    Both ends register a window of one micro-batch: the sender's is its pack buffer (a put's source must
+    be in a window), the receiver's is the landing buffer. The sender packs the micro-batch and puts it
+    with a signal; the receiver waits for the signal, copies the micro-batch out and signals back a credit,
+    which the sender waits for before its next put. The group carries one direction only, so a signal from
+    the peer is unambiguous. Puts on different edges need no common order (unlike `CopyEngineEdge`)."""
 
     ALIGN = 256
 
@@ -460,14 +470,14 @@ class PutEdge:
             self.buffer = torch.zeros(self.part, dtype=torch.uint8, device=device)
         torch.cuda.synchronize()
         self.comm = ctypes.c_void_p(backend._comm_ptr())
-        self.win = ctypes.c_void_p()
+        self.window = ctypes.c_void_p()
         _nccl_check(
             self.lib,
             self.lib.ncclCommWindowRegister(
                 self.comm,
                 ctypes.c_void_p(self.buffer.data_ptr()),
                 ctypes.c_size_t(self.part),
-                ctypes.byref(self.win),
+                ctypes.byref(self.window),
                 ctypes.c_int(_NCCL_WIN_COLL_SYMMETRIC),
             ),
             "ncclCommWindowRegister",
@@ -477,26 +487,22 @@ class PutEdge:
         self.sent = 0
 
     def _views(self, tensors: list[Tensor]) -> tuple[list[Tensor], int]:
-        """Views of the window for `tensors`, and the bytes they span."""
+        """Views of the buffer for `tensors`, and the bytes up to the end of the last one."""
         views, offset, end = [], 0, 0
         for tensor in tensors:
             nbytes = tensor.numel() * tensor.element_size()
             views.append(self.buffer[offset : offset + nbytes].view(tensor.dtype).view(tensor.shape))
             end = offset + nbytes
             offset += -(-nbytes // self.ALIGN) * self.ALIGN
-        if offset > self.part:
-            raise ValueError(f"stage transfer of {offset} bytes exceeds its {self.part}-byte buffer")
+        if end > self.part:
+            raise ValueError(f"stage transfer of {end} bytes exceeds its {self.part}-byte buffer")
         return views, end
-
-    def _cuda_stream(self) -> ctypes.c_void_p:
-        return ctypes.c_void_p(self.stream.cuda_stream)
 
     def _wait_signal(self) -> None:
         desc = _WaitSignalDesc(1, self.peer, 0, 0)
+        stream = ctypes.c_void_p(self.stream.cuda_stream)
         _nccl_check(
-            self.lib,
-            self.lib.ncclWaitSignal(ctypes.c_int(1), ctypes.byref(desc), self.comm, self._cuda_stream()),
-            "ncclWaitSignal",
+            self.lib, self.lib.ncclWaitSignal(ctypes.c_int(1), ctypes.byref(desc), self.comm, stream), "ncclWaitSignal"
         )
 
     def send(self, tensors: list[Tensor]) -> list[_EventWork]:
@@ -515,13 +521,13 @@ class PutEdge:
                     ctypes.c_size_t(nbytes),
                     ctypes.c_int(_NCCL_UINT8),
                     ctypes.c_int(self.peer),
-                    self.win,
-                    ctypes.c_size_t(0),
-                    ctypes.c_int(0),
-                    ctypes.c_int(0),
-                    ctypes.c_uint(0),
+                    self.window,
+                    ctypes.c_size_t(0),  # offset in the peer's window
+                    ctypes.c_int(0),  # signal index
+                    ctypes.c_int(0),  # context
+                    ctypes.c_uint(0),  # flags
                     self.comm,
-                    self._cuda_stream(),
+                    ctypes.c_void_p(self.stream.cuda_stream),
                 ),
                 "ncclPutSignal",
             )
@@ -539,11 +545,11 @@ class PutEdge:
                 self.lib,
                 self.lib.ncclSignal(
                     ctypes.c_int(self.peer),
-                    ctypes.c_int(0),
-                    ctypes.c_int(0),
-                    ctypes.c_uint(0),
+                    ctypes.c_int(0),  # signal index
+                    ctypes.c_int(0),  # context
+                    ctypes.c_uint(0),  # flags
                     self.comm,
-                    self._cuda_stream(),
+                    ctypes.c_void_p(self.stream.cuda_stream),
                 ),
                 "ncclSignal",
             )
