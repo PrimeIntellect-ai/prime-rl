@@ -14,6 +14,8 @@ import functools
 
 import torch
 
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import _rope_in_place_or_copy, _triton_rope_inplace
+
 try:
     from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
     from flash_mla import flash_mla_sparse_fwd
@@ -51,6 +53,12 @@ def dsv41_sparse_attn(
     q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor, sm_scale: float
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """`q` `(1, t, h, d)`, `kv` `(1, n, 1, d)`, `indices` `(1, t, 1, k)` int32 -> output and sink-free LSE."""
+    return _forward(q, kv, indices, sinks, sm_scale)
+
+
+def _forward(
+    q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sinks: torch.Tensor, sm_scale: float
+) -> tuple[torch.Tensor, torch.Tensor]:
     _, t, h, d = q.shape
     out, _max_logits, lse = flash_mla_sparse_fwd(
         q.view(t, h, d), kv.view(-1, 1, d), _pad_slots(indices).view(t, 1, -1), sm_scale, d, attn_sink=sinks
@@ -123,4 +131,62 @@ def _backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.Tensor | None):
 dsv41_sparse_attn.register_autograd(_backward, setup_context=_setup_context)
 
 
-__all__ = ["dsv41_sparse_attn", "flashmla_sparse_attn_available"]
+@torch.library.custom_op("prime_rl::dsv41_sparse_attn_rope", mutates_args=())
+def dsv41_sparse_attn_rope(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float,
+    cos_sin_cache: torch.Tensor,
+    position_ids: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """`dsv41_sparse_attn`, then the inverse RoPE of its output (`dsv4_rope(out, inverse=True)`) in place.
+
+    The backward needs the unrotated output only for `delta = rowsum(dO * O)`, and the rotation leaves
+    all but each head's trailing `rope_dim` channels alone, so those channels are kept as they were
+    (the third output, an eighth of the output for V4.1) instead of a rotated copy of the whole output.
+    Returns the rotated output, the sink-free LSE and those channels.
+    """
+    out, lse = _forward(q, kv, indices, sinks, sm_scale)
+    out_tail = out.new_empty(*out.shape[:-1], cos_sin_cache.shape[-1])
+    _triton_rope_inplace(out, cos_sin_cache, position_ids, True, orig=out_tail)
+    return out, lse, out_tail
+
+
+@dsv41_sparse_attn_rope.register_fake
+def _dsv41_sparse_attn_rope_fake(q, kv, indices, sinks, sm_scale, cos_sin_cache, position_ids):
+    out_tail = q.new_empty(*q.shape[:-1], cos_sin_cache.shape[-1])
+    return torch.empty_like(q), q.new_empty(q.shape[:-1], dtype=torch.float32), out_tail
+
+
+def _rope_setup_context(ctx, inputs, output) -> None:
+    q, kv, indices, sinks, sm_scale, cos_sin_cache, position_ids = inputs
+    out, lse, out_tail = output
+    ctx.save_for_backward(q, kv, out, lse, indices, sinks, out_tail, cos_sin_cache, position_ids)
+    ctx.sm_scale = sm_scale
+
+
+@functools.cache
+def _takes_out_tail(backward) -> bool:
+    """Whether the backward op reads the output's rotary channels from a separate `out_tail` (prime-kernels')."""
+    return any(argument.name == "out_tail" for argument in backward._opoverload._schema.arguments)
+
+
+def _rope_backward(ctx, grad_out: torch.Tensor, _grad_lse: torch.Tensor | None, _grad_tail: torch.Tensor | None):
+    q, kv, out, lse, indices, sinks, out_tail, cos_sin_cache, position_ids = ctx.saved_tensors
+    # The output feeds `o_a_proj` alone, whose input gradient is fresh: rotate it in place.
+    grad_out = _rope_in_place_or_copy(grad_out, cos_sin_cache, position_ids, False)
+    backward = _sparse_attn_backward_impl(q.shape[-2], q.shape[-1])
+    if _takes_out_tail(backward):
+        dq, dkv, dsinks = backward(grad_out, q, kv, out, lse, indices, sinks, ctx.sm_scale, out_tail)
+    else:
+        out = torch.cat([out[..., : -out_tail.shape[-1]], out_tail], dim=-1)
+        dq, dkv, dsinks = backward(grad_out, q, kv, out, lse, indices, sinks, ctx.sm_scale)
+    return dq, dkv, None, dsinks, None, None, None
+
+
+dsv41_sparse_attn_rope.register_autograd(_rope_backward, setup_context=_rope_setup_context)
+
+
+__all__ = ["dsv41_sparse_attn", "dsv41_sparse_attn_rope", "flashmla_sparse_attn_available"]

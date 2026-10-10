@@ -91,15 +91,18 @@ def _triton_rope(
 @triton.jit
 def _triton_rope_inplace_kernel(
     X,
+    ORIG,
     COS_SIN,
     POS,
     num_heads,
     head_dim: tl.constexpr,
     rope_dim: tl.constexpr,
     INVERSE: tl.constexpr,
+    SAVE_ORIG: tl.constexpr,
     BLOCK_H: tl.constexpr,
 ):
-    """Rotate the trailing `rope_dim` channels of `BLOCK_H` heads of one token in place."""
+    """Rotate the trailing `rope_dim` channels of `BLOCK_H` heads of one token in place; with
+    `SAVE_ORIG`, also copy them unrotated to `ORIG` `(tokens, num_heads, rope_dim)`."""
     token = tl.program_id(0).to(tl.int64)
     heads = tl.program_id(1) * BLOCK_H + tl.arange(0, BLOCK_H)
     pairs = tl.arange(0, rope_dim // 2)
@@ -112,27 +115,40 @@ def _triton_rope_inplace_kernel(
 
     offsets = (token * num_heads + heads[:, None]) * head_dim + (head_dim - rope_dim) + tl.arange(0, rope_dim)[None, :]
     mask = heads[:, None] < num_heads
-    x = tl.load(X + offsets, mask=mask).to(tl.float32)
-    x1, x2 = tl.split(tl.reshape(x, (BLOCK_H, rope_dim // 2, 2)))
+    x = tl.load(X + offsets, mask=mask)
+    if SAVE_ORIG:
+        orig = (token * num_heads + heads[:, None]) * rope_dim + tl.arange(0, rope_dim)[None, :]
+        tl.store(ORIG + orig, x, mask=mask)
+    x1, x2 = tl.split(tl.reshape(x.to(tl.float32), (BLOCK_H, rope_dim // 2, 2)))
     y1 = tl.fma(x1, cos, -(x2 * sin))
     y2 = tl.fma(x1, sin, x2 * cos)
     y = tl.reshape(tl.join(y1, y2), (BLOCK_H, rope_dim))
     tl.store(X + offsets, y.to(X.dtype.element_ty), mask=mask)
 
 
-def _triton_rope_inplace(x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, inverse: bool):
+def _triton_rope_inplace(
+    x: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    position_ids: torch.Tensor,
+    inverse: bool,
+    orig: torch.Tensor | None = None,
+):
+    """Rotate contiguous `x` in place; `orig` `(..., heads, rope_dim)`, if given, receives the rotary
+    channels as they were."""
     if x.numel() == 0:
         return
     num_heads, head_dim = x.shape[-2:]
     grid = lambda meta: (position_ids.numel(), triton.cdiv(num_heads, meta["BLOCK_H"]))
     _triton_rope_inplace_kernel[grid](
         x,
+        x if orig is None else orig,
         cos_sin_cache,
         position_ids.contiguous(),
         num_heads,
         head_dim,
         cos_sin_cache.shape[-1],
         INVERSE=inverse,
+        SAVE_ORIG=orig is not None,
     )
 
 

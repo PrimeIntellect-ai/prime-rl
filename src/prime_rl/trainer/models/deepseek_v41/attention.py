@@ -43,7 +43,11 @@ from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import Deep
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_linear_rope, dsv4_rope, dsv4_rope_inplace
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
-from prime_rl.trainer.models.kernels.dsv41_sparse_attn import dsv41_sparse_attn, flashmla_sparse_attn_available
+from prime_rl.trainer.models.kernels.dsv41_sparse_attn import (
+    dsv41_sparse_attn,
+    dsv41_sparse_attn_rope,
+    flashmla_sparse_attn_available,
+)
 from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -344,12 +348,18 @@ class DeepseekV41Attention(nn.Module):
             top_k_indices=state.top_k_indices if self.compress_ratio else None,
             window_indices=packed.window_indices,
         )
-        attn_output, _ = self.sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling)
         # Values are the rotated keys; the conjugate rotation at the query position cancels that.
-        # The attention backward reads its output, so only the gradient (fresh from `o_a_proj`) rotates in place.
-        attn_output = dsv4_rope_inplace(
-            attn_output, cos_sin_cache, packed.position_ids, inverse=True, in_place_forward=False
-        )
+        if self.sparse_attn is dsv41_sparse_attn:
+            # One op that rotates the output in place, keeping only the channels its backward needs unrotated.
+            attn_output, _, _ = dsv41_sparse_attn_rope(
+                q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling, cos_sin_cache, packed.position_ids
+            )
+        else:
+            attn_output, _ = self.sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling)
+            # The attention backward reads its output, so only the gradient (fresh from `o_a_proj`) rotates in place.
+            attn_output = dsv4_rope_inplace(
+                attn_output, cos_sin_cache, packed.position_ids, inverse=True, in_place_forward=False
+            )
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
         return self.o_b_proj(grouped), state
 
