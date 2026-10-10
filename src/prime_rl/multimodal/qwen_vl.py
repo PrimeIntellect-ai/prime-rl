@@ -8,7 +8,7 @@ from prime_rl.multimodal.base import ForwardPolicy, MaterializedMM, required_ten
 
 
 class QwenVLAdapter:
-    model_types = frozenset({"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe"})
+    model_types = frozenset({"qwen3_vl", "qwen3_vl_moe", "qwen3_5", "qwen3_5_moe", "qwen4_exp"})
     forward_policy = ForwardPolicy(
         pass_position_ids=False,
         requires_mm_token_type_ids=True,

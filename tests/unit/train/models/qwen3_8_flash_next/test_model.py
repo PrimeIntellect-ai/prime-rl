@@ -6,8 +6,9 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
+    Qwen3_8FlashNextVisionConfig,
 )
-from prime_rl.utils.vlm import get_language_model
+from prime_rl.utils.vlm import get_language_model, get_vision_encoder
 
 
 @pytest.fixture(params=[False, True], ids=["text", "composite"])
@@ -36,17 +37,29 @@ def config(request):
         make_ngram_vocab_size_divisible_by=8,
         split_ngram_parts=3,
     )
-    return Qwen3_8FlashNextConfig(text_config=text) if request.param else text
+    if not request.param:
+        return text
+    vision = Qwen3_8FlashNextVisionConfig(
+        depth=1,
+        hidden_size=16,
+        intermediate_size=16,
+        num_heads=2,
+        out_hidden_size=16,
+        num_position_embeddings=16,
+    )
+    return Qwen3_8FlashNextConfig(text_config=text, vision_config=vision, image_token_id=30)
 
 
 @pytest.mark.parametrize("shard_count", [3, 128])
 def test_config_and_checkpoint_roundtrip(config, shard_count):
     getattr(config, "text_config", config).split_ngram_parts = shard_count
-    restored = type(config).from_dict(config.to_dict())
+    restored = type(config).from_dict(config.to_dict(), attn_implementation="flash_attention_2")
     model = Qwen3_8FlashNextForCausalLM(restored)
     model.init_buffers_post_meta()
     assert len(get_language_model(model).layers) == 1
     assert model.cp_support(restored).styles == frozenset({"ulysses"})
+    assert model.supports_packed_multimodal_training == model.is_vlm
+    assert (get_vision_encoder(model) is not None) == model.is_vlm
     original = {
         name: torch.randn_like(value) if value.is_floating_point() else value.clone()
         for name, value in model.state_dict().items()
@@ -55,6 +68,7 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     operations = model.conversion_chain(restored)
     apply_prime_to_hf(converted, operations)
     assert model.is_hf_state_dict(converted)
+    assert any(name.startswith("model.visual.") for name in converted) == model.is_vlm
     apply_hf_to_prime(converted, operations)
     assert converted.keys() == original.keys()
     for name, value in original.items():

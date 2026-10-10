@@ -125,25 +125,70 @@ class Qwen3_8FlashNextTextConfig(PretrainedConfig):
         )
 
 
+class Qwen3_8FlashNextVisionConfig(PretrainedConfig):
+    model_type = "qwen4_exp_vision"
+    base_config_key = "vision_config"
+
+    def __init__(
+        self,
+        depth: int = 27,
+        hidden_size: int = 1152,
+        hidden_act: str = "gelu_pytorch_tanh",
+        intermediate_size: int = 4304,
+        num_heads: int = 16,
+        in_channels: int = 3,
+        patch_size: int = 16,
+        spatial_merge_size: int = 2,
+        temporal_patch_size: int = 2,
+        out_hidden_size: int = 2560,
+        num_position_embeddings: int = 2304,
+        initializer_range: float = 0.02,
+        **kwargs,
+    ) -> None:
+        self.depth = depth
+        self.hidden_size = hidden_size
+        self.hidden_act = hidden_act
+        self.intermediate_size = intermediate_size
+        self.num_heads = num_heads
+        self.in_channels = in_channels
+        self.patch_size = patch_size
+        self.spatial_merge_size = spatial_merge_size
+        self.temporal_patch_size = temporal_patch_size
+        self.out_hidden_size = out_hidden_size
+        self.num_position_embeddings = num_position_embeddings
+        self.initializer_range = initializer_range
+        kwargs.pop("deepstack_visual_indexes", None)
+        super().__init__(**kwargs)
+
+
 class Qwen3_8FlashNextConfig(PretrainedConfig):
+    """Vision-language composite: a Qwen3.8 Flash Next language model fed by a vision encoder."""
+
     model_type = "qwen4_exp"
-    sub_configs = {"text_config": Qwen3_8FlashNextTextConfig}
+    sub_configs = {"text_config": Qwen3_8FlashNextTextConfig, "vision_config": Qwen3_8FlashNextVisionConfig}
 
     def __init__(
         self,
         text_config: Qwen3_8FlashNextTextConfig | dict | None = None,
+        vision_config: Qwen3_8FlashNextVisionConfig | dict | None = None,
+        image_token_id: int = 248056,
+        video_token_id: int = 248057,
+        vision_start_token_id: int = 248053,
+        vision_end_token_id: int = 248054,
         tie_word_embeddings: bool = False,
         **kwargs,
     ) -> None:
         if isinstance(text_config, dict):
             text_config = Qwen3_8FlashNextTextConfig(**text_config)
         self.text_config = text_config or Qwen3_8FlashNextTextConfig()
+        if isinstance(vision_config, dict):
+            vision_config = Qwen3_8FlashNextVisionConfig(**vision_config)
+        self.vision_config = vision_config or Qwen3_8FlashNextVisionConfig()
+        self.image_token_id = image_token_id
+        self.video_token_id = video_token_id
+        self.vision_start_token_id = vision_start_token_id
+        self.vision_end_token_id = vision_end_token_id
 
-        kwargs.pop("vision_config", None)
-        kwargs.pop("image_token_id", None)
-        kwargs.pop("video_token_id", None)
-        kwargs.pop("vision_start_token_id", None)
-        kwargs.pop("vision_end_token_id", None)
         kwargs.pop("language_model_only", None)
         kwargs.setdefault("pad_token_id", self.text_config.pad_token_id)
         kwargs.setdefault("bos_token_id", self.text_config.bos_token_id)
@@ -151,4 +196,4 @@ class Qwen3_8FlashNextConfig(PretrainedConfig):
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
 
-__all__ = ["Qwen3_8FlashNextConfig", "Qwen3_8FlashNextTextConfig"]
+__all__ = ["Qwen3_8FlashNextConfig", "Qwen3_8FlashNextTextConfig", "Qwen3_8FlashNextVisionConfig"]
