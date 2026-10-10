@@ -179,6 +179,28 @@ def _tile_count_kernel(mIndices: cute.Tensor, mTileCounts: cute.Tensor):
             mTileCounts[b_i, s_i, 0] = (reach + BLOCK_I - 1) // BLOCK_I
 
 
+@cute.jit
+def _load_pair_indices(mIndices: cute.Tensor, kv_idx: cute.Tensor, b_i: Int32, s_i: Int32, pair: Int32, group: Int32):
+    """Load this producer thread's 8 key indices of one 128-slot pair; slots past the slot axis read as masked."""
+    n_slots = mIndices.shape[3]
+    for buf in cutlass.range_constexpr(2):
+        for r in cutlass.range_constexpr(ROWS_PER_GROUP):
+            slot = (2 * pair + buf) * BLOCK_I + r * NUM_GROUPS + group
+            idx = mIndices[b_i, s_i, 0, cutlass.min(slot, n_slots - 1)]
+            kv_idx[buf, r] = idx if slot < n_slots else Int32(-1)
+
+
+@cute.jit
+def _load_query_start(
+    mIndices: cute.Tensor, mTileCounts: cute.Tensor, kv_idx: cute.Tensor, work: Int32, seq_len: Int32, group: Int32
+) -> Int32:
+    """Load a query's tile count and its first pair's indices, so the producer can fetch them a query ahead."""
+    b_i = work // seq_len
+    s_i = work - b_i * seq_len
+    _load_pair_indices(mIndices, kv_idx, b_i, s_i, 0, group)
+    return mTileCounts[b_i, s_i, 0]
+
+
 @cute.kernel
 def _fwd_kernel(
     mQ: cute.Tensor,
@@ -231,17 +253,21 @@ def _fwd_kernel(
         idx_in_group = idx_in_wg % GROUP_SIZE
         group = idx_in_wg // GROUP_SIZE
         kv_idx = cute.make_rmem_tensor(cute.make_layout((2, ROWS_PER_GROUP), stride=(ROWS_PER_GROUP, 1)), Int32)
+        next_kv_idx = cute.make_fragment_like(kv_idx)
+        next_tile_count = Int32(0)
+        if cta < num_queries:
+            next_tile_count = _load_query_start(mIndices, mTileCounts, next_kv_idx, cta, seq_len, group)
         free_phase = Int32(1)
         for work in cutlass.range(cta, num_queries, num_ctas, unroll=1):
             b_i = work // seq_len
             s_i = work - b_i * seq_len
-            num_pairs = (cutlass.min(mTileCounts[b_i, s_i, 0], n_tiles) + 1) // 2
+            num_pairs = (cutlass.min(next_tile_count, n_tiles) + 1) // 2
+            kv_idx.store(next_kv_idx.load())
+            if work + num_ctas < num_queries:
+                next_tile_count = _load_query_start(mIndices, mTileCounts, next_kv_idx, work + num_ctas, seq_len, group)
             for pair in cutlass.range(num_pairs, unroll=1):
-                for buf in cutlass.range_constexpr(2):
-                    for r in cutlass.range_constexpr(ROWS_PER_GROUP):
-                        slot = (2 * pair + buf) * BLOCK_I + r * NUM_GROUPS + group
-                        idx = mIndices[b_i, s_i, 0, cutlass.min(slot, n_slots - 1)]
-                        kv_idx[buf, r] = idx if slot < n_slots else Int32(-1)
+                if pair > 0:
+                    _load_pair_indices(mIndices, kv_idx, b_i, s_i, pair, group)
                 for buf, half in ((0, 0), (1, 1), (0, 1), (1, 0)):
                     cute.arch.mbarrier_wait(mbars + MBAR_K_FREE + _k_half_index(buf, half), free_phase)
                     _gather_half(mKV, sK, b_i, kv_idx, group, idx_in_group, buf, half)
