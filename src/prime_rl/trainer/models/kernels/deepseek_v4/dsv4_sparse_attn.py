@@ -33,7 +33,7 @@ SLOT_TILE = 64
 BWD_SLOT_TILE = 32
 
 
-def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
+def _pad_slots_to_tile(indices: torch.Tensor, tile: int = SLOT_TILE) -> torch.Tensor:
     """Widen the gather-slot axis to a multiple of the tile, marking the slots that adds absent.
 
     Callers state the slots they mean and this covers the difference, so the tile stays a fact
@@ -42,10 +42,10 @@ def _pad_slots_to_tile(indices: torch.Tensor) -> torch.Tensor:
     usually aligned already (`sliding_window + index_topk = 128 + 512 = 640`), and then this
     returns its argument.
     """
-    remainder = indices.shape[-1] % SLOT_TILE
+    remainder = indices.shape[-1] % tile
     if remainder == 0:
         return indices
-    return F.pad(indices, (0, SLOT_TILE - remainder), value=IGNORE_SLOT).contiguous()
+    return F.pad(indices, (0, tile - remainder), value=IGNORE_SLOT).contiguous()
 
 
 def num_tiles_covering_valid_slots(indices: torch.Tensor, tile_size: int) -> torch.Tensor:
@@ -151,7 +151,31 @@ def _cute_forward(
     return dsv4_sparse_attn_fwd_cute(q, kv, indices, sinks.float().contiguous(), tile_counts, sm_scale)
 
 
-FORWARD_BACKENDS = {"tilelang": _tilelang_forward, "cute": _cute_forward}
+def _cute_ws_forward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float | None,
+    block_I: int,
+    num_stages: int,
+    threads: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd_cute_ws import (
+        PAIR,
+        dsv4_sparse_attn_fwd_cute_ws,
+    )
+
+    assert (block_I, num_stages, threads) == (SLOT_TILE, 2, 256), (
+        f"the warp-specialized CuTe forward has no block_I, num_stages or threads knobs; "
+        f"pass the defaults, got {block_I}, {num_stages}, {threads}"
+    )
+    indices = _pad_slots_to_tile(indices, PAIR)
+    tile_counts = num_tiles_covering_valid_slots(indices, SLOT_TILE)
+    return dsv4_sparse_attn_fwd_cute_ws(q, kv, indices, sinks.float().contiguous(), tile_counts, sm_scale)
+
+
+FORWARD_BACKENDS = {"tilelang": _tilelang_forward, "cute": _cute_forward, "cute_ws": _cute_ws_forward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn", mutates_args=())
@@ -231,7 +255,7 @@ def _tilelang_backward(
     return dq, dkv, delta
 
 
-BACKWARD_BACKENDS = {"tilelang": _tilelang_backward, "cute": _tilelang_backward}
+BACKWARD_BACKENDS = {"tilelang": _tilelang_backward, "cute": _tilelang_backward, "cute_ws": _tilelang_backward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn_backward", mutates_args=())
