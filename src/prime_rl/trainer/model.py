@@ -610,6 +610,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                         info.module.__dict__.setdefault("fsdp_params", {})[info.param_name] = fsdp_param
                     elif accumulate_dense_wgrad and isinstance(info.module, Float8BlockwiseLinear):
                         info.module.accumulate_wgrad_fp32(partial(_fp32_grad_accumulator, fsdp_param))
+                        _reduce_accumulated_grads_uniformly(group)
 
     if not parallel_dims.ep_enabled:
         return
@@ -655,6 +656,25 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             transformer_block.set_modules_to_backward_prefetch(prefetch_modules)
         elif embed_module is not None:
             transformer_block.set_modules_to_backward_prefetch([embed_module])
+
+
+def _reduce_accumulated_grads_uniformly(group) -> None:
+    """Before a reducing post-backward, give every parameter of `group` an fp32 accumulated gradient. Dense FP8
+    linears with `accumulate_wgrad_fp32` already hold theirs in fp32, and FSDP's reduce-scatter needs one gradient
+    dtype per group; when the reduce is deferred FSDP converts the others itself."""
+    if getattr(group, "_uniform_grad_dtype", False):
+        return
+    group._uniform_grad_dtype = True
+    post_backward = group.post_backward
+
+    def uniform_post_backward(*args, **kwargs):
+        if group.reduce_grads:
+            for fsdp_param in group.fsdp_params:
+                if fsdp_param.unsharded_accumulated_grad is None:
+                    fsdp_param.to_accumulated_grad_if_needed()
+        return post_backward(*args, **kwargs)
+
+    group.post_backward = uniform_post_backward
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
