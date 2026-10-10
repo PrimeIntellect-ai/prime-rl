@@ -141,9 +141,12 @@ def bind_process_to_gpu_numa_node() -> None:
 
     logger = get_logger()
     device_id = torch.cuda.current_device()
+    device_uuid = str(torch.cuda.get_device_properties(device_id).uuid)
+    nvml_uuid = f"GPU-{device_uuid.removeprefix('GPU-')}"
     pynvml.nvmlInit()
     try:
-        bus_id = pynvml.nvmlDeviceGetPciInfo(pynvml.nvmlDeviceGetHandleByIndex(device_id)).busId
+        handle = pynvml.nvmlDeviceGetHandleByUUID(nvml_uuid)
+        bus_id = pynvml.nvmlDeviceGetPciInfo(handle).busId
     finally:
         pynvml.nvmlShutdown()
     if isinstance(bus_id, bytes):
