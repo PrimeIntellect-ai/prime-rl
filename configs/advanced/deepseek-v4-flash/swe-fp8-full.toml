@@ -1,11 +1,11 @@
 # DeepSeek V4 Flash on the `scaleswe` SWE taskset at 131k context with every trainer-side FP8 parity feature on:
 # FP8 dense linears including the grouped attention output projection, DeepGEMM FP8 routed experts, the FP8 KV
 # cache simulation, and a compiled trainer. Same task, sequence length, batch and optimizer as swe-fp8-fp8.toml,
-# with 4 inference replicas (12 nodes total) instead of 8 and no optimizer CPU offload. For 16 nodes, set
+# with 4 inference replicas (12 nodes total) instead of 8 and no CPU offloading of any kind. For 16 nodes, set
 # num_infer_replicas = 8 and max_inflight = 512 as in swe-fp8-fp8.toml.
 #
-# Unproven at this scale: memory without optimizer offload at 131k with cp 4 (estimated ~125-130 GiB peak per
-# GPU), and compile at 131k (verified only at short context). Treat the first launch as a validation run.
+# With optimizer offload off and activation offload on, steady-state peak reserved memory measured 92-116 GiB per GPU.
+# Activation offload is now off as well, which keeps every checkpointed block input on the GPU, so recheck the peak.
 
 max_steps = 100
 seq_len = 131072
@@ -76,6 +76,7 @@ ep = 8
 cp = 4
 fused_lm_head_token_chunk_size = 1024
 optim_cpu_offload = false
+ac_offloading = "None"
 # Round the trainer's keys and values the way vLLM's fp8_ds_mla KV cache stores them, which is what
 # vLLM's attention reads.
 dsv4_kv_precision = "fp8"
@@ -86,9 +87,6 @@ fullgraph = false
 
 [trainer.model.ac]
 freq = 1
-
-[trainer.model.ac_offloading]
-max_inflight_activations = 5
 
 [trainer.model.moe.dispatch]
 type = "torch"
