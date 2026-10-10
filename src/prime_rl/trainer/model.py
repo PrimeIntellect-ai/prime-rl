@@ -353,6 +353,12 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
+    elif config.dsv4_kv_precision != "bf16":
+        raise ValueError(
+            f"dsv4_kv_precision={config.dsv4_kv_precision!r} is only implemented for DeepSeek V4, not {model_config.model_type!r}."
+        )
     if config.index_cache is not None:
         model_config.use_index_cache = True
         model_config.index_topk_freq = config.index_cache.topk_freq
