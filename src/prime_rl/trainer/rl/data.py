@@ -3,6 +3,7 @@ from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
@@ -210,13 +211,32 @@ class DataLoader:
         dp_rank = self.world.rank // non_dp_world_size
 
         self.receiver: BatchReceiver = setup_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.step = start_step
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        self._check_batch_id(micro_batches)
+        self.step += 1
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def _check_batch_id(self, micro_batches: list[MicroBatch]) -> None:
+        """Fail before training on a batch that is not this step's, or not the batch every other
+        rank got (e.g. a stale file or a reordered message). One tiny collective per step."""
+        batch_ids = {micro_batch.batch_id for micro_batch in micro_batches}
+        if batch_ids == {None}:
+            return
+        if len(batch_ids) != 1:
+            raise RuntimeError(f"Step {self.step}: micro batches of one rank carry different batch ids {batch_ids}")
+        batch_id = batch_ids.pop()
+        if batch_id >> 32 != self.step:
+            raise RuntimeError(f"Received the batch of step {batch_id >> 32} while expecting step {self.step}")
+        bounds = torch.tensor([batch_id, -batch_id], dtype=torch.int64, device="cuda")
+        dist.all_reduce(bounds, op=dist.ReduceOp.MAX)
+        if bounds[0] != -bounds[1]:
+            raise RuntimeError(f"Step {self.step}: trainer ranks received different batches")
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""

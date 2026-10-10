@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import time
 import uuid
 from typing import TYPE_CHECKING
@@ -619,6 +620,10 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
+        batch_id = (step << 32) | random.getrandbits(32)
+        for micro_batches in micro_batch_grid:
+            for micro_batch in micro_batches:
+                micro_batch.batch_id = batch_id
         await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_dispatch_gate()
