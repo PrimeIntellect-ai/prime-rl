@@ -565,6 +565,8 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = "inference"
         if self.slurm is not None and self.slurm.template_path is None:
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:

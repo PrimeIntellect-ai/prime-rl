@@ -3,6 +3,7 @@ seq_len = 32768
 
 [slurm]
 job_name = "general-agent-qwen3-30b-a3b-rlm"
+partition = "all"
 
 [deployment]
 type = "multi_node"
