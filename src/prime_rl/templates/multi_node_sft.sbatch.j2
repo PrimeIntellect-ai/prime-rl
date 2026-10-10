@@ -4,7 +4,9 @@
 #SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
+{%- if partition %}
 #SBATCH --partition={{ partition }}
+{%- endif %}
 {%- if account %}
 #SBATCH --account={{ account }}
 {%- endif %}

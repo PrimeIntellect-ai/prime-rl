@@ -122,8 +122,8 @@ class ResumeConfig(BaseConfig):
 
 
 class SlurmConfig(BaseConfig):
-    job_name: str = "prime-rl"
-    """SLURM job name."""
+    job_name: str | None = None
+    """SLURM job name. Defaults to ``run.name`` for ``rl`` and ``sft``, and to ``inference`` for ``inference``."""
 
     project_dir: Path = Path(".")
     """Path to the project root, used to source .env, activate .venv, and run uv sync."""
@@ -131,8 +131,8 @@ class SlurmConfig(BaseConfig):
     template_path: Path | None = None
     """SLURM template file. If None, uses the bundled single-node or multi-node template."""
 
-    partition: str = "cluster"
-    """SLURM partition (#SBATCH --partition)."""
+    partition: str | None = None
+    """SLURM partition (#SBATCH --partition). If None, the job goes to the cluster's default partition."""
 
     nodelist: str | None = None
     """Comma-separated list of specific nodes to run on (#SBATCH --nodelist)."""
