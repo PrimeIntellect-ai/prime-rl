@@ -188,14 +188,19 @@ class Orchestrator:
         # references are external endpoints — each env's Algorithm builds its
         # own pools in ``setup()`` below.
         get_logger().info(f"Initializing policy inference pool ({config.model})")
+        dynamo = config.model.client.dynamo
         self.clients = InferenceClient(
             config.model.client,
             model_name=config.model.name,
             train_client_type="renderer",
-            eval_client_type="openai_chat_completions",
+            eval_client_type="renderer" if dynamo is not None and dynamo.enabled else "openai_chat_completions",
             renderer_config=config.renderer,
         )
-        self.admin_plane = setup_admin_plane(config.model.client, config.model.name)
+        self.admin_plane = setup_admin_plane(
+            config.model.client,
+            config.model.name,
+            max_off_policy_steps=config.max_off_policy_steps,
+        )
 
         await monitors.setup(
             producer="orch",
