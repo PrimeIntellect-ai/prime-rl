@@ -217,3 +217,56 @@ def offload_plan(run_ops: list[tuple[str, int, int]], stages: set[int] | None, p
             offloaded.add((stage, mb))
             prefetch_at.setdefault(backward - prefetch_ahead, []).append((stage, mb))
     return offloaded, prefetch_at
+
+
+class MasterParamOffloader:
+    """Keeps the stage's sharded parameters (FSDP's fp32 masters) in pinned host memory during the pipeline.
+
+    Within a step, FSDP reads the sharded parameters only for the step's first all-gather: the pipeline keeps the
+    parameters unsharded until the last backward, and the optimizer reads them after it. So once every module
+    has run its first forward (`swap_out`), their storages are copied to the host and freed, and they are copied
+    back into the same storages before the gradient reduction (`swap_in`, called early, `wait` before the
+    reduction). A module that all-gathers again within the step would read an empty storage and fail."""
+
+    def __init__(self, model_parts: list[nn.Module]):
+        from torch.distributed.fsdp import FSDPModule
+
+        self._stream = torch.cuda.Stream()
+        self._tensors: list[Tensor] = []
+        seen = set()
+        for part in model_parts:
+            for module in part.modules():
+                if not isinstance(module, FSDPModule):
+                    continue
+                for group in module._get_fsdp_state()._fsdp_param_groups:
+                    for fsdp_param in group.fsdp_params:
+                        data = fsdp_param._sharded_param_data
+                        if data.is_cuda and id(data) not in seen:
+                            seen.add(id(data))
+                            self._tensors.append(data)
+        self._host = [torch.empty(t.shape, dtype=t.dtype, pin_memory=True) for t in self._tensors]
+        self._on_host = False
+
+    def swap_out(self) -> None:
+        self._stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(self._stream):
+            for tensor, host in zip(self._tensors, self._host):
+                host.copy_(tensor, non_blocking=True)
+                # The allocator reuses the storage only after the copy.
+                tensor.record_stream(self._stream)
+                tensor.untyped_storage().resize_(0)
+        self._on_host = True
+
+    def swap_in(self) -> None:
+        if not self._on_host:
+            return
+        for tensor in self._tensors:
+            tensor.untyped_storage().resize_(tensor.numel() * tensor.element_size())
+        self._stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(self._stream):
+            for tensor, host in zip(self._tensors, self._host):
+                tensor.copy_(host, non_blocking=True)
+        self._on_host = False
+
+    def wait(self) -> None:
+        torch.cuda.current_stream().wait_stream(self._stream)

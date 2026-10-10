@@ -33,7 +33,7 @@ from prime_rl.configs.trainer import PipelineActivationOffloadConfig
 from prime_rl.trainer.models.layers.expert_compute import defer_weight_grads
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.pipeline_offload import PipelineActivationOffloader, offload_plan
+from prime_rl.trainer.pipeline_offload import MasterParamOffloader, PipelineActivationOffloader, offload_plan
 
 SINGLE_STAGE_SCHEDULES: dict[str, type[PipelineScheduleSingle]] = {"1F1B": Schedule1F1B, "GPipe": ScheduleGPipe}
 MULTI_STAGE_SCHEDULES: dict[str, type[PipelineScheduleMulti]] = {
@@ -596,10 +596,18 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
         first_step_actions: list[Action] | None = None,
         offload: PipelineActivationOffloadConfig | None = None,
         defer_expert_weight_grads: bool = False,
+        offload_masters: bool = False,
         **kwargs,
     ):
         super().__init__(stages, **kwargs)
         self._defer_expert_weight_grads = defer_expert_weight_grads
+        self._masters = None
+        if offload_masters:
+            self._masters = MasterParamOffloader([stage.submod for stage in stages])
+            run_ops = [op for action, op in actions if action == "run"]
+            # Masters leave after the first forward of each local stage and come back after the last forward.
+            self._masters_out_at = max(run_ops.index(("F", stage.stage_index, 0)) for stage in stages)
+            self._masters_in_at = max(i for i, (kind, _, _) in enumerate(run_ops) if kind == "F")
         self._offloader = None
         if offload is not None:
             self._offloader = PipelineActivationOffloader(
@@ -702,6 +710,7 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
                         offloader.prefetch(key)
                 run_index += 1
                 offload = offloader is not None and (idx, mb) in self._offloaded
+                masters = None if blocking else self._masters
                 with torch.profiler.record_function(f"pp.{kind}.stage{idx}.mb{mb}"):
                     if kind == "F":
                         with offloader.forward((idx, mb)) if offload else nullcontext():
@@ -713,6 +722,10 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
                         self._maybe_compute_loss(stage, output, target_mbs, mb, loss_kwargs)
                         if not stage.is_last and idx + 1 in stages:
                             stages[idx + 1].set_local_fwd_input(output, mb)
+                        if masters is not None and run_index - 1 == self._masters_out_at:
+                            masters.swap_out()
+                        if masters is not None and run_index - 1 == self._masters_in_at:
+                            masters.swap_in()
                     else:
                         loss = self._maybe_get_loss(stage, mb)
                         if offload:
@@ -727,6 +740,9 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
         run_weight_grads()
         for work in sends:
             work.wait()
+        if self._masters is not None:
+            self._masters.swap_in()  # no-op unless the step ended before its last forward
+            self._masters.wait()
         self._update_losses(self._stages, losses)
         for stage in self._stages:
             stage.perform_reduce_grad(n if self.scale_grads else 1)
@@ -850,6 +866,7 @@ def build_pipeline_schedule(
     transport_ctas: int | None = None,
     offload: PipelineActivationOffloadConfig | None = None,
     defer_expert_weight_grads: bool = False,
+    offload_masters: bool = False,
 ) -> PipelineScheduleSingle | PipelineScheduleMulti:
     """`first_inputs` is stage 0's first micro-batch (`None` on ranks without stage 0)."""
     if "ZeroBubble" in schedule:
@@ -936,6 +953,7 @@ def build_pipeline_schedule(
             first_step_actions=global_actions,
             offload=offload,
             defer_expert_weight_grads=defer_expert_weight_grads,
+            offload_masters=offload_masters,
             n_microbatches=num_micro_batches,
             loss_fn=loss_fn,
             scale_grads=False,

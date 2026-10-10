@@ -525,6 +525,7 @@ def train(config: SFTConfig):
                     transport_ctas=config.model.pp_transport_ctas,
                     offload=config.model.pp_activation_offload,
                     defer_expert_weight_grads=config.model.pp_defer_expert_weight_grads,
+                    offload_masters=config.model.pp_offload_masters,
                 )
             queue_seq_lens(model_parts, micro_batches)
             losses = [] if pp_last else None
@@ -624,6 +625,9 @@ def train(config: SFTConfig):
         optimizer.step()
         optimizer.zero_grad()
         invalidate_quantized_expert_weights()
+        if config.model.pp_offload_masters:
+            # The freed reduced gradients stay cached on FSDP's reduce-scatter stream, out of the pipeline's reach.
+            torch.cuda.empty_cache()
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]

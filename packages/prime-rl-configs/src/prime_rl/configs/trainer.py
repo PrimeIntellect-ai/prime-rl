@@ -455,6 +455,9 @@ class ModelConfig(BaseModelConfig):
     pp_defer_expert_weight_grads: bool = False
     """``Async1F1B`` / ``DualPipeV`` only (1F1B-W): a backward leaves the FP8 Mega MoE experts' weight-gradient GEMMs for after the stage has posted its input-gradient send, so the previous stage gets its gradient one weight-gradient pass earlier and the transfer overlaps that pass. Same values: the GEMMs run in the same order into the same fp32 accumulators. Their operands (about 1 GB per MoE block at 8k tokens) live until they run. A step's last micro-batch runs them in its backward, which starts the gradient reduction."""
 
+    pp_offload_masters: bool = False
+    """``Async1F1B`` / ``DualPipeV`` only: keep the sharded fp32 parameters in pinned host memory from each step's first forward (after FSDP's all-gather, their only reader in the pipeline) until after its last forward, and release the cached memory of the step's reduced gradients after the optimizer step. Frees the sharded master and reduced-gradient memory (8 bytes per parameter / FSDP group size) for the pipeline, for one host round trip of the masters per step on a side stream. Same values."""
+
     pp_transport_ctas: int | None = Field(None, ge=1)
     """``nccl`` transport only: CTAs (SMs) each stage send/recv kernel takes. Pin it and shrink the persistent kernels by as many SMs (``moe.dispatch.num_sms``; DeepGEMM via ``pp_gemm_sms``) so a transfer in flight does not slow them. ``None`` leaves NCCL's default."""
 
