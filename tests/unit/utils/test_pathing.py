@@ -1,10 +1,13 @@
 import pytest
 
 from prime_rl.utils.pathing import (
+    abandon_future_ckpts,
     clean_future_steps,
     create_attempt_dirs,
+    get_all_ckpt_steps,
     get_batch_dir,
     get_broadcast_dir,
+    get_ckpt_dir,
     get_step_path,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -118,6 +121,17 @@ def test_clean_future_steps_rebuilds_resume_broadcast(tmp_path):
     assert get_step_path(broadcast_dir, 1).exists()
     assert not get_step_path(broadcast_dir, 2).exists()
     assert not get_step_path(broadcast_dir, 3).exists()
+
+
+def test_abandon_future_ckpts_moves_them_out_of_resume(tmp_path):
+    ckpt_dir = get_ckpt_dir(tmp_path)
+    for step in (1, 2, 3):
+        get_step_path(ckpt_dir, step).mkdir(parents=True)
+
+    abandon_future_ckpts(ckpt_dir, resume_step=1)
+
+    assert get_all_ckpt_steps(ckpt_dir) == [1]
+    assert sorted(path.name for path in (ckpt_dir / "abandoned").glob("*/step_*")) == ["step_2", "step_3"]
 
 
 def test_resolve_latest_ckpt_step_skips_incomplete_steps(tmp_path):
