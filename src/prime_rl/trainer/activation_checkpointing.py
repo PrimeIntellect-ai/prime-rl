@@ -41,6 +41,7 @@ DEFAULT_SELECTIVE_SAVE_NAMESPACES = frozenset(
     {
         "_c10d_functional",
         "deepep",
+        "deepep_v2",
         "flash_attn",
         "flash_attn_3",
         "prime_rl_attn",
