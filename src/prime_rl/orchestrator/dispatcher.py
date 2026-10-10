@@ -796,6 +796,10 @@ class Dispatcher:
         through the pipeline while wasted train inference is short-circuited.
         Return terminal markers directly to the consumer, which cannot enqueue
         them onto its own bounded result queue while it is draining."""
+        self.disable_train_scheduling()
+        # Include admissions already waiting on the rate limiter in the snapshot.
+        async with self.scheduling_lock:
+            pass
         train_tasks: list[asyncio.Task] = []
         cancelled_by_group: dict[uuid.UUID, GroupCancellation] = {}
         for gid, group in list(self.groups.items()):
