@@ -342,6 +342,12 @@ class MegaMoEDispatchConfig(BaseConfig):
     over each 128 rows, so the K-grouped GEMMs promote with one FFMA per element (the other operand keeps per-column
     scales). Changes numerics; ~0.5 ms less per layer in the weight-gradient GEMMs on H200."""
 
+    fp8_transposed_on_demand: bool = False
+    """FP8 only: keep only the experts' forward FP8 weights for the step and build the transposed copy the backward
+    reads (an exact transpose of the 128 x 128-block FP8 values and scales) in each backward, freeing it after.
+    1 byte less per local expert parameter (1.7 GB per V4.1 layer at EP8) for one transpose per MoE backward.
+    Same numerics."""
+
     free_bf16_expert_weights: bool = False
     """FP8 only: free the local experts' unsharded bf16 weights once they are quantized for the step, so only the
     FP8 copies the kernels read stay resident (2 bytes less per local expert parameter: 3.4 GB per V4.1 layer at EP8).
@@ -373,9 +379,10 @@ class MoERuntimeConfig(BaseConfig):
                 raise ValueError("dispatch.fp8 requires compute.type = 'deepgemm_fp8'")
         if isinstance(self.dispatch, DeepEPMoEDispatchConfig) and self.dispatch.fp8_grad and not self.dispatch.fp8:
             raise ValueError("dispatch.fp8_grad requires dispatch.fp8")
-        if isinstance(self.dispatch, MegaMoEDispatchConfig) and self.dispatch.free_bf16_expert_weights:
-            if not self.dispatch.fp8:
-                raise ValueError("dispatch.free_bf16_expert_weights requires dispatch.fp8")
+        if isinstance(self.dispatch, MegaMoEDispatchConfig) and not self.dispatch.fp8:
+            for flag in ("free_bf16_expert_weights", "fp8_transposed_on_demand"):
+                if getattr(self.dispatch, flag):
+                    raise ValueError(f"dispatch.{flag} requires dispatch.fp8")
         return self
 
 

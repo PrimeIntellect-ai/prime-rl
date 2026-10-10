@@ -123,6 +123,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     num_sms=dispatch.num_sms,
                     wgrad_tile_scales=dispatch.wgrad_tile_scales,
                     free_bf16_weights=dispatch.free_bf16_expert_weights,
+                    transposed_on_demand=dispatch.fp8_transposed_on_demand,
                 )
             else:
                 shared_limit = getattr(moe.shared_expert, "limit", moe.experts.activation.limit)

@@ -10,6 +10,8 @@ directory on the path under that name).
 """
 
 import torch
+import triton
+import triton.language as tl
 from torch import nn
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DTensor
@@ -217,6 +219,7 @@ class MegaMoEFP8TokenDispatcher:
         num_sms: int | None = None,
         wgrad_tile_scales: bool = False,
         free_bf16_weights: bool = False,
+        transposed_on_demand: bool = False,
     ) -> None:
         import prime_mega_moe.mega.fp8 as fp8_kernels
 
@@ -229,6 +232,7 @@ class MegaMoEFP8TokenDispatcher:
         self.num_sms = num_sms or torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
         self.wgrad_tile_scales = wgrad_tile_scales
         self.free_bf16_weights = free_bf16_weights
+        self.transposed_on_demand = transposed_on_demand
         # Created up front: inside the first checkpointed forward, its collectives would desync recompute.
         self.buffer = _get_fp8_buffer(group, num_experts, max_tokens_per_rank, top_k, hidden_size)
         self._experts: GroupedExperts | None = None
@@ -264,6 +268,9 @@ class MegaMoEFP8TokenDispatcher:
         from prime_rl.trainer.models.layers.expert_compute import FusedSwigluExpertCompute, _quantized_expert_weights
 
         weights = _quantized_expert_weights(FusedSwigluExpertCompute, self._experts)
+        if self.transposed_on_demand and weights[4] is not None:
+            # The cached list is shared for the step: drop its transposed copies, `transposed_weights` rebuilds them.
+            weights[4:] = [None] * 4
         if self.free_bf16_weights:
             # Only the quantization reads the bf16 copy. FSDP keeps the parameters unsharded for the rest of
             # the step, so its next reshard finds the storage already freed and its next unshard reallocates it.
@@ -271,6 +278,14 @@ class MegaMoEFP8TokenDispatcher:
             for fsdp_param in getattr(self._experts, "fsdp_params", {}).values():
                 fsdp_param.free_unsharded_param()
         return weights
+
+    def transposed_weights(self) -> list[torch.Tensor]:
+        """`[w13^T, its scales, w2^T, its scales]` for the backward: from the cache, or with `transposed_on_demand`
+        transposed from the forward copies (128 x 128 blocks, so the same values and scales as the cached copy)."""
+        w13_q, w13_sf, w2_q, w2_sf, *transposed = self.quantized_weights()
+        if transposed[0] is not None:
+            return transposed
+        return [_transpose_last2(w13_q), _transpose_last2(w13_sf), _transpose_last2(w2_q), _transpose_last2(w2_sf)]
 
     def load(self, x: torch.Tensor | None, topk_idx: torch.Tensor, topk_weights: torch.Tensor | None) -> None:
         from prime_rl.trainer.models.kernels.fp8_utils import per_token_cast_to_fp8_triton
@@ -295,6 +310,27 @@ class MegaMoEFP8TokenDispatcher:
                 torch.empty(I // 64, C, dtype=torch.float32, device="cuda"),
             )
         return _l2_operands[key]
+
+
+@triton.jit
+def _transpose_bytes_kernel(x_ptr, y_ptr, R, C, BLOCK: tl.constexpr):
+    """One BLOCK x BLOCK tile of ``x [E, R, C]`` (bytes) into ``y [E, C, R]``."""
+    e = tl.program_id(0).to(tl.int64)
+    rows = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    cols = tl.program_id(2) * BLOCK + tl.arange(0, BLOCK)
+    v = tl.load(x_ptr + e * R * C + rows[:, None] * C + cols[None, :])
+    tl.store(y_ptr + e * R * C + cols[:, None] * R + rows[None, :], tl.trans(v))
+
+
+def _transpose_last2(t: torch.Tensor) -> torch.Tensor:
+    if t.dtype != torch.float8_e4m3fn:
+        return t.transpose(1, 2).contiguous()
+    E, R, C = t.shape
+    block = 128
+    assert R % block == 0 and C % block == 0 and t.is_contiguous()
+    out = torch.empty(E, C, R, dtype=torch.uint8, device=t.device)
+    _transpose_bytes_kernel[(E, R // block, C // block)](t.view(torch.uint8), out, R, C, BLOCK=block, num_warps=8)
+    return out.view(torch.float8_e4m3fn)
 
 
 _fp8_buffers: dict[int, object] = {}
@@ -399,7 +435,7 @@ def _mega_moe_fp8_backward(ctx, grads):
     torch.cuda.current_stream().wait_event(_x_t_ready.pop(x_t.data_ptr()))
     dispatcher = _dispatchers[ctx.dispatcher_id]
     kernels = dispatcher.kernels
-    _, _, _, _, w13_t, w13_t_sf, w2_t, w2_t_sf = dispatcher.quantized_weights()
+    w13_t, w13_t_sf, w2_t, w2_t_sf = dispatcher.transposed_weights()
     # The backward kernel reads every pool but `x`
     pools = kernels.FP8Pools(None, None, z, weights, meta, counts)
     bufs = kernels.FP8BackwardBuffers(dispatcher.capacity, dispatcher.hidden_size, dispatcher.intermediate_size)
