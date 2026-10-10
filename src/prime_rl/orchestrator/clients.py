@@ -239,7 +239,9 @@ class AdminPlane:
                     if not retry:
                         break
                 if checksum is not None:
-                    members = await self.verify_weight_checksums(members, step, fail_on_mismatch=checksum.fail_on_mismatch)
+                    members = await self.verify_weight_checksums(
+                        members, step, fail_on_mismatch=checksum.fail_on_mismatch
+                    )
             finally:
                 resumed = await self._each(members, "/resume")
         finally:

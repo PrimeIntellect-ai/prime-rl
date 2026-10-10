@@ -50,11 +50,13 @@ class BaseWeightBroadcastConfig(BaseConfig):
     offered version in time. Raise it for large models on slow shared filesystems."""
 
     checksum: WeightChecksumConfig | None = None
-    """After every full weight update (not LoRA adapters), checksum each inference engine's parameters while the
-    engines are paused and compare the engines that have the same parallel layout (TP, PP, and with EP the DP
-    size). Needs at least two engines per layout (in P/D, two replicas of each role) and EPLB off; otherwise a
-    warning is logged instead. Only DP rank 0 of each engine is checked. Not compared against the trainer: vLLM stores
-    fused/converted parameters that differ from the trainer's HF tensors."""
+    """After every full weight update (not LoRA adapters), checksum each inference engine's parameters on GPU while
+    the engines are paused and compare engines that hold the same weight shard, under the same parallel layout (TP,
+    PP, and with EP the DP size). An engine is one admin URL: multi-node deployments run one per DP rank, a
+    single-node deployment is a single engine. If no two engines hold the same shard (e.g. one engine, one
+    expert-parallel replica, or a P/D role with one replica), a warning is logged instead. Requires EPLB off. Engines
+    are not compared against the trainer: vLLM stores fused/converted parameters that differ from the trainer's HF
+    tensors."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
