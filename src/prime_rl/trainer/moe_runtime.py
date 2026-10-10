@@ -96,6 +96,9 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
     selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
+    transposed_on_demand = getattr(dispatch, "fp8_transposed_on_demand", False)
+    if isinstance(transposed_on_demand, list):
+        transposed_on_demand = getattr(model, "pipeline_stage", 0) in transposed_on_demand
 
     for moe in moe_layers:
         compute = selected_compute if moe in selected_moes else bf16_compute
@@ -123,7 +126,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     num_sms=dispatch.num_sms,
                     wgrad_tile_scales=dispatch.wgrad_tile_scales,
                     free_bf16_weights=dispatch.free_bf16_expert_weights,
-                    transposed_on_demand=dispatch.fp8_transposed_on_demand,
+                    transposed_on_demand=transposed_on_demand,
                 )
             else:
                 shared_limit = getattr(moe.shared_expert, "limit", moe.experts.activation.limit)

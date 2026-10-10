@@ -348,11 +348,11 @@ class MegaMoEDispatchConfig(BaseConfig):
     over each 128 rows, so the K-grouped GEMMs promote with one FFMA per element (the other operand keeps per-column
     scales). Changes numerics; ~0.5 ms less per layer in the weight-gradient GEMMs on H200."""
 
-    fp8_transposed_on_demand: bool = False
+    fp8_transposed_on_demand: bool | list[int] = False
     """FP8 only: keep only the experts' forward FP8 weights for the step and build the transposed copy the backward
     reads (an exact transpose of the 128 x 128-block FP8 values and scales) in each backward, freeing it after.
-    1 byte less per local expert parameter (1.7 GB per V4.1 layer at EP8) for one transpose per MoE backward.
-    Same numerics."""
+    1 byte less per local expert parameter (1.7 GB per V4.1 layer at EP8) for one transpose (~1 ms) per MoE backward.
+    Same numerics. A list applies it only on those pipeline stages."""
 
     free_bf16_expert_weights: bool = False
     """FP8 only: free the local experts' unsharded bf16 weights once they are quantized for the step, so only the
