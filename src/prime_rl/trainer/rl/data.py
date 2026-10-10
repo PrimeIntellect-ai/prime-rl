@@ -3,6 +3,7 @@ from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
@@ -210,13 +211,38 @@ class DataLoader:
         dp_rank = self.world.rank // non_dp_world_size
 
         self.receiver: BatchReceiver = setup_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.step = start_step
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        self._check_batch_id(micro_batches)
+        self.step += 1
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def _check_batch_id(self, micro_batches: list[MicroBatch]) -> None:
+        """Fail before training on a batch that is not this step's, or not the batch every other
+        rank got (e.g. a stale file or a reordered message). One tiny collective per step."""
+        batch_ids = {micro_batch.batch_id for micro_batch in micro_batches}
+        error = None
+        batch_id = -1  # a batch without ids passes only if every rank's has none
+        if len(batch_ids) != 1:
+            error = f"micro batches of one rank carry different batch ids {batch_ids}"
+        elif batch_ids != {None}:
+            batch_id = batch_ids.pop()
+            if batch_id >> 32 != self.step:
+                error = f"received the batch of step {batch_id >> 32}"
+        # Every rank joins the collective, even after a local failure, so the others don't hang in it.
+        verdict = torch.tensor([batch_id, -batch_id, error is not None], dtype=torch.int64, device="cuda")
+        dist.all_reduce(verdict, op=dist.ReduceOp.MAX)
+        if error is not None:
+            raise RuntimeError(f"Step {self.step}: {error}")
+        if verdict[2]:
+            raise RuntimeError(f"Step {self.step}: another trainer rank received a wrong batch")
+        if verdict[0] != -verdict[1]:
+            raise RuntimeError(f"Step {self.step}: trainer ranks received different batches")
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
