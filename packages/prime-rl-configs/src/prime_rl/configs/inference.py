@@ -3,8 +3,9 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_config import BaseConfig
+from renderers import CustomRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import default_output_dir, find_package_resource
@@ -436,6 +437,20 @@ class InferenceConfig(BaseConfig):
     fp8_stochastic_weight_rounding: bool = False
     """Round online block-wise FP8 weights stochastically instead of to nearest. Each element lands on the e4m3 grid point on the far side of its value with probability equal to its fractional distance in bins, so the served weight equals the bf16 weight in expectation. Round-to-nearest pins a weight that starts on the grid until the trainer has moved it half a bin, which at lr 1e-6 takes on the order of 1000 steps, so the served policy stays at step 0 while the trainer drifts; unbiased rounding lets it track sub-bin updates in expectation. Input already on the grid rounds to nearest, so the checkpoint quantizes to identical bytes. Sets ``PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1`` for the vLLM workers."""
 
+    renderer: RendererConfig | None = None
+    """Serve ``/v1/chat/completions`` through this renderer instead of vLLM's chat template, tool parser and reasoning parser. The renderer reads ``vllm.tokenizer`` (or ``vllm.model``); request ``chat_template_kwargs`` over ``vllm.default_chat_template_kwargs`` set its template fields."""
+
+    @field_validator("renderer")
+    @classmethod
+    def _resolve_renderer_import_path(cls, renderer: RendererConfig | None) -> RendererConfig | None:
+        # Spawned vLLM processes and other nodes may not share the launch directory.
+        if isinstance(renderer, CustomRendererConfig):
+            module_ref, sep, attr = renderer.import_path.rpartition(":")
+            if sep and (module_ref.endswith(".py") or "/" in module_ref):
+                path = f"{Path(module_ref).expanduser().resolve()}:{attr}"
+                return CustomRendererConfig.model_validate({**renderer.model_dump(), "import_path": path})
+        return renderer
+
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
@@ -643,5 +658,8 @@ class InferenceConfig(BaseConfig):
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
             namespace.kv_transfer_config = kv_transfer_config
+
+        if self.renderer is not None:
+            namespace.renderer = self.renderer
 
         return namespace
