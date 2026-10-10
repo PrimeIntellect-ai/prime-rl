@@ -154,6 +154,8 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
+    # NCCL >= 2.30 for the one-sided puts of `model.pp_transport = "put"` (torch 2.13 pins 2.29.7).
+    "nvidia-nccl-cu13==2.32.3 ; sys_platform == 'linux'",
     # vLLM 0.30.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
     "nvidia-cutlass-dsl==4.7.1",
