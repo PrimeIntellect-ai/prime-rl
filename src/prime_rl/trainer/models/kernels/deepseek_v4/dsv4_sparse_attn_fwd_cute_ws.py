@@ -23,8 +23,9 @@ One CTA of 384 threads (three warpgroups) per query position:
 
 The online softmax keeps the running max in log2 units, `m = max(logit) * scale * log2(e)`, seeded
 with the sink `Sinks[h] * log2(e)`; the running sum of one thread per head (in warpgroup 0) is
-seeded with the sink's own term, 1. The slot axis must be a whole number of 128-slot pairs; a
-query reads the pairs that cover its `TileCounts` tiles.
+seeded with the sink's own term, 1. A small kernel launched first computes each query's tile
+count, and a query reads the 128-slot pairs that cover its tiles, treating slots past the end of
+the slot axis as masked.
 """
 
 import functools
@@ -68,6 +69,7 @@ MBAR_K_READY = 0
 MBAR_K_FREE = 4
 MBAR_VALID_READY = 8
 NUM_MBARS = 9
+TILE_COUNT_QUERIES_PER_CTA = 8
 
 
 def _k_half_index(buf: int, half: int) -> int:
@@ -156,6 +158,24 @@ def _gather_half(
 
 
 @cute.kernel
+def _tile_count_kernel(mIndices: cute.Tensor, mTileCounts: cute.Tensor):
+    """One warp per query: the number of leading 64-slot tiles that contain every valid slot."""
+    tidx, _, _ = cute.arch.thread_idx()
+    q_block, b_i, _ = cute.arch.block_idx()
+    lane = cute.arch.lane_idx()
+    s_i = q_block * TILE_COUNT_QUERIES_PER_CTA + tidx // cute.arch.WARP_SIZE
+    if s_i < mIndices.shape[1]:
+        reach = Int32(0)
+        for slot in cutlass.range(lane, mIndices.shape[3], cute.arch.WARP_SIZE, unroll=4):
+            if mIndices[b_i, s_i, 0, slot] >= 0:
+                reach = slot + 1
+        for step in cutlass.range_constexpr(5):
+            reach = cutlass.max(reach, cute.arch.shuffle_sync_bfly(reach, offset=1 << step))
+        if lane == 0:
+            mTileCounts[b_i, s_i, 0] = (reach + BLOCK_I - 1) // BLOCK_I
+
+
+@cute.kernel
 def _fwd_kernel(
     mQ: cute.Tensor,
     mKV: cute.Tensor,
@@ -196,7 +216,8 @@ def _fwd_kernel(
         cute.arch.mbarrier_init_fence()
     cute.arch.sync_threads()
 
-    n_tiles = mIndices.shape[3] // BLOCK_I
+    n_slots = mIndices.shape[3]
+    n_tiles = (n_slots + BLOCK_I - 1) // BLOCK_I
     tile_count = cutlass.min(mTileCounts[b_i, s_i, 0], n_tiles)
     num_pairs = (tile_count + 1) // 2
 
@@ -209,7 +230,9 @@ def _fwd_kernel(
         for pair in cutlass.range(num_pairs, unroll=1):
             for buf in cutlass.range_constexpr(2):
                 for r in cutlass.range_constexpr(ROWS_PER_GROUP):
-                    kv_idx[buf, r] = mIndices[b_i, s_i, 0, (2 * pair + buf) * BLOCK_I + r * NUM_GROUPS + group]
+                    slot = (2 * pair + buf) * BLOCK_I + r * NUM_GROUPS + group
+                    idx = mIndices[b_i, s_i, 0, cutlass.min(slot, n_slots - 1)]
+                    kv_idx[buf, r] = idx if slot < n_slots else Int32(-1)
             for buf, half in ((0, 0), (1, 1), (0, 1), (1, 0)):
                 cute.arch.mbarrier_wait(mbars + MBAR_K_FREE + _k_half_index(buf, half), free_phase)
                 _gather_half(mKV, sK, b_i, kv_idx, group, idx_in_group, buf, half)
@@ -464,6 +487,14 @@ def _fwd(
         + 8 * NUM_MBARS
         + 1024
     )
+    _tile_count_kernel.set_name_prefix(
+        "dsv4_sparse_attn_tile_counts", remove_cutlass_symbol=True, keep_mangled_name=False
+    )
+    _tile_count_kernel(mIndices, mTileCounts).launch(
+        grid=((mQ.shape[1] + TILE_COUNT_QUERIES_PER_CTA - 1) // TILE_COUNT_QUERIES_PER_CTA, mQ.shape[0], 1),
+        block=(TILE_COUNT_QUERIES_PER_CTA * cute.arch.WARP_SIZE, 1, 1),
+        stream=stream,
+    )
     _fwd_kernel.set_name_prefix("dsv4_sparse_attn_fwd_cute_ws", remove_cutlass_symbol=True, keep_mangled_name=False)
     _fwd_kernel(
         mQ,
@@ -509,19 +540,18 @@ def dsv4_sparse_attn_fwd_cute_ws(
     kv: torch.Tensor,
     indices: torch.Tensor,
     sinks: torch.Tensor,
-    tile_counts: torch.Tensor,
     sm_scale: float | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run the forward on contiguous inputs whose slot axis is a whole number of 128-slot pairs."""
+    """Run the forward on contiguous inputs, computing each query's tile count on the GPU first."""
     batch, seq_len, heads, dim = q.shape
     assert (heads, dim, kv.shape[2]) == (HEADS, DIM, 1), (
         f"the CuTe forward serves {HEADS} heads, head_dim {DIM} and one KV head, got {heads}, {dim}, {kv.shape[2]}"
     )
-    assert indices.shape[-1] % PAIR == 0, f"the slot axis must be a multiple of {PAIR}"
     assert q.data_ptr() % 16 == 0 and kv.data_ptr() % 16 == 0, "q and kv must be 16-byte aligned"
     if sm_scale is None:
         sm_scale = dim**-0.5
     out = torch.empty_like(q)
     lse = q.new_empty((batch, seq_len, heads), dtype=torch.float32)
+    tile_counts = indices.new_empty((batch, seq_len, 1))
     _compiled_fwd()(q, kv, indices, sinks, tile_counts, out, lse, sm_scale * LOG2E)
     return out, lse

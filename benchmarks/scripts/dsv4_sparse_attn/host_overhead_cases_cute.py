@@ -9,7 +9,9 @@ op:
 - `op`: the custom op under `no_grad`, as the benchmark's forward times it.
 - `op_body`: the backend's forward function called directly, without the dispatcher, autograd and dynamo-disable
   wrappers.
-- `wrapper_prep`: the slot padding, `num_tiles_covering_valid_slots` and float32 sinks the body prepares.
+- `wrapper_prep`: what the body prepares on the host side: for `cute`, the slot padding,
+  `num_tiles_covering_valid_slots` and float32 sinks; for `cute_ws`, the float32 sinks only (its tile counts
+  come from a kernel launched by the executor).
 - `fwd_call`: the CuTe module's entry point on prepared arguments: shape checks, output allocation and the call.
 - `executor_call`: the compiled TVM-FFI executor alone on prepared arguments and preallocated outputs.
 - `empty_floor`: two `torch.empty` calls the size of the outputs.
@@ -43,10 +45,7 @@ LOG2E = 1.44269504
 def cases():
     item_id = os.environ.get("DSV4_HOST_ITEM", "tiny-4096-hca-cp8r4")
     backend = os.environ.get("DSV4_HOST_BACKEND", "cute_ws")
-    module, slot_multiple = {
-        "cute": (dsv4_sparse_attn_fwd_cute, SLOT_TILE),
-        "cute_ws": (dsv4_sparse_attn_fwd_cute_ws, dsv4_sparse_attn_fwd_cute_ws.PAIR),
-    }[backend]
+    module = {"cute": dsv4_sparse_attn_fwd_cute, "cute_ws": dsv4_sparse_attn_fwd_cute_ws}[backend]
     entry = getattr(module, f"dsv4_sparse_attn_fwd_{backend}")
     (item,) = select_items(load_manifest(DEFAULT_CORPUS_DIR), [item_id])
     n_queries = int(os.environ.get("DSV4_HOST_QUERIES", item.n_queries))
@@ -55,10 +54,17 @@ def cases():
     q, kv, sinks = inputs["q"][:, :n_queries].contiguous(), inputs["kv"], inputs["sinks"]
 
     def prep():
-        padded = _pad_slots_to_tile(indices, slot_multiple)
+        if backend == "cute_ws":
+            return indices, indices.new_empty(indices.shape[:3]), sinks.float().contiguous()
+        padded = _pad_slots_to_tile(indices)
         return padded, num_tiles_covering_valid_slots(padded, SLOT_TILE), sinks.float().contiguous()
 
     padded, tile_counts, sinks_f32 = prep()
+    entry_args = (
+        (q, kv, padded, sinks_f32, SM_SCALE)
+        if backend == "cute_ws"
+        else (q, kv, padded, sinks_f32, tile_counts, SM_SCALE)
+    )
     executor = module._compiled_fwd()
     out = torch.empty_like(q)
     lse = q.new_empty(q.shape[:-1], dtype=torch.float32)
@@ -79,7 +85,7 @@ def cases():
                 "op": op,
                 "op_body": lambda: FORWARD_BACKENDS[backend](q, kv, indices, sinks, SM_SCALE, SLOT_TILE, 2, 256),
                 "wrapper_prep": prep,
-                "fwd_call": lambda: entry(q, kv, padded, sinks_f32, tile_counts, SM_SCALE),
+                "fwd_call": lambda: entry(*entry_args),
                 "executor_call": lambda: executor(q, kv, padded, sinks_f32, tile_counts, out, lse, *scale_args),
                 "empty_floor": empty_floor,
             },
