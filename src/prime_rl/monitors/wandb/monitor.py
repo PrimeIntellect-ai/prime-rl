@@ -119,6 +119,7 @@ class WandbMonitor(Monitor):
         # key prefixes that arrived via step=None (wall-time rows); their time axis
         # is defined lazily on first sight in log_metrics
         self._time_prefixes: set[str] = set()
+        self._step_metrics: set[str] = set()
 
         # Provision the curated "overview" saved view once per project (the run's primary process
         # in shared mode, else the single master). Best-effort: a workspaces/API failure must never
@@ -150,6 +151,10 @@ class WandbMonitor(Monitor):
                     wandb.define_metric(f"{prefix}/*", step_metric="_timestamp")
             wandb.log({**metrics, "_timestamp": time.time()})
         else:
+            # Override definitions retained by a resumed run's earlier writers.
+            for key in metrics.keys() - self._step_metrics - {"step"}:
+                wandb.define_metric(key, step_metric="step")
+                self._step_metrics.add(key)
             wandb.log({**metrics, "step": step, "_timestamp": time.time()})
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:

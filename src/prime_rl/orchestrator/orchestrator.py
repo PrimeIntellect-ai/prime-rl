@@ -5,7 +5,8 @@ and drives the pipeline. Components are single-purpose:
 
 - ``Dispatcher`` schedules environment runs and emits completed episodes.
 - ``TrainSink`` ingests train rollouts (score → admission → sample compilation)
-  and returns a ``TrainBatch`` when the threshold is met.
+  and returns a ``TrainBatch`` when the threshold is met. Completed groups
+  contribute scalar metrics to finite rollout windows regardless of admission.
 - ``EvalSink`` ingests eval rollouts and returns an ``EvalBatch`` (the full
   returned cohort) on epoch completion.
 - ``TrainEpisodes`` / ``EvalEpisodes`` preserve episode boundaries and build per-step metrics.
@@ -47,7 +48,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
+from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -60,7 +61,6 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
-    episode_group_id,
     episode_staleness,
     eval_work,
     intercept_vf_logging,
@@ -489,6 +489,7 @@ class Orchestrator:
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
+                await self.report_rollouts(force=True)
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
@@ -502,8 +503,7 @@ class Orchestrator:
             if isinstance(item, GroupCancellation):
                 assert item.kind == "train"  # eval groups are never dropped
                 train_batch = await self.train_sink.cancel(item)
-                if train_batch is not None and not self.draining and not self.stopped.is_set():
-                    await self.finalize_train_batch(train_batch)
+                await self.handle_train_result(train_batch)
                 continue
             if isinstance(item, DispatchFailure):
                 if item.kind == "eval":
@@ -513,8 +513,7 @@ class Orchestrator:
                         await self.finalize_eval_batch(eval_batch)
                 else:
                     train_batch = await self.train_sink.fail(item)
-                    if train_batch is not None and not self.draining and not self.stopped.is_set():
-                        await self.finalize_train_batch(train_batch)
+                    await self.handle_train_result(train_batch)
                 continue
             episode = item
 
@@ -539,10 +538,62 @@ class Orchestrator:
                 continue
 
             train_batch = await self.train_sink.add(episode)
-            # In drain mode any late-arriving train batch is dropped — we
-            # don't want to ship past ``max_steps``
-            if train_batch is not None and not self.draining and not self.stopped.is_set():
-                await self.finalize_train_batch(train_batch)
+            await self.handle_train_result(train_batch)
+
+    async def handle_train_result(self, batch: TrainBatch | None) -> None:
+        if self.heart is not None:
+            self.heart.beat()
+        # Flush before shipping so checkpointed totals include this batch's arrivals.
+        await self.report_rollouts(force=batch is not None and bool(batch.samples))
+        while batch is not None and not self.draining and not self.stopped.is_set():
+            await self.finalize_train_batch(batch)
+            if self.draining or self.stopped.is_set():
+                return
+            batch = self.train_sink.take_batch()
+            await self.report_rollouts(force=batch is not None and bool(batch.samples))
+        if self.draining or self.stopped.is_set():
+            if batch is not None:
+                self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+            self.train_sink.discard_queued()
+
+    async def report_rollouts(self, *, force: bool = False) -> None:
+        window = self.train_sink.take_rollout_window(force=force)
+        if window is not None:
+            await self.finalize_rollout_window(window)
+
+    async def finalize_rollout_window(self, window: RolloutWindow) -> None:
+        self.progress.rollout_window += 1
+        self.progress.total_tokens += window.tokens
+        self.progress.total_samples += window.traces
+        self.progress.total_problems += window.groups
+        metrics = {
+            "off_policy/dropped": 0.0,
+            "rollout/queued/pruned": 0.0,
+            "rollout/queued/cancelled": 0.0,
+        } | window.metrics.to_dict()
+        metrics |= {
+            "rollout/attempts": window.attempts,
+            "rollout/discarded": window.discarded,
+            "rollout/stale": window.stale,
+            "rollout/errored": window.errored,
+            "rollout/cancelled": window.cancelled,
+            "rollout/no_signal": window.discarded - window.stale - window.errored - window.cancelled,
+            "progress/tokens": window.tokens,
+            "progress/rollouts": window.traces,
+            "progress/tasks": window.groups,
+            "progress/total_tokens": self.progress.total_tokens,
+            "progress/total_rollouts": self.progress.total_samples,
+            "progress/total_tasks": self.progress.total_problems,
+        }
+        await monitors.log(metrics, step=self.progress.step)
+        if window.attempts and window.discarded / window.attempts > 0.5:
+            get_logger().warning(
+                f"Discarded {window.discarded}/{window.attempts} episodes "
+                f"({window.discarded / window.attempts:.1%}): stale={window.stale}, "
+                f"errored={window.errored}, cancelled={window.cancelled}, "
+                f"no_signal={window.discarded - window.stale - window.errored - window.cancelled}. "
+                "Review max_off_policy_steps, episode errors, and reward signal."
+            )
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
@@ -564,6 +615,16 @@ class Orchestrator:
         config = self.config
         step = self.progress.step
 
+        # A resume can start past the end (checkpoint written at the final
+        # step, or a lowered ``max_steps``): never ship beyond the budget.
+        if config.max_steps is not None and step > config.max_steps:
+            self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+            await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
+            return
+
+        if not batch.samples:
+            get_logger().warning(f"Step {step}: skipping empty train batch after zero-advantage pruning")
+            return
         # Sink-to-sink cycle time — the actual time between batches, not
         # including the orchestrator's ship I/O (overlapped with the
         # dispatcher producing the next batch)
@@ -571,17 +632,6 @@ class Orchestrator:
         step_time = (now - self.last_batch_at) if self.last_batch_at is not None else 0.0
         self.last_batch_at = now
 
-        # A resume can start past the end (checkpoint written at the final
-        # step, or a lowered ``max_steps``): never ship beyond the budget.
-        if config.max_steps is not None and step > config.max_steps:
-            await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
-            return
-
-        if not batch.samples:
-            get_logger().warning(
-                f"Step {step}: skipping empty train batch after {len(batch.episodes)} finalized episodes"
-            )
-            return
         effective = batch.cohort.effective
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
@@ -626,48 +676,14 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
-        # Episode metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the
-        # full arrival window; ``effective`` is the exact shipped cohort.
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", batch.episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix="train/agg", subset=subset)
-            for env_name, env_pool in pool.by_env().items():
-                metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset=subset)
-        total_attempts = len(batch.episodes) + len(batch.failures)
-        metrics |= dispatch_failure_metrics(batch.failures, prefix="train/agg/all", total_attempts=total_attempts)
-        failures_by_env: dict[str, list[DispatchFailure]] = {}
-        for failure in batch.failures:
-            failures_by_env.setdefault(failure.env_name, []).append(failure)
-        episodes_by_env = batch.episodes.by_env()
-        for env_name in set(episodes_by_env) | set(failures_by_env):
-            env_failures = failures_by_env.get(env_name, [])
-            env_attempts = len(episodes_by_env.get(env_name, TrainEpisodes())) + len(env_failures)
-            metrics |= dispatch_failure_metrics(
-                env_failures,
-                prefix=f"train/{env_name}/all",
-                total_attempts=env_attempts,
-            )
-
-        # Progress / timing / env-share accounting (assembled here, not in the metrics
-        # objects). ``num_tokens`` is over the full arrival window; the input/output breakdown is over
-        # the effective (shipped) subset, summing the same ``vf.Trace`` token properties the metric
-        # matrix reports.
-        num_tokens = batch.episodes.num_total_tokens
+        metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+        for env_name, env_pool in effective.by_env().items():
+            metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset="effective")
         num_input = sum(record.trace.num_input_tokens for record in effective.records)
         num_output = sum(record.trace.num_output_tokens for record in effective.records)
-        num_rollouts = batch.episodes.num_traces
-        group_ids = {episode_group_id(episode) for episode in batch.episodes}
-        group_ids.update(failure.group_id for failure in batch.failures)
-        num_unique_examples = len(group_ids)
         metrics |= {
-            "progress/tokens": num_tokens,
             "progress/input_tokens": num_input,
             "progress/output_tokens": num_output,
-            "progress/rollouts": num_rollouts,
-            "progress/tasks": num_unique_examples,
-            "progress/total_tokens": self.progress.total_tokens,
-            "progress/total_rollouts": self.progress.total_samples,
-            "progress/total_tasks": self.progress.total_problems,
             "time/step": step_time,
             "time/pack": pack_time,
             "time/save_ckpt": save_ckpt_time,
@@ -675,8 +691,7 @@ class Orchestrator:
             "step": step,
         }
         # Staleness of the shipped cohort, decomposed into its in-flight and
-        # in-queue shares; ``dropped`` counts queued traces the sink voided
-        # since the last ship.
+        # in-queue shares. Queue drops are reported with rollout windows.
         staleness = [episode_staleness(episode, step) for episode in effective]
         if staleness:
             totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
@@ -688,10 +703,8 @@ class Orchestrator:
                 "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
                 "off_policy/in_queue/max": float(max(in_queue)),
             }
-        metrics["off_policy/dropped"] = float(self.train_sink.stale_drops)
-        self.train_sink.stale_drops = 0
-        for env_name, env_pool in batch.episodes.by_env().items():
-            metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
+        for env_name, env_pool in effective.by_env().items():
+            metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
         metrics |= self.train_source.metrics()
         await monitors.log(metrics, step=step)
 
@@ -703,37 +716,10 @@ class Orchestrator:
                 "add more trainer nodes."
             )
 
-        shipped_episode_ids = {episode.id for episode in batch.cohort}
-        discarded_episodes = [
-            episode
-            for episode in batch.episodes
-            if episode.id not in shipped_episode_ids and episode.id not in batch.buffered_episode_ids
-        ]
-        stale_episodes = sum(episode.id in batch.episodes.cancelled for episode in discarded_episodes)
-        errored_episodes = sum(
-            episode.id not in batch.episodes.cancelled
-            and (not episode.ok or any(trace.has_error for trace in episode.traces))
-            for episode in discarded_episodes
-        )
-        num_attempts = len(batch.episodes) + len(batch.failures) + batch.cancelled_attempts
-        num_discarded = len(discarded_episodes) + len(batch.failures) + batch.cancelled_attempts
-        num_stale = stale_episodes + batch.stale_attempts
-        num_errored = errored_episodes + len(batch.failures)
-        num_no_signal = num_discarded - num_stale - num_errored
-        if num_attempts and num_discarded / num_attempts > 0.5:
-            get_logger().warning(
-                f"Discarded {num_discarded}/{num_attempts} episodes ({num_discarded / num_attempts:.1%}): "
-                f"stale={num_stale}, errored={num_errored}, no_signal={num_no_signal}. Review max_off_policy_steps, "
-                "episode errors, and reward signal."
-            )
         self.wait_for_policy_time = 0.0
 
         if self.heart is not None:
             self.heart.beat()
-
-        self.progress.total_tokens += num_tokens
-        self.progress.total_samples += num_rollouts
-        self.progress.total_problems += num_unique_examples
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
@@ -751,10 +737,14 @@ class Orchestrator:
         """Stop scheduling train work and let the pipeline empty; triggered
         eval epochs still run to completion."""
         self.draining = True
+        self.train_sink.discard_queued()
         self.dispatcher.disable_train_scheduling()
-        n_cancelled = await self.dispatcher.cancel_inflight_train_episodes()
+        cancellations = await self.dispatcher.cancel_inflight_train_episodes()
+        for cancellation in cancellations:
+            await self.handle_train_result(await self.train_sink.cancel(cancellation))
+        n_cancelled = sum(cancellation.count for cancellation in cancellations)
         get_logger().info(
-            f"{reason} — draining pipeline (cancelled {n_cancelled} in-flight "
+            f"{reason} — draining pipeline (cancelled {n_cancelled} outstanding "
             f"train episode(s); any in-flight evals will complete)"
         )
 
@@ -848,16 +838,9 @@ class Orchestrator:
         return body, payload
 
     def log_train_batch(self, batch: TrainBatch, *, step: int, step_time: float) -> None:
-        """Per-step ``Step …`` success line. Multi-env runs append an indented ``╰─`` line per env.
-        Every quality metric (Reward, Trainable, Turns, Branches, Max Off-Policy, Truncation) is
-        computed over exactly the traces shipped to the trainer this step (``batch.cohort``).
-        ``Error``, ``Cancelled``, and ``Ratio`` describe the step's full arrival window. Over the
-        shipped set they are 0/0/share-of-shipped by construction, so the window is the only scope
-        where they carry signal. A cancellation is a pipeline decision, not a rollout failure."""
-        episodes = batch.episodes
+        """Quality and environment share of exactly the traces shipped this step."""
         effective = batch.cohort.effective
         eff = effective.metrics
-        n_generated = episodes.num_traces
         n_effective = effective.num_traces
         n_trainable = sum(is_trainable(record.trace) for record in effective.records)
         trainable_rate = (n_trainable / n_effective) if n_effective else 0.0
@@ -868,29 +851,25 @@ class Orchestrator:
             f"Trainable {n_trainable}/{n_effective} ({trainable_rate:.1%}) | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Max Off-Policy {max_off_policy_steps} | "
-            f"Error {episodes.metrics.has_error.mean():.1%} | Cancelled {episodes.metrics.cancelled.mean():.1%} | "
-            f"Truncation {eff.is_truncated.mean():.1%} | Timeout {episodes.metrics.is_timeout.mean():.1%}"
+            f"Truncation {eff.is_truncated.mean():.1%} | Timeout {eff.is_timeout.mean():.1%}"
         )
         if len(self.train_envs) <= 1:
             get_logger().success(head)
             return
 
-        window_by_env = episodes.by_env()
         shipped_by_env = effective.by_env()
-        env_names = sorted(set(window_by_env) | set(shipped_by_env))
+        env_names = sorted(shipped_by_env)
         name_width = max((len(name) for name in env_names), default=0)
         lines = [head]
         for env_name in env_names:
-            pool = window_by_env.get(env_name, TrainEpisodes())
             env_eff_pool = shipped_by_env.get(env_name, TrainEpisodes())
             env_eff = env_eff_pool.metrics
-            ratio = (pool.num_traces / n_generated) if n_generated else 0.0
+            ratio = env_eff_pool.num_traces / n_effective if n_effective else 0.0
             lines.append(
                 f"╰─ {env_name:<{name_width}} | Ratio {ratio:.1%} | Reward {env_eff.reward.mean():.4f} | "
                 f"Turns {env_eff.num_turns.mean():.1f} | Branches {env_eff.num_branches.mean():.1f} | "
                 f"Max Off-Policy {max((episode_staleness(episode, step)[0] for episode in env_eff_pool), default=0)} | "
-                f"Error {pool.metrics.has_error.mean():.1%} | Cancelled {pool.metrics.cancelled.mean():.1%} | "
-                f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {pool.metrics.is_timeout.mean():.1%}"
+                f"Truncation {env_eff.is_truncated.mean():.1%} | Timeout {env_eff.is_timeout.mean():.1%}"
             )
         get_logger().success("\n\t\t ".join(lines))
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.metrics import EvalEpisodes, Stat, TrainEpisodes
+from prime_rl.orchestrator.metrics import EvalEpisodes, MetricWindow, Stat, TrainEpisodes
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -108,6 +108,23 @@ def test_stat():
     assert (s.p10(), s.p90()) == pytest.approx((1.2, 2.8))  # linear-interpolated percentiles
     assert s.to_dict("p") == pytest.approx({"p/mean": 2.0, "p/max": 3.0, "p/min": 1.0, "p/p10": 1.2, "p/p90": 2.8})
     assert Stat([]).p90() == 0.0 and Stat([]).to_dict("p") == {}
+
+
+def test_numeric_windows_preserve_distributions_and_rate_denominators():
+    groups = [
+        [mk(reward=1, group_id="a", stop_condition="length", is_truncated=True), mk(group_id="a")],
+        [mk(group_id="b", stop_condition="done", has_error=True), mk(group_id="b", stop_condition="done")],
+        [mk(group_id="c", agent_name="judge", trainable=False)],
+    ]
+    window = MetricWindow()
+    for group in groups:
+        window.extend(train_episodes(group).metrics.snapshot(prefix="train/agg", subset="all"))
+    out = window.to_dict()
+    assert out == pytest.approx(train_wandb([episode for group in groups for episode in group]))
+    assert out["train/agg/all/agent/stop_condition/length"] == pytest.approx(1 / 3)
+    assert out["train/agg/all/agent/stop_condition/generation_truncated"] == 1 / 4
+    assert out["train/agg/all/agent/solved_none"] == 1 / 2
+    assert out["train/agg/all/agent/reward/p90"] == pytest.approx(0.7)
 
 
 def test_container_effective_by_env_and_listlike():
