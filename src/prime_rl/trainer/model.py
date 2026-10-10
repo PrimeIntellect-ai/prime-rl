@@ -243,19 +243,37 @@ def get_load_balance_stats(
     per_layer_routing_confidence = []
     block_mlps = list(iter_moe_blocks(model))
     if not block_mlps:
-        return {"max_vio": None, "routing_confidence": None, "tokens_per_expert": torch.empty(0, 0)}
+        return {
+            "max_vio": None,
+            "routing_confidence": None,
+            "router_replay/agreement": None,
+            "router_replay/zero_overlap": None,
+            "tokens_per_expert": torch.empty(0, 0),
+        }
 
     local_tokens_per_expert = torch.stack([block_mlp.tokens_per_expert for block_mlp in block_mlps])
-    layer_stats = [(block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum) for block_mlp in block_mlps]
+    layer_stats = [
+        (block_mlp.tokens_per_expert, block_mlp.routing_confidence_sum, block_mlp.replay_agreement)
+        for block_mlp in block_mlps
+    ]
     if group is not None:
-        sizes = [tokens_per_expert.numel() + 1 for tokens_per_expert, _ in layer_stats]
+        sizes = [tokens_per_expert.numel() + 5 for tokens_per_expert, _, _ in layer_stats]
         packed_stats = torch.cat(
-            [torch.cat((tokens_per_expert, confidence.reshape(1))) for tokens_per_expert, confidence in layer_stats]
+            [
+                torch.cat((tokens_per_expert, confidence.reshape(1), replay))
+                for tokens_per_expert, confidence, replay in layer_stats
+            ]
         )
         dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
-        layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
+        layer_stats = [(stats[:-5], stats[-5], stats[-4:]) for stats in packed_stats.split(sizes)]
 
-    for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
+    # Per layer: replayed tokens, checked tokens, checked tokens with no shared expert, summed shared fraction
+    replay = torch.stack([replay for _, _, replay in layer_stats])
+    for block_mlp in block_mlps:
+        block_mlp.replay_agreement.zero_()
+    checked = replay[:, 1].clamp(min=1)
+
+    for block_mlp, (tokens_per_expert, routing_confidence_sum, _) in zip(block_mlps, layer_stats):
         num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
         tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
         balanced_load = tokens_per_expert.mean()
@@ -267,9 +285,14 @@ def get_load_balance_stats(
 
         block_mlp.tokens_per_expert.zero_()
         block_mlp.routing_confidence_sum.zero_()
+    # Every rank replays or none does (the trainer requires routes on every micro batch when
+    # replay is on), so all ranks agree on whether these stats exist.
+    replaying = bool(replay[:, 0].sum() > 0)
     return {
         "max_vio": torch.stack(per_layer_max_vio),
         "routing_confidence": torch.stack(per_layer_routing_confidence),
+        "router_replay/agreement": replay[:, 3] / checked if replaying else None,
+        "router_replay/zero_overlap": replay[:, 2] / checked if replaying else None,
         "tokens_per_expert": local_tokens_per_expert,
     }
 
@@ -289,8 +312,8 @@ def get_global_moe_stats(
     for name, values in load_balance_stats.items():
         if values is None:
             continue
-        value = values.max() if name == "max_vio" else values.mean()
-        if name == "max_vio":
+        value = values.max() if name in ("max_vio", "router_replay/zero_overlap") else values.mean()
+        if name in ("max_vio", "router_replay/zero_overlap"):
             dist.all_reduce(value, op=dist.ReduceOp.MAX, group=dp_cp_group)
         else:
             dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
@@ -905,6 +928,7 @@ def _reset_runtime_moe_buffers(model: nn.Module) -> None:
         if isinstance(module, MoE) and module.tokens_per_expert.device.type != "meta":
             module.tokens_per_expert.zero_()
             module.routing_confidence_sum.zero_()
+            module.replay_agreement.zero_()
 
 
 def _validate_flash_attn_4_installed() -> None:
