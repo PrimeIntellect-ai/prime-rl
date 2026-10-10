@@ -83,33 +83,21 @@ class FakeDataset(StatefulIterableDataset):
 
     def __init__(
         self,
-        vocab_size: int,
         seq_len: int,
         length: Literal["fixed", "variable"] = "fixed",
-        input_ids: Literal["increasing", "random"] = "random",
         seed: int = 0,
         non_dp_size: int = 1,
     ):
         super().__init__(non_dp_size)
-        self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
-        self.input_ids = input_ids
         self.seed = seed
 
-    def _draw_sample(self, generator: torch.Generator) -> tuple[int, list[int] | None]:
+    def _draw_sample_len(self, generator: torch.Generator) -> int:
         # Consume this samples "randomness" - fast forwarding must replay it to restore the generator state
-        seq_len = (
-            int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
-            if self.length == "variable"
-            else self.seq_len
-        )
-        random_input_ids = (
-            torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
-            if self.input_ids == "random"
-            else None
-        )
-        return seq_len, random_input_ids
+        if self.length == "variable":
+            return int(torch.randint(1, self.seq_len, (1,), generator=generator).item())
+        return self.seq_len
 
     def __iter__(self):
         self._setup_world_info()
@@ -120,7 +108,7 @@ class FakeDataset(StatefulIterableDataset):
             # step counts globally emmited samples but this rank is only emitted every data_world_size-TH
             already_emitted = len(range(self.data_rank, self.step, self.data_world_size))
             for _ in range(already_emitted):
-                self._draw_sample(generator)
+                self._draw_sample_len(generator)
             self.fast_forward = False
 
         while True:
@@ -130,8 +118,8 @@ class FakeDataset(StatefulIterableDataset):
             if (self.step - 1) % self.data_world_size != self.data_rank:
                 continue
 
-            seq_len, random_input_ids = self._draw_sample(generator)
-            input_ids = [self.step - 1] * (seq_len + 1) if random_input_ids is None else random_input_ids
+            seq_len = self._draw_sample_len(generator)
+            input_ids = [self.step - 1] * (seq_len + 1)
             position_ids = list(range(seq_len))
             loss_mask = [True] * seq_len
             fake_sample = {
@@ -731,10 +719,8 @@ def setup_dataset(
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
-            vocab_size=tokenizer.vocab_size,
             seq_len=config.seq_len,
             length=config.length,
-            input_ids=config.input_ids,
             seed=config.seed,
             non_dp_size=non_dp_size,
         )

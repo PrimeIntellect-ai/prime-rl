@@ -12,10 +12,8 @@ from prime_rl.trainer.world import reset_world
 
 def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
     dataset = FakeDataset(
-        vocab_size=32,
         seq_len=config.seq_len,
         length=config.length,
-        input_ids=config.input_ids,
         seed=config.seed,
         non_dp_size=non_dp_size,
     )
@@ -24,7 +22,7 @@ def setup_fake_dataloader(config: FakeDataConfig, non_dp_size: int = 1):
 
 def test_fake_dataset_single_rank_state():
     # Setup stateful dataloader
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="fixed", batch_size=1)
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -58,7 +56,7 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
     os.environ["LOCAL_WORLD_SIZE"] = str(2)
 
     # Setup stateful dataloader
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="fixed", batch_size=1)
     _, dataloader = setup_fake_dataloader(config, non_dp_size)
     dataiter = iter(dataloader)
 
@@ -75,7 +73,7 @@ def test_fake_dataset_multi_rank_state(rank: int, non_dp_size: int):
 
 
 def test_fake_dataset_single_rank_resume():
-    config = FakeDataConfig(length="fixed", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="fixed", batch_size=1)
     dataset, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -101,7 +99,7 @@ def test_fake_dataset_single_rank_resume():
 
 
 def test_fake_dataset_single_rank_state_with_packing():
-    config = FakeDataConfig(length="variable", input_ids="increasing", batch_size=1)
+    config = FakeDataConfig(length="variable", batch_size=1)
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)
 
@@ -244,7 +242,6 @@ def test_dataloader_progress_is_monotonic_with_uneven_workers():
         seq_len=32,
         num_workers=2,
         length="variable",
-        input_ids="increasing",
     )
     _, dataloader = setup_fake_dataloader(config)
     dataiter = iter(dataloader)

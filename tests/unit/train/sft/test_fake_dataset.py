@@ -4,12 +4,12 @@ from prime_rl.trainer.sft.data import FakeDataset
 
 
 def test_init_fake_dataset():
-    fake_dataset = FakeDataset(vocab_size=10000, seq_len=128)
+    fake_dataset = FakeDataset(seq_len=128)
     assert fake_dataset is not None
 
 
 def test_fake_dataset_state():
-    dataset = FakeDataset(vocab_size=10000, seq_len=128)
+    dataset = FakeDataset(seq_len=128)
     dataiter = iter(dataset)
 
     # Initial state
@@ -28,11 +28,11 @@ def test_fake_dataset_state():
 
 @pytest.mark.parametrize("length", ["fixed", "variable"])
 @pytest.mark.parametrize("data_world_size", [1, 2, 3])
-def test_fake_dataset_random_resume(length: str, data_world_size: int):
+def test_fake_dataset_resume(length: str, data_world_size: int):
     # Resuming mid run must replay the same per perank PR foir every data rank
 
     def make(data_rank: int) -> FakeDataset:
-        dataset = FakeDataset(vocab_size=10000, seq_len=128, length=length, input_ids="random")
+        dataset = FakeDataset(seq_len=128, length=length)
         dataset.data_rank, dataset.data_world_size = data_rank, data_world_size
         return dataset
 
