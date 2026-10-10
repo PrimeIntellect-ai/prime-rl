@@ -162,6 +162,7 @@ class TrainEnv(Env):
         )
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
+        self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
 
     async def setup(self) -> None:
         async def connect_source() -> None:
@@ -176,8 +177,6 @@ class TrainEnv(Env):
         for clients in (self.connected, self.algorithm.connected):
             if clients is not None:
                 await clients.aclose()
-
-        self.requires_top_logprobs = config.sampling.logprobs is not None and config.algo.sampling.source == "policy"
 
 
 class EvalEnv(Env):
