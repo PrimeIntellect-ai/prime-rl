@@ -25,6 +25,68 @@ from prime_rl.trainer.rl.loss import (
 pytestmark = [pytest.mark.gpu]
 
 
+@pytest.mark.parametrize("head_size,q_head", [(4, [0.6, 0.1, 0.2, 0.1]), (2, [0.5, 0.3]), (2, [0.1, 0.1])])
+@pytest.mark.parametrize("constant_advantage", [False, True])
+def test_icepop_score_centering_matches_dense_gradient(head_size, q_head, constant_advantage):
+    logits = torch.tensor([0.3, -0.4, 0.1, -0.9], requires_grad=True)
+    logp = logits.log_softmax(-1)
+    p = logp.detach().exp()
+    q = torch.tensor(q_head)
+    if head_size < 4:
+        q = torch.cat((q, (1 - q.sum()) * p[head_size:] / p[head_size:].sum()))
+    advantage = torch.ones(4) if constant_advantage else torch.tensor([1.3, -0.7, 0.2, -1.0])
+    # Enumerate all sampled actions, including rejected ones, under the same prefix.
+    inputs = LossInputs(
+        logp,
+        q.log(),
+        None,
+        advantage,
+        torch.ones(4, dtype=torch.bool),
+        q,
+        logp[:head_size].expand(4, -1),
+        q[:head_size].log().expand(4, -1),
+        torch.ones((4, head_size), dtype=torch.bool),
+    )
+    config = IcePopLossConfig(
+        ratio_low=0.5,
+        ratio_high=2.0,
+        score_centering=True,
+        score_centering_topk=head_size if head_size < 4 else None,
+    )
+    actual = setup_rl_loss_fn(config).loss(inputs).loss
+    ratio = p / q
+    weight = ratio * ((ratio >= config.ratio_low) & (ratio <= config.ratio_high))
+    baseline = (q * weight * logp).sum()
+    reference = -(q * advantage * (weight * logp - baseline)).sum()
+    actual_gradient = torch.autograd.grad(actual, logits, retain_graph=True)[0]
+    reference_gradient = torch.autograd.grad(reference, logits)[0]
+    torch.testing.assert_close(actual_gradient, reference_gradient, atol=2e-7, rtol=2e-6)
+    if constant_advantage:
+        torch.testing.assert_close(actual_gradient, torch.zeros_like(logits), atol=2e-7, rtol=0)
+
+
+def test_icepop_score_centering_excludes_non_rl_tokens():
+    logits = torch.tensor([[0.2, -0.3], [0.7, -0.1]], requires_grad=True)
+    logp = logits.log_softmax(-1)
+    q = torch.tensor([[0.8, 0.2], [0.5, 0.5]])
+    inputs = LossInputs(
+        logp[:, 0],
+        q[:, 0].log(),
+        None,
+        torch.tensor([1.0, float("nan")]),
+        torch.tensor([True, False]),
+        torch.tensor([0.4, 0.0]),
+        logp,
+        q.log(),
+        torch.tensor([[True, True], [False, False]]),
+    )
+    loss = IcePopLoss(IcePopLossConfig(score_centering=True)).loss(inputs).loss
+    gradient = torch.autograd.grad(loss, logits)[0]
+    assert torch.isfinite(loss)
+    assert torch.isfinite(gradient).all()
+    torch.testing.assert_close(gradient[1], torch.zeros(2))
+
+
 @pytest.mark.parametrize("head_size", [2, 5])
 def test_score_centering_matches_full_modeled_sampler_gradient(head_size):
     logits = torch.tensor([0.7, -0.4, 0.2, 0.1, -1.0], device="cuda", requires_grad=True)
