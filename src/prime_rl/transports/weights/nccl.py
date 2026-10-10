@@ -1,3 +1,4 @@
+import json
 import pickle
 from pathlib import Path
 from typing import Callable, Generator
@@ -11,11 +12,13 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
+from prime_rl.orchestrator.clients import NcclGroup
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.pathing import get_broadcast_dir
 from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import resolve_wire_dtype
 
@@ -168,6 +171,11 @@ class NCCLBroadcaster:
                 broadcast_state_dict(layer_state_dict, self.communicator)
 
 
+def nccl_group_file(broadcast_dir: Path) -> Path:
+    """Where the orchestrator publishes a new NCCL group after evicting or re-adding an engine."""
+    return broadcast_dir / "nccl_group.json"
+
+
 class NCCLWeightSender(WeightSender):
     """Broadcast weights into the inference engine using NCCL."""
 
@@ -178,6 +186,9 @@ class NCCLWeightSender(WeightSender):
         device: int | str | torch.device,
     ):
         super().__init__(output_dir, config.timeout)
+        self.config = config
+        self.device = device
+        self.generation = 0
         self.nccl_broadcast_sender = NCCLBroadcaster(
             config.host,
             config.port,
@@ -194,9 +205,35 @@ class NCCLWeightSender(WeightSender):
         # (DTensor resolution, checkpoint conversion) enqueues collectives on non-master
         # ranks, and if those start before the receiver has paused inference,
         # the collectives sit unmatched until NCCL's watchdog kills the process.
+        if self.world.is_master:
+            self._maybe_rebuild()
         if self.world.world_size > 1:
             dist.barrier()
         self.nccl_broadcast_sender.send(model)
+
+    def _maybe_rebuild(self) -> None:
+        """Join the group the orchestrator published after an engine was evicted or re-added.
+        The file is written before the receiver acknowledges this version, so it is current."""
+        group_file = nccl_group_file(get_broadcast_dir(self.output_dir))
+        if not group_file.exists():
+            return
+        group = json.loads(group_file.read_text())
+        if group["generation"] <= self.generation:
+            return
+        self.logger.info(
+            f"Rebuilding the NCCL weight broadcast group (generation {group['generation']}, "
+            f"{group['inference_world_size']} inference ranks)"
+        )
+        self.nccl_broadcast_sender.communicator.destroy()
+        self.nccl_broadcast_sender = NCCLBroadcaster(
+            self.config.host,
+            group["port"],
+            0,
+            group["inference_world_size"] + 1,
+            self.device,
+            self.config.timeout,
+        )
+        self.generation = group["generation"]
 
 
 class NCCLWeightReceiver(WeightReceiver):
@@ -206,11 +243,22 @@ class NCCLWeightReceiver(WeightReceiver):
     marker."""
 
     async def initialize(self) -> None:
+        group_file = nccl_group_file(self.broadcast_dir)
+        # A group left by a previous run must not steer the new trainer off generation 0
+        group_file.unlink(missing_ok=True)
         await self.admin_plane.initialize_nccl(
             host=self.config.host,
             port=self.config.port,
             timeout=self.config.timeout,
             inference_world_size=self.config.inference_world_size,
+        )
+        self.admin_plane.nccl = NcclGroup(
+            host=self.config.host,
+            base_port=self.config.port,
+            timeout=self.config.timeout,
+            gpus_per_server=self.config.inference_world_size // len(self.admin_plane.clients),
+            group_file=group_file,
+            members=list(self.admin_plane.clients),
         )
 
     async def receive(self, step: int) -> None:

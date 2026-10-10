@@ -396,10 +396,10 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
-        # Filesystem broadcast does not track the receiving engines, so a dead engine can be
-        # evicted and the run continues on the others (one engine has nothing to fall back to).
+        # A dead engine is evicted and the run continues on the others (one engine has nothing
+        # to fall back to). NIXL pins its receiving engines on the trainer side, so it fails fast.
         if (
-            self.config.weight_broadcast.type == "filesystem"
+            self.config.weight_broadcast.type in ("filesystem", "nccl")
             and type(self.admin_plane) is AdminPlane
             and len(self.admin_plane.clients) > 1
         ):

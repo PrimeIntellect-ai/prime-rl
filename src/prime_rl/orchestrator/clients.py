@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -102,6 +104,42 @@ class InferenceClient:
         await asyncio.gather(*(finish_session(session_id) for session_id in session_ids))
 
 
+@dataclass
+class NcclGroup:
+    """Membership of the NCCL weight broadcast group, for engine eviction and rejoin. The
+    trainer reads ``group_file`` at the start of each transfer and rebuilds its communicator
+    on a new generation (``transports/weights/nccl.py``)."""
+
+    host: str
+    base_port: int
+    timeout: int
+    gpus_per_server: int
+    group_file: Path
+    members: list[AsyncClient]
+    generation: int = 0
+
+    @property
+    def port(self) -> int:
+        return self.base_port + self.generation
+
+    def regroup(self, members: list[AsyncClient]) -> None:
+        """Start a new generation with ``members``. Written before the receiver acknowledges
+        the version, so the trainer sees it when it enters the transfer."""
+        self.generation += 1
+        self.members = list(members)
+        tmp = self.group_file.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(
+                {
+                    "generation": self.generation,
+                    "port": self.port,
+                    "inference_world_size": self.gpus_per_server * len(members),
+                }
+            )
+        )
+        tmp.replace(self.group_file)
+
+
 class AdminPlane:
     """Admin plane of the policy inference deployment: one httpx client per
     engine process. The router serves no admin routes (pause/resume,
@@ -129,6 +167,8 @@ class AdminPlane:
         self.evicted: list[AsyncClient] = []
         self.recovered: set[AsyncClient] = set()
         self.evicting = False
+        self.updating = False
+        self.nccl: NcclGroup | None = None
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -223,6 +263,9 @@ class AdminPlane:
         consecutive: dict[AsyncClient, int] = {}
         while True:
             await asyncio.sleep(interval)
+            # A weight update keeps the workers busy, so /liveness can time out on healthy engines
+            if self.updating:
+                continue
             clients = self.clients + self.evicted
             live = await asyncio.gather(*(_is_live(client) for client in clients))
             for client, ok in zip(clients, live):
@@ -286,15 +329,26 @@ class AdminPlane:
     ) -> None:
         rejoining = [client for client in self.evicted if client in self.recovered]
         get_logger().debug(f"Pausing inference engines to update weights to policy v{step}")
-        paused = await self._each(self.clients + rejoining, "/pause", params={"mode": "keep", "clear_cache": "false"})
+        self.updating = True
         try:
-            if on_paused is not None:
-                on_paused()
-            updated = await self._each(
-                paused, "/update_weights", json={"weight_dir": weight_dir}, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S
+            paused = await self._each(
+                self.clients + rejoining, "/pause", params={"mode": "keep", "clear_cache": "false"}
             )
+            regroup = self.nccl is not None and paused != self.nccl.members
+            if regroup:
+                self.nccl.regroup(paused)
+            try:
+                if on_paused is not None:
+                    on_paused()
+                if regroup:
+                    await self._init_nccl(paused)
+                updated = await self._each(
+                    paused, "/update_weights", json={"weight_dir": weight_dir}, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S
+                )
+            finally:
+                resumed = await self._each(paused, "/resume")
         finally:
-            resumed = await self._each(paused, "/resume")
+            self.updating = False
         for client in rejoining:
             if client in updated and client in resumed:
                 self.evicted.remove(client)
@@ -302,6 +356,32 @@ class AdminPlane:
                 self.clients.append(client)
                 await self._set_routed(client, True)
                 get_logger().info(f"Inference engine {client.base_url} rejoined at policy v{step}")
+
+    async def _init_nccl(self, members: list[AsyncClient]) -> None:
+        """Join ``members`` to the trainer's rebuilt communicator (``NcclGroup.regroup``). Not
+        evicting: a member missing from the rendezvous would hang it, so a failure here is fatal."""
+        group = self.nccl
+        assert group is not None
+        get_logger().info(
+            f"Rebuilding the NCCL weight broadcast group (generation {group.generation}): {len(members)} engines"
+        )
+        await asyncio.gather(
+            *(
+                _admin_post(
+                    client,
+                    "/init_broadcaster",
+                    timeout_s=max(ADMIN_TIMEOUT_S, group.timeout),
+                    json={
+                        "host": group.host,
+                        "port": group.port,
+                        "rank_offset": index * group.gpus_per_server,
+                        "inference_world_size": group.gpus_per_server * len(members),
+                        "timeout": group.timeout,
+                    },
+                )
+                for index, client in enumerate(members)
+            )
+        )
 
     async def aclose(self) -> None:
         for client in self.clients + self.evicted + self._router_clients:
