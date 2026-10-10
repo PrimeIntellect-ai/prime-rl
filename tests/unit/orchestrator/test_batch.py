@@ -655,3 +655,21 @@ def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
     # Inline masks sit at the sampled position; by-handle ones are read shifted onto the labels.
     assert masks[True][1].tolist() == [5, 6]
     assert masks[False][0].tolist() == [5, 6]
+
+
+def test_read_file_retries_short_reads(tmp_path, monkeypatch):
+    """A short read (a shared filesystem serving a stale view) is retried, then raises."""
+    from prime_rl.transports import payload
+    from prime_rl.transports.payload import PayloadSegment
+
+    rows = np.arange(6, dtype=np.int32).reshape(3, 2)
+    path = tmp_path / "late.bin"
+    path.write_bytes(b"")
+    segment = PayloadSegment("sampling_mask", str(path), 0, 0, 3, "int32", [2])
+    monkeypatch.setattr(payload.time, "sleep", lambda _: path.write_bytes(rows.tobytes()))
+    assert payload._read_file([segment]) == [rows.tobytes()]
+
+    monkeypatch.setattr(payload.time, "sleep", lambda _: None)
+    path.write_bytes(b"")
+    with pytest.raises(OSError, match="returned 0 of 24 bytes"):
+        payload._read_file([segment])

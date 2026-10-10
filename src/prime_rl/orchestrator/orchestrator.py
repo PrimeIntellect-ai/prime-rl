@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 import uuid
 from typing import TYPE_CHECKING
@@ -60,10 +61,13 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
+    delete_files,
+    delete_payloads_before,
     episode_group_id,
     episode_staleness,
     eval_work,
     intercept_vf_logging,
+    min_fresh_version,
     set_default_executor,
     trim_process_memory,
 )
@@ -251,6 +255,11 @@ class Orchestrator:
 
         # Transports are local setup — initialize them before the env and inference waits.
         self.packer = BatchPacker(config)
+        # A resumed run keeps the payloads: the trainer may still read batches pointing into them.
+        if config.payload_root is not None and self.resume_step is None:
+            shutil.rmtree(config.payload_root, ignore_errors=True)
+        # Step -> payload files of the shipped batch, deleted once the trainer has read it.
+        self.unread_payloads: dict[int, set[str]] = {}
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
             config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
@@ -335,6 +344,7 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            payload_root=config.payload_root,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
@@ -574,10 +584,12 @@ class Orchestrator:
         # A resume can start past the end (checkpoint written at the final
         # step, or a lowered ``max_steps``): never ship beyond the budget.
         if config.max_steps is not None and step > config.max_steps:
+            self.delete_payloads(batch.payload_files)
             await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
             return
 
         if not batch.samples:
+            self.delete_payloads(batch.payload_files)
             get_logger().warning(
                 f"Step {step}: skipping empty train batch after {len(batch.episodes)} finalized episodes"
             )
@@ -620,6 +632,7 @@ class Orchestrator:
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
         await self.sender.send(micro_batch_grid)
+        self.unread_payloads[step] = batch.payload_files
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -986,10 +999,25 @@ class Orchestrator:
                     self.gate_closed_at = None
             gate.set()
 
-    async def on_policy_update(self, _step: int) -> None:
+    async def on_policy_update(self, step: int) -> None:
         """Refresh policy-dependent state after inference applies new weights."""
         self.update_dispatch_gate()
         self.version_advanced.set()
+        if self.config.payload_root is None:
+            return
+        # The trainer read batch `step` before publishing v{step}.
+        read = [s for s in self.unread_payloads if s <= step]
+        self.delete_payloads(set().union(*(self.unread_payloads.pop(s) for s in read)))
+        # Orphans (in-flight episodes that were cancelled or failed, files from before a resume):
+        # unread batches only hold rollouts dispatched at min_fresh_version(step + 1) or later.
+        oldest = min_fresh_version(step + 1, self.config.max_off_policy_steps)
+        asyncio.get_running_loop().run_in_executor(None, delete_payloads_before, self.config.payload_root, oldest)
+
+    def delete_payloads(self, files: set[str]) -> None:
+        """Delete payload files in the background: on a shared filesystem, unlinking a step's
+        ~10^4-10^5 files must not hold up the weight update this runs under."""
+        if files:
+            asyncio.get_running_loop().run_in_executor(None, delete_files, files)
 
     async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global
