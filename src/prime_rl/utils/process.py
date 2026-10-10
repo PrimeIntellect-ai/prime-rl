@@ -35,6 +35,10 @@ DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
     "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
     "UCX_TLS": "all",
+    # vLLM's AOT compile cache and FlashInfer's JIT cache default to $HOME; a partial cache shared across
+    # nodes makes TP ranks load different compiled artifacts and hang.
+    "VLLM_CACHE_ROOT": f"/tmp/.vllm-cache-{os.getuid()}",
+    "FLASHINFER_WORKSPACE_BASE": f"/tmp/.flashinfer-cache-{os.getuid()}",
 }
 
 
