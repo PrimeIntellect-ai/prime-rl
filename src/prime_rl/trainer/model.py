@@ -1024,7 +1024,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     if has_moe:
-        configure_moe_runtime(model, config, parallel_dims)
+        configure_moe_runtime(model, config, parallel_dims, pp_stage)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.

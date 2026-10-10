@@ -71,7 +71,9 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
-def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+def configure_moe_runtime(
+    model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims, pp_stage: int | None = None
+) -> None:
     moe_layers = [module for module in model.modules() if isinstance(module, MoE)]
     if not moe_layers:
         if config.moe != MoERuntimeConfig():
@@ -127,7 +129,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                     wgrad_tile_scales=dispatch.wgrad_tile_scales,
                     free_bf16_weights=dispatch.free_bf16_expert_weights,
                     transposed_on_demand=transposed_on_demand,
-                    fused_wgrad_micro_batches=dispatch.fused_wgrad_micro_batches,
+                    fused_wgrad_micro_batches=_stage_value(dispatch.fused_wgrad_micro_batches, pp_stage),
                 )
             else:
                 shared_limit = getattr(moe.shared_expert, "limit", moe.experts.activation.limit)
@@ -198,6 +200,14 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
         f"apply_to={config.moe.compute.apply_to}, fallback=bf16, dispatch={config.moe.dispatch.type}, ep={parallel_dims.ep}"
     )
+
+
+def _stage_value(value: int | list[int], pp_stage: int | None) -> int:
+    """A per-stage config value: an int applies to every stage, a list holds one entry per pipeline stage."""
+    if isinstance(value, int):
+        return value
+    assert pp_stage is not None, "a per-stage list needs pipeline parallelism"
+    return value[pp_stage]
 
 
 def set_local_expert_grad_sync(model: nn.Module, final_micro_batch: bool) -> None:
