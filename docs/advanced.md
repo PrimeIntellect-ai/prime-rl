@@ -115,6 +115,8 @@ type = "deepep"
 num_sms = 32
 ```
 
+- **`deepep_v2`**: DeepEP V2 (`deep_ep_v2` package, from the prime-kernels release) for expert parallelism within one node. Multi-node EP must use `deepep`. It needs NCCL >= 2.32.3. Its kernels are compiled on first use with the CUDA toolkit at `CUDA_HOME` (default `/usr/local/cuda`) and cached in `EP_JIT_CACHE_DIR`. `num_sms = 0` (the default) lets DeepEP choose.
+
 ### Runtime Fusions
 
 `model.fusions` packs parameters that are always computed together into one tensor, turning several GEMMs into one. Both fusions are on by default:

@@ -7,6 +7,7 @@ from torch.distributed.tensor.parallel import parallelize_module
 from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
     DeepEPMoEDispatchConfig,
+    DeepEPV2MoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
     ModelConfig,
     MoERuntimeConfig,
@@ -122,6 +123,20 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
                 hidden_size=moe.experts.down_proj.shape[1],
+            )
+        elif isinstance(dispatch, DeepEPV2MoEDispatchConfig):
+            if importlib.util.find_spec("deep_ep_v2") is None:
+                raise RuntimeError("DeepEP V2 dispatch requires the deep-ep-v2 package from the prime-kernels release.")
+            from prime_rl.trainer.distributed.deepep_v2 import DeepEPV2TokenDispatcher
+
+            token_dispatcher = DeepEPV2TokenDispatcher(
+                num_experts=moe.experts.num_experts,
+                top_k=moe.router.top_k,
+                token_group_alignment=compute.token_group_alignment,
+                group=ep_mesh.get_group(),
+                num_sms=dispatch.num_sms,
+                hidden_size=moe.experts.down_proj.shape[1],
+                num_max_tokens_per_rank=config.seq_len // config.cp,
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
