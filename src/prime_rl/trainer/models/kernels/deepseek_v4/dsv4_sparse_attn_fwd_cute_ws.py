@@ -24,6 +24,8 @@ A persistent grid of one 384-thread CTA (three warpgroups) per SM walks the quer
     buffer's channels 0-255, warpgroup 1 in the even buffer's channels 256-511) and stores it with
     one TMA bulk store; one thread releases that half once the store has read it, while the rest of
     the warpgroup, the next query's Q load and the producer's first gathers already move on.
+  - Q arrives by TMA: one warp issues the next query's load as soon as both consumers have finished
+    their last score GEMM, so it lands during the epilogue.
 
 The online softmax keeps the running max in log2 units, `m = max(logit) * scale * log2(e)`, seeded
 with the sink `Sinks[h] * log2(e)`; the running sum of one thread per head (in warpgroup 0) is
@@ -66,13 +68,13 @@ BAR_WG1_MAX_READY = 2
 BAR_S0_READY = 3
 BAR_S1_READY = 4
 BAR_SUM_READY = 5
-BAR_Q_READY = 6
-BAR_WG0_O_STAGED = 7
+BAR_WG0_O_STAGED = 6
 
 MBAR_K_READY = 0
 MBAR_K_FREE = 4
 MBAR_VALID_READY = 8
-NUM_MBARS = 9
+MBAR_Q_READY = 9
+NUM_MBARS = 10
 TILE_COUNT_QUERIES_PER_CTA = 8
 
 
@@ -201,6 +203,22 @@ def _load_query_start(
     return mTileCounts[b_i, s_i, 0]
 
 
+@cute.jit
+def _load_q_tma(tma_atom_q: cute.CopyAtom, tma_q: cute.Tensor, sQ: cute.Tensor, bar, work: Int32, seq_len: Int32):
+    """Load one query's Q tile with TMA; the caller must be a whole warp."""
+    b_i = work // seq_len
+    tQsQ, tQgQ = cpasync.tma_partition(
+        tma_atom_q,
+        0,
+        cute.make_layout(1),
+        cute.group_modes(sQ, 0, 2),
+        cute.group_modes(tma_q[None, None, work - b_i * seq_len, b_i], 0, 2),
+    )
+    if cute.arch.lane_idx() == 0:
+        cute.arch.mbarrier_arrive_and_expect_tx(bar, cute.size_in_bytes(BFloat16, sQ.layout))
+    cute.copy(tma_atom_q, tQgQ, tQsQ, tma_bar_ptr=bar)
+
+
 @cute.kernel
 def _fwd_kernel(
     mQ: cute.Tensor,
@@ -219,7 +237,8 @@ def _fwd_kernel(
     tiled_mma_qk: cute.TiledMma,
     tiled_mma_pv_rs: cute.TiledMma,
     tiled_mma_pv_ss: cute.TiledMma,
-    tiled_copy_q: cute.TiledCopy,
+    tma_atom_q: cute.CopyAtom,
+    tma_q: cute.Tensor,
 ):
     tidx, _, _ = cute.arch.thread_idx()
     cta, _, _ = cute.arch.block_idx()
@@ -243,6 +262,7 @@ def _fwd_kernel(
             cute.arch.mbarrier_init(mbars + MBAR_K_READY + i, WARPGROUP_THREADS)
             cute.arch.mbarrier_init(mbars + MBAR_K_FREE + i, WARPGROUP_THREADS)
         cute.arch.mbarrier_init(mbars + MBAR_VALID_READY, NUM_GROUPS)
+        cute.arch.mbarrier_init(mbars + MBAR_Q_READY, 1)
         cute.arch.mbarrier_init_fence()
     cute.arch.sync_threads()
 
@@ -281,11 +301,10 @@ def _fwd_kernel(
                 free_phase ^= 1
     else:
         cute.arch.setmaxregister_increase(CONSUMER_REGS)
-        thr_copy_q = tiled_copy_q.get_slice(tidx)
-        tQsQ = thr_copy_q.partition_D(sQ)
-        if cta < num_queries:
-            cute.copy(tiled_copy_q, thr_copy_q.partition_S(mQ[cta // seq_len, cta % seq_len, None, None]), tQsQ)
-        cute.arch.cp_async_commit_group()
+        if tidx // cute.arch.WARP_SIZE == 0:
+            cpasync.prefetch_descriptor(tma_atom_q)
+            if cta < num_queries:
+                _load_q_tma(tma_atom_q, tma_q, sQ, mbars + MBAR_Q_READY, cta, seq_len)
 
         sQ_halves = [cute.local_tile(sQ, (HEADS, HALF), (0, half)) for half in range(2)]
         sK_halves = [
@@ -343,6 +362,7 @@ def _fwd_kernel(
         )
         thr_copy_o = smem_copy_o.get_slice(idx_in_wg)
         ready_phase = Int32(0)
+        q_phase = Int32(0)
         for work in cutlass.range(cta, num_queries, num_ctas, unroll=1):
             b_i = work // seq_len
             s_i = work - b_i * seq_len
@@ -352,9 +372,8 @@ def _fwd_kernel(
                 rM[r] = mSinks[head_of[r]] * LOG2E
                 rL[r] = Float32(1.0) if wg_idx == 0 and cute.arch.lane_idx() % 4 == 0 else Float32(0.0)
 
-            cute.arch.cp_async_wait_group(0)
-            cute.arch.fence_view_async_shared()
-            cute.arch.barrier(barrier_id=BAR_Q_READY, number_of_threads=CONSUMER_THREADS)
+            cute.arch.mbarrier_wait(mbars + MBAR_Q_READY, q_phase)
+            q_phase ^= 1
 
             if wg_idx == 0:
                 if num_pairs > 0:
@@ -451,13 +470,8 @@ def _fwd_kernel(
                     sL[wg_idx, head_of[r]] = v
             cute.arch.barrier(barrier_id=BAR_SUM_READY, number_of_threads=CONSUMER_THREADS)
             next_work = work + num_ctas
-            if next_work < num_queries:
-                cute.copy(
-                    tiled_copy_q,
-                    thr_copy_q.partition_S(mQ[next_work // seq_len, next_work % seq_len, None, None]),
-                    tQsQ,
-                )
-            cute.arch.cp_async_commit_group()
+            if next_work < num_queries and tidx // cute.arch.WARP_SIZE == 0:
+                _load_q_tma(tma_atom_q, tma_q, sQ, mbars + MBAR_Q_READY, next_work, seq_len)
             for r in cutlass.range_constexpr(n_rows):
                 rL[r] = rL[r] + sL[1 - wg_idx, head_of[r]]
                 inv_sum = cute.arch.rcp_approx(rL[r])
@@ -532,12 +546,11 @@ def _fwd(
         atom_layout_mnk=(1, 1, 1),
         tiler_mn=(HEADS, HALF),
     )
-    tiled_copy_q = cute.make_tiled_copy_tv(
-        cute.make_copy_atom(
-            cpasync.CopyG2SOp(cache_mode=cute.nvgpu.LoadCacheMode.GLOBAL), BFloat16, num_bits_per_copy=128
-        ),
-        cute.make_ordered_layout((CONSUMER_THREADS // (DIM // CHUNK), DIM // CHUNK), order=(1, 0)),
-        cute.make_layout((1, CHUNK)),
+    tma_atom_q, tma_q = cpasync.make_tiled_tma_atom(
+        cpasync.CopyBulkTensorTileG2SOp(),
+        cute.make_tensor(mQ.iterator, cute.select(mQ.layout, mode=[2, 3, 1, 0])),
+        sQ_layout,
+        (HEADS, DIM),
     )
     tma_atom_o, tma_o = cpasync.make_tiled_tma_atom(
         cpasync.CopyBulkTensorTileS2GOp(),
@@ -577,7 +590,8 @@ def _fwd(
         tiled_mma_qk,
         tiled_mma_pv_rs,
         tiled_mma_pv_ss,
-        tiled_copy_q,
+        tma_atom_q,
+        tma_q,
     ).launch(
         grid=(cutlass.min(mQ.shape[0] * mQ.shape[1], max_ctas), 1, 1),
         block=(THREADS, 1, 1),
