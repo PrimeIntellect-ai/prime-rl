@@ -7,6 +7,7 @@ LABEL = "flashmla_fwd_ref (reference, not a backend)"
 FORWARD_ONLY = True
 EXECUTED_SLOT_TILE = None
 SLOT_MULTIPLE = 128
+IMPORTS = ["flash_mla"]
 
 
 def unavailable_reason() -> str | None:

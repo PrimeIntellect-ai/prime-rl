@@ -10,9 +10,15 @@ TMPDIR. A first process replays the stream against the empty caches (cold), a se
 against what the first left behind (warm). Every item runs once, forward+backward (forward alone for a
 forward-only arm), and its first-call time is measured with the GPU idle before and after. Compiles are counted
 exactly by the backend's compile-entry-point wrapper, per item; new cache-directory entries are a cross-check.
+
+The first item carries every per-process cost, so it is reported apart from the remaining items, and each process
+also reports its startup breakdown: interpreter start and module-level imports (torch), each of the backend's
+`IMPORTS`, CUDA context creation, and for the first item the time inside the backend's JIT on a cache miss
+(split into compiles, disk loads and the rest) against the launch and execution that remain.
 """
 
 import argparse
+import importlib
 import json
 import os
 import subprocess
@@ -59,8 +65,18 @@ def cache_entries(cache_root: Path) -> dict[str, dict[str, int]]:
     return entries
 
 
-def worker(name: str, corpus_dir: Path, result_path: Path) -> None:
+def worker(name: str, corpus_dir: Path, result_path: Path, spawned_at: float) -> None:
+    startup = {"interpreter_and_torch_import_s": time.time() - spawned_at}
     backend = load_backend(name)
+    for module in backend.IMPORTS:
+        start = time.perf_counter()
+        importlib.import_module(module)
+        startup[f"import {module}_s"] = time.perf_counter() - start
+    start = time.perf_counter()
+    torch.cuda.init()
+    torch.empty(1, device="cuda")
+    torch.cuda.synchronize()
+    startup["cuda_context_s"] = time.perf_counter() - start
     read_counts = backend.install_compile_counter()
     manifest = load_manifest(corpus_dir)
     records = []
@@ -93,8 +109,20 @@ def worker(name: str, corpus_dir: Path, result_path: Path) -> None:
         )
         print(f"{position:2d} {item.id}: {elapsed_ms:.1f} ms, {records[-1]['counts']}", flush=True)
         del inputs, indices, args
+    first = records[0]
+    jit_miss_s = first["counts"].get("jit_miss_s", 0.0)
+    compile_s, disk_load_s = first["counts"].get("compile_s", 0.0), first["counts"].get("disk_load_s", 0.0)
+    startup |= {
+        "first_item_jit_compile_s": compile_s,
+        "first_item_jit_disk_load_s": disk_load_s,
+        "first_item_jit_other_s": jit_miss_s - compile_s - disk_load_s,
+        "first_item_launch_and_run_s": first["first_call_ms"] / 1e3 - jit_miss_s,
+    }
     result = {
         "stream_total_s": sum(record["first_call_ms"] for record in records) / 1e3,
+        "first_item_s": first["first_call_ms"] / 1e3,
+        "remainder_s": sum(record["first_call_ms"] for record in records[1:]) / 1e3,
+        "startup": startup,
         "counts": read_counts(),
         "items": records,
     }
@@ -121,6 +149,8 @@ def replay(name: str, corpus_dir: Path, cache_root: Path) -> dict:
             str(corpus_dir),
             "--result",
             str(result_path),
+            "--spawned-at",
+            str(time.time()),
         ]
         subprocess.run(command, env=env, check=True)
         process_wall_s = time.perf_counter() - start
@@ -146,16 +176,26 @@ def print_tables(runs: list[dict]) -> None:
     ]
     print(f"Dynamic stream of {len(runs[0]['stream'])} items, each called once; times in seconds, lower is better.")
     print("`compiles` and `loads` come from the compile-entry-point wrapper; `new files` from the cache dirs.\n")
-    print("| backend | phase | stream total s | process wall s | compiles | loads | new cache files |")
-    print("|---|---|---|---|---|---|---|")
+    print("`first item` carries the per-process costs; `rest` sums the other items' first calls.\n")
+    print("| backend | phase | first item s | rest s | process wall s | compiles | loads | new cache files |")
+    print("|---|---|---|---|---|---|---|---|")
     for label, _run, replayed in arms:
         for phase in PHASES:
             result = replayed["phases"][phase]
             new_files = sum(entry["files"] for entry in result["new_cache_entries"].values())
             print(
-                f"| {label} | {phase} | {result['stream_total_s']:.2f} | {result['process_wall_s']:.1f} | "
-                f"{result['counts'].get('compiles', 0)} | {result['counts'].get('disk_loads', '-')} | {new_files} |"
+                f"| {label} | {phase} | {result['first_item_s']:.2f} | {result['remainder_s']:.3f} | "
+                f"{result['process_wall_s']:.1f} | {result['counts'].get('compiles', 0)} | "
+                f"{result['counts'].get('disk_loads', '-')} | {new_files} |"
             )
+
+    print("\nPer-process startup breakdown in seconds (lower is better).\n")
+    print("| backend | phase | stage | s |")
+    print("|---|---|---|---|")
+    for label, _run, replayed in arms:
+        for phase in PHASES:
+            for stage, seconds in replayed["phases"][phase]["startup"].items():
+                print(f"| {label} | {phase} | {stage.removesuffix('_s')} | {seconds:.2f} |")
 
     print("\nPer-item first-call time in ms (lower is better) and compiles triggered by that item.\n")
     print("| # | item | backend | cold ms | cold compiles | warm ms | warm compiles |")
@@ -179,10 +219,11 @@ def main() -> None:
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--worker", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--result", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--spawned-at", type=float, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.worker:
-        worker(args.worker, args.corpus, args.result)
+        worker(args.worker, args.corpus, args.result, args.spawned_at)
         return
     if args.compare:
         print_tables([json.loads(path.read_text()) for path in args.compare])
