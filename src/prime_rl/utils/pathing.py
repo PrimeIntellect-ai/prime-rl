@@ -419,6 +419,20 @@ def clean_future_steps(output_dir: Path, resume_step: int) -> None:
             shutil.rmtree(get_step_path(directory, step))
 
 
+def abandon_future_ckpts(ckpt_dir: Path, resume_step: int) -> None:
+    """Move the checkpoints past ``resume_step`` to ``abandoned/<UTC time>/`` in ``ckpt_dir``.
+    After a rollback they belong to the abandoned run, and a later bare ``--resume`` would
+    pick them. ``get_all_ckpt_steps`` does not look inside ``abandoned/``."""
+    steps = [step for step in get_all_ckpt_steps(ckpt_dir) if step > resume_step]
+    if not steps:
+        return
+    abandoned_dir = ckpt_dir / "abandoned" / time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    abandoned_dir.mkdir(parents=True)
+    get_logger().warning(f"Moving checkpoints past step {resume_step} ({','.join(map(str, steps))}) to {abandoned_dir}")
+    for step in steps:
+        get_step_path(ckpt_dir, step).rename(get_step_path(abandoned_dir, step))
+
+
 def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
     wait_time = 0
