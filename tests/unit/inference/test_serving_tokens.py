@@ -156,7 +156,7 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
         else:
             logprobs.append({i: Logprob(logq[i]) for i in ids})
     support = SamplingMask([[3, 1, 2], [1, 3, 2]]) if replay else None
-    experts = np.array([[[1, 2]], [[3, 4]]], dtype=np.int64) if routed else None
+    experts = np.array([[[1, 2]], [[3, 4]]], dtype=np.uint8) if routed else None
     output = RequestOutput(
         "test",
         None,
