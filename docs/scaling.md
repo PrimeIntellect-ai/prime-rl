@@ -246,32 +246,31 @@ including the TrainerMesh API from ai-dynamo/modelexpress#835.
 The trainer supplies the model identity from `model.name` when constructing the
 weight sender; it is not a separate field in `[weight_broadcast]`.
 
-The GPU extra includes `modelexpress>=0.7.0`, but the published 0.7.0 package does
-not contain the APIs required by this transport. Install the compatible client
-revision into the same environment:
+The GPU extra pins the client to that revision. Build the matching server and its
+Redis backend once on the shared filesystem (the script fetches Rust and `protoc`
+when the host has none):
 
 ```bash
-uv pip install "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@8512b8c7130db34721a0b2ec57c23198fed3ef4f#subdirectory=modelexpress_client/python"
+bash scripts/install_modelexpress.sh
 ```
-
-Run PrimeRL with `uv run --no-sync` after this manual installation. Running
-`uv sync` can replace the source-installed client with the locked distribution.
 
 ```toml
 [weight_broadcast]
 type = "modelexpress"
-host = "mx-server"
 port = 8001
 staging_mode = "COPY_TO_HOST"
 staging_buffer_bytes = 1073741824
 staging_buffers_count = 2
 ```
 
-Run the matching MX server separately and provide its reachable address. The
-bundled NIXL service installer and automatic SLURM service launch do not configure
-this transport. Trainer rank 0 and the orchestrator need the same broadcast
-directory; other trainer ranks synchronize through the distributed process
-group. Only rendezvous markers use the filesystem, not weights.
+`uv run rl` starts a run-scoped server and Redis on `weight_broadcast.port`
+(logs under `logs/modelexpress/`). Multi-node SLURM jobs start them on the
+trainer head node and pass that address to every component; to use an existing
+service, set `slurm.launch_modelexpress = false` and configure
+`weight_broadcast.host` and `weight_broadcast.port`. Trainer rank 0 and the
+orchestrator need the same broadcast directory; other trainer ranks synchronize
+through the distributed process group. Only rendezvous markers use the
+filesystem, not weights.
 
 `COPY_TO_HOST` snapshots trainer shards into MX-owned host storage.
 `COPY_TO_DEVICE` uses additional GPU storage. `IN_PLACE` requires unchanged source

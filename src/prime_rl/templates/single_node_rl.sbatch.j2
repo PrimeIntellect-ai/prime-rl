@@ -102,7 +102,7 @@ REDIS_URL="redis://127.0.0.1:{{ modelexpress_redis_port }}" \
 MX_HEARTBEAT_TIMEOUT_SECS=31536000 \
     "$MX_BIN/modelexpress-server" \
     --port {{ modelexpress_port }} \
-    --database-path "$MX_STATE_DIR/models.db" \
+    --metrics-port 0 \
     --cache-directory "$MX_STATE_DIR/cache" \
     > "$MX_STATE_DIR/server.log" 2>&1 &
 MODEL_EXPRESS_PID=$!

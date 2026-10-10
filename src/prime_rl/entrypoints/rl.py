@@ -1,7 +1,9 @@
 import json
 import os
+import socket
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
@@ -46,6 +48,9 @@ INFERENCE_CONFIG = "inference.json"
 
 ENVS_DIR = "envs"
 
+MODELEXPRESS_BIN_DIR = Path(__file__).resolve().parents[3] / "third_party" / "modelexpress" / "bin"
+MODELEXPRESS_READY_TIMEOUT_S = 120
+
 
 def env_servers(config: RLConfig) -> list[tuple[str, EnvConfig]]:
     """``(split, source)`` for every launcher-managed train/eval source. The launcher
@@ -79,6 +84,81 @@ def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, 
     if env_servers(config):
         components.append(("Envs", f"{config_dir}/{ENVS_DIR}/*/*.json"))
     return components
+
+
+def wait_for_port(host: str, port: int, processes: ProcessGroup, name: str, timeout: float) -> None:
+    """Block until ``host:port`` accepts TCP connections; fail if ``name`` exits first."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return
+        except OSError:
+            pass
+        if processes.stop_events[name].is_set():
+            raise RuntimeError(f"{name} exited before listening on {host}:{port}")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"{name} did not listen on {host}:{port} within {timeout}s")
+        time.sleep(0.5)
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def start_modelexpress(processes: ProcessGroup, port: int, log_dir: Path) -> None:
+    """Start a run-scoped ModelExpress server backed by its own Redis."""
+    server, redis = MODELEXPRESS_BIN_DIR / "modelexpress-server", MODELEXPRESS_BIN_DIR / "redis-server"
+    if not (server.is_file() and redis.is_file()):
+        raise FileNotFoundError(
+            f"ModelExpress server binaries are missing in {MODELEXPRESS_BIN_DIR}; run scripts/install_modelexpress.sh"
+        )
+    state_dir = log_dir / "modelexpress"
+    (state_dir / "cache").mkdir(parents=True, exist_ok=True)
+
+    redis_port = free_port()
+    processes.start(
+        "redis",
+        [
+            str(redis),
+            "--port",
+            str(redis_port),
+            "--bind",
+            "127.0.0.1",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+            "--dir",
+            str(state_dir),
+        ],
+        env=dict(os.environ),
+        log_path=state_dir / "redis.log",
+    )
+    wait_for_port("127.0.0.1", redis_port, processes, "redis", MODELEXPRESS_READY_TIMEOUT_S)
+
+    processes.start(
+        "modelexpress",
+        [
+            str(server),
+            "--port",
+            str(port),
+            "--metrics-port",
+            "0",
+            "--cache-directory",
+            str(state_dir / "cache"),
+        ],
+        env={
+            **os.environ,
+            "MX_METADATA_BACKEND": "redis",
+            "REDIS_URL": f"redis://127.0.0.1:{redis_port}",
+            "MX_HEARTBEAT_TIMEOUT_SECS": "31536000",
+        },
+        log_path=state_dir / "server.log",
+    )
+    wait_for_port("127.0.0.1", port, processes, "modelexpress", MODELEXPRESS_READY_TIMEOUT_S)
 
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
@@ -165,6 +245,10 @@ def rl_local(config: RLConfig):
             )
 
     with ProcessGroup() as processes:
+        if config.weight_broadcast is not None and config.weight_broadcast.type == "modelexpress":
+            logger.info(f"Starting ModelExpress server on port {config.weight_broadcast.port}")
+            start_modelexpress(processes, config.weight_broadcast.port, log_dir)
+
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(
@@ -306,18 +390,19 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     train_env_names = env_server_names(config, "train")
     eval_env_names = env_server_names(config, "eval")
 
-    nixl_broadcast = (
+    # NIXL and ModelExpress weight broadcasts both rendezvous through a ModelExpress server.
+    mx_broadcast = (
         config.weight_broadcast
-        if config.weight_broadcast is not None and config.weight_broadcast.type == "nixl"
+        if config.weight_broadcast is not None and config.weight_broadcast.type in ("nixl", "modelexpress")
         else None
     )
-    launch_modelexpress = nixl_broadcast is not None and config.slurm.launch_modelexpress
     modelexpress_vars = {
-        "use_nixl_broadcast": nixl_broadcast is not None,
-        "launch_modelexpress": launch_modelexpress,
-        "modelexpress_host": nixl_broadcast.host if nixl_broadcast is not None else "",
-        "modelexpress_port": nixl_broadcast.port if nixl_broadcast is not None else 0,
-        "modelexpress_redis_port": 6380 if nixl_broadcast is not None and nixl_broadcast.port == 6379 else 6379,
+        "use_nixl_broadcast": mx_broadcast is not None and mx_broadcast.type == "nixl",
+        "use_modelexpress": mx_broadcast is not None,
+        "launch_modelexpress": mx_broadcast is not None and config.slurm.launch_modelexpress,
+        "modelexpress_host": mx_broadcast.host if mx_broadcast is not None else "",
+        "modelexpress_port": mx_broadcast.port if mx_broadcast is not None else 0,
+        "modelexpress_redis_port": 6380 if mx_broadcast is not None and mx_broadcast.port == 6379 else 6379,
     }
 
     ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None

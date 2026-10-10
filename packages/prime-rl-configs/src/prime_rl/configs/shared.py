@@ -170,7 +170,7 @@ class SlurmConfig(BaseConfig):
     """Shell command to run on the head node after cd, .env sourcing, and venv activation. Useful for cleanup like ``sudo pkill -f vllm``; wrap with ``srun bash -c '...'`` to fan out to all nodes."""
 
     launch_modelexpress: bool = True
-    """Start a job-scoped ModelExpress service for NIXL weight transfer."""
+    """Start a job-scoped ModelExpress server for NIXL and ModelExpress weight broadcasts on multi-node jobs."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
     """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""

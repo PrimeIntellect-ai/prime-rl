@@ -1,0 +1,2 @@
+[weight_broadcast]
+type = "nccl"

@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -25,7 +25,7 @@ flash-attn-3 = false
 flash-mla = false
 flashinfer-python = false
 harbor = "2026-10-08T00:00:00Z"
-modelexpress = "2026-10-04T00:00:00Z"
+modelexpress = false
 nixl-cu13 = false
 prime = false
 prime-evals = false
@@ -3744,7 +3744,7 @@ wheels = [
 [[package]]
 name = "modelexpress"
 version = "0.7.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/ai-dynamo/modelexpress.git?subdirectory=modelexpress_client%2Fpython&rev=8512b8c#8512b8c7130db34721a0b2ec57c23198fed3ef4f" }
 dependencies = [
     { name = "boto3" },
     { name = "google-crc32c" },
@@ -3759,12 +3759,6 @@ dependencies = [
     { name = "safetensors", version = "0.8.0", source = { registry = "https://pypi.org/simple" } },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "zstandard" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/95/ed/14206fe62fd6ded85fe8282bd98694236c293aaadf0c0f6ceaf6955d4ee9/modelexpress-0.7.0.tar.gz", hash = "sha256:79986eacb078de008b522982e91c7ce7d730dd03d48f3932b1dce945682d488b", size = 711281, upload-time = "2026-10-03T18:10:31.887Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/21/2b/cc248e0431dc0576c8c5203193077e42d0cda02925185111142f682c6525/modelexpress-0.7.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8daf85dd2e57e12dbbbf8a5558d2d953d009914a55754caddbe3f468a8dd1108", size = 573992, upload-time = "2026-10-03T18:09:36.191Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/d7/b1dd834fff004975bd56b1abcf57e15317c7ee145d4862988a2d503d0925/modelexpress-0.7.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3b3708e44d95c027c39987aff806dad0d98e6e1cf0dedf303b14b48e96c36fd7", size = 573546, upload-time = "2026-10-03T18:08:40.344Z" },
-    { url = "https://files.pythonhosted.org/packages/5a/25/1105431471ea1cc434d8289bd265f7b97ca88980998a3051d91c014297a1/modelexpress-0.7.0-py3-none-any.whl", hash = "sha256:cfd2e8309140dbb9ff2fc001716c92b2f80fe2e9ac325dc9b0bb5f60ed650056", size = 487272, upload-time = "2026-10-03T18:10:12.049Z" },
 ]
 
 [[package]]
@@ -5325,7 +5319,7 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
-    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.7.0" },
+    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/ai-dynamo/modelexpress.git?subdirectory=modelexpress_client%2Fpython&rev=8512b8c" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.3.10.post2" },
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "sys_platform == 'linux' and extra == 'disagg'" },
