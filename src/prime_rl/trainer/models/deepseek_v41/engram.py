@@ -171,7 +171,9 @@ class EngramHasher(nn.Module):
 
 
 @torch.compile
-def _engram_gate(h: Tensor, kv: Tensor, gate_weight: Tensor, hc_mult: int, eps: float, clamp_value: float) -> Tensor:
+def _engram_gate(
+    h: Tensor, kv: Tensor, q_weight: Tensor, k_weight: Tensor, hc_mult: int, eps: float, clamp_value: float
+) -> Tensor:
     """`h + gate * value`, the gate a signed-sqrt sigmoid of each stream's normalized match to its key."""
     dim = h.shape[-1]
     key, value = kv.split([hc_mult * dim, dim], dim=-1)
@@ -179,7 +181,8 @@ def _engram_gate(h: Tensor, kv: Tensor, gate_weight: Tensor, hc_mult: int, eps: 
     h32 = h.float()
     # Normalized per (token, stream) over `dim`, not jointly over the streams.
     rstd = torch.rsqrt(h32.square().mean(-1) + eps) * torch.rsqrt(key.square().mean(-1) + eps)
-    dot = (h32 * gate_weight.float() * key).sum(-1) * rstd * dim**-0.5
+    # q * k in fp32, as in DeepSeek's reference: rounding the product to bf16 first moves the gate.
+    dot = (h32 * (q_weight.float() * k_weight.float()) * key).sum(-1) * rstd * dim**-0.5
     gate = torch.sigmoid(torch.copysign(dot.abs().clamp_min(clamp_value).sqrt(), dot))
     return (h32 + gate.unsqueeze(-1) * value.float().unsqueeze(-2)).to(h.dtype)
 
@@ -200,16 +203,25 @@ class DeepseekV41Engram(nn.Module):
         )
         self.q_weight = nn.Parameter(torch.ones(config.hc_mult, config.hidden_size))
         self.k_weight = nn.Parameter(torch.ones(config.hc_mult, config.hidden_size))
+        # Set by activation checkpointing: recompute the projection and gate in backward.
+        self.recompute = False
+
+    def prefetch(self, hash_ids: Tensor) -> None:
+        """Start the table lookup of the next `forward` early, if the table is sharded for it."""
+        if hasattr(self.embed, "prefetch"):
+            self.embed.prefetch(hash_ids)
 
     def forward(self, mhc_states: Tensor, hash_ids: Tensor) -> Tensor:
         """`hash_ids` is `(t, n_hash_cols)` for this rank's `t` tokens."""
         rows = self.embed(hash_ids).to(mhc_states.dtype).view(*mhc_states.shape[:2], -1)
-        # The gate math is fp32 over every stream; recompute it in backward instead of storing it.
-        return torch.utils.checkpoint.checkpoint(self._mix, mhc_states, rows, use_reentrant=False)
+        if self.recompute:
+            return torch.utils.checkpoint.checkpoint(self._mix, mhc_states, rows, use_reentrant=False)
+        return self._mix(mhc_states, rows)
 
     def _mix(self, mhc_states: Tensor, rows: Tensor) -> Tensor:
+        # The compiled gate keeps `kv` for backward and recomputes its fp32 math there.
         kv = self.wkv(rows)
-        return _engram_gate(mhc_states, kv, self.q_weight * self.k_weight, self.hc_mult, self.eps, self.clamp_value)
+        return _engram_gate(mhc_states, kv, self.q_weight, self.k_weight, self.hc_mult, self.eps, self.clamp_value)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.embed.weight, mean=0.0, std=init_std)

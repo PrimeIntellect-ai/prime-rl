@@ -761,6 +761,9 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
             language_model.layers.register_module(
                 layer_name, get_activation_checkpoint_wrapper(ac_config, mode)(transformer_block)
             )
+        engrams = getattr(language_model, "engrams", {})
+        if ac_config.recompute_engram and layer_name in engrams and mode in ("full", "full_moe"):
+            engrams[layer_name].recompute = True
 
     get_logger().info(
         f"Applied activation checkpointing to layers {list(layers)} with modes {modes} (freq={ac_config.freq})"

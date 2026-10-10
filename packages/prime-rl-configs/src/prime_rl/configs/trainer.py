@@ -46,6 +46,9 @@ class ActivationCheckpointConfig(BaseConfig):
     layer_modes: list[ActivationCheckpointMode | Literal["none"]] | None = None
     """Mode of each decoder layer, one entry per layer of the full model (pipeline stages keep the full model's layer indices); ``none`` leaves a layer unchecked. Replaces ``mode`` and ``freq``. Early pipeline stages hold activations for more micro-batches, so they can retain less than later ones."""
 
+    recompute_engram: bool = False
+    """Engram layers (DeepSeek-V4.1) whose decoder layer runs ``full`` or ``full_moe`` also recompute their value/key projection and gate in backward, keeping only their inputs instead of the projection's output (51 KB per token)."""
+
 
 class ActivationOffloadingConfig(BaseConfig):
     pin_memory: bool = True

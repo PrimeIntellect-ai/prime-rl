@@ -135,6 +135,8 @@ class DeepseekV41TextModel(nn.Module):
         packed.check_position_ids(position_ids)
 
         hash_ids = self.engram_hasher(input_ids, packed.tok_doc_start) if self.engram_hasher is not None else None
+        for engram in self.engrams.values():
+            engram.prefetch(hash_ids[:, engram.engram_idx])
 
         mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         pre_mix = identity_pre_mix(mhc_states)
@@ -259,6 +261,8 @@ class DeepseekV41ForCausalLM(PrimeModel):
             config=model.config, seq_lens=seq_lens, device=input_ids.device, cp_rank=0, cp_world_size=1
         )
         hash_ids = model.engram_hasher(input_ids, packed.tok_doc_start) if model.engram_hasher is not None else None
+        for engram in model.engrams.values():
+            engram.prefetch(hash_ids[:, engram.engram_idx])
         for name, decoder_layer in model.layers.named_children():
             engram = model.engrams[name] if name in model.engrams else None
             if engram is not None:
