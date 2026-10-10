@@ -5,7 +5,7 @@ Computes what `dsv4_sparse_attn_fwd.py` computes (its docstring defines the shap
 the caller's contract) with the structure of FlashMLA's sm90 sparse prefill forward instead of
 TileLang's. It serves `heads = 64`, `dim = 512` and one KV head on `sm_90a` only.
 
-One CTA of 384 threads (three warpgroups) per query position:
+A persistent grid of one 384-thread CTA (three warpgroups) per SM walks the query positions:
 
   - the producer warpgroup gathers keys with `cp.async`, zero-filling masked rows, into two
     64-slot buffers whose channel halves (0-255 and 256-511) each have a "ready" and a "free"
@@ -20,6 +20,10 @@ One CTA of 384 threads (three warpgroups) per query position:
     shared memory), so every probability tile feeds both channel halves;
   - WGMMA is asynchronous: the next pair's score GEMM is issued while the current output GEMM is
     still running, and a key half is released by waiting on all but the newest WGMMA batch.
+  - each consumer stages its output half in the key half it last read (warpgroup 0 in the odd
+    buffer's channels 0-255, warpgroup 1 in the even buffer's channels 256-511) and releases that
+    half only after reading it back, while the next query's Q load and the producer's first
+    gathers already run.
 
 The online softmax keeps the running max in log2 units, `m = max(logit) * scale * log2(e)`, seeded
 with the sink `Sinks[h] * log2(e)`; the running sum of one thread per head (in warpgroup 0) is
@@ -195,7 +199,10 @@ def _fwd_kernel(
     tiled_store_o: cute.TiledCopy,
 ):
     tidx, _, _ = cute.arch.thread_idx()
-    s_i, b_i, _ = cute.arch.block_idx()
+    cta, _, _ = cute.arch.block_idx()
+    num_ctas, _, _ = cute.arch.grid_dim()
+    seq_len = mQ.shape[1]
+    num_queries = mQ.shape[0] * seq_len
     wg_idx = cute.arch.make_warp_uniform(tidx // WARPGROUP_THREADS)
     idx_in_wg = tidx % WARPGROUP_THREADS
 
@@ -218,8 +225,6 @@ def _fwd_kernel(
 
     n_slots = mIndices.shape[3]
     n_tiles = (n_slots + BLOCK_I - 1) // BLOCK_I
-    tile_count = cutlass.min(mTileCounts[b_i, s_i, 0], n_tiles)
-    num_pairs = (tile_count + 1) // 2
 
     if wg_idx == 2:
         cute.arch.setmaxregister_decrease(PRODUCER_REGS)
@@ -227,26 +232,32 @@ def _fwd_kernel(
         group = idx_in_wg // GROUP_SIZE
         kv_idx = cute.make_rmem_tensor(cute.make_layout((2, ROWS_PER_GROUP), stride=(ROWS_PER_GROUP, 1)), Int32)
         free_phase = Int32(1)
-        for pair in cutlass.range(num_pairs, unroll=1):
-            for buf in cutlass.range_constexpr(2):
-                for r in cutlass.range_constexpr(ROWS_PER_GROUP):
-                    slot = (2 * pair + buf) * BLOCK_I + r * NUM_GROUPS + group
-                    idx = mIndices[b_i, s_i, 0, cutlass.min(slot, n_slots - 1)]
-                    kv_idx[buf, r] = idx if slot < n_slots else Int32(-1)
-            for buf, half in ((0, 0), (1, 1), (0, 1), (1, 0)):
-                cute.arch.mbarrier_wait(mbars + MBAR_K_FREE + _k_half_index(buf, half), free_phase)
-                _gather_half(mKV, sK, b_i, kv_idx, group, idx_in_group, buf, half)
-                cute.arch.cp_async_mbarrier_arrive_noinc(mbars + MBAR_K_READY + _k_half_index(buf, half))
-            if idx_in_group == 0:
+        for work in cutlass.range(cta, num_queries, num_ctas, unroll=1):
+            b_i = work // seq_len
+            s_i = work - b_i * seq_len
+            num_pairs = (cutlass.min(mTileCounts[b_i, s_i, 0], n_tiles) + 1) // 2
+            for pair in cutlass.range(num_pairs, unroll=1):
                 for buf in cutlass.range_constexpr(2):
                     for r in cutlass.range_constexpr(ROWS_PER_GROUP):
-                        sValid[buf, r * NUM_GROUPS + group] = Int32(kv_idx[buf, r] >= 0)
-                cute.arch.mbarrier_arrive(mbars + MBAR_VALID_READY)
-            free_phase ^= 1
+                        slot = (2 * pair + buf) * BLOCK_I + r * NUM_GROUPS + group
+                        idx = mIndices[b_i, s_i, 0, cutlass.min(slot, n_slots - 1)]
+                        kv_idx[buf, r] = idx if slot < n_slots else Int32(-1)
+                for buf, half in ((0, 0), (1, 1), (0, 1), (1, 0)):
+                    cute.arch.mbarrier_wait(mbars + MBAR_K_FREE + _k_half_index(buf, half), free_phase)
+                    _gather_half(mKV, sK, b_i, kv_idx, group, idx_in_group, buf, half)
+                    cute.arch.cp_async_mbarrier_arrive_noinc(mbars + MBAR_K_READY + _k_half_index(buf, half))
+                if idx_in_group == 0:
+                    for buf in cutlass.range_constexpr(2):
+                        for r in cutlass.range_constexpr(ROWS_PER_GROUP):
+                            sValid[buf, r * NUM_GROUPS + group] = Int32(kv_idx[buf, r] >= 0)
+                    cute.arch.mbarrier_arrive(mbars + MBAR_VALID_READY)
+                free_phase ^= 1
     else:
         cute.arch.setmaxregister_increase(CONSUMER_REGS)
         thr_copy_q = tiled_copy_q.get_slice(tidx)
-        cute.copy(tiled_copy_q, thr_copy_q.partition_S(mQ[b_i, s_i, None, None]), thr_copy_q.partition_D(sQ))
+        tQsQ = thr_copy_q.partition_D(sQ)
+        if cta < num_queries:
+            cute.copy(tiled_copy_q, thr_copy_q.partition_S(mQ[cta // seq_len, cta % seq_len, None, None]), tQsQ)
         cute.arch.cp_async_commit_group()
 
         sQ_halves = [cute.local_tile(sQ, (HEADS, HALF), (0, half)) for half in range(2)]
@@ -282,7 +293,6 @@ def _fwd_kernel(
         ]
         tOrS_ss = [thr_ss.make_fragment_A(thr_ss.partition_A(sS[None, None, buf])) for buf in range(2)]
         rO = cute.make_rmem_tensor(thr_rs.partition_shape_C((HEADS, HALF)), Float32)
-        rO.fill(0.0)
         rO_rows = _acc_rows_view(rO)
 
         smem_copy_p = cute.make_tiled_copy_C(
@@ -299,131 +309,149 @@ def _fwd_kernel(
         rescale = cute.make_rmem_tensor((n_rows,), Float32)
         for r in cutlass.range_constexpr(n_rows):
             head_of[r] = tScS_rows[r, 0][0]
-            rM[r] = mSinks[head_of[r]] * LOG2E
-            rL[r] = Float32(1.0) if wg_idx == 0 and cute.arch.lane_idx() % 4 == 0 else Float32(0.0)
-
-        cute.arch.cp_async_wait_group(0)
-        cute.arch.fence_view_async_shared()
-        cute.arch.barrier(barrier_id=BAR_Q_READY, number_of_threads=CONSUMER_THREADS)
-
-        ready_phase = Int32(0)
-        if wg_idx == 0:
-            if num_pairs > 0:
-                cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 0), ready_phase)
-                _issue_gemm(tiled_mma_qk, rP, tSrQ[0], tSrK[0][0], True)
-                cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 1), ready_phase)
-                _issue_gemm(tiled_mma_qk, rP, tSrQ[1], tSrK[0][1], False)
-                warpgroup.commit_group()
-                warpgroup.wait_group(0)
-            for pair in cutlass.range(num_pairs, unroll=1):
-                cute.arch.mbarrier_wait(mbars + MBAR_VALID_READY, ready_phase)
-                _mask_scores(rP_rows, tScS_rows, sValid, 0)
-                for r in cutlass.range_constexpr(n_rows):
-                    old_max[r] = rM[r]
-                _online_softmax(rP_rows, rO_rows, rM, rL, old_max, sM, head_of, scale_log2)
-                cute.arch.barrier_arrive(barrier_id=BAR_WG0_MAX_READY, number_of_threads=CONSUMER_THREADS)
-                rPb.store(rP.load().to(BFloat16))
-                _issue_gemm(tiled_mma_pv_rs, rO, tOrP, tOrV_rs[0][0], False)
-                warpgroup.commit_group()
-                warpgroup.wait_group(0)
-                cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(0, 0))
-
-                cute.arch.barrier(barrier_id=BAR_WG1_MAX_READY, number_of_threads=CONSUMER_THREADS)
-                for r in cutlass.range_constexpr(n_rows):
-                    new_max = sM[head_of[r]]
-                    rescale[r] = cute.math.exp2(rM[r] - new_max, fastmath=True)
-                    rM[r] = new_max
-                    rP_rows[r, None].store(rP_rows[r, None].load() * rescale[r])
-                rPb.store(rP.load().to(BFloat16))
-                cute.copy(smem_copy_p, thr_copy_p.retile(rPb), tPsP[0])
-                cute.arch.fence_view_async_shared()
-                cute.arch.barrier_arrive(barrier_id=BAR_S0_READY, number_of_threads=CONSUMER_THREADS)
-
-                cute.arch.barrier(barrier_id=BAR_S1_READY, number_of_threads=CONSUMER_THREADS)
-                for r in cutlass.range_constexpr(n_rows):
-                    rO_rows[r, None].store(rO_rows[r, None].load() * rescale[r])
-                    rL[r] = rL[r] * rescale[r]
-                _issue_gemm(tiled_mma_pv_ss, rO, tOrS_ss[1], tOrV_ss[1][0], False)
-                warpgroup.commit_group()
-
-                ready_phase ^= 1
-                if pair + 1 < num_pairs:
-                    cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 0), ready_phase)
-                    _issue_gemm(tiled_mma_qk, rP, tSrQ[0], tSrK[0][0], True)
-                    warpgroup.commit_group()
-                    warpgroup.wait_group(1)
-                    cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(1, 0))
-                    cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 1), ready_phase)
-                    _issue_gemm(tiled_mma_qk, rP, tSrQ[1], tSrK[0][1], False)
-                    warpgroup.commit_group()
-                    warpgroup.wait_group(0)
-                else:
-                    warpgroup.wait_group(0)
-                    cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(1, 0))
-        else:
-            for pair in cutlass.range(num_pairs, unroll=1):
-                cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(1, 1), ready_phase)
-                _issue_gemm(tiled_mma_qk, rP, tSrQ[1], tSrK[1][1], True)
-                cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(1, 0), ready_phase)
-                _issue_gemm(tiled_mma_qk, rP, tSrQ[0], tSrK[1][0], False)
-                warpgroup.commit_group()
-                warpgroup.wait_group(0)
-
-                cute.arch.mbarrier_wait(mbars + MBAR_VALID_READY, ready_phase)
-                _mask_scores(rP_rows, tScS_rows, sValid, 1)
-                cute.arch.barrier(barrier_id=BAR_WG0_MAX_READY, number_of_threads=CONSUMER_THREADS)
-                for r in cutlass.range_constexpr(n_rows):
-                    old_max[r] = sM[head_of[r]]
-                _online_softmax(rP_rows, rO_rows, rM, rL, old_max, sM, head_of, scale_log2)
-                cute.arch.barrier_arrive(barrier_id=BAR_WG1_MAX_READY, number_of_threads=CONSUMER_THREADS)
-
-                rPb.store(rP.load().to(BFloat16))
-                _issue_gemm(tiled_mma_pv_rs, rO, tOrP, tOrV_rs[1][1], False)
-                warpgroup.commit_group()
-                cute.copy(smem_copy_p, thr_copy_p.retile(rPb), tPsP[1])
-                cute.arch.barrier(barrier_id=BAR_S0_READY, number_of_threads=CONSUMER_THREADS)
-                _issue_gemm(tiled_mma_pv_ss, rO, tOrS_ss[0], tOrV_ss[0][1], False)
-                warpgroup.commit_group()
-                cute.arch.fence_view_async_shared()
-                cute.arch.barrier_arrive(barrier_id=BAR_S1_READY, number_of_threads=CONSUMER_THREADS)
-
-                warpgroup.wait_group(1)
-                cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(1, 1))
-                warpgroup.wait_group(0)
-                cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(0, 1))
-                ready_phase ^= 1
-
         lane = cute.arch.lane_idx()
-        for r in cutlass.range_constexpr(n_rows):
-            v = rL[r]
-            for step in cutlass.range_constexpr(2):
-                v = v + cute.arch.shuffle_sync_bfly(v, offset=1 << step)
-            rL[r] = v
-            if lane % 4 == 0:
-                sL[wg_idx, head_of[r]] = v
-        cute.arch.barrier(barrier_id=BAR_SUM_READY, number_of_threads=CONSUMER_THREADS)
-        for r in cutlass.range_constexpr(n_rows):
-            rL[r] = rL[r] + sL[1 - wg_idx, head_of[r]]
-            inv_sum = cute.arch.rcp_approx(rL[r])
-            rO_rows[r, None].store(rO_rows[r, None].load() * inv_sum)
-        rOb = cute.make_fragment_like(rO, BFloat16)
-        rOb.store(rO.load().to(BFloat16))
-        sO = cute.local_tile(sQ, (HEADS, HALF), (0, wg_idx))
+        sO = cute.local_tile(sK[None, None, 1 - wg_idx], (BLOCK_I, HALF), (0, wg_idx))
         smem_copy_o = cute.make_tiled_copy_C(
             cute.make_copy_atom(warp.StMatrix8x8x16bOp(transpose=False, num_matrices=4), BFloat16), tiled_mma_pv_rs
         )
         thr_copy_o = smem_copy_o.get_slice(idx_in_wg)
-        cute.copy(smem_copy_o, thr_copy_o.retile(rOb), thr_copy_o.partition_D(sO))
-        cute.arch.barrier(barrier_id=BAR_WG0_O_STAGED + wg_idx, number_of_threads=WARPGROUP_THREADS)
         thr_store_o = tiled_store_o.get_slice(idx_in_wg)
-        gO = cute.local_tile(mOut[b_i, s_i, None, None], (HEADS, HALF), (0, wg_idx))
         tOsO = thr_store_o.partition_S(sO)
-        tOrO = cute.make_fragment_like(tOsO)
-        cute.copy(tiled_store_o, tOsO, tOrO)
-        cute.copy(tiled_store_o, tOrO, thr_store_o.partition_D(gO))
-        if lane % 4 == 0 and wg_idx == 0:
+        ready_phase = Int32(0)
+        for work in cutlass.range(cta, num_queries, num_ctas, unroll=1):
+            b_i = work // seq_len
+            s_i = work - b_i * seq_len
+            num_pairs = (cutlass.min(mTileCounts[b_i, s_i, 0], n_tiles) + 1) // 2
+            rO.fill(0.0)
             for r in cutlass.range_constexpr(n_rows):
-                mLse[b_i, s_i, head_of[r]] = cute.math.log2(rL[r], fastmath=True) + rM[r]
+                rM[r] = mSinks[head_of[r]] * LOG2E
+                rL[r] = Float32(1.0) if wg_idx == 0 and cute.arch.lane_idx() % 4 == 0 else Float32(0.0)
+
+            cute.arch.cp_async_wait_group(0)
+            cute.arch.fence_view_async_shared()
+            cute.arch.barrier(barrier_id=BAR_Q_READY, number_of_threads=CONSUMER_THREADS)
+
+            if wg_idx == 0:
+                if num_pairs > 0:
+                    cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 0), ready_phase)
+                    _issue_gemm(tiled_mma_qk, rP, tSrQ[0], tSrK[0][0], True)
+                    cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 1), ready_phase)
+                    _issue_gemm(tiled_mma_qk, rP, tSrQ[1], tSrK[0][1], False)
+                    warpgroup.commit_group()
+                    warpgroup.wait_group(0)
+                for pair in cutlass.range(num_pairs, unroll=1):
+                    cute.arch.mbarrier_wait(mbars + MBAR_VALID_READY, ready_phase)
+                    _mask_scores(rP_rows, tScS_rows, sValid, 0)
+                    for r in cutlass.range_constexpr(n_rows):
+                        old_max[r] = rM[r]
+                    _online_softmax(rP_rows, rO_rows, rM, rL, old_max, sM, head_of, scale_log2)
+                    cute.arch.barrier_arrive(barrier_id=BAR_WG0_MAX_READY, number_of_threads=CONSUMER_THREADS)
+                    rPb.store(rP.load().to(BFloat16))
+                    _issue_gemm(tiled_mma_pv_rs, rO, tOrP, tOrV_rs[0][0], False)
+                    warpgroup.commit_group()
+                    warpgroup.wait_group(0)
+                    cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(0, 0))
+
+                    cute.arch.barrier(barrier_id=BAR_WG1_MAX_READY, number_of_threads=CONSUMER_THREADS)
+                    for r in cutlass.range_constexpr(n_rows):
+                        new_max = sM[head_of[r]]
+                        rescale[r] = cute.math.exp2(rM[r] - new_max, fastmath=True)
+                        rM[r] = new_max
+                        rP_rows[r, None].store(rP_rows[r, None].load() * rescale[r])
+                    rPb.store(rP.load().to(BFloat16))
+                    cute.copy(smem_copy_p, thr_copy_p.retile(rPb), tPsP[0])
+                    cute.arch.fence_view_async_shared()
+                    cute.arch.barrier_arrive(barrier_id=BAR_S0_READY, number_of_threads=CONSUMER_THREADS)
+
+                    cute.arch.barrier(barrier_id=BAR_S1_READY, number_of_threads=CONSUMER_THREADS)
+                    for r in cutlass.range_constexpr(n_rows):
+                        rO_rows[r, None].store(rO_rows[r, None].load() * rescale[r])
+                        rL[r] = rL[r] * rescale[r]
+                    _issue_gemm(tiled_mma_pv_ss, rO, tOrS_ss[1], tOrV_ss[1][0], False)
+                    warpgroup.commit_group()
+
+                    ready_phase ^= 1
+                    if pair + 1 < num_pairs:
+                        cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 0), ready_phase)
+                        _issue_gemm(tiled_mma_qk, rP, tSrQ[0], tSrK[0][0], True)
+                        warpgroup.commit_group()
+                        warpgroup.wait_group(1)
+                        cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(1, 0))
+                        cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(0, 1), ready_phase)
+                        _issue_gemm(tiled_mma_qk, rP, tSrQ[1], tSrK[0][1], False)
+                        warpgroup.commit_group()
+                        warpgroup.wait_group(0)
+                    else:
+                        warpgroup.wait_group(0)
+            else:
+                for pair in cutlass.range(num_pairs, unroll=1):
+                    cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(1, 1), ready_phase)
+                    _issue_gemm(tiled_mma_qk, rP, tSrQ[1], tSrK[1][1], True)
+                    cute.arch.mbarrier_wait(mbars + MBAR_K_READY + _k_half_index(1, 0), ready_phase)
+                    _issue_gemm(tiled_mma_qk, rP, tSrQ[0], tSrK[1][0], False)
+                    warpgroup.commit_group()
+                    warpgroup.wait_group(0)
+
+                    cute.arch.mbarrier_wait(mbars + MBAR_VALID_READY, ready_phase)
+                    _mask_scores(rP_rows, tScS_rows, sValid, 1)
+                    cute.arch.barrier(barrier_id=BAR_WG0_MAX_READY, number_of_threads=CONSUMER_THREADS)
+                    for r in cutlass.range_constexpr(n_rows):
+                        old_max[r] = sM[head_of[r]]
+                    _online_softmax(rP_rows, rO_rows, rM, rL, old_max, sM, head_of, scale_log2)
+                    cute.arch.barrier_arrive(barrier_id=BAR_WG1_MAX_READY, number_of_threads=CONSUMER_THREADS)
+
+                    rPb.store(rP.load().to(BFloat16))
+                    _issue_gemm(tiled_mma_pv_rs, rO, tOrP, tOrV_rs[1][1], False)
+                    warpgroup.commit_group()
+                    cute.copy(smem_copy_p, thr_copy_p.retile(rPb), tPsP[1])
+                    cute.arch.barrier(barrier_id=BAR_S0_READY, number_of_threads=CONSUMER_THREADS)
+                    _issue_gemm(tiled_mma_pv_ss, rO, tOrS_ss[0], tOrV_ss[0][1], False)
+                    warpgroup.commit_group()
+                    cute.arch.fence_view_async_shared()
+                    cute.arch.barrier_arrive(barrier_id=BAR_S1_READY, number_of_threads=CONSUMER_THREADS)
+
+                    warpgroup.wait_group(1)
+                    cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(1, 1))
+                    warpgroup.wait_group(0)
+                    if pair + 1 < num_pairs:
+                        cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(0, 1))
+                    ready_phase ^= 1
+
+            for r in cutlass.range_constexpr(n_rows):
+                v = rL[r]
+                for step in cutlass.range_constexpr(2):
+                    v = v + cute.arch.shuffle_sync_bfly(v, offset=1 << step)
+                rL[r] = v
+                if lane % 4 == 0:
+                    sL[wg_idx, head_of[r]] = v
+            cute.arch.barrier(barrier_id=BAR_SUM_READY, number_of_threads=CONSUMER_THREADS)
+            next_work = work + num_ctas
+            if next_work < num_queries:
+                cute.copy(
+                    tiled_copy_q,
+                    thr_copy_q.partition_S(mQ[next_work // seq_len, next_work % seq_len, None, None]),
+                    tQsQ,
+                )
+            cute.arch.cp_async_commit_group()
+            for r in cutlass.range_constexpr(n_rows):
+                rL[r] = rL[r] + sL[1 - wg_idx, head_of[r]]
+                inv_sum = cute.arch.rcp_approx(rL[r])
+                rO_rows[r, None].store(rO_rows[r, None].load() * inv_sum)
+            rOb = cute.make_fragment_like(rO, BFloat16)
+            rOb.store(rO.load().to(BFloat16))
+            gO = cute.local_tile(mOut[b_i, s_i, None, None], (HEADS, HALF), (0, wg_idx))
+            if num_pairs > 0:
+                cute.copy(smem_copy_o, thr_copy_o.retile(rOb), thr_copy_o.partition_D(sO))
+                cute.arch.barrier(barrier_id=BAR_WG0_O_STAGED + wg_idx, number_of_threads=WARPGROUP_THREADS)
+                tOrO = cute.make_fragment_like(tOsO)
+                cute.copy(tiled_store_o, tOsO, tOrO)
+                cute.copy(tiled_store_o, tOrO, thr_store_o.partition_D(gO))
+                cute.arch.mbarrier_arrive(mbars + MBAR_K_FREE + _k_half_index(1 - wg_idx, wg_idx))
+            else:
+                cute.autovec_copy(rOb, thr_rs.partition_C(gO))
+            if lane % 4 == 0 and wg_idx == 0:
+                for r in cutlass.range_constexpr(n_rows):
+                    mLse[b_i, s_i, head_of[r]] = cute.math.log2(rL[r], fastmath=True) + rM[r]
 
 
 @cute.jit
@@ -436,6 +464,7 @@ def _fwd(
     mOut: cute.Tensor,
     mLse: cute.Tensor,
     scale_log2: Float32,
+    max_ctas: Int32,
     stream,
 ):
     sQ_layout = _smem_layout((HEADS, DIM))
@@ -513,7 +542,12 @@ def _fwd(
         tiled_mma_pv_ss,
         tiled_copy_q,
         tiled_store_o,
-    ).launch(grid=(mQ.shape[1], mQ.shape[0], 1), block=(THREADS, 1, 1), smem=smem_bytes, stream=stream)
+    ).launch(
+        grid=(cutlass.min(mQ.shape[0] * mQ.shape[1], max_ctas), 1, 1),
+        block=(THREADS, 1, 1),
+        smem=smem_bytes,
+        stream=stream,
+    )
 
 
 @functools.cache
@@ -530,6 +564,7 @@ def _compiled_fwd():
         make_fake_compact_tensor(BFloat16, (batch, seq_len, HEADS, DIM), **row_major_4d, assumed_align=16),
         make_fake_compact_tensor(Float32, (batch, seq_len, HEADS), stride_order=(2, 1, 0), assumed_align=4),
         Float32(1.0),
+        Int32(1),
         make_fake_stream(use_tvm_ffi_env_stream=True),
         options="--enable-tvm-ffi",
     )
@@ -553,5 +588,6 @@ def dsv4_sparse_attn_fwd_cute_ws(
     out = torch.empty_like(q)
     lse = q.new_empty((batch, seq_len, heads), dtype=torch.float32)
     tile_counts = indices.new_empty((batch, seq_len, 1))
-    _compiled_fwd()(q, kv, indices, sinks, tile_counts, out, lse, sm_scale * LOG2E)
+    num_sms = torch.cuda.get_device_properties(q.device).multi_processor_count
+    _compiled_fwd()(q, kv, indices, sinks, tile_counts, out, lse, sm_scale * LOG2E, num_sms)
     return out, lse
