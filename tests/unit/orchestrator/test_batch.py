@@ -541,3 +541,117 @@ def test_prepare_sample_none_routed_experts():
 
     micro_batch = prepare_sample(sample, seq_len=8)
     assert micro_batch.routed_experts is None
+
+
+def _write_rows(path, rows: np.ndarray) -> int:
+    with open(path, "ab") as f:
+        offset = f.tell()
+        f.write(np.ascontiguousarray(rows).tobytes())
+    return offset
+
+
+def test_payload_by_handle_matches_inline(tmp_path):
+    """Router-replay ids and sampling masks read by handle give the trainer the same
+    tensors as the inline path, through truncation, packing, padding and CP windows."""
+    import torch
+
+    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.trainer.rl.loss import shift_tensor_left
+    from prime_rl.transports.batch.types import SamplingMask
+    from prime_rl.transports.payload import PayloadSegment
+    from prime_rl.utils.cp import shard_for_cp
+
+    rng = np.random.default_rng(0)
+    inline, by_handle = [], []
+    for i in range(24):
+        n = int(rng.integers(4, 40))
+        mask = rng.random(n) < 0.5
+        if i == 0:  # truncated to seq_len before its first masked position
+            n, mask = 40, np.arange(40) >= 36
+        experts = rng.integers(0, 64, size=(n, 3, 2), dtype=np.uint8)
+        counts = np.where(mask, rng.integers(1, 5, size=n), 0).astype(np.int32)
+        mask_rows = np.full((n, 4), -1, dtype=np.int32)
+        for t in range(n):
+            mask_rows[t, : counts[t]] = rng.choice(1000, size=counts[t], replace=False)
+        sample = dict(
+            token_ids=rng.integers(0, 1000, size=n).tolist(),
+            mask=mask.tolist(),
+            logprobs=[0.0] * n,
+            temperatures=[1.0] * n,
+            advantages=[1.0] * n,
+            env_name="test-env",
+        )
+        inline.append(
+            TrainingSample(
+                **sample,
+                routed_experts=_routed_experts(experts),
+                sampling_mask=SamplingMask(ids=mask_rows[mask_rows >= 0].tobytes(), counts=counts.tobytes()),
+            )
+        )
+        # Routing in two segments from two files; masks one segment per sampled position,
+        # each at its own row width.
+        cut = int(rng.integers(1, n))
+        segments = []
+        for lo, hi in ((0, cut), (cut, n)):
+            path = str(tmp_path / f"{i}-{lo}.bin")
+            offset = _write_rows(path, experts[lo:hi])
+            segments.append(PayloadSegment("routed_experts", path, offset, lo, hi - lo, "uint8", [3, 2]))
+        for t in np.nonzero(mask)[0]:
+            path = str(tmp_path / f"{i}-mask.bin")
+            offset = _write_rows(path, mask_rows[t, : counts[t]][None])
+            segments.append(PayloadSegment("sampling_mask", path, offset, int(t), 1, "int32", [int(counts[t])]))
+        by_handle.append(TrainingSample(**sample, payload=segments))
+
+    bin_cost = build_bin_cost(None)
+    for cp_size in (1, 2):
+        inline_batches = prepare_batch(inline, 32, 2, bin_cost, pad_to_multiple_of=cp_size)
+        handle_batches = prepare_batch(by_handle, 32, 2, bin_cost, pad_to_multiple_of=cp_size)
+        for cp_rank in range(cp_size):
+            loader = object.__new__(DataLoader)
+            loader.cp_rank, loader.cp_size = cp_rank, cp_size
+            for expected_mb, actual_mb in zip(
+                _flatten_batches(inline_batches), _flatten_batches(handle_batches), strict=True
+            ):
+                expected = loader._micro_batch_to_tensor(expected_mb)
+                actual = loader._micro_batch_to_tensor(actual_mb)
+                assert actual["payload_cp_window"]
+                routed = shard_for_cp(expected["routed_experts"], cp_rank, cp_size)
+                sampling = expected["sampling_mask"]
+                if sampling is not None:
+                    sampling = shard_for_cp(shift_tensor_left(sampling, pad_value=-1), cp_rank, cp_size)
+                    width = actual["sampling_mask"].shape[-1]
+                    assert (sampling[..., width:] == -1).all()
+                    sampling = sampling[..., :width]
+                    if cp_size == 1:
+                        assert width == expected["sampling_mask"].shape[-1]
+                torch.testing.assert_close(actual["routed_experts"], routed, rtol=0, atol=0)
+                if sampling is None:
+                    assert actual["sampling_mask"] is None
+                else:
+                    torch.testing.assert_close(actual["sampling_mask"], sampling, rtol=0, atol=0)
+
+
+def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
+    """An inline-mask sample and a by-handle-mask sample never share a micro batch, so
+    reading the payload cannot overwrite the inline mask."""
+    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.transports.batch.types import SamplingMask
+    from prime_rl.transports.payload import PayloadSegment
+
+    row = np.array([5, 6], dtype=np.int32)
+    path = str(tmp_path / "mask.bin")
+    offset = _write_rows(path, row[None])
+    sample = dict(token_ids=[1, 2, 3], mask=[False, True, True], logprobs=[0.0] * 3, temperatures=[1.0] * 3)
+    sample.update(advantages=[1.0] * 3, env_name="test-env")
+    inline = TrainingSample(
+        **sample, sampling_mask=SamplingMask(ids=row.tobytes(), counts=np.int32([0, 2, 0]).tobytes())
+    )
+    by_handle = TrainingSample(**sample, payload=[PayloadSegment("sampling_mask", path, offset, 1, 1, "int32", [2])])
+
+    loader = object.__new__(DataLoader)
+    loader.cp_rank, loader.cp_size = 0, 1
+    batches = _flatten_batches(prepare_batch([inline, by_handle], 32, 1, build_bin_cost(None)))
+    masks = {mb.payload is None: loader._micro_batch_to_tensor(mb)["sampling_mask"][0] for mb in batches}
+    # Inline masks sit at the sampled position; by-handle ones are read shifted onto the labels.
+    assert masks[True][1].tolist() == [5, 6]
+    assert masks[False][0].tolist() == [5, 6]
