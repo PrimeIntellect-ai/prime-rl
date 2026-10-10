@@ -1,7 +1,8 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.kernels import fp8_indexer as fp8_indexer_module
+from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer, select_topk
 
 pytestmark = [
     pytest.mark.gpu,
@@ -109,3 +110,40 @@ def test_selection_agreement(segments):
     mean, p1 = agreement.mean().item(), agreement.quantile(0.01).item()
     assert mean > AGREEMENT_MEAN, f"mean set agreement {mean} below {AGREEMENT_MEAN}"
     assert p1 > AGREEMENT_P1, f"p1 set agreement {p1} below {AGREEMENT_P1}"
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not fp8_indexer_module._deep_select_supported(torch.device("cuda")),
+    reason="DeepSelect not installed or not built for this GPU",
+)
+@pytest.mark.parametrize("topk", [512, 2048])
+def test_deep_select_matches_torch_topk(topk, monkeypatch):
+    """DeepSelect picks exactly the logits `torch.topk` picks; only which of several tied logits differs.
+
+    Integer logits make ties common, at the top-k boundary too. Each row ends at a random `ke` past which
+    logits are -inf, like the indexer's causal range.
+    """
+    rows, cols = 1024, 16384
+    logits = torch.randint(-64, 64, (rows, cols), device="cuda").float()
+    ke = torch.randint(1, cols + 1, (rows,), device="cuda", dtype=torch.int32)
+    in_range = torch.arange(cols, device="cuda")[None, :] < ke[:, None]
+    logits = logits.masked_fill(~in_range, float("-inf"))
+
+    deep_select_picks = select_topk(logits, ke, topk, cols).long()
+    monkeypatch.setattr(fp8_indexer_module, "_deep_select_supported", lambda device: False)
+    torch_picks = select_topk(logits, ke, topk, cols).long()
+
+    def picked_values(picks):
+        valid = picks < ke[:, None]
+        values = logits.gather(1, picks.clamp(max=cols - 1)).masked_fill(~valid, float("-inf"))
+        return values.sort(dim=1, descending=True).values
+
+    assert torch.equal(picked_values(deep_select_picks), picked_values(torch_picks))
+
+    def picked_set(picks):
+        return picks.masked_fill(picks >= ke[:, None], cols).sort(dim=1).values
+
+    ranked = logits.sort(dim=1, descending=True).values
+    unique_boundary = (ranked[:, topk - 1] != ranked[:, topk]) | (ke <= topk)
+    assert unique_boundary.any() and not unique_boundary.all()
+    assert torch.equal(picked_set(deep_select_picks)[unique_boundary], picked_set(torch_picks)[unique_boundary])
