@@ -9,8 +9,7 @@ step = 5
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B"
-optim_cpu_offload = false
-full_offload = true
+offload = "full"
 
 [optim]
 lr = 0.0
