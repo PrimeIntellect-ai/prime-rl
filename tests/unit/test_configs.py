@@ -761,6 +761,12 @@ def test_trainer_rejects_vlm_cp_with_ring():
         TrainerConfig.model_validate(config)
 
 
+def test_ac_none_disables_ac_offloading():
+    config = TrainerModelConfig.model_validate({"ac": None})
+    assert config.ac is None
+    assert config.ac_offloading is None
+
+
 def test_shared_model_name_propagates_to_subconfigs():
     model_name = "PrimeIntellect/test-model"
     config = RLConfig.model_validate(
