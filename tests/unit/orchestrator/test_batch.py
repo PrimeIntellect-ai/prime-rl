@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -555,9 +556,15 @@ def _write_rows(path, rows: np.ndarray) -> int:
     return offset
 
 
+def _mask_logprobs(mask_rows: np.ndarray) -> np.ndarray:
+    return np.where(mask_rows >= 0, -(mask_rows + 1) / 1024, -np.inf).astype(np.float32)
+
+
 def test_payload_by_handle_matches_inline(tmp_path):
-    """Router-replay ids and sampling masks read by handle give the trainer the same
-    tensors as the inline path, through truncation, packing, padding and CP windows."""
+    """Every payload field read by handle gives the trainer the same tensors as the inline
+    path, through truncation, packing, padding and CP windows. Routing weights are checked
+    against Total Router Recall's inline int32 [ids | weight bits] layout, and sampler mask
+    logprobs (a function of their ids here) against the inline mask."""
     import torch
 
     from prime_rl.trainer.rl.data import DataLoader, prepare_micro_batch
@@ -574,6 +581,7 @@ def test_payload_by_handle_matches_inline(tmp_path):
         if i == 0:  # truncated to seq_len before its first masked position
             n, mask = 40, np.arange(40) >= 36
         experts = rng.integers(0, 64, size=(n, 3, 2), dtype=np.uint8)
+        weights = rng.random((n, 3, 2), dtype=np.float32)
         counts = np.where(mask, rng.integers(1, 5, size=n), 0).astype(np.int32)
         mask_rows = np.full((n, 4), -1, dtype=np.int32)
         for t in range(n):
@@ -589,22 +597,29 @@ def test_payload_by_handle_matches_inline(tmp_path):
         inline.append(
             TrainingSample(
                 **sample,
-                routed_experts=_routed_experts(experts),
+                routed_experts=_routed_experts(
+                    np.concatenate([experts.astype(np.int32), weights.view(np.int32)], -1), np.int32
+                ),
                 sampling_mask=SamplingMask(ids=mask_rows[mask_rows >= 0].tobytes(), counts=counts.tobytes()),
             )
         )
-        # Routing in two segments from two files; masks as CSR in one file, split at `cut`
-        # so the second segment starts mid-file.
+        # Routing in two segments from two files; masks one segment per sampled position,
+        # each at its own row width.
         cut = int(rng.integers(1, n))
         segments = []
         for lo, hi in ((0, cut), (cut, n)):
             path = str(tmp_path / f"{i}-{lo}.bin")
-            offset = _write_rows(path, experts[lo:hi])
-            segments.append(PayloadSegment("routed_experts", path, offset, lo, hi - lo, "uint8", [3, 2]))
+            for field, rows in (("routed_experts", experts), ("routed_expert_weights", weights)):
+                offset = _write_rows(path, rows[lo:hi])
+                segments.append(PayloadSegment(field, path, offset, lo, hi - lo, rows.dtype.name, [3, 2]))
         path = str(tmp_path / f"{i}-mask.bin")
-        _write_bytes(path, ragged_bytes(counts, mask_rows[mask_rows >= 0], 0))
-        whole = PayloadSegment("sampling_mask", path, 0, 0, n, "uint32", [])
-        segments += clip_segments([whole], 0, cut) + clip_segments([whole], cut, n)
+        ids = mask_rows[mask_rows >= 0]
+        for field, values in (("sampling_mask", ids), ("sampling_mask_logprobs", _mask_logprobs(ids))):
+            offset = os.path.getsize(path) if os.path.exists(path) else 0
+            _write_bytes(path, ragged_bytes(field, counts, values, offset))
+            # Split at `cut`, so the second segment starts mid-file.
+            whole = PayloadSegment(field, path, offset, 0, n, "uint32", [])
+            segments += clip_segments([whole], 0, cut) + clip_segments([whole], cut, n)
         by_handle.append(TrainingSample(**sample, payload=segments))
 
     bin_cost = build_bin_cost(None)
@@ -619,15 +634,18 @@ def test_payload_by_handle_matches_inline(tmp_path):
                 expected = loader._micro_batch_to_tensor(expected_mb)
                 actual = prepare_micro_batch(loader._micro_batch_to_tensor(actual_mb), None, None, cp_rank, cp_size)
                 assert actual["payload_cp_window"]
-                routed = shard_for_cp(expected["routed_experts"], cp_rank, cp_size)
-                sampling = expected["sampling_mask"]
-                if sampling is not None:
-                    sampling = shard_for_cp(shift_tensor_left(sampling, pad_value=-1), cp_rank, cp_size)
-                torch.testing.assert_close(actual["routed_experts"], routed, rtol=0, atol=0)
-                if sampling is None:
-                    assert actual["sampling_mask"] is None
-                else:
-                    torch.testing.assert_close(actual["sampling_mask"], sampling, rtol=0, atol=0)
+                routed = torch.cat([actual["routed_experts"], actual["routed_expert_weights"].view(torch.int32)], -1)
+                torch.testing.assert_close(
+                    routed, shard_for_cp(expected["routed_experts"], cp_rank, cp_size), rtol=0, atol=0
+                )
+                mask = expected["sampling_mask"]
+                if mask is None:
+                    assert actual["sampling_mask"] is None and "sampling_mask_logprobs" not in actual
+                    continue
+                labels_mask = shard_for_cp(shift_tensor_left(mask, pad_value=-1), cp_rank, cp_size)
+                torch.testing.assert_close(actual["sampling_mask"], labels_mask, rtol=0, atol=0)
+                logprobs = torch.from_numpy(_mask_logprobs(mask.numpy()))
+                torch.testing.assert_close(actual["sampling_mask_logprobs"], logprobs, rtol=0, atol=0)
 
 
 def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
@@ -639,7 +657,7 @@ def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
 
     row = np.array([5, 6], dtype=np.int32)
     path = str(tmp_path / "mask.bin")
-    _write_bytes(path, ragged_bytes(np.int32([2]), row, 0))
+    _write_bytes(path, ragged_bytes("sampling_mask", np.int32([2]), row, 0))
     sample = dict(token_ids=[1, 2, 3], mask=[False, True, True], logprobs=[0.0] * 3, temperatures=[1.0] * 3)
     sample.update(advantages=[1.0] * 3, env_name="test-env")
     inline = TrainingSample(

@@ -17,7 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.payload import PayloadSegment, read_field
+from prime_rl.transports.payload import PAYLOAD_FIELDS, PayloadSegment, read_field
 
 
 class TensorMicroBatch(TypedDict):
@@ -50,11 +50,12 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # By-handle segments of routed_experts and sampling_mask. prepare_micro_batch reads them, so
-    # the reads of later micro batches overlap the current one's forward and backward.
+    # By-handle segments of the PAYLOAD_FIELDS. prepare_micro_batch reads them, so the reads
+    # of later micro batches overlap the current one's forward and backward.
     payload: NotRequired[list[PayloadSegment] | None]
-    # True when routed_experts and sampling_mask were read by handle for this rank's CP
-    # window: already sharded, and the mask already shifted onto label positions.
+    # True when the by-handle fields were read for this rank's CP chunk (see
+    # PayloadField.window): routing already sharded, the mask already sharded and
+    # shifted onto label positions.
     payload_cp_window: bool
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
@@ -188,20 +189,19 @@ class FakeDataLoader:
 
 
 def _read_payload(micro_batch: TensorMicroBatch, segments: list[PayloadSegment], cp_rank: int, cp_size: int) -> None:
-    """Read the by-handle rows into the micro batch. Text micro batches read only this rank's CP
-    chunk, with the sampling mask taken one position ahead so it lands on the labels; multimodal
-    ones read the full sequence because the model may defer CP sharding."""
-    lo, hi, shift = 0, micro_batch["input_ids"].shape[1], 0
+    """Read every by-handle field over its window (``PayloadField.window``) into the micro batch,
+    replacing its inline twin of the same name. Text micro batches read this rank's CP chunk;
+    multimodal ones read the whole sequence because the model may defer CP sharding."""
+    n = micro_batch["input_ids"].shape[1]
     cp_window = micro_batch["mm_refs"] is None
+    windows = {"inputs": (0, n), "labels": (0, n), "sequence": (0, n)}
     if cp_window:
-        chunk = hi // cp_size
-        lo, hi, shift = chunk * cp_rank, chunk * (cp_rank + 1), 1
-    routed_experts = read_field(segments, "routed_experts", lo, hi, 0)
-    sampling_mask = read_field(segments, "sampling_mask", lo + shift, hi + shift, -1)
-    if routed_experts is not None:
-        micro_batch["routed_experts"] = torch.from_numpy(routed_experts).unsqueeze(0)
-    if sampling_mask is not None:
-        micro_batch["sampling_mask"] = torch.from_numpy(sampling_mask).unsqueeze(0)
+        lo = n // cp_size * cp_rank
+        hi = lo + n // cp_size
+        windows.update(inputs=(lo, hi), labels=(lo + 1, hi + 1))
+    for field in {segment.field for segment in segments}:
+        lo, hi = windows[PAYLOAD_FIELDS[field].window]
+        micro_batch[field] = torch.from_numpy(read_field(segments, field, lo, hi)).unsqueeze(0)
     micro_batch["payload_cp_window"] = cp_window
 
 

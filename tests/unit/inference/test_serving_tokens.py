@@ -143,7 +143,5 @@ def test_payload_dir_writes_routing_and_masks_by_handle(tmp_path):
     assert (routing["field"], routing["pos"], routing["rows"], routing["shape"]) == ("routed_experts", 2, 4, [2, 3])
     assert (mask_segment["field"], mask_segment["pos"], mask_segment["rows"]) == ("sampling_mask", 4, 3)
     segments = [PayloadSegment(**routing), PayloadSegment(**mask_segment)]
-    np.testing.assert_array_equal(read_field(segments, "routed_experts", 2, 6, 0), routed_experts)
-    np.testing.assert_array_equal(
-        read_field(segments, "sampling_mask", 4, 7, -1), [[7, -1, -1], [8, 9, 10], [-1, -1, -1]]
-    )
+    np.testing.assert_array_equal(read_field(segments, "routed_experts", 2, 6), routed_experts)
+    np.testing.assert_array_equal(read_field(segments, "sampling_mask", 4, 7), [[7, -1, -1], [8, 9, 10], [-1, -1, -1]])

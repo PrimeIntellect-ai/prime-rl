@@ -22,7 +22,7 @@ import verifiers.v1 as vf
 
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
 from prime_rl.transports.batch.types import RoutedExperts, SamplingMask
-from prime_rl.transports.payload import PayloadSegment, clip_segments
+from prime_rl.transports.payload import PAYLOAD_FIELDS, PayloadSegment, clip_segments
 from prime_rl.utils.logger import get_logger
 
 
@@ -106,23 +106,23 @@ def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> Samp
 
 def _sample_payload(branch: vf.Branch, num_tokens: int) -> list[PayloadSegment] | None:
     """The branch's by-handle segments for a `num_tokens` sample. No forward pass reaches the
-    final token, so its routing row repeats the one before it, as `Branch.routed_experts` does.
-    Routing with any other gap is dropped, like a missing inline payload."""
+    final token, so its row of each routing field repeats the one before it, as
+    `Branch.routed_experts` does. A routing field with any other gap is dropped, like a
+    missing inline payload."""
     segments = clip_segments((PayloadSegment(**s.model_dump()) for s in branch.payload), 0, num_tokens)
-    routing = [segment for segment in segments if segment.field == "routed_experts"]
-    if not routing:
-        return segments or None
-    covered = np.zeros(num_tokens, dtype=bool)
-    for segment in routing:
-        covered[segment.pos : segment.end] = True
-    if num_tokens > 1 and covered[-2] and not covered[-1]:
-        source = next(segment for segment in reversed(routing) if segment.pos <= num_tokens - 2 < segment.end)
-        (row,) = clip_segments([source], num_tokens - 2, num_tokens - 1)
-        segments.append(msgspec.structs.replace(row, pos=num_tokens - 1))
-        covered[-1] = True
-    if not covered.all():
-        get_logger().warning(f"Dropping router-replay payload with gaps (branch {branch.index}, {num_tokens} tokens)")
-        segments = [segment for segment in segments if segment.field != "routed_experts"]
+    for field in {segment.field for segment in segments if PAYLOAD_FIELDS[segment.field].window == "inputs"}:
+        routing = [segment for segment in segments if segment.field == field]
+        covered = np.zeros(num_tokens, dtype=bool)
+        for segment in routing:
+            covered[segment.pos : segment.end] = True
+        if num_tokens > 1 and covered[-2] and not covered[-1]:
+            source = next(segment for segment in reversed(routing) if segment.pos <= num_tokens - 2 < segment.end)
+            (row,) = clip_segments([source], num_tokens - 2, num_tokens - 1)
+            segments.append(msgspec.structs.replace(row, pos=num_tokens - 1))
+            covered[-1] = True
+        if not covered.all():
+            get_logger().warning(f"Dropping {field} payload with gaps (branch {branch.index}, {num_tokens} tokens)")
+            segments = [segment for segment in segments if segment.field != field]
     return segments or None
 
 
