@@ -578,6 +578,36 @@ class MuonConfig(BaseOptimizerConfig):
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
+    embedding_update: Literal["sinkhorn", "adamw"] | None = None
+    """How the token embedding, the LM head and the Engram hash tables are updated, with DeepSeek-V4.1's
+    split of the other parameters (tech report §2.5): Engram projections go to Muon with the other
+    matrices, normalization weights to AdamW with weight decay, biases and scaling factors (Engram gate
+    weights, mHC bias and scale, attention sinks) to AdamW without. ``"sinkhorn"`` is the report's
+    momentum update with Sinkhorn balancing (one fp32 state per parameter, no weight decay);
+    ``"adamw"`` is AdamW without weight decay. ``None`` sends the embedding and LM head to AdamW and every
+    other 2-D parameter, Engram tables included, to Muon."""
+
+    sinkhorn_iters: int = Field(11, ge=1)
+    """Alternating row / column normalizations of the Sinkhorn update (odd: it starts and ends with rows)."""
+
+    sinkhorn_tau: float = Field(1e-3, ge=0)
+    """Rows of the momentum update whose norm is at most this fraction of the mean row norm are not updated."""
+
+    sinkhorn_eps: float = Field(1e-20, gt=0)
+    """Added to every row and column norm of the Sinkhorn update."""
+
+    sinkhorn_lr_scale: float = Field(0.18, gt=0)
+    """Learning-rate correction of the Sinkhorn update (gamma), which has unit row-wise RMS."""
+
+    engram_lr_scale: float = Field(5.0, gt=0)
+    """Learning-rate multiplier of the Engram hash tables. Only used with ``embedding_update`` set."""
+
+    @model_validator(mode="after")
+    def validate_sinkhorn_iters(self):
+        if self.sinkhorn_iters % 2 != 1:
+            raise ValueError(f"optim.sinkhorn_iters must be odd, got {self.sinkhorn_iters}")
+        return self
+
 
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"

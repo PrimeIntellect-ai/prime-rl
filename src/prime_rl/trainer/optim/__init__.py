@@ -1,6 +1,5 @@
 import torch
 import torch.distributed as dist
-from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import SGD, AdamW, Optimizer
@@ -15,6 +14,7 @@ from prime_rl.trainer.optim.offload import (
     _create_cpu_master_weights,
 )
 from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.optim.sinkhorn import MuonWithSinkhorn
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
@@ -143,6 +143,29 @@ def _create_optimizer(
             )
 
 
+def _is_embedding_like(name: str) -> bool:
+    """Matrices whose rows are token or n-gram ids: the token embedding, the LM head and Engram hash tables."""
+    return "embed_tokens" in name or "lm_head" in name or _is_engram_table(name)
+
+
+def _is_engram_table(name: str) -> bool:
+    return ".engrams." in name and name.endswith(".embed.weight")
+
+
+def _deepseek_v41_param_class(name: str, param: nn.Parameter) -> str:
+    """Which update DeepSeek-V4.1 (tech report §2.5) gives a parameter: `embedding` (embeddings, LM head,
+    Engram tables), `muon` (linear-layer matrices), `norm` (normalization weights: AdamW with weight
+    decay) or `scale` (biases and scaling factors: AdamW without)."""
+    if _is_embedding_like(name):
+        return "embedding"
+    # The Engram gate weights are per-channel scales stored as (hc_mult, hidden) matrices.
+    if ".engrams." in name and name.rsplit(".", 1)[-1] in ("q_weight", "k_weight"):
+        return "scale"
+    if param.ndim >= 2:
+        return "muon"
+    return "norm" if "norm" in name else "scale"
+
+
 def _create_muon_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
@@ -159,22 +182,35 @@ def _create_muon_optimizer(
             return False
         return True
 
+    named_params = [(n, p) for n, p in named_params if p.requires_grad]
+    if config.embedding_update is not None:
+        classes = {n: _deepseek_v41_param_class(n, p) for n, p in named_params}
+    else:
+        classes = {n: "muon" if muon_enabled(n, p) else "norm" for n, p in named_params}
+
     muon_params = []
     expert_params = []
     router_params = []
     adamw_params = []
+    adamw_no_decay_params = []
+    embedding_params = []
+    engram_table_params = []
     for n, p in named_params:
-        if p.requires_grad and muon_enabled(n, p):
-            if "mlp.experts" in n:
+        match classes[n]:
+            case "muon" if "mlp.experts" in n:
                 expert_params.append(p)
-            elif "mlp.router" in n:
+            case "muon" if "mlp.router" in n:
                 router_params.append(p)
-            else:
+            case "muon":
                 muon_params.append(p)
-        elif p.requires_grad:
-            adamw_params.append(p)
-        else:
-            pass
+            case "norm":
+                adamw_params.append(p)
+            case "scale":
+                adamw_no_decay_params.append(p)
+            case "embedding" if _is_engram_table(n):
+                engram_table_params.append(p)
+            case "embedding":
+                embedding_params.append(p)
 
     param_groups = []
 
@@ -207,6 +243,26 @@ def _create_muon_optimizer(
         )
 
     param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
+    if adamw_no_decay_params:
+        param_groups.append(dict(params=adamw_no_decay_params, algorithm="adamw", lr=lr, weight_decay=0.0))
+    for params, group_lr in ((embedding_params, lr), (engram_table_params, lr * config.engram_lr_scale)):
+        if not params:
+            continue
+        if config.embedding_update == "sinkhorn":
+            param_groups.append(
+                dict(
+                    params=params,
+                    algorithm="sinkhorn",
+                    lr=group_lr,
+                    weight_decay=0.0,
+                    sinkhorn_iters=config.sinkhorn_iters,
+                    sinkhorn_tau=config.sinkhorn_tau,
+                    sinkhorn_eps=config.sinkhorn_eps,
+                    sinkhorn_lr_scale=config.sinkhorn_lr_scale,
+                )
+            )
+        else:
+            param_groups.append(dict(params=params, algorithm="adamw", lr=group_lr, weight_decay=0.0))
 
     if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
         distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
@@ -224,7 +280,7 @@ def _create_muon_optimizer(
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
 
-    optimizer = Muon(
+    optimizer = MuonWithSinkhorn(
         params=param_groups,
         matrix_partitions=matrix_partitions,
         lr=lr,
