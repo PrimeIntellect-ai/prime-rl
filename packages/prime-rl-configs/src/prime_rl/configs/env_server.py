@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import verifiers.v1 as vf
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import SerializeAsAny, model_validator
 
 from prime_rl.configs.shared import LogConfig
-from prime_rl.utils.config import BaseConfig, default_output_dir
+from prime_rl.utils.config import BaseConfig
 
 
 class EnvServerConfig(BaseConfig):
@@ -24,9 +24,6 @@ class EnvServerConfig(BaseConfig):
     unset binds an OS-assigned port)."""
 
     log: LogConfig = LogConfig()
-
-    output_dir: Path = Field(default_factory=default_output_dir)
-    """Directory to write outputs to — logs and any generated artifacts are written as subdirectories. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
     @model_validator(mode="before")
     @classmethod

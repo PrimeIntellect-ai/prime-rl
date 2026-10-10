@@ -258,12 +258,8 @@ class TrainerLogConfig(LogConfig):
 
 class HeartbeatConfig(BaseConfig):
     url: str
-    """URL to send the heartbeat to."""
-
-    min_interval: float = Field(30.0, gt=0)
-    """Minimum seconds between pings. Beats can arrive far more often (evals beat once
-    per landed episode); surplus beats are dropped to stay under Better Stack's heartbeat
-    rate limit. Size it well under the monitor's period."""
+    """URL to send the heartbeat to. Pings are sent at most once every 30 seconds to stay
+    under Better Stack's rate limit, so size the monitor's period well above that."""
 
 
 class BaseTransportConfig(BaseConfig):

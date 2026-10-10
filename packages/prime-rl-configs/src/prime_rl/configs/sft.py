@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -187,8 +187,8 @@ class SingleNodeDeploymentConfig(BaseDeploymentConfig):
     num_train_gpus: int = 1
     """GPUs allocated to the trainer."""
 
-    num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
-    """GPUs allocated to inference for online evals (alias: ``num_eval_gpus``). Only used when an ``[inference]`` block is configured."""
+    num_infer_gpus: int = 1
+    """GPUs allocated to inference for online evals. Only used when an ``[inference]`` block is configured."""
 
     @model_validator(mode="after")
     def validate_gpu_count(self):
@@ -203,8 +203,8 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     num_train_nodes: int = Field(2, ge=1)
     """Training nodes."""
 
-    num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
-    """Inference nodes for online evals (alias: ``num_eval_nodes``). These nodes share
+    num_infer_nodes: int = Field(0, ge=0)
+    """Inference nodes for online evals. These nodes share
     one SLURM allocation with the trainer nodes."""
 
     nodes_per_fsdp_group: int | None = None

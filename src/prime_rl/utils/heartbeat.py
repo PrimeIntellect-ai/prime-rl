@@ -6,24 +6,24 @@ import requests
 from prime_rl.configs.shared import HeartbeatConfig
 from prime_rl.utils.logger import get_logger
 
+MIN_INTERVAL_S = 30.0
+
 
 class Heartbeat:
     """Heartbeat monitor that sends heartbeats to Better Stack.
 
     The beat() method is called on every progress event (train batch, landed eval
     episode, ...), but a ping is only sent when the last one is at least
-    ``min_interval`` seconds old and none is in flight. Better Stack rate-limits
+    ``MIN_INTERVAL_S`` seconds old and none is in flight. Better Stack rate-limits
     frequent pings (HTTP 429), and a monitor only needs pings well within its
     period + grace, so surplus beats are dropped without an HTTP request.
 
     Args:
-        config: The heartbeat config: the Better Stack URL to ping and the
-            minimum seconds between pings.
+        config: The heartbeat config: the Better Stack URL to ping.
     """
 
     def __init__(self, config: HeartbeatConfig):
         self.heartbeat_url = config.url
-        self.min_interval = config.min_interval
         self._lock = threading.Lock()
         self._pending = False
         self._last_beat_at: float | None = None
@@ -48,13 +48,13 @@ class Heartbeat:
         training continues uninterrupted. The lock is held only briefly
         (microseconds) to check/set flags atomically.
 
-        Beats that arrive while a ping is in flight or within ``min_interval`` of
+        Beats that arrive while a ping is in flight or within ``MIN_INTERVAL_S`` of
         the last one are dropped; the first beat after the interval sends the
         next ping.
         """
         with self._lock:
             now = time.monotonic()
-            if self._pending or (self._last_beat_at is not None and now - self._last_beat_at < self.min_interval):
+            if self._pending or (self._last_beat_at is not None and now - self._last_beat_at < MIN_INTERVAL_S):
                 return
             self._pending = True
             self._last_beat_at = now
