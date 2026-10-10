@@ -118,6 +118,11 @@ class NCCLWeightUpdateWorker(Worker):
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
 
+        # A restarted trainer/orchestrator re-initializes engines that outlived them; drop the
+        # previous run's communicator first (abort-based, safe without the old peers).
+        previous = getattr(self, "nccl_broadcast_receiver", None)
+        if previous is not None:
+            previous.communicator.destroy()
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
             port=port,

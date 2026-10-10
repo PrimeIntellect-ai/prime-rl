@@ -186,6 +186,9 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        # Prefixes every prefix-cache salt. Versions repeat after a resume (with weights that
+        # can differ from the crashed run's), and the engines may have outlived that run.
+        self.cache_salt_prefix = uuid.uuid4().hex[:8]
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
@@ -560,7 +563,7 @@ class Dispatcher:
         env = env_collection.get(group.env_name)
         # Only endpoints receiving policy weight updates need a cache salt.
         if live_sourced and self.policy_weights_change:
-            cache_salt = str(group.policy_version_at_start)
+            cache_salt = f"{self.cache_salt_prefix}:{group.policy_version_at_start}"
         else:
             cache_salt = None
 
