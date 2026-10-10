@@ -7,8 +7,8 @@ usage (repo root, on an otherwise idle GPU):
   uv run --no-sync python benchmarks/scripts/dsv4_sparse_attn/bench.py --compare A.json [B.json ...]
 
 Per item, every backend's outputs are first compared against `tilelang` (out, lse, dq, dkv, dsink), and on
-items of total length at most 4096 also against the float32 dense reference; a backend that fails is
-reported and not timed. Each passing backend is then timed on the forward and on forward+backward
+items of total length at most 4096 also against the float32 dense reference, where every backend's LSE bound
+is `DENSE_LSE_RTOL` (bf16 kernels against fp32 math); a backend that fails is reported and not timed. Each passing backend is then timed on the forward and on forward+backward
 (`torch.autograd.grad` with a fixed `dO`):
 
 - op-boundary time: CUDA events around one call that starts with the GPU idle and the L2 flushed, so host
@@ -72,6 +72,7 @@ L2_FLUSH_BYTES = 256 * 2**20
 PROFILE_RANGE = "dsv4_sparse_attn_bench_call"
 GPU_ACTIVITY_CATEGORIES = ("kernel", "gpu_memset", "gpu_memcpy")
 MODES = ("fwd", "fwd_bwd")
+DENSE_LSE_RTOL = 1e-6
 
 
 def relative_error(actual: torch.Tensor, reference: torch.Tensor) -> float:
@@ -80,8 +81,9 @@ def relative_error(actual: torch.Tensor, reference: torch.Tensor) -> float:
     return float((actual - reference).abs().max() / reference.abs().max())
 
 
-def tolerances(name: str) -> dict[str, float]:
-    lse_rtol = LSE_RTOL_BY_BACKEND.get(name, LSE_RTOL)
+def tolerances(name: str, vs_dense: bool) -> dict[str, float]:
+    """The gate's bounds: against the fp32 reference every bf16 backend gets `DENSE_LSE_RTOL` on the LSE."""
+    lse_rtol = DENSE_LSE_RTOL if vs_dense else LSE_RTOL_BY_BACKEND.get(name, LSE_RTOL)
     return {"out": OUT_RTOL, "lse": lse_rtol, "dq": DQ_RTOL, "dkv": DKV_RTOL, "dsink": DSINK_RTOL}
 
 
@@ -105,9 +107,9 @@ def dense_outputs(inputs: dict, indices: torch.Tensor) -> dict[str, torch.Tensor
     return {"out": out.detach(), "lse": lse, "dq": dq, "dkv": dkv, "dsink": dsink}
 
 
-def gate(name: str, outputs: dict, reference: dict) -> dict[str, dict]:
+def gate(name: str, outputs: dict, reference: dict, vs_dense: bool) -> dict[str, dict]:
     checks = {}
-    for tensor, rtol in tolerances(name).items():
+    for tensor, rtol in tolerances(name, vs_dense).items():
         if outputs.get(tensor) is None or reference.get(tensor) is None:
             continue
         error = relative_error(outputs[tensor], reference[tensor])
@@ -264,9 +266,9 @@ def benchmark_item(item, corpus_dir: Path, backends: dict, args, flush: torch.Te
             record["backends"][name] = entry
             print(f"{item.id} {name}: raised {error!r}, not timed", flush=True)
             continue
-        checks = {"vs_tilelang": gate(name, outputs, reference)}
+        checks = {"vs_tilelang": gate(name, outputs, reference, vs_dense=False)}
         if dense is not None:
-            checks["vs_dense_fp32"] = gate(name, outputs, dense)
+            checks["vs_dense_fp32"] = gate(name, outputs, dense, vs_dense=True)
         failed = [
             f"{basis}.{tensor}"
             for basis, by_tensor in checks.items()
