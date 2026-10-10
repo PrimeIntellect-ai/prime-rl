@@ -15,6 +15,11 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4Hyper
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
+from prime_rl.trainer.models.layers.fp8_linear import (
+    Float8BlockwiseGroupedLinear,
+    replace_linear_with_fp8_blockwise_linear,
+)
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
@@ -1427,3 +1432,143 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
     assert torch.equal(compiled, fused)
     assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
     _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")
+
+
+O_GROUPS = V4FLASH_MODEL["o_groups"]
+O_A_IN_FEATURES = V4FLASH_MODEL["num_attention_heads"] * V4FLASH_MODEL["head_dim"] // O_GROUPS
+O_A_OUT_FEATURES = O_GROUPS * V4FLASH_MODEL["o_lora_rank"]
+# A misaligned token count, so the weight gradient's 128-token padding is exercised.
+O_A_TOKENS = 517
+# Relative Frobenius error of an FP8 matmul against bf16 on Gaussian operands, with headroom.
+O_A_FP8_RTOL = 0.06
+
+requires_fp8_einsum = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (9, 10),
+    reason="DeepGEMM's fp8_einsum runs on Hopper (SM90) and Blackwell (SM100) only",
+)
+requires_sm90 = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="vLLM serves wo_a with fp32 scales on Hopper only, Blackwell packs them as INT32 ue8m0",
+)
+
+
+def _fp8_o_a_proj() -> nn.Module:
+    """o_a_proj at Flash shapes, made FP8 by the same replacement pass the trainer runs.
+
+    The weight is drawn at std 0.02, so every 128x128 block's amax sits far above 448 * 1e-4,
+    where the trainer's scale floor and vLLM's amax floor would round differently.
+    """
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        model = nn.ModuleDict({"o_a_proj": GroupedLinear(O_A_IN_FEATURES, O_A_OUT_FEATURES, O_GROUPS)})
+    nn.init.normal_(model["o_a_proj"].weight, std=0.02)
+    replace_linear_with_fp8_blockwise_linear(model, ignore_modules=[])
+    assert type(model["o_a_proj"]) is Float8BlockwiseGroupedLinear
+    return model["o_a_proj"]
+
+
+def _o_a_proj_input() -> torch.Tensor:
+    return torch.randn(1, O_A_TOKENS, O_GROUPS, O_A_IN_FEATURES, device="cuda", dtype=torch.bfloat16)
+
+
+def _bf16_o_a_proj(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    return torch.einsum("btgk,gnk->btgn", x, weight.view(O_GROUPS, -1, O_A_IN_FEATURES))
+
+
+def _assert_frobenius_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
+    error = (actual.float() - reference.float()).norm() / reference.float().norm()
+    assert error <= rtol, f"{label}: relative error {error} exceeds {rtol}"
+
+
+@requires_sm90
+def test_fp8_o_a_proj_quantizes_and_multiplies_like_vllm_wo_a(monkeypatch):
+    """The FP8 o_a_proj hands DeepGEMM bit for bit what vLLM's online-FP8 `wo_a` does, and gets its output.
+
+    vLLM fuses the inverse RoPE into the input cast. Position 0 makes that rotation the identity, so
+    its kernel quantizes exactly the tensor the trainer does.
+    """
+    deep_gemm = pytest.importorskip("deep_gemm")
+    pytest.importorskip("vllm")
+    from vllm.models.deepseek_v4.common.ops.fused_inv_rope_fp8_quant import fused_inv_rope_fp8_quant
+    from vllm.utils.deep_gemm import per_block_cast_to_fp8
+
+    module = _fp8_o_a_proj()
+    x = _o_a_proj_input()
+    einsum_calls = []
+    real_fp8_einsum = deep_gemm.fp8_einsum
+
+    def recording_fp8_einsum(expr, a, b, d, recipe):
+        einsum_calls.append((expr, a, b, recipe))
+        real_fp8_einsum(expr, a, b, d, recipe=recipe)
+
+    monkeypatch.setattr(deep_gemm, "fp8_einsum", recording_fp8_einsum)
+    out = module(x)
+    monkeypatch.undo()
+
+    ((expr, (x_fp8, x_sf), (weight_fp8, weight_sf), recipe),) = einsum_calls
+    heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    identity_rope = torch.cat([torch.ones(1, ROPE_DIM // 2), torch.zeros(1, ROPE_DIM // 2)], dim=-1).cuda()
+    vllm_x_fp8, vllm_x_sf = fused_inv_rope_fp8_quant(
+        x.view(O_A_TOKENS, heads, head_dim),
+        torch.zeros(O_A_TOKENS, dtype=torch.int64, device="cuda"),
+        identity_rope,
+        n_groups=O_GROUPS,
+        heads_per_group=heads // O_GROUPS,
+        nope_dim=head_dim - ROPE_DIM,
+        rope_dim=ROPE_DIM,
+    )
+    vllm_weight_fp8, vllm_weight_sf = per_block_cast_to_fp8(module.weight.detach(), [128, 128], use_ue8m0=False)
+    vllm_weight_fp8 = vllm_weight_fp8.view(O_GROUPS, -1, O_A_IN_FEATURES)
+    vllm_weight_sf = vllm_weight_sf.view(O_GROUPS, -1, vllm_weight_sf.size(-1))
+
+    assert expr == "bhr,hdr->bhd"
+    assert recipe == (1, 128, 128)
+    assert torch.equal(x_fp8.view(torch.uint8), vllm_x_fp8.view(torch.uint8))
+    assert torch.equal(x_sf, vllm_x_sf)
+    assert torch.equal(weight_fp8.view(torch.uint8), vllm_weight_fp8.view(torch.uint8))
+    assert torch.equal(weight_sf, vllm_weight_sf)
+
+    vllm_out = torch.empty(O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS, device="cuda", dtype=torch.bfloat16)
+    real_fp8_einsum(expr, (vllm_x_fp8, vllm_x_sf), (vllm_weight_fp8, vllm_weight_sf), vllm_out, recipe=recipe)
+    assert out.shape == (1, O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS)
+    assert out.dtype == torch.bfloat16
+    assert torch.equal(out.view_as(vllm_out), vllm_out)
+    _assert_frobenius_relative(out, _bf16_o_a_proj(x, module.weight.detach()), O_A_FP8_RTOL, "output")
+
+
+@requires_fp8_einsum
+def test_fp8_o_a_proj_gradients_match_bf16():
+    module = _fp8_o_a_proj()
+    weight = module.weight.detach().clone().requires_grad_(True)
+    fp8_x, bf16_x = _leaves(_o_a_proj_input(), _o_a_proj_input())
+    with torch.no_grad():
+        bf16_x.copy_(fp8_x)
+    upstream = torch.randn(1, O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS, device="cuda")
+
+    (module(fp8_x).float() * upstream).sum().backward()
+    (_bf16_o_a_proj(bf16_x, weight).float() * upstream).sum().backward()
+
+    assert fp8_x.grad.dtype == torch.bfloat16 and module.weight.grad.dtype == torch.bfloat16
+    _assert_frobenius_relative(fp8_x.grad, bf16_x.grad, O_A_FP8_RTOL, "dx")
+    _assert_frobenius_relative(module.weight.grad, weight.grad, O_A_FP8_RTOL, "dweight")
+
+
+@requires_fp8_einsum
+def test_fp8_o_a_proj_traces_under_torch_compile():
+    """`torch.compile(fullgraph=True)` through the FP8 o_a_proj forward and backward is bit for bit eager."""
+    module = _fp8_o_a_proj()
+    eager_x, compiled_x = _leaves(_o_a_proj_input(), _o_a_proj_input())
+    with torch.no_grad():
+        compiled_x.copy_(eager_x)
+    upstream = torch.randn(1, O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS, device="cuda", dtype=torch.bfloat16)
+
+    eager_out = module(eager_x)
+    (eager_out * upstream).sum().backward()
+    eager_weight_grad = module.weight.grad
+    module.weight.grad = None
+    compiled_out = torch.compile(module, fullgraph=True)(compiled_x)
+    (compiled_out * upstream).sum().backward()
+
+    assert compiled_out.shape == eager_out.shape and compiled_out.dtype == eager_out.dtype
+    assert torch.equal(compiled_out, eager_out)
+    assert torch.equal(compiled_x.grad, eager_x.grad)
+    assert torch.equal(module.weight.grad, eager_weight_grad)
