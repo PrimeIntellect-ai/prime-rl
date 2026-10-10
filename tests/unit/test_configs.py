@@ -119,7 +119,7 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
-@pytest.mark.parametrize("loss_type", ["score_centering", "ipo", "ipo_tis"])
+@pytest.mark.parametrize("loss_type", ["score_centering", "ipo", "ipo_tis", "icepop"])
 def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
     from prime_rl.entrypoints.rl import write_config
 
@@ -220,6 +220,9 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
+    for invalid in ({"ratio_high": float("inf")}, {"ratio_low": float("nan")}, {"score_centering_topk": 128}):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": {"type": "icepop", **invalid}})
     assert config.loss.ratio_low == 0.2
     assert config.loss.ratio_high == 5.0
 
