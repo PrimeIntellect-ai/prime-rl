@@ -30,6 +30,7 @@ from torch.distributed.pipelining.schedules import (
 )
 
 from prime_rl.configs.trainer import PipelineActivationOffloadConfig
+from prime_rl.trainer.models.layers.expert_compute import defer_weight_grads
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.pipeline_offload import PipelineActivationOffloader, offload_plan
@@ -594,9 +595,11 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
         copy_engine_edges: dict[tuple[int, int], CopyEngineEdge | PutEdge] | None = None,
         first_step_actions: list[Action] | None = None,
         offload: PipelineActivationOffloadConfig | None = None,
+        defer_expert_weight_grads: bool = False,
         **kwargs,
     ):
         super().__init__(stages, **kwargs)
+        self._defer_expert_weight_grads = defer_expert_weight_grads
         self._offloader = None
         if offload is not None:
             self._offloader = PipelineActivationOffloader(
@@ -647,10 +650,20 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
         self._first_step_actions = None
         # The first step keeps every activation on the GPU: its global action order differs from the plan's.
         offloader = None if blocking else self._offloader
+        # Expert weight-gradient GEMMs of the last backward, run once its input-gradient send is posted.
+        weight_grads: list[Callable[[], None]] = []
+
+        def run_weight_grads() -> None:
+            for weight_grad in weight_grads:
+                weight_grad()
+            weight_grads.clear()
+
         run_index = 0
         for action, op in actions:
             kind, idx, mb = op
             stage = stages[idx]
+            if action == "run":
+                run_weight_grads()
             if action == "recv":
                 if kind == "F":
                     recvs[op] = self._post(stage.get_fwd_recv_ops(mb), idx - 1, idx)
@@ -667,6 +680,7 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
                     sent_outputs.append((works, stage, mb))
                 else:
                     sends.extend(self._post(stage.get_bwd_send_ops(mb), idx, idx - 1))
+                    run_weight_grads()
                 if blocking:
                     for work in sends:
                         work.wait()
@@ -703,9 +717,14 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
                         loss = self._maybe_get_loss(stage, mb)
                         if offload:
                             offloader.wait((idx, mb))
-                        stage.backward_one_chunk(mb, loss=loss, last_backward=mb == n - 1)
+                        defer = self._defer_expert_weight_grads and not blocking and mb != n - 1
+                        with defer_weight_grads() if defer else nullcontext([]) as deferred:
+                            stage.backward_one_chunk(mb, loss=loss, last_backward=mb == n - 1)
+                            weight_grads.extend(deferred)
+                            deferred.clear()
                         if not stage.is_first and idx - 1 in stages:
                             stages[idx - 1].set_local_bwd_input(stage.get_local_bwd_output(mb), mb)
+        run_weight_grads()
         for work in sends:
             work.wait()
         self._update_losses(self._stages, losses)
@@ -830,6 +849,7 @@ def build_pipeline_schedule(
     transport: str = "nccl",
     transport_ctas: int | None = None,
     offload: PipelineActivationOffloadConfig | None = None,
+    defer_expert_weight_grads: bool = False,
 ) -> PipelineScheduleSingle | PipelineScheduleMulti:
     """`first_inputs` is stage 0's first micro-batch (`None` on ranks without stage 0)."""
     if "ZeroBubble" in schedule:
@@ -915,6 +935,7 @@ def build_pipeline_schedule(
             copy_engine_edges=copy_engine_edges,
             first_step_actions=global_actions,
             offload=offload,
+            defer_expert_weight_grads=defer_expert_weight_grads,
             n_microbatches=num_micro_batches,
             loss_fn=loss_fn,
             scale_grads=False,

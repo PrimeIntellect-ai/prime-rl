@@ -9,6 +9,8 @@ need the upstream `deep_gemm`, so the fork is imported as `prime_mega_moe` (its 
 directory on the path under that name).
 """
 
+from functools import partial
+
 import torch
 import triton
 import triton.language as tl
@@ -428,6 +430,7 @@ def _mega_moe_fp8_setup_context(ctx, inputs, output) -> None:
 
 
 def _mega_moe_fp8_backward(ctx, grads):
+    from prime_rl.trainer.models.layers import expert_compute
     from prime_rl.trainer.models.layers.expert_compute import _fp32_grad_accumulator
 
     grad_y = grads[0]
@@ -461,9 +464,20 @@ def _mega_moe_fp8_backward(ctx, grads):
     if fsdp_params is not None:
         dw13 = _fp32_grad_accumulator(fsdp_params["gate_up_proj"])
         dw2 = _fp32_grad_accumulator(fsdp_params["down_proj"])
-        kernels.fp8_mega_moe_weight_grads(
-            counts, bufs, (x_t, x_t_sf), dw13, dw2, _side_stream(), dispatcher.wgrad_tile_scales
+        weight_grads = partial(
+            kernels.fp8_mega_moe_weight_grads,
+            counts,
+            bufs,
+            (x_t, x_t_sf),
+            dw13,
+            dw2,
+            _side_stream(),
+            dispatcher.wgrad_tile_scales,
         )
+        if expert_compute._deferred_weight_grads is not None:
+            expert_compute._deferred_weight_grads.append(weight_grads)
+        else:
+            weight_grads()
     else:
         # Without FSDP the experts' plain parameters take the gradients.
         params = (experts.gate_up_proj, experts.down_proj)
