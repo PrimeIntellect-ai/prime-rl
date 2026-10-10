@@ -2,6 +2,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
@@ -13,7 +14,7 @@ from prime_rl.trainer.optim.offload import (
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
-from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.optim.sign_sgd import SignSGD, sign_sgd_update_
 from prime_rl.trainer.optim.sinkhorn import MuonWithSinkhorn
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -63,6 +64,18 @@ def setup_optimizer(
     if full_offload_config is not None and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
+    # Tables kept in host memory (`offload_to_host`) are updated by their own streamed step.
+    host_params = [p for _, p in named_params if getattr(p, "host_table", None) is not None and p.requires_grad]
+    named_params = [(n, p) for n, p in named_params if getattr(p, "host_table", None) is None]
+    if host_params and (
+        cpu_offload
+        or full_offload_config is not None
+        or config.type not in ("adamw", "sign_sgd")
+        or getattr(config, "apply_in_backward", False)
+    ):
+        raise ValueError(
+            "host-offloaded engram tables need optim.type adamw or sign_sgd, without optimizer offload or apply_in_backward"
+        )
     optimizer_named_params = named_params
     master_weights = None
     if full_offload_config is not None:
@@ -97,7 +110,47 @@ def setup_optimizer(
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
         return CPUOffloadOptimizer(optimizer), None
 
+    if host_params:
+        optimizer.register_step_post_hook(_HostTableStep(config.type, host_params))
     return optimizer, None
+
+
+class _HostTableStep:
+    """After each optimizer step, gives every host-offloaded table the update the optimizer would have
+    applied to it on the GPU (same kernel, same hyperparameters from the first param group), then
+    drops its gradient, which the optimizer's `zero_grad` does not see."""
+
+    def __init__(self, optim_type: str, params: list[nn.Parameter]) -> None:
+        self.optim_type = optim_type
+        self.params = params
+        # AdamW's fused `state["step"]`, one per parameter.
+        self.steps = [torch.zeros((), dtype=torch.float32, device="cuda") for _ in params]
+
+    @torch.no_grad()
+    def __call__(self, optimizer: Optimizer, args, kwargs) -> None:
+        group = optimizer.param_groups[0]
+        # The update runs later (see `HostTable`), so it binds this step's hyperparameters now.
+        lr, weight_decay = group["lr"], group["weight_decay"]
+        for param, step in zip(self.params, self.steps):
+            if param.grad is None:
+                continue
+            grad = param.grad.to_local() if isinstance(param.grad, DTensor) else param.grad
+            param.host_table.wait()
+            if self.optim_type == "adamw":
+                (beta1, beta2), eps = group["betas"], group["eps"]
+                step += 1
+
+                def update(p, g, state, step=step):
+                    torch._fused_adamw_(
+                        [p], [g], [state[0]], [state[1]], [], [step],
+                        amsgrad=False, lr=lr, beta1=beta1, beta2=beta2,
+                        weight_decay=weight_decay, eps=eps, maximize=False,
+                    )  # fmt: skip
+
+                param.host_table.step(grad, 2, update)
+            else:
+                param.host_table.step(grad, 0, lambda p, g, state: sign_sgd_update_(p, g, lr, weight_decay))
+            param.grad = None
 
 
 def _create_optimizer(

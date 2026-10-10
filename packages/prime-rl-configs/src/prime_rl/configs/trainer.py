@@ -478,6 +478,13 @@ class ModelConfig(BaseModelConfig):
     """Freeze DeepSeek-V4.1's engram n-gram tables (~98B parameters each). Required for RL: the tables are
     too large to broadcast, so the inference engine keeps serving its own copy."""
 
+    engram_offload: bool = False
+    """Keep each rank's shard of DeepSeek-V4.1's engram tables, with its optimizer state, in pinned host memory
+    instead of on the GPU (prototype). Lookups gather rows from host memory over PCIe ahead of the forward,
+    and the optimizer step streams the whole shard through the GPU with the same update kernel, so every
+    row is updated every step as before. Needs `optim.type` adamw or sign_sgd; checkpointing the
+    tables is not implemented."""
+
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 

@@ -35,7 +35,11 @@ from prime_rl.trainer.activation_checkpointing import (
     get_activation_checkpoint_wrapper,
     get_layer_modes,
 )
-from prime_rl.trainer.distributed.embedding_parallel import AllToAllEmbeddingParallel, EmbeddingParallel
+from prime_rl.trainer.distributed.embedding_parallel import (
+    AllToAllEmbeddingParallel,
+    EmbeddingParallel,
+    offload_to_host,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, cast_float_and_contiguous
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
@@ -1026,6 +1030,12 @@ def setup_model(
         _move_buffers_to_cuda(model, config)
     else:
         load_dcp_from_hf(model, config, parallel_dims)
+
+    if config.engram_offload:
+        for module in model.modules():
+            if isinstance(module, DeepseekV41Engram):
+                offload_to_host(module.embed)
+        torch.cuda.empty_cache()
 
     _reset_runtime_moe_buffers(model)
     return model
