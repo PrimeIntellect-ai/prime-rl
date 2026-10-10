@@ -18,6 +18,7 @@ def apply_shared_vllm_patches():
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
+    monkey_patch_routed_experts_with_pd_connectors()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
@@ -181,6 +182,105 @@ def monkey_patch_minimax_m2_think_end_passthrough():
         )
 
     minimax_m2.minimax_m2_config = _patched_config
+
+
+def monkey_patch_routed_experts_with_pd_connectors():
+    """Let vLLM's routed-experts capture (AuxOutput connector) run on NIXL P/D instances.
+
+    vLLM 0.31 rejects routed-experts capture with P/D connectors, because a decode instance never
+    computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
+    (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
+    this instance, and the worker does not buffer the
+    partially known first block. The router takes the prompt rows from the prefill instance. Delete
+    once vLLM supports routed experts with P/D connectors.
+    """
+    from vllm.config.vllm import VllmConfig
+    from vllm.distributed.aux_output_connector.connector import AuxOutputSchedulerConnector
+    from vllm.distributed.aux_output_connector.worker import AuxOutputWorkerConnector
+
+    original_verify = VllmConfig._verify_aux_output_compatibility
+    if getattr(original_verify, "_prime_rl_allows_pd", False):
+        return
+
+    def _verify_aux_output_compatibility(config):
+        kv_transfer_config = config.kv_transfer_config
+        if kv_transfer_config is None or not kv_transfer_config.has_connector("NixlConnector"):
+            return original_verify(config)
+        # The P/D connector check is the last one; every other check still runs.
+        config.kv_transfer_config = None
+        try:
+            return original_verify(config)
+        finally:
+            config.kv_transfer_config = kv_transfer_config
+
+    original_build_connector_meta = AuxOutputSchedulerConnector.build_connector_meta
+
+    def build_connector_meta(self, scheduler_output, requests):
+        metadata = original_build_connector_meta(self, scheduler_output, requests)
+        floors = _emit_floors(self)
+        for request_id, emit_start in metadata.requests.items():
+            request = requests[request_id]
+            if not _is_pd_decode_request(request):
+                continue
+            # Fixed at the first forward (built before the step advances num_computed_tokens).
+            # Normally prompt_len - 1; lower after a failed KV load, where this instance
+            # recomputes those rows itself.
+            floor = floors.setdefault(request_id, request.num_computed_tokens)
+            metadata.requests[request_id] = max(emit_start, floor)
+        return metadata
+
+    original_request_finished = AuxOutputSchedulerConnector.request_finished
+
+    def request_finished(self, request):
+        # Preemption keeps the floor: a resumed request may hit prompt blocks loaded from the prefill
+        # instance, which have no rows here.
+        if request.is_finished():
+            _emit_floors(self).pop(request.request_id, None)
+        return original_request_finished(self, request)
+
+    original_worker_init = AuxOutputWorkerConnector.__init__
+
+    def worker_init(self, *args, **kwargs):
+        original_worker_init(self, *args, **kwargs)
+        if self._buffer is not None:
+            skip_remote_prefill_partial_block(self)
+
+    _verify_aux_output_compatibility._prime_rl_allows_pd = True
+    VllmConfig._verify_aux_output_compatibility = _verify_aux_output_compatibility
+    AuxOutputSchedulerConnector.build_connector_meta = build_connector_meta
+    AuxOutputSchedulerConnector.request_finished = request_finished
+    AuxOutputWorkerConnector.__init__ = worker_init
+
+
+def skip_remote_prefill_partial_block(worker) -> None:
+    """Make an AuxOutput worker skip the mid-block start of a remotely prefilled request's first forward."""
+    from vllm.utils.math_utils import cdiv
+
+    buffer = worker._buffer
+    capture = buffer.capture
+    block_size = buffer.block_size
+
+    def _capture(request_id, token_start, rows):
+        state = worker._requests[request_id]
+        if state.capture_cursor is None and token_start % block_size and state.emit_cursor >= token_start:
+            # The rows before this token exist only on the prefill instance, so this block is never
+            # published. Buffer from the next block; this step's rows are still emitted directly.
+            state.prime_rl_buffer_start = cdiv(token_start, block_size) * block_size
+        skip = min(max(getattr(state, "prime_rl_buffer_start", 0) - token_start, 0), len(rows))
+        return capture(request_id, token_start + skip, rows[skip:])
+
+    buffer.capture = _capture
+
+
+def _emit_floors(connector) -> dict[str, int]:
+    """First output token of each remotely prefilled request on this instance."""
+    return connector.__dict__.setdefault("_prime_rl_emit_floors", {})
+
+
+def _is_pd_decode_request(request) -> bool:
+    """A request on a P/D decode instance (NIXL clears ``do_remote_prefill`` once scheduled, not ``remote_engine_id``)."""
+    params = request.kv_transfer_params or {}
+    return bool(params.get("remote_engine_id")) and not params.get("do_remote_decode")
 
 
 def monkey_patch_strip_routed_experts_from_chat():

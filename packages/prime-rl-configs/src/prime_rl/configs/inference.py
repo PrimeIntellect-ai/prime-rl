@@ -509,16 +509,6 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_no_routed_experts(self):
-        """vLLM rejects routed-expert capture with NIXL KV transfer."""
-        if self.deployment.type == "disaggregated" and self.vllm.enable_return_routed_experts:
-            raise ValueError(
-                "Routed-expert return (enable_return_routed_experts) is not supported with disaggregated P/D: "
-                "vLLM does not capture routed experts across NIXL KV transfer."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_router_deployment(self):
         """The llm-d router (EPP + Envoy) is launched by the SLURM templates only; multi-node deployments need a router to front the per-rank engines."""
         if self.router is not None and self.router.type == "llm-d" and self.deployment.type == "single_node":

@@ -70,6 +70,7 @@ class PrimeRlServingTokens(ServingTokens):
             routed_experts = _GenerateRoutedExpertsCapture(
                 result_generator,
                 start=request.sampling_params.routed_experts_prompt_start,
+                remote_prefill=bool((request.kv_transfer_params or {}).get("do_remote_prefill")),
             )
             result_generator = routed_experts
 
