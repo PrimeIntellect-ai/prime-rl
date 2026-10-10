@@ -30,15 +30,21 @@ class GCConfig(BaseConfig):
     """Run garbage collection every N training steps. Disables Python's automatic GC so every rank collects together and one slow rank can't stall the others."""
 
 
+ActivationCheckpointMode: TypeAlias = Literal["full_moe", "full", "projections", "attention", "matmul", "selective"]
+
+
 class ActivationCheckpointConfig(BaseConfig):
-    mode: Literal["full", "selective"] = "full"
-    """Both modes checkpoint whole transformer blocks. ``selective`` additionally retains selected operations."""
+    mode: ActivationCheckpointMode = "full"
+    """What each checkpointed block keeps for backward; the rest is recomputed. Every mode checkpoints whole transformer blocks and keeps the operations that cannot be replayed (expert dispatch, top-k selections). ``full`` keeps nothing else. ``full_moe`` is ``full`` that also recomputes the FP8 Mega MoE (dispatch, expert GEMMs and combine) instead of keeping its pools; other MoE backends keep theirs. ``projections`` also keeps the projection outputs except the attention query's, so recompute runs the query projection, attention and the elementwise work. ``attention`` also keeps the attention outputs and the mHC collapses, so recompute runs the query projection and the elementwise work. ``matmul`` also keeps the query, so recompute runs no matmul. ``selective`` keeps ``targets``."""
 
     freq: int = Field(1, ge=1)
     """Apply activation checkpointing to every N layers."""
 
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+
+    layer_modes: list[ActivationCheckpointMode | Literal["none"]] | None = None
+    """Mode of each decoder layer, one entry per layer of the full model (pipeline stages keep the full model's layer indices); ``none`` leaves a layer unchecked. Replaces ``mode`` and ``freq``. Early pipeline stages hold activations for more micro-batches, so they can retain less than later ones."""
 
 
 class ActivationOffloadingConfig(BaseConfig):

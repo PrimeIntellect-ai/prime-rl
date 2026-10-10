@@ -69,7 +69,7 @@ def test_selective_policy_saves_default_and_custom_targets():
     )
 
 
-@pytest.mark.parametrize("mode", ["full", "selective"])
+@pytest.mark.parametrize("mode", ["full_moe", "full", "projections", "attention", "matmul", "selective"])
 def test_checkpoint_records_moe_routing_once(mode):
     moe = MoE(
         router=TokenChoiceTopKRouter(

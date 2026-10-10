@@ -10,7 +10,7 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import _CHECKPOINT_PREFIX, CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
@@ -31,7 +31,10 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
+from prime_rl.trainer.activation_checkpointing import (
+    get_activation_checkpoint_wrapper,
+    get_layer_modes,
+)
 from prime_rl.trainer.distributed.embedding_parallel import AllToAllEmbeddingParallel, EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, cast_float_and_contiguous
@@ -751,18 +754,16 @@ def reshard_module(model: nn.Module):
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     language_model = get_language_model(model)
-    wrap_block = get_activation_checkpoint_wrapper(ac_config)
-    checkpointed_layers = 0
-
-    for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
-        if layer_id % ac_config.freq != 0:
-            continue
-
-        language_model.layers.register_module(layer_name, wrap_block(transformer_block))
-        checkpointed_layers += 1
+    layers = dict(language_model.layers.named_children())
+    modes = get_layer_modes(ac_config, list(layers), language_model.config.num_hidden_layers)
+    for (layer_name, transformer_block), mode in zip(layers.items(), modes):
+        if mode != "none":
+            language_model.layers.register_module(
+                layer_name, get_activation_checkpoint_wrapper(ac_config, mode)(transformer_block)
+            )
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied activation checkpointing to layers {list(layers)} with modes {modes} (freq={ac_config.freq})"
     )
 
 
@@ -859,6 +860,8 @@ def _random_init_(model: nn.Module, std: float = 0.02) -> None:
     place in the parameter's mesh, so layouts that shard a parameter alike draw it alike.
     """
     for name, param in model.named_parameters():
+        # Activation checkpointing's wrapper is not part of the parameter's identity.
+        name = name.replace(_CHECKPOINT_PREFIX, "")
         local = param.to_local() if isinstance(param, DTensor) else param
         if local.ndim >= 2:
             coordinate = param.device_mesh.get_coordinate() if isinstance(param, DTensor) else []
