@@ -743,8 +743,9 @@ class Orchestrator:
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
+        # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
         if self.release_future is not None:
-            await self.release_future
+            await asyncio.shield(self.release_future)
         payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
         self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
