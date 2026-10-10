@@ -10,6 +10,13 @@ import torch
 LABEL = "cudnn_flashmla"
 FORWARD_ONLY = False
 EXECUTED_SLOT_TILE = {"fwd": 64, "bwd": 64}
+IMPORTS = [
+    "flash_mla",
+    "cutlass.cute",
+    "cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90",
+    "tilelang",
+    "prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn",
+]
 
 
 def unavailable_reason() -> str | None:
@@ -36,18 +43,18 @@ def install_compile_counter():
     from backends import tilelang
 
     read_tilelang_counts = tilelang.install_compile_counter()
-    compile_ms = [0.0]
+    cute_compile_s = [0.0]
     real_compile = cute.compile
 
     def timed_compile(*args, **kwargs):
         start = time.perf_counter()
         compiled = real_compile(*args, **kwargs)
-        compile_ms[0] += (time.perf_counter() - start) * 1e3
+        cute_compile_s[0] += time.perf_counter() - start
         return compiled
 
     cute.compile = timed_compile
 
-    def read_counts() -> dict[str, int]:
+    def read_counts() -> dict[str, float]:
         main = len(flash_attn_bwd_sm90.compile_cache)
         auxiliary = len(flash_attn_bwd_sm90.compile_cache_pre) + len(flash_attn_bwd_sm90.compile_cache_post)
         tilelang_counts = read_tilelang_counts()
@@ -55,7 +62,10 @@ def install_compile_counter():
             "compiles": main + auxiliary + tilelang_counts["compiles"],
             "disk_loads": tilelang_counts["disk_loads"],
             "bwd_main_compiles": main,
-            "cute_compile_ms": round(compile_ms[0]),
+            "cute_compile_s": cute_compile_s[0],
+            "compile_s": cute_compile_s[0] + tilelang_counts["compile_s"],
+            "disk_load_s": tilelang_counts["disk_load_s"],
+            "jit_miss_s": cute_compile_s[0] + tilelang_counts["jit_miss_s"],
         }
 
     return read_counts
