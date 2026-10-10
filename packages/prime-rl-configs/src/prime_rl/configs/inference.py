@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_config import BaseConfig
+from renderers import CustomRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import default_output_dir, find_package_resource
@@ -482,6 +483,20 @@ class InferenceConfig(BaseConfig):
             resolved.append(target)
         return resolved
 
+    renderer: RendererConfig | None = None
+    """Serve ``/v1/chat/completions`` through this renderer instead of vLLM's chat template, tool parser and reasoning parser. The renderer reads ``vllm.tokenizer`` (or ``vllm.model``); request ``chat_template_kwargs`` over ``vllm.default_chat_template_kwargs`` set its template fields."""
+
+    @field_validator("renderer")
+    @classmethod
+    def _resolve_renderer_import_path(cls, renderer: RendererConfig | None) -> RendererConfig | None:
+        # Spawned vLLM processes and other nodes may not share the launch directory.
+        if isinstance(renderer, CustomRendererConfig):
+            module_ref, sep, attr = renderer.import_path.rpartition(":")
+            if sep and (module_ref.endswith(".py") or "/" in module_ref):
+                path = f"{Path(module_ref).expanduser().resolve()}:{attr}"
+                return CustomRendererConfig.model_validate({**renderer.model_dump(), "import_path": path})
+        return renderer
+
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
@@ -687,5 +702,8 @@ class InferenceConfig(BaseConfig):
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
             namespace.kv_transfer_config = kv_transfer_config
+
+        if self.renderer is not None:
+            namespace.renderer = self.renderer
 
         return namespace

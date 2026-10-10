@@ -8,6 +8,7 @@ from starlette.datastructures import State
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.launchers.api_server.app_state import init_app_state
 from vllm.entrypoints.launchers.cli_args import make_arg_parser, validate_parsed_serve_args
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.lora.protocol import LoadLoRAAdapterRequest
@@ -106,6 +107,14 @@ async def liveness(raw_request: Request):
     return {"status": "ok"}
 
 
+renderer_router = APIRouter()
+
+
+@renderer_router.post("/v1/chat/completions")
+async def renderer_chat_completions(request: ChatCompletionRequest, raw_request: Request):
+    return await raw_request.app.state.renderer_chat_completions.create_chat_completion(request, raw_request)
+
+
 @router.post("/init_broadcaster")
 async def init_broadcaster(request: Request):
     data = await request.json()
@@ -151,6 +160,16 @@ async def custom_init_app_state(
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
 
+    if getattr(args, "renderer", None) is not None:
+        from prime_rl.inference.vllm.serving_renderer import RendererChatCompletions
+
+        state.renderer_chat_completions = RendererChatCompletions(
+            state.serving_tokens,
+            args.renderer,
+            args.tokenizer or args.model,
+            args.default_chat_template_kwargs,
+        )
+
 
 import vllm.entrypoints.launchers.api_server.entry
 import vllm.v1.utils
@@ -164,6 +183,10 @@ def custom_build_app(args: Namespace, supported_tasks: tuple, model_config=None)
     """
     app = _original_build_app(args, supported_tasks, model_config)
     app.include_router(router)
+    if getattr(args, "renderer", None) is not None:
+        # The renderer serves chat completions in place of vLLM's chat template.
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", None) != "/v1/chat/completions"]
+        app.include_router(renderer_router)
     return app
 
 
