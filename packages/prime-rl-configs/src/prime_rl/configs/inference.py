@@ -223,7 +223,7 @@ class WeightBroadcastConfig(BaseConfig):
 
 class CPUOffloadTier(BaseConfig):
     num_bytes: int = Field(..., gt=0)
-    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``)."""
+    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's ``cpu_bytes_to_use`` per engine (one engine per DP rank), backed by ``/dev/shm``: a node needs this times its engine count in ``/dev/shm``, checked at engine startup. For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``)."""
 
 
 class DiskOffloadTier(BaseConfig):

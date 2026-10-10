@@ -245,7 +245,7 @@ num_bytes = 128_000_000_000
 path = "/scratch/kv"
 ```
 
-For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+For `native`, `cpu.num_bytes` is the CPU KV pool of each engine (one per DP rank; vLLM shards it across the engine's workers), allocated in `/dev/shm`. A node needs `num_bytes × engines per node` of `/dev/shm`; the launcher checks this at engine startup and fails with a clear error if it does not fit. For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
 
 
 ### Optimized P/D disaggregation deployment
