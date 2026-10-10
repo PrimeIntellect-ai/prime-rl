@@ -72,7 +72,7 @@ from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_trainer_step_path, resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
 
@@ -96,6 +96,11 @@ def train(config: TrainerConfig):
             run_config=config,
         )
     )
+
+    # The SLURM step watchdog reads the mtime of this file to see that training advances
+    trainer_step_path = get_trainer_step_path(config.output_dir)
+    if world.is_master:
+        trainer_step_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -223,6 +228,12 @@ def train(config: TrainerConfig):
         )
     else:
         logger.info("Starting from scratch")
+
+    # A run resumed from its final checkpoint (e.g. a requeued job that failed after
+    # finishing) has nothing left to train.
+    if config.max_steps is not None and progress.step > config.max_steps:
+        logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        return
 
     # Set up the data loader (Optionally, use a fake data loader for debugging)
     logger.info(f"Initializing data loader ({config.data})")
@@ -710,6 +721,8 @@ def train(config: TrainerConfig):
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+        if world.is_master:
+            trainer_step_path.write_text(str(progress.step))
 
         if is_last_step:
             break

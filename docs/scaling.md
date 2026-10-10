@@ -253,6 +253,12 @@ ModelExpress exchanges peer metadata during startup. Weight updates reuse prepar
 
 By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
 
+### Requeue and step watchdog
+
+A failed job requeues itself (same job ID) up to `slurm.max_requeues` times (default 0: off). The job log keeps appending to `launcher/logs/job_<id>.log`, and component logs of restart `n` go to `logs/attempt_<k>/restart_<n>/`. Every RL and SFT component of a requeued job resumes from the latest complete checkpoint, so enable `[ckpt]` with an `interval`, or a requeue restarts training from scratch.
+
+The trainer master writes its last finished step to `<run_dir>/trainer_step` after every step. If `slurm.step_timeout` is set (default `None`: off) and that file is not updated for that many seconds, the job is killed with a message in the job log, and it requeues if `max_requeues` allows. The first window starts at job start and also covers startup, so set the timeout above the longest expected startup and step time.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

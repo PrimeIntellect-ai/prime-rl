@@ -13,7 +13,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_trainer_step_path, resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
@@ -90,6 +90,11 @@ def train(config: SFTConfig):
             overview_flavor="sft",
         )
     )
+
+    # The SLURM step watchdog reads the mtime of this file to see that training advances
+    trainer_step_path = get_trainer_step_path(config.run_dir)
+    if world.is_master:
+        trainer_step_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Setup heartbeat (only on rank 0)
     heart = None
@@ -392,6 +397,13 @@ def train(config: SFTConfig):
         logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
         weight_sender.broadcast(model, startup_version)
 
+    # A run resumed from its final checkpoint (e.g. a requeued job that failed after
+    # finishing) has nothing left to train. The startup broadcast above still runs so
+    # online evals can finish.
+    if config.max_steps is not None and progress.step > config.max_steps:
+        logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        return
+
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3  # GiB
     is_first_step = True
@@ -657,6 +669,8 @@ def train(config: SFTConfig):
         # Send heartbeat if configured
         if heart is not None:
             heart.beat()
+        if world.is_master:
+            trainer_step_path.write_text(str(progress.step))
 
         if is_last_step:
             break

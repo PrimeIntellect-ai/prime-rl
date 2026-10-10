@@ -20,6 +20,10 @@
 #SBATCH --exclusive
 #SBATCH --output={{ launcher_log_dir }}/job_%j.log
 #SBATCH --error={{ launcher_log_dir }}/job_%j.log
+{%- if max_requeues %}
+#SBATCH --requeue
+#SBATCH --open-mode=append
+{%- endif %}
 
 # Exit immediately on any failed command so a crash on any node releases the
 # allocation instead of leaving zombie processes holding nodes.
@@ -42,9 +46,9 @@ export CONFIG_DIR={{ config_dir }}
 export TRAIN_CONFIG_PATH={{ config_path }}
 export OUTPUT_DIR={{ output_dir }}
 export LAUNCHER_DIR={{ launcher_dir }}
-export LOG_DIR={{ log_dir }}
 export PRL_ATTEMPT_CONFIG_DIR=$CONFIG_DIR
-export PRL_ATTEMPT_LOG_DIR=$LOG_DIR
+{% include '_requeue.sh.j2' %}
+export LOG_DIR=$PRL_ATTEMPT_LOG_DIR
 mkdir -p $LOG_DIR/trainer
 ln -sfn trainer/node_0.log $LOG_DIR/trainer.log
 {% if online_eval -%}
@@ -142,7 +146,7 @@ CLEANUP_SH
 
 # Run trainer and online-eval roles in one SLURM step. A non-zero exit on any
 # node terminates the other roles. Clean trainer exits let the final eval drain.
-srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
+launch srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     set -o pipefail
 
     cd $PROJECT_DIR
@@ -240,7 +244,7 @@ else
             --redirects=3 \
             --local-ranks-filter={{ ranks_filter }} \
             -m prime_rl.trainer.sft.train \
-            @ $TRAIN_CONFIG_PATH \
+            @ $TRAIN_CONFIG_PATH $RESUME_ARGS \
 {%- if use_nccl_broadcast %}
             --weight-broadcast.host 0.0.0.0 \
 {%- endif %}
