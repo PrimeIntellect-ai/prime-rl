@@ -4,9 +4,9 @@ usage (repo root):
   uv run --no-sync python benchmarks/scripts/dsv4_sparse_attn/summarize.py BENCH.json STREAM.json [--corpus DIR]
       > SUMMARY.md
 
-Prints provenance, the synthetic-corpus caveat, a headline table of the single-row (cp1) items, host overhead,
-correctness margins, the dynamic stream, and per-item histograms of valid slots per query, which show how
-dynamic the corpus is. The full per-item tables come from `bench.py --compare` and `stream.py --compare`.
+Prints provenance, the synthetic-corpus caveat, a headline table of the single-row (cp1) items, a per-arm table
+of the same items when the run has more than one arm, host overhead, correctness margins, the dynamic stream, and
+per-item histograms of valid slots per query, which show how dynamic the corpus is. The full per-item tables come from `bench.py --compare` and `stream.py --compare`.
 """
 
 import argparse
@@ -71,6 +71,36 @@ def print_headline(bench: dict) -> None:
             f"{ms(fwd_bwd['op_us']['median'])} | {ms(fwd_bwd['gpu']['us']['median'])} | {rate:.0f} | "
             f"{100 * rate / bench['peak_dense_bf16_tflops']:.1f} | {ratio} |"
         )
+    print()
+
+
+def print_arms(bench: dict) -> None:
+    arms = list(dict.fromkeys(name for item in bench["items"].values() for name in item["backends"]))
+    if len(arms) < 2:
+        return
+    print("## Every arm on the single-row items (cp1)\n")
+    print("Time per call in ms (lower is better): op-boundary, then GPU busy time. TFLOP/s counts useful FLOPs (valid")
+    print("slots only) over op-boundary time (higher is better). `exec/useful` is the FLOPs of the slots the arm's")
+    print("tiles touch over useful FLOPs (1 is no wasted work). `-` marks a mode the arm does not have.\n")
+    print("| item | arm | fwd | fwd gpu | fwd TFLOP/s | exec/useful fwd | f+b | f+b gpu | f+b TFLOP/s |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for item_id, item in bench["items"].items():
+        if item["cp"] != 1:
+            continue
+        for name in arms:
+            entry = item["backends"].get(name, {})
+            cells = []
+            for mode, flops_key in (("fwd", "fwd"), ("fwd_bwd", "fwd_bwd")):
+                t = timing(entry, mode)
+                if t is None:
+                    cells.append("- | - | -" if mode == "fwd_bwd" else "- | - | - | -")
+                    continue
+                rate = item["useful_flops"][flops_key] / t["op_us"]["median"] / 1e6
+                cell = f"{ms(t['op_us']['median'])} | {ms(t['gpu']['us']['median'])} | {rate:.0f}"
+                if mode == "fwd":
+                    cell += f" | {entry.get('executed_over_useful', {}).get('fwd', float('nan')):.2f}"
+                cells.append(cell)
+            print(f"| {item_id} | {name} | {cells[0]} | {cells[1]} |")
     print()
 
 
@@ -178,6 +208,7 @@ def main() -> None:
     print_provenance(bench)
     print()
     print_headline(bench)
+    print_arms(bench)
     print_host_overhead(bench)
     print_correctness(bench)
     print_stream(stream)
