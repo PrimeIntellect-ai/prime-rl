@@ -201,12 +201,23 @@ The policies you might want to configure are:
 
 ### Dead engines
 
-With more than one engine behind the router and NCCL or filesystem weight broadcast, the orchestrator keeps training when an engine dies.
-- **Eviction.** An engine is evicted after three failed `/liveness` probes (10 s apart) or a failed weight-update call. It leaves the router and the weight updates, and its in-flight rollouts fail like any other request.
-- **NCCL.** The broadcast group is rebuilt without the evicted engine at the next weight update.
-- **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update and only then returns to the router.
+With more than one engine behind the router and NCCL or filesystem weight broadcast, the orchestrator keeps training when an engine dies or hangs.
+- **Eviction.** An engine is evicted when any of these happens:
+  - three `/liveness` probes in a row fail (10 s apart). The probe is a worker RPC, so a stuck engine core fails it even when the API server answers;
+  - it has running requests but generates no token for 300 s;
+  - a weight-update call to it fails.
+- **After eviction:**
+  - the engine leaves the router and the weight updates;
+  - its in-flight requests fail, or are dropped after 300 s without progress if the engine hangs.
+- **NCCL.** The broadcast group is rebuilt over the remaining engines at the next weight update, on a new port.
+- **Death mid-transfer (NCCL).** If an engine dies during the transfer:
+  - the orchestrator writes an abort marker into the step's broadcast directory;
+  - the trainer and the other engines abort the collective (`ncclCommAbort`);
+  - the group is rebuilt and the trainer sends the version again.
+  - The inference nodes must see the run's output directory for this.
+- **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update. It returns to the router only after that update succeeds.
+- **Router.** A `vllm-router` that crashes is restarted in place by the launcher, with the same port and worker list.
 - **Still fatal:**
-  - an engine that dies in the middle of an NCCL transfer (the SLURM step watchdog covers that hang);
   - the last engine dying;
   - NIXL broadcast, which pins its receivers.
 
