@@ -177,7 +177,8 @@ class EvalRunner:
         newer checkpoint, the unfinished episodes of this epoch are cancelled so the
         caller can move on to it."""
         for env_name in fired:
-            await monitors.log_eval_plan(env_name, step, self.eval_sink.batch_size_for(env_name))
+            if (expected := self.eval_sink.batch_size_for(env_name)) is not None:
+                await monitors.log_eval_plan(env_name, step, expected)
 
         now = time.perf_counter()
         for env_name in fired:
@@ -193,13 +194,18 @@ class EvalRunner:
         )
         self.dispatcher.switch_mode(DispatcherMode.PREFER_EVAL, reason=f"eval was triggered at step {step}")
 
-        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) > 0}
+        pending = {env_name for env_name in fired if self.eval_sink.batch_size_for(env_name) != 0}
         for episode in restored:
             await self.land(episode, pending)
         cancellation_task: asyncio.Task[int] | None = None
         newer_step: int | None = None
 
         while pending:
+            for env_name in [name for name in pending if self.stream_done(name)]:
+                await self.finalize_eval_batch(self.eval_sink.process_batch((env_name, step)))
+                pending.discard(env_name)
+            if not pending:
+                break
             if (
                 cancellation_task is None
                 and superseding_step is not None
@@ -213,7 +219,7 @@ class EvalRunner:
                 )
 
             try:
-                if superseding_step is not None:
+                if superseding_step is not None or any(env.feed is not None for env in self.eval_envs):
                     item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=POLL_INTERVAL_S)
                 else:
                     item = await self.dispatcher.out_q.get()
@@ -241,6 +247,14 @@ class EvalRunner:
             get_logger().warning(
                 f"Cancelled {cancelled} unfinished eval episodes for step {step}; advancing to checkpoint {newer_step}"
             )
+
+    def stream_done(self, env_name: str) -> bool:
+        """Whether a streaming env's taskset ended and every rollout it dispatched landed."""
+        return (
+            self.eval_envs.get(env_name).feed is not None
+            and not self.eval_source.streaming(env_name)
+            and self.dispatcher.eval_env_settled(env_name)
+        )
 
     async def land(self, episode: vf.Episode, pending: set[str]) -> None:
         """One episode of the epoch, arrived or restored: through the monitors and into
@@ -309,7 +323,10 @@ class EvalRunner:
 
         parts = []
         for env_name, _step, arrived, expected in sorted(self.eval_sink.batch_progress()):
-            parts.append(f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else env_name)
+            # a stream's size is known only once it ends
+            parts.append(
+                f"{env_name} {arrived}/{expected} ({arrived / expected:.1%})" if expected else f"{env_name} {arrived}"
+            )
         progress_part = " | ".join(parts) if parts else "Idle"
 
         stages = live.stage_counts(list(self.dispatcher.inflight.values()))

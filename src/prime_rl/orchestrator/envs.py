@@ -33,6 +33,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
+from prime_rl.orchestrator.task_feed import TaskFeed
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
 
@@ -185,13 +186,16 @@ class EvalEnv(Env):
         super().__init__(config, address, address_file)
         self.sampling = config.sampling
         self.examples: list[vf.Task] = []
+        self.feed: TaskFeed | None = None
+        """An infinite taskset, streamed through a single epoch (a standalone eval)."""
 
     async def start(self) -> None:
         await super().start()
         if self.num_tasks is None:
-            raise ValueError(f"Eval env {self.name} has an infinite taskset — set select.limit to bound it")
-        # A fixed eval set, pulled off the tasks once and reused every epoch.
-        self.examples = list(self.tasks)
+            self.feed = TaskFeed(self.tasks, name=self.name)
+        else:
+            # A fixed eval set, pulled off the tasks once and reused every epoch.
+            self.examples = list(self.tasks)
 
 
 EnvT = TypeVar("EnvT", bound=Env)
