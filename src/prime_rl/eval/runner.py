@@ -269,7 +269,7 @@ class EvalRunner:
         metrics: dict[str, float] = {}
         for subset, pool in (("all", episodes), ("effective", effective)):
             metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+        total_attempts = episodes.expected_count
         metrics |= dispatch_failure_metrics(
             batch.failures,
             prefix=f"eval/{batch.env_name}/all",
@@ -283,21 +283,26 @@ class EvalRunner:
         await monitors.log(metrics, step=batch.step)
 
         eff, full = effective.metrics, episodes.metrics
+        reward = f"{eff.reward.mean():.4f}" if effective.expected_count else "unavailable"
+        error_rate = metrics[f"eval/{batch.env_name}/all/has_error/mean"]
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
         if batch.cancelled:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
-                f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
-                f"Error {full.has_error.mean():.1%} | "
+                f"{format_time(elapsed):>7} | Reward {reward} | "
+                f"Error {error_rate:.1%} | "
+                f"Coverage {effective.expected_count}/{total_attempts} | "
                 f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
             )
             return
-        get_logger().success(
+        log = get_logger().success if effective.expected_count else get_logger().warning
+        log(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
-            f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+            f"{format_time(elapsed):>7} | Reward {reward} | "
+            f"Coverage {effective.expected_count}/{total_attempts} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
-            f"Error {full.has_error.mean():.1%} | Truncation {eff.is_truncated.mean():.1%} | "
+            f"Error {error_rate:.1%} | Truncation {eff.is_truncated.mean():.1%} | "
             f"Timeout {full.is_timeout.mean():.1%}"
         )
 

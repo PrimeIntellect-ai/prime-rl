@@ -1,9 +1,19 @@
+import re
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias, get_args
 
 import verifiers.v1 as vf
-from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    SerializeAsAny,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
 from verifiers.v1.configs.agent import agent_config_fields
@@ -271,12 +281,48 @@ class TrainSourceConfig(EnvConfig):
         return self
 
 
+class EvalInfraErrorRule(BaseConfig):
+    type: str
+    """Exact recorded error type. All specified fields must match."""
+
+    status_code: list[Annotated[int, Field(ge=100, le=599)]] | None = None
+    """Match any listed HTTP status; an absent status does not match."""
+
+    message: str | None = None
+    """Regex search of the recorded message, for errors without a structured status."""
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                re.compile(value)
+            except re.error as exc:
+                raise ValueError(f"Invalid infrastructure error regex: {exc}") from exc
+        return value
+
+
+def default_eval_infra_errors() -> list[EvalInfraErrorRule]:
+    return [
+        EvalInfraErrorRule(type="InterceptionError"),
+        EvalInfraErrorRule(type="TunnelError"),
+        EvalInfraErrorRule(type="ProviderError", status_code=[429, 500, 502, 503, 504]),
+        EvalInfraErrorRule(type="SandboxError", status_code=[429, 500, 502, 503, 504]),
+        EvalInfraErrorRule(type="SandboxError", message="Failed to route request to sandbox"),
+    ]
+
+
 class EvalSourceConfig(EnvConfig):
     sampling: vf.SamplingConfig = vf.SamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
     group_size: int = Field(1, ge=1)
     """Rollouts generated per example. Used for pass@k estimation (e.g. ``group_size=8`` enables pass@1 through pass@8)."""
+
+    infra_errors: list[EvalInfraErrorRule] = Field(default_factory=default_eval_infra_errors)
+    """Terminal failures excluded from effective eval. Replaces the default rules when
+    set; unclassified errors (including HarnessError) remain counted failures.
+    This classification does not enable retries; configure env.retries separately."""
 
 
 class OnlineEvalSourceConfig(EvalSourceConfig):
@@ -372,6 +418,9 @@ class EvalSourcesConfig(SourceGroupConfig):
 
     group_size: int = Field(1, ge=1)
     """Rollouts per example that every eval source inherits."""
+
+    infra_errors: list[EvalInfraErrorRule] = Field(default_factory=default_eval_infra_errors)
+    """Infrastructure error rules inherited by every eval source."""
 
     @model_validator(mode="after")
     def validate_non_empty_sources(self):

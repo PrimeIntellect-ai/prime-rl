@@ -1,0 +1,7 @@
+Fix the reported issue in the repository checked out at /testbed, your current working directory. Use the bash tool to inspect the repository and read the relevant source files before changing code. Determine file paths and existing APIs from the repository rather than guessing them. Implement the fix in the repository, run appropriate tests, and leave the source changes in place.
+
+You may use the internet to look up general information that helps you reason about the task, such as documentation, API references, language/library behavior, error semantics, standards, examples of intended usage, and background concepts.
+
+You must not search for, open, fetch, view, or copy anything that could reveal this task's reference solution or upstream fix. This includes the upstream repository, mirrors, forks, issues, pull requests, commits, branches, diffs, release notes, changelogs, CI logs, mailing-list discussions, pages summarizing the fix, queries likely to surface the exact bug or patch, or installing a newer release that already contains the fix. Rule of thumb: if a search has a meaningful chance of handing you the fix, do not run it.
+
+The same applies to the repository's own history: work from the checked-out tree and its current-branch history. Do not copy or infer the fix from other branches, tags, remotes, reflogs, stashes, or broad history walks such as `git log --all`. Ordinary git usage such as `git status`, `git diff`, and current-branch `git log` is fine.

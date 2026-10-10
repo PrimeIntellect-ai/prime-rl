@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from verifiers.v1.configs.agent import agent_config_fields
+
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation
@@ -75,10 +77,21 @@ class EvalSink:
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         env_name, step = key
+        config = self.eval_envs.get(env_name).config
+        failures = self.pending_batch_failures.pop(key, [])
+        cancelled = self.pending_batch_cancellations.pop(key, 0)
         return EvalBatch(
             env_name=env_name,
             step=step,
-            episodes=EvalEpisodes(self.pending_batches.pop(key, []), group_size=self.group_size_for(env_name)),
-            failures=self.pending_batch_failures.pop(key, []),
-            cancelled=self.pending_batch_cancellations.pop(key, 0),
+            episodes=EvalEpisodes(
+                self.pending_batches.pop(key, []),
+                group_size=self.group_size_for(env_name),
+                expected_count=self.batch_size_for(env_name),
+                agent_names=list(agent_config_fields(config.env)),
+                infra_errors=config.infra_errors,
+                dispatch_failures=len(failures),
+                cancelled_count=cancelled,
+            ),
+            failures=failures,
+            cancelled=cancelled,
         )
