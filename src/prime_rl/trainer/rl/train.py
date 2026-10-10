@@ -75,6 +75,9 @@ from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
 
+# Warn when more than this fraction of a layer's replayed tokens shares no expert with the trainer's routing
+MAX_REPLAY_ZERO_OVERLAP = 0.01
+
 
 @clean_exit
 def train(config: TrainerConfig):
@@ -660,7 +663,17 @@ def train(config: TrainerConfig):
             step_message += f" | Max Vio {tensor_stats['max_vio/mean']:.4f}"
         if "routing_confidence/mean" in tensor_stats:
             step_message += f" | Routing Conf. {tensor_stats['routing_confidence/mean']:.4f}"
+        if "router_replay/agreement/mean" in tensor_stats:
+            step_message += f" | Replay Agreement {tensor_stats['router_replay/agreement/mean']:.1%}"
         logger.success(step_message)
+        # Trainer and sampler weights differ slightly, so a replayed route rarely shares no
+        # expert with the router's own choice. Many such tokens mean the routes are misaligned.
+        zero_overlap = tensor_stats.get("router_replay/zero_overlap/max", 0.0)
+        if zero_overlap > MAX_REPLAY_ZERO_OVERLAP:
+            logger.warning(
+                f"{zero_overlap:.1%} of replayed tokens in some MoE layer share no expert with the trainer's own "
+                "routing. The replayed routes are likely misaligned with their tokens."
+            )
 
         # Log performance metrics
         perf_metrics = {
