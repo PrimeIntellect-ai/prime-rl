@@ -95,14 +95,6 @@ class FusionsConfig(BaseConfig):
     """Experimental. Shard fused 2-D weights along dim 1 under FSDP so that weight loading and checkpointing are zero-copy: the checkpoint reads and writes the fused weights and their optimizer state in place, instead of assembling a full copy of every fused weight on each rank first. Requires the hidden size to be divisible by the FSDP shard mesh size."""
 
 
-class IndexCacheConfig(BaseConfig):
-    topk_freq: int = Field(1, ge=1)
-    """Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override."""
-
-    topk_pattern: str | None = None
-    """Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers."""
-
-
 class LoRAConfig(BaseConfig):
     rank: int = Field(16, ge=1)
     """Rank of the low-rank decomposition matrices."""
@@ -328,9 +320,6 @@ class ModelConfig(BaseModelConfig):
 
     dsa_backend: DSABackend = "tilelang"
     """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
-
-    index_cache: IndexCacheConfig | None = None
-    """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
