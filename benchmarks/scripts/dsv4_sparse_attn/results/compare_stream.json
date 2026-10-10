@@ -1,0 +1,5215 @@
+{
+ "label": "compare",
+ "provenance": {
+  "hostname": "prime-nebius-puku-h200-gpu-059",
+  "git": {
+   "sha": "dfb6b9bd3fa78a0784e9ccad8761bbdbe4e5ebf9",
+   "dirty": false
+  },
+  "corpus_hash": "b5b289171983c8c69e97e98158943d702b13ec7f1399a0c1af6ff4e1bdfda57b",
+  "gpu": {
+   "uuid": "GPU-3a9fd966-94f2-9acb-4d75-d9c998cab826",
+   "name": "NVIDIA H200",
+   "capability": [
+    9,
+    0
+   ],
+   "query": {
+    "name": "NVIDIA H200",
+    "driver_version": "580.173.02",
+    "clocks.sm": "1980 MHz",
+    "clocks.max.sm": "1980 MHz",
+    "clocks.mem": "3201 MHz",
+    "clocks.max.mem": "3201 MHz",
+    "power.limit": "700.00 W",
+    "power.max_limit": "700.00 W"
+   },
+   "nvidia_smi_clock_power": "==============NVSMI LOG==============\n\nTimestamp                                              : Sat Oct 10 07:35:22 2026\nDriver Version                                         : 580.173.02\nCUDA Version                                           : 13.0\n\nAttached GPUs                                          : 8\nGPU 00000000:8D:00.0\n    GPU Power Readings\n        Average Power Draw                             : 129.43 W\n        Instantaneous Power Draw                       : 130.00 W\n        Current Power Limit                            : 700.00 W\n        Requested Power Limit                          : 700.00 W\n        Default Power Limit                            : 700.00 W\n        Min Power Limit                                : 200.00 W\n        Max Power Limit                                : 700.00 W\n    Power Samples\n        Duration                                       : 2.36 sec\n        Number of Samples                              : 119\n        Max                                            : 162.16 W\n        Min                                            : 124.97 W\n        Avg                                            : 130.19 W\n    GPU Memory Power Readings \n        Average Power Draw                             : 40.58 W\n        Instantaneous Power Draw                       : N/A\n    Module Power Readings\n        Average Power Draw                             : N/A\n        Instantaneous Power Draw                       : N/A\n        Current Power Limit                            : N/A\n        Requested Power Limit                          : N/A\n        Default Power Limit                            : N/A\n        Min Power Limit                                : N/A\n        Max Power Limit                                : N/A\n    Clocks\n        Graphics                                       : 1980 MHz\n        SM                                             : 1980 MHz\n        Memory                                         : 3201 MHz\n        Video                                          : 1545 MHz\n    Applications Clocks\n        Graphics                                       : 1980 MHz\n        Memory                                         : 3201 MHz\n    Default Applications Clocks\n        Graphics                                       : 1980 MHz\n        Memory                                         : 3201 MHz\n    Deferred Clocks\n        Memory                                         : N/A\n    Max Clocks\n        Graphics                                       : 1980 MHz\n        SM                                             : 1980 MHz\n        Memory                                         : 3201 MHz\n        Video                                          : 1545 MHz\n    Max Customer Boost Clocks\n        Graphics                                       : 1980 MHz\n    SM Clock Samples\n        Duration                                       : Not Found\n        Number of Samples                              : Not Found\n        Max                                            : Not Found\n        Min                                            : Not Found\n        Avg                                            : Not Found\n    Memory Clock Samples\n        Duration                                       : Not Found\n        Number of Samples                              : Not Found\n        Max                                            : Not Found\n        Min                                            : Not Found\n        Avg                                            : Not Found\n    Clock Policy\n        Auto Boost                                     : N/A\n        Auto Boost Default                             : N/A"
+  },
+  "versions": {
+   "torch": "2.13.0+cu130",
+   "tilelang": "0.1.12"
+  },
+  "argv": [
+   "benchmarks/scripts/dsv4_sparse_attn/stream.py",
+   "--backends",
+   "tilelang",
+   "cudnn_flashmla",
+   "cute",
+   "cute_ws",
+   "--label",
+   "compare",
+   "--out",
+   "benchmarks/scripts/dsv4_sparse_attn/results/compare_stream.json"
+  ]
+ },
+ "stream": [
+  "stream00-short-14224-csa-cp8r1",
+  "stream01-tiny-48096-hca-cp1",
+  "stream02-heavy-38136-hca-cp8r6",
+  "stream03-short-37152-sliding-cp8r1",
+  "stream04-short-34872-csa-cp8r5",
+  "stream05-single-25016-csa-cp8r4",
+  "stream06-heavy-55096-csa-cp1",
+  "stream07-short-17664-csa-cp8r2",
+  "stream08-single-28000-hca-cp1",
+  "stream09-tiny-33656-hca-cp1",
+  "stream10-heavy-48264-csa-cp1",
+  "stream11-tiny-12904-hca-cp1",
+  "stream12-tiny-39552-sliding-cp1",
+  "stream13-single-64144-csa-cp8r1",
+  "stream14-heavy-15304-csa-cp1",
+  "stream15-heavy-48400-sliding-cp1",
+  "stream16-tiny-65360-hca-cp1",
+  "stream17-heavy-4848-sliding-cp8r5",
+  "stream18-short-24576-sliding-cp1",
+  "stream19-single-36016-hca-cp1",
+  "stream20-short-24768-hca-cp1",
+  "stream21-heavy-39048-sliding-cp1",
+  "stream22-single-60624-sliding-cp1",
+  "stream23-single-61784-csa-cp1",
+  "stream24-single-6944-hca-cp8r6",
+  "stream25-single-56616-hca-cp1",
+  "stream26-tiny-60696-sliding-cp8r2",
+  "stream27-tiny-62600-sliding-cp8r4",
+  "stream28-single-42136-csa-cp1",
+  "stream29-tiny-22480-sliding-cp8r4",
+  "stream30-heavy-38080-csa-cp1",
+  "stream31-short-12824-hca-cp8r5"
+ ],
+ "backends": {
+  "tilelang": {
+   "cache_dir": "/home/garrett/tmp/dsv4-sparse-attn-bench/stream-caches/tilelang-psxqg1x9",
+   "phases": {
+    "cold": {
+     "stream_total_s": 21.348740819375962,
+     "first_item_s": 20.734156363178045,
+     "remainder_s": 0.6145844561979175,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.224916934967041,
+      "import tilelang_s": 2.046369021991268,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 41.47125437180512,
+      "cuda_context_s": 0.17867278796620667,
+      "first_item_jit_compile_s": 15.860251942882314,
+      "first_item_jit_disk_load_s": 0.0,
+      "first_item_jit_other_s": 2.5134359581861645,
+      "first_item_launch_and_run_s": 2.3604684621095657
+     },
+     "counts": {
+      "compiles": 4,
+      "disk_loads": 0,
+      "jit_misses": 4,
+      "compile_s": 15.860251942882314,
+      "disk_load_s": 0.0,
+      "jit_miss_s": 18.37368790106848
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 20734.156363178045,
+       "counts": {
+        "compiles": 4,
+        "disk_loads": 0,
+        "jit_misses": 4,
+        "compile_s": 15.860251942882314,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 18.37368790106848
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 17.41372304968536,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 9.55466297455132,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 3.379988018423319,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 5.242440849542618,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 5.621936870738864,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 42.41679911501706,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 3.318262053653598,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 20.571183878928423,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 11.892586946487427,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 52.66964598558843,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 5.110821919515729,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 13.793848920613527,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 12.708031106740236,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 14.161979081109166,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 22.002821089699864,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 22.790709044784307,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 2.315661869943142,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 11.886884924024343,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 28.183717979118228,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 13.286209898069501,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 17.861719941720366,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 28.042819118127227,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 90.71584581397474,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 2.8539029881358147,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 52.46399505995214,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 3.5684958565980196,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 3.603072836995125,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 60.802158899605274,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 2.533362014219165,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 31.067567877471447,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 2.749600214883685,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 72.54085553088225,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 20,
+       "leaf_dirs": 6
+      },
+      "triton": {
+       "files": 1,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    },
+    "warm": {
+     "stream_total_s": 0.8948254189454019,
+     "first_item_s": 0.2788112419657409,
+     "remainder_s": 0.616014176979661,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.9137306213378906,
+      "import tilelang_s": 2.348105756100267,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 41.01117457286455,
+      "cuda_context_s": 0.1551494849845767,
+      "first_item_jit_compile_s": 0.0,
+      "first_item_jit_disk_load_s": 0.027612174162641168,
+      "first_item_jit_other_s": 0.14354728371836245,
+      "first_item_launch_and_run_s": 0.1076517840847373
+     },
+     "counts": {
+      "compiles": 0,
+      "disk_loads": 4,
+      "jit_misses": 4,
+      "compile_s": 0.0,
+      "disk_load_s": 0.027612174162641168,
+      "jit_miss_s": 0.17115945788100362
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 278.8112419657409,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 4,
+        "jit_misses": 4,
+        "compile_s": 0.0,
+        "disk_load_s": 0.027612174162641168,
+        "jit_miss_s": 0.17115945788100362
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 18.15479318611324,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 9.607755113393068,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 3.2027249690145254,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 5.129669094458222,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 5.757538136094809,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 42.645201086997986,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 3.5822601057589054,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 20.5763669218868,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 11.801704065874219,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 52.62624681927264,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 5.13942283578217,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 13.779308181256056,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 12.68644887022674,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 14.213653048500419,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 22.05060701817274,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 22.809370886534452,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 2.409324049949646,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 11.851664865389466,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 28.28070311807096,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 13.270372990518808,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 18.031977815553546,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 28.068138053640723,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 90.3916119132191,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 2.5404938496649265,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 52.69606690853834,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 3.5944031551480293,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 3.644722979515791,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 60.91857701539993,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 2.5182899553328753,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 31.335600884631276,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 2.69915908575058,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 52.61231763288379,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "triton": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    }
+   }
+  },
+  "cudnn_flashmla": {
+   "cache_dir": "/home/garrett/tmp/dsv4-sparse-attn-bench/stream-caches/cudnn_flashmla-hoibyayh",
+   "phases": {
+    "cold": {
+     "stream_total_s": 14.94330612779595,
+     "first_item_s": 6.975458486005664,
+     "remainder_s": 7.967847641790286,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.7062065601348877,
+      "import flash_mla_s": 0.006464549107477069,
+      "import cutlass.cute_s": 0.5189910859335214,
+      "import cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90_s": 0.07465267507359385,
+      "import tilelang_s": 2.456950084073469,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 41.51265857508406,
+      "cuda_context_s": 0.1431496029254049,
+      "first_item_jit_compile_s": 6.027276807231829,
+      "first_item_jit_disk_load_s": 0.0,
+      "first_item_jit_other_s": 0.45985612901858985,
+      "first_item_launch_and_run_s": 0.48832554975524545
+     },
+     "counts": {
+      "compiles": 7,
+      "disk_loads": 0,
+      "bwd_main_compiles": 4,
+      "cute_compile_s": 10.889896207023412,
+      "compile_s": 13.622705728048459,
+      "disk_load_s": 0.0,
+      "jit_miss_s": 14.082561857067049
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 6975.458486005664,
+       "counts": {
+        "compiles": 4,
+        "disk_loads": 0,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 3.294467286206782,
+        "compile_s": 6.027276807231829,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 6.487132936250418
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 2513.107102829963,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 0,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 2.5018607499077916,
+        "compile_s": 2.5018607499077916,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 2.5018607499077916
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 2587.0758679229766,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 0,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 2.5762686249800026,
+        "compile_s": 2.5762686249800026,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 2.5762686249800026
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 3.341197967529297,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 3.05966311134398,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 3.3565890043973923,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 25.352217024192214,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 2.050209091976285,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 2527.147294022143,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 0,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 2.517299545928836,
+        "compile_s": 2.517299545928836,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 2.517299545928836
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 9.202959947288036,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 28.904497856274247,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 3.7257301155477762,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 10.39362302981317,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 6.690497975796461,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 7.966198027133942,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 14.829701045528054,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 17.548247938975692,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 1.6115889884531498,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 7.814920973032713,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 16.52717310935259,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 8.835555985569954,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 11.981535935774446,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 18.79968401044607,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 47.21914394758642,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 1.9001839682459831,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 30.039971927180886,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 2.84462608397007,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 2.546073170378804,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 31.834752997383475,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 1.9211817998439074,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 18.169777002185583,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 2.0498749800026417,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 67.63947217003442,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 5,
+       "leaf_dirs": 3
+      },
+      "triton": {
+       "files": 1,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    },
+    "warm": {
+     "stream_total_s": 11.392990849912167,
+     "first_item_s": 3.453077763086185,
+     "remainder_s": 7.939913086825982,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.751579523086548,
+      "import flash_mla_s": 0.011384079931303859,
+      "import cutlass.cute_s": 0.6044765638653189,
+      "import cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90_s": 0.09020143700763583,
+      "import tilelang_s": 2.4231846511829644,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 40.51211988599971,
+      "cuda_context_s": 0.20917432685382664,
+      "first_item_jit_compile_s": 3.299860133090988,
+      "first_item_jit_disk_load_s": 0.008181049022823572,
+      "first_item_jit_other_s": 0.04246836109086871,
+      "first_item_launch_and_run_s": 0.10256821988150477
+     },
+     "counts": {
+      "compiles": 6,
+      "disk_loads": 1,
+      "bwd_main_compiles": 4,
+      "cute_compile_s": 10.804651404963806,
+      "compile_s": 10.804651404963806,
+      "disk_load_s": 0.008181049022823572,
+      "jit_miss_s": 10.855300815077499
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 3453.077763086185,
+       "counts": {
+        "compiles": 3,
+        "disk_loads": 1,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 3.299860133090988,
+        "compile_s": 3.299860133090988,
+        "disk_load_s": 0.008181049022823572,
+        "jit_miss_s": 3.35050954320468
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 2477.536128135398,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 0,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 2.4665341179352254,
+        "compile_s": 2.4665341179352254,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 2.4665341179352254
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 2507.7539179474115,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 0,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 2.4972741790115833,
+        "compile_s": 2.4972741790115833,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 2.4972741790115833
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 2.8456489089876413,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 3.2373019494116306,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 67.46964389458299,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 25.18184995278716,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 2.1547721698880196,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 2550.9991268627346,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 0,
+        "bwd_main_compiles": 1,
+        "cute_compile_s": 2.5409829749260098,
+        "compile_s": 2.5409829749260098,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 2.5409829749260098
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 9.019400924444199,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 28.986095916479826,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 3.7652591709047556,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 10.322295827791095,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 6.687310058623552,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 7.952481042593718,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 14.84505902044475,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 17.582031898200512,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 1.6122690867632627,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 7.812012918293476,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 16.612041974440217,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 8.769970154389739,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 11.982909869402647,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 18.770457012578845,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 47.3121190443635,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 1.5999898314476013,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 30.034414026886225,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 2.575051039457321,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 2.699420088902116,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 31.89222700893879,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 1.9334799144417048,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 18.08076212182641,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 1.8876390531659126,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "bwd_main_compiles": 0,
+        "cute_compile_s": 0.0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 63.14075215207413,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "triton": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    }
+   }
+  },
+  "cute": {
+   "cache_dir": "/home/garrett/tmp/dsv4-sparse-attn-bench/stream-caches/cute-k9hkaakp",
+   "phases": {
+    "cold": {
+     "stream_total_s": 14.619659800315276,
+     "first_item_s": 14.033700021915138,
+     "remainder_s": 0.585959778400138,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.683626651763916,
+      "import tilelang_s": 2.4456863747909665,
+      "import cutlass.cute_s": 0.6778349368833005,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 41.06970871984959,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd_cute_s": 0.0020350769627839327,
+      "cuda_context_s": 0.19720070995390415,
+      "first_item_jit_compile_s": 9.457609636010602,
+      "first_item_jit_disk_load_s": 0.0,
+      "first_item_jit_other_s": 1.7067581117153168,
+      "first_item_launch_and_run_s": 2.869332274189219
+     },
+     "counts": {
+      "compiles": 4,
+      "disk_loads": 0,
+      "jit_misses": 3,
+      "compile_s": 9.457609636010602,
+      "disk_load_s": 0.0,
+      "jit_miss_s": 11.164367747725919,
+      "cute_compiles": 1,
+      "cute_compile_s": 1.2457360778935254
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 14033.700021915138,
+       "counts": {
+        "compiles": 4,
+        "disk_loads": 0,
+        "jit_misses": 3,
+        "compile_s": 9.457609636010602,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 11.164367747725919,
+        "cute_compiles": 1,
+        "cute_compile_s": 1.2457360778935254
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 16.221298836171627,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 7.35542899928987,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 2.6645869947969913,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 4.537638043984771,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 5.124072078615427,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 41.32059100084007,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 2.920788014307618,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 19.638488069176674,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 10.902357986196876,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 51.49755114689469,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 4.42171492613852,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 12.731845956295729,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 12.015484971925616,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 13.411543099209666,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 20.940969930961728,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 21.628777030855417,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 1.781851053237915,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 11.018560966476798,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 27.179726166650653,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 12.463254854083061,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 16.889716032892466,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 26.831889059394598,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 88.83266011253,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 2.7119170408695936,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 51.19783990085125,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 2.8074539732187986,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 2.9066670686006546,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 59.633007971569896,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 2.0377368200570345,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 30.09083215147257,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 2.2435281425714493,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 66.90532335382886,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 15,
+       "leaf_dirs": 5
+      },
+      "triton": {
+       "files": 1,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    },
+    "warm": {
+     "stream_total_s": 2.0267703209538013,
+     "first_item_s": 1.4434427979867905,
+     "remainder_s": 0.5833275229670107,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.6640045642852783,
+      "import tilelang_s": 2.4251228200737387,
+      "import cutlass.cute_s": 0.7398794870823622,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 40.526068011065945,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd_cute_s": 0.0018541768658906221,
+      "cuda_context_s": 0.14693765807896852,
+      "first_item_jit_compile_s": 0.0,
+      "first_item_jit_disk_load_s": 0.020413203863427043,
+      "first_item_jit_other_s": 0.08372012712061405,
+      "first_item_launch_and_run_s": 1.3393094670027494
+     },
+     "counts": {
+      "compiles": 1,
+      "disk_loads": 3,
+      "jit_misses": 3,
+      "compile_s": 0.0,
+      "disk_load_s": 0.020413203863427043,
+      "jit_miss_s": 0.1041333309840411,
+      "cute_compiles": 1,
+      "cute_compile_s": 1.2347300208639354
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 1443.4427979867905,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 3,
+        "jit_misses": 3,
+        "compile_s": 0.0,
+        "disk_load_s": 0.020413203863427043,
+        "jit_miss_s": 0.1041333309840411,
+        "cute_compiles": 1,
+        "cute_compile_s": 1.2347300208639354
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 16.088407021015882,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 7.059591123834252,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 2.5748200714588165,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 4.459591116756201,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 4.968762863427401,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 41.07720102183521,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 2.7323749382048845,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 19.555088132619858,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 10.910430923104286,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 51.384473918005824,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 4.381068050861359,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 12.736978009343147,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 11.96828088723123,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 13.393532019108534,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 20.88965382426977,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 21.485227160155773,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 1.6771110240370035,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 11.044081998988986,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 27.134804986417294,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 12.381621869280934,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 16.867322148755193,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 26.87139413319528,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 88.77545711584389,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 1.9456320442259312,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 51.222615176811814,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 2.8307721950113773,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 2.88791093043983,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 59.60065615363419,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 2.1044621244072914,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 30.012775911018252,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 2.3054240737110376,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 53.63992807106115,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "triton": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    }
+   }
+  },
+  "cute_ws": {
+   "cache_dir": "/home/garrett/tmp/dsv4-sparse-attn-bench/stream-caches/cute_ws-bp0l34x7",
+   "phases": {
+    "cold": {
+     "stream_total_s": 16.236468512564898,
+     "first_item_s": 15.724070944124833,
+     "remainder_s": 0.5123975684400648,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.7194032669067383,
+      "import tilelang_s": 2.3723282117862254,
+      "import cutlass.cute_s": 0.6585058469790965,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 40.938018129905686,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd_cute_ws_s": 0.003601731965318322,
+      "cuda_context_s": 0.2027693330310285,
+      "first_item_jit_compile_s": 9.454196810722351,
+      "first_item_jit_disk_load_s": 0.0,
+      "first_item_jit_other_s": 1.7043860962148756,
+      "first_item_launch_and_run_s": 4.565488037187606
+     },
+     "counts": {
+      "compiles": 4,
+      "disk_loads": 0,
+      "jit_misses": 3,
+      "compile_s": 9.454196810722351,
+      "disk_load_s": 0.0,
+      "jit_miss_s": 11.158582906937227,
+      "cute_compiles": 1,
+      "cute_compile_s": 2.932251031976193
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 15724.070944124833,
+       "counts": {
+        "compiles": 4,
+        "disk_loads": 0,
+        "jit_misses": 3,
+        "compile_s": 9.454196810722351,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 11.158582906937227,
+        "cute_compiles": 1,
+        "cute_compile_s": 2.932251031976193
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 15.706086065620184,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 10.638518957421184,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 2.7167811058461666,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 4.0716249495744705,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 4.9539171159267426,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 35.71753902360797,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 2.6811878196895123,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 16.728010959923267,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 8.919360814616084,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 45.22322304546833,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 3.6485609598457813,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 10.362714994698763,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 10.557458968833089,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 11.644762009382248,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 17.063345992937684,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 17.59021496400237,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 1.6252161003649235,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 8.9965530205518,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 23.457897128537297,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 10.463278042152524,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 13.749310979619622,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 22.006287006661296,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 79.05645598657429,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 1.992969075217843,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 44.56808906979859,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 2.6968640740960836,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 2.4071710649877787,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 52.76215402409434,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 2.016762038692832,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 26.179593056440353,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 2.195660024881363,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 68.35299038887024,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 15,
+       "leaf_dirs": 5
+      },
+      "triton": {
+       "files": 1,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    },
+    "warm": {
+     "stream_total_s": 3.6691342999693006,
+     "first_item_s": 3.157219590153545,
+     "remainder_s": 0.5119147098157555,
+     "startup": {
+      "interpreter_and_torch_import_s": 3.8583436012268066,
+      "import tilelang_s": 2.3899381239898503,
+      "import cutlass.cute_s": 0.7604733719490469,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_s": 40.39325450616889,
+      "import prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd_cute_ws_s": 0.0038468290586024523,
+      "cuda_context_s": 0.14741271384991705,
+      "first_item_jit_compile_s": 0.0,
+      "first_item_jit_disk_load_s": 0.021908978931605816,
+      "first_item_jit_other_s": 0.08861096575856209,
+      "first_item_launch_and_run_s": 3.0466996454633772
+     },
+     "counts": {
+      "compiles": 1,
+      "disk_loads": 3,
+      "jit_misses": 3,
+      "compile_s": 0.0,
+      "disk_load_s": 0.021908978931605816,
+      "jit_miss_s": 0.1105199446901679,
+      "cute_compiles": 1,
+      "cute_compile_s": 2.9374854580964893
+     },
+     "items": [
+      {
+       "position": 0,
+       "id": "stream00-short-14224-csa-cp8r1",
+       "total_len": 14224,
+       "n_queries": 1778,
+       "n_positions": 17775,
+       "n_slots": 640,
+       "first_call_ms": 3157.219590153545,
+       "counts": {
+        "compiles": 1,
+        "disk_loads": 3,
+        "jit_misses": 3,
+        "compile_s": 0.0,
+        "disk_load_s": 0.021908978931605816,
+        "jit_miss_s": 0.1105199446901679,
+        "cute_compiles": 1,
+        "cute_compile_s": 2.9374854580964893
+       }
+      },
+      {
+       "position": 1,
+       "id": "stream01-tiny-48096-hca-cp1",
+       "total_len": 48096,
+       "n_queries": 48096,
+       "n_positions": 48096,
+       "n_slots": 128,
+       "first_call_ms": 13.25863297097385,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 2,
+       "id": "stream02-heavy-38136-hca-cp8r6",
+       "total_len": 38136,
+       "n_queries": 4767,
+       "n_positions": 38401,
+       "n_slots": 173,
+       "first_call_ms": 11.768786935135722,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 3,
+       "id": "stream03-short-37152-sliding-cp8r1",
+       "total_len": 37152,
+       "n_queries": 4644,
+       "n_positions": 37152,
+       "n_slots": 128,
+       "first_call_ms": 2.8430530801415443,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 4,
+       "id": "stream04-short-34872-csa-cp8r5",
+       "total_len": 34872,
+       "n_queries": 4359,
+       "n_positions": 43583,
+       "n_slots": 640,
+       "first_call_ms": 4.353669006377459,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 5,
+       "id": "stream05-single-25016-csa-cp8r4",
+       "total_len": 25016,
+       "n_queries": 3127,
+       "n_positions": 31270,
+       "n_slots": 640,
+       "first_call_ms": 4.909786861389875,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 6,
+       "id": "stream06-heavy-55096-csa-cp1",
+       "total_len": 55096,
+       "n_queries": 55096,
+       "n_positions": 68819,
+       "n_slots": 640,
+       "first_call_ms": 35.75310483574867,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 7,
+       "id": "stream07-short-17664-csa-cp8r2",
+       "total_len": 17664,
+       "n_queries": 2208,
+       "n_positions": 22075,
+       "n_slots": 640,
+       "first_call_ms": 2.7826670557260513,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 8,
+       "id": "stream08-single-28000-hca-cp1",
+       "total_len": 28000,
+       "n_queries": 28000,
+       "n_positions": 28218,
+       "n_slots": 346,
+       "first_call_ms": 16.78906404413283,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 9,
+       "id": "stream09-tiny-33656-hca-cp1",
+       "total_len": 33656,
+       "n_queries": 33656,
+       "n_positions": 33656,
+       "n_slots": 128,
+       "first_call_ms": 8.990942034870386,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 10,
+       "id": "stream10-heavy-48264-csa-cp1",
+       "total_len": 48264,
+       "n_queries": 48264,
+       "n_positions": 60307,
+       "n_slots": 640,
+       "first_call_ms": 45.27544090524316,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 11,
+       "id": "stream11-tiny-12904-hca-cp1",
+       "total_len": 12904,
+       "n_queries": 12904,
+       "n_positions": 12904,
+       "n_slots": 128,
+       "first_call_ms": 3.6225421354174614,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 12,
+       "id": "stream12-tiny-39552-sliding-cp1",
+       "total_len": 39552,
+       "n_queries": 39552,
+       "n_positions": 39552,
+       "n_slots": 128,
+       "first_call_ms": 10.489990003407001,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 13,
+       "id": "stream13-single-64144-csa-cp8r1",
+       "total_len": 64144,
+       "n_queries": 8018,
+       "n_positions": 80180,
+       "n_slots": 640,
+       "first_call_ms": 10.566034121438861,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 14,
+       "id": "stream14-heavy-15304-csa-cp1",
+       "total_len": 15304,
+       "n_queries": 15304,
+       "n_positions": 19120,
+       "n_slots": 640,
+       "first_call_ms": 11.650786036625504,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 15,
+       "id": "stream15-heavy-48400-sliding-cp1",
+       "total_len": 48400,
+       "n_queries": 48400,
+       "n_positions": 48400,
+       "n_slots": 128,
+       "first_call_ms": 17.036773962900043,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 16,
+       "id": "stream16-tiny-65360-hca-cp1",
+       "total_len": 65360,
+       "n_queries": 65360,
+       "n_positions": 65360,
+       "n_slots": 128,
+       "first_call_ms": 17.990696942433715,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 17,
+       "id": "stream17-heavy-4848-sliding-cp8r5",
+       "total_len": 4848,
+       "n_queries": 606,
+       "n_positions": 4848,
+       "n_slots": 128,
+       "first_call_ms": 1.519814133644104,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 18,
+       "id": "stream18-short-24576-sliding-cp1",
+       "total_len": 24576,
+       "n_queries": 24576,
+       "n_positions": 24576,
+       "n_slots": 128,
+       "first_call_ms": 9.005418978631496,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 19,
+       "id": "stream19-single-36016-hca-cp1",
+       "total_len": 36016,
+       "n_queries": 36016,
+       "n_positions": 36297,
+       "n_slots": 409,
+       "first_call_ms": 23.417046992108226,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 20,
+       "id": "stream20-short-24768-hca-cp1",
+       "total_len": 24768,
+       "n_queries": 24768,
+       "n_positions": 24951,
+       "n_slots": 152,
+       "first_call_ms": 10.512292850762606,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 21,
+       "id": "stream21-heavy-39048-sliding-cp1",
+       "total_len": 39048,
+       "n_queries": 39048,
+       "n_positions": 39048,
+       "n_slots": 128,
+       "first_call_ms": 13.789145974442363,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 22,
+       "id": "stream22-single-60624-sliding-cp1",
+       "total_len": 60624,
+       "n_queries": 60624,
+       "n_positions": 60624,
+       "n_slots": 128,
+       "first_call_ms": 22.155447863042355,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 23,
+       "id": "stream23-single-61784-csa-cp1",
+       "total_len": 61784,
+       "n_queries": 61784,
+       "n_positions": 77230,
+       "n_slots": 640,
+       "first_call_ms": 79.12950799800456,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 24,
+       "id": "stream24-single-6944-hca-cp8r6",
+       "total_len": 6944,
+       "n_queries": 868,
+       "n_positions": 6998,
+       "n_slots": 182,
+       "first_call_ms": 1.8807260785251856,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 25,
+       "id": "stream25-single-56616-hca-cp1",
+       "total_len": 56616,
+       "n_queries": 56616,
+       "n_positions": 57058,
+       "n_slots": 570,
+       "first_call_ms": 44.59649114869535,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 26,
+       "id": "stream26-tiny-60696-sliding-cp8r2",
+       "total_len": 60696,
+       "n_queries": 7587,
+       "n_positions": 60696,
+       "n_slots": 128,
+       "first_call_ms": 2.7311339508742094,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 27,
+       "id": "stream27-tiny-62600-sliding-cp8r4",
+       "total_len": 62600,
+       "n_queries": 7825,
+       "n_positions": 62600,
+       "n_slots": 128,
+       "first_call_ms": 2.354338997974992,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 28,
+       "id": "stream28-single-42136-csa-cp1",
+       "total_len": 42136,
+       "n_queries": 42136,
+       "n_positions": 52670,
+       "n_slots": 640,
+       "first_call_ms": 52.844669902697206,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 29,
+       "id": "stream29-tiny-22480-sliding-cp8r4",
+       "total_len": 22480,
+       "n_queries": 2810,
+       "n_positions": 22480,
+       "n_slots": 128,
+       "first_call_ms": 1.938012894243002,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 30,
+       "id": "stream30-heavy-38080-csa-cp1",
+       "total_len": 38080,
+       "n_queries": 38080,
+       "n_positions": 47568,
+       "n_slots": 640,
+       "first_call_ms": 26.054068934172392,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      },
+      {
+       "position": 31,
+       "id": "stream31-short-12824-hca-cp8r5",
+       "total_len": 12824,
+       "n_queries": 1603,
+       "n_positions": 12921,
+       "n_slots": 154,
+       "first_call_ms": 1.9046221859753132,
+       "counts": {
+        "compiles": 0,
+        "disk_loads": 0,
+        "jit_misses": 0,
+        "compile_s": 0.0,
+        "disk_load_s": 0.0,
+        "jit_miss_s": 0.0,
+        "cute_compiles": 0,
+        "cute_compile_s": 0.0
+       }
+      }
+     ],
+     "process_wall_s": 55.56958484603092,
+     "new_cache_entries": {
+      "tilelang": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "triton": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "inductor": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cute_dsl": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "cuda": {
+       "files": 0,
+       "leaf_dirs": 0
+      },
+      "tmp": {
+       "files": 0,
+       "leaf_dirs": 0
+      }
+     }
+    }
+   }
+  }
+ },
+ "skipped_backends": {}
+}
