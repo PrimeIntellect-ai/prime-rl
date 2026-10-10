@@ -86,10 +86,11 @@ class FakeDataLoader:
         else:
             get_micro_batch_fn = self._get_sample_micro_batch
 
-        # This is a pretty ugly hack to ensure that all CP ranks in a data parallel group receive the same micro batch.
+        # Seeded by the global micro batch index, so every DP layout trains the same batch and
+        # all CP ranks of a data parallel group receive the same micro batch.
         micro_batches = []
         for micro_batch_idx in range(self.num_micro_batches):
-            seed = self.dp_rank * 1000000 + self.batch_counter * 1000 + micro_batch_idx
+            seed = self.batch_counter * 1000000 + self.dp_rank * self.num_micro_batches + micro_batch_idx
             generator = torch.Generator().manual_seed(seed)
             micro_batches.append(get_micro_batch_fn(generator))
 
