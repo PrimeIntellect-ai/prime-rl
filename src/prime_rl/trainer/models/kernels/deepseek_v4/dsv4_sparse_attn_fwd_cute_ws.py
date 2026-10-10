@@ -126,7 +126,6 @@ def _online_softmax(
 def _gather_half(
     mKV: cute.Tensor,
     sK: cute.Tensor,
-    gather_atom: cute.CopyAtom,
     b_i: Int32,
     kv_idx: cute.Tensor,
     group: Int32,
@@ -134,25 +133,30 @@ def _gather_half(
     buf: cutlass.Constexpr,
     half: cutlass.Constexpr,
 ):
-    """Issue the producer's `cp.async` copies of one channel half of one key buffer."""
+    """Issue the producer's `cp.async` copies of one channel half of one key buffer.
+
+    The destination address is formed by hand because a raw pointer drops the swizzle that `sK`'s
+    pointer carries: in the 128-byte swizzle, the 16-byte chunk `c` of row `row` sits at chunk
+    `c ^ (row % 8)`, and every row this thread writes has `row % 8 == group % 8`.
+    """
     seq_len_kv = mKV.shape[1]
+    sK_base = cute.recast_ptr(sK.iterator, None, BFloat16)
+    swizzled_chunk = idx_in_group ^ (group % 8)
     for r in cutlass.range_constexpr(ROWS_PER_GROUP):
         row = r * NUM_GROUPS + group
         idx = kv_idx[buf, r]
         in_range = idx >= 0 and idx < seq_len_kv
-        gRow = cute.flat_divide(mKV[b_i, idx if in_range else 0, 0, None], (CHUNK,))
-        sRow = cute.flat_divide(sK[row, None, buf], (CHUNK,))
+        src_row = mKV[b_i, idx if in_range else 0, 0, None].iterator
+        dst_row = sK_base + (buf * BLOCK_I * DIM + row * 64 + swizzled_chunk * CHUNK)
         for tile in cutlass.range_constexpr(HALF // 64):
-            chunk = (half * HALF + tile * 64) // CHUNK + idx_in_group
-            src = gRow[None, chunk]
-            src = cute.make_tensor(
-                cute.make_ptr(BFloat16, src.iterator.toint(), cute.AddressSpace.gmem, assumed_align=16),
-                cute.group_modes(src.layout, 0, 1),
+            col_tile = half * (HALF // 64) + tile
+            cute.arch.cp_async_shared_global(
+                dst_row + col_tile * BLOCK_I * 64,
+                src_row + (col_tile * 64 + idx_in_group * CHUNK),
+                16,
+                "cg",
+                cp_size=16 if in_range else 0,
             )
-            dst = cute.group_modes(sRow[None, chunk], 0, 1)
-            in_range_pred = cute.make_fragment_like(src, cutlass.Boolean)
-            in_range_pred.fill(in_range)
-            cute.copy(gather_atom, src, dst, pred=in_range_pred)
 
 
 @cute.kernel
@@ -201,9 +205,6 @@ def _fwd_kernel(
 
     if wg_idx == 2:
         cute.arch.setmaxregister_decrease(PRODUCER_REGS)
-        gather_atom = cute.make_copy_atom(
-            cpasync.CopyG2SOp(cache_mode=cute.nvgpu.LoadCacheMode.GLOBAL), BFloat16, num_bits_per_copy=128
-        )
         idx_in_group = idx_in_wg % GROUP_SIZE
         group = idx_in_wg // GROUP_SIZE
         kv_idx = cute.make_rmem_tensor(cute.make_layout((2, ROWS_PER_GROUP), stride=(ROWS_PER_GROUP, 1)), Int32)
@@ -214,7 +215,7 @@ def _fwd_kernel(
                     kv_idx[buf, r] = mIndices[b_i, s_i, 0, (2 * pair + buf) * BLOCK_I + r * NUM_GROUPS + group]
             for buf, half in ((0, 0), (1, 1), (0, 1), (1, 0)):
                 cute.arch.mbarrier_wait(mbars + MBAR_K_FREE + _k_half_index(buf, half), free_phase)
-                _gather_half(mKV, sK, gather_atom, b_i, kv_idx, group, idx_in_group, buf, half)
+                _gather_half(mKV, sK, b_i, kv_idx, group, idx_in_group, buf, half)
                 cute.arch.cp_async_mbarrier_arrive_noinc(mbars + MBAR_K_READY + _k_half_index(buf, half))
             if idx_in_group == 0:
                 for buf in cutlass.range_constexpr(2):
