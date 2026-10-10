@@ -49,7 +49,7 @@ from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
 from prime_rl.inference.vllm.routed_experts import compact_routed_experts, serialize_routed_experts
-from prime_rl.transports.payload import csr_rows
+from prime_rl.transports.payload import PAYLOAD_FIELDS, ragged_bytes
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
@@ -97,8 +97,9 @@ class _PackedOutputs:
         payload_dir = (request.sampling_params.extra_args or {}).get("payload_dir")
         self._payload_dir = Path(payload_dir) if payload_dir is not None else None
         self.fields: dict[int, dict[str, Any]] = {}
-        # Choice index -> (field, first token position, rows) for the by-handle file.
-        self.arrays: dict[int, list[tuple[str, int, np.ndarray]]] = {}
+        # Choice index -> (field, first token position, rows) for the by-handle file; rows of a
+        # ragged field are CSR (counts, values).
+        self.arrays: dict[int, list[tuple[str, int, Any]]] = {}
 
     async def __aiter__(self):
         async for request_output in self._generator:
@@ -128,7 +129,7 @@ class _PackedOutputs:
                         fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
                     else:
                         # Mask row i is completion token i.
-                        arrays.append(("sampling_mask", prompt_len, csr_rows("sampling_mask", mask.ids, mask.counts)))
+                        arrays.append(("sampling_mask", prompt_len, (mask.counts, mask.ids)))
                     output.sampling_mask = None
             yield request_output
 
@@ -146,7 +147,7 @@ class _PackedOutputs:
         return PrimeRlGenerateResponse(**{**response.model_dump(exclude={"choices"}), "choices": choices})
 
 
-def _write_payload(directory: Path, arrays: list[tuple[str, int, np.ndarray]]) -> list[dict[str, Any]]:
+def _write_payload(directory: Path, arrays: list[tuple[str, int, Any]]) -> list[dict[str, Any]]:
     """Write ``(field, first position, rows)`` arrays back to back into one new file and return
     their segments. The file is synced and closed before the response, so readers on other
     nodes see it; so is the directory when this call creates it."""
@@ -157,19 +158,16 @@ def _write_payload(directory: Path, arrays: list[tuple[str, int, np.ndarray]]) -
     offset = 0
     with open(path, "wb") as f:
         for field, pos, rows in arrays:
-            f.write(rows.data)
-            segments.append(
-                dict(
-                    field=field,
-                    file=path,
-                    offset=offset,
-                    pos=pos,
-                    rows=len(rows),
-                    dtype=rows.dtype.name,
-                    shape=list(rows.shape[1:]),
-                )
-            )
-            offset += rows.nbytes
+            if PAYLOAD_FIELDS[field].ragged:
+                counts, values = rows
+                data = ragged_bytes(field, counts, values, offset)
+                segment = dict(rows=len(counts), dtype="uint32", shape=[])
+            else:
+                data = memoryview(rows).cast("B")
+                segment = dict(rows=len(rows), dtype=rows.dtype.name, shape=list(rows.shape[1:]))
+            f.write(data)
+            segments.append(dict(field=field, file=path, offset=offset, pos=pos, **segment))
+            offset += len(data)
         os.fsync(f.fileno())
     if created:
         fd = os.open(directory, os.O_RDONLY)
