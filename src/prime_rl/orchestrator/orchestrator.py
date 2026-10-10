@@ -235,7 +235,7 @@ class Orchestrator:
             else:
                 self.resume_step = config.resume.step
                 if self.resume_step is None:
-                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir)
+                    self.resume_step = resolve_latest_ckpt_step(self.ckpt_manager.ckpt_dir, ("trainer", "orchestrator"))
 
         # Resume below may bump ``policy.version`` and the LoRA model name
         self.policy.model_name = self.clients.model_name

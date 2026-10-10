@@ -434,6 +434,9 @@ class RLOnlineEvalConfig(ScheduledEvalConfig):
 
 
 class CheckpointConfig(BaseConfig):
+    output_dir: Path | None = None
+    """Override directory for checkpoints. If set, checkpoints are written here instead of under the orchestrator ``output_dir``. In an RL run it matches the trainer's, so both write into the same step directories."""
+
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 

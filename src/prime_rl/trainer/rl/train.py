@@ -132,7 +132,7 @@ def train(config: TrainerConfig):
         else:
             checkpoint_step = config.resume.step
             if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir, ("trainer", "orchestrator"))
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

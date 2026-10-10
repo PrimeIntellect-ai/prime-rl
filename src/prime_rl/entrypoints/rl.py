@@ -15,6 +15,7 @@ from prime_rl.entrypoints.inference import vllm_overrides_fragment
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
+    abandon_future_ckpts,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -513,18 +514,21 @@ def rl(config: RLConfig):
     # from a previous run and the orchestrator would see a negative async level.
     get_logger().info("Starting RL run")
     resume_step: int | None = None
+    own_ckpt_dir: Path | None = None
     if resuming:
         if config.resume.dir is not None:
             resume_step = config.resume.dir_step
         else:
+            own_ckpt_dir = get_ckpt_dir(ckpt_output_dir if ckpt_output_dir is not None else config.run_dir)
             resume_step = config.resume.step
             if resume_step is None:
-                ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+                resume_step = resolve_latest_ckpt_step(own_ckpt_dir, ("trainer", "orchestrator"))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")
         clean_future_steps(config.run_dir, resume_step)
+        if own_ckpt_dir is not None and not config.dry_run:
+            abandon_future_ckpts(own_ckpt_dir, resume_step)
     else:
         get_logger().info("Training from scratch, cleaning any stale rollouts and broadcasts")
         clean_future_steps(config.run_dir, -1)

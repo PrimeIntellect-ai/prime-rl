@@ -82,7 +82,7 @@ class SharedMonitorsConfig(BaseConfig):
 
 class SharedCheckpointConfig(BaseConfig):
     output_dir: Path | None = None
-    """Override directory for checkpoints and weights. When set, checkpoints and weight snapshots are written here instead of under the trainer ``output_dir``."""
+    """Override directory for checkpoints and weights. When set, trainer and orchestrator checkpoints and weight snapshots are written here instead of under the run directory."""
 
     interval: int | None = None
     """Interval at which to save checkpoints."""

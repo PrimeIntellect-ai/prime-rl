@@ -14,6 +14,7 @@ from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
+    abandon_future_ckpts,
     clean_future_steps,
     format_config_message,
     format_log_message,
@@ -66,7 +67,7 @@ def resolve_resume_step(config: SFTConfig) -> int | None:
         return config.resume.dir_step
     if config.resume.step is not None:
         return config.resume.step
-    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
+    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)), ("trainer",))
 
 
 def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
@@ -477,6 +478,11 @@ def sft(config: SFTConfig):
     config.run_dir.mkdir(parents=True, exist_ok=True)
     if ckpt_output_dir is not None:
         ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+
+    if resuming and config.resume.dir is None and not config.dry_run:
+        resume_step = resolve_resume_step(config)
+        if resume_step is not None:
+            abandon_future_ckpts(get_ckpt_dir(get_ckpt_base(config)), resume_step)
 
     if config.eval is not None and not config.dry_run:
         clean_stale_eval_artifacts(config)
