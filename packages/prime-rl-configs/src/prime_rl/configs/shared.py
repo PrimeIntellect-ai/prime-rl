@@ -39,9 +39,10 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer. The trainer
-    fails the run when no consumer acknowledges an offered version in time."""
+    timeout: int = 3600
+    """Timeout in seconds for the broadcast handshake and transfer, including the orchestrator's wait
+    for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
+    offered version in time. Raise it for large models on slow shared filesystems."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
