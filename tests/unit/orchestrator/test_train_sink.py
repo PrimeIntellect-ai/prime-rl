@@ -22,6 +22,10 @@ from prime_rl.utils.logger import setup_logger
 setup_logger("warning")
 
 
+async def add_and_take(s, ep):
+    return await s.process_batch() if await s.add(ep) else None
+
+
 def trace(*, advantage=1.0, ok=True, trainable=True, sampled=True):
     tools = [Tool(name="search", description="schema" * 100, parameters={"type": "object"})]
     nodes = [
@@ -97,7 +101,7 @@ def test_zero_output_finalization_releases_objects_without_reporting(constant, a
             ep = episode([t], group=str(i))
             refs.extend([weakref.ref(t), weakref.ref(ep)])
             before = msgspec.msgpack.encode(trace_to_samples(t, env_name="test"))
-            batch = await s.add(ep)
+            batch = await add_and_take(s, ep)
             assert batch is None or not batch.samples
             assert msgspec.msgpack.encode(trace_to_samples(t, env_name="test")) == before
             assert s.take_rollout_window() is None
@@ -128,7 +132,7 @@ def test_queued_trace_does_not_own_discarded_siblings():
         refs = [weakref.ref(t) for t in discarded] + [weakref.ref(ep)]
         s = sink()
         before = msgspec.msgpack.encode(trace_to_samples(kept, env_name="test"))
-        assert await s.add(ep) is None
+        assert await add_and_take(s, ep) is None
         assert all(t.nodes[2].token_ids == [3, 4] for t in discarded)
         del discarded, ep
         gc.collect()
@@ -151,7 +155,7 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
         assert s.take_rollout_window(force=True).attempts == 1
         del old
         s.progress.step = 4
-        assert await s.take_batch() is None
+        assert not s._batch_ready()
         gc.collect()
         assert ref() is None
         window = s.take_rollout_window(force=True)
@@ -168,12 +172,12 @@ def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
         zero, kept, sibling, another = trace(advantage=0), trace(), trace(), trace()
         ep = episode([zero, kept, sibling, another])
         ep_id = ep.id
-        batch = await s.add(ep)
+        batch = await add_and_take(s, ep)
         assert len(batch.samples) == 1 and batch.samples[0].trace_id == kept.id
         assert len(batch.cohort) == 1 and batch.cohort.episodes[0].id == ep_id
         assert sibling.id in s.pending_batch
         assert zero.nodes[2].token_ids == [3, 4]
-        batch = await s.take_batch()
+        batch = await s.process_batch()
         assert len(batch.samples) == 2
         assert len(batch.cohort) == 1 and batch.cohort.num_traces == 2
         assert batch.cohort.episodes[0].id == ep_id
@@ -197,7 +201,7 @@ def test_failures_and_cancellations_accumulate_until_reporting():
                 task_hash="hash",
                 error=vf.Error(type="TransportError", message="large" * 1000),
             )
-            assert await s.fail(failure) is None
+            assert not await s.fail(failure)
             assert s.take_rollout_window() is None
             assert not s.pending_group_failures
         for i in range(4):
