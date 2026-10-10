@@ -7,7 +7,7 @@ dashboard = false
 level = "debug"
 
 [model]
-name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+name = "Qwen/Qwen3-30B-A3B"
 
 [weight_broadcast]
 type = "nccl"
