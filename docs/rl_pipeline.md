@@ -23,7 +23,7 @@ If you change the pipeline, check the change against [Invariants](#invariants), 
 
 ## Overview
 
-The orchestrator is one process running three concurrent loops on one asyncio event loop: the dispatcher, the main loop, and the weight watcher. The trainer, inference servers, and env servers are separate processes.
+The orchestrator is one process running three main concurrent loops on one asyncio event loop: the dispatcher, the main loop, and the weight watcher. A fourth, the inference-metrics poller, drives the concurrency controller and is not drawn. The trainer, inference servers, and env servers are separate processes.
 
 ```
                 tasks
@@ -31,7 +31,7 @@ The orchestrator is one process running three concurrent loops on one asyncio ev
                   v
       +-------------------+   results   +-------------------+   batch N   +-----------+
       |    dispatcher     |------------>|     main loop     |------------>|  trainer  |
-      |  starts episodes  |             |  groups, scores,  |             +-----------+
+      |  starts episodes  |<-closes gate|  groups, scores,  |             +-----------+
       +-------------------+             |  ships batches    |                   |
           |          ^                  +-------------------+                   |
           |          |                            ^                             |
@@ -46,17 +46,19 @@ The orchestrator is one process running three concurrent loops on one asyncio ev
                      v{N}
 ```
 
+The gate, fence, cancel, and ship hold are [throttles](#throttles); [Terms](#terms) defines them briefly.
+
 | Component | Receives | Emits | Decides |
 |---|---|---|---|
-| Train source | Requests for a task | Tasks | Which env and task come next |
-| Dispatcher | Tasks, throttle signals | Episode requests; one result per attempt | When an episode may start |
+| Train source | Task requests; finished groups | Tasks; admit or reject | Next env and task; whether a group trains |
+| Dispatcher | Tasks, throttle signals | Episode requests; results | When an episode may start |
 | Env servers + inference | Episode requests | Finished episodes | Nothing the pipeline controls |
 | Main loop | Results | Batches to the trainer | When a ready batch may ship |
-| Train sink | Results, from the main loop | Ready batches | Which groups and traces train |
+| Train sink | Results, from the main loop | Ready batches | What an admitted group queues; what goes stale |
 | Batch packer | A ready batch | Micro batches per trainer rank | How samples are split across ranks |
 | Trainer | Batches | New weights | Nothing the pipeline controls |
 | Weight watcher | New weights | Weights to inference; version signal | When to swap weights |
-| Concurrency controller | Inference load metrics | The in-flight cap | How many episodes may run at once |
+| Concurrency controller | Load metrics; completions | In-flight cap; cancel requests | Episodes allowed at once |
 
 ## Terms
 
@@ -64,12 +66,16 @@ The orchestrator is one process running three concurrent loops on one asyncio ev
 - **Trace**: one trainable token sequence inside an episode. An episode can contain several. `batch_size` counts traces.
 - **Group**: the `group_size` episodes of one task, scored relative to each other.
 - **Attempt**: one started episode, whether it finishes, fails, or is cancelled.
-- **Result**: what the dispatcher reports for an attempt: a finished episode, a failure, or one cancellation covering everything a dropped group still owes. Results reach the main loop through a queue.
+- **Result**: what the dispatcher reports: a finished episode, a failure, or one cancellation covering everything a dropped group still owes. Every attempt is covered by exactly one result. Results reach the main loop through a queue.
 - **Curriculum**: an env's task sampler, which also decides whether a finished group trains. See [Algorithms](algorithms.md#curricula).
 - **Step and policy version**: steps count batches from 1; policy versions count from 0, with `v0` the base model. Batch $N$ trains on `v{N-1}` and produces `v{N}`.
 - **Dispatch version**: the policy version inference served when a group's first episode started. Every episode in the group carries it.
 - **Staleness**: for a rollout trained in batch $N$ with dispatch version `v{k}`, the number $(N-1) - k$.
 - **Run-ahead**: how many versions the policy a batch trains on may be ahead of the policy inference serves when that batch ships.
+- **Dispatch gate**: stops new train starts while the orchestrator is too far ahead of inference.
+- **Ship hold**: holds a ready batch until inference serves a recent enough policy version.
+- **Weight-update fence**: stops new starts while a weight update is in progress.
+- **Early stale cancel**: drops in-flight train groups that can no longer train within the staleness bound.
 
 ## Goals
 
@@ -89,7 +95,7 @@ It accepts two trade-offs to get there.
 
 Each invariant is a guarantee the pipeline targets, followed by the component that enforces it. Where today's code falls short, the shortfall is listed under [Known Gaps](#known-gaps).
 
-1. **Every opened train group reaches exactly one terminal state**: its traces are queued for training, or it is dropped for having no trainable traces, rejected by the curriculum, voided as stale, or abandoned. Enforced by the dispatcher, which reports every attempt exactly once, and the train sink, which counts each group to completion.
+1. **Every opened train group leaves the train sink in exactly one way once all its attempts are accounted for**: some of its traces are queued for training, or nothing is queued because no trace was trainable, the curriculum rejected it, every sample was pruned after admission (for example, zero advantage across the group), or it was voided as stale. Queued traces can still be voided by the staleness sweep before they ship. Enforced by the dispatcher, which covers every attempt with exactly one result, and the train sink, which counts each group to completion.
 2. **No trained token was generated by a policy more than `max_off_policy_steps` versions behind the policy it trains.** Staleness is measured from the dispatch version, which can only overstate it. Enforced by the train sink, before every batch cut.
 3. **Batch $N$ ships only once inference serves at least `v{N-2}`**, that is, `v{N-1}` minus the run-ahead. Enforced by the main loop's ship hold.
 4. **A new episode starts only while in-flight episodes are below the current cap, and the cap stays within its configured bounds.** Lowering the cap cancels nothing by itself, so in-flight episodes can briefly exceed it. Enforced by the dispatcher and the concurrency controller.
@@ -154,7 +160,7 @@ Every throttle protects one thing. The tags match the [Life of an Episode](#life
 | `[cap]` adaptive in-flight cap | Inference KV cache | New starts | Dispatcher, concurrency controller |
 | `[burst]` admission burst cap | Inference prefill bursts | New starts | Dispatcher |
 | `[rate]` `tasks_per_minute` | External services | New starts | Dispatcher |
-| `[gate]` dispatch gate | Run-ahead (early check) | New train starts | Orchestrator |
+| `[gate]` dispatch gate | Run-ahead (early check) | New train starts | Main loop closes, watcher reopens |
 | `[hold]` ship hold | Run-ahead (guarantee) | Batch shipping | Main loop |
 | `[cancel]` early stale cancel | Inference compute | In-flight groups | Dispatcher, at weight updates |
 | `[sweep]` staleness sweep | Staleness (guarantee) | Queued traces | Train sink |
@@ -163,7 +169,7 @@ Every throttle protects one thing. The tags match the [Life of an Episode](#life
 
 ### Engine Load
 
-The concurrency controller adapts the cap to inference load. It grows the cap slowly while the engines have headroom, trims it under KV-cache pressure, and on overload (preemptions or a persistent queue for KV capacity) cuts it and cancels the youngest groups first, since they have the least inference spent. Setting the minimum and maximum equal gives fixed concurrency. Train and eval share the cap. The burst cap limits net growth per time window, so a raised cap does not land a wall of prefills at once.
+The concurrency controller adapts the cap to inference load. It grows the cap slowly while the engines have headroom. Under KV-cache pressure it trims the cap: a soft trim lets completions drain the pool, and above a hard threshold it also cancels the excess. On overload (preemptions or a persistent queue for KV capacity) it cuts the cap and cancels the excess. Cancellations take the youngest train groups first, since they have the least inference spent. Setting the minimum and maximum equal gives fixed concurrency. Train and eval share the cap. The burst cap limits net growth per time window, so a raised cap does not land a wall of prefills at once.
 
 ### Two Checks for Run-Ahead
 
@@ -184,7 +190,7 @@ The dispatcher never waits when it reports a result: the result queue is unbound
 
 Blocking on emit would deadlock. During a weight update, the early cancel reports cancellations to the result queue, while the main loop, the queue's only reader, may itself be in the ship hold waiting for that update to finish.
 
-The threshold is the configured maximum, not the current cap. A low current cap would shrink the buffer and idle inference during routine short main-loop stalls. During a stall, memory is bounded by the threshold's worth of queued results plus the episodes still in flight when starts pause. When `concurrency.max_inflight` is unset, nothing bounds the backlog.
+The threshold is the configured maximum, not the current cap. A low current cap would shrink the buffer and idle inference during routine short main-loop stalls. During a stall, memory is bounded by the threshold's worth of queued results plus the episodes still in flight when starts pause. When `concurrency.max_inflight` is set to `None`, nothing bounds the backlog.
 
 ## Life of an Episode
 
@@ -206,8 +212,8 @@ result queue      finished episode | failure | group cancellation
 main loop         hands each result to the train sink
      |
      v
-train sink        waits for every attempt in the group, scores the group,
-     |            lets the curriculum admit or reject it, converts traces to samples
+train sink        waits for every attempt in the group, scores it if any trace is trainable,
+     |            asks the curriculum to admit or reject it, converts traces to samples
      |            [sweep] voids queued traces past the staleness bound
      v  (batch_size traces queued)
 main loop         [hold] waits until inference serves v{N-2}
@@ -219,7 +225,7 @@ trainer           trains batch N on v{N-1}, publishes v{N}
 weight watcher    [fence] [cancel], then loads v{N} (see Weight Updates)
 ```
 
-Each group ends in one terminal state: its traces are queued for training, or it has no trainable traces, the curriculum rejects it, the staleness bound voids it (in flight or queued), or the dispatcher abandons it after an overload cut.
+Each group ends in one of the terminal states listed in the [first invariant](#invariants). An overload cut shrinks a group rather than ending it: the members that already arrived are scored and admitted as a smaller group, and the cancelled members count toward completion.
 
 The main loop is the only reader of the result queue. It routes each result to the train or eval sink, ships a batch when one is ready, advances the step, and saves checkpoints. It does slow work inline (scoring, packing, sending, the ship hold), so while it is busy, results pile up until `[backlog]` pauses new starts. Checkpoint saves run synchronously and briefly block the whole event loop.
 
