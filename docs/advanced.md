@@ -112,7 +112,7 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 ```toml
 [trainer.model.moe.dispatch]
 type = "deepep"
-num_sms = 20
+num_sms = 32
 token_chunk_size = 4096
 ```
 
