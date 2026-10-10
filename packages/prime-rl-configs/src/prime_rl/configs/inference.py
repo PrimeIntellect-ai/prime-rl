@@ -29,15 +29,6 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-# vLLM all2all backend options for expert-parallel deployments.
-All2AllBackend = Literal[
-    "allgather_reducescatter",
-    "deepep_high_throughput",
-    "deepep_low_latency",
-    "flashinfer_nvlink_one_sided",
-    "flashinfer_nvlink_two_sided",
-]
-
 QuantizationType = Literal["fp8_per_block"]
 
 
@@ -59,17 +50,8 @@ class VllmConfig(BaseConfig):
     model: str = "Qwen/Qwen3-0.6B"
     """HF model name or local path."""
 
-    dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
-    """dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models."""
-
     max_model_len: int | None = None
     """Maximum model context length. If None, uses the model config's value."""
-
-    enforce_eager: bool = False
-    """Enforce eager mode. When False, PyTorch eager and cuda graphs run hybrid for maximum performance."""
-
-    trust_remote_code: bool = False
-    """Trust remote code when loading the model."""
 
     chat_template: str | None = None
     """Chat template — a Jinja2 template string or path to a template file. If None, uses the model's default."""
@@ -98,9 +80,6 @@ class VllmConfig(BaseConfig):
     api_server_count: int = Field(1, ge=0)
     """API servers to run. Set to 0 for headless mode."""
 
-    seed: int = 0
-    """Seed the inference components."""
-
     gpu_memory_utilization: float = 0.9
     """GPU memory utilization."""
 
@@ -113,10 +92,6 @@ class VllmConfig(BaseConfig):
     enable_lora: bool = False
     """Enable LoRA."""
 
-    max_loras: int = 1
-    """Maximum number of concurrently served LoRAs. prime-rl serves one adapter and reloads
-    it in place every policy version (same name, same lora_int_id), so one slot suffices."""
-
     max_lora_rank: int | None = None
     """Maximum LoRA rank. Rounded up to the nearest value vLLM accepts."""
 
@@ -126,9 +101,6 @@ class VllmConfig(BaseConfig):
     enable_expert_parallel: bool = False
     """Enable expert parallelism for MoE models."""
 
-    all2all_backend: All2AllBackend = "allgather_reducescatter"
-    """All-to-all backend for expert-parallel communication."""
-
     enable_eplb: bool = False
     """Enable expert parallel load balancer (EPLB)."""
 
@@ -137,9 +109,6 @@ class VllmConfig(BaseConfig):
     rank reads only its own expert shard from disk. No-op for non-MoE models, when
     expert parallelism is disabled, or under EPLB (redundant expert slots need all
     logical expert weights)."""
-
-    enable_dbo: bool = False
-    """Enable dual batch overlap (DBO)."""
 
     enable_return_routed_experts: bool = False
     """Return routed experts in responses."""
