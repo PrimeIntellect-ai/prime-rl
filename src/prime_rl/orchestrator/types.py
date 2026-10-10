@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import bisect
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
@@ -21,6 +23,17 @@ class Policy:
 
     version: int = 0
     model_name: str = ""
+    applied: list[tuple[float, int]] = field(default_factory=list)
+    """``(wall-clock time, version)`` each time inference finished applying a version."""
+
+    def set_version(self, version: int) -> None:
+        self.version = version
+        self.applied.append((time.time(), version))
+
+    def version_at(self, timestamp: float) -> int:
+        """The version inference served at ``timestamp`` (the first one before any update)."""
+        index = bisect.bisect_right(self.applied, timestamp, key=lambda entry: entry[0])
+        return self.applied[max(index - 1, 0)][1] if self.applied else self.version
 
 
 @dataclass
