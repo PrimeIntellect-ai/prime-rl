@@ -86,6 +86,28 @@ WeightBroadcastConfig: TypeAlias = Annotated[
 """Weight transfer from trainer to inference. ``rl`` copies its ``[weight_broadcast]`` to the trainer and orchestrator."""
 
 
+class BaseDeploymentConfig(BaseConfig):
+    gpus_per_node: int = 8
+    """GPUs per node."""
+
+
+class BaseSingleNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["single_node"] = "single_node"
+
+    num_train_gpus: int = 1
+    """GPUs allocated to the trainer."""
+
+    num_infer_gpus: int = 1
+    """GPUs allocated to inference. ``sft`` uses them only for online evals with an ``[inference]`` block."""
+
+
+class BaseMultiNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["multi_node"] = "multi_node"
+
+    num_train_nodes: int = Field(ge=1)
+    """Training nodes."""
+
+
 class RunConfig(BaseConfig):
     name: str | None = None
     """Run name. Auto-generated as ``<envs>--<model>--<short-id>`` when unset, so every launch gets a fresh, readable run directory; set an explicit name (e.g. an experiment name) to get a predictable run directory, which is also required to resume a previous run. Unless set explicitly, the W&B run name and the Prime platform run name inherit it."""
