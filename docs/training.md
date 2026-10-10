@@ -336,6 +336,12 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
+### Keeping Inference Across a Restart
+
+Inference holds no run state, so it does not have to restart with the trainer and orchestrator. Start it as its own job (`uv run inference @ infer.toml`, or the `inference` SLURM template). Then launch `rl` without an `[inference]` section and point `orchestrator.model.client.base_url` (and `admin_base_url` for per-engine admin URLs) at it. Relaunch `rl` with `--resume` after a trainer or orchestrator crash. The trainer layout (TP/EP/DP) may change, because DCP reshards on load. The engines keep running and get the resumed policy from the trainer's startup broadcast.
+
+The orchestrator salts the prefix cache per process, so KV computed by the crashed run is never reused. Engines left paused by a crash are resumed by the startup weight sync. A trainer that dies in the middle of an NCCL broadcast leaves the engines stuck in the receive; the orchestrator then fails at startup and the inference job must be restarted. Filesystem broadcast (the default for externally managed inference) does not have this failure mode.
+
 ### Exporting Checkpoints
 
 Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.

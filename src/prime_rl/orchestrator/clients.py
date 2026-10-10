@@ -134,6 +134,7 @@ class AdminPlane:
             check_health(self._router_clients, timeout=self._wait_for_ready_timeout),
         )
         await maybe_check_has_model(self.clients, model_name, skip_model_check=self._skip_model_check)
+        await asyncio.gather(*(_check_engine_responsive(client) for client in self.clients))
 
     async def initialize_nccl(
         self,
@@ -398,6 +399,18 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
                 **kwargs,
             )
             response.raise_for_status()
+
+
+async def _check_engine_responsive(client: AsyncClient) -> None:
+    """Fail fast on an engine that outlived a crashed run but cannot serve: its worker RPCs
+    time out, for example because it is stuck in the NCCL receive of a trainer that died
+    mid-broadcast. Endpoints without prime-rl's ``/liveness`` are skipped."""
+    response = await client.get("/liveness", timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0))
+    if response.status_code == 503:
+        raise RuntimeError(
+            f"Inference engine at {client.base_url} is unresponsive (/liveness: {response.text[:200]}). "
+            "It may be stuck in a weight transfer from a crashed trainer; restart the inference server."
+        )
 
 
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
