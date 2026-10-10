@@ -520,9 +520,7 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_router_deployment(self):
-        """The llm-d router (EPP + Envoy) is launched by the SLURM templates only; multi-node deployments need a router to front the per-rank engines."""
-        if self.router is not None and self.router.type == "llm-d" and self.deployment.type == "single_node":
-            raise ValueError("The llm-d router backend requires a multi-node or disaggregated SLURM deployment.")
+        """Multi-node deployments need a router to front the per-rank engines."""
         if self.router is None and self.deployment.type in ("multi_node", "disaggregated"):
             raise ValueError("Multi-node / disaggregated deployments require a router fronting the per-rank engines.")
         return self

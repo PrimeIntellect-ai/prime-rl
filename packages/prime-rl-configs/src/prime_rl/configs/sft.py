@@ -407,6 +407,9 @@ class SFTConfig(BaseConfig):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        router = self.inference.router if self.inference is not None else None
+        if router is not None and router.type == "llm-d" and self.inference.deployment.type == "single_node":
+            raise ValueError("The llm-d router backend requires a multi-node or disaggregated SLURM deployment.")
         return self
 
     @model_validator(mode="after")
