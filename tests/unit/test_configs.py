@@ -618,7 +618,7 @@ def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, 
     if frozen:
         source["algo"] = {
             "type": "sft",
-            "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8000/v1"}},
+            "teacher": {"name": "teacher", "base_url": "http://localhost:8000/v1"},
         }
     if rejected and not frozen:
         with pytest.raises(ValidationError, match="sampling"):

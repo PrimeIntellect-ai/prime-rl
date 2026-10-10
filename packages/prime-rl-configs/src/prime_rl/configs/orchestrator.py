@@ -255,7 +255,7 @@ class TrainSourceConfig(EnvConfig):
 
     @model_validator(mode="after")
     def validate_policy_sampling(self):
-        if self.algo.sampling.source != "policy":
+        if self.algo.rollout_model != "policy":
             return self
         # The source owns the distribution replayed by the trainer; agents may
         # change generation limits and rendering without changing that distribution.
@@ -604,7 +604,7 @@ class OrchestratorConfig(BaseConfig):
         Owned here: every truncating config gets a top-k bound (bounds the sampling
         masks); opd/opsd is rejected (full-vocab prefill refs would mix
         normalizations). Frozen-source envs sample externally and are exempt."""
-        policy_samplings = [env.sampling for env in self.train.source if env.algo.sampling.source == "policy"] or (
+        policy_samplings = [env.sampling for env in self.train.source if env.algo.rollout_model == "policy"] or (
             [self.train.sampling] if not self.train.source else []
         )
         truncating = [sampling for sampling in policy_samplings if sampling.truncates_distribution()]
@@ -649,7 +649,7 @@ class OrchestratorConfig(BaseConfig):
     @property
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
-        return any(env.algo.sampling.source == "policy" for env in self.train.source)
+        return any(env.algo.rollout_model == "policy" for env in self.train.source)
 
     @model_validator(mode="after")
     def validate_renderer_auto_resolves(self):
@@ -708,7 +708,7 @@ class OrchestratorConfig(BaseConfig):
         for env in self.train.source:
             # Policy-sourced rollouts hit our vLLM server; frozen-sourced
             # rollouts may hit external OAI endpoints that reject these knobs.
-            if env.algo.sampling.source == "policy":
+            if env.algo.rollout_model == "policy":
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
@@ -717,7 +717,7 @@ class OrchestratorConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_policy_top_k_consistency(self):
         """Require one top-k capture mode across the live policy server."""
-        policy_sources = [env for env in self.train.source if env.algo.sampling.source == "policy"]
+        policy_sources = [env for env in self.train.source if env.algo.rollout_model == "policy"]
         enabled = [env for env in policy_sources if env.sampling.top_k is not None]
         disabled = [env for env in policy_sources if env.sampling.top_k is None]
         if enabled and disabled:

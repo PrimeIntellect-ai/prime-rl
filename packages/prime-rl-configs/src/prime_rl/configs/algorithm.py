@@ -1,19 +1,19 @@
-"""Algorithm abstraction: sampling and the per-token training signal.
+"""Algorithm abstraction: the rollout model and the per-token training signal.
 
 An algorithm is a named, self-contained config — a discriminated union keyed
 on ``type`` (``grpo``, ``max_rl``, ``rae``, ``hierarchical_grpo``, ``opd``,
 ``opsd``, ``sft``, ``echo``, ``debug``).
 The bundle *is* the algorithm: each variant carries
-its sampling component and its credit-assignment / loss-routing parameters,
+its credit-assignment / loss-routing parameters and any model it references,
 and its class defaults are the vetted setting — ``type = "opd"`` with a
 teacher IS on-policy distillation; any key you set is visibly your own
 assembly. There is no separate ``advantage`` sub-component and no preset layer.
 
 Each algorithm fixes two things:
 
-1. **Sampling** — which model generates train rollouts. ``sampling.source`` is
-   a model reference: ``"policy"`` (the live policy) or an inline frozen hosted
-   model.
+1. **The rollout model** — which model generates train rollouts
+   (``rollout_model``): the live policy, except for ``sft``, which samples from
+   its frozen ``teacher``.
 2. **The per-token training signal** — credit assignment and loss routing,
    fused: one mapping from a finalized rollout to per-token ``(loss component,
    weight)``. Group-relative algorithms compute scalars on the orchestrator and
@@ -38,7 +38,6 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 import verifiers.v1 as vf
 from pydantic import Field, model_validator
-from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import VLLMClientConfig
 from prime_rl.utils.config import BaseConfig
@@ -66,19 +65,6 @@ version, sampling logprobs carried, rollouts age off-policy) or an inline
 externally-hosted frozen model."""
 
 ActionLossType: TypeAlias = Literal["rl", "ce", "ref_kl"]
-
-
-# ---------------------------------------------------------------------------
-# Sampling
-# ---------------------------------------------------------------------------
-
-
-class SamplingConfig(BaseConfig):
-    source: ModelReference = "policy"
-    """Model reference for train rollout generation: ``"policy"`` (the live
-    policy — prefix caches salted per version, sampling logprobs requested,
-    rollouts age off-policy) or an inline frozen hosted model (stable prefix
-    cache, no sampling logprobs, rollouts never go stale)."""
 
 
 # ---------------------------------------------------------------------------
@@ -152,13 +138,12 @@ class EchoFilterConfig(BaseConfig):
 
 
 class BaseAlgoConfig(BaseConfig):
-    """Base for every algorithm: the shared sampling component and the
-    cross-cutting source/loss compatibility check. Each subclass sets ``type``
-    (the discriminator), declares its loss routing (``action_loss_type``), and
-    adds its own parameters — including any reference model it needs, named
-    where that model is actually used (opd scores against a frozen ``teacher``;
-    sft samples from its ``sampling.source``; opsd self-distills against the
-    live policy and names no model).
+    """Base for every algorithm. Each subclass sets ``type`` (the discriminator),
+    declares its loss routing (``action_loss_type``), and adds its own
+    parameters — including any reference model it needs, named where that model
+    is actually used (opd scores against a frozen ``teacher``; sft samples from
+    its frozen ``teacher``; opsd self-distills against the live policy and names
+    no model).
 
     The bundle IS the algorithm — there is no separate ``advantage``
     sub-component. ``algo.type`` names it, and the class defaults are the
@@ -166,22 +151,12 @@ class BaseAlgoConfig(BaseConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
-    sampling: SamplingConfig = SamplingConfig()
-    """Sampling component: which model generates train rollouts."""
-
-    @model_validator(mode="after")
-    def validate_sampling_source(self):
-        """The on-policy loss types (rl, ref_kl) need the live policy's own
-        sampling logprobs, so they must sample from ``"policy"``; only sft (ce)
-        may sample from a frozen model."""
-        if self.action_loss_type in ("rl", "ref_kl") and self.sampling.source != "policy":
-            raise ValueError(
-                f"algorithm '{self.type}' trains with the "
-                f"{self.action_loss_type} loss type but sampling.source is a frozen model — "
-                "the importance ratio and trust region need the live policy's own sampling logprobs. "
-                "Use the 'sft' algorithm to distill frozen-model tokens."
-            )
-        return self
+    @property
+    def rollout_model(self) -> ModelReference:
+        """The model that generates train rollouts. The on-policy loss types
+        (rl, ref_kl) need the live policy's own sampling logprobs, so only sft
+        samples from a frozen model."""
+        return "policy"
 
     def validate_env(self, env_config: vf.EnvConfig) -> None:
         """Raise if this algorithm cannot run on the env it is configured for,
@@ -332,13 +307,8 @@ class OPSDAlgoConfig(BaseAlgoConfig):
     template: str = "Here is an example of an expert response:\n<demonstration>\n{demonstration}\n</demonstration>"
     """Content of the leading system message carrying the demonstration.
     Receives ``{demonstration}``; the original question stays in the (verbatim)
-    user turn, so it isn't templated here."""
-
-    renderer: RendererConfig = AutoRendererConfig()
-    """Renderer family for the hint block. The tokenizer is always the live
-    policy's (self-distillation has no separate model — not configurable).
-    Defaults to ``"auto"`` (resolved from the policy tokenizer); set explicitly
-    to match a non-auto policy renderer."""
+    user turn, so it isn't templated here. The hint block is rendered with the
+    policy's renderer and tokenizer."""
 
 
 class SFTAlgoConfig(BaseAlgoConfig):
@@ -350,18 +320,14 @@ class SFTAlgoConfig(BaseAlgoConfig):
 
     action_loss_type: ClassVar[ActionLossType] = "ce"
 
-    @model_validator(mode="after")
-    def require_frozen_source(self):
-        """sft's teacher is the model it samples from — ``sampling.source`` must
-        be a frozen hosted model, not the policy (CE on the policy's own tokens
-        is not a distillation target)."""
-        if self.sampling.source == "policy":
-            raise ValueError(
-                f"algorithm '{self.type}' needs a teacher to sample rollouts from — "
-                "CE on the policy's own tokens is not a distillation target. Set "
-                "sampling.source to an inline hosted model (name + base_url)."
-            )
-        return self
+    teacher: FrozenModelConfig
+    """The teacher — an inline frozen hosted model (``name`` + ``base_url``) that
+    generates the train rollouts the policy imitates. Required, and necessarily a
+    frozen endpoint: CE on the policy's own tokens is not a distillation target."""
+
+    @property
+    def rollout_model(self) -> ModelReference:
+        return self.teacher
 
 
 class DebugAlgoConfig(BaseAlgoConfig):
@@ -412,7 +378,7 @@ its class defaults are the vetted setting.
 - ``hierarchical_grpo`` — GRPO for proposer-solver envs: solvers are compared within one proposed problem and proposers across proposals. Needs ``episode_agents``.
 - ``opd`` — on-policy distillation: policy samples, per-token reverse KL against a reference model. Needs ``teacher``.
 - ``opsd`` — SDFT: policy samples, demo-conditioned reverse KL against the live policy (the teacher is the policy itself).
-- ``sft`` — a frozen model samples, the policy trains with CE on its tokens. Needs a frozen ``sampling.source``.
+- ``sft`` — a frozen ``teacher`` samples, the policy trains with CE on its tokens. Needs ``teacher``.
 - ``echo`` — GRPO on action tokens + weighted CE on tool-response observation tokens.
 - ``debug`` — the same constant advantage on every sampled token, ignoring
   rewards. Debugging only: for infra work that needs every token trainable.
