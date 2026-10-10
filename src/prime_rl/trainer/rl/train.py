@@ -70,7 +70,7 @@ from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
-from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.process import die_with_parent, set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.utils import clean_exit
@@ -741,6 +741,8 @@ def train(config: TrainerConfig):
 def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
     set_proc_title("Trainer")
+    # torchrun starts its workers in their own sessions; tie them to the agent
+    die_with_parent()
     train(cli(TrainerConfig))
 
 
