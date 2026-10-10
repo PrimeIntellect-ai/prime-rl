@@ -115,3 +115,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
+
+    # Identifies the step's batch: ``step << 32`` plus a random 32-bit nonce, the same on every
+    # micro batch of every rank. Trainer ranks check that they all train the same batch.
+    batch_id: int | None = None
