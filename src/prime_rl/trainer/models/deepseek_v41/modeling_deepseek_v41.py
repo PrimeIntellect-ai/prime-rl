@@ -6,6 +6,9 @@ it, its `post`/`comb` gates write its own output back, and its `pre` gate collap
 for the next sublayer. The first attention reads stream 0, and the last FFN's `pre` gate produces
 the final hidden state, so there is no separate head collapse.
 
+`residual_type = "gated" | "layerscale"` swaps mHC for a single-stream gated residual (`gated_residual.py`)
+with the same layout at `hc_mult = 1`.
+
 Engram lookups are added into the streams before `engram_layer_ids`. They sit between decoder
 layers, outside the compiled and checkpointed blocks, because their table lookup is a pair of
 all-to-alls with data-dependent split sizes.
@@ -27,11 +30,8 @@ from prime_rl.trainer.models.deepseek_v41.converting_deepseek_v41 import (
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram, EngramHasher
-from prime_rl.trainer.models.deepseek_v41.hyperconnections import (
-    DeepseekV41HyperConnection,
-    collapse_streams,
-    identity_pre_mix,
-)
+from prime_rl.trainer.models.deepseek_v41.gated_residual import residual_connection
+from prime_rl.trainer.models.deepseek_v41.hyperconnections import collapse_streams, identity_pre_mix
 from prime_rl.trainer.models.deepseek_v41.quantize import quantize_state_dict_
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
@@ -54,8 +54,9 @@ class DeepseekV41DecoderLayer(nn.Module):
         self.mlp = DeepseekV4MoE(config, layer_idx)
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.attn_hc = DeepseekV41HyperConnection(config)
-        self.ffn_hc = DeepseekV41HyperConnection(config)
+        # mHC gates, or a single-stream gated residual (`config.residual_type`) behind the same interface.
+        self.attn_hc = residual_connection(config)
+        self.ffn_hc = residual_connection(config)
         # "attention" or "moe" when a pipeline stage boundary cuts this layer and the stage keeps one block.
         self.pipeline_part: str | None = None
 

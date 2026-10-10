@@ -81,6 +81,7 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "prime_rl::dsv41_sparse_attn",
         "prime_rl::dsv41_sparse_attn_rope",
         "prime_rl::dsv4_linear_rope",
+        "prime_rl::dsv41_gated_residual",
         "prime_rl::fp8_blockwise_mm",
         "prime_rl::grouped_fp8_gemm",
         "prime_rl::sparse_mla",
