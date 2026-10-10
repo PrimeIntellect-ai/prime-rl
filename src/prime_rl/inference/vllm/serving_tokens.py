@@ -10,7 +10,10 @@ per-token JSON: ``routed_experts`` as ``{data, shape, start, dtype}`` base64
 raw bytes (the form the PD router can merge and the renderers parse),
 ``completion_logprobs`` as a ``{data, shape, dtype}`` float32 array instead of
 ``logprobs.content``, and ``sampling_mask`` as CSR ``{ids, counts}`` int32 arrays
-instead of one list per token.
+instead of one list per token. A request whose ``sampling_params.extra_args``
+carries a ``payload_dir`` (the orchestrator's train rollouts on multi-node runs)
+gets its ``routed_experts`` and ``sampling_mask`` written to one file there and
+returned as ``payload`` segments instead.
 
 Per-token Python objects are what makes the API server slow under RL load:
 ~100+ concurrent 16k-token requests keep tens of millions of them alive, and
@@ -24,7 +27,11 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -41,7 +48,8 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
-from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
+from prime_rl.inference.vllm.routed_experts import compact_routed_experts, serialize_routed_experts
+from prime_rl.transports.payload import RAGGED_FIELDS, ragged_bytes
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
@@ -51,6 +59,7 @@ class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
     routed_experts: dict[str, Any] | None = None  # type: ignore[assignment]
     completion_logprobs: dict[str, Any] | None = None
     sampling_mask: dict[str, Any] | None = None  # type: ignore[assignment]
+    payload: list[dict[str, Any]] | None = None
 
 
 class PrimeRlGenerateResponse(GenerateResponse):
@@ -78,21 +87,36 @@ def pack_sampled_logprobs(logprobs: FlatLogprobs) -> np.ndarray:
 
 class _PackedOutputs:
     """Wraps the result generator: takes the per-token payloads off each final
-    output (so upstream builds no per-token objects) and keeps them packed."""
+    output (so upstream builds no per-token objects) and keeps them packed, or
+    collects them for a by-handle file when the request has a ``payload_dir``."""
 
     def __init__(self, generator: AsyncIterator[RequestOutput], request: GenerateRequest):
         self._generator = generator
         self._request = request
         self._routed_experts_start = request.sampling_params.routed_experts_prompt_start
+        payload_dir = (request.sampling_params.extra_args or {}).get("payload_dir")
+        self._payload_dir = Path(payload_dir) if payload_dir is not None else None
         self.fields: dict[int, dict[str, Any]] = {}
+        # Choice index -> (field, first token position, rows) for the by-handle file; rows of a
+        # ragged field are CSR (counts, values).
+        self.arrays: dict[int, list[tuple[str, int, Any]]] = {}
 
     async def __aiter__(self):
         async for request_output in self._generator:
+            prompt_len = len(request_output.prompt_token_ids or ())
             for output in request_output.outputs:
                 fields = self.fields.setdefault(output.index, {})
-                routed_experts = serialize_routed_experts(output.routed_experts, start=self._routed_experts_start)
-                if routed_experts is not None:
-                    fields["routed_experts"] = routed_experts
+                arrays = self.arrays[output.index] = []
+                if output.routed_experts is not None:
+                    if self._payload_dir is None:
+                        fields["routed_experts"] = serialize_routed_experts(
+                            output.routed_experts, start=self._routed_experts_start
+                        )
+                    else:
+                        rows = compact_routed_experts(output.routed_experts)
+                        # Anchored at the last forwarded token: under P/D a decode instance
+                        # emits rows from its first forward (prompt_len - 1), not from start.
+                        arrays.append(("routed_experts", prompt_len + len(output.token_ids) - 1 - len(rows), rows))
                     output.routed_experts = None
                 if isinstance(output.logprobs, FlatLogprobs):
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
@@ -101,23 +125,61 @@ class _PackedOutputs:
                     self._request.sampling_params.logprobs = None
                 mask = output.sampling_mask
                 if mask is not None:
-                    fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
+                    if self._payload_dir is None:
+                        fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
+                    else:
+                        # Mask row i is completion token i.
+                        arrays.append(("sampling_mask", prompt_len, (mask.counts, mask.ids)))
                     output.sampling_mask = None
             yield request_output
 
-    def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
-        choices = [
-            PrimeRlGenerateResponseChoice(
-                **choice.model_dump(exclude={"routed_experts", "sampling_mask"}),
-                **self.fields.get(choice.index, {}),
+    async def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
+        choices = []
+        for choice in response.choices:
+            fields = self.fields.get(choice.index, {})
+            if arrays := self.arrays.get(choice.index):
+                fields["payload"] = await asyncio.to_thread(_write_payload, self._payload_dir, arrays)
+            choices.append(
+                PrimeRlGenerateResponseChoice(
+                    **choice.model_dump(exclude={"routed_experts", "sampling_mask"}), **fields
+                )
             )
-            for choice in response.choices
-        ]
         return PrimeRlGenerateResponse(**{**response.model_dump(exclude={"choices"}), "choices": choices})
 
 
+def _write_payload(directory: Path, arrays: list[tuple[str, int, Any]]) -> list[dict[str, Any]]:
+    """Write ``(field, first position, rows)`` arrays back to back into one new file and return
+    their segments. The file is synced and closed before the response, so readers on other
+    nodes see it; so is the directory when this call creates it."""
+    created = not directory.exists()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = str(directory / f"{uuid.uuid4().hex}.bin")
+    segments = []
+    offset = 0
+    with open(path, "wb") as f:
+        for field, pos, rows in arrays:
+            if field in RAGGED_FIELDS:
+                counts, values = rows
+                data = ragged_bytes(counts, values, offset)
+                segment = dict(rows=len(counts), dtype="uint32", shape=[])
+            else:
+                data = memoryview(rows).cast("B")
+                segment = dict(rows=len(rows), dtype=rows.dtype.name, shape=list(rows.shape[1:]))
+            f.write(data)
+            segments.append(dict(field=field, file=path, offset=offset, pos=pos, **segment))
+            offset += len(data)
+        os.fsync(f.fileno())
+    if created:
+        fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return segments
+
+
 class PrimeRlServingTokens(ServingTokens):
-    """ServingTokens with packed per-token payloads."""
+    """ServingTokens with packed or by-handle per-token payloads."""
 
     async def serve_tokens(
         self,
@@ -149,5 +211,5 @@ class PrimeRlServingTokens(ServingTokens):
             request_metadata,
         )
         if isinstance(response, GenerateResponse):
-            response = packed.post_process(response)
+            response = await packed.post_process(response)
         return response

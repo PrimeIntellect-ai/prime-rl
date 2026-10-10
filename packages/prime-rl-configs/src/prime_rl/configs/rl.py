@@ -586,6 +586,39 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_payload_root(self):
+        """Multi-node runs pass router-replay ids and sampling masks by handle through
+        ``<run dir>/payloads``, which the SLURM deployment shares with the trainer.
+        Disaggregated P/D stays inline: the PD router merges only inline routing."""
+        inference = self.inference
+        if (
+            inference is not None
+            and self.orchestrator.payload_root is None
+            and (inference.vllm.enable_return_routed_experts or inference.enable_return_sampling_mask)
+            and self.deployment.type == "multi_node"
+            and inference.deployment.type != "disaggregated"
+        ):
+            self.orchestrator.payload_root = (self.run_dir / "payloads").absolute()
+        # Payload rows are read when a micro batch is prepared; one worker reads the next ones during compute.
+        if self.orchestrator.payload_root is not None and "num_workers" not in self.trainer.data.model_fields_set:
+            self.trainer.data.num_workers = 1
+        return self
+
+    @model_validator(mode="after")
+    def validate_payload_root_without_disaggregated(self):
+        inference = self.inference
+        if (
+            self.orchestrator.payload_root is not None
+            and inference is not None
+            and inference.deployment.type == "disaggregated"
+        ):
+            raise ValueError(
+                "orchestrator.payload_root is not supported with disaggregated P/D: the PD router does not "
+                "stitch by-handle routing segments. Unset orchestrator.payload_root to keep payloads inline."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_disaggregated_no_routed_experts(self):
         """Runs after ``auto_setup_router_replay``, which sets the inference flag after InferenceConfig's validators."""
         inference = self.inference
