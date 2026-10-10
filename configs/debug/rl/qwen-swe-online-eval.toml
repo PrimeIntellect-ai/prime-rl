@@ -102,10 +102,7 @@ max_retries = 3
 
 [[orchestrator.eval.env.retries.rules]]
 type = "ProviderError"
-status_code = [
-    429,
-    "5xx",
-]
+status_code = [429, 500, 502, 503, 504]
 max_retries = 3
 
 [[orchestrator.eval.env.retries.rules]]
