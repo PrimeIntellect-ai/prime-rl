@@ -2,6 +2,7 @@ import bisect
 import gc
 import shutil
 import time
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,7 @@ class AppState(Stateful):
         self.optimizers = optimizers
         self.scheduler = scheduler
         self.progress = progress
+        self._optimizer_param_groups: list[tuple[tuple[str, ...], dict[str, Any]]] | None = None
 
     def _get_checkpoint_optimizers(self) -> list[Optimizer]:
         """Expose optimizers keyed by their model parameters for DCP."""
@@ -91,6 +93,21 @@ class AppState(Stateful):
             "model": model_state_dict,
             "optimizers": split_packed_optimizer_state_for_checkpoint(self.model, optimizer_state_dict),
         }
+        if self._has_cpu_offload():
+            # Pair live groups with the template's canonical names, including packed parameters.
+            # Full offload's checkpoint optimizer has copied groups and different parameters.
+            base_optimizers = [
+                optimizer.base_optimizer if isinstance(optimizer, OffloadOptimizer) else optimizer
+                for optimizer in self.optimizers
+            ]
+            self._optimizer_param_groups = [
+                (tuple(sorted(saved_group["params"])), group)
+                for group, saved_group in zip(
+                    (group for optimizer in base_optimizers for group in optimizer.param_groups),
+                    state_dict["optimizers"]["param_groups"],
+                    strict=True,
+                )
+            ]
         if self.scheduler is not None:
             scheduler_state_dict = self.scheduler.state_dict()
             state_dict["scheduler"] = scheduler_state_dict
@@ -114,7 +131,7 @@ class AppState(Stateful):
         has_cpu_offload = self._has_cpu_offload()
 
         if has_cpu_offload:
-            # When CPU offload is on, the optimizer is already loaded by the time we
+            # When CPU offload is on, the optimizer tensors are loaded by the time we
             # get here: state_dict() handed dcp_load a template whose tensors share
             # storage with optim.state[p][k], and dcp_load wrote the checkpoint bytes
             # directly into those tensors via target_tensor.copy_(...). Running
@@ -122,10 +139,16 @@ class AppState(Stateful):
             # through Optimizer.load_state_dict, whose _cast hook does
             # value.to(param.dtype, param.device) and would allocate a fresh GPU
             # copy of every state tensor — undoing the in-place CPU load and
-            # detaching optim.state from the tensors we just populated. So we only
-            # apply the model side here and flip the wrappers to initialized so
-            # subsequent steps take the steady-state path.
+            # detaching optim.state from the tensors we just populated. Restore the
+            # copied group metadata separately, retaining live parameter references.
             set_model_state_dict(self.model, model_state_dict=state_dict["model"])
+            assert self._optimizer_param_groups is not None  # Built by DCP's state_dict() call.
+            saved_groups = defaultdict(deque)
+            for saved_group in state_dict["optimizers"]["param_groups"]:
+                saved_groups[tuple(sorted(saved_group["params"]))].append(saved_group)
+            for names, group in self._optimizer_param_groups:
+                saved_group = saved_groups[names].popleft()
+                group.update({key: value for key, value in saved_group.items() if key != "params"})
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
