@@ -351,6 +351,9 @@ class TrainSink:
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
+        payload_files = {
+            segment.file for _, samples in selected for sample in samples for segment in sample.payload or ()
+        }
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
@@ -394,4 +397,5 @@ class TrainSink:
             buffered_episode_ids=buffered_episode_ids,
             cancelled_attempts=cancelled_attempts,
             stale_attempts=stale_attempts,
+            payload_files=payload_files,
         )
