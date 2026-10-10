@@ -14,6 +14,9 @@ def setup_vllm_env(config: InferenceConfig):
     # setdefault keeps an explicit env-var choice authoritative.
     if config.enable_return_sampling_mask or config.vllm.enable_return_routed_experts:
         os.environ.setdefault("VLLM_USE_V2_MODEL_RUNNER", "1")
+    if config.enable_return_sampling_mask_logprobs:
+        # Read by the vLLM plugin in every process (spawned workers inherit it).
+        os.environ["PRIME_RETURN_SAMPLING_MASK_LOGPROBS"] = "1"
 
     # vLLM 0.24.0 flipped VLLM_ENFORCE_STRICT_TOOL_CALLING's default to True, which
     # grammar-constrains generation (xgrammar structural tags) for tool_choice

@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -25,9 +27,95 @@ def apply_shared_vllm_patches():
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_packed_sampling_masks()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    if os.environ.get("PRIME_RETURN_SAMPLING_MASK_LOGPROBS") == "1":
+        monkey_patch_sampling_mask_logprobs()
+
+
+# float32 -inf as int32 bits. Mask logprobs ride XORed with it, so an id without a value
+# (zero high bits) decodes to -inf: no sampler probability, no centering.
+NEG_INF_BITS = int(np.float32(-np.inf).view(np.int32))
+
+
+def monkey_patch_sampling_mask_logprobs():
+    """Return the sampler's logprob of every sampling-mask id (score centering).
+
+    vLLM builds the mask from the processed logits (temperature + top-k/top-p, -inf
+    outside the kept set S), so ``logits[id] - logsumexp(logits)`` is the sampler's
+    renormalized logprob on S. Each value rides the existing mask path (engine IPC,
+    output processor) in the high half of an int64 id:
+    ``(float32 bits ^ NEG_INF_BITS) << 32 | id``. Rows wider than the compact
+    buffer (ties, served from the bitmask as plain int32 ids) decode to -inf.
+    ``PrimeRlServingTokens`` splits the pairs; streaming and offline ``LLM`` consumers
+    would see packed ids and are unsupported while this is on.
+    """
+    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
+
+    from_logits = SamplingMaskTensors.from_logits.__func__
+
+    def from_logits_with_logprobs(cls, logits, num_sampled_tokens, max_num_kept):
+        tensors = from_logits(cls, logits, num_sampled_tokens, max_num_kept)
+        # Slots past each row's count are uninitialized and never read; clamp so the gather stays in range.
+        ids = tensors.token_ids.long().clamp(0, logits.shape[1] - 1)
+        logprobs = (logits.gather(1, ids) - logits.logsumexp(-1, keepdim=True)).float()
+        bits = logprobs.view(torch.int32) ^ NEG_INF_BITS
+        return tensors._replace(token_ids=(bits.long() << 32) | tensors.token_ids.long())
+
+    SamplingMaskTensors.from_logits = classmethod(from_logits_with_logprobs)
+
+
+@dataclass
+class PackedSamplingMask:
+    """A finished request's sampling masks in CSR form: ``ids[sum(counts[:i]):][:counts[i]]``
+    are the kept token ids of completion token ``i``."""
+
+    ids: np.ndarray
+    counts: np.ndarray
+
+
+def monkey_patch_packed_sampling_masks():
+    """Keep sampling masks as numpy arrays in the API server's output processor.
+
+    vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
+    runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
+    objects per token that every gen-2 pass walks. Store only the (untracked) id
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    """
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
+
+    original_init = RequestState.__init__
+    original_new_completion_output = RequestState._new_completion_output
+
+    class _MaskIds(list):
+        def append(self, chunk):
+            super().append(chunk.token_ids)
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
+
+    def _new_completion_output(self, token_ids, finish_reason, stop_reason):
+        chunks = self.sampling_mask_chunks
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
+            return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        self.sampling_mask_chunks = _MaskIds()
+        output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        output.sampling_mask = PackedSamplingMask(
+            ids=np.concatenate(chunks),
+            counts=np.fromiter(map(len, chunks), dtype=np.int32, count=len(chunks)),
+        )
+        return output
+
+    RequestState.__init__ = _init
+    RequestState._new_completion_output = _new_completion_output
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
