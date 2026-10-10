@@ -5,7 +5,9 @@ trainer rank reads the rows of its window."""
 
 import math
 import os
+from collections import defaultdict
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 
 import msgspec
 import numpy as np
@@ -53,15 +55,34 @@ def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int, fil
         return None
     shape = [max(dims) for dims in zip(*(segment.shape for segment in field_segments))]
     out = np.full((hi - lo, *shape), fill, dtype=np.int32)
-    fds: dict[str, int] = {}
-    try:
-        for segment in clip_segments(field_segments, lo, hi):
-            if segment.file not in fds:
-                fds[segment.file] = os.open(segment.file, os.O_RDONLY)
-            data = os.pread(fds[segment.file], segment.rows * segment.row_bytes, segment.offset)
-            rows = np.frombuffer(data, dtype=segment.dtype).reshape(segment.rows, *segment.shape)
-            out[(slice(segment.pos - lo, segment.end - lo), *(slice(0, dim) for dim in segment.shape))] = rows
-    finally:
-        for fd in fds.values():
-            os.close(fd)
+    segments = clip_segments(field_segments, lo, hi)
+    for segment, data in zip(segments, _read_segments(segments)):
+        rows = np.frombuffer(data, dtype=segment.dtype).reshape(segment.rows, *segment.shape)
+        out[(slice(segment.pos - lo, segment.end - lo), *(slice(0, dim) for dim in segment.shape))] = rows
     return out
+
+
+# Reads are latency-bound on a shared filesystem (a few rows per turn, spread over many files),
+# so the files are read concurrently.
+_READ_POOL = ThreadPoolExecutor(32, thread_name_prefix="payload-read")
+
+
+def _read_segments(segments: list[PayloadSegment]) -> list[bytes]:
+    """Each segment's bytes, in order. Each file is opened once."""
+    by_file: dict[str, list[int]] = defaultdict(list)
+    for i, segment in enumerate(segments):
+        by_file[segment.file].append(i)
+    data: list[bytes] = [b""] * len(segments)
+    files = _READ_POOL.map(_read_file, ([segments[i] for i in indices] for indices in by_file.values()))
+    for indices, chunks in zip(by_file.values(), files):
+        for i, chunk in zip(indices, chunks):
+            data[i] = chunk
+    return data
+
+
+def _read_file(segments: list[PayloadSegment]) -> list[bytes]:
+    fd = os.open(segments[0].file, os.O_RDONLY)
+    try:
+        return [os.pread(fd, segment.rows * segment.row_bytes, segment.offset) for segment in segments]
+    finally:
+        os.close(fd)
