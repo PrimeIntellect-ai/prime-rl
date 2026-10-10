@@ -1,6 +1,6 @@
 # Hosted validation of online eval accounting; derived from the Qwen SWE base.
 max_steps = 2
-seq_len = 131072
+seq_len = 40960
 dashboard = false
 
 [log]
@@ -114,7 +114,7 @@ type = "TunnelError"
 max_retries = 3
 
 [inference.vllm]
-max_model_len = 131072
+max_model_len = 40960
 tensor_parallel_size = 2
 data_parallel_size = 3
 api_server_count = 12
