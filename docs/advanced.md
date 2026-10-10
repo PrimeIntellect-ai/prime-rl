@@ -107,16 +107,13 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
 - **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
-- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
+- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
 
 ```toml
 [trainer.model.moe.dispatch]
 type = "deepep"
-num_sms = 20
-token_chunk_size = 4096
+num_sms = 32
 ```
-
-With DeepEP, gradient clipping is currently not supported. (`optim.max_norm` is set to `None` automatically.)
 
 ### Runtime Fusions
 
