@@ -125,8 +125,7 @@ def _dispatch_backward(
     after_event.current_stream_wait()
 
     grad_x = grad_x.to(ctx.input_dtype)
-    grad_topk_weights = grad_scores.to(ctx.input_dtype) if grad_scores is not None else None
-    return grad_x, None, grad_topk_weights, None, None, None, None
+    return grad_x, None, grad_scores, None, None, None, None
 
 
 def _combine_op_impl(x: torch.Tensor, handle_id: torch.Tensor, dispatcher_id: int) -> torch.Tensor:
