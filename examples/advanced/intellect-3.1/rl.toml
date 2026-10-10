@@ -24,7 +24,6 @@ project = "intellect-3.1"
 attn = "flash_attention_3"
 ep = 8
 cp = 2
-fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.compile]
 
