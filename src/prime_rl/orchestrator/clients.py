@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -123,6 +124,7 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
+        self._modelexpress_lock = asyncio.Lock()
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -203,6 +205,68 @@ class AdminPlane:
             )
         finally:
             await _resume_engines(self.clients)
+
+    async def update_modelexpress_weights(
+        self,
+        *,
+        version_uid: str,
+        step: int = 0,
+        on_paused: Callable[[], None] | None = None,
+    ) -> None:
+        """Install an exact MX version; keep inference paused if installation is uncertain."""
+        async with self._modelexpress_lock:
+            if not version_uid:
+                raise ValueError("modelexpress requires version_uid")
+            await _pause_engines(self.clients, step=step)
+            if on_paused is not None:
+                on_paused()
+
+            async def install(client):
+                response = await client.post(
+                    "/update_weights_from_modelexpress",
+                    json={"version_uid": version_uid},
+                    timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
+                )
+                response.raise_for_status()
+
+            results = await asyncio.gather(*(install(client) for client in self.clients), return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+            await _resume_engines(self.clients)
+
+    async def initialize_modelexpress(
+        self,
+        host: str,
+        port: int,
+        timeout: int,
+        inference_world_size: int,
+        staging_buffer_bytes: int | None,
+        staging_buffers_count: int,
+    ) -> None:
+        workers_per_server = inference_world_size // len(self.clients)
+        if workers_per_server < 1 or inference_world_size % len(self.clients):
+            raise ValueError("modelexpress requires an equal number of workers per inference server")
+        session_id = uuid.uuid4().hex
+
+        async def initialize(index, client):
+            response = await client.post(
+                "/init_broadcaster",
+                json={
+                    "host": host,
+                    "port": port,
+                    "timeout": timeout,
+                    "rank_offset": index * workers_per_server,
+                    "inference_world_size": inference_world_size,
+                    "session_id": session_id,
+                    "staging_buffer_bytes": staging_buffer_bytes,
+                    "staging_buffers_count": staging_buffers_count,
+                },
+                timeout=max(ADMIN_TIMEOUT_S, timeout),
+            )
+            response.raise_for_status()
+
+        await asyncio.gather(*(initialize(index, client) for index, client in enumerate(self.clients)))
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:

@@ -65,8 +65,8 @@ gpu = [
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
     "torchao>=0.18.0 ; sys_platform == 'linux'",
-    "modelexpress==0.3.0 ; sys_platform == 'linux'",
     "nixl-cu13==0.10.1 ; sys_platform == 'linux'",
+    "modelexpress>=0.7.0 ; sys_platform == 'linux'",
 ]
 dashboard = [
     "fastapi>=0.115",
@@ -182,22 +182,6 @@ exclude = [
     "deps/prime-envs/environments/tool_use/apex_agents",
 ]
 
-# ModelExpress 0.3.0 publishes protobuf<6 metadata, but its generated proto is
-# compatible with protobuf 6. prime-sandboxes requires protobuf>=6.31.1; keep
-# this capped to the validated protobuf major.
-[[tool.uv.dependency-metadata]]
-name = "modelexpress"
-version = "0.3.0"
-requires-dist = [
-    "grpcio>=1.66.2",
-    "huggingface_hub>=0.20.0",
-    "nixl",
-    "numpy>=1.24.0",
-    "protobuf>=5.27.0,<7.0.0",
-    "pydantic>=2.0.0",
-    "torch>=2.6.0",
-]
-
 # Mirror the upstream Pydantic compatibility correction until the next release.
 [[tool.uv.dependency-metadata]]
 name = "ai-dynamo-runtime"
@@ -225,6 +209,7 @@ requires-dist = [
 ]
 
 [tool.uv.exclude-newer-package]
+modelexpress = "2026-10-04T00:00:00Z"
 # verifiers pins harbor==0.24.0, published inside the rolling window;
 # bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
 harbor = "2026-10-08T00:00:00Z"
