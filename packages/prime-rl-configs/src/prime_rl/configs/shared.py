@@ -223,15 +223,19 @@ class ClientConfig(BaseClientConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
-    dynamo: DynamoConfig | None = None
-    """Dynamo RL worker-discovery configuration."""
-
 
 class VLLMClientConfig(ClientConfig):
     """Client defaults for the live inference deployment managed by training."""
 
     base_url: str = "http://localhost:8000/v1"
     api_key_var: str = "VLLM_API_KEY"
+
+
+class PolicyClientConfig(VLLMClientConfig):
+    """Client of the policy deployment the orchestrator drives (weight updates, admin plane)."""
+
+    dynamo: DynamoConfig | None = None
+    """Dynamo RL worker-discovery configuration."""
 
 
 class LogConfig(BaseConfig):

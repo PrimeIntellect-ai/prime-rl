@@ -21,7 +21,7 @@ from verifiers.v1.configs.client import (
 )
 
 from prime_rl.configs.algorithm import FrozenModelConfig
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -209,7 +209,7 @@ class AdminPlane:
             await client.aclose()
 
 
-def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+def setup_admin_plane(client_config: PolicyClientConfig, model_name: str) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
