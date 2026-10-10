@@ -96,32 +96,18 @@ def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     return None
 
 
-@torch.library.custom_op("prime_rl::dsv4_sparse_attn", mutates_args=())
-def dsv4_sparse_attn(
+def _tilelang_forward(
     q: torch.Tensor,
     kv: torch.Tensor,
     indices: torch.Tensor,
     sinks: torch.Tensor,
-    sm_scale: float | None = None,
-    block_I: int = 64,
-    num_stages: int = 2,
-    threads: int = 256,
+    sm_scale: float | None,
+    block_I: int,
+    num_stages: int,
+    threads: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    assert q.is_contiguous(), "q must be contiguous"
-    assert kv.is_contiguous(), "kv must be contiguous"
-    assert indices.is_contiguous(), "indices must be contiguous"
     batch, seq_len, heads, dim = q.shape
     _, _, kv_group, _ = kv.shape
-
-    assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
-    assert kv.shape[0] == batch
-    assert q.dtype == torch.bfloat16, (
-        f"the sparse attention kernel runs in bfloat16 only, but the queries are {q.dtype}"
-    )
-    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
-    assert shape_error is None, shape_error
-    assert indices.shape[:3] == (batch, seq_len, kv_group)
-    assert sinks.shape == (heads,)
     assert SLOT_TILE % block_I == 0, (
         f"the slot axis is padded to a multiple of {SLOT_TILE}, so block_I must divide it, got {block_I}"
     )
@@ -143,6 +129,42 @@ def dsv4_sparse_attn(
     return out, lse
 
 
+FORWARD_BACKENDS = {"tilelang": _tilelang_forward}
+
+
+@torch.library.custom_op("prime_rl::dsv4_sparse_attn", mutates_args=())
+def dsv4_sparse_attn(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float | None = None,
+    block_I: int = 64,
+    num_stages: int = 2,
+    threads: int = 256,
+    backend: str = "tilelang",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    assert backend in FORWARD_BACKENDS, (
+        f"unknown sparse attention backend {backend!r}, expected one of {sorted(FORWARD_BACKENDS)}"
+    )
+    assert q.is_contiguous(), "q must be contiguous"
+    assert kv.is_contiguous(), "kv must be contiguous"
+    assert indices.is_contiguous(), "indices must be contiguous"
+    batch, seq_len, heads, dim = q.shape
+    _, _, kv_group, _ = kv.shape
+
+    assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
+    assert kv.shape[0] == batch
+    assert q.dtype == torch.bfloat16, (
+        f"the sparse attention kernel runs in bfloat16 only, but the queries are {q.dtype}"
+    )
+    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
+    assert shape_error is None, shape_error
+    assert indices.shape[:3] == (batch, seq_len, kv_group)
+    assert sinks.shape == (heads,)
+    return FORWARD_BACKENDS[backend](q, kv, indices, sinks, sm_scale, block_I, num_stages, threads)
+
+
 # A fake must mirror the op's signature exactly, so it takes every argument even though only `q`,
 # the one argument that determines the output shapes, is read.
 @dsv4_sparse_attn.register_fake
@@ -155,34 +177,22 @@ def _dsv4_sparse_attn_fake(
     block_I: int = 64,
     num_stages: int = 2,
     threads: int = 256,
+    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
 
-@torch.library.custom_op("prime_rl::dsv4_sparse_attn_backward", mutates_args=())
-def dsv4_sparse_attn_backward(
+def _tilelang_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
     out: torch.Tensor,
     grad_out: torch.Tensor,
     indices: torch.Tensor,
     lse: torch.Tensor,
-    sm_scale: float | None = None,
+    sm_scale: float | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert q.is_contiguous(), "q must be contiguous"
-    assert kv.is_contiguous(), "kv must be contiguous"
-    assert indices.is_contiguous(), "indices must be contiguous"
-    assert lse.is_contiguous(), "lse must be contiguous"
-    grad_out = grad_out.contiguous()
     batch, seq_len, heads, dim = q.shape
     _, _, kv_group, _ = kv.shape
-    assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
-    assert kv.shape[0] == batch
-    # This op is public, so it repeats the forward's shape checks rather than trusting autograd.
-    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
-    assert shape_error is None, shape_error
-    assert indices.shape[:3] == (batch, seq_len, kv_group)
-    assert lse.shape == (batch, seq_len, heads)
     indices = _pad_slots_to_tile(indices)
 
     preprocess_kernel = preprocess(heads, dim)
@@ -199,6 +209,40 @@ def dsv4_sparse_attn_backward(
     return dq, dkv, delta
 
 
+BACKWARD_BACKENDS = {"tilelang": _tilelang_backward}
+
+
+@torch.library.custom_op("prime_rl::dsv4_sparse_attn_backward", mutates_args=())
+def dsv4_sparse_attn_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    sm_scale: float | None = None,
+    backend: str = "tilelang",
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    assert backend in BACKWARD_BACKENDS, (
+        f"unknown sparse attention backend {backend!r}, expected one of {sorted(BACKWARD_BACKENDS)}"
+    )
+    assert q.is_contiguous(), "q must be contiguous"
+    assert kv.is_contiguous(), "kv must be contiguous"
+    assert indices.is_contiguous(), "indices must be contiguous"
+    assert lse.is_contiguous(), "lse must be contiguous"
+    grad_out = grad_out.contiguous()
+    batch, seq_len, heads, dim = q.shape
+    _, _, kv_group, _ = kv.shape
+    assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
+    assert kv.shape[0] == batch
+    # This op is public, so it repeats the forward's shape checks rather than trusting autograd.
+    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
+    assert shape_error is None, shape_error
+    assert indices.shape[:3] == (batch, seq_len, kv_group)
+    assert lse.shape == (batch, seq_len, heads)
+    return BACKWARD_BACKENDS[backend](q, kv, out, grad_out, indices, lse, sm_scale)
+
+
 @dsv4_sparse_attn_backward.register_fake
 def _dsv4_sparse_attn_backward_fake(
     q: torch.Tensor,
@@ -208,15 +252,17 @@ def _dsv4_sparse_attn_backward_fake(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None = None,
+    backend: str = "tilelang",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv), torch.empty_like(lse)
 
 
 def _dsv4_sparse_attn_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads = inputs
+    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads, backend = inputs
     out, lse = output
     ctx.save_for_backward(q, kv, out, indices, lse, sinks)
     ctx.sm_scale = sm_scale
+    ctx.backend = backend
     ctx.mark_non_differentiable(lse)
 
 
@@ -230,12 +276,13 @@ def _dsv4_sparse_attn_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: 
         indices,
         lse.detach(),
         ctx.sm_scale,
+        backend=ctx.backend,
     )
     # dp_k/dsink = -p_k * p_sink, so do[d]/dsink = -p_sink * o[d] and the head's sink gradient
     # contracts to -p_sink * Delta. The sink logit is unscaled, hence no sm_scale factor.
     p_sink = torch.exp2(sinks.float().view(1, 1, -1) * LOG2E - lse)
     dsink = -(p_sink * delta).sum(dim=(0, 1)).to(sinks.dtype)
-    return dq, dkv, None, dsink, None, None, None, None
+    return dq, dkv, None, dsink, None, None, None, None, None
 
 
 dsv4_sparse_attn.register_autograd(_dsv4_sparse_attn_autograd_backward, setup_context=_dsv4_sparse_attn_setup_context)

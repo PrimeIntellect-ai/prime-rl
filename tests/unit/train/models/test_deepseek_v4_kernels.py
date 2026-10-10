@@ -209,6 +209,8 @@ SM_SCALE = DIM**-0.5
 SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
 SHAPE_IDS = ["aligned", "misaligned", "batched"]
 
+DSV4_BACKENDS = ["tilelang"]
+
 # What a real query with a short window or a saturated top-k looks like; a masked slot still
 # costs a GEMM column.
 MASKED_FRACTION = 0.25
@@ -219,6 +221,7 @@ MASKED_FRACTION = 0.25
 OUT_RTOL = 1e-2
 # The LSE is float32 throughout on both sides.
 LSE_RTOL = 5e-7
+LSE_RTOL_BY_BACKEND: dict[str, float] = {}
 DQ_RTOL = 1e-2
 # The vendored kernel this one forked from rounds `P` and `dP` to bfloat16 before the `dKV` GEMMs
 # while the oracle keeps them in float32, on top of the bfloat16 `kv` both sides share.
@@ -329,15 +332,16 @@ def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sin
     return torch.cat([logits, sink_logits], dim=-1).logsumexp(dim=-1) * math.log2(math.e)
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
+def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv, backend):
     """Output and log-sum-exp against the float32 gather oracle, which has identical semantics."""
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
 
     with torch.no_grad():
-        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
         # Float32 inputs to the oracle, which is what runs it in float32: it follows the dtype it
         # is handed. Widened here rather than inside it, so the exact answer is what the bound is
         # measured against instead of one rounded back to bfloat16.
@@ -347,12 +351,13 @@ def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
     assert out.shape == q.shape and out.dtype == torch.bfloat16
     assert lse.shape == (batch, seq_len, HEADS) and lse.dtype == torch.float32
     _assert_relative(out, reference_out, OUT_RTOL, "output")
-    _assert_relative(lse, reference_lse, LSE_RTOL, "lse")
+    _assert_relative(lse, reference_lse, LSE_RTOL_BY_BACKEND.get(backend, LSE_RTOL), "lse")
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
+def test_kernel_pads_a_slot_count_its_tile_does_not_divide(backend):
     """A caller states the slots it means and the kernel covers the difference to its own tile.
 
     The gather-slot axis is tiled at 64, but that is a fact about these kernels rather than
@@ -368,16 +373,17 @@ def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
     indices = _build_indices(batch, seq_len, seq_len_kv, MASKED_FRACTION, topk=unaligned)
 
     with torch.no_grad():
-        out, _ = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        out, _ = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
         reference = _dense_reference(q.float(), kv.float(), indices, sinks, SM_SCALE)
 
     assert out.shape == q.shape
     _assert_relative(out, reference, OUT_RTOL, "output")
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_fully_masked_query_reads_as_zero_keys():
+def test_fully_masked_query_reads_as_zero_keys(backend):
     """A query with no keys at all must emit exactly zero, on the sink term alone.
 
     The sink carries the softmax denominator by itself here, which is what keeps `lse` finite
@@ -394,7 +400,7 @@ def test_fully_masked_query_reads_as_zero_keys():
     indices[:, 0] = IGNORE_SLOT  # the first query gathers nothing
 
     with torch.no_grad():
-        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
 
     assert torch.equal(out[:, 0], torch.zeros_like(out[:, 0])), "a fully masked query must emit exactly zero"
     expected_lse = sinks.float() * math.log2(math.e)
@@ -452,10 +458,11 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
     )
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv):
+def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv, backend):
     """All three differentiable inputs, each against its own bound.
 
     `dsink` is the one term the kernel forms in torch rather than in tilelang, out of the `Delta`
@@ -465,7 +472,7 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
     reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
 
-    out, _lse = dsv4_sparse_attn(kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE)
+    out, _lse = dsv4_sparse_attn(kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend=backend)
     # One weight tensor for both losses, so the two backwards are the same function of the same
     # numbers and any difference belongs to the kernel.
     weight = torch.randn_like(out)
@@ -482,9 +489,10 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     _assert_relative(kernel_sinks.grad, reference_sinks.grad, DSINK_RTOL, "dsink")
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_traces_under_torch_compile():
+def test_kernel_traces_under_torch_compile(backend):
     """`torch.compile(fullgraph=True)` through the op, forward and backward.
 
     `apply_compile` in `prime_rl/trainer/model.py` compiles each decoder layer, so every real
@@ -498,7 +506,7 @@ def test_kernel_traces_under_torch_compile():
     compiled_leaves = _leaves(q, kv, sinks)
 
     def attend(q: torch.Tensor, kv: torch.Tensor, sinks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
 
     out, lse = attend(*eager_leaves)
     # One weight tensor for both losses, so the two backwards are the same function of the same
@@ -569,9 +577,9 @@ def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
     recorded: dict[str, torch.Tensor] = {}
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def kernel(q, kv_buf, indices, sinks, scale):
+    def kernel(q, kv_buf, indices, *args, **kwargs):
         recorded["kv_buf"], recorded["indices"] = kv_buf, indices
-        recorded["kernel"] = real_kernel(q, kv_buf, indices, sinks, scale)
+        recorded["kernel"] = real_kernel(q, kv_buf, indices, *args, **kwargs)
         return recorded["kernel"]
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", kernel)
@@ -825,10 +833,11 @@ EAGER_KERNEL_DOC_IDS = ["one-doc", "no-entries", "two-docs", "three-docs"]
 EAGER_KERNEL_RTOL, EAGER_KERNEL_GRAD_RTOL = 1e-2, 5e-2
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize("doc_lens", EAGER_KERNEL_DOC_LENS, ids=EAGER_KERNEL_DOC_IDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
+def test_sparse_attention_kernel_matches_eager(doc_lens, backend, monkeypatch):
     """The fused kernel against the naive dense softmax, single-document and packed.
 
     Every other kernel test reaches eager only transitively: the kernel is compared to the gather
@@ -850,6 +859,7 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     """
     seq_len = sum(doc_lens)
     kernel_module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    kernel_module.dsa_backend = backend
     eager_module = copy.deepcopy(kernel_module).float()
     eager_reference.use_eager_attention(eager_module)
 
@@ -861,9 +871,9 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, *args, **kwargs):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, *args, **kwargs)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
@@ -886,9 +896,10 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     _assert_relative(kernel_input.grad, eager_input.grad, EAGER_KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
+def test_sparse_attention_kernel_packed_matches_unpacked(backend, monkeypatch):
     """The fused kernel path, end to end through one CSA layer, must respect documents.
 
     The same invariant its float32 neighbours assert, run in bfloat16 because that is the only
@@ -903,6 +914,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     a fallback would leave this test asserting a property of the gather reference instead.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    module.dsa_backend = backend
     packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG)
     with torch.device("cuda"):
         hidden = torch.randn(1, sum(KERNEL_DOC_LENS), V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
@@ -911,9 +923,9 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, *args, **kwargs):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, *args, **kwargs)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
@@ -960,9 +972,9 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, *args, **kwargs):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, *args, **kwargs)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
@@ -1092,9 +1104,10 @@ def _assert_within_the_bfloat16_floor(
 
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize("doc_lens", PARITY_DOC_LENS, ids=PARITY_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
-def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens):
+def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens, backend):
     """The two consumers of one `SparseAttnInputs` must compute the same attention, and its gradient.
 
     They are handed the identical index tensor, so this is not about which keys a query reads,
@@ -1111,6 +1124,7 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
     its slots out differently and only CSA had coverage.
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
+    module.dsa_backend = backend
     weights = module.state_dict()
     eager_bf16 = v4flash_attention(layer_idx, dtype=torch.bfloat16, eager=True)
     eager_bf16.load_state_dict(weights)

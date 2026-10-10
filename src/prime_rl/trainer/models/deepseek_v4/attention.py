@@ -140,8 +140,13 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
-    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import dsv4_sparse_attn, sparse_attn_shape_error
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import (
+        FORWARD_BACKENDS,
+        dsv4_sparse_attn,
+        sparse_attn_shape_error,
+    )
 except ImportError:
+    FORWARD_BACKENDS = {}
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
 
@@ -699,6 +704,12 @@ class DeepseekV4Attention(nn.Module):
         blocker = _kernel_blocker(self.num_heads, self.head_dim)
         if blocker is not None:
             raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
+        self.dsa_backend = getattr(config, "dsa_backend", "tilelang")
+        if self.dsa_backend not in FORWARD_BACKENDS:
+            raise ValueError(
+                f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
+                f"expected one of {sorted(FORWARD_BACKENDS)}"
+            )
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
@@ -769,6 +780,7 @@ class DeepseekV4Attention(nn.Module):
             inputs.indices,
             self.sinks,
             self.scaling,
+            backend=self.dsa_backend,
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
