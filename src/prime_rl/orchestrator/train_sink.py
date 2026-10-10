@@ -108,18 +108,18 @@ class TrainSink:
             counts[episode_env_name(episode)] += 1
         return dict(counts)
 
-    async def add(self, episode: vf.Episode) -> TrainBatch | None:
-        """Process one completed episode and return a batch when ready."""
+    async def add(self, episode: vf.Episode) -> bool:
+        """Process one completed episode and report batch readiness."""
         await self.process_episode(episode)
         group_id = episode_group_id(episode)
         env_name = episode_env_name(episode)
         self.pending_groups[group_id].append(episode)
         if not self._group_complete(group_id, env_name):
-            return None
+            return False
         await self.process_group(group_id)
-        return await self.take_batch()
+        return self._batch_ready()
 
-    async def cancel(self, cancellation: GroupCancellation) -> TrainBatch | None:
+    async def cancel(self, cancellation: GroupCancellation) -> bool:
         """Process a dropped group's terminal marker: its ``count`` completes
         the group's episode accounting so finalization still fires. A
         ``stale`` drop also voids the group's already-arrived episodes in
@@ -127,20 +127,20 @@ class TrainSink:
         are equally stale."""
         self.pending_group_cancellations[cancellation.group_id] = cancellation
         if not self._group_complete(cancellation.group_id, cancellation.env_name):
-            return None
+            return False
         await self.process_group(cancellation.group_id)
-        return await self.take_batch()
+        return self._batch_ready()
 
-    async def fail(self, failure: DispatchFailure) -> TrainBatch | None:
+    async def fail(self, failure: DispatchFailure) -> bool:
         """Count a request failure toward its group without presenting it as
         an episode to the algorithm or curriculum."""
         if failure.kind != "train":
             raise ValueError(f"TrainSink cannot process a {failure.kind} dispatch failure")
         self.pending_group_failures[failure.group_id].append(failure)
         if not self._group_complete(failure.group_id, failure.env_name):
-            return None
+            return False
         await self.process_group(failure.group_id)
-        return await self.take_batch()
+        return self._batch_ready()
 
     def _group_complete(self, group_id: str, env_name: str) -> bool:
         cancellation = self.pending_group_cancellations.get(group_id)
@@ -148,11 +148,11 @@ class TrainSink:
         failed = len(self.pending_group_failures[group_id])
         return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
 
-    async def take_batch(self) -> TrainBatch | None:
+    def _batch_ready(self) -> bool:
         """Sweep stale queued traces, then cut a batch if the survivors still
         meet the threshold."""
         self._drop_stale()
-        return await self.process_batch() if len(self.pending_batch) >= self.batch_size else None
+        return len(self.pending_batch) >= self.batch_size
 
     def _drop_stale(self, trace_ids: Iterable[str] | None = None) -> None:
         """Void queued traces past ``max_off_policy_steps``. The batch being
