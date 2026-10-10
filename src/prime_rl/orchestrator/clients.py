@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -21,7 +23,7 @@ from verifiers.v1.configs.client import (
 )
 
 from prime_rl.configs.algorithm import FrozenModelConfig
-from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
+from prime_rl.configs.shared import ClientConfig, PolicyClientConfig, WeightChecksumConfig
 from prime_rl.utils.logger import get_logger
 
 
@@ -112,6 +114,9 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
+    last_checksum_time: float = 0.0
+    checksum_mismatches: int = 0
+
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
@@ -182,6 +187,7 @@ class AdminPlane:
         transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        checksum: WeightChecksumConfig | None = None,
     ) -> None:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
@@ -201,12 +207,53 @@ class AdminPlane:
                     for admin_client in self.clients
                 ]
             )
+            if checksum is not None:
+                await self.verify_weight_checksums(step, fail_on_mismatch=checksum.fail_on_mismatch)
         finally:
             await _resume_engines(self.clients)
+
+    async def verify_weight_checksums(self, step: int, *, fail_on_mismatch: bool) -> None:
+        """Compare the weight checksums of engine workers that hold the same shard."""
+        start = time.perf_counter()
+        responses = await asyncio.gather(
+            *[_admin_post(client, "/weight_checksums", timeout_s=UPDATE_WEIGHTS_TIMEOUT_S) for client in self.clients]
+        )
+        engines = [response.json()["checksums"] for response in responses]
+        mismatches = find_checksum_mismatches(engines)
+        self.last_checksum_time = time.perf_counter() - start
+        get_logger().debug(f"Computed weight checksums for policy v{step} in {self.last_checksum_time:.2f}s")
+        shards = Counter(worker["shard"] for workers in engines for worker in workers)
+        if max(shards.values()) < 2:
+            raise ValueError("Weight checksums need at least two engines that hold the same weight shards")
+        if not mismatches:
+            return
+        self.checksum_mismatches += 1
+        message = (
+            f"Weight checksums of policy v{step} mismatch for {len(mismatches)} tensors: {', '.join(mismatches[:10])}"
+        )
+        if fail_on_mismatch:
+            raise RuntimeError(message)
+        get_logger().warning(message)
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
+
+
+def find_checksum_mismatches(engines: list[list[dict]]) -> list[str]:
+    """Compare every worker with the first worker that holds the same shard.
+
+    ``engines[engine]`` lists that engine's workers as ``{"shard": str, "checksums": {param: int}}``."""
+    reference: dict[str, tuple[int, dict[str, int]]] = {}
+    mismatches = []
+    for engine, workers in enumerate(engines):
+        for worker in workers:
+            ref_engine, expected = reference.setdefault(worker["shard"], (engine, worker["checksums"]))
+            actual = worker["checksums"]
+            for name in sorted(expected.keys() | actual.keys()):
+                if expected.get(name) != actual.get(name):
+                    mismatches.append(f"engine{engine}/{worker['shard']}/{name} != engine{ref_engine}")
+    return mismatches
 
 
 def setup_admin_plane(client_config: PolicyClientConfig, model_name: str) -> AdminPlane:
@@ -380,7 +427,9 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs
+) -> httpx.Response:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
@@ -398,6 +447,7 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
                 **kwargs,
             )
             response.raise_for_status()
+            return response
 
 
 async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:

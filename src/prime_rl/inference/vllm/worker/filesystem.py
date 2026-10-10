@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from torch.nn import Module
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
-from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.inference.vllm.worker.weight_transfer import collect_weight_checksums, load_weights_checkpoint_layerwise
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -20,6 +20,9 @@ class FileSystemWeightUpdateWorker(Worker):
     def liveness_probe(self) -> None:
         """No-op RPC used by the API server liveness endpoint."""
         return None
+
+    def weight_checksums(self) -> dict:
+        return collect_weight_checksums(self.model_runner.get_model(), self.parallel_config)
 
     def update_weights_from_path(self, weight_path: str) -> None:
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""

@@ -7,7 +7,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
-from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.inference.vllm.worker.weight_transfer import collect_weight_checksums, load_weights_checkpoint_layerwise
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -130,6 +130,9 @@ class NCCLWeightUpdateWorker(Worker):
     def liveness_probe(self) -> None:
         """No-op RPC used by the API server liveness endpoint."""
         return None
+
+    def weight_checksums(self) -> dict:
+        return collect_weight_checksums(self.model_runner.get_model(), self.parallel_config)
 
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""

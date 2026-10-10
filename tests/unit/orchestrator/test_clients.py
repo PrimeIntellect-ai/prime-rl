@@ -10,6 +10,7 @@ from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
     check_health,
+    find_checksum_mismatches,
     load_lora_adapter,
     setup_client,
 )
@@ -158,3 +159,16 @@ def test_setup_client_preserves_chat_client_defaults():
         base_url="http://worker-a:8000/v1",
         headers={},
     )
+
+
+def test_find_checksum_mismatches():
+    def worker(shard, **checksums):
+        return {"shard": shard, "checksums": checksums}
+
+    engine = [worker("tp0", a=1, b=2), worker("tp1", a=3)]
+    assert find_checksum_mismatches([engine, engine]) == []
+    changed = [worker("tp0", a=1, b=5), worker("tp1", a=3, c=4)]
+    assert find_checksum_mismatches([engine, changed, [worker("tp2", a=9)]]) == [
+        "engine1/tp0/b != engine0",
+        "engine1/tp1/c != engine0",
+    ]
