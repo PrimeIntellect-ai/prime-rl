@@ -246,7 +246,7 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Dispatch and combine routed tokens with DeepEP."""
 
     type: Literal["deepep"] = "deepep"
-    num_sms: int = Field(20, ge=1)
+    num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
 
     token_chunk_size: int | None = Field(None, ge=1)
