@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
@@ -33,7 +34,7 @@ from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import dispatch_failure_metrics
+from prime_rl.orchestrator.metrics import eval_batch_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
@@ -266,15 +267,8 @@ class EvalRunner:
 
         episodes = batch.episodes
         effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = episodes.expected_count
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
+        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+        metrics = eval_batch_metrics(batch, list(agent_config_fields(self.eval_envs.get(batch.env_name).config.env)))
         if batch.cancelled:
             metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
             metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
@@ -283,7 +277,7 @@ class EvalRunner:
         await monitors.log(metrics, step=batch.step)
 
         eff, full = effective.metrics, episodes.metrics
-        reward = f"{eff.reward.mean():.4f}" if effective.expected_count else "unavailable"
+        reward = f"{eff.reward.mean():.4f}" if effective else "unavailable"
         error_rate = metrics[f"eval/{batch.env_name}/all/has_error/mean"]
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
@@ -292,18 +286,17 @@ class EvalRunner:
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
                 f"{format_time(elapsed):>7} | Reward {reward} | "
                 f"Error {error_rate:.1%} | "
-                f"Coverage {effective.expected_count}/{total_attempts} | "
+                f"Coverage {len(effective)}/{total_attempts} | "
                 f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
             )
             return
-        log = get_logger().success if effective.expected_count else get_logger().warning
+        log = get_logger().success if effective else get_logger().warning
         log(
             f"Evaluated {batch.env_name} (Step {batch.step}) | "
             f"{format_time(elapsed):>7} | Reward {reward} | "
-            f"Coverage {effective.expected_count}/{total_attempts} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Error {error_rate:.1%} | Truncation {eff.is_truncated.mean():.1%} | "
-            f"Timeout {full.is_timeout.mean():.1%}"
+            f"Timeout {full.is_timeout.mean():.1%} | Coverage {len(effective)}/{total_attempts}"
         )
 
     def collect_pipeline_view(self) -> tuple[str, dict[str, float]]:

@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import EvalInfraErrorRule
-from prime_rl.orchestrator.metrics import EvalEpisodes, Stat, TrainEpisodes
+from prime_rl.orchestrator.metrics import EvalEpisodes, Stat, TrainEpisodes, eval_batch_metrics
+from prime_rl.orchestrator.types import DispatchFailure, EvalBatch
 from prime_rl.orchestrator.utils import compute_pass_metrics
 
 _ids = count()
@@ -308,27 +308,54 @@ def test_eval_avg_at_k_and_pass_k():
     assert not any("avg@4" in key for key in multi_agent_out)
 
 
+def eval_wandb(episodes, *, failures=0, cancelled=0, agent_names=("agent",)):
+    batch = EvalBatch(
+        env_name="x",
+        step=1,
+        episodes=EvalEpisodes(episodes, group_size=1),
+        failures=[
+            DispatchFailure(
+                kind="eval",
+                env_name="x",
+                group_id="g0",
+                step=1,
+                policy_version=1,
+                task_type="test",
+                task_key=str(i),
+                task_hash="test",
+                error=vf.Error(type="ConnectionError", message="env server unavailable"),
+            )
+            for i in range(failures)
+        ],
+        cancelled=cancelled,
+    )
+    return eval_batch_metrics(batch, list(agent_names))
+
+
 def test_eval_counts_planned_slots_and_missing_rewards():
     episodes = [
         mk(reward=1.0, rewards={"solved": vf.Reward(score=1.0)}),
-        mk(reward=0.0, rewards={"solved": vf.Reward(score=0.0)}),
-        mk(has_error=True, error_type="SandboxError", error_message="Failed to route request to sandbox"),
-        mk(has_error=True, error_type="HarnessError"),
+        mk(reward=0.0),
+        mk(
+            has_error=True,
+            error_type="SandboxError",
+            error_message="Failed to route request to sandbox",
+            rewards={"infra_only": None},
+        ),
+        mk(has_error=True, error_type="HarnessError", rewards={"solved": None}),
     ]
-    cohort = EvalEpisodes(episodes, group_size=1, expected_count=5, dispatch_failures=1)
-    all_out = cohort.metrics.to_wandb(prefix="eval/x", subset="all")
-    effective = cohort.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
-    assert all_out["eval/x/all/agent/reward/mean"] == 1 / 5
-    assert all_out["eval/x/all/agent/rewards/solved/mean"] == 1 / 5
-    assert effective["eval/x/effective/agent/reward/mean"] == 1 / 3
-    assert effective["eval/x/effective/agent/rewards/solved/mean"] == 1 / 3
-    assert effective["eval/x/effective/agent/pass@1"] == pytest.approx(1 / 3)
-    assert all_out["eval/x/all/count"] == 5
-    assert effective["eval/x/effective/count"] == 3
-    assert all_out["eval/x/all/infra_error/count"] == 2
-    assert all_out["eval/x/all/unclassified_error/count"] == 1
-    assert all_out["eval/x/all/has_error/mean"] == 3 / 5
-    assert all_out["eval/x/effective/coverage/mean"] == 3 / 5
+    out = eval_wandb(episodes, failures=1)
+    assert out["eval/x/all/agent/reward/mean"] == 1 / 5
+    assert out["eval/x/all/agent/rewards/solved/mean"] == 1 / 5
+    assert out["eval/x/effective/agent/reward/mean"] == 1 / 3
+    assert out["eval/x/effective/agent/rewards/solved/mean"] == 1 / 3
+    assert out["eval/x/effective/agent/rewards/infra_only/mean"] == 0
+    assert out["eval/x/effective/agent/pass@1"] == pytest.approx(1 / 3)
+    assert out["eval/x/all/has_error/mean"] == 3 / 5
+    assert out["eval/x/all/dispatch_failure/mean"] == 1 / 5
+    assert out["eval/x/effective/coverage/mean"] == 3 / 5
+    assert not any(key.endswith("/count") for key in out)
+    assert not any(part in key for key in out for part in ("infra_error", "unclassified_error", "retry_recovered"))
 
 
 @pytest.mark.parametrize(
@@ -367,41 +394,51 @@ def test_eval_recovered_retry_and_episode_failure():
     cohort = EvalEpisodes([recovered, unknown, env_failed], group_size=1)
     assert cohort.metrics.reward.mean() == 1 / 3
     assert cohort.effective.metrics.reward.mean() == 1 / 2
-    assert cohort.metrics.to_wandb(prefix="eval/x", subset="all")["eval/x/all/retry_recovered/count"] == 1
+    out = eval_wandb(cohort.episodes)
+    assert out["eval/x/effective/coverage/mean"] == 2 / 3
+    assert out["eval/x/effective/agent/pass@1"] == 1 / 2
 
 
 def test_eval_empty_traces_cancellations_and_all_infra_failure():
     empty = mk(has_error=True)
     empty.traces = []
-    cohort = EvalEpisodes([mk(reward=1.0), empty], group_size=1, expected_count=3, cancelled_count=1)
-    assert cohort.metrics.reward.mean() == 1 / 3
-    assert cohort.effective.metrics.reward.mean() == 1 / 2
-    failed = EvalEpisodes([], group_size=1, expected_count=2, agent_names=["agent"], dispatch_failures=2)
-    all_out = failed.metrics.to_wandb(prefix="eval/x", subset="all")
-    effective = failed.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
-    assert all_out["eval/x/all/agent/reward/mean"] == 0.0
-    assert all_out["eval/x/all/infra_error/mean"] == 1.0
-    assert effective["eval/x/effective/count"] == 0
-    assert "eval/x/effective/agent/reward/mean" not in effective
+    out = eval_wandb([mk(reward=1.0), empty], cancelled=1)
+    assert out["eval/x/all/agent/reward/mean"] == 1 / 3
+    assert out["eval/x/effective/agent/reward/mean"] == 1 / 2
+    assert out["eval/x/effective/agent/pass@1"] == 1 / 2
+    assert out["eval/x/all/cancelled/mean"] == 1 / 3
+    assert out["eval/x/all/has_error/mean"] == 1 / 3
+    for failed in (
+        eval_wandb([], failures=2),
+        eval_wandb([mk(has_error=True, error_type="ProviderError", error_status=503)]),
+    ):
+        assert failed["eval/x/all/agent/reward/mean"] == 0.0
+        assert failed["eval/x/all/has_error/mean"] == 1.0
+        assert failed["eval/x/effective/coverage/mean"] == 0
+        assert not any(key.startswith("eval/x/effective/agent/") for key in failed)
+    cancelled = eval_wandb([], cancelled=2, agent_names=("solver",))
+    assert cancelled["eval/x/all/solver/reward/mean"] == 0
+    assert cancelled["eval/x/all/cancelled/mean"] == 1
+    assert cancelled["eval/x/all/has_error/mean"] == 0
+    assert cancelled["eval/x/effective/coverage/mean"] == 0
+    assert eval_wandb([]) == {}
 
 
 @pytest.mark.parametrize("stage,excluded", [("agent", False), ("setup", True), ("finalize", True), ("scoring", True)])
-def test_eval_timeout_stage_and_error_override(stage, excluded):
+def test_eval_timeout_stage(stage, excluded):
     episode = mk(is_timeout=True, stop_condition=f"{stage}_timeout")
     assert len(EvalEpisodes([episode], group_size=1).effective) == (0 if excluded else 1)
-    failed = mk(has_error=True, error_type="HarnessError", error_message="install download unavailable")
-    cohort = EvalEpisodes(
-        [failed],
-        group_size=1,
-        infra_errors=[EvalInfraErrorRule(type="HarnessError", message="install download unavailable")],
-    )
-    assert not cohort.effective
 
 
-def test_eval_weights_episodes_equally_with_agent_fanout():
+def test_eval_preserves_trace_weighting_and_includes_non_trainable_agents():
     cohort = EvalEpisodes([combine(mk(reward=1.0), mk(reward=0.0)), mk(reward=1.0, trainable=False)], group_size=1)
-    assert cohort.metrics.reward.mean() == 0.75
-    assert cohort.effective.metrics.reward.mean() == 0.75
+    assert cohort.metrics.reward.mean() == 2 / 3
+    assert cohort.effective.metrics.reward.mean() == 2 / 3
+    out = eval_wandb(cohort.episodes)
+    assert out["eval/x/all/agent/reward/mean"] == 2 / 3
+    assert out["eval/x/effective/agent/reward/mean"] == 2 / 3
+    assert out["eval/x/effective/agent/pass@1"] == pytest.approx(2 / 3)
+    assert out["eval/x/effective/coverage/mean"] == 1
 
 
 def test_compute_pass_metrics_matches_closed_form():

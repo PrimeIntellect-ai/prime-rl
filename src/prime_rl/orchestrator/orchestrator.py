@@ -26,6 +26,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.runtimes import set_base_sandbox_labels
 
 if TYPE_CHECKING:
@@ -47,7 +48,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
+from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics, eval_batch_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -908,15 +909,8 @@ class Orchestrator:
         # Infrastructure-invalid episodes are excluded only from the effective set.
         episodes = batch.episodes
         effective = episodes.effective
-        metrics: dict[str, float] = {}
-        for subset, pool in (("all", episodes), ("effective", effective)):
-            metrics |= pool.metrics.to_wandb(prefix=f"eval/{batch.env_name}", subset=subset)
-        total_attempts = episodes.expected_count
-        metrics |= dispatch_failure_metrics(
-            batch.failures,
-            prefix=f"eval/{batch.env_name}/all",
-            total_attempts=total_attempts,
-        )
+        total_attempts = len(episodes) + len(batch.failures) + batch.cancelled
+        metrics = eval_batch_metrics(batch, list(agent_config_fields(self.eval_envs.get(batch.env_name).config.env)))
         if policy_version is not None:
             metrics[f"eval/{batch.env_name}/policy_version"] = float(policy_version)
         metrics["step"] = float(batch.step)
@@ -925,15 +919,14 @@ class Orchestrator:
         eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
-        reward = f"{eff.reward.mean():.4f}" if effective.expected_count else "unavailable"
-        log = get_logger().warning if batch.cancelled or not effective.expected_count else get_logger().success
+        reward = f"{eff.reward.mean():.4f}" if effective else "unavailable"
+        log = get_logger().warning if batch.cancelled or not effective else get_logger().success
         log(
             f"Evaluated {batch.env_name} | "
             f"Policy v{policy_version} | {format_time(elapsed):>7} | Reward {reward} | "
-            f"Coverage {effective.expected_count}/{total_attempts} | "
             f"Turns {eff.num_turns.mean():.1f} | Branches {eff.num_branches.mean():.1f} | "
             f"Error {metrics[f'eval/{batch.env_name}/all/has_error/mean']:.1%} | Truncation {eff.is_truncated.mean():.1%} | "
-            f"Timeout {full.is_timeout.mean():.1%}"
+            f"Timeout {full.is_timeout.mean():.1%} | Coverage {len(effective)}/{total_attempts}"
         )
 
     async def maybe_save_ckpt(self, step: int) -> float:

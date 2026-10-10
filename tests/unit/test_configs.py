@@ -13,7 +13,6 @@ from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.orchestrator import (
-    EvalInfraErrorRule,
     EvalSourcesConfig,
     OrchestratorConfig,
     RLOnlineEvalConfig,
@@ -40,22 +39,6 @@ CONFIG_CLASSES = [
     EnvServerConfig,
     EvalConfig,
 ]
-
-
-def test_eval_infra_error_rules_inherit_and_validate():
-    config = EvalSourcesConfig.model_validate(
-        {
-            "infra_errors": [{"type": "HarnessError", "message": "install failed"}],
-            "source": [
-                {"env": {"taskset": {"id": "reverse-text"}}},
-                {"env": {"taskset": {"id": "gsm8k"}}, "infra_errors": []},
-            ],
-        }
-    )
-    assert config.source[0].infra_errors == config.infra_errors
-    assert config.source[1].infra_errors == []
-    with pytest.raises(ValidationError, match="Invalid infrastructure error regex"):
-        EvalInfraErrorRule(type="HarnessError", message="[")
 
 
 def get_config_files() -> list[Path]:

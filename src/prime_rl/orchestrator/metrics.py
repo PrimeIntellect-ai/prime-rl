@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import verifiers.v1 as vf
 
-from prime_rl.configs.orchestrator import EvalInfraErrorRule, default_eval_infra_errors
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
-from prime_rl.orchestrator.types import DispatchFailure
+from prime_rl.orchestrator.types import DispatchFailure, EvalBatch
 from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
 
 Subset = Literal["all", "effective"]
@@ -385,92 +383,80 @@ def pass_at_k(by_example: dict[str, list[float]]) -> dict[str, float]:
 
 
 class EvalMetrics(EpisodeMetrics):
-    def __init__(self, cohort: EvalEpisodes) -> None:
-        super().__init__(cohort.episodes, cohort.records)
-        self.cohort = cohort
+    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int) -> None:
+        super().__init__(episodes, records)
+        self.group_size = group_size
 
-    def scores(self, agent: str, reward_name: str | None = None) -> list[float]:
-        values = []
+    def scores(self, agent: str, reward_name: str | None = None) -> dict[str, list[float]]:
+        groups: dict[str, list[float]] = {}
         for episode in self.episodes:
             traces = [trace for trace in episode.traces if trace.agent.name == agent]
-            if (
-                not episode.ok
-                or any(trace.has_error for trace in traces)
-                or episode_has_infra_error(episode, self.cohort.infra_errors)
-            ):
-                values.append(0.0)
-            elif reward_name is None:
-                values.append(Stat([trace.reward for trace in traces]).mean())
-            else:
-                values.append(
-                    Stat(
-                        [reward.value if (reward := trace.rewards.get(reward_name)) else 0.0 for trace in traces]
-                    ).mean()
-                )
-        return values + [0.0] * (self.cohort.expected_count - len(self.episodes))
+            failed = not episode.ok or episode_has_infra_error(episode)
+            values = []
+            for trace in traces:
+                if failed or trace.has_error:
+                    values.append(0.0)
+                elif reward_name is None:
+                    values.append(float(trace.reward))
+                else:
+                    reward = trace.rewards.get(reward_name)
+                    values.append(reward.value if reward is not None else 0.0)
+            groups.setdefault(episode_group_id(episode), []).extend(values or [0.0])
+        return groups
 
     @property
     def reward(self) -> Stat:
-        return Stat([score for agent in self.cohort.agent_names for score in self.scores(agent)])
+        return Stat([score for agent in self.by_agent() for group in self.scores(agent).values() for score in group])
 
-    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
+    def to_wandb(
+        self,
+        *,
+        prefix: str,
+        subset: Subset,
+        missing: int = 0,
+        reward_names: dict[str, set[str]] | None = None,
+    ) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        out[f"{prefix}/{subset}/count"] = float(self.cohort.expected_count)
-        for agent in self.cohort.agent_names:
+        if reward_names is None:
+            reward_names = {
+                agent: {name for trace in traces.traces for name in trace.rewards}
+                for agent, traces in self.by_agent().items()
+            }
+        for agent, names in reward_names.items():
             metric_prefix = f"{prefix}/{subset}/{agent}"
-            scores = self.scores(agent)
-            out[f"{metric_prefix}/count"] = float(len(scores))
-            out |= Stat(scores).to_dict(f"{metric_prefix}/reward")
-            for name in self.cohort.reward_names.get(agent, []):
-                out |= Stat(self.scores(agent, name)).to_dict(f"{metric_prefix}/rewards/{name}")
+            groups = self.scores(agent)
+            scores = [score for group in groups.values() for score in group] + [0.0] * missing
             if not scores:
                 continue
-            failed = sum(
-                not episode.ok
-                or not any(trace.agent.name == agent for trace in episode.traces)
-                or any(trace.has_error for trace in episode.traces if trace.agent.name == agent)
-                or episode_has_infra_error(episode, self.cohort.infra_errors)
-                for episode in self.episodes
-            )
-            out[f"{metric_prefix}/has_error/mean"] = (
-                failed + self.cohort.dispatch_failures
-            ) / self.cohort.expected_count
-            out[f"{metric_prefix}/avg@{self.cohort.group_size}"] = Stat(scores).mean()
+            out |= Stat(scores).to_dict(f"{metric_prefix}/reward")
+            for name in sorted(names):
+                values = [score for group in self.scores(agent, name).values() for score in group]
+                out |= Stat(values + [0.0] * missing).to_dict(f"{metric_prefix}/rewards/{name}")
+            out[f"{metric_prefix}/avg@{self.group_size}"] = Stat(scores).mean()
             if subset == "effective":
-                groups: dict[str, list[float]] = {}
-                for episode, score in zip(self.episodes, scores, strict=True):
-                    groups.setdefault(episode_group_id(episode), []).append(score)
                 out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(groups).items()}
-        if subset == "all":
-            expected = self.cohort.expected_count
-            infra = sum(episode_has_infra_error(episode, self.cohort.infra_errors) for episode in self.episodes)
-            unknown = sum(
-                (not episode.ok or any(trace.has_error for trace in episode.traces))
-                and not episode_has_infra_error(episode, self.cohort.infra_errors)
-                for episode in self.episodes
-            )
-            recovered = sum(
-                episode.ok
-                and not episode_has_infra_error(episode, self.cohort.infra_errors)
-                and (bool(episode.errors) or any(trace.errors for trace in episode.traces))
-                for episode in self.episodes
-            )
-            counts = {
-                "expected": expected,
-                "returned": len(self.episodes),
-                "infra_error": infra + self.cohort.dispatch_failures,
-                "unclassified_error": unknown,
-                "retry_recovered": recovered,
-                "cancelled": self.cohort.cancelled_count,
-            }
-            for name, count in counts.items():
-                out[f"{prefix}/all/{name}/count"] = float(count)
-                if expected:
-                    out[f"{prefix}/all/{name}/mean"] = count / expected
-            if expected:
-                out[f"{prefix}/effective/coverage/mean"] = self.cohort.effective.expected_count / expected
-                out[f"{prefix}/all/has_error/mean"] = (infra + unknown + self.cohort.dispatch_failures) / expected
         return out
+
+
+def eval_batch_metrics(batch: EvalBatch, agent_names: list[str]) -> dict[str, float]:
+    """Use the completed batch's accounting for both eval entrypoints."""
+    episodes = batch.episodes
+    effective = episodes.effective
+    missing = len(batch.failures) + batch.cancelled
+    total = len(episodes) + missing
+    if not total:
+        return {}
+    prefix = f"eval/{batch.env_name}"
+    reward_names: dict[str, set[str]] = {agent: set() for agent in agent_names}
+    for record in episodes.records:
+        reward_names.setdefault(record.trace.agent.name, set()).update(record.trace.rewards)
+    out = episodes.metrics.to_wandb(prefix=prefix, subset="all", missing=missing, reward_names=reward_names)
+    out |= effective.metrics.to_wandb(prefix=prefix, subset="effective", reward_names=reward_names)
+    out[f"{prefix}/effective/coverage/mean"] = len(effective) / total
+    out[f"{prefix}/all/has_error/mean"] = (sum(episodes.metrics.has_error.values) + len(batch.failures)) / total
+    out[f"{prefix}/all/cancelled/mean"] = batch.cancelled / total
+    out |= dispatch_failure_metrics(batch.failures, prefix=f"{prefix}/all", total_attempts=total)
+    return out
 
 
 class EpisodeCollection:
@@ -595,7 +581,7 @@ class TrainEpisodes(EpisodeCollection):
         return TrainMetrics(self.selected_episodes, self.records, self.cancelled)
 
 
-def episode_has_infra_error(episode: vf.Episode, rules: list[EvalInfraErrorRule]) -> bool:
+def episode_has_infra_error(episode: vf.Episode) -> bool:
     if any(
         trace.stop_condition in {"setup_timeout", "finalize_timeout", "scoring_timeout"} for trace in episode.traces
     ):
@@ -609,66 +595,27 @@ def episode_has_infra_error(episode: vf.Episode, rules: list[EvalInfraErrorRule]
             return True
     return any(
         error is not None
-        and error.type == rule.type
-        and (rule.status_code is None or error.status_code in rule.status_code)
-        and (rule.message is None or re.search(rule.message, error.message) is not None)
+        and (
+            error.type in {"InterceptionError", "TunnelError"}
+            or (error.type in {"ProviderError", "SandboxError"} and error.status_code in {429, 500, 502, 503, 504})
+            or (error.type == "SandboxError" and "Failed to route request to sandbox" in error.message)
+        )
         for error in errors
-        for rule in rules
     )
 
 
 class EvalEpisodes(EpisodeCollection):
-    def __init__(
-        self,
-        episodes: list[vf.Episode],
-        group_size: int,
-        *,
-        expected_count: int | None = None,
-        agent_names: list[str] | None = None,
-        reward_names: dict[str, list[str]] | None = None,
-        infra_errors: list[EvalInfraErrorRule] | None = None,
-        dispatch_failures: int = 0,
-        cancelled_count: int = 0,
-    ) -> None:
+    def __init__(self, episodes: list[vf.Episode], group_size: int) -> None:
         super().__init__(episodes)
         self.group_size = group_size
-        accounted = len(episodes) + dispatch_failures + cancelled_count
-        self.expected_count = accounted if expected_count is None else expected_count
-        if self.expected_count < accounted:
-            raise ValueError("Accounted eval episodes exceed the planned count")
-        self.agent_names = sorted(
-            set(agent_names or []) | {trace.agent.name for episode in episodes for trace in episode.traces}
-        )
-        self.reward_names = (
-            reward_names
-            if reward_names is not None
-            else {
-                agent: sorted(
-                    {
-                        name
-                        for episode in episodes
-                        for trace in episode.traces
-                        if trace.agent.name == agent
-                        for name in trace.rewards
-                    }
-                )
-                for agent in self.agent_names
-            }
-        )
-        self.infra_errors = default_eval_infra_errors() if infra_errors is None else infra_errors
-        self.dispatch_failures = dispatch_failures
-        self.cancelled_count = cancelled_count
 
     @property
     def effective(self) -> EvalEpisodes:
         return EvalEpisodes(
-            [episode for episode in self.episodes if not episode_has_infra_error(episode, self.infra_errors)],
+            [episode for episode in self.episodes if not episode_has_infra_error(episode)],
             self.group_size,
-            agent_names=self.agent_names,
-            reward_names=self.reward_names,
-            infra_errors=self.infra_errors,
         )
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self)
+        return EvalMetrics(self.selected_episodes, self.records, self.group_size)
