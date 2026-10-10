@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -25,9 +27,61 @@ def apply_shared_vllm_patches():
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_packed_sampling_masks()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+@dataclass
+class PackedSamplingMask:
+    """A finished request's sampling masks in CSR form: ``ids[sum(counts[:i]):][:counts[i]]``
+    are the kept token ids of completion token ``i``."""
+
+    ids: np.ndarray
+    counts: np.ndarray
+
+
+def monkey_patch_packed_sampling_masks():
+    """Keep sampling masks as numpy arrays in the API server's output processor.
+
+    vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
+    runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
+    objects per token that every gen-2 pass walks. Store only the (untracked) id
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    """
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
+
+    original_init = RequestState.__init__
+    original_new_completion_output = RequestState._new_completion_output
+
+    class _MaskIds(list):
+        def append(self, chunk):
+            super().append(chunk.token_ids)
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
+
+    def _new_completion_output(self, token_ids, finish_reason, stop_reason):
+        chunks = self.sampling_mask_chunks
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
+            return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        self.sampling_mask_chunks = _MaskIds()
+        output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        output.sampling_mask = PackedSamplingMask(
+            ids=np.concatenate(chunks),
+            counts=np.fromiter(map(len, chunks), dtype=np.int32, count=len(chunks)),
+        )
+        return output
+
+    RequestState.__init__ = _init
+    RequestState._new_completion_output = _new_completion_output
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
