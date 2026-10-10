@@ -164,8 +164,9 @@ class Dispatcher:
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
-        # bound ``out_q``
+        # bound the ``out_q`` backlog
         self.max_inflight = initial_max_inflight
+        self.max_inflight_ceiling = max_inflight_ceiling
         self.current_inflight = 0
         self.rate_limiter: AsyncLimiter | None = (
             AsyncLimiter(tasks_per_minute, time_period=60) if tasks_per_minute else None
@@ -187,13 +188,9 @@ class Dispatcher:
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
 
-        # Bounded so the dispatcher backpressures on a slow sink (unbounded
-        # when no hard ceiling is configured — the dynamic cap still bounds
-        # in-flight work). One entry per episode — the sinks count episodes,
-        # never loose traces — plus terminal dispatcher events for attempts
-        # that produced no episode.
-        maxsize = max(8, max_inflight_ceiling) if max_inflight_ceiling is not None else 0
-        self.out_q: asyncio.Queue[DispatchResult] = asyncio.Queue(maxsize=maxsize)
+        # Unbounded because weight updates put here while the orchestrator, which
+        # drains it, may be waiting for that same update to finish.
+        self.out_q: asyncio.Queue[DispatchResult] = asyncio.Queue()
 
         self.mode: DispatcherMode = DispatcherMode.PREFER_TRAIN
         # Set by the orchestrator after the final train step; pipeline then
@@ -232,6 +229,10 @@ class Dispatcher:
     @property
     def available_permits(self) -> int:
         return self.max_inflight - self.current_inflight
+
+    @property
+    def is_out_q_backlogged(self) -> bool:
+        return self.max_inflight_ceiling is not None and self.out_q.qsize() >= self.max_inflight_ceiling
 
     def set_limit(self, max_inflight: int) -> None:
         """Move the in-flight cap (concurrency controller hook). A cap below
@@ -453,6 +454,8 @@ class Dispatcher:
                 return
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
+            if self.is_out_q_backlogged:
+                return
 
             async with self.scheduling_lock:
                 if self.policy_update_pending:
@@ -646,7 +649,7 @@ class Dispatcher:
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)
-            await self.out_q.put(
+            self.out_q.put_nowait(
                 DispatchFailure(
                     kind=meta.kind,
                     env_name=meta.env_name,
@@ -725,7 +728,7 @@ class Dispatcher:
         )
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
-        await self.out_q.put(episode)
+        self.out_q.put_nowait(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
         """Cancel this group's remaining in-flight tasks and emit one
@@ -762,7 +765,7 @@ class Dispatcher:
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
                 f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
             )
-            await self.out_q.put(
+            self.out_q.put_nowait(
                 GroupCancellation(
                     kind=kind,
                     env_name=env_name,
@@ -839,7 +842,7 @@ class Dispatcher:
             )
             cancelled += count
             self.metrics.record_cancellation(kind="eval", env_name=request.env_name, n=count)
-            await self.out_q.put(
+            self.out_q.put_nowait(
                 GroupCancellation(
                     kind="eval",
                     env_name=request.env_name,
