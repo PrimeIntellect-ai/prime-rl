@@ -761,6 +761,12 @@ def test_trainer_rejects_vlm_cp_with_ring():
         TrainerConfig.model_validate(config)
 
 
+def test_trainer_vlm_requires_bf16():
+    vlm = {"vision_encoder_attr": "model.visual", "language_model_attr": "model.language_model"}
+    with pytest.raises(ValidationError, match="optimization_dtype='bfloat16'"):
+        TrainerConfig.model_validate({"model": {"vlm": vlm}})
+
+
 def test_shared_model_name_propagates_to_subconfigs():
     model_name = "PrimeIntellect/test-model"
     config = RLConfig.model_validate(
