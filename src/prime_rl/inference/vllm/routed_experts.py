@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import Any
 
 import numpy as np
 import pybase64
-from vllm.outputs import RequestOutput
+from vllm.distributed.aux_output_connector.connector import AuxRequestOutput
 
 
 def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, Any] | None:
@@ -33,16 +32,55 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     }
 
 
-class RoutedExpertsCapture:
-    def __init__(self, generator: AsyncIterator[RequestOutput], start: int = 0):
-        self._generator = generator
-        self._start = start
-        self.routed_experts: dict[int, dict[str, Any]] = {}
+class PackedAuxOutputs:
+    """One step's ``dict[request_id, AuxRequestOutput]`` as one rows array.
 
-    async def __aiter__(self):
-        async for request_output in self._generator:
-            for output in request_output.outputs:
-                encoded = serialize_routed_experts(getattr(output, "routed_experts", None), start=self._start)
-                if encoded is not None:
-                    self.routed_experts[output.index] = encoded
-            yield request_output
+    Answers the scheduler's ``in`` / ``[]`` lookups and pickles as three byte strings instead of one buffer per
+    request. Unpickled rows own their memory rather than viewing the shared-memory ring buffer.
+    """
+
+    __slots__ = ("_index", "_token_starts", "_offsets", "_rows")
+
+    def __init__(self, index: dict[str, int], token_starts: np.ndarray, offsets: np.ndarray, rows: np.ndarray):
+        self._index = index
+        self._token_starts = token_starts
+        self._offsets = offsets
+        self._rows = rows
+
+    @classmethod
+    def pack(cls, outputs: dict[str, AuxRequestOutput]) -> PackedAuxOutputs:
+        rows = [output.rows for output in outputs.values()]
+        offsets = np.zeros(len(rows) + 1, dtype=np.int64)
+        np.cumsum([len(r) for r in rows], out=offsets[1:])
+        token_starts = np.fromiter((output.token_start for output in outputs.values()), np.int64, len(rows))
+        return cls(dict(zip(outputs, range(len(rows)))), token_starts, offsets, np.concatenate(rows))
+
+    def __contains__(self, request_id: str) -> bool:
+        return request_id in self._index
+
+    def __getitem__(self, request_id: str) -> AuxRequestOutput:
+        i = self._index[request_id]
+        return AuxRequestOutput(int(self._token_starts[i]), self._rows[self._offsets[i] : self._offsets[i + 1]])
+
+    def __reduce__(self):
+        rows = self._rows
+        return (
+            _unpack_aux_outputs,
+            (
+                list(self._index),
+                self._token_starts.tobytes(),
+                self._offsets.tobytes(),
+                rows.tobytes(),
+                rows.dtype.str,
+                rows.shape,
+            ),
+        )
+
+
+def _unpack_aux_outputs(request_ids, token_starts, offsets, rows, dtype, shape) -> PackedAuxOutputs:
+    return PackedAuxOutputs(
+        dict(zip(request_ids, range(len(request_ids)))),
+        np.frombuffer(token_starts, np.int64),
+        np.frombuffer(offsets, np.int64),
+        np.frombuffer(rows, dtype).reshape(shape),
+    )

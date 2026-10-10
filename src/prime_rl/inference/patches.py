@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -25,9 +27,139 @@ def apply_shared_vllm_patches():
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_packed_sampling_masks()
+    monkey_patch_engine_gc()
+    monkey_patch_packed_aux_outputs()
+    monkey_patch_aux_output_store()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+
+
+@dataclass
+class PackedSamplingMask:
+    """A finished request's sampling masks in CSR form: ``ids[sum(counts[:i]):][:counts[i]]``
+    are the kept token ids of completion token ``i``."""
+
+    ids: np.ndarray
+    counts: np.ndarray
+
+
+def monkey_patch_packed_sampling_masks():
+    """Keep sampling masks as numpy arrays in the API server's output processor.
+
+    vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
+    runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
+    objects per token that every gen-2 pass walks. Store only the (untracked) id
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    """
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
+
+    original_init = RequestState.__init__
+    original_new_completion_output = RequestState._new_completion_output
+
+    class _MaskIds(list):
+        def append(self, chunk):
+            super().append(chunk.token_ids)
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
+
+    def _new_completion_output(self, token_ids, finish_reason, stop_reason):
+        chunks = self.sampling_mask_chunks
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
+            return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        self.sampling_mask_chunks = _MaskIds()
+        output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        output.sampling_mask = PackedSamplingMask(
+            ids=np.concatenate(chunks),
+            counts=np.fromiter(map(len, chunks), dtype=np.int32, count=len(chunks)),
+        )
+        return output
+
+    RequestState.__init__ = _init
+    RequestState._new_completion_output = _new_completion_output
+
+
+ENGINE_GC_THRESHOLDS = (50_000, 20, 100)
+
+
+def monkey_patch_engine_gc():
+    """Freeze the startup heap and raise GC thresholds in EngineCore (vLLM only freezes) and the GPU workers."""
+    import gc
+
+    from vllm.v1.engine import core
+    from vllm.v1.worker.gpu_worker import Worker
+
+    original_freeze_gc_heap = core.freeze_gc_heap
+    original_compile_or_warm_up_model = Worker.compile_or_warm_up_model
+
+    def freeze_gc_heap():
+        original_freeze_gc_heap()
+        gc.set_threshold(*ENGINE_GC_THRESHOLDS)
+
+    def compile_or_warm_up_model(self, *args, **kwargs):
+        result = original_compile_or_warm_up_model(self, *args, **kwargs)
+        gc.collect()
+        gc.freeze()
+        gc.set_threshold(*ENGINE_GC_THRESHOLDS)
+        return result
+
+    core.freeze_gc_heap = freeze_gc_heap
+    Worker.compile_or_warm_up_model = compile_or_warm_up_model
+
+
+def monkey_patch_packed_aux_outputs():
+    """Send each step's routed experts from the output worker to EngineCore as one ``PackedAuxOutputs``."""
+    from vllm.distributed.aux_output_connector.worker import AuxOutputWorkerConnector
+
+    from prime_rl.inference.vllm.routed_experts import PackedAuxOutputs
+
+    original_process_output = AuxOutputWorkerConnector.process_output
+
+    def process_output(self, pending):
+        outputs = original_process_output(self, pending)
+        return PackedAuxOutputs.pack(outputs) if outputs else outputs
+
+    AuxOutputWorkerConnector.process_output = process_output
+
+
+AUX_OUTPUT_STORE_HEADROOM = 2
+
+
+def monkey_patch_aux_output_store():
+    """Keep routed-experts store eviction from rescanning referenced keys, and size the store above the KV cache.
+
+    Eviction skips keys referenced by running requests, and they pile up at the front of the LRU, so every ``put``
+    on a full store rescans them. Their position never affects which keys are evicted, so move them to the end.
+    At full KV the referenced keys alone can exceed a store of exactly KV size and ``put`` raises, so the worker
+    builds it at ``AUX_OUTPUT_STORE_HEADROOM`` times vLLM's size (anonymous mmap: unused slots cost no memory).
+    """
+    from itertools import takewhile
+
+    from vllm.distributed.aux_output_connector import worker as aux_worker
+    from vllm.distributed.aux_output_connector.store import BlockObjectStore
+
+    original_evict_to_fit = BlockObjectStore._evict_to_fit
+
+    def _evict_to_fit(self, protected: set[str]) -> None:
+        if len(self._lru) > self.num_slots:
+            for key in list(takewhile(self._references.__contains__, self._lru)):
+                self._lru.move_to_end(key)
+        original_evict_to_fit(self, protected)
+
+    class _RoomyBlockObjectStore(BlockObjectStore):
+        def __init__(self, *, max_bytes: int, object_nbytes: int):
+            super().__init__(max_bytes=AUX_OUTPUT_STORE_HEADROOM * max_bytes, object_nbytes=object_nbytes)
+
+    BlockObjectStore._evict_to_fit = _evict_to_fit
+    aux_worker.BlockObjectStore = _RoomyBlockObjectStore
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
