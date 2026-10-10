@@ -621,12 +621,6 @@ class SFTConfig(BaseConfig):
         validate_scheduler(self.scheduler, self.max_steps)
         return self
 
-    @model_validator(mode="after")
-    def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.offload == "fsdp":
-            raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
     ### Auto-setup and validate shared configs
 
     @model_validator(mode="after")

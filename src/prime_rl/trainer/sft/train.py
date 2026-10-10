@@ -100,7 +100,7 @@ def train(config: SFTConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.offload in ("fsdp", "full"),
+        enable_gloo=config.model.offload == "full",
     )
     if config.model.offload == "full":
         setup_full_cpu_optimizer_offload()

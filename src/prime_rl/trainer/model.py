@@ -19,7 +19,7 @@ from torch import Tensor
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
-from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
@@ -509,7 +509,7 @@ def _expert_shard_placement_fn(
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.offload == "fsdp" else OffloadPolicy()
+    offload_policy: OffloadPolicy = OffloadPolicy()
 
     fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
@@ -695,7 +695,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    device = "cpu" if config.offload == "fsdp" else "cuda"
+    device = "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
 
@@ -705,7 +705,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        _move_buffers_to_cuda(model, config)
         return
 
     if not Path(config.name).exists():
@@ -775,7 +774,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
     )
     write_back_loaded_packed_parameters(model, state_dict)
-    _move_buffers_to_cuda(model, config)
 
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
     if lora_modules:
@@ -889,15 +887,6 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
-
-
-def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
-    """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
-    if config.offload != "fsdp":
-        return
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "cpu":
-            buffer.data = buffer.data.to("cuda")
 
 
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
@@ -1024,11 +1013,10 @@ def setup_model(
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
         )
-        device = "cpu" if config.offload == "fsdp" else "cuda"
+        device = "cuda"
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-        _move_buffers_to_cuda(model, config)
     else:
         load_dcp_from_hf(model, config, parallel_dims)
 

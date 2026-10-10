@@ -86,7 +86,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 |---|---|
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
-| `trainer.model.offload` | CPU offloading: `optimizer` (default) offloads optimizer state between steps; `full` offloads gradients, FP32 masters, and optimizer state and runs the optimizer (AdamW or SignSGD) on CPU during backward; `fsdp` offloads params + grads + optimizer state through FSDP (big memory win, large throughput hit); `none` disables offloading. |
+| `trainer.model.offload` | CPU offloading: `optimizer` (default) offloads optimizer state between steps; `full` offloads gradients, FP32 masters, and optimizer state and runs the optimizer (AdamW or SignSGD) on CPU during backward; `none` disables offloading. |
 
 ### Expert Parallelism
 

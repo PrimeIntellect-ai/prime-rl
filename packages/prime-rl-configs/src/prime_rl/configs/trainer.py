@@ -49,7 +49,7 @@ class ActivationOffloadingConfig(BaseConfig):
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
 
 
-OffloadMode: TypeAlias = Literal["none", "optimizer", "full", "fsdp"]
+OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 
 class CompileConfig(BaseConfig):
@@ -262,7 +262,7 @@ class ModelConfig(BaseModelConfig):
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
     offload: OffloadMode = "optimizer"
-    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU, avoiding the H2D all-gather overhead of ``fsdp`` while still saving GPU memory. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``fsdp`` offloads parameters, gradients, and optimizer states through FSDP with pinned memory. ``none`` keeps everything on GPU."""
+    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -705,12 +705,6 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_scheduler_steps(self):
         validate_scheduler(self.scheduler, self.max_steps)
-        return self
-
-    @model_validator(mode="after")
-    def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.offload == "fsdp":
-            raise ValueError("Muon optimizer does not support FSDP CPU offload")
         return self
 
     @model_validator(mode="after")
