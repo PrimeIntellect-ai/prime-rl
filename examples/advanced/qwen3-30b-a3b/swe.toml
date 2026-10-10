@@ -16,6 +16,7 @@ num_infer_nodes = 2
 
 [slurm]
 job_name = "swe-qwen30b"
+partition = "all"
 
 [ckpt]
 interval = 100

@@ -16,6 +16,7 @@ num_infer_nodes = 12
 
 [slurm]
 job_name = "swe-minimax"
+partition = "all"
 
 [ckpt]
 interval = 100
