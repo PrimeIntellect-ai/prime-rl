@@ -285,6 +285,21 @@ ratio_high = 5.0
 | `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
+IcePop supports `score_centering = true`. Set `score_centering_topk = 128`
+for untruncated sampling and a proportional-tail approximation, or omit it
+for exact centering over complete replayed sampling support. The latter
+requires bounded training sampling (`top_k`) and the same replay settings
+on an uncentered control run.
+
+With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, SC subtracts
+`sum_v q_v*w_v*grad(log p_v)` from the sampled weighted score before
+advantage scaling. The correction applies even when the sampled token is
+rejected. On the proportional tail, the ratio is constant, so all tail
+actions are accepted or rejected together; no IPO tail-bound check is needed.
+Both tail masses are floored at `1e-6`, following the SC reference formulation.
+This is token-wise MIS with SC, not the original IcePop paper's additional
+old/current-policy PPO surrogate. The default ratio band remains `[0.2, 5]`.
+
 ### Score Centering
 
 [Score centering](https://arxiv.org/abs/2609.20807) subtracts the sampler-expected score from the policy-gradient update to reduce training/inference drift. To use the paper's top-k estimator with untruncated sampling:

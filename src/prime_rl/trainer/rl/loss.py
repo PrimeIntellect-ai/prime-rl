@@ -344,14 +344,45 @@ class IcePopLoss:
         if weights is not None:
             per_token_loss = per_token_loss * weights[keep_mask]
 
+        loss = per_token_loss.sum()
+        centering_metrics = {}
+        if loss_config.score_centering and log_importance_ratio.numel():
+            head, sampler, valid = _centering_head(inputs)
+            with torch.no_grad():
+                p = head.exp().masked_fill(~valid, 0.0)
+                q = sampler.exp().masked_fill(~valid, 0.0)
+                head_log_ratio = head - sampler
+                accepted = valid & (head_log_ratio >= log_ratio_low) & (head_log_ratio <= log_ratio_high)
+                # q * (p/q) * mask = p * mask, without unstable exponentiation.
+                mass = p.masked_fill(~accepted, 0.0)
+                if loss_config.score_centering_topk is not None:
+                    p_tail = (1.0 - p.sum(-1)).clamp_min(1e-6)
+                    q_tail = (1.0 - q.sum(-1)).clamp_min(1e-6)
+                    rho = q_tail / p_tail
+                    tail_log_ratio = -rho.log()
+                    # The proportional tail has one ratio; MIS accepts all or none.
+                    alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
+                    mass = mass - alpha.unsqueeze(-1) * p
+                    centering_metrics["score_centering/tail_scale"] = alpha
+                centering_metrics["score_centering/head_mass"] = q.sum(-1)
+                centering_metrics["score_centering/logit_correction_l1"] = (
+                    mass - p * mass.sum(-1, keepdim=True)
+                ).abs().sum(-1) + (1.0 - p.sum(-1)).clamp_min(0.0) * mass.sum(-1).abs()
+            correction = loss_config.adv_tau * advantages.detach() * (mass * head).sum(-1)
+            if weights is not None:
+                correction = correction * weights
+            # Rejected sampled actions still contribute the centering correction.
+            loss = loss + correction.sum()
+
         mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
+            **centering_metrics,
         }
-        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+        return LossOutputs(loss=loss, metrics=metrics)
 
 
 class PPOLoss:
