@@ -512,8 +512,8 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
     batch_size: int = Field(128, ge=1)
     """Samples to train on per step."""
