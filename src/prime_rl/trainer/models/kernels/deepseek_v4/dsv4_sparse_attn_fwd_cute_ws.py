@@ -62,6 +62,7 @@ BAR_S0_READY = 3
 BAR_S1_READY = 4
 BAR_SUM_READY = 5
 BAR_Q_READY = 6
+BAR_WG0_O_STAGED = 7
 
 MBAR_K_READY = 0
 MBAR_K_FREE = 4
@@ -176,6 +177,7 @@ def _fwd_kernel(
     tiled_mma_pv_rs: cute.TiledMma,
     tiled_mma_pv_ss: cute.TiledMma,
     tiled_copy_q: cute.TiledCopy,
+    tiled_store_o: cute.TiledCopy,
 ):
     tidx, _, _ = cute.arch.thread_idx()
     s_i, b_i, _ = cute.arch.block_idx()
@@ -388,8 +390,19 @@ def _fwd_kernel(
             rO_rows[r, None].store(rO_rows[r, None].load() * inv_sum)
         rOb = cute.make_fragment_like(rO, BFloat16)
         rOb.store(rO.load().to(BFloat16))
+        sO = cute.local_tile(sQ, (HEADS, HALF), (0, wg_idx))
+        smem_copy_o = cute.make_tiled_copy_C(
+            cute.make_copy_atom(warp.StMatrix8x8x16bOp(transpose=False, num_matrices=4), BFloat16), tiled_mma_pv_rs
+        )
+        thr_copy_o = smem_copy_o.get_slice(idx_in_wg)
+        cute.copy(smem_copy_o, thr_copy_o.retile(rOb), thr_copy_o.partition_D(sO))
+        cute.arch.barrier(barrier_id=BAR_WG0_O_STAGED + wg_idx, number_of_threads=WARPGROUP_THREADS)
+        thr_store_o = tiled_store_o.get_slice(idx_in_wg)
         gO = cute.local_tile(mOut[b_i, s_i, None, None], (HEADS, HALF), (0, wg_idx))
-        cute.autovec_copy(rOb, thr_rs.partition_C(gO))
+        tOsO = thr_store_o.partition_S(sO)
+        tOrO = cute.make_fragment_like(tOsO)
+        cute.copy(tiled_store_o, tOsO, tOrO)
+        cute.copy(tiled_store_o, tOrO, thr_store_o.partition_D(gO))
         if lane % 4 == 0 and wg_idx == 0:
             for r in cutlass.range_constexpr(n_rows):
                 mLse[b_i, s_i, head_of[r]] = cute.math.log2(rL[r], fastmath=True) + rM[r]
@@ -445,6 +458,11 @@ def _fwd(
         cute.make_ordered_layout((CONSUMER_THREADS // (DIM // CHUNK), DIM // CHUNK), order=(1, 0)),
         cute.make_layout((1, CHUNK)),
     )
+    tiled_store_o = cute.make_tiled_copy_tv(
+        cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), BFloat16, num_bits_per_copy=128),
+        cute.make_ordered_layout((WARPGROUP_THREADS // (HALF // CHUNK), HALF // CHUNK), order=(1, 0)),
+        cute.make_layout((1, CHUNK)),
+    )
     smem_bytes = (
         sum(cute.size_in_bytes(BFloat16, layout) for layout in (sQ_layout, sK_layout, sS_layout))
         + 4 * (2 * BLOCK_I + 3 * HEADS)
@@ -468,6 +486,7 @@ def _fwd(
         tiled_mma_pv_rs,
         tiled_mma_pv_ss,
         tiled_copy_q,
+        tiled_store_o,
     ).launch(grid=(mQ.shape[1], mQ.shape[0], 1), block=(THREADS, 1, 1), smem=smem_bytes, stream=stream)
 
 
