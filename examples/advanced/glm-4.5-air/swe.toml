@@ -48,7 +48,6 @@ keep_last = 1
 # --- Trainer ---
 
 [trainer]
-dist_timeout_seconds = 3600
 enable_router_replay = true
 
 [model]
@@ -123,4 +122,3 @@ gpu_memory_utilization = 0.85
 max_model_len = 131072
 tensor_parallel_size = 8
 enable_expert_parallel = true
-enable_return_routed_experts = true

@@ -37,7 +37,6 @@ name = "zai-org/GLM-4.5-Air"
 # --- Trainer ---
 
 [trainer]
-dist_timeout_seconds = 3600
 enable_router_replay = true
 
 [trainer.model]
@@ -52,9 +51,6 @@ fused_lm_head_token_chunk_size = 1024
 max_inflight_activations = 1
 
 [trainer.model.compile]
-
-[trainer.ckpt]
-skip_optimizer = true
 
 [trainer.optim]
 type = "muon"
@@ -175,4 +171,3 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 [inference.vllm]
 max_model_len = 131072
 tensor_parallel_size = 8
-enable_return_routed_experts = true
