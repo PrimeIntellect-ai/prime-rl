@@ -113,6 +113,27 @@ class DispatcherMetrics:
         return out
 
 
+def turn_policy_versions(trace: vf.Trace, policy: Policy) -> list[list[int]]:
+    """``[first, last]`` policy version inference served while each sampled node of ``trace``
+    was generated, in node order. A turn spans from the previous sampled node on its path
+    (or the trace start) to its own commit; weight updates keep in-flight requests, so one
+    turn can mix versions. From node wall-clock stamps, so exact up to clock skew between
+    the env server and the orchestrator."""
+    versions = []
+    for node in trace.nodes:
+        if not node.sampled:
+            continue
+        start = trace.timing.start
+        parent = node.parent
+        while parent is not None:
+            if trace.nodes[parent].sampled:
+                start = trace.nodes[parent].timestamp
+                break
+            parent = trace.nodes[parent].parent
+        versions.append([policy.version_at(start), policy.version_at(node.timestamp)])
+    return versions
+
+
 def _validate_episode_task(episode: vf.WireEpisode, task: vf.Task) -> None:
     expected = (task.key, task.hash)
     actual = (episode.task.key, episode.task.hash)
@@ -725,6 +746,9 @@ class Dispatcher:
         )
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
+        if live_policy:
+            for trace in episode.traces:
+                trace.info["policy_versions"] = turn_policy_versions(trace, self.policy)
         await self.out_q.put(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:

@@ -50,7 +50,7 @@ class WeightWatcher:
         async with self.update_lock:
             await self.receiver.sync_startup(step, timeout)
             self.ckpt_step = step
-            self.policy.version = step
+            self.policy.set_version(step)
             await self._notify_update(step)
 
     async def start(self) -> None:
@@ -113,7 +113,7 @@ class WeightWatcher:
             await self.receiver.receive(next_step)
             self.last_update_weights_time = time.perf_counter() - t1
             self.update_count += 1
-            self.policy.version = next_step
+            self.policy.set_version(next_step)
             get_logger().debug(
                 f"Updated inference weights to policy v{next_step} in {format_time(self.last_update_weights_time)}"
             )
