@@ -17,7 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.payload import read_field
+from prime_rl.transports.payload import PayloadSegment, read_field
 
 
 class TensorMicroBatch(TypedDict):
@@ -50,6 +50,9 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
+    # By-handle segments of routed_experts and sampling_mask. prepare_micro_batch reads them, so
+    # the reads of later micro batches overlap the current one's forward and backward.
+    payload: NotRequired[list[PayloadSegment] | None]
     # True when routed_experts and sampling_mask were read by handle for this rank's CP
     # window: already sharded, and the mask already shifted onto label positions.
     payload_cp_window: bool
@@ -184,10 +187,35 @@ class FakeDataLoader:
         }
 
 
+def _read_payload(micro_batch: TensorMicroBatch, segments: list[PayloadSegment], cp_rank: int, cp_size: int) -> None:
+    """Read the by-handle rows into the micro batch. Text micro batches read only this rank's CP
+    chunk, with the sampling mask taken one position ahead so it lands on the labels; multimodal
+    ones read the full sequence because the model may defer CP sharding."""
+    lo, hi, shift = 0, micro_batch["input_ids"].shape[1], 0
+    cp_window = micro_batch["mm_refs"] is None
+    if cp_window:
+        chunk = hi // cp_size
+        lo, hi, shift = chunk * cp_rank, chunk * (cp_rank + 1), 1
+    routed_experts = read_field(segments, "routed_experts", lo, hi, 0)
+    sampling_mask = read_field(segments, "sampling_mask", lo + shift, hi + shift, -1)
+    if routed_experts is not None:
+        micro_batch["routed_experts"] = torch.from_numpy(routed_experts).unsqueeze(0)
+    if sampling_mask is not None:
+        micro_batch["sampling_mask"] = torch.from_numpy(sampling_mask).unsqueeze(0)
+    micro_batch["payload_cp_window"] = cp_window
+
+
 def prepare_micro_batch(
-    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+    micro_batch: TensorMicroBatch,
+    processor: Any | None,
+    mm_adapter: MultimodalAdapter | None,
+    cp_rank: int,
+    cp_size: int,
 ) -> TensorMicroBatch:
-    """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
+    """Prepare a micro batch for the training loop: read its by-handle payload and materialize its images."""
+    segments = micro_batch.pop("payload", None)
+    if segments:
+        _read_payload(micro_batch, segments, cp_rank, cp_size)
     micro_batch["mm_kwargs"] = None
     micro_batch["mm_forward_policy"] = None
     mm_refs = micro_batch.get("mm_refs")
@@ -210,12 +238,8 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
-        cp_rank: int,
-        cp_size: int,
     ):
         self.world = get_world()
-        self.cp_rank = cp_rank
-        self.cp_size = cp_size
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
@@ -253,11 +277,6 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
-        payload_cp_window = False
-        if micro_batch.payload:
-            payload_routed_experts, payload_sampling_mask, payload_cp_window = self._read_payload(micro_batch)
-            routed_experts = payload_routed_experts if payload_routed_experts is not None else routed_experts
-            sampling_mask = payload_sampling_mask if payload_sampling_mask is not None else sampling_mask
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -281,7 +300,8 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
-            payload_cp_window=payload_cp_window,
+            payload=micro_batch.payload,
+            payload_cp_window=False,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.rl_weights is not None
             else None,
@@ -292,24 +312,6 @@ class DataLoader:
             if micro_batch.ref_kl_weights is not None
             else None,
         )
-
-    def _read_payload(self, micro_batch: MicroBatch) -> tuple[Tensor | None, Tensor | None, bool]:
-        """Read the by-handle rows. Text micro batches read only this rank's CP chunk, with
-        the sampling mask taken one position ahead so it lands on the labels; multimodal
-        ones read the full sequence because the model may defer CP sharding."""
-        segments = micro_batch.payload
-        lo, hi, shift = 0, len(micro_batch.input_ids), 0
-        cp_window = micro_batch.mm_refs is None
-        if cp_window:
-            chunk = hi // self.cp_size
-            lo, hi, shift = chunk * self.cp_rank, chunk * (self.cp_rank + 1), 1
-        routed_experts = read_field(segments, "routed_experts", lo, hi, 0)
-        sampling_mask = read_field(segments, "sampling_mask", lo + shift, hi + shift, -1)
-        if routed_experts is not None:
-            routed_experts = torch.from_numpy(routed_experts).unsqueeze(0)
-        if sampling_mask is not None:
-            sampling_mask = torch.from_numpy(sampling_mask).unsqueeze(0)
-        return routed_experts, sampling_mask, cp_window
 
 
 def _torch_dtype(name: str) -> torch.dtype:
