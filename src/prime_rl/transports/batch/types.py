@@ -81,6 +81,13 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
 
 
 # Orchestrator -> Trainer
+class ControlTag(msgspec.Struct, array_like=True, gc=False):
+    """A run-control request (see ``prime_rl.utils.control``) the trainer acts on after this step."""
+
+    id: str
+    action: str
+
+
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """A micro batch of data for training."""
 
@@ -115,3 +122,7 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
+
+    # Set on every micro batch of the step a control request applies to; appended for
+    # wire-layout stability.
+    control: ControlTag | None = None

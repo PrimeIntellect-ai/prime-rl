@@ -32,6 +32,8 @@ dependencies = [
     "renderers[multimodal]>=0.1.12.dev2",
     "pybase64>=1.4.2",
     "msgspec>=0.18",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]

@@ -59,12 +59,35 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.control import (
+    PAUSE_REPORT_TIMEOUT_S,
+    ControlCommit,
+    ControlPlane,
+    ControlRecord,
+    get_control_dir,
+    start_control_server_thread,
+    write_commit,
+)
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
+
+
+CONTROL_ACTIONS = (None, "checkpoint", "pause")
+
+
+def take_control(plane: ControlPlane | None, step: int) -> tuple[str | None, ControlRecord | None]:
+    """The action of the master's pending control request, which every rank applies to ``step``,
+    and the request itself on the master."""
+    record = plane.take() if plane is not None else None
+    if record is not None:
+        plane.accept(record, step)
+    code = torch.tensor(CONTROL_ACTIONS.index(record.action if record else None), device="cuda")
+    dist.broadcast(code, src=0)
+    return CONTROL_ACTIONS[code.item()], record
 
 
 @clean_exit
@@ -400,12 +423,22 @@ def train(config: SFTConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
+    control_dir = get_control_dir(config.run_dir)
+    control_plane = ControlPlane(control_dir) if config.control is not None and world.is_master else None
+    if control_plane is not None:
+        start_control_server_thread(control_plane, config.control)
+    control_action, control = None, None
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
+        if config.control is not None:
+            control_action, control = take_control(control_plane, progress.step)
+            if control_action is not None:
+                logger.info(f"Control request: {control_action} at step {progress.step}")
+                is_last_step = is_last_step or control_action == "pause"
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
@@ -532,13 +565,16 @@ def train(config: SFTConfig):
         # online-eval steps — they are how the inference server picks up the new policy.
         save_ckpt_time = 0
         is_ckpt_step = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
-        if ckpt_manager is not None and is_ckpt_step and not is_last_step:
+        checkpoint_requested = control_action == "checkpoint"
+        if ckpt_manager is not None and (is_ckpt_step or checkpoint_requested) and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
+            if checkpoint_requested and control is not None:
+                write_commit(control_dir, ControlCommit(id=control.id, action=control.action, step=progress.step))
 
         broadcast_weights_time = 0
         if weight_sender is not None and not is_last_step and is_online_eval_step(progress.step):
@@ -671,13 +707,17 @@ def train(config: SFTConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None:
+    paused = control_action == "pause"
+    if config.ckpt is not None or control_action is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
+        if control is not None:
+            write_commit(control_dir, ControlCommit(id=control.id, action=control.action, step=progress.step))
 
-    # Broadcast the final weights so the evals process can run its forced final epoch
-    if weight_sender is not None:
+    # Broadcast the final weights so the evals process can run its forced final epoch. A paused
+    # run has no final epoch.
+    if weight_sender is not None and not paused:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
 
@@ -685,8 +725,10 @@ def train(config: SFTConfig):
         gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("SFT trainer finished")
-    asyncio.run(monitors.finalize())
+    logger.success("SFT trainer paused" if paused else "SFT trainer finished")
+    asyncio.run(monitors.finalize(paused=paused))
+    if paused and control is not None:
+        control_plane.wait_reported(control.id, PAUSE_REPORT_TIMEOUT_S)
 
 
 def main():

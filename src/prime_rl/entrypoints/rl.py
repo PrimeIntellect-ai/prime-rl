@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
 from prime_rl.utils.config import cli, dump_resolved_config
+from prime_rl.utils.control import get_control_dir, paused_since
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -110,6 +112,7 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
 
 def rl_local(config: RLConfig):
     assert config.deployment.type == "single_node"
+    launched_at = time.time()
 
     logger = setup_logger(
         config.log.level or os.environ.get("PRIME_LOG_LEVEL", "info"),
@@ -264,7 +267,10 @@ def rl_local(config: RLConfig):
 
         # Trainer and orchestrator completion is the successful stop condition.
         processes.wait("trainer", "orchestrator")
-        logger.success("Training finished!")
+        if paused_since(get_control_dir(config.run_dir), launched_at):
+            logger.success("Training paused!")
+        else:
+            logger.success("Training finished!")
 
 
 def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script_path: Path) -> None:

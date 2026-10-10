@@ -177,7 +177,7 @@ class FileMonitor(Monitor):
 
         await asyncio.to_thread(write)
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         for stream, index in self._streams.values():
             stream.close()
             index.close()
