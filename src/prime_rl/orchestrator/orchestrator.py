@@ -980,6 +980,7 @@ class Orchestrator:
         await self.ckpt_manager.save(
             self.progress, self.train_source, self.train_sink, self.dispatcher.open_train_groups(), step
         )
+        self.delete_payloads(self.train_sink.pin_snapshot())
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs
@@ -1018,12 +1019,13 @@ class Orchestrator:
         self.delete_payloads(set().union(*(self.unread_payloads.pop(s) for s in read)))
         # Orphans (in-flight episodes that were cancelled or failed, files from before a resume):
         # unread batches only hold rollouts dispatched at min_fresh_version(step + 1) or later.
-        oldest = min_fresh_version(step + 1, self.config.max_off_policy_steps)
+        oldest = min(min_fresh_version(step + 1, self.config.max_off_policy_steps), self.train_sink.pinned_version)
         asyncio.get_running_loop().run_in_executor(None, delete_payloads_before, self.config.payload_root, oldest)
 
     def delete_payloads(self, files: set[str]) -> None:
         """Delete payload files in the background: on a shared filesystem, unlinking a step's
         ~10^4-10^5 files must not hold up the weight update this runs under."""
+        files = self.train_sink.releasable(files)
         if files:
             asyncio.get_running_loop().run_in_executor(None, delete_files, files)
 

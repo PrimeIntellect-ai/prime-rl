@@ -107,6 +107,14 @@ class TrainSink:
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.queued: dict[str, QueuedTrace] = {}
+        # By-handle payload files the latest checkpoint points into (and the oldest
+        # policy version among them): a resume from it needs them, so they outlive
+        # their samples until the next checkpoint. ``held_back`` are pinned files
+        # that would otherwise have been deleted.
+        self.pinned: set[str] = set()
+        self.pinned_version = math.inf
+        self.held_back: set[str] = set()
+        self._snapshot: tuple[set[str], float] = (set(), math.inf)
         # Episodes of queued traces, for the shipped cohort's metrics. Traces
         # replayed from a checkpoint have none.
         self.episode_by_trace: dict[str, vf.Episode] = {}
@@ -124,7 +132,19 @@ class TrainSink:
         for a batch (samples plus :class:`QueuedTrace`, no episodes), and every
         train group still open in the dispatcher (``open_groups``: group id ->
         env and task) with its finished episodes. Copies are shallow: queued
-        samples and finished episodes are not mutated before they ship."""
+        samples and finished episodes are not mutated before they ship.
+
+        Also records the payload files the snapshot points into; ``pin_snapshot``
+        protects them once the checkpoint is written."""
+        groups = [self.pending_groups.get(group_id, []) for group_id in open_groups]
+        self._snapshot = (
+            self._sample_files(self.pending_batch) | payload_files(episode for group in groups for episode in group),
+            min(
+                [queued.policy_start for queued in self.queued.values()]
+                + [policy.start for group in groups for episode in group if (policy := train_work(episode).policy)],
+                default=math.inf,
+            ),
+        )
         return {
             "pending_batch": dict(self.pending_batch),
             "queued": dict(self.queued),
@@ -163,11 +183,38 @@ class TrainSink:
             requests.append(
                 TaskRequest(env_name=env_name, task=task, step=self.progress.step, rollouts=rollouts, group_id=group_id)
             )
+        self.pinned = self._sample_files(self.pending_batch) | payload_files(
+            episode for group in self.pending_groups.values() for episode in group
+        )
+        self.pinned_version = min_version
         get_logger().info(
             f"Resuming with {len(self.pending_batch)} queued traces and {len(requests)} open groups "
             f"({kept} finished episodes kept)"
         )
         return requests
+
+    @staticmethod
+    def _sample_files(samples_by_trace: dict[str, list[TrainingSample]]) -> set[str]:
+        return {
+            segment.file
+            for samples in samples_by_trace.values()
+            for sample in samples
+            for segment in sample.payload or ()
+        }
+
+    def pin_snapshot(self) -> set[str]:
+        """Protect the payload files of the last ``state_dict`` snapshot (now written to a
+        checkpoint) until the next one replaces it. Returns the previously pinned files
+        whose deletion was held back and that the new checkpoint no longer needs."""
+        self.pinned, self.pinned_version = self._snapshot
+        released = self.held_back - self.pinned
+        self.held_back -= released
+        return released
+
+    def releasable(self, files: set[str]) -> set[str]:
+        """The files that may be deleted now; deletion of pinned files is held back."""
+        self.held_back |= files & self.pinned
+        return files - self.pinned
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -264,7 +311,7 @@ class TrainSink:
             self.episode_by_trace.pop(trace_id, None)
             self.pending_episodes.cancelled.add(self.queued.pop(trace_id).episode_id)
             dropped += 1
-        delete_files(files)
+        delete_files(self.releasable(files))
         if dropped:
             self.stale_drops += dropped
             get_logger().warning(
@@ -286,7 +333,7 @@ class TrainSink:
         if files:
             queued = (self.pending_batch.get(trace.id, ()) for episode in group for trace in episode.traces)
             files -= {segment.file for samples in queued for sample in samples for segment in sample.payload or ()}
-            await asyncio.to_thread(delete_files, files)
+            await asyncio.to_thread(delete_files, self.releasable(files))
 
     async def _process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
