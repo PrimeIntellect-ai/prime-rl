@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import math
 from collections.abc import Callable
 from unittest.mock import MagicMock
@@ -209,7 +210,15 @@ SM_SCALE = DIM**-0.5
 SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
 SHAPE_IDS = ["aligned", "misaligned", "batched"]
 
-DSV4_BACKENDS = ["tilelang"]
+requires_cudnn_flashmla = pytest.mark.skipif(
+    importlib.util.find_spec("flash_mla") is None
+    or importlib.util.find_spec("cudnn") is None
+    or not torch.cuda.is_available()
+    or torch.cuda.get_device_capability()[0] != 9,
+    reason="the cudnn_flashmla backend needs the `flash-mla` extra, the cuDNN frontend and an SM90 GPU",
+)
+
+DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
 
 # What a real query with a short window or a saturated top-k looks like; a masked slot still
 # costs a GEMM column.
@@ -466,9 +475,11 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     """All three differentiable inputs, each against its own bound.
 
     `dsink` is the one term the kernel forms in torch rather than in tilelang, out of the `Delta`
-    the backward returns, so it is the assertion that would catch a wrong `Lse` convention.
+    the backward returns, so it is the assertion that would catch a wrong `Lse` convention. The
+    first query gathers nothing, so its `Lse` is the sink term alone on the way back too.
     """
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
+    indices[:, 0] = IGNORE_SLOT
     kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
     reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
 

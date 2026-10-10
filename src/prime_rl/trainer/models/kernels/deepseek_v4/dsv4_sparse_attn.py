@@ -2,7 +2,8 @@
 # and `prime_rl::dsv4_sparse_attn_backward` custom ops, their fake (meta) implementations, and the
 # autograd rule that ties them together and forms the attention-sink gradient in torch. The
 # TileLang kernels themselves live in `dsv4_sparse_attn_fwd.py` and `dsv4_sparse_attn_bwd.py`; this
-# module is the only place that knows both exist.
+# module is the only place that knows both exist. The `cudnn_flashmla` backend calls FlashMLA's
+# sparse prefill forward and the cuDNN frontend's DSA backward from their wheels.
 
 # TileLang ships a libcudart stub that proxies to the real CUDA runtime via
 # dlsym(RTLD_DEFAULT, ...).  If the stub's own symbols are the first ones found
@@ -10,6 +11,7 @@
 # and the stub calls abort().  Pre-loading the real library with RTLD_GLOBAL
 # ensures dlsym finds it before the stub's own exports.
 import ctypes as _ctypes
+import math
 
 try:
     _ctypes.CDLL("libcudart.so", mode=_ctypes.RTLD_GLOBAL)
@@ -62,12 +64,7 @@ def num_tiles_covering_valid_slots(indices: torch.Tensor, tile_size: int) -> tor
     return last_valid_slot_idx // tile_size + 1
 
 
-def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
-    """The reason these kernels cannot serve this shape, or ``None`` if they can.
-
-    The forward, the backward and the constructor check in `deepseek_v4/attention.py` all need
-    the same answer, so the constraints live here only.
-    """
+def _tilelang_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     # The backward's `preprocess` tiles the channel axis at `block_ND = 32` and reads whole
     # tiles, so a `dim` below that (or not a multiple of it) over-reads into the next head and
     # silently corrupts `Delta`, hence every gradient. This subsumes `atomic_addx4`'s own
@@ -94,6 +91,30 @@ def sparse_attn_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
             "its GEMM over min(64, heads) rows fails to compile below that"
         )
     return None
+
+
+def _cudnn_flashmla_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
+    if kv_group != 1:
+        return f"FlashMLA and the cuDNN backward serve a single KV head, but this shape has {kv_group}"
+    if heads not in (64, 128):
+        return f"FlashMLA's sparse prefill serves 64 or 128 query heads, but this shape has {heads}"
+    if dim != 512:
+        return f"FlashMLA's sparse prefill and the cuDNN backward need head_dim 512 here, but it is {dim}"
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9:
+        return "the cudnn_flashmla backend runs on SM90 only; its SM100 paths are untested for DeepSeek V4"
+    return None
+
+
+SHAPE_ERRORS = {"tilelang": _tilelang_shape_error, "cudnn_flashmla": _cudnn_flashmla_shape_error}
+
+
+def sparse_attn_shape_error(heads: int, kv_group: int, dim: int, backend: str = "tilelang") -> str | None:
+    """The reason `backend`'s kernels cannot serve this shape, or ``None`` if they can.
+
+    The forward, the backward and the constructor check in `deepseek_v4/attention.py` all need
+    the same answer, so the constraints live here only.
+    """
+    return SHAPE_ERRORS[backend](heads, kv_group, dim)
 
 
 def _tilelang_forward(
@@ -129,7 +150,72 @@ def _tilelang_forward(
     return out, lse
 
 
-FORWARD_BACKENDS = {"tilelang": _tilelang_forward}
+# FlashMLA's SM90 sparse prefill reads slots two 64-wide tiles at a time, so it needs a multiple of 128.
+# The cuDNN backward compiles one kernel per slot width, so widths are rounded up to a few buckets.
+CUDNN_FLASHMLA_SLOT_TILE = 128
+CUDNN_FLASHMLA_SLOT_BUCKETS = (128, 256, 512, 640, 768, 1024)
+CUDNN_FLASHMLA_WIDE_SLOT_STEP = 512
+
+
+def cudnn_flashmla_slot_width(n_slots: int) -> int:
+    """The bucketed slot width the cudnn_flashmla kernels run `n_slots` slots at."""
+    for width in CUDNN_FLASHMLA_SLOT_BUCKETS:
+        if n_slots <= width:
+            return width
+    return -(-n_slots // CUDNN_FLASHMLA_WIDE_SLOT_STEP) * CUDNN_FLASHMLA_WIDE_SLOT_STEP
+
+
+def _flat_cudnn_flashmla_indices(indices: torch.Tensor, n_positions: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Bucket-padded global indices into the batch-flattened KV, and each query's valid prefix length.
+
+    `indices` is `(batch, seq_len, 1, n_slots)` with batch-local positions. The results are
+    `(batch * seq_len, width)` and `(batch * seq_len,)`, both int32, with absent slots at -1.
+    """
+    batch, seq_len, _, n_slots = indices.shape
+    width = cudnn_flashmla_slot_width(n_slots)
+    padded = F.pad(indices, (0, width - n_slots), value=IGNORE_SLOT)
+    batch_offset = torch.arange(batch, device=indices.device, dtype=indices.dtype).view(batch, 1, 1, 1) * n_positions
+    is_valid_slot = padded >= 0
+    flat_indices = torch.where(is_valid_slot, padded + batch_offset, IGNORE_SLOT).view(batch * seq_len, width)
+    slot_numbers = torch.arange(1, width + 1, device=indices.device, dtype=torch.int32)
+    topk_length = torch.where(is_valid_slot, slot_numbers, 0).amax(dim=-1).view(batch * seq_len)
+    return flat_indices.contiguous(), topk_length
+
+
+def _cudnn_flashmla_forward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sinks: torch.Tensor,
+    sm_scale: float | None,
+    _block_I: int,
+    _num_stages: int,
+    _threads: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    from flash_mla import flash_mla_sparse_fwd
+
+    batch, seq_len, heads, dim = q.shape
+    n_positions = kv.shape[1]
+    if sm_scale is None:
+        sm_scale = dim**-0.5
+    flat_indices, topk_length = _flat_cudnn_flashmla_indices(indices, n_positions)
+    sink_logits = sinks.float().contiguous()
+    out, _max_logits, sinkless_lse = flash_mla_sparse_fwd(
+        q.view(batch * seq_len, heads, dim),
+        kv.view(batch * n_positions, 1, dim),
+        flat_indices.unsqueeze(1),
+        sm_scale,
+        dim,
+        attn_sink=sink_logits,
+        topk_length=topk_length,
+    )
+    # FlashMLA's LSE is natural-log and leaves the sink out, and it is +inf for a query with no
+    # valid slot. The public LSE is TileLang's: base-2, sink included, the sink alone when empty.
+    lse = torch.where(torch.isfinite(sinkless_lse), torch.logaddexp(sinkless_lse, sink_logits), sink_logits) * LOG2E
+    return out.view(batch, seq_len, heads, dim), lse.view(batch, seq_len, heads)
+
+
+FORWARD_BACKENDS = {"tilelang": _tilelang_forward, "cudnn_flashmla": _cudnn_flashmla_forward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn", mutates_args=())
@@ -158,7 +244,7 @@ def dsv4_sparse_attn(
     assert q.dtype == torch.bfloat16, (
         f"the sparse attention kernel runs in bfloat16 only, but the queries are {q.dtype}"
     )
-    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
+    shape_error = sparse_attn_shape_error(heads, kv_group, dim, backend)
     assert shape_error is None, shape_error
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert sinks.shape == (heads,)
@@ -209,7 +295,37 @@ def _tilelang_backward(
     return dq, dkv, delta
 
 
-BACKWARD_BACKENDS = {"tilelang": _tilelang_backward}
+def _cudnn_flashmla_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    sm_scale: float | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+
+    batch, seq_len, heads, dim = q.shape
+    n_positions = kv.shape[1]
+    flat_indices, topk_length = _flat_cudnn_flashmla_indices(indices, n_positions)
+    # A sink-inclusive natural-log LSE with no `attn_sink` makes cuDNN's `exp(s - lse)` exactly the
+    # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
+    dq, dkv = flash_attn_bwd_sm90(
+        q.view(batch * seq_len, heads, dim),
+        kv.view(batch * n_positions, dim),
+        out.view(batch * seq_len, heads, dim),
+        grad_out.view(batch * seq_len, heads, dim),
+        (lse * math.log(2.0)).view(batch * seq_len, heads),
+        softmax_scale=sm_scale,
+        topk_idxs=flat_indices,
+        topk_length=topk_length,
+    )
+    delta = (out.float() * grad_out.float()).sum(dim=-1)
+    return dq.view_as(q), dkv.view_as(kv), delta
+
+
+BACKWARD_BACKENDS = {"tilelang": _tilelang_backward, "cudnn_flashmla": _cudnn_flashmla_backward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn_backward", mutates_args=())
@@ -236,7 +352,7 @@ def dsv4_sparse_attn_backward(
     assert kv.shape[-1] == dim, "q and kv must share the full channel dim; DS V4 has no score-only tail"
     assert kv.shape[0] == batch
     # This op is public, so it repeats the forward's shape checks rather than trusting autograd.
-    shape_error = sparse_attn_shape_error(heads, kv_group, dim)
+    shape_error = sparse_attn_shape_error(heads, kv_group, dim, backend)
     assert shape_error is None, shape_error
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert lse.shape == (batch, seq_len, heads)
