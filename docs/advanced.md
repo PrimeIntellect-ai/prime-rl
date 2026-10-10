@@ -39,7 +39,7 @@ and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 che
 
 Dense linear precision and routed-expert precision are configured independently. `[trainer.model.quantization]` applies only to dense `Linear` modules:
 
-- `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90+).
+- `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90+). DeepSeek V4 currently crashes on it (DeepGEMM assertion on a [32768 x 65536] linear); `moe.compute.type = "deepgemm_fp8"` alone works.
 - `type = "mxfp8"` — torchao MXFP8 linears (requires SM100). `recipe` is `mxfp8_rceil` or `mxfp8_rceil_wgrad_with_hp`.
 
 `[trainer.model.moe.compute]` selects routed-expert compute independently:

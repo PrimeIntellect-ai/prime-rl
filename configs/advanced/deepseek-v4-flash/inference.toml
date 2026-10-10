@@ -33,3 +33,8 @@ kv_cache_dtype = "fp8"
 # Recipe-derived rather than measured here: every NVIDIA configuration in the vLLM recipe pairs
 # the fp8 KV cache with this block size.
 block_size = 256
+
+[env_vars]
+# Required on H200: without a full warmup, DeepGEMM JIT-compiles kernels during CUDA graph capture and
+# the server crashes at startup.
+VLLM_DEEP_GEMM_WARMUP = "full"
