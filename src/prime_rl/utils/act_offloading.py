@@ -324,4 +324,4 @@ def maybe_activation_offloading(config: ActivationOffloadingConfig | None) -> Of
     if config is None:
         return nullcontext()
 
-    return OffloadActivations()
+    return OffloadActivations(max_fwd_stash_size=config.max_inflight_activations)

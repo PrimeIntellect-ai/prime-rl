@@ -12,6 +12,7 @@ ep = 8
 freq = 1
 
 [model.ac_offloading]
+max_inflight_activations = 5
 
 [optim]
 type = "adamw"

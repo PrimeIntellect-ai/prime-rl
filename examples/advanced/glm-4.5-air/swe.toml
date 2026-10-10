@@ -62,6 +62,7 @@ cp_style = "ulysses"
 [trainer.model.ac]
 
 [trainer.model.ac_offloading]
+max_inflight_activations = 1
 
 [trainer.model.compile]
 
