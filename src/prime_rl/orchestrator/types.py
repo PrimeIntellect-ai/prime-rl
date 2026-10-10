@@ -106,6 +106,8 @@ class InflightEpisode:
     client_config: vf.ClientConfig | None = None
     started_at: float = 0.0
     """``time.monotonic()`` at dispatch; feeds episode-duration estimates."""
+    progressed_at: float = 0.0
+    """``time.monotonic()`` of the last delta the env server streamed for the episode."""
     dispatch_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     """Names the episode on the live view from dispatch until its first trace streams."""
     live: dict[str, LiveTrace] = field(default_factory=dict)

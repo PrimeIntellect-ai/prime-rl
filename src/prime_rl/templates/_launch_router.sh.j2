@@ -81,6 +81,17 @@ LLMD_EOF
     else
         cmd+=(--worker-urls $worker_args)
     fi
-    "${cmd[@]}" >> "$log" 2>&1 &
+    # The router is stateless, so a crashed router is restarted in place (same port and worker
+    # list; its health check drops dead workers) instead of tearing down the job.
+    (
+        trap 'kill "$pid" 2>/dev/null; exit' TERM
+        while true; do
+            "${cmd[@]}" >> "$log" 2>&1 &
+            pid=$!
+            wait "$pid" && break
+            echo "$tag exited with code $? - restarting" | tee -a "$log"
+            sleep 2
+        done
+    ) &
 {%- endif %}
 }

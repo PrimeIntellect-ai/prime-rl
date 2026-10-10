@@ -1,8 +1,8 @@
 import json
 import os
-import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
@@ -215,15 +215,18 @@ def inference_local(config: InferenceConfig):
     router_stopping = Event()
     if config.router is not None:
         logger.info(f"Starting router on http://{host}:{port}/v1 (engine on port {config.backend_port})\n")
-        router_process = start_router(config)
+        router_config = config.model_copy(deep=True)
+        router_process = start_router(router_config)
         # The router owns the client-facing port; the engine moves behind it.
         config.server.port = config.backend_port
 
         def watch_router():
-            router_process.wait()
-            if not router_stopping.is_set():
-                logger.error(f"Router exited with code {router_process.returncode} - shutting down")
-                os.kill(os.getpid(), signal.SIGTERM)
+            # The router is stateless: restart a crashed one in place instead of stopping inference
+            nonlocal router_process
+            while router_process.wait() is not None and not router_stopping.is_set():
+                logger.error(f"Router exited with code {router_process.returncode} - restarting it")
+                time.sleep(2)
+                router_process = start_router(router_config)
 
         Thread(target=watch_router, daemon=True).start()
     else:

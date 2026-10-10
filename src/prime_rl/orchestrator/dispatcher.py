@@ -581,6 +581,7 @@ class Dispatcher:
         session_ids: set[str] = set()
 
         def on_delta(delta: dict) -> None:
+            meta.progressed_at = time.monotonic()
             session_ids.add(delta["trace"])
             first = not meta.live
             live.apply(meta, delta)
@@ -812,6 +813,18 @@ class Dispatcher:
         if train_tasks:
             await safe_cancel_all(train_tasks)
         return cancelled
+
+    async def cancel_stuck(self, since: float) -> int:
+        """Drop the groups of episodes that made no progress since ``since`` (an engine was
+        evicted then): their requests can hang on an engine that is alive but stuck."""
+        group_ids = {
+            meta.group_id for meta in self.inflight.values() if max(meta.started_at, meta.progressed_at) < since
+        }
+        for group_id in group_ids:
+            await self.drop_group(group_id, reason="superseded")
+        if group_ids:
+            get_logger().warning(f"Dropped {len(group_ids)} groups stuck since an inference engine was evicted")
+        return len(group_ids)
 
     async def cancel_eval_step(self, step: int) -> int:
         """Cancel queued and active eval groups for a superseded checkpoint.

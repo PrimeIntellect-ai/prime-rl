@@ -1,4 +1,6 @@
 import pickle
+import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
@@ -74,6 +76,7 @@ class NCCLWeightBroadcastReceiver:
 
         pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout)
         self.communicator = PyNcclCommunicator(pg, device=device)
+        self.port = port
 
     @torch.no_grad()
     def receive_state_dict(self):
@@ -146,10 +149,28 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        load_weights_checkpoint_layerwise(
-            model,
-            state_iter,
-            self.model_runner.model_config,
-            self.vllm_config,
-        )
+        receiver = self.nccl_broadcast_receiver
+        # The orchestrator writes this marker when another engine dies during the transfer;
+        # aborting unblocks the collective so the survivors can regroup and receive again.
+        abort_marker = Path(weight_dir) / f".abort_{receiver.port}"
+        done = threading.Event()
+
+        def abort_on_marker() -> None:
+            while not done.wait(0.5):
+                if abort_marker.exists():
+                    logger.warning("Aborting the NCCL weight receive: another engine died")
+                    receiver.communicator.destroy()
+                    return
+
+        threading.Thread(target=abort_on_marker, daemon=True).start()
+        try:
+            load_weights_checkpoint_layerwise(
+                model,
+                receiver.receive_state_dict(),
+                self.model_runner.model_config,
+                self.vllm_config,
+            )
+        finally:
+            done.set()
+        if receiver.communicator.disabled:
+            raise RuntimeError("The weight transfer was aborted")
