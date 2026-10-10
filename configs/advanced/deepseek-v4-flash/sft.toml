@@ -51,7 +51,7 @@ lr = 1e-5
 project = "deepseek-v4-flash"
 name = "deepseek-v4-flash-sft"
 
-# `num_infer_nodes` defaults to 0, so this allocates 4 nodes and runs only the trainer.
+# `infer_nodes_per_replica` defaults to 0, so this allocates 4 nodes and runs only the trainer.
 [deployment]
 type = "multi_node"
 num_train_nodes = 4

@@ -218,7 +218,7 @@ def write_slurm_script(
             trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_train_nodes,
             num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
+            num_infer_nodes=config.deployment.infer_nodes_per_replica if online_eval else 0,
             gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
             prl_run_id=prl_run_id,
@@ -280,7 +280,7 @@ def sft_slurm(config: SFTConfig):
         eval=online_eval,
         inference=online_eval,
         env_names={"eval": [source.resolved_name for source in eval_env_servers(config)]} if online_eval else None,
-        num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
+        num_infer_nodes=config.deployment.infer_nodes_per_replica if online_eval else 0,
     )
 
     if config.dry_run:

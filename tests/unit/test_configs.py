@@ -703,7 +703,7 @@ def test_multi_node_auto_inference_parallelism():
                 "type": "multi_node",
                 "gpus_per_node": 8,
                 "num_train_nodes": 1,
-                "num_infer_nodes": 2,
+                "infer_nodes_per_replica": 2,
             },
             "slurm": {},
         }

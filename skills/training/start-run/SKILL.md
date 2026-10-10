@@ -70,7 +70,7 @@ uv run sft @ examples/basic/reverse-text/sft.toml --dry-run
 - Config: `SFTConfig` (`packages/prime-rl-configs/src/prime_rl/configs/sft.py`)
 - Entrypoint: `src/prime_rl/entrypoints/sft.py`
 - SLURM: single- and multi-node
-- Multi-node online evals use one SLURM job with `num_train_nodes + num_infer_nodes` nodes. The generated `launcher/sft.sbatch` assigns inference nodes first, then trainer nodes.
+- Multi-node online evals use one SLURM job with `num_train_nodes + infer_nodes_per_replica` nodes. The generated `launcher/sft.sbatch` assigns inference nodes first, then trainer nodes.
 
 ## `inference` — vLLM server
 

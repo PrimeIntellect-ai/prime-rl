@@ -240,13 +240,13 @@ The launcher starts the inference server, one env server per eval source, and an
 
 #### Multi-Node Trainer and Inference Pool
 
-On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.num_infer_nodes` nodes. The first `num_infer_nodes` run the inference pool, router, env servers, and online-eval process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
+On a `multi_node` deployment, one SLURM job reserves `deployment.num_train_nodes + deployment.infer_nodes_per_replica` nodes. The first `infer_nodes_per_replica` run the inference pool, router, env servers, and online-eval process. The remaining nodes run the trainer. The inference pool runs one vLLM engine per DP rank behind one router, with `gpus_per_node / inference.vllm.tensor_parallel_size` engines per node:
 
 ```toml
 [deployment]
 type = "multi_node"
 num_train_nodes = 2  # trainer nodes
-num_infer_nodes = 1  # inference pool + online evals
+infer_nodes_per_replica = 1  # inference pool + online evals
 
 [inference.vllm]
 tensor_parallel_size = 8

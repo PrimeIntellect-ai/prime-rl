@@ -133,21 +133,17 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     num_train_nodes: int
     """Training nodes."""
 
-    num_infer_nodes: int | None = Field(None, ge=0)
-    """Inference nodes per replica. If unset, inferred from ``inference.deployment``. Set to 0 to skip inference and orchestrator (requires fake data)."""
+    infer_nodes_per_replica: int | None = Field(None, ge=0)
+    """Inference nodes per replica. If unset, the nodes of a disaggregated ``inference.deployment``, else 1. Set to 0 to skip inference and orchestrator (requires fake data)."""
 
     num_infer_replicas: int = Field(1, ge=1)
-    """Independent inference replicas. Total inference nodes = ``num_infer_nodes * num_infer_replicas``."""
+    """Independent inference replicas. Total inference nodes = ``infer_nodes_per_replica * num_infer_replicas``."""
 
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
     orchestrator_on_inference: bool = False
     """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
-
-    @property
-    def infer_nodes_per_replica(self) -> int:
-        return self.num_infer_nodes or 0
 
     @property
     def total_infer_nodes(self) -> int:
@@ -239,30 +235,24 @@ class RLConfig(BaseConfig):
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
-    def auto_setup_infer_nodes(self):
-        if self.deployment.type != "multi_node":
-            return self
-
-        if self.inference is None:
-            inferred_nodes = 0
-        elif self.inference.deployment.type == "multi_node":
-            inferred_nodes = self.inference.deployment.num_nodes
-        elif self.inference.deployment.type == "disaggregated":
-            inferred_nodes = self.inference.deployment.num_nodes
-        else:
-            inferred_nodes = 1
-
-        if self.deployment.num_infer_nodes is None:
-            self.deployment.num_infer_nodes = inferred_nodes
-        elif (
-            self.inference is not None
-            and self.inference.deployment.type == "multi_node"
-            and self.deployment.num_infer_nodes != inferred_nodes
-        ):
+    def validate_inference_deployment(self):
+        if self.inference is not None and self.inference.deployment.type == "multi_node":
             raise ValueError(
-                f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal "
-                f"inference.deployment.num_nodes ({inferred_nodes}) for multi-node inference."
+                "inference.deployment.type = 'multi_node' is not supported by the rl entrypoint. Set the inference "
+                "topology on the top-level deployment (deployment.infer_nodes_per_replica, deployment.num_infer_replicas)."
             )
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_infer_nodes(self):
+        if self.deployment.type != "multi_node" or self.deployment.infer_nodes_per_replica is not None:
+            return self
+        if self.inference is None:
+            self.deployment.infer_nodes_per_replica = 0
+        elif self.inference.deployment.type == "disaggregated":
+            self.deployment.infer_nodes_per_replica = self.inference.deployment.num_nodes
+        else:
+            self.deployment.infer_nodes_per_replica = 1
         return self
 
     @model_validator(mode="after")
@@ -270,17 +260,17 @@ class RLConfig(BaseConfig):
         if self.deployment.type == "multi_node":
             if self.slurm is None:
                 raise ValueError("Must use SLURM for multi-node deployment.")
-            num_infer_nodes = self.deployment.infer_nodes_per_replica
-            if num_infer_nodes > 0 and not self.inference:
+            infer_nodes = self.deployment.infer_nodes_per_replica
+            if infer_nodes > 0 and not self.inference:
                 raise ValueError("Must configure inference when using multi-node deployment with inference nodes.")
-            if num_infer_nodes == 0 and self.inference:
+            if infer_nodes == 0 and self.inference:
                 raise ValueError(
-                    "Cannot configure inference with num_infer_nodes = 0. "
-                    "Either set num_infer_nodes > 0 or remove the inference config."
+                    "Cannot configure inference with deployment.infer_nodes_per_replica = 0. "
+                    "Either set it > 0 or remove the inference config."
                 )
-            if num_infer_nodes == 0 and not self.trainer.data.fake:
+            if infer_nodes == 0 and not self.trainer.data.fake:
                 raise ValueError(
-                    "Must use fake data (trainer.data.fake) when num_infer_nodes = 0, "
+                    "Must use fake data (trainer.data.fake) when deployment.infer_nodes_per_replica = 0, "
                     "since no orchestrator or inference server will be running."
                 )
         return self
@@ -556,6 +546,14 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_llmd_router_deployment(self):
+        """The llm-d router (EPP + Envoy) is launched by the multi-node SLURM template only."""
+        router = self.inference.router if self.inference is not None else None
+        if router is not None and router.type == "llm-d" and self.deployment.type != "multi_node":
+            raise ValueError("The llm-d router backend requires deployment.type = 'multi_node'.")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating
@@ -753,7 +751,7 @@ class RLConfig(BaseConfig):
         expected_infer_nodes = infer_deploy.num_nodes
         if self.deployment.infer_nodes_per_replica != expected_infer_nodes:
             raise ValueError(
-                f"deployment.num_infer_nodes ({self.deployment.num_infer_nodes}) must equal the derived "
+                f"deployment.infer_nodes_per_replica ({self.deployment.infer_nodes_per_replica}) must equal the derived "
                 f"disaggregated inference nodes per replica ({expected_infer_nodes})."
             )
 
