@@ -5,7 +5,7 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
-from prime_rl.trainer.rl.loss import compute_entropy, shift_tensor_left, shift_tensor_right
+from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shift_tensor_left, shift_tensor_right
 from prime_rl.utils.utils import default_dtype
 
 

@@ -139,7 +139,9 @@ def test_compact_logprobs_roundtrip_ragged_slices(flat, selection):
 @pytest.mark.parametrize("routed", [False, True])
 async def test_compact_formatter_matches_native_evidence_and_metadata(flat, replay, routed):
     serving = object.__new__(PrimeRlServingTokens)
-    serving.model_config = SimpleNamespace(enable_return_routed_experts=routed)
+    serving.engine_client = SimpleNamespace(
+        vllm_config=SimpleNamespace(aux_output_config=SimpleNamespace(enable_return_routed_experts=routed))
+    )
     serving.enable_prompt_tokens_details = True
     serving.enable_log_outputs = False
     sampled_ids = [2, 3] if replay else [2, 7]
