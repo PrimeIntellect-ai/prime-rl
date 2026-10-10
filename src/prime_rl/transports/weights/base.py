@@ -20,10 +20,41 @@ from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_st
 # engines paused inside the receive RPC), the trainer raises ``.started`` and
 # moves the weights, then raises ``.finished`` — for filesystem, the weights
 # are fully on disk.
+#
+# A transport whose consumer applies the weights itself can add a fifth stage:
+# ``.receiver_applied``, raised by the consumer once its engines are on v{step}.
+# The trainer then waits on that marker instead of on a transport notification,
+# because a notification that fails to arrive cannot be told apart from one that
+# failed to send. NIXL uses it; the filesystem transport does not need it, since
+# its consumer loads only after ``.finished``.
 SENDER_READY_MARKER = ".sender_ready"
 RECEIVER_READY_MARKER = ".receiver_ready"
 STARTED_MARKER = ".started"
+RECEIVER_APPLIED_MARKER = ".receiver_applied"
 FINISHED_MARKER = ".finished"
+
+
+def wait_for_marker(marker: Path, timeout: int, *, what: str) -> None:
+    """Block until ``marker`` exists, bounded by ``timeout``.
+
+    Bounded on purpose: a peer that dies mid-handshake must fail the run instead of
+    stranding this side forever.
+    """
+    logger = get_logger()
+    logger.debug(f"Waiting for {what} at {marker}")
+    start = time.monotonic()
+    last_log = start
+    while not marker.exists():
+        now = time.monotonic()
+        if now - start > timeout:
+            raise TimeoutError(f"Timed out after {timeout}s waiting for {what} ({marker})")
+        if now - last_log > 60:
+            # A busy consumer (e.g. an evals process mid-epoch) can lag legitimately;
+            # raise the transport's timeout if this trips on long eval epochs.
+            logger.warning(f"Still waiting for {what} after {now - start:.0f}s")
+            last_log = now
+        time.sleep(0.1)
+    logger.debug(f"Saw {what}")
 
 
 def prune_broadcasts_beyond(output_dir: Path, step: int) -> None:
@@ -73,24 +104,12 @@ class WeightSender(ABC):
         return get_step_path(get_broadcast_dir(self.output_dir), step)
 
     def _wait_for_receiver_ready(self, step_dir: Path) -> None:
-        """Wait for the consumer to acknowledge the offered version. Bounded:
-        a consumer that dies mid-handshake must fail the run instead of
-        stranding the trainer forever."""
-        ready_file = step_dir / RECEIVER_READY_MARKER
-        self.logger.debug(f"Waiting for the receiver at {ready_file}")
-        start = time.monotonic()
-        last_log = start
-        while not ready_file.exists():
-            now = time.monotonic()
-            if now - start > self.timeout:
-                raise TimeoutError(f"No receiver joined the broadcast within {self.timeout}s ({ready_file})")
-            if now - last_log > 60:
-                # A busy consumer (e.g. an evals process mid-epoch) can lag legitimately;
-                # raise weight_broadcast.timeout if this trips on long eval epochs.
-                self.logger.warning(f"Still waiting for the broadcast receiver after {now - start:.0f}s")
-                last_log = now
-            time.sleep(0.1)
-        self.logger.debug("Receiver ready, starting the transfer")
+        """Wait for the consumer to acknowledge the offered version."""
+        wait_for_marker(
+            step_dir / RECEIVER_READY_MARKER,
+            self.timeout,
+            what="the broadcast receiver to acknowledge the offered version",
+        )
 
     @abstractmethod
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:

@@ -23,7 +23,12 @@ from prime_rl.configs.shared import NIXLWeightBroadcastConfig
 from prime_rl.orchestrator.clients import init_nixl_broadcast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.transports.weights.base import (
+    RECEIVER_APPLIED_MARKER,
+    WeightReceiver,
+    WeightSender,
+    wait_for_marker,
+)
 from prime_rl.transports.weights.nixl.agent import (
     NixlAgent,
     NixlPeer,
@@ -437,10 +442,14 @@ class NIXLWeightSender(WeightSender):
             self.finish_transfer_group(group)
 
         if self.world.is_master:
-            self.nixl_agent.wait_for_notification(
-                [self.orchestrator_peer],
-                policy_notification(step, "complete"),
-                timeout=self.config.timeout,
+            # The consumer raises this marker once its engines are on v{step}. A
+            # notification is indistinguishable from one that never arrived, which is the
+            # failure this replaces: the orchestrator applied the update and carried on
+            # while the trainer waited out its timeout (#3742).
+            wait_for_marker(
+                step_dir / RECEIVER_APPLIED_MARKER,
+                self.config.timeout,
+                what="the orchestrator to apply the policy update",
             )
         dist.barrier()
         self.broadcast_count += 1
@@ -496,7 +505,7 @@ class NIXLWeightReceiver(WeightReceiver):
             timeout=self.config.timeout,
         )
         await self.admin_plane.update_weights(None, transport="nixl", step=step)
-        self.nixl_agent.send_notification(
-            trainer_peer,
-            policy_notification(step, "complete"),
-        )
+        # Durable counterpart of the old "complete" notification. This is a local write on
+        # the orchestrator, so a failure raises here instead of leaving the trainer to time
+        # out on a message that was never sent (#3742).
+        (self.step_dir(step) / RECEIVER_APPLIED_MARKER).touch()
