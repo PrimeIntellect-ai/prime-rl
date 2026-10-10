@@ -21,6 +21,8 @@ from tilelang import language as T
 
 from prime_rl.configs.trainer import DSABackend
 
+SPARSE_MLA_BACKENDS = ("tilelang", "cudnn_flashmla")
+
 
 @tilelang.jit(out_idx=[-1])
 def preprocess(
@@ -388,6 +390,9 @@ def sparse_mla_backward(
     sm_scale: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Sparse MLA backward for the `backend` route (see `sparse_mla`); `lse` is natural-log."""
+    assert backend in SPARSE_MLA_BACKENDS, (
+        f"sparse MLA has no {backend!r} backend, expected one of {SPARSE_MLA_BACKENDS}"
+    )
     assert q.is_contiguous()
     assert kv.is_contiguous()
     assert indices.is_contiguous()
