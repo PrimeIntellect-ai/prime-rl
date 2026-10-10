@@ -97,7 +97,6 @@ type = "fp8"
 type = "deepgemm_fp8"
 
 [trainer.model.ac]
-freq = 1
 
 [trainer.model.compile]
 

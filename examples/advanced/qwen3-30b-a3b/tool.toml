@@ -26,7 +26,6 @@ name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 cp = 2
 
 [trainer.model.ac]
-freq = 1
 
 [trainer.model.compile]
 
