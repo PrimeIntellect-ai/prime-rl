@@ -68,7 +68,8 @@ def cases():
     executor = module._compiled_fwd()
     out = torch.empty_like(q)
     lse = q.new_empty(q.shape[:-1], dtype=torch.float32)
-    scale_args = (SM_SCALE, SM_SCALE * LOG2E) if backend == "cute" else (SM_SCALE * LOG2E,)
+    num_sms = torch.cuda.get_device_properties(q.device).multi_processor_count
+    scale_args = (SM_SCALE, SM_SCALE * LOG2E) if backend == "cute" else (SM_SCALE * LOG2E, num_sms)
 
     def op():
         with torch.no_grad():
