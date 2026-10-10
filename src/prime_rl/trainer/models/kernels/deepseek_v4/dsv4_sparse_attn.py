@@ -151,8 +151,8 @@ def _tilelang_forward(
 
 
 # FlashMLA's SM90 sparse prefill reads slots two 64-wide tiles at a time, so it needs a multiple of 128.
-# The cuDNN backward compiles one kernel per slot width, about 2.6 s each on H200, while 128 padded slots
-# past `topk_length` add about 0.4% to forward+backward, so widths are rounded up to a few buckets.
+# The cuDNN backward compiles one kernel per slot width, about 2.5 s each on H200, while 128 padded slots
+# past `topk_length` add 0.3-0.8% to forward+backward (`slot_width_cost.py`), so widths round up to buckets.
 CUDNN_FLASHMLA_SLOT_TILE = 128
 CUDNN_FLASHMLA_SLOT_BUCKETS = (128, 256, 512, 640, 768, 1024)
 CUDNN_FLASHMLA_WIDE_SLOT_STEP = 512

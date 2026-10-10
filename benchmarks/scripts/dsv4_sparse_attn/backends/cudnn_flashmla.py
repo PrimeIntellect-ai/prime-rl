@@ -1,4 +1,7 @@
-"""FlashMLA's sparse prefill forward with the cuDNN frontend's SM90 DSA backward, as `dsa_backend` ships it."""
+"""FlashMLA's sparse prefill forward with the cuDNN frontend's SM90 DSA backward, as `dsa_backend` ships it.
+
+Its compile count covers the cuDNN CuTe kernels and the TileLang `preprocess` kernel that forms `delta`.
+"""
 
 import time
 
@@ -30,6 +33,9 @@ def install_compile_counter():
     import cutlass.cute as cute
     from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
 
+    from backends import tilelang
+
+    read_tilelang_counts = tilelang.install_compile_counter()
     compile_ms = [0.0]
     real_compile = cute.compile
 
@@ -44,6 +50,12 @@ def install_compile_counter():
     def read_counts() -> dict[str, int]:
         main = len(flash_attn_bwd_sm90.compile_cache)
         auxiliary = len(flash_attn_bwd_sm90.compile_cache_pre) + len(flash_attn_bwd_sm90.compile_cache_post)
-        return {"compiles": main + auxiliary, "bwd_main_compiles": main, "compile_ms": round(compile_ms[0])}
+        tilelang_counts = read_tilelang_counts()
+        return {
+            "compiles": main + auxiliary + tilelang_counts["compiles"],
+            "disk_loads": tilelang_counts["disk_loads"],
+            "bwd_main_compiles": main,
+            "cute_compile_ms": round(compile_ms[0]),
+        }
 
     return read_counts
