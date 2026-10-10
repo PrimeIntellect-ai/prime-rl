@@ -442,8 +442,6 @@ class SFTConfig(BaseConfig):
                     "LoRA training is not yet supported with in-memory weight broadcast. "
                     "Set weight_broadcast.type = 'filesystem'."
                 )
-            if self.eval.retrigger_on_resume:
-                raise ValueError("eval.retrigger_on_resume requires weight_broadcast.type = 'filesystem'.")
 
         if self.deployment.type == "multi_node":
             # Dedicated nodes in the SFT allocation run the inference pool, router,
