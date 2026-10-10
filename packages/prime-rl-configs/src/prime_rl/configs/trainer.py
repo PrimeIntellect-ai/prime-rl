@@ -74,6 +74,12 @@ class PipelineActivationOffloadConfig(BaseConfig):
     stages: list[int] | None = None
     """Pipeline stages that offload. ``None``: every stage."""
 
+    target: Literal["host", "fp8"] = "host"
+    """``host``: copy the activations to pinned host memory (same values). ``fp8``: keep them on the GPU as FP8
+    with one fp32 scale per 128 values (half the bytes of bf16), and dequantize them before the backward; only
+    bf16 tensors whose last dimension is a multiple of 128 are compressed. Changes numerics: the backward (and
+    activation checkpointing's recompute) reads the dequantized values."""
+
 
 class OptimizerInBackwardOffloadConfig(BaseConfig):
     """Full CPU optimizer offload: FP32 masters, optimizer state (AdamW moments; SignSGD is

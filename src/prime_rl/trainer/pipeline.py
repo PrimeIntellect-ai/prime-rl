@@ -593,7 +593,9 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
         super().__init__(stages, **kwargs)
         self._offloader = None
         if offload is not None:
-            self._offloader = PipelineActivationOffloader([stage.submod for stage in stages], offload.min_bytes)
+            self._offloader = PipelineActivationOffloader(
+                [stage.submod for stage in stages], offload.min_bytes, offload.target
+            )
             run_ops = [op for action, op in actions if action == "run"]
             stages_set = None if offload.stages is None else set(offload.stages)
             self._offloaded, self._prefetch_at = offload_plan(run_ops, stages_set, offload.prefetch_ahead)

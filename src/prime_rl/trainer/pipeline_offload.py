@@ -12,6 +12,8 @@ activation checkpointing keeps), not the stage's outputs, which are still being 
 """
 
 import torch
+import triton
+import triton.language as tl
 from torch import Tensor, nn
 from torch.utils._pytree import tree_flatten
 
@@ -28,8 +30,11 @@ class PipelineActivationOffloader:
     `wait(key)` right before it. Copies run on two side streams; the compute stream only waits for a
     micro-batch's activations to be back before its backward."""
 
-    def __init__(self, model_parts: list[nn.Module], min_bytes: int):
+    def __init__(self, model_parts: list[nn.Module], min_bytes: int, target: str = "host"):
         self.min_bytes = min_bytes
+        self.target = target
+        # fp8 target, per micro-batch: (tensor, FP8 values, scales) triples
+        self._fp8: dict[Key, list[tuple[Tensor, Tensor, Tensor]]] = {}
         self._d2h, self._h2d = torch.cuda.Stream(), torch.cuda.Stream()
         self._collecting: Key | None = None
         self._candidates: dict[Key, dict[int, Tensor]] = {}
@@ -68,6 +73,16 @@ class PipelineActivationOffloader:
                 candidates.pop(tensor.untyped_storage().data_ptr(), None)
         if not candidates:
             return
+        if self.target == "fp8":
+            compressed = []
+            for tensor in candidates.values():
+                if not _fp8_compressible(tensor):
+                    continue
+                q, sf = _quantize_fp8(tensor)
+                tensor.untyped_storage().resize_(0)
+                compressed.append((tensor, q, sf))
+            self._fp8[key] = compressed
+            return
         self._d2h.wait_stream(torch.cuda.current_stream())
         pairs = []
         with torch.cuda.stream(self._d2h):
@@ -84,6 +99,13 @@ class PipelineActivationOffloader:
 
     def prefetch(self, key: Key) -> None:
         """Start copying the micro-batch's activations back into their storages."""
+        compressed = self._fp8.pop(key, None)
+        if compressed is not None:
+            # On the compute stream: the values are back before anything that follows reads them.
+            for tensor, q, sf in compressed:
+                tensor.untyped_storage().resize_(tensor.numel() * tensor.element_size())
+                _dequantize_fp8(q, sf, tensor)
+            return
         pairs = self._host.pop(key, None)
         if pairs is None:
             return
@@ -101,7 +123,7 @@ class PipelineActivationOffloader:
 
     def wait(self, key: Key) -> None:
         """Make the compute stream wait until the micro-batch's activations are back."""
-        if key in self._host:
+        if key in self._host or key in self._fp8:
             self.prefetch(key)
         returned = self._returned.pop(key, None)
         if returned is not None:
@@ -125,6 +147,60 @@ class _Collecting:
 
 def _bytes_view(storage: torch.UntypedStorage, device: torch.device) -> Tensor:
     return torch.empty(0, dtype=torch.uint8, device=device).set_(storage)
+
+
+_FP8_GROUP = 128
+
+
+def _fp8_compressible(tensor: Tensor) -> bool:
+    return (
+        tensor.dtype == torch.bfloat16
+        and tensor.is_contiguous()
+        and tensor.shape[-1] % _FP8_GROUP == 0
+        and tensor.storage_offset() == 0
+        and tensor.untyped_storage().nbytes() == tensor.numel() * tensor.element_size()
+    )
+
+
+@triton.jit
+def _quantize_fp8_kernel(x_ptr, q_ptr, sf_ptr, num_groups, GROUP: tl.constexpr, GROUPS: tl.constexpr):
+    """GROUPS consecutive groups of GROUP values: FP8 values and one fp32 scale (amax / 448) per group."""
+    g = tl.program_id(0).to(tl.int64) * GROUPS + tl.arange(0, GROUPS)
+    mask = g < num_groups
+    offs = g[:, None] * GROUP + tl.arange(0, GROUP)[None, :]
+    v = tl.load(x_ptr + offs, mask=mask[:, None], other=0.0).to(tl.float32)
+    scale = tl.maximum(tl.max(tl.abs(v), axis=1), 1e-12) / 448.0
+    tl.store(q_ptr + offs, (v / scale[:, None]).to(tl.float8e4nv), mask=mask[:, None])
+    tl.store(sf_ptr + g, scale, mask=mask)
+
+
+@triton.jit
+def _dequantize_fp8_kernel(q_ptr, sf_ptr, x_ptr, num_groups, GROUP: tl.constexpr, GROUPS: tl.constexpr):
+    g = tl.program_id(0).to(tl.int64) * GROUPS + tl.arange(0, GROUPS)
+    mask = g < num_groups
+    offs = g[:, None] * GROUP + tl.arange(0, GROUP)[None, :]
+    v = tl.load(q_ptr + offs, mask=mask[:, None], other=0.0).to(tl.float32)
+    scale = tl.load(sf_ptr + g, mask=mask, other=0.0)
+    tl.store(x_ptr + offs, (v * scale[:, None]).to(tl.bfloat16), mask=mask[:, None])
+
+
+_GROUPS_PER_PROGRAM = 32
+
+
+def _quantize_fp8(tensor: Tensor) -> tuple[Tensor, Tensor]:
+    """FP8 values of a contiguous bf16 tensor and one fp32 scale (amax / 448) per 128 consecutive values."""
+    groups = tensor.numel() // _FP8_GROUP
+    q = torch.empty(tensor.numel(), dtype=torch.float8_e4m3fn, device=tensor.device)
+    sf = torch.empty(groups, dtype=torch.float32, device=tensor.device)
+    grid = (triton.cdiv(groups, _GROUPS_PER_PROGRAM),)
+    _quantize_fp8_kernel[grid](tensor, q, sf, groups, GROUP=_FP8_GROUP, GROUPS=_GROUPS_PER_PROGRAM)
+    return q, sf
+
+
+def _dequantize_fp8(q: Tensor, sf: Tensor, out: Tensor) -> None:
+    groups = sf.numel()
+    grid = (triton.cdiv(groups, _GROUPS_PER_PROGRAM),)
+    _dequantize_fp8_kernel[grid](q, sf, out, groups, GROUP=_FP8_GROUP, GROUPS=_GROUPS_PER_PROGRAM)
 
 
 def offload_plan(run_ops: list[tuple[str, int, int]], stages: set[int] | None, prefetch_ahead: int):
