@@ -1,204 +1,155 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from weakref import WeakValueDictionary
 
 import torch
 from deep_ep import Buffer
-from deep_ep.utils import EventHandle, EventOverlap
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.distributed.token_dispatcher import (
-    ExpertFunction,
-    PermutationState,
+    LocalDispatchState,
     TokenDispatcherBase,
+    _scatter_routed_output,
     permute_for_grouped_gemm,
     unpermute_from_grouped_gemm,
 )
 
 _buffer: Buffer | None = None
-_handle_cache: dict[int, object] = {}
-_combine_backward_handles: dict[int, object] = {}
-# The custom-op schema can carry only the dispatcher ID; weak values avoid extending dispatcher lifetimes.
-_combine_dispatchers: WeakValueDictionary[int, DeepEPTokenDispatcher] = WeakValueDictionary()
-_pending_dispatch_events: dict[int, EventOverlap] = {}
-_handle_counter = 0
-_deepep_cuda_ops_registered = False
-_deepep_cuda_lib: torch.library.Library | None = None
+# DeepEP handles are tuples of tensors, so the custom ops carry them as a one-element CPU tensor ID.
+_handles: dict[int, tuple] = {}
+_next_handle_id = 0
 
 
-def _get_next_handle_id() -> torch.Tensor:
-    global _handle_counter
-    _handle_counter += 1
-    return torch.tensor([_handle_counter], dtype=torch.int64, device="cpu")
+class _HandleOwner(bytearray):
+    """Storage of a handle ID tensor. The handle lives exactly as long as some tensor shares that storage."""
+
+    def __del__(self) -> None:
+        _handles.pop(int.from_bytes(self, "little"), None)
 
 
-def _new_event_overlap() -> EventOverlap:
-    return EventOverlap(EventHandle())
+def _store_handle(handle: tuple) -> torch.Tensor:
+    global _next_handle_id
+    _next_handle_id += 1
+    _handles[_next_handle_id] = handle
+    return torch.frombuffer(_HandleOwner(_next_handle_id.to_bytes(8, "little")), dtype=torch.int64)
 
 
-def register_deepep_cuda_ops() -> None:
-    global _deepep_cuda_lib, _deepep_cuda_ops_registered
-    if _deepep_cuda_ops_registered:
-        return
-
-    # Keep the Library alive so PyTorch does not deregister the custom ops.
-    _deepep_cuda_lib = torch.library.Library("deepep", "DEF")
-    _deepep_cuda_lib.define(
-        "dispatch(Tensor x, Tensor topk_idx, Tensor topk_weights, "
-        "Tensor num_tokens_per_rank, Tensor num_tokens_per_rdma_rank, "
-        "Tensor is_token_in_rank, Tensor num_tokens_per_expert) "
-        "-> (Tensor, Tensor, Tensor, Tensor, Tensor)"
-    )
-    _deepep_cuda_lib.define("combine(Tensor x, Tensor handle_id, int dispatcher_id) -> Tensor")
-
-    torch.library.impl(_deepep_cuda_lib, "dispatch", "CUDA")(_dispatch_op_impl)
-    torch.library.impl(_deepep_cuda_lib, "combine", "CUDA")(_combine_op_impl)
-
-    torch.library.register_autograd("deepep::dispatch", _dispatch_backward, setup_context=_dispatch_setup_context)
-    torch.library.register_autograd("deepep::combine", _combine_backward, setup_context=_combine_setup_context)
-
-    _deepep_cuda_ops_registered = True
+def _get_handle(handle_id: torch.Tensor) -> tuple:
+    return _handles[handle_id.item()]
 
 
-def _dispatch_op_impl(
-    x: torch.Tensor,
-    topk_idx: torch.Tensor,
-    topk_weights: torch.Tensor,
-    num_tokens_per_rank: torch.Tensor,
-    num_tokens_per_rdma_rank: torch.Tensor,
-    is_token_in_rank: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
+@torch.library.custom_op("deepep::dispatch", mutates_args=())
+def _dispatch(
+    x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor, num_experts: int
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert _buffer is not None, "DeepEP buffer must be initialized before dispatch."
+    """Send each token to the ranks of its experts.
 
-    previous_event = _new_event_overlap()
-    recv_x, recv_indices, recv_scores, recv_num_tokens_per_expert_list, handle, after_event = _buffer.dispatch(
-        x=x,
+    Returns the received tokens and their routing weights, the order that groups the received
+    (token, local expert) pairs by expert, the pair count per local expert, and the handle ID.
+    """
+    num_tokens_per_rank, num_tokens_per_rdma_rank, num_tokens_per_expert, is_token_in_rank, _ = (
+        _buffer.get_dispatch_layout(topk_idx, num_experts)
+    )
+    recv_x, recv_topk_idx, recv_topk_weights, recv_num_tokens_per_expert, handle, _ = _buffer.dispatch(
+        x,
         topk_idx=topk_idx,
-        topk_weights=topk_weights.to(torch.float32),
+        topk_weights=topk_weights,
         num_tokens_per_rank=num_tokens_per_rank,
         num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
         is_token_in_rank=is_token_in_rank,
         num_tokens_per_expert=num_tokens_per_expert,
-        previous_event=previous_event,
-        async_finish=True,
-        allocate_on_comm_stream=True,
     )
-    handle_id = _get_next_handle_id()
-    _handle_cache[handle_id.item()] = handle
-    _pending_dispatch_events[handle_id.item()] = after_event
-    recv_num_tokens_per_expert = torch.tensor(recv_num_tokens_per_expert_list, dtype=torch.int32, device="cpu")
-    return recv_x, recv_indices, recv_scores, recv_num_tokens_per_expert, handle_id
+    # DeepEP already returns the counts on the host, so the order is sliced without a device sync.
+    num_local_experts = len(recv_num_tokens_per_expert)
+    expert_keys = recv_topk_idx.flatten().masked_fill(recv_topk_idx.flatten() < 0, num_local_experts)
+    expert_order = torch.argsort(expert_keys, stable=True)[: sum(recv_num_tokens_per_expert)]
+    recv_num_tokens_per_expert = torch.tensor(recv_num_tokens_per_expert, pin_memory=True).to(
+        x.device, non_blocking=True
+    )
+    return recv_x, recv_topk_weights, expert_order, recv_num_tokens_per_expert, _store_handle(handle)
+
+
+@_dispatch.register_fake
+def _(x, topk_idx, topk_weights, num_experts):
+    ctx = torch.library.get_ctx()
+    num_recv_tokens = ctx.new_dynamic_size()
+    return (
+        x.new_empty((num_recv_tokens, x.shape[1])),
+        topk_weights.new_empty((num_recv_tokens, topk_weights.shape[1])),
+        topk_idx.new_empty((ctx.new_dynamic_size(),)),
+        topk_idx.new_empty((num_experts // _buffer.group_size,)),
+        torch.empty(1, dtype=torch.int64),
+    )
+
+
+@torch.library.custom_op("deepep::combine", mutates_args=())
+def _combine(x: torch.Tensor, handle_id: torch.Tensor, num_tokens: int) -> torch.Tensor:
+    combined, _, _ = _buffer.combine(x, _get_handle(handle_id))
+    return combined
+
+
+@_combine.register_fake
+def _(x, handle_id, num_tokens):
+    return x.new_empty((num_tokens, x.shape[1]))
+
+
+@torch.library.custom_op("deepep::dispatch_backward", mutates_args=())
+def _dispatch_backward_op(
+    grad_x: torch.Tensor, grad_topk_weights: torch.Tensor, handle_id: torch.Tensor, num_tokens: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    grad_x, grad_topk_weights, _ = _buffer.combine(grad_x, _get_handle(handle_id), topk_weights=grad_topk_weights)
+    return grad_x, grad_topk_weights
+
+
+@_dispatch_backward_op.register_fake
+def _(grad_x, grad_topk_weights, handle_id, num_tokens):
+    return grad_x.new_empty((num_tokens, grad_x.shape[1])), grad_topk_weights.new_empty(
+        (num_tokens, grad_topk_weights.shape[1])
+    )
+
+
+@torch.library.custom_op("deepep::combine_backward", mutates_args=())
+def _combine_backward_op(grad: torch.Tensor, handle_id: torch.Tensor, num_recv_tokens: int) -> torch.Tensor:
+    grad_x, _, _, _, _, _ = _buffer.dispatch(grad, handle=_get_handle(handle_id))
+    return grad_x
+
+
+@_combine_backward_op.register_fake
+def _(grad, handle_id, num_recv_tokens):
+    return grad.new_empty((num_recv_tokens, grad.shape[1]))
 
 
 def _dispatch_setup_context(ctx, inputs, output) -> None:
     x, *_ = inputs
     *_, handle_id = output
-    ctx.input_dtype = x.dtype
-    ctx.saved_handle = _handle_cache.get(handle_id.item())
+    ctx.save_for_backward(handle_id)
+    ctx.num_tokens = x.shape[0]
 
 
-def _dispatch_backward(
-    ctx,
-    grad_recv_x,
-    grad_recv_indices,
-    grad_recv_scores,
-    grad_recv_num_tokens_per_expert,
-    grad_handle_id,
-):
-    if grad_recv_x is None:
-        return None, None, None, None, None, None, None
-
-    handle = ctx.saved_handle
-    assert handle is not None
-
-    previous_event = _new_event_overlap()
-    grad_x, grad_scores, after_event = _buffer.combine(
-        x=grad_recv_x,
-        handle=handle,
-        topk_weights=grad_recv_scores.float() if grad_recv_scores is not None else None,
-        previous_event=previous_event,
-        async_finish=True,
-        allocate_on_comm_stream=True,
+def _dispatch_backward(ctx, grad_recv_x, grad_recv_topk_weights, *_):
+    (handle_id,) = ctx.saved_tensors
+    grad_x, grad_topk_weights = _dispatch_backward_op(
+        grad_recv_x, grad_recv_topk_weights.contiguous(), handle_id, ctx.num_tokens
     )
-    after_event.current_stream_wait()
-
-    grad_x = grad_x.to(ctx.input_dtype)
-    return grad_x, None, grad_scores, None, None, None, None
-
-
-def _combine_op_impl(x: torch.Tensor, handle_id: torch.Tensor, dispatcher_id: int) -> torch.Tensor:
-    assert _buffer is not None, "DeepEP buffer must be initialized before combine."
-    handle_key = handle_id.item()
-    handle = _handle_cache.pop(handle_key, None)
-    assert handle is not None, f"Handle not found for handle_id={handle_key}"
-
-    previous_event = _new_event_overlap()
-    combined, _, after_event = _buffer.combine(
-        x=x,
-        handle=handle,
-        previous_event=previous_event,
-        async_finish=True,
-        allocate_on_comm_stream=True,
-    )
-    dispatcher = _combine_dispatchers.get(dispatcher_id)
-    assert dispatcher is not None, "DeepEP dispatcher was released before combine completed."
-    dispatcher._pending_combine_events.append(after_event)
-    if x.requires_grad:
-        _combine_backward_handles[handle_key] = handle
-    return combined
+    return grad_x, None, grad_topk_weights, None
 
 
 def _combine_setup_context(ctx, inputs, output) -> None:
-    _, handle_id, _ = inputs
-    ctx.handle = _combine_backward_handles.pop(handle_id.item(), None)
+    x, handle_id, _ = inputs
+    ctx.save_for_backward(handle_id)
+    ctx.num_recv_tokens = x.shape[0]
 
 
-def _combine_backward(ctx, grad_combined: torch.Tensor) -> tuple[torch.Tensor, None, None]:
-    handle = ctx.handle
-    assert handle is not None, "Handle not found in DeepEP combine backward."
-
-    previous_event = _new_event_overlap()
-    grad_x, _, _, _, _, after_event = _buffer.dispatch(
-        x=grad_combined,
-        topk_idx=None,
-        topk_weights=None,
-        num_tokens_per_rank=None,
-        num_tokens_per_rdma_rank=None,
-        is_token_in_rank=None,
-        num_tokens_per_expert=None,
-        handle=handle,
-        previous_event=previous_event,
-        async_finish=True,
-        allocate_on_comm_stream=True,
-    )
-    after_event.current_stream_wait()
-    return grad_x, None, None
+def _combine_backward(ctx, grad_combined):
+    (handle_id,) = ctx.saved_tensors
+    return _combine_backward_op(grad_combined.contiguous(), handle_id, ctx.num_recv_tokens), None, None
 
 
-@torch.compiler.disable()
-def _sync_dispatch(handle_id: torch.Tensor | int) -> None:
-    handle_key = handle_id if isinstance(handle_id, int) else handle_id.item()
-    pending_event = _pending_dispatch_events.pop(handle_key, None)
-    if pending_event is not None:
-        pending_event.current_stream_wait()
+_dispatch.register_autograd(_dispatch_backward, setup_context=_dispatch_setup_context)
+_combine.register_autograd(_combine_backward, setup_context=_combine_setup_context)
 
 
-def configure_num_sms(num_sms: int) -> None:
-    """Set the number of SMs for DeepEP intranode dispatch/combine kernels.
-
-    Must be called before the first dispatch/combine. Also determines
-    internode RDMA channel count (num_channels = num_sms / 2).
-    """
-    Buffer.set_num_sms(num_sms)
-
-
-def get_hidden_bytes(x: torch.Tensor) -> int:
-    return x.size(1) * max(x.element_size(), 2)
-
-
-def get_buffer(group: ProcessGroup, hidden_bytes: int) -> Buffer:
+def _create_buffer(group: ProcessGroup, hidden_bytes: int) -> None:
     global _buffer
 
     num_nvl_bytes, num_rdma_bytes = 0, 0
@@ -215,97 +166,11 @@ def get_buffer(group: ProcessGroup, hidden_bytes: int) -> Buffer:
         # Internode kernels need at least one RDMA queue pair per SM.
         _buffer = Buffer(group, num_nvl_bytes, num_rdma_bytes, num_qps_per_rank=Buffer.num_sms)
 
-    return _buffer
-
-
-def _permute_tokens(
-    hidden_states: torch.Tensor,
-    dispatched_indices: torch.Tensor,
-    dispatched_scores: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    mask = dispatched_indices != -1
-    valid_expert_ids = dispatched_indices[mask]
-    valid_scores = dispatched_scores[mask]
-
-    sort_order = torch.argsort(valid_expert_ids, stable=True)
-    permuted_indices = torch.arange(len(hidden_states), device=hidden_states.device).repeat_interleave(mask.sum(dim=1))[
-        sort_order
-    ]
-    permuted_hidden_states = hidden_states.index_select(0, permuted_indices)
-    permuted_scores = valid_scores[sort_order]
-    return permuted_hidden_states, permuted_scores, permuted_indices
-
-
-def _unpermute_tokens(
-    permuted_hidden_states: torch.Tensor,
-    permuted_indices: torch.Tensor,
-    num_tokens: int,
-) -> torch.Tensor:
-    hidden_dim = permuted_hidden_states.shape[1]
-    output_hidden_states = permuted_hidden_states.new_zeros((num_tokens, hidden_dim))
-    output_hidden_states.scatter_add_(0, permuted_indices.unsqueeze(1).expand(-1, hidden_dim), permuted_hidden_states)
-    return output_hidden_states
-
-
-@dataclass
-class _PendingDispatchState:
-    hidden_states: torch.Tensor
-    dispatched_indices: torch.Tensor
-    dispatched_scores: torch.Tensor
-    num_tokens_per_expert: torch.Tensor
-    handle_id: torch.Tensor
-    score_before_experts: bool
-
-
-def dispatch_tokens_async(
-    hidden_states: torch.Tensor,
-    selected_experts_indices: torch.Tensor,
-    top_scores: torch.Tensor,
-    num_experts: int,
-    group: ProcessGroup,
-    *,
-    score_before_experts: bool = True,
-) -> _PendingDispatchState:
-    selected_experts_indices = selected_experts_indices.contiguous()
-    top_scores = top_scores.contiguous()
-    selected_experts_indices = selected_experts_indices.masked_fill(top_scores == 0, -1)
-    if top_scores.dtype != torch.float32:
-        top_scores = top_scores.float()
-
-    buffer = get_buffer(group, get_hidden_bytes(hidden_states))
-    num_tokens_per_rank, num_tokens_per_rdma_rank, num_tokens_per_expert_dispatch, is_token_in_rank, _ = (
-        buffer.get_dispatch_layout(topk_idx=selected_experts_indices, num_experts=num_experts)
-    )
-
-    hidden_states, dispatched_indices, dispatched_expert_scores, num_tokens_per_expert, handle_id = (
-        torch.ops.deepep.dispatch(
-            hidden_states,
-            selected_experts_indices,
-            top_scores,
-            num_tokens_per_rank,
-            num_tokens_per_rdma_rank,
-            is_token_in_rank,
-            num_tokens_per_expert_dispatch,
-        )
-    )
-
-    return _PendingDispatchState(
-        hidden_states=hidden_states,
-        dispatched_indices=dispatched_indices,
-        dispatched_scores=dispatched_expert_scores,
-        num_tokens_per_expert=num_tokens_per_expert,
-        handle_id=handle_id,
-        score_before_experts=score_before_experts,
-    )
-
 
 @dataclass(frozen=True)
-class DeepEPDispatchState:
+class DeepEPDispatchState(LocalDispatchState):
+    num_input_tokens: int
     handle_id: torch.Tensor
-    deep_ep_permuted_indices: torch.Tensor
-    num_received_tokens: int
-    scores_after_experts: torch.Tensor | None
-    grouped_gemm_permutation: PermutationState
 
 
 class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
@@ -316,58 +181,14 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         token_group_alignment: int,
         group: ProcessGroup,
         num_sms: int,
-        token_chunk_size: int | None,
         hidden_size: int,
     ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.num_local_experts = num_experts // group.size()
-        self.group = group
-        self.token_chunk_size = token_chunk_size
-        self._pending_combine_events: list[EventOverlap] = []
-        self._dispatcher_id = id(self)
-        _combine_dispatchers[self._dispatcher_id] = self
-        self._concatenate_stream: torch.cuda.Stream | None = None
-        self._output_event: torch.cuda.Event | None = None
-        configure_num_sms(num_sms)
+        Buffer.set_num_sms(num_sms)
         # Create the buffer before any forward: its constructor runs collectives that dynamo cannot
         # trace and that would shift the op order activation checkpointing replays in the recompute.
-        get_buffer(group, hidden_size * 2)
-
-    def _finalize_dispatch(
-        self, pending_state: _PendingDispatchState
-    ) -> tuple[torch.Tensor, torch.Tensor, DeepEPDispatchState]:
-        _sync_dispatch(pending_state.handle_id)
-
-        hidden_states = pending_state.hidden_states
-        num_received_tokens = hidden_states.shape[0]
-        hidden_states, permuted_scores, deep_ep_permuted_indices = _permute_tokens(
-            hidden_states,
-            pending_state.dispatched_indices,
-            pending_state.dispatched_scores,
-        )
-        num_tokens_per_expert = pending_state.num_tokens_per_expert.to(hidden_states.device)
-
-        if pending_state.score_before_experts:
-            hidden_states = (hidden_states.float() * permuted_scores.float().reshape(-1, 1)).to(hidden_states.dtype)
-            scores_after_experts = None
-        else:
-            scores_after_experts = permuted_scores
-
-        hidden_states, num_tokens_per_expert, grouped_gemm_permutation = permute_for_grouped_gemm(
-            hidden_states,
-            num_tokens_per_expert,
-            experts_per_rank=self.num_local_experts,
-            num_ranks=1,
-            alignment=self.token_group_alignment,
-        )
-        state = DeepEPDispatchState(
-            handle_id=pending_state.handle_id,
-            deep_ep_permuted_indices=deep_ep_permuted_indices,
-            num_received_tokens=num_received_tokens,
-            scores_after_experts=scores_after_experts,
-            grouped_gemm_permutation=grouped_gemm_permutation,
-        )
-        return hidden_states, num_tokens_per_expert, state
+        _create_buffer(group, hidden_size * 2)
 
     def dispatch(
         self,
@@ -377,105 +198,43 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, DeepEPDispatchState]:
-        pending_state = dispatch_tokens_async(
-            x,
-            selected_experts_indices,
-            top_scores,
-            num_experts=self.num_experts,
-            group=self.group,
-            score_before_experts=score_before_experts,
+        top_scores = top_scores.float().contiguous()
+        selected_experts_indices = selected_experts_indices.masked_fill(top_scores == 0, -1).contiguous()
+        recv_x, recv_scores, expert_order, num_tokens_per_expert, handle_id = torch.ops.deepep.dispatch(
+            x, selected_experts_indices, top_scores, self.num_experts
         )
-        return self._finalize_dispatch(pending_state)
+        token_indices = expert_order // selected_experts_indices.shape[1]
+        routed_input = recv_x[token_indices]
+        sorted_scores = recv_scores.flatten()[expert_order]
+        scores_after_experts = None
+        if score_before_experts:
+            routed_input = (routed_input.float() * sorted_scores.reshape(-1, 1)).to(x.dtype)
+        else:
+            scores_after_experts = sorted_scores
+
+        routed_input, num_tokens_per_expert, permutation = permute_for_grouped_gemm(
+            routed_input,
+            num_tokens_per_expert,
+            experts_per_rank=self.num_local_experts,
+            num_ranks=1,
+            alignment=self.token_group_alignment,
+        )
+        state = DeepEPDispatchState(
+            num_tokens=recv_x.shape[0],
+            token_indices_experts_sorted=token_indices,
+            scores_after_experts=scores_after_experts,
+            permutation=permutation,
+            num_input_tokens=x.shape[0],
+            handle_id=handle_id,
+        )
+        return routed_input, num_tokens_per_expert, state
 
     def combine(self, routed_output: torch.Tensor, state: DeepEPDispatchState) -> torch.Tensor:
-        routed_output = unpermute_from_grouped_gemm(routed_output, state.grouped_gemm_permutation)
-        if state.scores_after_experts is not None:
-            routed_output = (routed_output.float() * state.scores_after_experts.float().reshape(-1, 1)).to(
-                routed_output.dtype
-            )
-        routed_output = _unpermute_tokens(
+        routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
+        routed_output = _scatter_routed_output(
             routed_output,
-            state.deep_ep_permuted_indices,
-            state.num_received_tokens,
+            num_tokens=state.num_tokens,
+            token_indices_experts_sorted=state.token_indices_experts_sorted,
+            scores_after_experts=state.scores_after_experts,
         )
-        combined = torch.ops.deepep.combine(routed_output, state.handle_id, self._dispatcher_id)
-        return combined
-
-    def _run_dispatched_chunk(
-        self,
-        pending_state: _PendingDispatchState,
-        experts: ExpertFunction,
-    ) -> torch.Tensor:
-        hidden_states, num_tokens_per_expert, dispatch_state = self._finalize_dispatch(pending_state)
-        routed_output = experts(hidden_states, num_tokens_per_expert)
-        return self.combine(routed_output, dispatch_state)
-
-    @torch.compiler.disable()
-    def _synchronize_combines(self) -> None:
-        for event in self._pending_combine_events:
-            event.current_stream_wait()
-        self._pending_combine_events.clear()
-
-    # DeepEP handles live in module-level dicts keyed by a fresh id per call; dynamo would guard on each key.
-    @torch.compiler.disable()
-    def run(
-        self,
-        x: torch.Tensor,
-        top_scores: torch.Tensor,
-        selected_experts_indices: torch.Tensor,
-        experts: ExpertFunction,
-        *,
-        score_before_experts: bool,
-    ) -> torch.Tensor:
-        if self.token_chunk_size is None:
-            chunk_ranges = [(0, x.shape[0])]
-        else:
-            chunk_ranges = [
-                (start, min(start + self.token_chunk_size, x.shape[0]))
-                for start in range(0, x.shape[0], self.token_chunk_size)
-            ]
-
-        pending_states = (
-            dispatch_tokens_async(
-                x[start:end],
-                selected_experts_indices[start:end],
-                top_scores[start:end],
-                num_experts=self.num_experts,
-                group=self.group,
-                score_before_experts=score_before_experts,
-            )
-            for start, end in chunk_ranges
-        )
-
-        pending_state = next(pending_states)
-        routed_outputs: list[torch.Tensor] = []
-        for next_pending_state in pending_states:
-            routed_outputs.append(self._run_dispatched_chunk(pending_state, experts))
-            pending_state = next_pending_state
-        routed_outputs.append(self._run_dispatched_chunk(pending_state, experts))
-        if len(routed_outputs) == 1:
-            return routed_outputs[0]
-
-        if self._concatenate_stream is None:
-            self._concatenate_stream = torch.cuda.Stream()
-        with torch.cuda.stream(self._concatenate_stream):
-            self._synchronize_combines()
-            output = torch.cat(routed_outputs, dim=0)
-            self._output_event = self._concatenate_stream.record_event()
-        return output
-
-    def synchronize(self) -> None:
-        if self._output_event is not None:
-            torch.cuda.current_stream().wait_event(self._output_event)
-            self._output_event = None
-            return
-        self._synchronize_combines()
-
-
-register_deepep_cuda_ops()
-
-__all__ = [
-    "configure_num_sms",
-    "DeepEPTokenDispatcher",
-    "dispatch_tokens_async",
-]
+        return torch.ops.deepep.combine(routed_output, state.handle_id, state.num_input_tokens)

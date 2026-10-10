@@ -227,7 +227,7 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
         },
         {"moe": {"compute": {"type": "deepgemm_fp8"}}},
         {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
-        {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
+        {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16}}},
         {
             "ep": 2,
             "moe": {

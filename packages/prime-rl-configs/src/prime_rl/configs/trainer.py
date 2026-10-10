@@ -249,9 +249,6 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     num_sms: int = Field(32, ge=1)
     """SMs allocated to DeepEP communication kernels."""
 
-    token_chunk_size: int | None = Field(None, ge=1)
-    """Optional chunk size used to pipeline dispatch with local expert compute."""
-
 
 MoEDispatchConfig: TypeAlias = Annotated[
     TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
