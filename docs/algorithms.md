@@ -325,6 +325,8 @@ type = "grpo"
 type = "linear"
 ```
 
+On the CLI, enable it with `--orchestrator.train.algo.length-penalty.type linear`.
+
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 
 **Prompt-mean loss aggregation** (`loss_aggregation = "prompt"` on `grpo` and `echo`; default `"token"`). By default every `rl` token in the batch weighs the same, so prompts whose groups produce long trajectories dominate the gradient. With `"prompt"`, the loss is MiMo-V2.6's prompt-mean (Eq. 1): the mean over prompt groups $q$ of $\frac{1}{T_q}\sum_{t \in q} \mathcal{L}_{rl,t}$, where $T_q$ is the group's total trainable tokens. MiMo uses it to keep response length from growing too fast. `score_group` gives each trainable token of the group the `rl` weight $1/T_q$, so each group's weights sum to 1 and $N_{rl}$ (the summed weights) is the number of groups in the step. Zero-advantage tokens are still dropped from the `rl` component, so a group with a zero-advantage rollout keeps less than its full weight of 1. All envs with an `rl` loss in a run must use the same `loss_aggregation`.
@@ -334,6 +336,53 @@ A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-
 type = "grpo"
 loss_aggregation = "prompt"
 ```
+
+#### Cost penalty
+
+The `cost` penalty charges each rollout for what it would cost once the model is deployed: the token bill, and optionally the user's wait. Both are in USD. One rate, `reward_per_usd` ($\lambda$), converts USD to reward:
+
+$$s_i' = s_i - \bar{s} \cdot \lambda \cdot (\text{token\_usd}_i + \text{latency\_usd}_i)$$
+
+It uses the same pass-rate gate $\bar{s}$ as `linear`, so an all-fail group gets no advantage from cost alone. Unlike `linear`, it is in absolute units and not normalized by the group. $1/\lambda$ is the cost at which a rollout of an always-solved group loses a full reward.
+
+With $U$ uncached input, $K$ cached input, and $O$ output tokens, summed over the trace's policy calls:
+
+$$\text{token\_usd} = (\texttt{input\_usd\_per\_mtok} \cdot U + \texttt{cached\_input\_usd\_per\_mtok} \cdot K + \texttt{output\_usd\_per\_mtok} \cdot O) / 10^6$$
+
+$$\text{latency\_usd} = \texttt{usd\_per\_hour} \cdot \text{latency\_s} / 3600, \qquad \text{latency\_s} = \rho \cdot \left(\frac{U}{\texttt{prefill\_tokens\_per\_s}} + \frac{O}{\texttt{decode\_tokens\_per\_s}}\right) + \text{tool\_s}$$
+
+`latency_usd` is 0 when `[latency]` is unset.
+
+- **Calls.** All policy calls in the trace count, including same-trace subagents. Judge calls do not count. Calls to non-policy models carry no token ids: they cost nothing, do not seed the prefix cache, and their duration counts as tool time, like failed calls.
+- **Prefix cache.** A call's input is cached up to the deepest message node of its path that was on an earlier policy call's path (any agent, by call start). This is exact for append-only histories. After context editing or compaction, input is paid in full from the first changed message. It is not the RL server's real cache: provider cache expiry is not modelled.
+- **Model time** uses the deployed model's per-request speeds, not the RL server's (batching and load say nothing about deployment). $\rho$ is the measured parallelism: the union of policy call intervals divided by the sum of their durations (1 for sequential calls).
+- **Tool time** is measured: the agent span minus the union of policy call intervals. It is an over-estimate of the user's wait: it also counts client-side waits before a call starts (concurrency limits, retry backoff) and harness start-up.
+
+```toml
+[orchestrator.train.algo.length_penalty]
+type = "cost"
+reward_per_usd = 2.0                # $0.50 of cost = 1 reward (at pass rate 1)
+input_usd_per_mtok = 0.20           # GLM-4.5-Air API price
+cached_input_usd_per_mtok = 0.03
+output_usd_per_mtok = 1.10
+
+[orchestrator.train.algo.length_penalty.latency]   # optional; omit to price tokens only
+usd_per_hour = 2.0                  # value of one hour of the user waiting
+prefill_tokens_per_s = 5000         # per-request speeds of the deployed model
+decode_tokens_per_s = 80
+```
+
+**Self-hosted serving.** Convert a GPU-hour price to per-token prices with the replica's aggregate throughput at serving load (all streams, not the per-request speed): $\texttt{input\_usd\_per\_mtok} = 10^6 \cdot \text{num\_gpus} \cdot \text{gpu\_usd\_per\_hour} / (3600 \cdot \text{prefill tokens/s})$, and the same for output with decode tokens/s. For 8 GPUs at \$2/h with 50k prefill and 5k decode tokens/s, that is \$0.09 input and \$0.89 output per Mtok. Set the cached price to what holding the KV cache costs you (0 if free).
+
+**Worked example** (the config above). A SWE rollout with 60 turns: $U$ = 50k, $K$ = 1.2M, $O$ = 15k, 300 s of tool time, sequential calls ($\rho = 1$).
+- token_usd = 0.20 · 0.05 + 0.03 · 1.2 + 1.10 · 0.015 = 0.010 + 0.036 + 0.0165 = \$0.0625.
+- latency_s = 50k / 5000 + 15k / 80 + 300 = 10 + 187.5 + 300 = 497.5 s, so latency_usd = 2 · 497.5 / 3600 = \$0.276.
+- penalty = $\bar{s}$ · 2 · (0.0625 + 0.276) = 0.68 · $\bar{s}$. A sibling that is \$0.05 cheaper gains 0.1 · $\bar{s}$ of advantage.
+
+> [!WARNING]
+> The latency term can dominate. At `usd_per_hour = 20` the example's latency_usd is \$2.76, 44× its token cost, and the penalty mostly rewards fewer tool calls and shorter outputs. With cheap models, keep `usd_per_hour` low or omit `[latency]` to penalize tokens only.
+
+Per-trace values are logged under `metrics/cost_penalty/*`: `token_usd` and `cache_hit_rate`, plus `latency_s` and `tool_s` when `[latency]` is set.
 
 ### Hierarchical GRPO
 
