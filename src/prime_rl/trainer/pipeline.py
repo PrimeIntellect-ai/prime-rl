@@ -9,6 +9,7 @@ stage over its own ranks.
 """
 
 import copy
+import ctypes
 from collections.abc import Callable
 from contextlib import nullcontext
 from functools import partial
@@ -420,6 +421,135 @@ class CopyEngineEdge:
             return [_EventWork(self.stream.record_event())]
 
 
+class _WaitSignalDesc(ctypes.Structure):
+    _fields_ = [("opCnt", ctypes.c_int), ("peer", ctypes.c_int), ("sigIdx", ctypes.c_int), ("ctx", ctypes.c_int)]
+
+
+_NCCL_UINT8 = 1
+_NCCL_WIN_COLL_SYMMETRIC = 1
+
+
+def _nccl_lib() -> ctypes.CDLL:
+    # Resolves to the libnccl torch already loaded (also when another build is preloaded).
+    return ctypes.CDLL("libnccl.so.2")
+
+
+def _nccl_check(lib: ctypes.CDLL, rc: int, what: str) -> None:
+    if rc != 0:
+        lib.ncclGetErrorString.restype = ctypes.c_char_p
+        raise RuntimeError(f"{what} failed: {lib.ncclGetErrorString(rc).decode()} ({rc})")
+
+
+class PutEdge:
+    """One transfer edge (one direction between two neighbouring ranks) carried by NCCL's one-sided
+    `ncclPutSignal`: the sender packs a micro-batch into its window and puts it into the receiver's window,
+    the receiver waits for the put's signal, copies the micro-batch out and returns a credit with `ncclSignal`;
+    the sender waits for that credit before its next put. On a group with the zero-CTA policy NCCL >= 2.30 runs
+    puts and signals from a CPU proxy, so a transfer in flight holds no SM. Both ends register a window of one
+    micro-batch (the sender's is its pack buffer, the receiver's its landing buffer). Puts need no matching
+    order between edges, unlike the copy-engine all-gathers."""
+
+    ALIGN = 256
+
+    def __init__(self, group: dist.ProcessGroup, nbytes: int, device: torch.device):
+        backend = group._get_backend(device)
+        self.lib = _nccl_lib()
+        self.part = -(-nbytes // self.ALIGN) * self.ALIGN
+        self.pool = torch.cuda.MemPool(backend.mem_allocator)
+        with torch.cuda.use_mem_pool(self.pool):
+            self.buffer = torch.zeros(self.part, dtype=torch.uint8, device=device)
+        torch.cuda.synchronize()
+        self.comm = ctypes.c_void_p(backend._comm_ptr())
+        self.win = ctypes.c_void_p()
+        _nccl_check(
+            self.lib,
+            self.lib.ncclCommWindowRegister(
+                self.comm,
+                ctypes.c_void_p(self.buffer.data_ptr()),
+                ctypes.c_size_t(self.part),
+                ctypes.byref(self.win),
+                ctypes.c_int(_NCCL_WIN_COLL_SYMMETRIC),
+            ),
+            "ncclCommWindowRegister",
+        )
+        self.peer = 1 - dist.get_group_rank(group, dist.get_rank())
+        self.stream = torch.cuda.Stream(device)
+        self.sent = 0
+
+    def _views(self, tensors: list[Tensor]) -> tuple[list[Tensor], int]:
+        """Views of the window for `tensors`, and the bytes they span."""
+        views, offset, end = [], 0, 0
+        for tensor in tensors:
+            nbytes = tensor.numel() * tensor.element_size()
+            views.append(self.buffer[offset : offset + nbytes].view(tensor.dtype).view(tensor.shape))
+            end = offset + nbytes
+            offset += -(-nbytes // self.ALIGN) * self.ALIGN
+        if offset > self.part:
+            raise ValueError(f"stage transfer of {offset} bytes exceeds its {self.part}-byte buffer")
+        return views, end
+
+    def _cuda_stream(self) -> ctypes.c_void_p:
+        return ctypes.c_void_p(self.stream.cuda_stream)
+
+    def _wait_signal(self) -> None:
+        desc = _WaitSignalDesc(1, self.peer, 0, 0)
+        _nccl_check(
+            self.lib,
+            self.lib.ncclWaitSignal(ctypes.c_int(1), ctypes.byref(desc), self.comm, self._cuda_stream()),
+            "ncclWaitSignal",
+        )
+
+    def send(self, tensors: list[Tensor]) -> list[_EventWork]:
+        self.stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(self.stream):
+            if self.sent:
+                self._wait_signal()  # the receiver has copied the previous micro-batch out
+            views, nbytes = self._views(tensors)
+            for tensor, view in zip(tensors, views):
+                tensor.record_stream(self.stream)
+                view.copy_(tensor)
+            _nccl_check(
+                self.lib,
+                self.lib.ncclPutSignal(
+                    ctypes.c_void_p(self.buffer.data_ptr()),
+                    ctypes.c_size_t(nbytes),
+                    ctypes.c_int(_NCCL_UINT8),
+                    ctypes.c_int(self.peer),
+                    self.win,
+                    ctypes.c_size_t(0),
+                    ctypes.c_int(0),
+                    ctypes.c_int(0),
+                    ctypes.c_uint(0),
+                    self.comm,
+                    self._cuda_stream(),
+                ),
+                "ncclPutSignal",
+            )
+            self.sent += 1
+            return [_EventWork(self.stream.record_event())]
+
+    def recv(self, tensors: list[Tensor]) -> list[_EventWork]:
+        self.stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(self.stream):
+            self._wait_signal()
+            for tensor, view in zip(tensors, self._views(tensors)[0]):
+                # Receive buffers double as autograd leaves of the stage's input.
+                tensor.detach().copy_(view)
+            _nccl_check(
+                self.lib,
+                self.lib.ncclSignal(
+                    ctypes.c_int(self.peer),
+                    ctypes.c_int(0),
+                    ctypes.c_int(0),
+                    ctypes.c_uint(0),
+                    self.comm,
+                    self._cuda_stream(),
+                ),
+                "ncclSignal",
+            )
+            return [_EventWork(self.stream.record_event())]
+
+
 def _release_outputs(stage: PipelineStage, mb: int) -> None:
     """Free the memory of a micro-batch's sent forward outputs that the model declares releasable
     (`pipeline_releasable_outputs`, output indices): outputs that no backward of the stage reads, so the
@@ -455,7 +585,7 @@ class AsyncPipelineSchedule(PipelineScheduleMulti):
         owners: dict[int, int],
         edge_groups: dict[tuple[int, int], dist.ProcessGroup],
         edge_kind: Callable[[int, int], int],
-        copy_engine_edges: dict[tuple[int, int], CopyEngineEdge] | None = None,
+        copy_engine_edges: dict[tuple[int, int], CopyEngineEdge | PutEdge] | None = None,
         first_step_actions: list[Action] | None = None,
         offload: PipelineActivationOffloadConfig | None = None,
         **kwargs,
@@ -751,11 +881,12 @@ def build_pipeline_schedule(
             pp_ranks,
             pp_mesh.get_local_rank(),
             kinds=2 * stages_per_rank,
-            copy_engine=transport == "copy_engine",
+            copy_engine=transport in ("copy_engine", "put"),
             ctas=transport_ctas,
         )
         copy_engine_edges = None
-        if transport == "copy_engine":
+        if transport in ("copy_engine", "put"):
+            edge_cls = CopyEngineEdge if transport == "copy_engine" else PutEdge
             # An edge's buffer holds one micro-batch of the activations crossing it (its gradients are
             # no larger). Registration is collective, so edges are set up in the groups' global order.
             local = dict(zip(stage_ids, shapes))
@@ -764,7 +895,7 @@ def build_pipeline_schedule(
                 first = low if kind < 2 else 2 * pp - 2 - low
                 metas = local[first][1] if first in local else local[first + 1][0]
                 nbytes = sum(meta.numel() * meta.element_size() for meta in metas)
-                copy_engine_edges[(low, kind)] = CopyEngineEdge(edge_groups[(low, kind)], nbytes, device)
+                copy_engine_edges[(low, kind)] = edge_cls(edge_groups[(low, kind)], nbytes, device)
             torch.cuda.synchronize()
         # Gradients are scaled by the caller, like the gradient-accumulation path does.
         return AsyncPipelineSchedule(
