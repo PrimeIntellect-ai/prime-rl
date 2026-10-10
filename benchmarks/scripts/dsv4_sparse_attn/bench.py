@@ -3,7 +3,7 @@
 usage (repo root, on an otherwise idle GPU):
   uv run --no-sync python benchmarks/scripts/dsv4_sparse_attn/bench.py --out RESULTS.json [--label NAME]
       [--corpus DIR] [--items GLOB ...] [--backends NAME ...] [--rounds K] [--iters N] [--warmup N]
-      [--profile-iters N]
+      [--profile-iters N] [--host-trace DIR]
   uv run --no-sync python benchmarks/scripts/dsv4_sparse_attn/bench.py --compare A.json [B.json ...]
 
 Per item, every backend's outputs are first compared against `tilelang` (out, lse, dq, dkv, dsink), and on
@@ -17,6 +17,11 @@ reported and not timed. Each passing backend is then timed on the forward and on
 - GPU kernel time: the summed duration of the kernels, memsets and memcpys each call launches, from a
   torch.profiler trace, so op-boundary minus kernel time is host overhead and launch gaps.
 - peak memory above the pre-call allocation.
+
+With `--host-trace DIR`, each timed callable is also profiled with Python stacks and written to
+`DIR/<item>__<backend>__<mode>.json.gz`, one `dsv4_sparse_attn_bench_call` annotation per call, for attributing host
+time with the profiling skill's `trace_events.py --include-python`. Python tracing inflates host time, so read it
+as relative cost.
 
 Results go to a JSON with provenance (GPU, driver, clocks, power limit, host, git SHA, corpus hash), and the
 markdown tables are printed. `--compare` prints the tables for several result files and refuses files built
@@ -176,6 +181,18 @@ def time_gpu_activity(fn, iters: int, flush: torch.Tensor) -> dict:
     return {"us": summarize(busy_us), "launches_per_call": statistics.median(launches)}
 
 
+def write_host_trace(fn, iters: int, flush: torch.Tensor, path: Path) -> None:
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], with_stack=True) as prof:
+        for _ in range(iters):
+            flush.zero_()
+            torch.cuda.synchronize()
+            with record_function(PROFILE_RANGE):
+                fn()
+            torch.cuda.synchronize()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prof.export_chrome_trace(str(path))
+
+
 def peak_mib(fn) -> float:
     torch.cuda.synchronize()
     baseline = torch.cuda.memory_allocated()
@@ -280,6 +297,9 @@ def benchmark_item(item, corpus_dir: Path, backends: dict, args, flush: torch.Te
                 "gpu": time_gpu_activity(fn, args.profile_iters, flush),
                 "peak_mib": peak_mib(fn),
             }
+            if args.host_trace is not None:
+                path = args.host_trace / f"{item.id}__{name}__{mode}.json.gz"
+                write_host_trace(fn, args.profile_iters, flush, path)
     return record
 
 
@@ -395,6 +415,7 @@ def main() -> None:
     parser.add_argument("--iters", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--profile-iters", type=int, default=5)
+    parser.add_argument("--host-trace", type=Path, default=None, help="write a Python-stack trace per callable here")
     args = parser.parse_args()
 
     if args.compare:
@@ -424,7 +445,11 @@ def main() -> None:
     result = {
         "label": args.label or prov["git"]["sha"][:9],
         "provenance": prov,
-        "settings": {key: value for key, value in vars(args).items() if key not in ("compare", "out", "corpus")},
+        "settings": {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in vars(args).items()
+            if key not in ("compare", "out", "corpus")
+        },
         "corpus": str(args.corpus),
         "backends": {name: backend.LABEL for name, backend in backends.items()},
         "skipped_backends": skipped,
