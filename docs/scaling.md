@@ -221,7 +221,7 @@ SFT multi-node:
 [deployment]
 type = "multi_node"
 num_train_nodes = 2
-num_infer_nodes = 1  # required only for online evals
+infer_nodes_per_replica = 1  # required only for online evals
 gpus_per_node = 8
 ```
 

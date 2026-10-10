@@ -203,9 +203,8 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     num_train_nodes: int = Field(2, ge=1)
     """Training nodes."""
 
-    num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
-    """Inference nodes for online evals (alias: ``num_eval_nodes``). These nodes share
-    one SLURM allocation with the trainer nodes."""
+    infer_nodes_per_replica: int = Field(0, ge=0)
+    """Inference nodes for online evals. These nodes share one SLURM allocation with the trainer nodes."""
 
     nodes_per_fsdp_group: int | None = None
     """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
@@ -456,8 +455,10 @@ class SFTConfig(BaseConfig):
                     "Multi-node online evals require an [inference] block - dedicated nodes in the "
                     "SFT allocation run the inference pool and evals process."
                 )
-            if self.deployment.num_infer_nodes < 1:
-                raise ValueError("Online evals on a multi-node deployment require deployment.num_infer_nodes >= 1.")
+            if self.deployment.infer_nodes_per_replica < 1:
+                raise ValueError(
+                    "Online evals on a multi-node deployment require deployment.infer_nodes_per_replica >= 1."
+                )
             if self.inference.router is None:
                 raise ValueError(
                     "Multi-node online evals require an inference router - the launcher starts one "
@@ -475,7 +476,7 @@ class SFTConfig(BaseConfig):
                 )
             if self.weight_broadcast.type == "nccl":
                 self.weight_broadcast.inference_world_size = (
-                    self.deployment.num_infer_nodes * self.deployment.gpus_per_node
+                    self.deployment.infer_nodes_per_replica * self.deployment.gpus_per_node
                 )
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
             if self.max_steps is None:
