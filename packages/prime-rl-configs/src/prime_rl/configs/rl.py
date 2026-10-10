@@ -599,6 +599,9 @@ class RLConfig(BaseConfig):
             and inference.deployment.type != "disaggregated"
         ):
             self.orchestrator.payload_root = (self.run_dir / "payloads").absolute()
+        # Payload rows are read when a micro batch is prepared; one worker reads the next ones during compute.
+        if self.orchestrator.payload_root is not None and "num_workers" not in self.trainer.data.model_fields_set:
+            self.trainer.data.num_workers = 1
         return self
 
     @model_validator(mode="after")
