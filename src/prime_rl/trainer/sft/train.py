@@ -12,6 +12,7 @@ from datetime import timedelta
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
+from torch import nn
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
@@ -271,8 +272,19 @@ def train(config: SFTConfig):
         if len(model_parts) > 1 and config.ckpt is not None:
             raise ValueError("checkpoints support one pipeline stage per rank only")
         pp_group = parallel_dims.world_mesh["pp"].get_group()
+        if config.model.pp_gemm_sms is not None:
+            import deep_gemm
+
+            deep_gemm.set_num_sms(config.model.pp_gemm_sms)
         num_stages = parallel_dims.pp * config.model.pp_stages_per_rank
         pp_first, pp_last = 0 in stage_ids, num_stages - 1 in stage_ids
+        # The pipeline rank holding the last stage (rank 0 in V schedules), which computes the loss.
+        pp_loss_rank = next(
+            owner
+            for owner in range(parallel_dims.pp)
+            if num_stages - 1
+            in local_stage_ids(owner, parallel_dims.pp, config.model.pp_schedule, config.model.pp_stages_per_rank)
+        )
         pp_schedule = None  # built at the first step, from its first micro-batch
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
@@ -508,6 +520,10 @@ def train(config: SFTConfig):
                     grad_accum_steps,
                     loss_fn=lambda loss_sum, _target: loss_sum.sum() / grad_accum_steps,
                     first_inputs=tuple(t[:1] for t in stage_inputs) if pp_first else None,
+                    warmup_step=config.model.pp_warmup_step,
+                    transport=config.model.pp_transport,
+                    transport_ctas=config.model.pp_transport_ctas,
+                    offload=config.model.pp_activation_offload,
                 )
             queue_seq_lens(model_parts, micro_batches)
             losses = [] if pp_last else None
@@ -517,7 +533,7 @@ def train(config: SFTConfig):
                 pp_schedule.step(*stage_inputs, target=target, losses=losses)
             if pp_last:
                 step_loss_sum += torch.stack(losses).sum().detach() * grad_accum_steps
-            dist.broadcast(step_loss_sum, group_src=parallel_dims.pp - 1, group=pp_group)
+            dist.broadcast(step_loss_sum, group_src=pp_loss_rank, group=pp_group)
             if is_moe_model:
                 moe_stats_step, step_tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
                 for name, value in moe_stats_step.items():
@@ -596,8 +612,12 @@ def train(config: SFTConfig):
             grad_norm = in_backward.grad_norm(grad_scale if global_token_count_val > 0 else 0.0)
         elif config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
+            # A pipeline rank can hold several stages (model parts).
             grad_norm = clip_grad_norm_(
-                gradient_manager, model, config.optim.max_norm, pp_group if pp_enabled else None
+                gradient_manager,
+                nn.ModuleList(model_parts) if pp_enabled else model,
+                config.optim.max_norm,
+                pp_group if pp_enabled else None,
             )
         logger.debug("Optimizer step")
         optimizer.step()

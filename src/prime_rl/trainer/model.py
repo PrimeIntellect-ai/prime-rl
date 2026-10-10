@@ -987,12 +987,12 @@ def setup_model(
     # No-op for models without a sparse indexer.
     freeze_sparse_indexer(model)
 
-    # A pipeline stage can hold no decoder layers (the head alone), and then no MoE.
-    has_layers = len(get_language_model(model).layers) > 0
-    if config.debug.force_balanced_routing and has_layers:
+    # A pipeline stage can hold no MoE: no decoder layers (the head alone) or only an attention block.
+    has_moe = any(isinstance(module, MoE) for module in model.modules())
+    if config.debug.force_balanced_routing and has_moe:
         apply_force_balanced_routing(model)
 
-    if has_layers:
+    if has_moe:
         configure_moe_runtime(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,

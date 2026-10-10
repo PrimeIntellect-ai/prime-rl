@@ -58,6 +58,23 @@ class ActivationOffloadingConfig(BaseConfig):
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
 
 
+class PipelineActivationOffloadConfig(BaseConfig):
+    """Activation offloading for the ``Async1F1B`` / ``DualPipeV`` pipeline schedules: after a micro-batch's
+    forward, a stage copies the activations it keeps for the backward (its received inputs and its decoder and
+    engram layers' inputs, which activation checkpointing keeps) to pinned host memory and frees them, and copies
+    them back a few ops before that micro-batch's backward. Copies run on side streams beside the compute."""
+
+    min_bytes: int = Field(64 * 2**20, ge=1)
+    """Smallest tensor storage to offload, in bytes."""
+
+    prefetch_ahead: int = Field(2, ge=1)
+    """How many ops (forwards or backwards) before a micro-batch's backward its activations start coming back.
+    Micro-batches whose backward follows their forward more closely stay on the GPU."""
+
+    stages: list[int] | None = None
+    """Pipeline stages that offload. ``None``: every stage."""
+
+
 class OptimizerInBackwardOffloadConfig(BaseConfig):
     """Full CPU optimizer offload: FP32 masters, optimizer state (AdamW moments; SignSGD is
     stateless), and accumulated gradients live in CPU RAM, each optimizer chunk runs on CPU as
@@ -411,16 +428,31 @@ class ModelConfig(BaseModelConfig):
     pp: int = 1
     """Pipeline parallelism degree. 1 disables PP. The decoder layers are split into ``pp * pp_stages_per_rank`` stages of consecutive layers; each stage is FSDP-sharded (and expert-parallel) over its pipeline rank's devices."""
 
-    pp_schedule: Literal["1F1B", "Async1F1B", "GPipe", "Interleaved1F1B", "InterleavedZeroBubble", "ZBVZeroBubble"] = (
-        "1F1B"
-    )
-    """Pipeline schedule. The step's micro-batches are the pipeline's micro-batches. ``1F1B`` and ``GPipe`` run one stage per rank; the interleaved schedules loop ``pp_stages_per_rank`` stages over the ranks; ``ZBVZeroBubble`` places two stages per rank in a V."""
+    pp_schedule: Literal[
+        "1F1B", "Async1F1B", "DualPipeV", "GPipe", "Interleaved1F1B", "InterleavedZeroBubble", "ZBVZeroBubble"
+    ] = "1F1B"
+    """Pipeline schedule. The step's micro-batches are the pipeline's micro-batches. ``1F1B`` and ``GPipe`` run one stage per rank; the interleaved schedules loop ``pp_stages_per_rank`` stages over the ranks; ``ZBVZeroBubble`` places two stages per rank in a V. ``Async1F1B`` (one stage per rank) and ``DualPipeV`` (two stages per rank in a V, DeepSeek's order with full backwards, at least ``2 * pp`` micro-batches) run on an executor that never waits on a stage transfer before it is needed; DualPipeV also hides the transfer time that 1F1B adds to every cycle, at the same worst-rank activation memory."""
+
+    pp_warmup_step: list[Annotated[int, Field(ge=1)]] = [1]
+    """``Async1F1B`` only: how many more warmup forwards each stage runs than the next one, one entry per neighbour pair (``pp - 1``, first pair first) or a single entry for all. 1 is classic 1F1B, which waits for one activation and one gradient transfer every cycle; 2 hides both transfers at one more micro-batch in flight on every earlier stage (all 2: stage s keeps ``2 * (pp - s) - 1``). Memory-bound early stages can keep 1 if they carry about two transfers less work per micro-batch than the bottleneck stage. Larger steps only add in-flight micro-batches (useful to emulate a deeper pipeline's memory)."""
+
+    pp_transport: Literal["nccl", "copy_engine"] = "nccl"
+    """``Async1F1B`` / ``DualPipeV`` stage transfers. ``nccl`` uses send/recv, whose kernels hold SMs while a transfer is in flight and slow persistent kernels (fused MoE, DeepGEMM) that overlap it. ``copy_engine`` sends each micro-batch as an in-place two-rank all-gather of an NCCL symmetric-window buffer with the zero-CTA policy, which NCCL >= 2.32 runs on copy engines only; it costs one buffer of a micro-batch's activations per transfer edge, sends as many bytes back as forward, and needs NCCL >= 2.32 at runtime (older NCCL falls back to SM kernels)."""
+
+    pp_transport_ctas: int | None = Field(None, ge=1)
+    """``nccl`` transport only: CTAs (SMs) each stage send/recv kernel takes. Pin it and shrink the persistent kernels by as many SMs (``moe.dispatch.num_sms``; DeepGEMM via ``pp_gemm_sms``) so a transfer in flight does not slow them. ``None`` leaves NCCL's default."""
+
+    pp_gemm_sms: int | None = Field(None, ge=2, multiple_of=2)
+    """SMs DeepGEMM's dense FP8 GEMMs run on under pipeline parallelism (``deep_gemm.set_num_sms``); with ``pp_transport_ctas`` this keeps their waves off the SMs a transfer holds. ``None`` uses every SM."""
 
     pp_stages_per_rank: int = Field(1, ge=1)
     """Pipeline stages each pipeline rank holds."""
 
-    pp_layers_per_stage: list[int] | None = None
-    """Decoder layers of each stage, in stage order. Defaults to an even split, earlier stages taking the remainder."""
+    pp_layers_per_stage: list[float] | None = None
+    """Decoder layers of each stage, in stage order (``pp * pp_stages_per_rank`` entries; DualPipeV numbers its stages along the V, so rank 0 holds the first and the last). Multiples of 0.5 cut a layer between its attention and its MoE block (DeepSeek-V4.1); 0 gives a stage with only the embedding or the head. Defaults to an even split of whole layers, earlier stages taking the remainder."""
+
+    pp_activation_offload: PipelineActivationOffloadConfig | None = None
+    """``Async1F1B`` / ``DualPipeV`` only: offload the activations a stage keeps for its in-flight micro-batches to host memory between their forward and backward. ``None`` keeps them on the GPU. (``ac_offloading`` applies only without pipeline parallelism.)"""
 
     cp_style: Literal["ring", "ulysses"] = "ring"
     """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
@@ -465,6 +497,12 @@ class ModelConfig(BaseModelConfig):
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
+        return self
+
+    @model_validator(mode="after")
+    def pp_activation_offload_requires_async_schedule(self):
+        if self.pp_activation_offload is not None and self.pp_schedule not in ("Async1F1B", "DualPipeV"):
+            raise ValueError("model.pp_activation_offload requires pp_schedule 'Async1F1B' or 'DualPipeV'")
         return self
 
     @model_validator(mode="after")

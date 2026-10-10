@@ -56,6 +56,20 @@ class DeepseekV41DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.attn_hc = DeepseekV41HyperConnection(config)
         self.ffn_hc = DeepseekV41HyperConnection(config)
+        # "attention" or "moe" when a pipeline stage boundary cuts this layer and the stage keeps one block.
+        self.pipeline_part: str | None = None
+
+    def keep_pipeline_part(self, part: str) -> None:
+        """Keep only the attention block (and its mHC gates) or only the MoE block of this layer. Between
+        the two the residual streams and the attention block's `pre` gate are what a layer boundary
+        carries, so a stage boundary can sit there."""
+        if part == "attention":
+            self.mlp = self.post_attention_layernorm = self.ffn_hc = None
+        elif part == "moe":
+            self.self_attn = self.input_layernorm = self.attn_hc = None
+        else:
+            raise ValueError(f"unknown pipeline part {part!r}")
+        self.pipeline_part = part
 
     def forward(
         self,
@@ -69,16 +83,50 @@ class DeepseekV41DecoderLayer(nn.Module):
         *,
         packed: PackedContext,
     ) -> tuple[Tensor, ...]:
-        state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
+        if self.pipeline_part == "attention":
+            state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
+            attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
+            attn_out, state = self.self_attn(self.input_layernorm(attn_in), packed=packed, state=state)
+            return (self.attn_hc.update_states(post, comb, attn_out, streams), attn_pre, *state.as_tuple())
+        if self.pipeline_part == "moe":
+            ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, pre_mix)
+            mlp_out = self.mlp(self.post_attention_layernorm(ffn_in), routed_experts=routed_experts)
+            return (
+                self.dense_after_mlp(post, comb, mlp_out, streams),
+                ffn_pre,
+                compressed_kv,
+                index_k,
+                top_k_indices,
+                candidates,
+            )
+        ffn_in, ffn_pre, post, comb, streams, *state = self.dense_before_mlp(
+            mhc_states, pre_mix, compressed_kv, index_k, top_k_indices, candidates, packed=packed
+        )
+        mlp_out = self.mlp(ffn_in, routed_experts=routed_experts)
+        return (self.dense_after_mlp(post, comb, mlp_out, streams), ffn_pre, *state)
 
+    def dense_before_mlp(
+        self,
+        mhc_states: Tensor,
+        pre_mix: Tensor,
+        compressed_kv: Tensor | None,
+        index_k: Tensor | None,
+        top_k_indices: Tensor | None,
+        candidates: Tensor | None,
+        *,
+        packed: PackedContext,
+    ) -> tuple[Tensor | None, ...]:
+        """mHC gates, attention and the FFN's input gates and norm."""
+        state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
         attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
         attn_out, state = self.self_attn(self.input_layernorm(attn_in), packed=packed, state=state)
         mhc_states = self.attn_hc.update_states(post, comb, attn_out, streams)
-
         ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
-        mlp_out = self.mlp(self.post_attention_layernorm(ffn_in), routed_experts=routed_experts)
-        mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, streams)
-        return (mhc_states, ffn_pre, *state.as_tuple())
+        return (self.post_attention_layernorm(ffn_in), ffn_pre, post, comb, streams, *state.as_tuple())
+
+    def dense_after_mlp(self, post: Tensor, comb: Tensor, mlp_out: Tensor, streams: Tensor) -> Tensor:
+        """Writes the MoE output back into the residual streams."""
+        return self.ffn_hc.update_states(post, comb, mlp_out, streams)
 
 
 # fp32 in the published checkpoint; mirrors V4's list.
@@ -219,14 +267,26 @@ class DeepseekV41ForCausalLM(PrimeModel):
         hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
 
-    def prune_to_pipeline_stage(self, layer_ids: range, *, first: bool, last: bool) -> None:
+    def prune_to_pipeline_stage(self, units: range, *, first: bool, last: bool) -> None:
         """Keep only this pipeline stage's decoder layers (and engrams), the embedding on the first
-        stage and the final norm and head on the last."""
+        stage and the final norm and head on the last. `units` are half layers: unit 2i is layer i's
+        attention block, 2i + 1 its MoE block; a layer cut by a stage boundary keeps its stage's block,
+        and its engram goes with the attention block."""
         from prime_rl.trainer.pipeline import StageLayers
 
         model = self.model
+        # The residual streams a non-last stage sends come out of an mHC update, whose backward reads only
+        # its inputs, so the executor may free them once sent. The shared attention state is read by later
+        # layers' backward and is kept.
+        self.pipeline_releasable_outputs = () if last else (0,)
+        layer_ids = sorted({unit // 2 for unit in units})
         model.layers = StageLayers({idx: model.layers[idx] for idx in layer_ids})
-        model.engrams = nn.ModuleDict({key: engram for key, engram in model.engrams.items() if int(key) in layer_ids})
+        for idx, layer in zip(layer_ids, model.layers):
+            if 2 * idx not in units:
+                layer.keep_pipeline_part("moe")
+            elif 2 * idx + 1 not in units:
+                layer.keep_pipeline_part("attention")
+        model.engrams = nn.ModuleDict({key: engram for key, engram in model.engrams.items() if 2 * int(key) in units})
         if len(model.engrams) == 0:
             model.engram_hasher = None
         if not first:
