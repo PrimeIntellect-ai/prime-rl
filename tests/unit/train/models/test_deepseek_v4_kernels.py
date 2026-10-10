@@ -230,7 +230,9 @@ MASKED_FRACTION = 0.25
 OUT_RTOL = 1e-2
 # The LSE is float32 throughout on both sides.
 LSE_RTOL = 5e-7
-LSE_RTOL_BY_BACKEND: dict[str, float] = {}
+# FlashMLA returns a natural-log LSE without the sink, so the base-2 sink-inclusive one is two more
+# float32 roundings away; measured at up to 5.1e-7 on the benchmark corpus, about 4 ulps.
+LSE_RTOL_BY_BACKEND: dict[str, float] = {"cudnn_flashmla": 1e-6}
 DQ_RTOL = 1e-2
 # The vendored kernel this one forked from rounds `P` and `dP` to bfloat16 before the `dKV` GEMMs
 # while the oracle keeps them in float32, on top of the bfloat16 `kv` both sides share.
