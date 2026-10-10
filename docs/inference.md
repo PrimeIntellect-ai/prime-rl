@@ -12,6 +12,7 @@ This page covers the inference configuration and the supported features/deployme
 - [P/D Disaggregation](#pd-disaggregation)
 - [Router](#router)
     - [Routing policies](#routing-policies)
+    - [Dead engines](#dead-engines)
 - [Adaptive Concurrency](#adaptive-concurrency)
 - [Advanced Configuration](#advanced-configuration)
     - [KV Cache Offload](#kv-cache-offload)
@@ -197,6 +198,28 @@ The policies you might want to configure are:
 
 - `round_robin` - this policy will round-robin the requests between the available replicas. This is useful if you want to balance the load between the replicas. This might give you better results if you don't have enough rollouts to make `consistent_hash` hashing saturated.
 
+
+### Dead engines
+
+With more than one engine behind the router and NCCL or filesystem weight broadcast, the orchestrator keeps training when an engine dies or hangs.
+- **Eviction.** An engine is evicted when any of these happens:
+  - three `/liveness` probes in a row fail (10 s apart). The probe is a worker RPC, so a stuck engine core fails it even when the API server answers;
+  - it has running requests but generates no token for 300 s;
+  - a weight-update call to it fails.
+- **After eviction:**
+  - the engine leaves the router and the weight updates;
+  - its in-flight requests fail, or are dropped after 300 s without progress if the engine hangs.
+- **NCCL.** The broadcast group is rebuilt over the remaining engines at the next weight update, on a new port.
+- **Death mid-transfer (NCCL).** If an engine dies during the transfer:
+  - the orchestrator writes an abort marker into the step's broadcast directory;
+  - the trainer and the other engines abort the collective (`ncclCommAbort`);
+  - the group is rebuilt and the trainer sends the version again.
+  - The inference nodes must see the run's output directory for this.
+- **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update. It returns to the router only after that update succeeds.
+- **Router.** A `vllm-router` that crashes is restarted in place by the launcher, with the same port and worker list.
+- **Still fatal:**
+  - the last engine dying;
+  - NIXL broadcast, which pins its receivers.
 
 ## Adaptive Concurrency
 

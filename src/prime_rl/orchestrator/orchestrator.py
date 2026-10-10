@@ -85,6 +85,8 @@ SHUTDOWN_TIMEOUT_S = 300
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
+# After an engine is evicted, episodes that streamed nothing for this long are dropped
+STUCK_EPISODE_GRACE_S = 300.0
 
 
 class Orchestrator:
@@ -150,6 +152,7 @@ class Orchestrator:
         self.wait_for_policy_time = 0.0
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
+        self.background_tasks: set[asyncio.Task] = set()
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -396,6 +399,15 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
+        # A dead engine is evicted and the run continues on the others (one engine has nothing
+        # to fall back to). NIXL pins its receiving engines on the trainer side, so it fails fast.
+        if (
+            self.config.weight_broadcast.type in ("filesystem", "nccl")
+            and type(self.admin_plane) is AdminPlane
+            and len(self.admin_plane.clients) > 1
+        ):
+            self.component_tasks.append(asyncio.create_task(self.admin_plane.monitor_health(), name="inference_health"))
+            self.admin_plane.on_evict = self.drop_stuck_after_eviction
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
@@ -951,6 +963,19 @@ class Orchestrator:
         # event loop keeps the dispatcher from mutating TrainSource mid-save
         self.ckpt_manager.save(self.progress, self.train_source, step)
         return time.perf_counter() - t
+
+    def drop_stuck_after_eviction(self) -> None:
+        """Requests on an engine that is alive but stuck never return. Once the episodes still
+        running elsewhere had time to show progress, drop those that showed none."""
+        evicted_at = time.monotonic()
+
+        async def drop_stuck() -> None:
+            await asyncio.sleep(STUCK_EPISODE_GRACE_S)
+            await self.dispatcher.cancel_stuck(since=evicted_at)
+
+        task = asyncio.create_task(drop_stuck())
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs

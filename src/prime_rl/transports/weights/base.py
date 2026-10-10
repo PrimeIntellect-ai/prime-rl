@@ -81,6 +81,7 @@ class WeightSender(ABC):
         start = time.monotonic()
         last_log = start
         while not ready_file.exists():
+            self._wait_hook()
             now = time.monotonic()
             if now - start > self.timeout:
                 raise TimeoutError(f"No receiver joined the broadcast within {self.timeout}s ({ready_file})")
@@ -91,6 +92,9 @@ class WeightSender(ABC):
                 last_log = now
             time.sleep(0.1)
         self.logger.debug("Receiver ready, starting the transfer")
+
+    def _wait_hook(self) -> None:
+        """Called while waiting for the receiver; transports with a receiver group rejoin it here."""
 
     @abstractmethod
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
