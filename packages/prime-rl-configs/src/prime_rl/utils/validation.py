@@ -188,3 +188,15 @@ def propagate_shared_fields(data: Any) -> Any:
         raise ValueError("\n".join(lines))
 
     return data
+
+
+def set_derived(config: Any, field: str, value: Any, path: str) -> None:
+    """Set a field the launcher derives. An explicit value is accepted only when it
+    equals the derived one, so resolved configs re-parse but a conflicting value fails
+    instead of being silently replaced."""
+    if field in config.model_fields_set and getattr(config, field) != value:
+        raise ValueError(
+            f"{path} ({getattr(config, field)!r}) conflicts with the derived value ({value!r}). "
+            "It is set automatically by the launcher; remove it."
+        )
+    setattr(config, field, value)
