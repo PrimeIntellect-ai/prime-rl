@@ -109,7 +109,7 @@ def train(config: TrainerConfig):
         enable_gloo=config.model.offload in ("fsdp", "full"),
     )
     if config.model.offload == "full":
-        setup_full_cpu_optimizer_offload(numa_bind=config.model.offload_numa_bind)
+        setup_full_cpu_optimizer_offload()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.

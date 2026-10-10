@@ -175,9 +175,8 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload(numa_bind: bool) -> None:
-    if numa_bind:
-        bind_process_to_gpu_numa_node()
+def setup_full_cpu_optimizer_offload() -> None:
+    bind_process_to_gpu_numa_node()
     configure_cpu_optimizer_threads()
 
 

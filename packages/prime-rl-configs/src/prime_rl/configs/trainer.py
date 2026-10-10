@@ -264,9 +264,6 @@ class ModelConfig(BaseModelConfig):
     offload: OffloadMode = "optimizer"
     """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU, avoiding the H2D all-gather overhead of ``fsdp`` while still saving GPU memory. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``fsdp`` offloads parameters, gradients, and optimizer states through FSDP with pinned memory. ``none`` keeps everything on GPU."""
 
-    offload_numa_bind: bool = True
-    """With ``offload = "full"``, pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
-
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
 
