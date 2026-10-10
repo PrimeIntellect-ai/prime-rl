@@ -1,4 +1,5 @@
 import contextlib
+import ctypes
 import os
 import signal
 import subprocess
@@ -82,6 +83,18 @@ def torchrun_cmd(
         "@",
         config_path.as_posix(),
     ]
+
+
+_PR_SET_PDEATHSIG = 1
+# Resolved before any fork: the child of a multi-threaded launcher should only make the call.
+_prctl = ctypes.CDLL(None, use_errno=True).prctl if sys.platform == "linux" else None
+
+
+def die_with_parent() -> None:
+    """Have the kernel SIGTERM this process when its parent exits. A launcher or torchrun agent
+    that is SIGKILLed (or OOM-killed) then leaves no orphans holding GPUs and ports. Linux only."""
+    if _prctl is not None:
+        _prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
 
 
 def set_proc_title(name: str) -> None:
@@ -185,7 +198,7 @@ class ProcessGroup:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # If we don't log stdout, the inference server hangs
         with open(log_path, "w") as log_file:
-            process = Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+            process = Popen(cmd, env=env, stdout=log_file, stderr=log_file, preexec_fn=die_with_parent)
         self.processes.append(process)
         stop_event = Event()
         self.stop_events[name] = stop_event

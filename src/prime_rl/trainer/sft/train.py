@@ -62,7 +62,7 @@ from prime_rl.trainer.world import get_world
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
-from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.process import die_with_parent, set_proc_title
 from prime_rl.utils.utils import clean_exit
 import torch.distributed as dist
 
@@ -691,6 +691,8 @@ def train(config: SFTConfig):
 
 def main():
     set_proc_title("SFTTrainer")
+    # torchrun starts its workers in their own sessions; tie them to the agent
+    die_with_parent()
     train(cli(SFTConfig))
 
 
