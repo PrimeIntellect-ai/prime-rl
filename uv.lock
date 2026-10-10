@@ -112,13 +112,14 @@ members = [
     "pi-officeqa-pro-v2",
     "pi-programbench",
     "pi-swe-sweep",
-    "pi-terminal-bench-2",
+    "pi-terminalbench2-1",
     "pinchbench",
     "prime-rl",
     "prolog",
     "proofnet",
     "proposer-solver",
     "proverbench",
+    "ptx-remote",
     "putnambench",
     "r2e-gym",
     "recursive-task-synthesis",
@@ -1351,7 +1352,7 @@ wheels = [
 
 [[package]]
 name = "deep-swe"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/deep_swe" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -4719,7 +4720,7 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2
 
 [[package]]
 name = "pi-officeqa-pro-v2"
-version = "0.1.4"
+version = "0.1.5"
 source = { editable = "deps/prime-envs/environments/search/pi_officeqa_pro_v2" }
 dependencies = [
     { name = "verifiers" },
@@ -4741,7 +4742,7 @@ requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2
 
 [[package]]
 name = "pi-swe-sweep"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/swe/pi_swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -4751,15 +4752,15 @@ dependencies = [
 requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2.dev165" }]
 
 [[package]]
-name = "pi-terminal-bench-2"
-version = "0.1.0"
-source = { editable = "deps/prime-envs/environments/terminal/pi_terminal_bench_2" }
+name = "pi-terminalbench2-1"
+version = "0.2.2"
+source = { editable = "deps/prime-envs/environments/terminal/pi_terminalbench2_1" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2.dev162" }]
 
 [[package]]
 name = "pillow"
@@ -5463,6 +5464,32 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8e/13/125093eadae863ce03c6ffdbae9929430d116a246ef69866dad94da3bfbc/psutil-7.2.2-cp36-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8", size = 148972, upload-time = "2026-01-28T18:15:29.342Z" },
     { url = "https://files.pythonhosted.org/packages/04/78/0acd37ca84ce3ddffaa92ef0f571e073faa6d8ff1f0559ab1272188ea2be/psutil-7.2.2-cp36-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc", size = 148266, upload-time = "2026-01-28T18:15:31.597Z" },
 ]
+
+[[package]]
+name = "ptx-remote"
+version = "0.1.0"
+source = { editable = "deps/prime-envs/environments/code/ptx_remote" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "verifiers" },
+]
+
+[package.optional-dependencies]
+server = [
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30" },
+    { name = "verifiers", specifier = ">=0.3.2.dev150" },
+]
+provides-extras = ["server"]
 
 [[package]]
 name = "ptyprocess"
@@ -6770,7 +6797,7 @@ wheels = [
 
 [[package]]
 name = "swe-sweep"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/swe/swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -6963,7 +6990,7 @@ wheels = [
 
 [[package]]
 name = "terminal-bench-2"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/terminal/terminal_bench_2" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
