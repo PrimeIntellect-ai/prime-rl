@@ -53,4 +53,4 @@ TRITON_CACHE_DIR = "/tmp/.triton-cache"
 
 [inference.vllm]
 max_model_len = 2048
-tensor_parallel_size = 4
+tensor_parallel_size = 8
