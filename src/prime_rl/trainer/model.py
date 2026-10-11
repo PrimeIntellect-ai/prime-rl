@@ -63,7 +63,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIn
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.utils import wait_for_master
+from prime_rl.trainer.utils import get_dcp_group, wait_for_master
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
@@ -769,6 +769,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
+        process_group=get_dcp_group(),
     )
     write_back_loaded_packed_parameters(model, state_dict)
 
