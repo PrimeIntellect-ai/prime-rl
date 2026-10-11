@@ -295,38 +295,8 @@ class _ProbabilityMaskedISLoss:
         return LossOutputs(loss=loss, metrics=metrics)
 
 
-class IPOLoss(_ProbabilityMaskedISLoss):
-    """Absolute-probability trust region with an importance-weighted policy gradient."""
-
-
-class IPOTISLoss(_ProbabilityMaskedISLoss):
-    """IPO acceptance with truncated importance coefficients and optional SC.
-
-    IPO's absolute-probability mask can accept large p/q ratios when both
-    probabilities are small. TIS limits their contribution while retaining
-    accepted actions: w_v = 1[|p_v-q_v| <= eps] * min(p_v/q_v, ratio_cap).
-    The default cap of 2 is an algorithmic truncation, not a numerical guard.
-    Above the cap the score coefficient saturates; its gradient is not zeroed.
-    There is no lower floor, which would amplify low-ratio stale actions.
-
-    Truncation and masking break the zero-mean importance-weighted score.
-    Score centering subtracts b = sum_v q_v*w_v*grad(log p_v), giving the
-    ascent update A*(w_a*grad(log p_a) - b). The baseline uses the same mask
-    and cap, and applies even when the sampled action is rejected. This
-    cancels constant-advantage drift but does not restore all signal removed
-    by truncation or guarantee stability. With no masking or active cap,
-    b is zero and SC adds nothing to exact importance sampling.
-
-    Centering is exact over a complete replayed sampling support, or uses
-    a captured head and proportional-tail approximation with the IPO tail
-    acceptance check. All centering coefficients are detached.
-
-    The optional sample gate instead uses A*m_a*(t_a*s_a - B/Z), where
-    t=min(p/q, cap), B=E_q[m*t*s], and Z=E_q[m]. Positions with insufficient
-    acceptance mass skip both terms, preserving constant-advantage cancellation.
-    The head gate uses A*M*(t_a*s_a - E_q[t*s]), with M determined by all
-    captured head probabilities, independently of the sampled action.
-    Both gates suppress the entire position's contribution when rejected.
+class _GatedProbabilityMaskedISLoss(_ProbabilityMaskedISLoss):
+    """Shared position gates and conditional centering for IPO importance weights.
 
     On a proportional tail, rejected candidates satisfy |1-rho|*p_v > eps.
     Their total probability difference is at most one, so the largest
@@ -335,7 +305,7 @@ class IPOTISLoss(_ProbabilityMaskedISLoss):
     Cancellation with a captured head is only as accurate as its tail model.
     """
 
-    def __init__(self, config: IPOTISLossConfig):
+    def __init__(self, config: IPOLossConfig | IPOTISLossConfig):
         super().__init__(config)
         self.tail_topk = (
             ceil(1 / config.eps)
@@ -370,7 +340,7 @@ class IPOTISLoss(_ProbabilityMaskedISLoss):
             q = sampler.exp().masked_fill(~valid, 0.0)
             head_keep = valid & (_absolute_probability_difference(head, sampler) <= config.eps)
             sampled_keep = _absolute_probability_difference(logp, logq) <= config.eps
-            mass = torch.minimum(p, config.ratio_cap * q)
+            mass = torch.minimum(p, self.ratio_cap * q)
             acceptance = torch.ones_like(logp)
             tail_p = tail.exp()
             tail_mass = torch.zeros_like(tail_p)
@@ -390,7 +360,7 @@ class IPOTISLoss(_ProbabilityMaskedISLoss):
                 q_tail = (1 - q.sum(-1)).clamp_min(0.0)
                 q_tail = q_tail.masked_fill(~has_tail, 0.0)
                 log_rho = q_tail.log() - safe_log_p_tail
-                alpha = (log_rho + logp.new_tensor(config.ratio_cap).log()).clamp_max(0).exp()
+                alpha = (log_rho + logp.new_tensor(self.ratio_cap).log()).clamp_max(0).exp()
                 tail_bound = (log_p_tail.exp() - q_tail).abs()
                 if config.score_centering_gate == "sample":
                     tail_conditional = (tail - safe_log_p_tail.unsqueeze(-1)).exp()
@@ -416,7 +386,7 @@ class IPOTISLoss(_ProbabilityMaskedISLoss):
             correction_l1 = correction_l1 + (1 - captured_p.sum(-1)).clamp_min(0.0) * residual_sum.abs()
 
         log_ratio = logp - logq
-        importance_ratio = _capped_importance_ratio(log_ratio[keep], config.ratio_cap)
+        importance_ratio = _capped_importance_ratio(log_ratio[keep], self.ratio_cap)
         advantage = config.adv_tau * inputs.advantages[mask][keep].detach()
         correction = (mass[keep] * head[keep]).sum(-1) + (tail_mass[keep] * safe_tail[keep]).sum(-1)
         per_token = advantage * (-importance_ratio + correction)
@@ -430,7 +400,7 @@ class IPOTISLoss(_ProbabilityMaskedISLoss):
                 "masked_mismatch_kl": _safe_mean(mismatch, ~keep),
                 "unmasked_mismatch_kl": _safe_mean(mismatch, keep),
                 "ratio_saturated": _safe_mean(
-                    (log_ratio.detach() > log_ratio.new_tensor(config.ratio_cap).log()).float(), keep
+                    (log_ratio.detach() > log_ratio.new_tensor(self.ratio_cap).log()).float(), keep
                 ),
                 "score_centering/head_mass": q.sum(-1),
                 "score_centering/acceptance_mass": acceptance,
@@ -444,6 +414,46 @@ class IPOTISLoss(_ProbabilityMaskedISLoss):
                 "score_centering/residual_l1": residual.abs().sum(-1).masked_fill(~keep, 0.0),
             },
         )
+
+
+class IPOLoss(_GatedProbabilityMaskedISLoss):
+    """Probability-difference masking with optional conditional score centering.
+
+    Without SC, a rejected sampled word removes the entire position's loss.
+    Sample-gated SC preserves this behavior: g=A*m_y*(r_y*s_y-B/Z), where
+    m_v=1[|p_v-q_v|<=eps], Z=sum(q_v*m_v), and B=sum(p_v*m_v*s_v).
+    Although unmasked importance-weighted scores have zero mean, selecting
+    accepted words generally makes B nonzero. Conditional centering cancels
+    constant-advantage drift without introducing algorithmic ratio truncation.
+    If every word passes the mask, B=0 and SC adds nothing to exact IS.
+
+    The numerical max_importance_ratio guard applies to both the sampled
+    coefficient and baseline. Below score_centering_min_acceptance, both
+    terms skip the position; admitted positions divide by Z without clamping.
+    All centering coefficients are detached. With a captured head, cancellation
+    under the real sampler is limited by the proportional-tail approximation.
+    """
+
+
+class IPOTISLoss(_GatedProbabilityMaskedISLoss):
+    """IPO acceptance with truncated importance coefficients and optional SC.
+
+    IPO can accept large p/q when both probabilities are small. TIS limits
+    their contribution with w_v=m_v*min(p_v/q_v, ratio_cap). The default cap
+    of 2 is algorithmic truncation, not a numerical guard. Above it the score
+    coefficient saturates; its gradient is not zeroed. There is no lower floor.
+
+    Weighted SC subtracts b=sum(q_v*w_v*s_v) from every draw, including
+    rejected draws. The optional sample gate instead uses
+    A*m_y*(t_y*s_y-B/Z), with t=min(p/q, cap), B=E_q[m*t*s], Z=E_q[m].
+    The head gate uses A*M*(t_y*s_y-E_q[t*s]), with M independent of the draw.
+    Both position gates skip the whole contribution when rejected.
+
+    Centering cancels constant-advantage drift with exact sampler probabilities;
+    it does not restore signal removed by masking/truncation or guarantee
+    stability. Captured-head centering uses a proportional-tail approximation.
+    All centering coefficients are detached and use the same ratio cap.
+    """
 
 
 class IcePopLoss:

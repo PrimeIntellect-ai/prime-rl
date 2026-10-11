@@ -12,7 +12,8 @@ from prime_rl.utils.utils import default_dtype
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 @pytest.mark.parametrize("tail_only", [False, True])
 @pytest.mark.parametrize("k", [0, 5])
-def test_fused_tail_candidates_gradient(device, tail_only, k):
+@pytest.mark.parametrize("head_size", [4, 1024])
+def test_fused_tail_candidates_gradient(device, tail_only, k, head_size):
     from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
 
     torch.manual_seed(23)
@@ -21,6 +22,9 @@ def test_fused_tail_candidates_gradient(device, tail_only, k):
     ids = torch.tensor(
         [[[0, 8192, 8202, -1], [2, 9, 5, 0], [-1, -1, -1, -1], [8, 9, 8199, -1], [0, 1, 2, 3]]], device=device
     )
+    if head_size == 1024:
+        ids = (torch.arange(head_size, device=device) + 7800).remainder(8203).expand(1, 5, -1).clone()
+        ids[:, 2] = -1
     labels = torch.tensor([[1, 4, 100, 8192, 3]], device=device)
     temperature = torch.linspace(0.8, 1.4, 5, device=device).unsqueeze(0)
     out = lm(hidden, labels, temperature, topk_ids=ids, tail_topk=k)
@@ -49,18 +53,22 @@ def test_fused_tail_candidates_gradient(device, tail_only, k):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("head_only", [False, True])
-def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
+@pytest.mark.parametrize("head_size", [4, 1024])
+def test_fused_head_top_logprobs_gradient(dtype, replay, head_only, head_size):
     from prime_rl.trainer.rl.loss import selective_log_softmax_with_sampling_mask, selective_topk_log_softmax
 
     torch.manual_seed(7)
     hidden = torch.randn(1, 7, 16, device="cuda", dtype=dtype, requires_grad=True)
     lm = FusedOutputLinear(16, 8203, chunk_size=3).to(device="cuda", dtype=dtype)
     labels = torch.tensor([[3, 8199, 12, 99, 0, 17, 8192]], device="cuda")
-    head_ids = torch.stack([labels, (labels + 1) % 8203, (labels + 2) % 8203, torch.full_like(labels, -1)], dim=-1)
+    head_ids = (labels.unsqueeze(-1) + torch.arange(head_size, device="cuda")).remainder(8203)
+    head_ids[..., -1] = -1
     head_ids[:, 2] = -1
     sampling_mask = head_ids if replay else None
     temperature = torch.linspace(0.6, 1.4, 7, device="cuda").unsqueeze(0)
     coefficient = torch.randn_like(head_ids, dtype=torch.float32)
+    # Keep the random correction's variance comparable across capture sizes.
+    coefficient = coefficient * (4 / head_size) ** 0.5
     out = lm(hidden, labels, temperature, sampling_mask, head_ids)
     loss = (out["topk_logprobs"] * coefficient).sum()
     if not head_only:
@@ -81,6 +89,9 @@ def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
     for grad, ref in zip(actual, expected, strict=True):
         atol, rtol = (1e-2, 3e-2) if dtype == torch.bfloat16 else (5e-6, 1e-4)
         torch.testing.assert_close(grad, ref, atol=atol, rtol=rtol)
+        if dtype == torch.bfloat16:
+            relative_error = (grad.float() - ref.float()).norm() / ref.float().norm()
+            assert relative_error < 1e-2
 
 
 @pytest.mark.gpu

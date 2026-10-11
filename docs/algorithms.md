@@ -215,6 +215,41 @@ The knobs under `[trainer.loss]` are:
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 
+#### Conditional score centering with the sampled-word mask
+
+IPO supports conditional SC without an algorithmic importance-ratio cap:
+
+```toml
+[trainer.loss]
+type = "ipo"
+eps = 0.2
+score_centering = true
+score_centering_gate = "sample"
+score_centering_topk = 1024
+```
+
+Only the chosen word decides whether the position contributes. A rejected position
+has zero sampled loss and zero correction. With $s_v=\nabla\log p_v$,
+$m_v=\mathbf1\{|p_v-q_v|\le\epsilon\}$ and $t_v=\min(p_v/q_v,10000)$, the ascent update is:
+
+$$
+Z=\sum_vq_vm_v,\qquad B=\sum_vq_vm_vt_vs_v,\qquad
+g_y=A_y m_y\left(t_y s_y-\frac{B}{Z}\right).
+$$
+
+The existing `max_importance_ratio` numerical guard applies to both terms. When
+it is inactive, $B=\sum_v m_vp_vs_v$, which need not vanish after selecting accepted
+words. If all words pass, the exact baseline is zero. The default
+`score_centering_min_acceptance=1e-4` skips both terms below that acceptance mass;
+admitted prefixes use their actual $Z$. Masks and baseline coefficients are detached.
+
+The head contains full-vocabulary-normalized probabilities; it does not truncate
+sampling. Uncaptured sampler probabilities use a proportional-tail model, with
+individual modeled tail rejections included in $B$ and $Z$. Cancellation is exact
+for that model, and approximate for the unknown real tail. This mode shares the
+conditional-centering implementation with `ipo_tis`, while retaining IPO's numerical
+guard instead of its algorithmic cap. Ordinary IPO keeps SC disabled by default.
+
 ### IPO with Truncated Importance Sampling
 
 `ipo_tis` retains IPO's absolute-probability acceptance mask and truncates the

@@ -25,10 +25,14 @@ from prime_rl.trainer.rl.loss import (
 pytestmark = [pytest.mark.gpu]
 
 
-@pytest.mark.parametrize("gate", ["sample", "head"])
-@pytest.mark.parametrize("case", ["diffuse", "concentrated", "zero", "tiny", "tiny_tail", "eps_one", "complete"])
+@pytest.mark.parametrize(
+    "config_cls,gate", [(IPOLossConfig, "sample"), (IPOTISLossConfig, "sample"), (IPOTISLossConfig, "head")]
+)
+@pytest.mark.parametrize(
+    "case", ["diffuse", "concentrated", "zero", "tiny", "tiny_tail", "eps_one", "complete", "guard"]
+)
 @pytest.mark.parametrize("constant_advantage", [False, True])
-def test_gated_score_centering_dense_gradient_cpu(gate, case, constant_advantage):
+def test_gated_score_centering_dense_gradient_cpu(config_cls, gate, case, constant_advantage):
     from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
 
     eps, head_size = 0.2, 2
@@ -44,6 +48,9 @@ def test_gated_score_centering_dense_gradient_cpu(gate, case, constant_advantage
     elif case == "tiny_tail":
         p = torch.tensor([0.55, 0.45, 1e-40, 2e-41], dtype=torch.float64)
         q_head = p.new_tensor([0.5, 0.4])
+    elif case == "guard":
+        p = torch.tensor([0.15, 0.25, 0.45, 0.13, 0.02], dtype=torch.float64)
+        q_head = p.new_tensor([1e-8, 0.4])
     else:
         p = torch.tensor([0.25, 0.25, 0.45, 0.03, 0.02], dtype=torch.float64)
         q_head = p.new_tensor([0.41, 0.41])
@@ -54,9 +61,8 @@ def test_gated_score_centering_dense_gradient_cpu(gate, case, constant_advantage
     )
     if case == "complete":
         head_size = len(p)
-    config = IPOTISLossConfig(
+    config = config_cls(
         eps=eps,
-        ratio_cap=2,
         score_centering=True,
         score_centering_topk=None if case == "complete" else head_size,
         score_centering_gate=gate,
@@ -88,7 +94,7 @@ def test_gated_score_centering_dense_gradient_cpu(gate, case, constant_advantage
         )
     )
     detached_p = logp.detach().exp()
-    tis = (detached_p / q).clamp_max(config.ratio_cap)
+    tis = (detached_p / q).clamp_max(loss_fn.ratio_cap)
     accepted = (detached_p - q).abs() <= eps
     if gate == "sample":
         z = (q * accepted).sum(-1)
@@ -116,9 +122,11 @@ def test_gated_score_centering_dense_gradient_cpu(gate, case, constant_advantage
         assert result.metrics["score_centering/position_masked"].max() == 0
 
 
-@pytest.mark.parametrize("gate", ["sample", "head"])
-def test_gated_score_centering_excluded_nonfinite_cpu(gate):
-    config = IPOTISLossConfig(score_centering=True, score_centering_gate=gate)
+@pytest.mark.parametrize(
+    "config_cls,gate", [(IPOLossConfig, "sample"), (IPOTISLossConfig, "sample"), (IPOTISLossConfig, "head")]
+)
+def test_gated_score_centering_excluded_nonfinite_cpu(config_cls, gate):
+    config = config_cls(score_centering=True, score_centering_gate=gate)
     logp = torch.tensor([float("nan"), -0.5], requires_grad=True)
     inputs = LossInputs(
         logp, logp.detach(), None, torch.full_like(logp, float("nan")), torch.zeros(2, dtype=torch.bool)

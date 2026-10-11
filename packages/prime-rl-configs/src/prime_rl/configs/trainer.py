@@ -545,12 +545,24 @@ class IPOLossConfig(BaseConfig):
 
     score_centering_topk: int | None = Field(None, ge=1)
     """Use an untruncated sampler head and proportional tail for IPO centering.
-    Fails if the modeled tail cannot be proven to lie inside IPO's trust region."""
+    Weighted centering requires the modeled tail to remain inside IPO's trust region;
+    sample gating accounts for individual rejected tail candidates."""
+
+    score_centering_gate: Literal["weighted", "sample"] = "weighted"
+    """weighted centers all draws; sample skips rejected positions and centers
+    conditional on the sampled word passing IPO's probability-difference mask."""
+
+    score_centering_min_acceptance: float = Field(1e-4, gt=0, le=1, allow_inf_nan=False)
+    """Skip both sampled loss and conditional correction below this acceptance mass."""
 
     @model_validator(mode="after")
     def validate_score_centering_topk(self):
         if self.score_centering_topk is not None and not self.score_centering:
             raise ValueError("score_centering_topk requires score_centering = true")
+        if self.score_centering_gate != "weighted" and not self.score_centering:
+            raise ValueError("score_centering_gate requires score_centering = true")
+        if self.score_centering_gate == "sample" and self.score_centering_topk is not None and self.eps == 0:
+            raise ValueError("Sample-gated proportional-tail centering requires eps > 0")
         return self
 
 
