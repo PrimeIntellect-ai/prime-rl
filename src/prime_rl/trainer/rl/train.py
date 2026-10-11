@@ -87,6 +87,15 @@ def train(config: TrainerConfig):
     )
     logger.info(f"Starting RL trainer in {world} (output_dir={config.output_dir})")
 
+    if config.model.compile is not None:
+        from prime_rl.trainer.compile_compat import apply_autotune_checkpoint_patch
+
+        apply_autotune_checkpoint_patch()
+        logger.info(
+            f"Autotuning checkpoint dispatch backport active (torch={torch.__version__}; "
+            "bench, autotune_to_one_config, coordinate_descent_tuning)"
+        )
+
     # Setup the monitors
     asyncio.run(
         monitors.setup(
