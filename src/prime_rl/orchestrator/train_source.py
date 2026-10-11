@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import Any
 
 import verifiers.v1 as vf
@@ -16,6 +16,9 @@ from prime_rl.utils.logger import get_logger
 
 TASK_ERRORS = {"TaskError", "ToolsetError"}
 """Error types raised by a task's own code (setup, finalize, rewards) or its toolset."""
+CONFIRM_GROUPS = 4
+"""Later groups of the env that decide whether a failing task is quarantined (most must
+succeed) or the env was failing as a whole."""
 
 
 class TrainSource:
@@ -43,8 +46,8 @@ class TrainSource:
         self.quarantined: dict[str, dict[str, str]] = {name: {} for name in self.env_names}
         """Per env, the keys of tasks no longer sampled, with the error that put them there."""
         self._failed_groups: dict[tuple[str, str], int] = defaultdict(int)
-        self._recent_failed: dict[str, deque[bool]] = {name: deque(maxlen=20) for name in self.env_names}
-        """Per env, whether each of its last 20 groups fully errored, for any reason."""
+        self._candidates: dict[str, dict[str, tuple[str, list[bool]]]] = {name: {} for name in self.env_names}
+        """Per env, tasks waiting for confirmation: their error and whether each later group of the env succeeded."""
         self.num_tasks = {env.name: env.num_tasks for env in self.envs}
 
     def next_task(self, *, step: int) -> TaskRequest:
@@ -61,26 +64,34 @@ class TrainSource:
         """Quarantine a task after ``quarantine_after`` consecutive groups in which every
         episode failed in the task's own code or toolset. Infra errors (sandbox, provider,
         env server) say nothing about the task; timeouts and zero rewards are task results.
-        Nothing is quarantined while most of the env's recent groups fail (an outage, e.g.
-        a judge that every reward calls)."""
+        A task that qualifies is quarantined only once most of the env's next
+        ``CONFIRM_GROUPS`` groups of other tasks succeed, so the start of an outage (e.g. a
+        judge that every reward calls) quarantines nothing."""
         errors = [
             [*episode.errors, *(error for trace in episode.traces for error in trace.errors)] for episode in group
         ]
         failed = all(errors)
-        recent = self._recent_failed[env_name]
-        recent.append(failed)
         key = group[0].task.key
+        candidates = self._candidates[env_name]
+        for other in [other for other in candidates if other != key]:
+            reason, outcomes = candidates[other]
+            outcomes.append(not failed)
+            if len(outcomes) == CONFIRM_GROUPS:
+                del candidates[other]
+                if 2 * sum(outcomes) > CONFIRM_GROUPS:
+                    self._quarantine(env_name, other, reason)
         if not failed:
             self._failed_groups.pop((env_name, key), None)
             return
         if not all(episode_errors[-1].type in TASK_ERRORS for episode_errors in errors):
             return
         self._failed_groups[(env_name, key)] += 1
-        if self._failed_groups[(env_name, key)] < self.quarantine_after or 2 * sum(recent) > len(recent):
-            return
-        del self._failed_groups[(env_name, key)]
-        last = errors[-1][-1]
-        reason = f"{last.type}: {last.message}"[:500]
+        if self._failed_groups[(env_name, key)] >= self.quarantine_after and key not in candidates:
+            del self._failed_groups[(env_name, key)]
+            last = errors[-1][-1]
+            candidates[key] = (f"{last.type}: {last.message}"[:500], [])
+
+    def _quarantine(self, env_name: str, key: str, reason: str) -> None:
         self.quarantined[env_name][key] = reason
         get_logger().warning(
             f"Quarantined task {key} of env {env_name}: every episode of its last {self.quarantine_after} "

@@ -212,21 +212,22 @@ def test_train_source_quarantines_tasks_that_fail_in_task_code() -> None:
             episode.traces[0].errors.append(vf.Error(type=error_type, message="setup failed"))
         return group
 
-    # While most of the env's recent groups fail (an outage), nothing is quarantined.
+    # The env's next groups fail too (an outage starting): nothing is quarantined.
     outage = source()
     outage.on_result(errored(bad, "TaskError"))
+    for _ in range(4):
+        outage.on_result(errored(good, "TaskError"))
     assert outage.quarantined == {"test": {}}
 
     healthy = source()
-    for _ in range(3):
-        healthy.on_result(make_rollout(good))
+    healthy.on_result(errored(bad, "SandboxError"))  # infra errors say nothing about the task
+    healthy.on_result(errored(bad, "TaskError"))
     timed_out = make_rollout(good)
     timed_out[0].traces[0].is_timeout = True
-    healthy.on_result(timed_out)
-    healthy.on_result(errored(bad, "SandboxError"))  # infra errors say nothing about the task
+    for group in (timed_out, make_rollout(good), make_rollout(good)):
+        healthy.on_result(group)
     assert healthy.quarantined == {"test": {}}
-
-    healthy.on_result(errored(bad, "TaskError"))
+    healthy.on_result(make_rollout(good))  # most of the next 4 groups succeeded
     assert healthy.quarantined == {"test": {bad.key: "TaskError: setup failed"}}
     assert {healthy.next_task(step=1).task.key for _ in range(4)} == {good.key}
 
