@@ -84,7 +84,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--clean` | Wipe the run directory before starting. Useful when re-running a named run during iteration. |
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process configs to `<run_dir>/configs/latest/resolved/`, and exit without launching. The fastest way to debug a misbehaving config. |
-| `orchestrator.sandbox_lifetime` | Prime sandboxes of the run are deleted after this many seconds, busy or not (default 24 h; None = no limit). Keep it above the longest episode. Every sandbox is labeled with `run.name` (and `prl-env:<source>`); the orchestrator deletes the run's labeled sandboxes at startup and exit, and the launcher after its processes stop, so a restart cleans up what a killed run leaked. `sandboxes/*` metrics track live sandboxes per env and their age. |
+| `orchestrator.sandbox_lifetime` | Prime sandboxes of the run are deleted after this many seconds, busy or not (default 24 h; None = no limit). Keep it above the longest episode. Every sandbox is labeled `prl-run:<id>`, where the id is minted on the run's first launch and kept in `<run_dir>/run_id`, so resumes and requeues share it while concurrent runs never do. The orchestrator deletes the run's labeled sandboxes at startup and exit, and the launcher after its processes stop, so a restart cleans up what a killed run leaked. Sandboxes also carry `run.name` and `prl-env:<source>`; `sandboxes/*` metrics track live sandboxes per env and their age. |
 
 ### Algorithms
 

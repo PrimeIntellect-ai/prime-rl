@@ -229,7 +229,7 @@ def env_address_file(config_dir: Path, split: str, name: str) -> Path:
 
 
 def write_env_server_config(
-    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, sandbox_lifetime: float | None = 86400
+    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, sandbox_lifetime: float | None = None
 ) -> Path:
     """Write the ``EnvServerConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve

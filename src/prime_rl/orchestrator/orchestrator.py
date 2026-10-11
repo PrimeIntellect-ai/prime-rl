@@ -75,7 +75,7 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
-from prime_rl.utils.sandboxes import SandboxMetrics, sweep_sandboxes
+from prime_rl.utils.sandboxes import SandboxMetrics, run_label, sweep_sandboxes
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -210,13 +210,14 @@ class Orchestrator:
         # Base labels for sandboxes created in this process; env-server processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
+        self.run_label = run_label()
+        set_base_sandbox_labels([label for label in (self.run_name, self.run_label) if label])
         set_default_sandbox_lifetime(config.sandbox_lifetime)
-        if self.run_name:
-            set_base_sandbox_labels([self.run_name])
+        if self.run_label:
             # Nothing of this run is in flight yet: a labeled sandbox was leaked by an
             # earlier attempt of the run.
-            await asyncio.to_thread(sweep_sandboxes, self.run_name)
-            self.sandbox_metrics = SandboxMetrics(self.run_name)
+            await asyncio.to_thread(sweep_sandboxes, self.run_label)
+            self.sandbox_metrics = SandboxMetrics(self.run_label)
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat)
@@ -447,8 +448,8 @@ class Orchestrator:
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             await self.stop(clean_exit)
-            if self.run_name:
-                await asyncio.to_thread(sweep_sandboxes, self.run_name)
+            if self.run_label:
+                await asyncio.to_thread(sweep_sandboxes, self.run_label)
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:

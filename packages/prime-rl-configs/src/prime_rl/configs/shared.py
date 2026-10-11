@@ -16,6 +16,7 @@ PROTECTED_ENV_VARS = frozenset(
         "CUDA_VISIBLE_DEVICES",
         "PRL_RUN_ID",
         "PRL_RUN_NAME",
+        "PRL_STABLE_RUN_ID",
         "WANDB_RUN_ID",
         "WANDB_SHARED_MODE",
         "WANDB_SHARED_LABEL",

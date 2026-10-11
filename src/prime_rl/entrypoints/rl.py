@@ -36,7 +36,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
-from prime_rl.utils.sandboxes import sweep_on_exit
+from prime_rl.utils.sandboxes import run_label, stable_run_id, sweep_on_exit
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -168,7 +168,7 @@ def rl_local(config: RLConfig):
             )
 
     # Exits after the processes stop: a component killed by SIGKILL skips its own sweep.
-    with sweep_on_exit(config.run.name), ProcessGroup() as processes:
+    with sweep_on_exit(run_label()), ProcessGroup() as processes:
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(
@@ -345,6 +345,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=True,
             run_name=config.run.name,
+            stable_run_id=os.environ["PRL_STABLE_RUN_ID"],
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -391,6 +392,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=False,
             run_name=config.run.name,
+            stable_run_id=os.environ["PRL_STABLE_RUN_ID"],
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -512,6 +514,9 @@ def rl(config: RLConfig):
         config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
     )
     config.run_dir.mkdir(parents=True, exist_ok=True)
+    # Unlike $PRL_RUN_ID (one per launch), this id is shared by every launch of the run
+    # dir; the run's sandboxes are labeled and swept by it.
+    os.environ["PRL_STABLE_RUN_ID"] = stable_run_id(config.run_dir)
     if ckpt_output_dir is not None:
         ckpt_output_dir.mkdir(parents=True, exist_ok=True)
 
