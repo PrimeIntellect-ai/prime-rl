@@ -16,6 +16,8 @@ broadcast, whose output vLLM's own loader reads back under the published names.
 
 from __future__ import annotations
 
+import re
+
 from prime_rl.trainer.models.conversion_ops import (
     ConvOp,
     Drop,
@@ -107,3 +109,31 @@ def conversion_chain(config) -> list[ConvOp]:
         PrefixRename("layers.", "model.layers."),
     ]
     return ops
+
+
+# A LoRA adapter only carries the attention and expert linears, keyed
+# `model.layers.N.<prime path>.lora_{A,B}.weight`. vLLM maps adapter names with the same
+# `hf_to_vllm_mapper` as the base weights, so they must use the published names. Applied in order.
+_ADAPTER_RENAMES: list[tuple[re.Pattern, str]] = [
+    (re.compile(p), r)
+    for p, r in (
+        (r"\.self_attn\.compressor\.indexer\.", ".attn.indexer."),
+        (r"\.self_attn\.", ".attn."),
+        (r"\.mlp\.shared_expert\.", ".ffn.shared_experts."),
+        (r"\.mlp\.", ".ffn."),
+        (r"\.q_a_proj\.", ".wq_a."),
+        (r"\.q_b_proj\.", ".wq_b."),
+        (r"\.kv_proj\.", ".wkv."),
+        (r"\.o_b_proj\.", ".wo_b."),
+        (r"\.compressor\.gate_proj\.", ".compressor.wgate."),
+        (r"\.gate_proj\.", ".w1."),
+        (r"\.down_proj\.", ".w2."),
+        (r"\.up_proj\.", ".w3."),
+    )
+]
+
+
+def adapter_key_to_hf(name: str) -> str:
+    for pattern, replacement in _ADAPTER_RENAMES:
+        name = pattern.sub(replacement, name)
+    return name

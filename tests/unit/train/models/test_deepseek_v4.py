@@ -6,7 +6,8 @@ import pytest
 import torch
 from torch import nn
 
-from prime_rl.configs.trainer import ModelConfig
+from prime_rl.configs.trainer import LoRAConfig, ModelConfig
+from prime_rl.trainer.lora import apply_lora_to_model, get_lora_state
 from prime_rl.trainer.model import load_dcp_from_hf
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
@@ -420,6 +421,35 @@ def test_deepseek_v4_on_disk_keys_map_to_the_names_vllm_expects():
             f"{expert_dtype}: unexpected {sorted(mapped - VLLM_MAPPED_NAMES)}, "
             f"missing {sorted(VLLM_MAPPED_NAMES - mapped)}"
         )
+
+
+def test_deepseek_v4_lora_adapter_uses_on_disk_names():
+    """vLLM maps adapter keys with the same mapper as the base weights, so each adapted weight
+    must carry the on-disk name `convert_to_hf` gives it."""
+    with torch.device("meta"):
+        model = DeepseekV4ForCausalLM._from_config(MODEL_CONFIG)
+    on_disk = {f"model.{name}" for name in model.convert_to_hf(dict(model.state_dict()))}
+    apply_lora_to_model(
+        model,
+        LoRAConfig(
+            rank=8,
+            target_modules=[
+                "q_a_proj",
+                "q_b_proj",
+                "kv_proj",
+                "o_b_proj",
+                "weights_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+                "experts",
+            ],
+        ),
+    )
+
+    adapted = {re.sub(r"\.lora_[AB]\.", ".", name) for name in get_lora_state().adapter_state_dict()}
+
+    assert adapted and adapted <= on_disk, sorted(adapted - on_disk)[:5]
 
 
 def test_deepseek_v4_init_buffers_post_meta_restores_every_rotary():
