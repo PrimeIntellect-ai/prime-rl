@@ -53,6 +53,7 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
+    SpikeGuard,
     Tensors,
     begin_backward,
     clip_grad_norm_,
@@ -252,6 +253,11 @@ def train(config: TrainerConfig):
         maybe_record_function = record_function
     start_step = progress.step
     max_peak_memory = 0.0
+    spike_guards = (
+        {name: SpikeGuard(config.spike_guard.factor, config.spike_guard.window) for name in config.spike_guard.metrics}
+        if config.spike_guard is not None
+        else {}
+    )
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -583,10 +589,34 @@ def train(config: TrainerConfig):
         if skip_step:
             logger.warning(f"Non-finite grad norm ({grad_norm.item()}) at step {progress.step}: skipping the update")
 
+        spike_message = None
+        if spike_guards and not skip_step:
+            watched = {"grad_norm": grad_norm}
+            if "loss" in spike_guards:
+                # Each logged loss is already divided by the global token count, and every CP rank holds the
+                # same sequence loss, so the global loss is the dp_cp sum divided by cp_size.
+                global_loss = torch.cat(tensors["loss"]).sum().cuda()
+                dist.all_reduce(global_loss, op=dist.ReduceOp.SUM, group=dp_cp_group)
+                global_loss.div_(cp_size)
+                watched["loss"] = global_loss.abs()
+            for name, guard in spike_guards.items():
+                value = watched[name].item()
+                if guard.is_spike(value):
+                    spike_message = (
+                        f"{name} spiked at step {progress.step}: {value:.4g} > {guard.factor} x {guard.median():.4g}, "
+                        f"the median of the last {len(guard.history)} steps"
+                    )
+                    break
+            if spike_message is not None:
+                logger.error(f"{spike_message}. Stopping without applying the update")
+                skip_step = True
+
         # Update the model parameters
         if not skip_step:
             optimizer.step()
         optimizer.zero_grad()
+        if spike_message is not None:
+            raise RuntimeError(f"{spike_message}. Resume from the last checkpoint, e.g. with a lower learning rate.")
 
         # Update learning rate scheduler
         scheduler.step()

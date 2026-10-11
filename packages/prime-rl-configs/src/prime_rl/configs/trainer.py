@@ -561,6 +561,17 @@ class DataLoaderConfig(BaseConfig):
     """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
 
 
+class SpikeGuardConfig(BaseConfig):
+    factor: float = Field(10.0, gt=1)
+    """A step spikes when a watched value exceeds ``factor`` times its median over the last ``window`` steps."""
+
+    window: int = Field(20, ge=1)
+    """Number of past steps in the median. The guard starts once it has ``window`` steps (after every start and resume)."""
+
+    metrics: list[Literal["grad_norm", "loss"]] = ["grad_norm"]
+    """Values to watch. ``loss`` is compared by magnitude; the RL loss often sits near 0, where a ratio to its median is noisy."""
+
+
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
@@ -619,6 +630,9 @@ class TrainerConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
+    spike_guard: SpikeGuardConfig | None = None
+    """Stop the run, without applying the update, when the grad norm (or loss) spikes. Resume from the last checkpoint, e.g. with a lower learning rate."""
+
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
@@ -641,6 +655,15 @@ class TrainerConfig(BaseConfig):
         """Resolve ``model.freeze_moe_router='auto'``: RL keeps the pretrained router."""
         if self.model.freeze_moe_router == "auto":
             self.model.freeze_moe_router = True
+        return self
+
+    @model_validator(mode="after")
+    def spike_guard_grad_norm_needs_grad_norm(self):
+        if self.spike_guard is not None and "grad_norm" in self.spike_guard.metrics and self.model.offload == "full":
+            raise ValueError(
+                "spike_guard cannot watch grad_norm with model.offload = 'full': the CPU optimizer steps during "
+                "backward, before the grad norm exists. Watch only loss."
+            )
         return self
 
     @model_validator(mode="after")

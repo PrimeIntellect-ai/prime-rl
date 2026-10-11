@@ -2,8 +2,9 @@ import gc
 import os
 import pickle
 import shutil
+import statistics
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -115,6 +116,23 @@ def is_finite_on_all_ranks(value: Tensor) -> bool:
     nonfinite = (~torch.isfinite(value)).to(torch.int32)
     dist.all_reduce(nonfinite, op=dist.ReduceOp.MAX)
     return not nonfinite.item()
+
+
+class SpikeGuard:
+    """Flags a value above ``factor`` times the median of the last ``window`` values that were not flagged."""
+
+    def __init__(self, factor: float, window: int):
+        self.factor = factor
+        self.history: deque[float] = deque(maxlen=window)
+
+    def median(self) -> float:
+        return statistics.median(self.history)
+
+    def is_spike(self, value: float) -> bool:
+        if len(self.history) == self.history.maxlen and value > self.factor * self.median():
+            return True
+        self.history.append(value)
+        return False
 
 
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
