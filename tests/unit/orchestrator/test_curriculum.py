@@ -194,3 +194,33 @@ def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
 
     positive_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=0.5, reject_max=0.5))
     assert positive_gate.admit(make_rollout(task, advantages=[0.5])) is False
+
+
+def test_train_source_quarantines_tasks_whose_groups_always_error() -> None:
+    tasks = [make_task(i) for i in range(2)]
+    config = SimpleNamespace(ratio=1.0, curriculum=None)
+    source = TrainSource([SimpleNamespace(name="test", tasks=iter(tasks), num_tasks=2, config=config)], 2)
+    bad, good = tasks
+
+    def errored(task: vf.Task) -> list[vf.Episode]:
+        group = make_rollout(task) + make_rollout(task)
+        for episode in group:
+            episode.ok = False
+            episode.traces[0].errors.append(vf.Error(type="TaskError", message="setup failed"))
+        return group
+
+    source.on_result(errored(bad))
+    source.on_result(make_rollout(bad))  # a success resets the count
+    source.on_result(errored(bad))
+    timed_out = make_rollout(good)
+    timed_out[0].traces[0].is_timeout = True
+    source.on_result(timed_out)
+    assert source.quarantined == {"test": {}}
+
+    source.on_result(errored(bad))
+    assert source.quarantined == {"test": {bad.key: "TaskError: setup failed"}}
+    assert {source.next_task(step=1).task.key for _ in range(4)} == {good.key}
+
+    restored = TrainSource([SimpleNamespace(name="test", tasks=iter(tasks), num_tasks=2, config=config)], 2)
+    restored.load_state_dict(source.state_dict())
+    assert restored.quarantined == source.quarantined

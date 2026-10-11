@@ -12,12 +12,13 @@ from prime_rl.orchestrator.curriculum import Curriculum
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
+from prime_rl.utils.logger import get_logger
 
 
 class TrainSource:
     """Mix train envs and host one user-authored curriculum per env."""
 
-    def __init__(self, train_envs: TrainEnvs) -> None:
+    def __init__(self, train_envs: TrainEnvs, quarantine_after: int | None = None) -> None:
         self.rng = random.Random(42)
         self.envs = list(train_envs)
         if not self.envs:
@@ -35,15 +36,52 @@ class TrainSource:
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
 
+        self.quarantine_after = quarantine_after
+        self.quarantined: dict[str, dict[str, str]] = {name: {} for name in self.env_names}
+        """Per env, the keys of tasks no longer sampled, with the error that put them there."""
+        self._failed_groups: dict[tuple[str, str], int] = defaultdict(int)
+        self.num_tasks = {env.name: env.num_tasks for env in self.envs}
+
     def next_task(self, *, step: int) -> TaskRequest:
         env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
-        return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
+        quarantined = self.quarantined[env_name]
+        if quarantined and len(quarantined) == self.num_tasks[env_name]:
+            raise RuntimeError(f"Every task of env {env_name} is quarantined: {quarantined}")
+        task = next(self.curricula[env_name].sampler)
+        while task.key in quarantined:
+            task = next(self.curricula[env_name].sampler)
+        return TaskRequest(env_name=env_name, task=task, step=step)
+
+    def _track_failures(self, env_name: str, group: list[vf.Episode]) -> None:
+        """Quarantine a task after ``quarantine_after`` consecutive groups in which every
+        episode errored. Errors only: a timeout or a zero reward is a task result."""
+        errors = [
+            [*episode.errors, *(error for trace in episode.traces for error in trace.errors)] for episode in group
+        ]
+        key = group[0].task.key
+        if not all(errors):
+            self._failed_groups.pop((env_name, key), None)
+            return
+        self._failed_groups[(env_name, key)] += 1
+        if self._failed_groups[(env_name, key)] < self.quarantine_after:
+            return
+        del self._failed_groups[(env_name, key)]
+        last = errors[-1][-1]
+        reason = f"{last.type}: {last.message}"[:500]
+        self.quarantined[env_name][key] = reason
+        get_logger().warning(
+            f"Quarantined task {key} of env {env_name}: every episode of its last {self.quarantine_after} "
+            f"groups errored (last: {reason}). It is no longer sampled ({len(self.quarantined[env_name])} "
+            f"quarantined in {env_name})."
+        )
 
     def on_result(self, group: list[vf.Episode]) -> bool:
         """Report a finalized group and return whether it should train."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         env_name = episode_env_name(group[0])
+        if self.quarantine_after is not None:
+            self._track_failures(env_name, group)
         admitted = self.curricula[env_name].on_result(group)
         if not isinstance(admitted, bool):
             raise TypeError(f"Curriculum.on_result() must return bool, got {type(admitted).__name__}")
@@ -62,17 +100,21 @@ class TrainSource:
             if total:
                 metrics[f"curriculum/{env_name}/admission_rate"] = admitted / total
             metrics |= {f"curriculum/{env_name}/{name}": float(value) for name, value in curriculum.metrics().items()}
+            if self.quarantine_after is not None:
+                metrics[f"curriculum/{env_name}/quarantined"] = float(len(self.quarantined[env_name]))
         return metrics
 
     def state_dict(self) -> dict[str, Any]:
         return {
             "rng": self.rng.getstate(),
             "envs": {name: curriculum.state_dict() for name, curriculum in self.curricula.items()},
+            "quarantined": self.quarantined,
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        expected_fields = {"rng", "envs"}
-        if set(state_dict) != expected_fields:
+        # Checkpoints written before quarantine have no "quarantined".
+        expected_fields = {"rng", "envs", "quarantined"}
+        if not {"rng", "envs"} <= set(state_dict) <= expected_fields:
             raise ValueError(f"Train-source checkpoint fields must be {sorted(expected_fields)}")
         env_states = state_dict["envs"]
         if set(env_states) != set(self.curricula):
@@ -83,3 +125,7 @@ class TrainSource:
         self.rng.setstate(state_dict["rng"])
         for name, curriculum in self.curricula.items():
             curriculum.load_state_dict(env_states[name])
+        self.quarantined.update(state_dict.get("quarantined", {}))
+        for name, quarantined in self.quarantined.items():
+            if quarantined:
+                get_logger().info(f"Resumed {len(quarantined)} quarantined tasks of env {name}")

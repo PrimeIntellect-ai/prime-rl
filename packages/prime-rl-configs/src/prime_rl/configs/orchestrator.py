@@ -512,6 +512,9 @@ class OrchestratorConfig(BaseConfig):
     dispatch_per_minute: int | None = Field(None, ge=1)
     """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
+    quarantine_after: int | None = Field(3, ge=1)
+    """Stop sampling a train task after this many consecutive groups in which every episode errored (a setup that always fails, a broken image). Timeouts and zero rewards do not count. The quarantined tasks are logged, counted in ``curriculum/<env>/quarantined`` and kept in the checkpoint. None disables it."""
+
     batch_size: int = Field(128, ge=1)
     """Samples to train on per step."""
 
