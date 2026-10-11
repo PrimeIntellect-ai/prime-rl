@@ -404,17 +404,20 @@ class Orchestrator:
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
+        loop_done = False
         try:
             await self.main_loop()
+            loop_done = True
             await self.wait_for_final_broadcast()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
-            # first ship). Saved before finalize, which tells the launcher the run is done. Only on a
-            # clean exit: after a crash the trainer has no checkpoint for that step.
-            if clean_exit and self.config.ckpt is not None and self.progress.step > 1:
+            # first ship). Saved before finalize, which tells the launcher the run is done. Only once the
+            # step loop finished (the last step is fully shipped); a crash mid-loop leaves no consistent
+            # state for that step, and the trainer has no checkpoint for it.
+            if loop_done and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
                 self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
