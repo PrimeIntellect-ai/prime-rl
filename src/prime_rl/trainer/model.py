@@ -1030,6 +1030,7 @@ def forward(
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
     topk_ids: Int[Tensor, "batch seq head"] | None = None,
+    tail_topk: int | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
@@ -1046,6 +1047,8 @@ def forward(
 
     if topk_ids is not None:
         kwargs["topk_ids"] = topk_ids
+    if tail_topk is not None:
+        kwargs["tail_topk"] = tail_topk
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)

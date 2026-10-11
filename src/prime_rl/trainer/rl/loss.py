@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from math import ceil
 from typing import Any, Callable, Protocol
 
 import torch
@@ -39,6 +40,8 @@ class LossInputs:
     trainer_topk_logprobs: Float[Tensor, "seq head"] | None = None
     sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
     topk_valid: Bool[Tensor, "seq head"] | None = None
+    trainer_tail_logprobs: Float[Tensor, "seq tail"] | None = None
+    trainer_tail_log_mass: Float[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -317,7 +320,130 @@ class IPOTISLoss(_ProbabilityMaskedISLoss):
     Centering is exact over a complete replayed sampling support, or uses
     a captured head and proportional-tail approximation with the IPO tail
     acceptance check. All centering coefficients are detached.
+
+    The optional sample gate instead uses A*m_a*(t_a*s_a - B/Z), where
+    t=min(p/q, cap), B=E_q[m*t*s], and Z=E_q[m]. Positions with insufficient
+    acceptance mass skip both terms, preserving constant-advantage cancellation.
+    The head gate uses A*M*(t_a*s_a - E_q[t*s]), with M determined by all
+    captured head probabilities, independently of the sampled action.
+    Both gates suppress the entire position's contribution when rejected.
+
+    On a proportional tail, rejected candidates satisfy |1-rho|*p_v > eps.
+    Their total probability difference is at most one, so the largest
+    ceil(1/eps) tail probabilities contain every exception. This permits
+    per-action tail masking without transporting more sampler probabilities.
+    Cancellation with a captured head is only as accurate as its tail model.
     """
+
+    def __init__(self, config: IPOTISLossConfig):
+        super().__init__(config)
+        self.tail_topk = (
+            ceil(1 / config.eps)
+            if config.score_centering_gate == "sample"
+            and config.score_centering_topk is not None
+            and 0 < config.eps < 1
+            else 0
+        )
+        if config.score_centering_gate == "weighted" or config.score_centering_topk is None:
+            self.tail_topk = None
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        config = self.config
+        if config.score_centering_gate == "weighted":
+            return super().loss(inputs)
+        mask = inputs.loss_mask
+        if not bool(mask.any()):
+            return LossOutputs(loss=inputs.trainer_logprobs[:0].sum(), metrics={})
+
+        logp = inputs.trainer_logprobs[mask]
+        logq = inputs.inference_logprobs[mask]
+        head, sampler, valid = _centering_head(inputs)
+        tail = head[:, :0]
+        if self.tail_topk:
+            if inputs.trainer_tail_logprobs is None:
+                raise ValueError("Sample-gated score centering requires trainer tail candidates")
+            tail = inputs.trainer_tail_logprobs[mask]
+        safe_tail = tail.masked_fill(tail.isneginf(), 0.0)
+
+        with torch.no_grad():
+            p = head.exp().masked_fill(~valid, 0.0)
+            q = sampler.exp().masked_fill(~valid, 0.0)
+            head_keep = valid & (_absolute_probability_difference(head, sampler) <= config.eps)
+            sampled_keep = _absolute_probability_difference(logp, logq) <= config.eps
+            mass = torch.minimum(p, config.ratio_cap * q)
+            acceptance = torch.ones_like(logp)
+            tail_p = tail.exp()
+            tail_mass = torch.zeros_like(tail_p)
+            tail_rejected = torch.zeros_like(tail_p, dtype=torch.bool)
+            alpha = torch.zeros_like(logp)
+            tail_bound = torch.zeros_like(logp)
+
+            if config.score_centering_gate == "sample":
+                mass = mass.masked_fill(~head_keep, 0.0)
+                acceptance = q.masked_fill(~head_keep, 0.0).sum(-1)
+            if config.score_centering_topk is not None:
+                if inputs.trainer_tail_log_mass is None:
+                    raise ValueError("Gated score centering requires trainer tail log mass")
+                log_p_tail = inputs.trainer_tail_log_mass[mask]
+                has_tail = log_p_tail.isfinite()
+                safe_log_p_tail = log_p_tail.masked_fill(~has_tail, 0.0)
+                q_tail = (1 - q.sum(-1)).clamp_min(0.0)
+                q_tail = q_tail.masked_fill(~has_tail, 0.0)
+                log_rho = q_tail.log() - safe_log_p_tail
+                alpha = (log_rho + logp.new_tensor(config.ratio_cap).log()).clamp_max(0).exp()
+                tail_bound = (log_p_tail.exp() - q_tail).abs()
+                if config.score_centering_gate == "sample":
+                    tail_conditional = (tail - safe_log_p_tail.unsqueeze(-1)).exp()
+                    tail_rejected = (tail_p - q_tail.unsqueeze(-1) * tail_conditional).abs() > config.eps
+                    tail_mass = -alpha.unsqueeze(-1) * tail_p.masked_fill(~tail_rejected, 0.0)
+                    rejected_fraction = tail_conditional.masked_fill(~tail_rejected, 0.0).sum(-1)
+                    acceptance = acceptance + q_tail * (1 - rejected_fraction).clamp_min(0.0)
+                mass = mass - alpha.unsqueeze(-1) * p
+
+            low_acceptance = acceptance < config.score_centering_min_acceptance
+            if config.score_centering_gate == "sample":
+                keep = sampled_keep & ~low_acceptance
+                # Skipped positions use a harmless denominator; admitted positions use Z exactly.
+                denominator = torch.where(low_acceptance, 1.0, acceptance)
+                mass = mass / denominator.unsqueeze(-1)
+                tail_mass = tail_mass / denominator.unsqueeze(-1)
+            else:
+                keep = (head_keep | ~valid).all(-1)
+            residual = torch.cat([mass, tail_mass], dim=-1)
+            captured_p = torch.cat([p, tail_p], dim=-1)
+            residual_sum = residual.sum(-1)
+            correction_l1 = (residual - captured_p * residual_sum.unsqueeze(-1)).abs().sum(-1)
+            correction_l1 = correction_l1 + (1 - captured_p.sum(-1)).clamp_min(0.0) * residual_sum.abs()
+
+        log_ratio = logp - logq
+        importance_ratio = _capped_importance_ratio(log_ratio[keep], config.ratio_cap)
+        advantage = config.adv_tau * inputs.advantages[mask][keep].detach()
+        correction = (mass[keep] * head[keep]).sum(-1) + (tail_mass[keep] * safe_tail[keep]).sum(-1)
+        per_token = advantage * (-importance_ratio + correction)
+        if inputs.loss_weights is not None:
+            per_token = per_token * inputs.loss_weights[mask][keep]
+        mismatch = _mismatch_kl_from_log_ratio(log_ratio)
+        return LossOutputs(
+            loss=per_token.sum(),
+            metrics={
+                "is_masked": (~keep).float().mean(),
+                "masked_mismatch_kl": _safe_mean(mismatch, ~keep),
+                "unmasked_mismatch_kl": _safe_mean(mismatch, keep),
+                "ratio_saturated": _safe_mean(
+                    (log_ratio.detach() > log_ratio.new_tensor(config.ratio_cap).log()).float(), keep
+                ),
+                "score_centering/head_mass": q.sum(-1),
+                "score_centering/acceptance_mass": acceptance,
+                "score_centering/low_acceptance": low_acceptance.float(),
+                "score_centering/position_masked": (~keep).float(),
+                "score_centering/sampled_ipo_masked": (~sampled_keep).float(),
+                "score_centering/tail_masked_count": tail_rejected.sum(-1).float(),
+                "score_centering/tail_change_bound": tail_bound,
+                "score_centering/tail_scale": alpha,
+                "score_centering/logit_correction_l1": correction_l1.masked_fill(~keep, 0.0),
+                "score_centering/residual_l1": residual.abs().sum(-1).masked_fill(~keep, 0.0),
+            },
+        )
 
 
 class IcePopLoss:
@@ -524,6 +650,8 @@ def compute_loss(
     trainer_topk_logprobs: list[Tensor] | None = None,
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
+    trainer_tail_logprobs: list[Tensor] | None = None,
+    trainer_tail_log_mass: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -575,6 +703,8 @@ def compute_loss(
     trainer_topk_logprobs = trainer_topk_logprobs if trainer_topk_logprobs is not None else [None] * n
     sampler_topk_logprobs = sampler_topk_logprobs if sampler_topk_logprobs is not None else [None] * n
     topk_valid = topk_valid if topk_valid is not None else [None] * n
+    trainer_tail_logprobs = trainer_tail_logprobs if trainer_tail_logprobs is not None else [None] * n
+    trainer_tail_log_mass = trainer_tail_log_mass if trainer_tail_log_mass is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -589,7 +719,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0][:0].sum()
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, t_tail, t_tail_mass in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -601,6 +731,8 @@ def compute_loss(
         trainer_topk_logprobs,
         sampler_topk_logprobs,
         topk_valid,
+        trainer_tail_logprobs,
+        trainer_tail_log_mass,
         strict=True,
     ):
 
@@ -615,6 +747,8 @@ def compute_loss(
                 trainer_topk_logprobs=t_head,
                 sampler_topk_logprobs=q_head,
                 topk_valid=valid,
+                trainer_tail_logprobs=t_tail,
+                trainer_tail_log_mass=t_tail_mass,
             )
 
         if rl_w is None:

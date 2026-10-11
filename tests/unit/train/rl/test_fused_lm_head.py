@@ -9,6 +9,42 @@ from prime_rl.trainer.rl.loss import compute_entropy, selective_log_softmax, shi
 from prime_rl.utils.utils import default_dtype
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("tail_only", [False, True])
+@pytest.mark.parametrize("k", [0, 5])
+def test_fused_tail_candidates_gradient(device, tail_only, k):
+    from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
+
+    torch.manual_seed(23)
+    hidden = torch.randn(1, 5, 8, device=device, requires_grad=True)
+    lm = FusedOutputLinear(8, 8203, chunk_size=2).to(device)
+    ids = torch.tensor(
+        [[[0, 8192, 8202, -1], [2, 9, 5, 0], [-1, -1, -1, -1], [8, 9, 8199, -1], [0, 1, 2, 3]]], device=device
+    )
+    labels = torch.tensor([[1, 4, 100, 8192, 3]], device=device)
+    temperature = torch.linspace(0.8, 1.4, 5, device=device).unsqueeze(0)
+    out = lm(hidden, labels, temperature, topk_ids=ids, tail_topk=k)
+    coefficient = torch.randn_like(out["tail_logprobs"]) if k else None
+    loss = (out["tail_logprobs"] * coefficient).sum() if k else out["logprobs"].sum()
+    if not tail_only:
+        loss = loss + out["logprobs"].sum() + out["topk_logprobs"].sum()
+    actual = torch.autograd.grad(loss, (hidden, lm.weight))
+    logits = (hidden @ lm.weight.t()) / temperature.unsqueeze(-1)
+    tail, mass = tail_log_softmax(logits, ids, k)
+    assert not out["tail_log_mass"].requires_grad
+    torch.testing.assert_close(out["tail_log_mass"], mass, atol=5e-6, rtol=1e-6)
+    if k:
+        torch.testing.assert_close(out["tail_logprobs"], tail, atol=5e-6, rtol=1e-6)
+    reference = (tail * coefficient).sum() if k else logits.log_softmax(-1).gather(-1, labels.unsqueeze(-1)).sum()
+    if not tail_only:
+        full = logits.log_softmax(-1)
+        head = full.gather(-1, ids.clamp_min(0)).masked_fill(ids < 0, 0)
+        reference = reference + full.gather(-1, labels.unsqueeze(-1)).sum() + head.sum()
+    expected = torch.autograd.grad(reference, (hidden, lm.weight))
+    for grad, ref in zip(actual, expected, strict=True):
+        torch.testing.assert_close(grad, ref, atol=3e-5, rtol=2e-4)
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("replay", [False, True])

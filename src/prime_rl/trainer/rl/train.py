@@ -68,6 +68,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
+from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -155,6 +156,7 @@ def train(config: TrainerConfig):
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
+    tail_topk = getattr(rl_loss_fn, "tail_topk", None)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -473,6 +475,7 @@ def train(config: TrainerConfig):
                     routed_experts=routed_experts,
                     sampling_mask=sampling_mask,
                     topk_ids=topk_ids,
+                    tail_topk=tail_topk,
                 )
 
             if out.get("logprobs") is None:
@@ -488,6 +491,10 @@ def train(config: TrainerConfig):
                 out["entropy"] = compute_entropy(scaled_logits)
                 if topk_ids is not None:
                     out["topk_logprobs"] = selective_topk_log_softmax(scaled_logits, topk_ids, sampling_mask, labels)
+                    if tail_topk is not None:
+                        out["tail_logprobs"], out["tail_log_mass"] = tail_log_softmax(
+                            scaled_logits, topk_ids, tail_topk
+                        )
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
@@ -495,6 +502,10 @@ def train(config: TrainerConfig):
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
                 if out.get("topk_logprobs") is not None:
                     out["topk_logprobs"] = gather_for_cp(out["topk_logprobs"], cp_group)
+                if out.get("tail_logprobs") is not None:
+                    out["tail_logprobs"] = gather_for_cp(out["tail_logprobs"], cp_group)
+                if out.get("tail_log_mass") is not None:
+                    out["tail_log_mass"] = gather_for_cp_wo_grad(out["tail_log_mass"], cp_size, cp_group)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -508,6 +519,14 @@ def train(config: TrainerConfig):
             trainer_topk = out.get("topk_logprobs")
             if trainer_topk is not None:
                 trainer_topk = torch.cat([torch.zeros_like(trainer_topk[:, :1]), trainer_topk[:, :-1]], dim=1)
+            trainer_tail = out.get("tail_logprobs")
+            if trainer_tail is not None:
+                trainer_tail = torch.cat(
+                    [torch.full_like(trainer_tail[:, :1], -torch.inf), trainer_tail[:, :-1]], dim=1
+                )
+            trainer_tail_mass = out.get("tail_log_mass")
+            if trainer_tail_mass is not None:
+                trainer_tail_mass = shift_tensor_right(trainer_tail_mass, pad_value=-torch.inf)
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
@@ -531,6 +550,12 @@ def train(config: TrainerConfig):
                 if sampler_topk is not None
                 else None,
                 topk_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
+                trainer_tail_logprobs=trainer_tail.squeeze(0).split(sequence_lengths)
+                if trainer_tail is not None
+                else None,
+                trainer_tail_log_mass=trainer_tail_mass.squeeze(0).split(sequence_lengths)
+                if trainer_tail_mass is not None
+                else None,
             )
 
             # Backward pass

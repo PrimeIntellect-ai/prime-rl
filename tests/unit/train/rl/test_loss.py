@@ -25,6 +25,110 @@ from prime_rl.trainer.rl.loss import (
 pytestmark = [pytest.mark.gpu]
 
 
+@pytest.mark.parametrize("gate", ["sample", "head"])
+@pytest.mark.parametrize("case", ["diffuse", "concentrated", "zero", "tiny", "tiny_tail", "eps_one", "complete"])
+@pytest.mark.parametrize("constant_advantage", [False, True])
+def test_gated_score_centering_dense_gradient_cpu(gate, case, constant_advantage):
+    from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
+
+    eps, head_size = 0.2, 2
+    if case == "diffuse":
+        p = torch.tensor([0.3, 0.3] + [0.004] * 100, dtype=torch.float64)
+        q_head = p.new_tensor([0.4995, 0.4995])
+    elif case in ("zero", "tiny"):
+        small = 1e-8 if case == "tiny" else 0.0
+        p = torch.tensor([0.95 - small / 2, 0.05 - small / 2, small], dtype=torch.float64)
+        q_head = p.new_tensor([0.05 - small / 2, 0.95 - small / 2])
+        if not small:
+            p = p[:2]
+    elif case == "tiny_tail":
+        p = torch.tensor([0.55, 0.45, 1e-40, 2e-41], dtype=torch.float64)
+        q_head = p.new_tensor([0.5, 0.4])
+    else:
+        p = torch.tensor([0.25, 0.25, 0.45, 0.03, 0.02], dtype=torch.float64)
+        q_head = p.new_tensor([0.41, 0.41])
+        if case == "eps_one":
+            eps = 1.0
+    q = torch.cat(
+        [q_head, (1 - q_head.sum()) * p[head_size:] / p[head_size:].sum().clamp_min(torch.finfo(p.dtype).tiny)]
+    )
+    if case == "complete":
+        head_size = len(p)
+    config = IPOTISLossConfig(
+        eps=eps,
+        ratio_cap=2,
+        score_centering=True,
+        score_centering_topk=None if case == "complete" else head_size,
+        score_centering_gate=gate,
+    )
+    loss_fn = setup_rl_loss_fn(config)
+    count = len(p)
+    logits = p.log().expand(count, -1).clone().requires_grad_()
+    logp = logits.log_softmax(-1)
+    ids = torch.arange(head_size).expand(count, -1)
+    tail, tail_mass = (
+        tail_log_softmax(logits, ids, loss_fn.tail_topk) if loss_fn.tail_topk is not None else (None, None)
+    )
+    advantages = (
+        torch.ones(count, dtype=p.dtype) if constant_advantage else torch.linspace(-1.1, 1.7, count, dtype=p.dtype)
+    )
+    result = loss_fn.loss(
+        LossInputs(
+            trainer_logprobs=logp.diagonal(),
+            inference_logprobs=q.log(),
+            ref_logprobs=None,
+            advantages=advantages,
+            loss_mask=torch.ones(count, dtype=torch.bool),
+            loss_weights=q,
+            trainer_topk_logprobs=logp[:, :head_size],
+            sampler_topk_logprobs=q[:head_size].log().expand(count, -1),
+            topk_valid=torch.ones_like(ids, dtype=torch.bool),
+            trainer_tail_logprobs=tail,
+            trainer_tail_log_mass=tail_mass,
+        )
+    )
+    detached_p = logp.detach().exp()
+    tis = (detached_p / q).clamp_max(config.ratio_cap)
+    accepted = (detached_p - q).abs() <= eps
+    if gate == "sample":
+        z = (q * accepted).sum(-1)
+        safe = z >= config.score_centering_min_acceptance
+        keep = accepted.diagonal() & safe
+        denominator = torch.where(safe, z, 1.0)
+        center = ((q * accepted * tis) * logp).sum(-1) / denominator
+    else:
+        keep = accepted[:, :head_size].all(-1)
+        center = (q * tis * logp).sum(-1)
+    reference = (advantages[keep] * q[keep] * (-tis.diagonal()[keep] * logp.diagonal()[keep] + center[keep])).sum()
+    actual = torch.autograd.grad(result.loss, logits, retain_graph=True)[0]
+    expected = torch.autograd.grad(reference, logits)[0]
+    torch.testing.assert_close(actual, expected, atol=2e-12, rtol=1e-9)
+    assert torch.isfinite(actual).all()
+    assert torch.count_nonzero(actual[~keep]) == 0
+    if constant_advantage:
+        torch.testing.assert_close(actual.sum(0), torch.zeros_like(p), atol=2e-12, rtol=0)
+    if case in ("zero", "tiny"):
+        assert torch.count_nonzero(actual) == 0
+    if gate == "sample" and case == "concentrated":
+        assert result.metrics["score_centering/tail_masked_count"].max() == 1
+    if gate == "sample" and case == "diffuse":
+        assert result.metrics["score_centering/tail_change_bound"].min() > eps
+        assert result.metrics["score_centering/position_masked"].max() == 0
+
+
+@pytest.mark.parametrize("gate", ["sample", "head"])
+def test_gated_score_centering_excluded_nonfinite_cpu(gate):
+    config = IPOTISLossConfig(score_centering=True, score_centering_gate=gate)
+    logp = torch.tensor([float("nan"), -0.5], requires_grad=True)
+    inputs = LossInputs(
+        logp, logp.detach(), None, torch.full_like(logp, float("nan")), torch.zeros(2, dtype=torch.bool)
+    )
+    result = setup_rl_loss_fn(config).loss(inputs)
+    result.loss.backward()
+    assert result.loss == 0
+    assert torch.count_nonzero(logp.grad) == 0
+
+
 @pytest.mark.parametrize("head_size", [2, 5])
 def test_score_centering_matches_full_modeled_sampler_gradient(head_size):
     logits = torch.tensor([0.7, -0.4, 0.2, 0.1, -1.0], device="cuda", requires_grad=True)

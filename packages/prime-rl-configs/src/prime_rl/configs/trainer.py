@@ -573,10 +573,23 @@ class IPOTISLossConfig(BaseConfig):
     """Approximate an untruncated sampler with a captured head and proportional tail.
     None selects exact centering over the complete replayed sampling support."""
 
+    score_centering_gate: Literal["weighted", "sample", "head"] = "weighted"
+    """weighted centers the masked score, including rejected draws. sample gates the
+    entire update by the sampled action and centers conditional on acceptance.
+    head gates TIS+SC by whether every captured candidate passes the IPO bound."""
+
+    score_centering_min_acceptance: float = Field(1e-4, gt=0, le=1, allow_inf_nan=False)
+    """For the sample gate, skip the entire position below this modeled acceptance mass.
+    The same prefix-wide skip applies to the sampled term and centering correction."""
+
     @model_validator(mode="after")
     def validate_score_centering_topk(self):
         if self.score_centering_topk is not None and not self.score_centering:
             raise ValueError("score_centering_topk requires score_centering = true")
+        if self.score_centering_gate != "weighted" and not self.score_centering:
+            raise ValueError("score_centering_gate requires score_centering = true")
+        if self.score_centering_gate == "sample" and self.score_centering_topk is not None and self.eps == 0:
+            raise ValueError("Sample-gated proportional-tail centering requires eps > 0")
         return self
 
 
