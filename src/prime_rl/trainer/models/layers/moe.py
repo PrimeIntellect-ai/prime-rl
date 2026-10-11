@@ -406,8 +406,6 @@ class MoE(nn.Module):
         if self.shared_expert is not None:
             shared_output = self.shared_expert(x)
 
-        self.token_dispatcher.synchronize()
-
         routed_output = self.prepare_expert_output(routed_output)
 
         if shared_output is not None:
