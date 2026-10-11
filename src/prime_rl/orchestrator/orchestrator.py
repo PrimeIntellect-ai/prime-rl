@@ -432,7 +432,7 @@ class Orchestrator:
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            await self.stop(clean_exit)
+            await self.stop()
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:
@@ -1012,7 +1012,7 @@ class Orchestrator:
         self.update_dispatch_gate()
         self.version_advanced.set()
 
-    async def stop(self, clean_exit: bool) -> None:
+    async def stop(self) -> None:
         """Bounded best-effort teardown of all components. Has a global
         timeout so a wedged peer can't keep the process alive forever —
         training artifacts are already persisted before this is reached."""
@@ -1055,7 +1055,7 @@ class Orchestrator:
                 f"Orchestrator shutdown did not complete within {SHUTDOWN_TIMEOUT_S}s; "
                 "forcing process exit. Training artifacts are already persisted."
             )
-            os._exit(0 if clean_exit else 1)
+            os._exit(0)
         await task
         get_logger().debug(f"Stopped orchestrator components in {format_time(time.perf_counter() - t0)}")
 
