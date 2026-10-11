@@ -9,7 +9,6 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender, prune_broadcasts_beyond
 from prime_rl.transports.weights.filesystem import FileSystemWeightReceiver, FileSystemWeightSender
 from prime_rl.transports.weights.nccl import NCCLWeightReceiver, NCCLWeightSender
-from prime_rl.transports.weights.nixl import NIXLWeightReceiver, NIXLWeightSender
 
 __all__ = [
     "WeightReceiver",
@@ -25,13 +24,23 @@ def setup_weight_sender(
     config: WeightBroadcastConfig,
     parallel_dims: ParallelDims,
     lora_config: LoRAConfig | None = None,
+    *,
+    model_name: str | None = None,
 ) -> WeightSender:
     if config.type == "nccl":
         return NCCLWeightSender(output_dir, config, torch.cuda.current_device())
     elif config.type == "filesystem":
         return FileSystemWeightSender(output_dir, config, lora_config)
     elif config.type == "nixl":
+        from prime_rl.transports.weights.nixl import NIXLWeightSender
+
         return NIXLWeightSender(output_dir, config, parallel_dims)
+    elif config.type == "modelexpress":
+        from prime_rl.transports.weights.modelexpress import ModelExpressWeightSender
+
+        if model_name is None:
+            raise ValueError("modelexpress requires model_name")
+        return ModelExpressWeightSender(output_dir, config, model_name=model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")
 
@@ -47,6 +56,12 @@ def setup_weight_receiver(
     elif config.type == "filesystem":
         return FileSystemWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     elif config.type == "nixl":
+        from prime_rl.transports.weights.nixl import NIXLWeightReceiver
+
         return NIXLWeightReceiver(broadcast_dir, config, admin_plane, model_name)
+    elif config.type == "modelexpress":
+        from prime_rl.transports.weights.modelexpress import ModelExpressWeightReceiver
+
+        return ModelExpressWeightReceiver(broadcast_dir, config, admin_plane, model_name)
     else:
         raise ValueError(f"Invalid weight broadcast type: {config.type}")

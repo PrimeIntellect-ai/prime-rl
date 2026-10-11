@@ -1,0 +1,7 @@
+[weight_broadcast]
+type = "modelexpress"
+
+# Full receiver staging holds a second copy of each inference GPU's weight shard;
+# leave room for it next to the KV cache.
+[inference.vllm]
+gpu_memory_utilization = 0.6

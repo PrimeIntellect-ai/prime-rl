@@ -7,7 +7,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 MODELEXPRESS_REPOSITORY="https://github.com/ai-dynamo/modelexpress.git"
-MODELEXPRESS_REF="v0.3.0"
+# Must match the modelexpress client rev pinned in pyproject.toml.
+MODELEXPRESS_REF="8512b8c7130db34721a0b2ec57c23198fed3ef4f"
+PROTOC_VERSION="29.3"
 REDIS_VERSION="7.4.2"
 REDIS_SHA256="4ddebbf09061cbb589011786febdb34f29767dd7f89dbe712d2b68e808af6a1f"
 
@@ -16,29 +18,49 @@ if [[ $# -gt 0 ]]; then
     exit 1
 fi
 
-BIN_DIR="$PROJECT_DIR/third_party/modelexpress/bin"
+MX_DIR="$PROJECT_DIR/third_party/modelexpress"
+BIN_DIR="$MX_DIR/bin"
 mkdir -p "$BIN_DIR"
 
-if [[ -x "$BIN_DIR/modelexpress-server" ]] \
-    && "$BIN_DIR/modelexpress-server" --version 2>/dev/null | grep -q "${MODELEXPRESS_REF#v}"; then
+if [[ -x "$BIN_DIR/modelexpress-server" ]] && [[ "$(cat "$BIN_DIR/modelexpress-server.ref" 2>/dev/null)" == "$MODELEXPRESS_REF" ]]; then
     echo "modelexpress-server $MODELEXPRESS_REF already installed at $BIN_DIR"
 else
-    command -v cargo >/dev/null || {
-        echo "cargo not found; install Rust 1.90 or newer before running this script" >&2
-        exit 1
-    }
-    command -v protoc >/dev/null || {
-        echo "protoc not found; install Protocol Buffers before running this script" >&2
-        exit 1
-    }
     BUILD_DIR=$(mktemp -d)
     trap 'rm -rf "$BUILD_DIR"' EXIT
-    git clone --depth 1 --branch "$MODELEXPRESS_REF" "$MODELEXPRESS_REPOSITORY" "$BUILD_DIR/modelexpress"
+    # Bootstrap a job-local Rust toolchain and protoc when the host has none.
+    if ! command -v cargo >/dev/null; then
+        export RUSTUP_HOME="$MX_DIR/rustup" CARGO_HOME="$MX_DIR/cargo"
+        if [[ ! -x "$CARGO_HOME/bin/cargo" ]]; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+        fi
+        export PATH="$CARGO_HOME/bin:$PATH"
+    fi
+    if ! command -v protoc >/dev/null; then
+        PROTOC_DIR="$MX_DIR/protoc"
+        if [[ ! -x "$PROTOC_DIR/bin/protoc" ]]; then
+            case "$(uname -m)" in
+                x86_64) PROTOC_ARCH="x86_64" ;;
+                aarch64) PROTOC_ARCH="aarch_64" ;;
+                *) echo "Unsupported architecture $(uname -m)" >&2; exit 1 ;;
+            esac
+            curl --fail --location --silent --show-error \
+                --output "$BUILD_DIR/protoc.zip" \
+                "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
+            mkdir -p "$PROTOC_DIR"
+            python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$BUILD_DIR/protoc.zip" "$PROTOC_DIR"
+            chmod +x "$PROTOC_DIR/bin/protoc"
+        fi
+        export PATH="$PROTOC_DIR/bin:$PATH" PROTOC="$PROTOC_DIR/bin/protoc"
+    fi
+    git clone --quiet "$MODELEXPRESS_REPOSITORY" "$BUILD_DIR/modelexpress"
     (
         cd "$BUILD_DIR/modelexpress"
+        git fetch --quiet origin "$MODELEXPRESS_REF"
+        git checkout --quiet "$MODELEXPRESS_REF"
         cargo build --release --bin modelexpress-server
     )
     cp "$BUILD_DIR/modelexpress/target/release/modelexpress-server" "$BIN_DIR/"
+    echo "$MODELEXPRESS_REF" > "$BIN_DIR/modelexpress-server.ref"
 fi
 
 if [[ -x "$BIN_DIR/redis-server" ]] \

@@ -698,7 +698,7 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
-        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl"):
+        if self.model.lora is not None and self.weight_broadcast.type in ("nccl", "nixl", "modelexpress"):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
