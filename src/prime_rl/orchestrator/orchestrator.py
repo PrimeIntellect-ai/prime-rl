@@ -26,7 +26,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import set_base_sandbox_labels
+from verifiers.v1.runtimes import set_base_sandbox_labels, set_default_sandbox_lifetime
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
@@ -75,6 +75,7 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
+from prime_rl.utils.sandboxes import SandboxMetrics, sweep_sandboxes
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -117,6 +118,7 @@ class Orchestrator:
     # Set by ``setup()`` only when relevant config is present
     heart: Heartbeat | None
     inference_metrics: InferenceMetricsCollector | None
+    sandbox_metrics: SandboxMetrics | None
     eval_envs: EvalEnvs | None
     eval_sink: EvalSink | None
     eval_source: EvalSource | None
@@ -160,6 +162,7 @@ class Orchestrator:
         # config is present
         self.heart = None
         self.inference_metrics = None
+        self.sandbox_metrics = None
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
@@ -207,8 +210,13 @@ class Orchestrator:
         # Base labels for sandboxes created in this process; env-server processes read
         # the same launcher-set env var themselves.
         self.run_name = os.environ.get("PRL_RUN_NAME")
+        set_default_sandbox_lifetime(config.sandbox_lifetime)
         if self.run_name:
             set_base_sandbox_labels([self.run_name])
+            # Nothing of this run is in flight yet: a labeled sandbox was leaked by an
+            # earlier attempt of the run.
+            await asyncio.to_thread(sweep_sandboxes, self.run_name)
+            self.sandbox_metrics = SandboxMetrics(self.run_name)
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat)
@@ -392,6 +400,8 @@ class Orchestrator:
         # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
         await self.periodic_logger.start()
+        if self.sandbox_metrics is not None:
+            await self.sandbox_metrics.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
@@ -435,6 +445,8 @@ class Orchestrator:
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             await self.stop(clean_exit)
+            if self.run_name:
+                await asyncio.to_thread(sweep_sandboxes, self.run_name)
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:
@@ -1012,6 +1024,8 @@ class Orchestrator:
             if self.inference_metrics is not None:
                 get_logger().debug("Stopping inference metrics collector")
                 await self.inference_metrics.stop()
+            if self.sandbox_metrics is not None:
+                await self.sandbox_metrics.stop()
             if self.clients is not None:
                 await self.clients.aclose()
             if self.admin_plane is not None:

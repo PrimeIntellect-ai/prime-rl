@@ -36,6 +36,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.sandboxes import sweep_on_exit
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -105,7 +106,9 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
     for split, source in env_servers(config):
-        write_env_server_config(output_dir, split, source, config.orchestrator.log)
+        write_env_server_config(
+            output_dir, split, source, config.orchestrator.log, config.orchestrator.sandbox_lifetime
+        )
 
 
 def rl_local(config: RLConfig):
@@ -164,7 +167,8 @@ def rl_local(config: RLConfig):
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
 
-    with ProcessGroup() as processes:
+    # Exits after the processes stop: a component killed by SIGKILL skips its own sweep.
+    with sweep_on_exit(config.run.name), ProcessGroup() as processes:
         if config.inference:
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
             processes.start(

@@ -23,6 +23,12 @@ class EnvServerConfig(BaseConfig):
     servers they spawn, so the address never has to be agreed on up front (``serve.address``
     unset binds an OS-assigned port)."""
 
+    sandbox_lifetime: float | None = Field(86400, gt=0)
+    """Seconds after which a Prime sandbox is deleted, busy or not, unless its runtime config sets ``lifetime``. None removes the limit."""
+
+    sandbox_labels: list[str] = []
+    """Labels added to every Prime sandbox, after the run name."""
+
     log: LogConfig = LogConfig()
 
     output_dir: Path = Field(default_factory=default_output_dir)
