@@ -23,7 +23,7 @@ class OffloadActivations(saved_tensors_hooks):
     """Context manager under which activation tensors created in the forward pass will be offloaded.
 
     Enable the memory efficiency technique of activation offloading, where activations bigger than
-    min_offload_size bytes will be offloaded to CPU in the forward and brought back in the backward.
+    min_offload_size bytes will be offloaded to pinned CPU memory in the forward and brought back in the backward.
     This is in contrast to maintaining the activation on GPU VRAM throughout the program.
 
     This manager uses one additional CUDA stream, shared by the whole process, to handle the communication
@@ -32,10 +32,6 @@ class OffloadActivations(saved_tensors_hooks):
     runtime vs memory usage.
 
     Args:
-        use_pin_memory (bool): Whether or not the offloaded Tensor will be placed in pinned
-            memory on the CPU. Pinned memory allows the Tensor to be moved back onto GPU more quickly
-            but is a limited resource. Default: True.
-
         max_fwd_stash_size (int): The maximum size of the forward stash, or the maximum number of
             consecutive activations to keep alive during the forward pass. This number must be at
             least 1. Keeping alive more activations will potentially allow more overlap between the
@@ -59,7 +55,6 @@ class OffloadActivations(saved_tensors_hooks):
 
     def __init__(
         self,
-        use_pin_memory: bool = True,
         max_fwd_stash_size: int = 5,
         min_offload_size: int = 1024,
     ) -> None:
@@ -71,7 +66,6 @@ class OffloadActivations(saved_tensors_hooks):
         self.is_first_forward_pass = True
 
         # managing cpu memory
-        self.use_pin_memory: bool = use_pin_memory
         self.virtual_memory_safe_pct = 90  # we should not exceed this percentage of memory
         # comp stream
         if torch.accelerator.is_available():
@@ -149,7 +143,7 @@ class OffloadActivations(saved_tensors_hooks):
                 self.s1.wait_stream(self.s0)
 
                 with self.s1:
-                    cpu_tensor = torch.empty_like(activation, pin_memory=self.use_pin_memory, device="cpu")
+                    cpu_tensor = torch.empty_like(activation, pin_memory=True, device="cpu")
                     cpu_tensor.copy_(activation, non_blocking=True)
                     self.tracker[tensor_id] = (
                         cpu_tensor,
@@ -185,8 +179,7 @@ class OffloadActivations(saved_tensors_hooks):
 
                 if self.is_first_forward_pass:
                     self.is_first_forward_pass = False
-                    if self.use_pin_memory:
-                        verify_sufficient_virtual_memory()
+                    verify_sufficient_virtual_memory()
 
                 self.is_first_backward_call = False
                 self.is_first_forward_call = True
@@ -293,7 +286,4 @@ def maybe_activation_offloading(config: ActivationOffloadingConfig | None) -> Of
     if config is None:
         return nullcontext()
 
-    return OffloadActivations(
-        use_pin_memory=config.pin_memory,
-        max_fwd_stash_size=config.max_inflight_activations,
-    )
+    return OffloadActivations(max_fwd_stash_size=config.max_inflight_activations)
