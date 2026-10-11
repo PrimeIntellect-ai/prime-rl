@@ -307,6 +307,9 @@ class AdminPlane:
         self.evicting = True
         consecutive: dict[AsyncClient, int] = {}
         progress: dict[AsyncClient, tuple[float, float]] = {}
+        # Engines evicted for a stall -> generated tokens at eviction. Liveness alone does not
+        # clear a stall: they recover once their requests finish, progress, or they restart.
+        stalled: dict[AsyncClient, float] = {}
         while True:
             await asyncio.sleep(interval)
             # A weight update keeps the workers busy and pauses generation
@@ -316,19 +319,27 @@ class AdminPlane:
             await self._sync_router()
             clients = self.clients + self.evicted
             live = await asyncio.gather(*(_is_live(client) for client in clients))
-            counters = await asyncio.gather(*(_generation_counters(client) for client in self.clients))
+            probed = self.clients + [client for client in stalled if client in self.evicted]
+            counters = dict(zip(probed, await asyncio.gather(*(_generation_counters(client) for client in probed))))
             now = time.monotonic()
-            for client, (running, tokens) in zip(list(self.clients), counters):
+            for client in list(self.clients):
+                running, tokens = counters[client]
                 last = progress.get(client)
                 if running == 0 or last is None or tokens != last[1]:
                     progress[client] = (now, tokens)
                 elif now - last[0] > stall_timeout:
                     progress.pop(client)
+                    stalled[client] = tokens
                     await self._evict(
                         client, f"no token generated for {now - last[0]:.0f}s with {running:.0f} running requests"
                     )
             for client, ok in zip(clients, live):
                 if client in self.evicted:
+                    if ok and client in stalled:
+                        running, tokens = counters[client]
+                        if running and tokens == stalled[client]:
+                            continue
+                    stalled.pop(client, None)
                     if ok and client not in self.recovered:
                         get_logger().info(
                             f"Evicted inference engine {client.base_url} answers again; it rejoins at the next weight update"
