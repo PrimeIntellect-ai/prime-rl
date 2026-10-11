@@ -20,7 +20,12 @@ from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
-from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
+from torch.distributed.fsdp._fully_shard._fsdp_init import (
+    _get_device_from_mesh,
+    _get_mesh_info,
+    _get_post_forward_mesh_info,
+    _init_param_group,
+)
 from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
@@ -547,7 +552,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
-    fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
             if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
@@ -573,30 +577,35 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 ),
             }
 
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
-            if fullgraph:
-                raise ValueError(
-                    "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16': the fp32 router is "
-                    "its own FSDP unit inside the compiled block, and dynamo cannot trace FSDP hooks."
-                )
-            # Own FSDP unit with an fp32 policy so the gate weight is not cast to
-            # bf16 for forward and its gradients reduce in fp32.
-            fully_shard(
-                block_mlp.router,
-                mesh=hsdp_mesh,
-                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
-                reshard_after_forward=config.reshard_after_forward,
-                shard_placement_fn=shard_placement_fn,
-            )
-            # Keep the router reduction from waiting for the expert reduction's input buffer.
-            block_mlp.router.set_reduce_scatter_max_input_buffers(2)
+        router_params = (
+            list(block_mlp.router.parameters())
+            if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE)
+            else []
+        )
 
         fully_shard(
             transformer_block,
             mesh=hsdp_mesh,
+            ignored_params=set(router_params),
             **block_fsdp_config,
         )
+        if router_params:
+            # A separate precision group shares the block's hooks, keeping FSDP
+            # collectives outside the compiled checkpoint region.
+            router_mesh_info = _get_mesh_info(hsdp_mesh)
+            _init_param_group(
+                fully_shard.state(transformer_block),
+                router_params,
+                (transformer_block,),
+                router_mesh_info,
+                _get_post_forward_mesh_info(config.reshard_after_forward, router_mesh_info),
+                _get_device_from_mesh(hsdp_mesh),
+                shard_placement_fn,
+                MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
+                offload_policy,
+                reshard_after_forward=config.reshard_after_forward,
+            )
+            transformer_block.set_reduce_scatter_max_input_buffers(2)
         if expert_mesh_info is not None and isinstance(block_mlp, MoE):
             # Expert gradients reduce over the EP-complement mesh only, so they divide by the full
             # data-parallel size. That is already the dense parameters' default divisor.
@@ -653,11 +662,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
-            next_mlp = getattr(next_transformer_block, "mlp", None)
-            prefetch_modules = [next_transformer_block]
-            if isinstance(next_mlp, MoE) and isinstance(next_mlp.router, FSDPModule):
-                prefetch_modules.append(next_mlp.router)
-            transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
+            transformer_block.set_modules_to_forward_prefetch([next_transformer_block])
         elif final_module is not None and model.lm_head is not None:
             if shard_norm_and_lm_head:
                 transformer_block.set_modules_to_forward_prefetch([final_module, model.lm_head])
@@ -669,9 +674,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     if final_module is not None and model.lm_head is not None and len(language_model.layers) > 0:
         last_transformer_block = reversed_transformer_blocks[0]
         prefetch_modules = [last_transformer_block]
-        last_mlp = getattr(last_transformer_block, "mlp", None)
-        if isinstance(last_mlp, MoE) and isinstance(last_mlp.router, FSDPModule):
-            prefetch_modules.append(last_mlp.router)
 
         if shard_norm_and_lm_head:
             model.lm_head.set_modules_to_backward_prefetch(prefetch_modules)
@@ -680,11 +682,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
     for transformer_block, prev_transformer_block in zip(reversed_transformer_blocks, prev_transformer_blocks):
         if prev_transformer_block is not None:
-            prev_mlp = getattr(prev_transformer_block, "mlp", None)
-            prefetch_modules = [prev_transformer_block]
-            if isinstance(prev_mlp, MoE) and isinstance(prev_mlp.router, FSDPModule):
-                prefetch_modules.append(prev_mlp.router)
-            transformer_block.set_modules_to_backward_prefetch(prefetch_modules)
+            transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
         elif embed_module is not None:
             if shard_norm_and_lm_head:
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
