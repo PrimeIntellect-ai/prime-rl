@@ -52,8 +52,7 @@ name = "zai-org/GLM-4.5-Air"
 attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
-optim_cpu_offload = false
-full_offload = true
+offload = "full"
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
