@@ -439,6 +439,8 @@ class Orchestrator:
                     await self.inference_metrics.stop()
                 if self.periodic_logger is not None:
                     await self.periodic_logger.stop()
+                if self.sandbox_metrics is not None:
+                    await self.sandbox_metrics.stop()
                 # Finalize only on a clean exit — a crashed run must not be marked
                 # completed; the platform run's atexit hook marks it failed instead.
                 await monitors.finalize()
