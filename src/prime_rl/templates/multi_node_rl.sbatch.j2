@@ -221,16 +221,13 @@ srun bash -s <<'CLEANUP_SH'
 CLEANUP_SH
 
 # Run RL
-# --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other
-# tasks so a crashed component terminates the SLURM job instead of leaving the
-# surviving ranks holding nodes.
-#
-# The body goes to bash on stdin through a quoted heredoc instead of a
-# single-quoted `bash -c` argument: srun broadcasts stdin to every task, and the
-# quoted delimiter passes the script through verbatim, so apostrophes and quotes
-# (including in the shared _launch_*.sh.j2 includes) need no escaping. Nothing in
-# the body reads stdin, which would otherwise eat the rest of the script.
-srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
+# The launch body is written to a file through a quoted heredoc, so apostrophes and
+# quotes (including in the shared _launch_*.sh.j2 includes) need no escaping. It runs
+# as one srun step over every node (trainer, orchestrator, router and other support
+# processes){% if num_infer_nodes > 0 %} and as one srun step per inference engine group (see
+# run_engine_group below){% endif %}.
+LAUNCH_BODY=$LAUNCHER_DIR/launch_${SLURM_JOB_ID}.sh
+cat > "$LAUNCH_BODY" <<'LAUNCH_SH'
     # pipefail ensures `cmd | tee log` propagates `cmd` failures, and the
     # wait/cleanup block at the end of this script surfaces background
     # process crashes (router, orchestrator) as task failures.
@@ -241,6 +238,12 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     [ -f .env ] && source .env
     source .venv/bin/activate
     # Do not sync to avoid conflicts with lockfile
+
+    # An engine group step (ENGINE_GROUP set) runs on the group's nodes only and launches
+    # only the group's engines; the main step launches everything else.
+    if [ -n "${ENGINE_GROUP:-}" ]; then NODE_RANK=$((ENGINE_FIRST_NODE + SLURM_NODEID)); else NODE_RANK=$SLURM_PROCID; fi
+    # engine_rank <local_dp_rank>: whether this step launches that engine
+    engine_rank() { [ -n "${ENGINE_GROUP:-}" ] && [[ " ${ENGINE_RANKS:-$1} " == *" $1 "* ]]; }
 
     # Higher ulimit
     ulimit -n 65536
@@ -267,7 +270,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     }
 {% if launch_modelexpress %}
 
-    if [ "$SLURM_PROCID" -eq "$NUM_INFER_NODES" ]; then
+    if [ "$NODE_RANK" -eq "$NUM_INFER_NODES" ]; then
         MX_BIN="$PROJECT_DIR/third_party/modelexpress/bin"
         if [ ! -x "$MX_BIN/modelexpress-server" ] || [ ! -x "$MX_BIN/redis-server" ]; then
             echo "ModelExpress server dependencies are missing; run scripts/install_modelexpress.sh" >&2
@@ -328,8 +331,8 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
 {% if num_infer_nodes > 0 -%}
 
-if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
-    INFER_NODE_RANK=$SLURM_PROCID
+if [ "$NODE_RANK" -lt "$NUM_INFER_NODES" ]; then
+    INFER_NODE_RANK=$NODE_RANK
     # Inference env vars: launcher defaults + [env_vars] + [inference.env_vars]
 {%- for key, value in inference_env_vars.items() %}
     export {{ key }}="{{ value }}"
@@ -347,7 +350,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     RANK_IN_REPLICA=$((INFER_NODE_RANK % NODES_PER_INFER_REPLICA))
 
     echo "INFER_NODE_RANK=$INFER_NODE_RANK REPLICA=$REPLICA_IDX RANK_IN_REPLICA=$RANK_IN_REPLICA LOCAL_IP=$LOCAL_IP" \
-        | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
+        | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     CONFIG_PATH="$CONFIG_DIR/inference.json"
 {% include '_launch_rank.sh.j2' %}
@@ -423,7 +426,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
     # Start the single global router on inference node 0 (PD mode, external LB across all per-rank endpoints)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+    if [ -z "${ENGINE_GROUP:-}" ] && [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router pd "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 {%- if router.type == "llm-d" %}
@@ -431,7 +434,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     # + rank) -> vLLM decode (DECODE_PORT + rank) after orchestrating remote prefill.
     # Every decode node fronts its own local ranks, so launch on each (not just the
     # replica head), or decode nodes beyond the head get advertised but unserved endpoints.
-    if [ "$ROLE" = "decode" ]; then
+    if [ -z "${ENGINE_GROUP:-}" ] && [ "$ROLE" = "decode" ]; then
         SIDECAR_LOG="$LOG_DIR/inference/sidecar_${INFER_NODE_RANK}.log"
         echo "Starting pd-sidecar on $LOCAL_IP:$DECODE_SIDECAR_PORT(+rank) -> vLLM $DECODE_PORT(+rank)" | tee $SIDECAR_LOG
         export PATH="$PROJECT_DIR/third_party/llmd/bin:$PATH"
@@ -453,6 +456,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     # endpoints. The kv_transfer_config is built in InferenceConfig.to_namespace() from the config.
     if [ "$ROLE_RANK" -eq 0 ]; then DP_ADDR=$LOCAL_IP; else DP_ADDR=$HEAD_HOST; fi
     for k in $(seq 0 $((INFERENCE_DP_LOCAL - 1))); do
+        engine_rank "$k" || continue
         GLOBAL_RANK=$((START_RANK + k))
         RANK_GPUS=$(seq -s, $((k * INFERENCE_TP)) $((k * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
@@ -460,7 +464,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     done
 {%- else -%}
     # Start the single global router on inference node 0 (external LB across all per-rank endpoints)
-    if [ "$INFER_NODE_RANK" -eq 0 ]; then
+    if [ -z "${ENGINE_GROUP:-}" ] && [ "$INFER_NODE_RANK" -eq 0 ]; then
         launch_router regular "$ROUTER_ARGS" "$ROUTER_PORT" "{{ router.policy }}" "$LOG_DIR/inference/router.log"
     fi
 
@@ -475,6 +479,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     INFER_GROUP_DP=$((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL))
     if [ "$RANK_IN_REPLICA" -eq 0 ]; then DP_ADDR="$LOCAL_IP"; else DP_ADDR="$REPLICA_HEAD_HOST"; fi
     for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
+        engine_rank "$d" || continue
         RANK_GPUS=$(seq -s, $((d * INFERENCE_TP)) $((d * INFERENCE_TP + INFERENCE_TP - 1)))
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
         if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ "$INFER_GROUP_DP" -gt 1 ]; then
@@ -532,7 +537,7 @@ else
 # Launch the orchestrator on the node ORCH_ADDR points at (see the ORCH_PROCID
 # computation above). Top-level (after the role if/else) so the wait -n teardown
 # covers it.
-if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
+if [ -z "${ENGINE_GROUP:-}" ] && [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     ORCHESTRATOR_ARGS="@ $CONFIG_DIR/orchestrator.json"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.base-url $INFER_URLS"
     ORCHESTRATOR_ARGS="$ORCHESTRATOR_ARGS --model.client.admin-base-url $ADMIN_URLS"
@@ -589,11 +594,18 @@ COMPLETION_PID=$!
 
 # A clean component exit is not enough to stop the run. Keep waiting for the
 # shared completion condition. Propagate any failure through
-# --kill-on-bad-exit=1 so every node tears down.
+# --kill-on-bad-exit=1 so every node tears down. In an engine group step, any
+# engine exit ends the step on every node of the group.
 while true; do
     wait -n -p FINISHED_PID
     EXIT_CODE=$?
-    if [ "$EXIT_CODE" -ne 0 ] || [ "${FINISHED_PID:-}" = "$COMPLETION_PID" ]; then
+    if [ "${FINISHED_PID:-}" = "$COMPLETION_PID" ]; then
+        break
+    fi
+    if [ -n "${ENGINE_GROUP:-}" ] && [ "$EXIT_CODE" -eq 0 ]; then
+        EXIT_CODE=1
+    fi
+    if [ "$EXIT_CODE" -ne 0 ]; then
         break
     fi
 done
@@ -608,7 +620,7 @@ REMAINING_PIDS=$(jobs -p)
 # --kill-on-bad-exit from reaping checkpointing trainers on peer nodes. We then
 # propagate the exit code so the allocation tears down. A clean (zero) exit cannot
 # trip --kill-on-bad-exit, so we tear down immediately.
-if [ "$EXIT_CODE" -ne 0 ]; then
+if [ "$EXIT_CODE" -ne 0 ] && [ -z "${ENGINE_GROUP:-}" ]; then
     echo "[$(hostname)] component exited with code $EXIT_CODE - waiting up to {{ cleanup_grace_period }}s for an in-flight trainer checkpoint to finish before teardown"
     GRACE_DEADLINE=$((SECONDS + {{ cleanup_grace_period }}))
     while [ "$SECONDS" -lt "$GRACE_DEADLINE" ]; do
@@ -626,3 +638,80 @@ for pid in $REMAINING_PIDS; do
 done
 exit $EXIT_CODE
 LAUNCH_SH
+
+# --kill-on-bad-exit=1 propagates a non-zero exit on any node to all other tasks
+# of the step, so a crashed trainer, orchestrator or support process terminates
+# the job instead of leaving the surviving ranks holding nodes.
+srun --kill-on-bad-exit=1 bash "$LAUNCH_BODY" &
+MAIN_PID=$!
+{%- if num_infer_nodes > 0 %}
+
+# Each inference engine group (the engines that fail together: one engine, or one
+# multi-rank DP/EP group) runs as its own step, so its exit ends only that step
+# (--kill-on-bad-exit=1 tears down the rest of the group) and not the job. The
+# orchestrator evicts the group's engines and readmits them at the next weight update
+# once the restarted group answers again. NIXL broadcast pins its receivers and a
+# single engine has no peer to fall back to, so there an engine exit ends the job.
+MAX_ENGINE_RESTARTS={{ max_engine_restarts }}
+ENGINE_EXIT_FATAL={{ "1" if use_nixl_broadcast else "0" }}
+[ "$(wc -w <<< "$ADMIN_URLS")" -gt 1 ] || ENGINE_EXIT_FATAL=1
+# run_engine_group <first_infer_node> <num_nodes> <local_dp_ranks|"" for all>
+run_engine_group() {
+    local first=$1 count=$2 ranks=$3 restarts=0 code
+    local hosts
+    hosts=$(IFS=,; echo "${INFER_HOSTS[*]:$first:$count}")
+    while true; do
+        code=0
+        ENGINE_GROUP=1 ENGINE_FIRST_NODE=$first ENGINE_RANKS=$ranks \
+            srun --overlap --nodes="$count" --ntasks-per-node=1 --nodelist="$hosts" --kill-on-bad-exit=1 \
+            bash "$LAUNCH_BODY" || code=$?
+        # Engine exits are non-zero; a zero exit means the run finished.
+        if [ "$code" -eq 0 ] || ! kill -0 "$MAIN_PID" 2>/dev/null; then
+            return 0
+        fi
+        if [ "$ENGINE_EXIT_FATAL" -eq 1 ]; then
+            echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - ending the job"
+            kill -TERM "$MAIN_PID"
+            return 0
+        fi
+        if [ "$restarts" -ge "$MAX_ENGINE_RESTARTS" ]; then
+            echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - no restarts left, leaving it down"
+            return 0
+        fi
+        restarts=$((restarts + 1))
+        echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - restart $restarts of $MAX_ENGINE_RESTARTS"
+        sleep 10
+    done
+}
+{% if is_disaggregated -%}
+# One group per P/D role replica: its DP ranks span its nodes.
+for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
+    base=$((r * NODES_PER_INFER_REPLICA))
+    for ((p=0; p<NUM_PREFILL_NODES; p+=NODES_PER_PREFILL_REPLICA)); do
+        run_engine_group $((base + p)) "$NODES_PER_PREFILL_REPLICA" "" &
+    done
+    for ((d=0; d<NUM_DECODE_NODES; d+=NODES_PER_DECODE_REPLICA)); do
+        run_engine_group $((base + NUM_PREFILL_NODES + d)) "$NODES_PER_DECODE_REPLICA" "" &
+    done
+done
+{%- else -%}
+if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ $((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL)) -gt 1 ]; then
+    # One group per replica: its DP ranks form one EP group.
+    for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
+        run_engine_group $((r * NODES_PER_INFER_REPLICA)) "$NODES_PER_INFER_REPLICA" "" &
+    done
+else
+    # Independent engines: one group each.
+    for ((n=0; n<NUM_INFER_NODES; n++)); do
+        for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
+            run_engine_group "$n" 1 "$d" &
+        done
+    done
+fi
+{%- endif %}
+{%- endif %}
+
+# The job ends with the main step; engine group steps end with the job.
+EXIT_CODE=0
+wait "$MAIN_PID" || EXIT_CODE=$?
+exit $EXIT_CODE

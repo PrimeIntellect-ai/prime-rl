@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -423,10 +424,14 @@ class AdminPlane:
     ) -> list[AsyncClient]:
         """Run one admin op on every client; evict the ones that fail and return the rest. Without
         eviction (``monitor_health`` not running), a failure raises."""
-        post = post or _admin_post
         if not self.evicting:
+            post = post or _admin_post
             await asyncio.gather(*(post(client, op, **kwargs) for client in clients))
             return list(clients)
+        # One attempt: an engine that fails is evicted and rejoins once it answers again. Retrying
+        # could reach a relaunched engine on the same port that has neither the weights nor the
+        # weight broadcast group.
+        post = post or functools.partial(_admin_post, attempts=1)
         results = await asyncio.gather(*(post(client, op, **kwargs) for client in clients), return_exceptions=True)
         succeeded = []
         for client, result in zip(clients, results):
@@ -640,14 +645,16 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, attempts: int = 10, **kwargs
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_retryable_admin_error),
-        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
+        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(attempts),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     ):

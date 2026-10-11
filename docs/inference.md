@@ -217,9 +217,11 @@ With more than one engine behind the router and NCCL or filesystem weight broadc
   - The inference nodes must see the run's output directory for this.
 - **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update. It returns to the router only after that update succeeds. An engine evicted for a stall rejoins only once its requests finish or progress again, or after a restart.
 - **Router.** A `vllm-router` that crashes is restarted in place by the launcher, with the same port and worker list.
+- **SLURM.** Each engine group runs as its own SLURM step, so an engine exit does not end the job. An engine group is the set of engines that fail together: one engine, or one multi-rank DP/EP group (a P/D role replica, or a replica with expert parallelism). When one engine in a group exits, its whole group is torn down and restarted, up to `slurm.max_engine_restarts` times (default 3). After that the group stays down. The trainer, orchestrator and router still end the job when they fail.
+- **P/D.** `vllm-router` cannot re-add a prefill or decode worker through its API. So a restarted P/D group receives the weight updates again, but it takes traffic only after the router restarts.
 - **Still fatal:**
   - the last engine dying;
-  - NIXL broadcast, which pins its receivers.
+  - NIXL broadcast, which pins its receivers. On SLURM, an engine exit then ends the job, and the same holds for a deployment with a single engine.
 
 ## Adaptive Concurrency
 
