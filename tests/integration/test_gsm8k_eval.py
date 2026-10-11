@@ -3,7 +3,9 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+from verifiers.v1.configs.client import resolve_api_key
 
+from prime_rl.configs.shared import ClientConfig
 from tests.conftest import ProcessResult
 from tests.utils import strip_escape_codes
 
@@ -21,7 +23,9 @@ def run_dir(output_dir: Path) -> Path:
 @pytest.fixture(scope="module")
 def eval_process(run_process: Callable[..., ProcessResult], output_dir: Path) -> ProcessResult:
     """`uv run eval` of single-turn null-harness rollouts against Prime Inference (the
-    default client and model); needs `PRIME_API_KEY`, no GPU, no sandbox."""
+    default client and model); needs `PRIME_API_KEY` or `prime login`, no GPU, no sandbox."""
+    if resolve_api_key(ClientConfig()) == "EMPTY":
+        pytest.skip("GSM8K eval requires PRIME_API_KEY or prime login")
     cmd = [
         "uv",
         "run",
