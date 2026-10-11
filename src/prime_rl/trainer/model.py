@@ -835,6 +835,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     apply_autotune_checkpoint_patch()
     get_logger().info(f"Autotuning checkpoint dispatch backport active (torch={torch.__version__})")
     torch._dynamo.config.capture_scalar_outputs = True
+    # Expert all-to-all output lengths depend on the routed token counts.
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
