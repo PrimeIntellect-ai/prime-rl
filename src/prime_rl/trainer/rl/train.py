@@ -65,6 +65,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.health import TRAINER_RULES, RunHealth
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
@@ -102,6 +103,7 @@ def train(config: TrainerConfig):
     if config.heartbeat is not None and world.is_master:
         logger.info("Initializing heartbeat")
         heart = Heartbeat(config.heartbeat)
+    run_health = RunHealth(TRAINER_RULES)
 
     # Set precision
     setup_torch_distributed(
@@ -689,6 +691,8 @@ def train(config: TrainerConfig):
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
 
         tensor_stats["step"] = progress.step
+        if world.is_master:
+            tensor_stats |= run_health.check(tensor_stats)
         asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
 
         # Log time metrics

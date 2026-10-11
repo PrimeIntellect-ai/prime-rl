@@ -72,6 +72,7 @@ from prime_rl.trainer.model import setup_tokenizer
 from prime_rl.transports.batch import setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
+from prime_rl.utils.health import ORCHESTRATOR_RULES, RunHealth
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
@@ -160,6 +161,7 @@ class Orchestrator:
         # config is present
         self.heart = None
         self.inference_metrics = None
+        self.run_health = RunHealth(ORCHESTRATOR_RULES)
         self.eval_envs = None
         self.eval_sink = None
         self.eval_source = None
@@ -685,6 +687,7 @@ class Orchestrator:
         for env_name, env_pool in batch.episodes.by_env().items():
             metrics[f"batch/{env_name}"] = env_pool.num_traces / batch.episodes.num_traces
         metrics |= self.train_source.metrics()
+        metrics |= self.run_health.check(metrics | self.dispatcher.gauges())
         await monitors.log(metrics, step=step)
 
         active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
