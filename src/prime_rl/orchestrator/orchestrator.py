@@ -554,7 +554,7 @@ class Orchestrator:
             await self.finalize_train_batch(batch)
             if self.draining or self.stopped.is_set():
                 return
-            batch = self.train_sink.take_batch()
+            batch = await self.train_sink.take_batch()
             await self.report_rollouts(force=batch is not None and bool(batch.samples))
         if self.draining or self.stopped.is_set():
             if batch is not None:
