@@ -35,8 +35,15 @@ class TrainSource:
         self._admitted: dict[str, int] = defaultdict(int)
         self._rejected: dict[str, int] = defaultdict(int)
 
-    def next_task(self, *, step: int) -> TaskRequest:
-        env_name = self.rng.choices(self.env_names, weights=self.weights, k=1)[0]
+    def next_task(self, *, step: int, exclude: set[str] = frozenset()) -> TaskRequest | None:
+        """Sample the next task from an env not in ``exclude``; None when every env is excluded."""
+        names, weights = self.env_names, self.weights
+        if exclude:
+            names = [name for name in self.env_names if name not in exclude]
+            weights = [weight for name, weight in zip(self.env_names, self.weights) if name not in exclude]
+            if not names:
+                return None
+        env_name = self.rng.choices(names, weights=weights, k=1)[0]
         return TaskRequest(env_name=env_name, task=next(self.curricula[env_name].sampler), step=step)
 
     def on_result(self, group: list[vf.Episode]) -> bool:

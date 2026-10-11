@@ -9,6 +9,7 @@ is what guarantees nothing stale ships."""
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 
@@ -93,6 +94,8 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+        self.last_sample_at = time.perf_counter()
+        """When a group last added trainable samples to the queue."""
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -296,6 +299,7 @@ class TrainSink:
             return
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+        self.last_sample_at = time.perf_counter()
 
     def _admit(self, group: list[vf.Episode]) -> bool:
         return self.on_result(group) if self.on_result is not None else True

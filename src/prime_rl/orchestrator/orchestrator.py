@@ -327,6 +327,7 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            circuit_breaker=config.circuit_breaker,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
@@ -399,6 +400,7 @@ class Orchestrator:
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
+        self.stall_checked_at = self.last_batch_at
 
         # ``clean_exit`` stays False if ``main_loop`` raises (signal-driven
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
@@ -430,7 +432,7 @@ class Orchestrator:
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            await self.stop()
+            await self.stop(clean_exit)
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:
@@ -480,6 +482,7 @@ class Orchestrator:
         the result."""
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
+            self._check_stall()
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
@@ -535,6 +538,28 @@ class Orchestrator:
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    def _check_stall(self) -> None:
+        """Name the stuck envs when no trainable sample arrived for ``stall_timeout``;
+        exit with an error instead when ``fail_on_stall`` is set."""
+        timeout = self.config.stall_timeout
+        if timeout is None or self.draining or self.dispatcher.train_scheduling_disabled:
+            return
+        now = time.perf_counter()
+        if self.dispatcher.mode == DispatcherMode.PREFER_EVAL:
+            self.stall_checked_at = now
+            return
+        last_progress = max(self.last_batch_at, self.train_sink.last_sample_at)
+        if now - max(last_progress, self.stall_checked_at) < timeout:
+            return
+        self.stall_checked_at = now
+        envs = "\n".join(f"  {line}" for line in self.dispatcher.stall_report())
+        message = (
+            f"No new trainable sample in {now - last_progress:.0f}s (stall_timeout={timeout:.0f}s). Train envs:\n{envs}"
+        )
+        if self.config.fail_on_stall:
+            raise RuntimeError(message)
+        get_logger().warning(message)
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
@@ -599,7 +624,11 @@ class Orchestrator:
                 self.version_advanced.clear()
                 if self.policy.version >= required_version:
                     break
-                await self.version_advanced.wait()
+                self._raise_if_component_stopped()
+                try:
+                    await asyncio.wait_for(self.version_advanced.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
             self.wait_for_policy_time += time.perf_counter() - hold_start
 
         # The effective (clean, trained-on) subset is logged at ship time as annotation
@@ -983,7 +1012,7 @@ class Orchestrator:
         self.update_dispatch_gate()
         self.version_advanced.set()
 
-    async def stop(self) -> None:
+    async def stop(self, clean_exit: bool) -> None:
         """Bounded best-effort teardown of all components. Has a global
         timeout so a wedged peer can't keep the process alive forever —
         training artifacts are already persisted before this is reached."""
@@ -1026,7 +1055,7 @@ class Orchestrator:
                 f"Orchestrator shutdown did not complete within {SHUTDOWN_TIMEOUT_S}s; "
                 "forcing process exit. Training artifacts are already persisted."
             )
-            os._exit(0)
+            os._exit(0 if clean_exit else 1)
         await task
         get_logger().debug(f"Stopped orchestrator components in {format_time(time.perf_counter() - t0)}")
 

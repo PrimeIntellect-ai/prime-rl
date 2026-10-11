@@ -451,6 +451,22 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
+class CircuitBreakerConfig(BaseConfig):
+    """Per-env circuit breaker for train dispatch. An env whose episodes keep
+    failing (sandbox API, grader or env-server outage) stops getting new
+    rollouts, so the other envs keep filling batches; after ``cooldown`` one
+    probe episode tests whether it recovered."""
+
+    failures: int = Field(32, ge=1)
+    """Consecutive failed episodes of one env that open its breaker."""
+
+    cooldown: float = Field(60.0, gt=0)
+    """Seconds an open breaker waits before letting one probe episode through. Doubles after each failed probe."""
+
+    max_cooldown: float = Field(1800.0, gt=0)
+    """Upper bound on the cooldown."""
+
+
 # Top-k injected on truncated policy sampling that has none, and the hard upper
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
@@ -538,6 +554,15 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    circuit_breaker: CircuitBreakerConfig | None = CircuitBreakerConfig()
+    """Pause a train env whose episodes keep failing so the other envs keep training. None disables it."""
+
+    stall_timeout: float | None = Field(1800.0, gt=0)
+    """Seconds without a new trainable sample before the orchestrator logs which envs are stuck. None disables the check."""
+
+    fail_on_stall: bool = False
+    """Exit with an error after ``stall_timeout`` instead of logging and waiting."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
