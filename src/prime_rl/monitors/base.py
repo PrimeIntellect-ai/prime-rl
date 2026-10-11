@@ -71,5 +71,5 @@ class Monitor(ABC):
         errored ones included. Fires once per epoch, after the episodes streamed through
         ``log``. Monitors that carry episodes as they arrive ignore it."""
 
-    async def finalize(self) -> None:
-        """Finalize run."""
+    async def finalize(self, paused: bool = False) -> None:
+        """Finalize run. A paused run stopped to resume later and did not complete."""

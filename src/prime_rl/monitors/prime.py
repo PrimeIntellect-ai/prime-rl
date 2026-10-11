@@ -240,11 +240,14 @@ class PrimeTrainMonitor(Monitor):
         # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_episodes, episodes)
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         # Drains queued uploads so the final step's metrics and episodes land,
         # then finalizes (idempotent on the platform side); an attached run's
-        # failure marking stays with the launcher.
-        await asyncio.to_thread(self.run.finish)
+        # failure marking stays with the launcher, which also owns a paused run's status.
+        if paused:
+            await asyncio.to_thread(self.run.finish, status=pr.RunStatus.CANCELLED, error="paused")
+        else:
+            await asyncio.to_thread(self.run.finish)
 
 
 class PrimeEvalMonitor(Monitor):
@@ -430,7 +433,7 @@ class PrimeEvalMonitor(Monitor):
             return
         self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {run.url}")
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         # An epoch the run did not finish leaves its evaluation open: close it as cancelled.
         for (env_name, step), run in self.runs.items():
             if run is None or run.finished:

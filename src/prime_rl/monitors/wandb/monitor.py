@@ -155,7 +155,7 @@ class WandbMonitor(Monitor):
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         pass
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         self.logger.info(f"Finalizing W&B run {self.wandb.id}")
         t0 = time.perf_counter()
         # Explicit finish: in (experimental) shared mode the SDK's atexit finish does

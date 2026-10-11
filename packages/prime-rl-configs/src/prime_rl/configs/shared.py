@@ -95,6 +95,18 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
 
 
+class ControlConfig(BaseConfig):
+    host: str = "0.0.0.0"
+    """Address the control API binds to."""
+
+    port: int = Field(8040, ge=1, le=65535)
+    """Port the control API listens on."""
+
+    commit_timeout: float = Field(3600.0, gt=0)
+    """Seconds a paused orchestrator keeps serving while it waits for the trainer to commit
+    the pause checkpoint (RL)."""
+
+
 class ResumeConfig(BaseConfig):
     """Resume the run from a checkpoint. A bare ``--resume`` (or empty ``[resume]`` block)
     resumes from the latest checkpoint."""

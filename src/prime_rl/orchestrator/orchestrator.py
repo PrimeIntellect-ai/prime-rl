@@ -20,6 +20,7 @@ in ``setup()`` and drives them from ``main_loop()``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 import uuid
@@ -69,9 +70,17 @@ from prime_rl.orchestrator.utils import (
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
 from prime_rl.trainer.model import setup_tokenizer
-from prime_rl.transports.batch import setup_batch_sender
+from prime_rl.transports.batch import ControlTag, setup_batch_sender
 from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
+from prime_rl.utils.control import (
+    PAUSE_REPORT_TIMEOUT_S,
+    ControlPlane,
+    ControlRecord,
+    ControlServer,
+    get_control_dir,
+    setup_control_server,
+)
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
@@ -97,6 +106,10 @@ class Orchestrator:
     last_batch_at: float | None
     eval_triggered_at: dict[tuple[str, int], float]
     ckpt_manager: CheckpointManager
+    control_plane: ControlPlane | None
+    control_server: ControlServer | None
+    control_task: asyncio.Task | None
+    pause: ControlRecord | None
     component_tasks: list[asyncio.Task]
 
     # Always set by ``setup()``
@@ -134,6 +147,10 @@ class Orchestrator:
 
         self.progress = Progress()
         self.ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt)
+        self.control_plane = ControlPlane(get_control_dir(config.output_dir)) if config.control else None
+        self.control_server = None
+        self.control_task = None
+        self.pause = None
         self.policy = Policy(version=0, model_name="")
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
@@ -396,6 +413,9 @@ class Orchestrator:
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
+        if self.control_plane is not None:
+            self.control_server = setup_control_server(self.control_plane, config.control)
+            self.control_task = asyncio.create_task(self.control_server.serve(), name="control")
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
@@ -407,13 +427,14 @@ class Orchestrator:
         try:
             await self.main_loop()
             await self.wait_for_final_broadcast()
+            await self.wait_for_pause_commit()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
             # first ship). Saved before finalize, which tells the launcher the run is done.
-            if self.config.ckpt is not None and self.progress.step > 1:
+            if (self.config.ckpt is not None or self.pause is not None) and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
                 self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
@@ -427,7 +448,7 @@ class Orchestrator:
                     await self.periodic_logger.stop()
                 # Finalize only on a clean exit — a crashed run must not be marked
                 # completed; the platform run's atexit hook marks it failed instead.
-                await monitors.finalize()
+                await monitors.finalize(paused=self.pause is not None)
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
             await self.stop()
@@ -466,9 +487,33 @@ class Orchestrator:
         """Stay alive for the trainer's last broadcast. Every broadcast is a
         blocking rendezvous — tearing down the watcher before it would strand
         the trainer inside the handshake."""
-        if self.config.max_steps is None:
+        final_step = self.final_step()
+        if final_step is None:
             return
-        await self.wait_for_version(self.config.max_steps, reason="before shutdown")
+        await self.wait_for_version(final_step, reason="before shutdown")
+
+    def final_step(self) -> int | None:
+        """The last step to ship: ``max_steps``, or earlier once a pause was accepted."""
+        steps = (self.config.max_steps, self.pause.step if self.pause is not None else None)
+        return min((step for step in steps if step is not None), default=None)
+
+    async def wait_for_pause_commit(self) -> None:
+        """Keep the control API up until the trainer commits the pause checkpoint and a client has
+        read the commit, so a client polling the request cannot miss it."""
+        if self.pause is None:
+            return
+        timeout = self.config.control.commit_timeout
+        try:
+            async with asyncio.timeout(timeout):
+                while self.control_plane.get(self.pause.id).state != "committed":
+                    await asyncio.sleep(1)
+        except TimeoutError:
+            get_logger().warning(f"Trainer did not commit the pause checkpoint within {timeout}s")
+            return
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(PAUSE_REPORT_TIMEOUT_S):
+                while self.pause.id not in self.control_plane.reported:
+                    await asyncio.sleep(0.2)
 
     async def main_loop(self) -> None:
         """Consume dispatcher results and route them to the train / eval sink.
@@ -553,7 +598,6 @@ class Orchestrator:
         side-effects (ckpt, monitors.log, reference scoring, sender.send,
         metrics, heartbeat, progress, eval trigger). The sink has already
         done all data-transformation work."""
-        config = self.config
         step = self.progress.step
 
         # Sink-to-sink cycle time — the actual time between batches, not
@@ -565,8 +609,9 @@ class Orchestrator:
 
         # A resume can start past the end (checkpoint written at the final
         # step, or a lowered ``max_steps``): never ship beyond the budget.
-        if config.max_steps is not None and step > config.max_steps:
-            await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
+        final_step = self.final_step()
+        if final_step is not None and step > final_step:
+            await self.start_draining(f"Step {step} exceeds the final step {final_step}")
             return
 
         if not batch.samples:
@@ -611,11 +656,26 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
+        # Tag every rank's micro batches so the trainer acts on the step checkpointed below.
+        control = self.control_plane.take() if self.control_plane is not None else None
+        if control is not None:
+            tag = ControlTag(id=control.id, action=control.action)
+            for micro_batches in micro_batch_grid:
+                for micro_batch in micro_batches:
+                    micro_batch.control = tag
         await self.sender.send(micro_batch_grid)
         self.progress.step += 1
         self.update_dispatch_gate()
+        if control is not None:
+            get_logger().info(f"Control request {control.id}: {control.action} at step {step}")
+            self.control_plane.accept(control, step)
+            if control.action == "pause":
+                self.pause = control
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
-        save_ckpt_time = await self.maybe_save_ckpt(step)
+        if control is not None and control.action == "checkpoint":
+            save_ckpt_time = self.save_ckpt(step)
+        else:
+            save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
         # Episode metrics over the {agg,<env>} × {all,effective} matrix. ``all`` is the
@@ -729,13 +789,14 @@ class Orchestrator:
 
         self.log_train_batch(batch, step=step, step_time=step_time)
 
-        if config.max_steps is not None and step >= config.max_steps:
+        final_step = self.final_step()
+        if final_step is not None and step >= final_step:
             await self.wait_for_version(step, reason="before shutdown")
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
         # and with a tight ``max_off_policy_steps`` it never fills at all (the
         # versions it would need are never broadcast).
-        if config.max_steps is not None and step >= config.max_steps:
+        if final_step is not None and step >= final_step:
             await self.start_draining("Shipped the final batch")
         trim_process_memory()
 
@@ -941,10 +1002,15 @@ class Orchestrator:
             return 0.0
         # The final step's checkpoint is written once in ``start()``'s teardown; skip it here so
         # we don't double-save. This mirrors the trainer (its is_last_step skips the in-loop save).
-        if self.config.max_steps is not None and step >= self.config.max_steps:
+        final_step = self.final_step()
+        if final_step is not None and step >= final_step:
             return 0.0
         if step % self.config.ckpt.interval != 0:
             return 0.0
+        return self.save_ckpt(step)
+
+    def save_ckpt(self, step: int) -> float:
+        """Checkpoint the step just shipped. Returns elapsed time."""
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
         # Synchronous on purpose: the payload is tiny, and snapshotting on the
@@ -1016,6 +1082,10 @@ class Orchestrator:
                 get_logger().debug("Stopping train env clients")
                 for env in self.train_envs:
                     await env.aclose()
+            if self.control_task is not None:
+                # Last, and graceful: in-flight requests (a client waiting on a commit) complete
+                self.control_server.should_exit = True
+                await self.control_task
 
         get_logger().info("Stopping orchestrator components")
         t0 = time.perf_counter()

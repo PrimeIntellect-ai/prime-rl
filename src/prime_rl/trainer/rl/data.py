@@ -12,6 +12,7 @@ from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
+    ControlTag,
     MicroBatch,
     MMRefs,
     TransportConfig,
@@ -76,6 +77,7 @@ class FakeDataLoader:
         self.seq_len = seq_len
         self.generate_samples = config.generate_samples
         self.batch_counter = 0
+        self.control: ControlTag | None = None
 
     def wait_for_batch(self) -> None:
         return
@@ -210,12 +212,14 @@ class DataLoader:
         dp_rank = self.world.rank // non_dp_world_size
 
         self.receiver: BatchReceiver = setup_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.control: ControlTag | None = None
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        self.control = micro_batches[0].control if micro_batches else None
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:

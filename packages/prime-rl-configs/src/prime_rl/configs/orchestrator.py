@@ -15,6 +15,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -538,6 +539,10 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: ControlConfig | None = None
+    """Serve the run control API (checkpoint or pause the run at the next step). If None, the run
+    takes no control requests."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

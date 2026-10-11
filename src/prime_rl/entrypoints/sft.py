@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
+from prime_rl.utils.control import get_control_dir, paused_since
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -302,6 +304,7 @@ def sft_slurm(config: SFTConfig):
 def sft_local(config: SFTConfig):
     """Run SFT training locally with process monitoring and cleanup."""
     assert config.deployment.type == "single_node"
+    launched_at = time.time()
 
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
 
@@ -435,7 +438,10 @@ def sft_local(config: SFTConfig):
         # Wait for the trainer (and the online-eval process, which drains its final evals
         # after the trainer's last checkpoint) while surfacing any process failure.
         processes.wait("trainer", *(["online-eval"] if config.eval is not None else []))
-        logger.success("SFT training finished!")
+        if paused_since(get_control_dir(config.run_dir), launched_at):
+            logger.success("SFT training paused!")
+        else:
+            logger.success("SFT training finished!")
 
 
 def clean_stale_eval_artifacts(config: SFTConfig) -> None:

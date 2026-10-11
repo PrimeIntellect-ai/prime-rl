@@ -13,6 +13,7 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -252,6 +253,10 @@ class SFTConfig(BaseConfig):
 
     resume: ResumeConfig | None = None
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
+
+    control: ControlConfig | None = None
+    """Serve the run control API on the master rank (checkpoint or pause the run at the next
+    step). If None, the run takes no control requests."""
 
     log: TrainerLogConfig = TrainerLogConfig()
 

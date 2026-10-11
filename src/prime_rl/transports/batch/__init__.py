@@ -7,6 +7,7 @@ from prime_rl.transports.batch.filesystem import (
     FileSystemBatchSender,
 )
 from prime_rl.transports.batch.types import (
+    ControlTag,
     MicroBatch,
     MMImageRef,
     MMRefs,
@@ -49,6 +50,7 @@ __all__ = [
     "ZMQBatchReceiver",
     "BatchReceiver",
     "BatchSender",
+    "ControlTag",
     "MMImageRef",
     "MMRefs",
     "TrainingSample",

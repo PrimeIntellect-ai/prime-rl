@@ -70,6 +70,7 @@ from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
+from prime_rl.utils.control import ControlCommit, get_control_dir, write_commit
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
@@ -251,6 +252,8 @@ def train(config: TrainerConfig):
         maybe_record_function = record_function
     start_step = progress.step
     max_peak_memory = 0.0
+    control_dir = get_control_dir(config.output_dir)
+    control = None
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -287,6 +290,12 @@ def train(config: TrainerConfig):
         logger.debug("Loading batch")
         load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
+        # Every rank's batch carries the same tag, so all ranks take the same branch below.
+        control = dataloader.control
+        if control is not None:
+            logger.info(f"Control request {control.id}: {control.action} at step {progress.step}")
+            if control.action == "pause":
+                is_last_step = True
         load_data_time = time.perf_counter() - load_data_start_time
         logger.debug(f"Loaded batch in {format_time(load_data_time)}")
 
@@ -603,19 +612,19 @@ def train(config: TrainerConfig):
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
-        # Checkpoint the step we just finished (model = policy v{progress.step}).
-        if (
-            (config.ckpt and config.ckpt.interval)
-            # the last step is written once after the loop (final ckpt), so skip it here
-            and not is_last_step
-            and progress.step % config.ckpt.interval == 0
-        ):
+        # Checkpoint the step we just finished (model = policy v{progress.step}). The last step
+        # is written once after the loop (final ckpt), so skip it here.
+        checkpoint_requested = control is not None and control.action == "checkpoint"
+        interval_due = bool(config.ckpt and config.ckpt.interval) and progress.step % config.ckpt.interval == 0
+        if not is_last_step and (checkpoint_requested or interval_due):
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
             ckpt_manager.maybe_clean()
+            if checkpoint_requested and world.is_master:
+                write_commit(control_dir, ControlCommit(id=control.id, action=control.action, step=progress.step))
         else:
             save_ckpt_time = 0
 
@@ -723,18 +732,21 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None:
+    paused = control is not None and control.action == "pause"
+    if config.ckpt is not None or control is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
         ckpt_manager.maybe_clean()
+        if control is not None and world.is_master:
+            write_commit(control_dir, ControlCommit(id=control.id, action=control.action, step=progress.step))
 
     if gradient_manager is not None:
         gradient_manager.close()
     micro_batch_workers.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("RL trainer finished")
-    asyncio.run(monitors.finalize())
+    logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")
+    asyncio.run(monitors.finalize(paused=paused))
 
 
 def main():
