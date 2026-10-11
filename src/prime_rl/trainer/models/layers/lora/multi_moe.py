@@ -339,18 +339,18 @@ class MultiLoRAGroupedExperts(MultiLoRAModule):
 
         h1_base = torch._grouped_mm(x.bfloat16(), gate_proj.bfloat16().transpose(-2, -1), offs=offsets)
         gate_proj_lora_out = _run_lora_grouped_mm(lora_x, gate_proj_lora_a, gate_proj_lora_b, offsets)
-        h1 = h1_base + scaling * gate_proj_lora_out.bfloat16()
+        h1 = torch.add(h1_base, gate_proj_lora_out.bfloat16(), alpha=scaling)
 
         h3_base = torch._grouped_mm(x.bfloat16(), up_proj.bfloat16().transpose(-2, -1), offs=offsets)
         up_proj_lora_out = _run_lora_grouped_mm(lora_x, up_proj_lora_a, up_proj_lora_b, offsets)
-        h3 = h3_base + scaling * up_proj_lora_out.bfloat16()
+        h3 = torch.add(h3_base, up_proj_lora_out.bfloat16(), alpha=scaling)
 
         h = self.base_layer.activation.apply(h1, h3)
 
         lora_h = self.lora_dropout(h)
         h2_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
         down_proj_lora_out = _run_lora_grouped_mm(lora_h, down_proj_lora_a, down_proj_lora_b, offsets)
-        out = (h2_base + scaling * down_proj_lora_out.bfloat16()).type_as(x)
+        out = torch.add(h2_base, down_proj_lora_out.bfloat16(), alpha=scaling).type_as(x)
 
         # EP handling: unpermute output back to dispatched token order
         if permuted_indices is not None:
@@ -563,12 +563,12 @@ class MultiLoRANonGatedGroupedExperts(MultiLoRAModule):
 
         h_base = torch._grouped_mm(x.bfloat16(), up_proj.bfloat16().transpose(-2, -1), offs=offsets)
         up_proj_lora_out = _run_lora_grouped_mm(lora_x, up_proj_lora_a, up_proj_lora_b, offsets)
-        h = self.base_layer.activation.apply(None, h_base + scaling * up_proj_lora_out.bfloat16())
+        h = self.base_layer.activation.apply(None, torch.add(h_base, up_proj_lora_out.bfloat16(), alpha=scaling))
 
         lora_h = self.lora_dropout(h)
         out_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
         down_proj_lora_out = _run_lora_grouped_mm(lora_h, down_proj_lora_a, down_proj_lora_b, offsets)
-        out = (out_base + scaling * down_proj_lora_out.bfloat16()).type_as(x)
+        out = torch.add(out_base, down_proj_lora_out.bfloat16(), alpha=scaling).type_as(x)
 
         if permuted_indices is not None:
             out_unpermuted = out.new_zeros(input_shape)
@@ -813,8 +813,8 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
         up = up + broadcast_expert_bias(up_proj_bias, num_tokens_per_expert, up.shape[0]).bfloat16()
 
         gate_up_lora = _run_lora_grouped_mm(lora_x, gu_a, gu_b, offsets)
-        gate = gate + scaling * gate_up_lora[..., ::2].bfloat16()
-        up = up + scaling * gate_up_lora[..., 1::2].bfloat16()
+        gate = torch.add(gate, gate_up_lora[..., ::2].bfloat16(), alpha=scaling)
+        up = torch.add(up, gate_up_lora[..., 1::2].bfloat16(), alpha=scaling)
 
         h = self.base_layer.activation.apply(gate, up)
         lora_h = self.lora_dropout(h)
@@ -822,7 +822,7 @@ class MultiLoRAGptOssGroupedExperts(MultiLoRAModule):
         out_base = torch._grouped_mm(h, down_proj.bfloat16().transpose(-2, -1), offs=offsets)
         out_base = out_base + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, out_base.shape[0]).bfloat16()
         out_lora = _run_lora_grouped_mm(lora_h, d_a, d_b, offsets)
-        out = (out_base + scaling * out_lora.bfloat16()).type_as(x)
+        out = torch.add(out_base, out_lora.bfloat16(), alpha=scaling).type_as(x)
 
         if permuted_indices is not None:
             out_unpermuted = out.new_zeros(input_shape)
