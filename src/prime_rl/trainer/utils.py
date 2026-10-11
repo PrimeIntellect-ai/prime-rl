@@ -203,6 +203,18 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
 
 
+def wait_for_master(key: str, timeout: float) -> None:
+    """A barrier for work only the master does, which can outlast ``dist_timeout_seconds`` (a model
+    conversion, waiting for a weight broadcast's receiver). The other ranks wait on the c10d store,
+    not in an NCCL collective, whose watchdog kills them after ``dist_timeout_seconds``. The master
+    calls it with the same ``key`` when it is done."""
+    store = dist.distributed_c10d._get_default_store()
+    if get_world().is_master:
+        store.set(key, "done")
+    else:
+        store.wait([key], timedelta(seconds=timeout))
+
+
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):
     """
     Visualize the loss mask of a tokenized sample using rich.

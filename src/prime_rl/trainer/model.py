@@ -63,6 +63,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIn
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.utils import wait_for_master
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
@@ -107,6 +108,9 @@ DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float32": torch.float32,
 }
+
+# The one-time HF <-> PrimeRL conversion runs on the master alone; DeepSeek-V4-Flash takes over an hour.
+CONVERSION_TIMEOUT_S = 4 * 3600
 
 # We increase the torch.compile recompile limit and cache size as we found this
 # necessary for training INTELLECT-3 with Muon.
@@ -752,7 +756,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
-    torch.distributed.barrier()
+    wait_for_master("model_conversion", timeout=CONVERSION_TIMEOUT_S)
     if snapshot_path.name == "prime" and not (snapshot_path / ".prime-v1").is_file():
         raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 

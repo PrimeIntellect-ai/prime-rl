@@ -613,8 +613,8 @@ class TrainerConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 3600
-    """Timeout in seconds for torch distributed ops."""
+    dist_timeout_seconds: int = 900
+    """Timeout in seconds for torch distributed ops: a hung collective (e.g. a dead rank) fails the run after this long."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
