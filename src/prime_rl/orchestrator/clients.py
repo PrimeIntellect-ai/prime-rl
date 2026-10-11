@@ -215,9 +215,12 @@ class AdminPlane:
             members = await self._each(
                 self.clients + rejoining, "/pause", params={"mode": "keep", "clear_cache": "false"}
             )
+            # A rejoining engine has no communicator (it may have been relaunched), so always regroup
+            regroup = bool(rejoining)
             try:
                 while True:
-                    if members != self.members:
+                    if regroup or members != self.members:
+                        regroup = False
                         self.members = list(members)
                         self.generation += 1
                         if on_membership_change is not None:
