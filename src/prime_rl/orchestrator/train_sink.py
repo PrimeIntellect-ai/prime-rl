@@ -199,7 +199,8 @@ class TrainSink:
             del self.episode_by_trace[trace_id]
             self.pending_episodes.cancelled.add(episode.id)
             dropped += 1
-        delete_files(files)
+        if files:
+            asyncio.get_running_loop().run_in_executor(None, delete_files, files)
         if dropped:
             self.stale_drops += dropped
             get_logger().warning(
