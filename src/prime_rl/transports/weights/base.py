@@ -10,8 +10,7 @@ import torch.nn as nn
 
 from prime_rl.configs.shared import WeightBroadcastConfig
 from prime_rl.orchestrator.clients import AdminPlane
-from prime_rl.trainer.utils import wait_for_master
-from prime_rl.trainer.world import get_world
+from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_broadcast_dir, get_step_path
 

@@ -63,8 +63,8 @@ from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIn
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.utils import get_dcp_group, wait_for_master
-from prime_rl.trainer.world import get_world
+from prime_rl.trainer.utils import get_dcp_group
+from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
@@ -756,7 +756,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
-    wait_for_master("model_conversion", timeout=CONVERSION_TIMEOUT_S)
+    wait_for_master(f"model_conversion:{config.name}", timeout=CONVERSION_TIMEOUT_S)
     if snapshot_path.name == "prime" and not (snapshot_path / ".prime-v1").is_file():
         raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 
