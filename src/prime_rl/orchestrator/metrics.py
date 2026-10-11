@@ -371,9 +371,13 @@ class TrainMetrics(EpisodeMetrics):
         return out
 
 
-def pass_at_k(by_example: dict[str, list[float]]) -> dict[str, float]:
-    if any(reward not in (0.0, 1.0) for rewards in by_example.values() for reward in rewards):
+def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
+    rewards = [record.trace.reward for record in records]
+    if not set(rewards).issubset({0.0, 1.0}):
         return {}
+    by_example: dict = {}
+    for record in records:
+        by_example.setdefault(episode_group_id(record.episode), []).append(record.trace.reward)
     per_example = [compute_pass_metrics(group) for group in by_example.values()]
     keys = sorted({key for result in per_example for key in result})
     return {
@@ -387,26 +391,12 @@ class EvalMetrics(EpisodeMetrics):
         super().__init__(episodes, records)
         self.group_size = group_size
 
-    def scores(self, agent: str, reward_name: str | None = None) -> dict[str, list[float]]:
-        groups: dict[str, list[float]] = {}
-        for episode in self.episodes:
-            traces = [trace for trace in episode.traces if trace.agent.name == agent]
-            failed = not episode.ok or episode_has_infra_error(episode)
-            values = []
-            for trace in traces:
-                if failed or trace.has_error:
-                    values.append(0.0)
-                elif reward_name is None:
-                    values.append(float(trace.reward))
-                else:
-                    reward = trace.rewards.get(reward_name)
-                    values.append(reward.value if reward is not None else 0.0)
-            groups.setdefault(episode_group_id(episode), []).extend(values or [0.0])
-        return groups
-
     @property
     def reward(self) -> Stat:
-        return Stat([score for agent in self.by_agent() for group in self.scores(agent).values() for score in group])
+        return Stat(
+            [float(record.trace.reward) for record in self.records]
+            + [0.0] * sum(not episode.traces for episode in self.episodes)
+        )
 
     def to_wandb(
         self,
@@ -424,17 +414,22 @@ class EvalMetrics(EpisodeMetrics):
             }
         for agent, names in reward_names.items():
             metric_prefix = f"{prefix}/{subset}/{agent}"
-            groups = self.scores(agent)
-            scores = [score for group in groups.values() for score in group] + [0.0] * missing
+            records = [record for record in self.records if record.trace.agent.name == agent]
+            # Keep an absent agent or unreturned attempt in the reward denominator.
+            zeros = [0.0] * (missing + len(self.episodes) - len({id(record.episode) for record in records}))
+            scores = [float(record.trace.reward) for record in records] + zeros
             if not scores:
                 continue
             out |= Stat(scores).to_dict(f"{metric_prefix}/reward")
             for name in sorted(names):
-                values = [score for group in self.scores(agent, name).values() for score in group]
-                out |= Stat(values + [0.0] * missing).to_dict(f"{metric_prefix}/rewards/{name}")
+                values = [
+                    reward.value if (reward := record.trace.rewards.get(name)) is not None else 0.0
+                    for record in records
+                ]
+                out |= Stat(values + zeros).to_dict(f"{metric_prefix}/rewards/{name}")
             out[f"{metric_prefix}/avg@{self.group_size}"] = Stat(scores).mean()
             if subset == "effective":
-                out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(groups).items()}
+                out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(records).items()}
         return out
 
 

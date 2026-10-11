@@ -378,25 +378,32 @@ def test_eval_classifies_terminal_errors(error_type, status, message, excluded):
     assert cohort.metrics.reward.mean() == 0.0
 
 
-def test_eval_recovered_retry_and_episode_failure():
-    recovered = mk(reward=1.0)
+@pytest.mark.parametrize("score", [0.5, 1.0])
+def test_eval_preserves_rewards_after_retries_and_failures(score):
+    recovered = mk(reward=1.0, rewards={"solved": vf.Reward(score=1.0)})
     recovered.errors = [vf.Error(type="SandboxError", message="Failed to route request to sandbox")]
     recovered.last_error = recovered.errors[-1]
     recovered.traces[0].errors = [vf.Error(type="InterceptionError", message="connection failed")]
     recovered.traces[0].last_error = recovered.traces[0].errors[-1]
-    unknown = mk(reward=1.0, has_error=True, error_type="HarnessError")
+    unknown = mk(reward=score, rewards={"solved": vf.Reward(score=score)}, has_error=True, error_type="HarnessError")
     unknown.errors = recovered.errors
     unknown.last_error = recovered.last_error
-    env_failed = mk(reward=1.0)
+    env_failed = mk(reward=0.25, rewards={"solved": vf.Reward(score=0.25)})
     env_failed.ok = False
     env_failed.errors = [vf.Error(type="InterceptionError", message="finalize failed")]
     env_failed.last_error = env_failed.errors[-1]
     cohort = EvalEpisodes([recovered, unknown, env_failed], group_size=1)
-    assert cohort.metrics.reward.mean() == 1 / 3
-    assert cohort.effective.metrics.reward.mean() == 1 / 2
+    assert cohort.metrics.reward.mean() == (1.25 + score) / 3
+    assert cohort.effective.metrics.reward.mean() == (1 + score) / 2
     out = eval_wandb(cohort.episodes)
+    for reward in ("reward", "rewards/solved"):
+        assert out[f"eval/x/all/agent/{reward}/mean"] == (1.25 + score) / 3
+        assert out[f"eval/x/effective/agent/{reward}/mean"] == (1 + score) / 2
     assert out["eval/x/effective/coverage/mean"] == 2 / 3
-    assert out["eval/x/effective/agent/pass@1"] == 1 / 2
+    if score == 1.0:
+        assert out["eval/x/effective/agent/pass@1"] == 1.0
+    else:
+        assert not any("pass@" in key or "pass^" in key for key in out)
 
 
 def test_eval_empty_traces_cancellations_and_all_infra_failure():
@@ -405,7 +412,7 @@ def test_eval_empty_traces_cancellations_and_all_infra_failure():
     out = eval_wandb([mk(reward=1.0), empty], cancelled=1)
     assert out["eval/x/all/agent/reward/mean"] == 1 / 3
     assert out["eval/x/effective/agent/reward/mean"] == 1 / 2
-    assert out["eval/x/effective/agent/pass@1"] == 1 / 2
+    assert out["eval/x/effective/agent/pass@1"] == 1.0  # Pass metrics use only recorded traces.
     assert out["eval/x/all/cancelled/mean"] == 1 / 3
     assert out["eval/x/all/has_error/mean"] == 1 / 3
     for failed in (
