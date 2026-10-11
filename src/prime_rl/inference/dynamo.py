@@ -171,6 +171,7 @@ class DynamoAdminPlane(AdminPlane):
         self._headers = _discovery_headers(client_config)
         self._frontend_clients = setup_admin_clients(client_config.model_copy(update={"admin_base_url": None}))
         self.clients: list[httpx.AsyncClient] = []
+        self._init_membership()
         self._fingerprint: tuple[int, str] | None = None
         self._nccl_initialization_state: Literal["uninitialized", "initializing", "ready", "terminal"] = "uninitialized"
         self._mutation_lock = asyncio.Lock()

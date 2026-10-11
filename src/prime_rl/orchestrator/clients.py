@@ -125,6 +125,9 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
+        self._init_membership()
+
+    def _init_membership(self) -> None:
         # Engine eviction (``monitor_health``): engines that failed a health check or an
         # admin op leave ``clients`` for ``evicted``; ``recovered`` are evicted engines that
         # answer again and rejoin at the next weight update.
@@ -209,7 +212,7 @@ class AdminPlane:
         file, so the trainer and the other engines abort the collective. ``resend()`` then tells
         whether the trainer aborted and will send the version again to the regrouped survivors."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
-        rejoining = [client for client in self.evicted if client in self.recovered]
+        rejoining = self._rejoining()
         self.updating = True
         try:
             members = await self._each(
@@ -235,8 +238,29 @@ class AdminPlane:
                 resumed = await self._each(members, "/resume")
         finally:
             self.updating = False
+        await self._readmit(rejoining, resumed, step)
+
+    async def load_lora_adapter(self, lora_name: str, lora_path: Path, *, step: int = 0) -> None:
+        """Load the adapter on every engine, plus any recovered engine, which rejoins once it has
+        the adapter. Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not
+        reset here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``)
+        so KV computed under old weights is never reused."""
+        rejoining = self._rejoining()
+        loaded = await self._each(
+            self.clients + rejoining,
+            "/load_lora_adapter",
+            post=_post_lora_adapter,
+            json={"lora_name": lora_name, "lora_path": lora_path.as_posix()},
+        )
+        await self._readmit(rejoining, loaded, step)
+
+    def _rejoining(self) -> list[AsyncClient]:
+        return [client for client in self.evicted if client in self.recovered]
+
+    async def _readmit(self, rejoining: list[AsyncClient], updated: list[AsyncClient], step: int) -> None:
+        """Put the rejoining engines that took the new weights back into ``clients`` and the router."""
         for client in rejoining:
-            if client in resumed:
+            if client in updated:
                 self.evicted.remove(client)
                 self.recovered.discard(client)
                 self.clients.append(client)
@@ -394,15 +418,16 @@ class AdminPlane:
                     f"Could not {'add' if routed else 'remove'} {url} on router {router.base_url}: {error!r}"
                 )
 
-    async def _each(self, clients: list[AsyncClient], op: str, **kwargs) -> list[AsyncClient]:
+    async def _each(
+        self, clients: list[AsyncClient], op: str, *, post: Callable[..., Awaitable[None]] | None = None, **kwargs
+    ) -> list[AsyncClient]:
         """Run one admin op on every client; evict the ones that fail and return the rest. Without
         eviction (``monitor_health`` not running), a failure raises."""
+        post = post or _admin_post
         if not self.evicting:
-            await asyncio.gather(*(_admin_post(client, op, **kwargs) for client in clients))
+            await asyncio.gather(*(post(client, op, **kwargs) for client in clients))
             return list(clients)
-        results = await asyncio.gather(
-            *(_admin_post(client, op, **kwargs) for client in clients), return_exceptions=True
-        )
+        results = await asyncio.gather(*(post(client, op, **kwargs) for client in clients), return_exceptions=True)
         succeeded = []
         for client, result in zip(clients, results):
             if isinstance(result, Exception):
@@ -659,35 +684,20 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
-    """Make a HTTP post request to the vLLM server to load a LoRA adapter.
-
-    Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
-    here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``) so
-    KV computed under old weights is never reused.
-
-    Retries with exponential backoff if the adapter files are not found,
-    which can happen due to NFS propagation delays.
-    """
-    logger = get_logger()
-    lora_path_posix = lora_path.as_posix()
-
-    @retry(
-        retry=retry_if_exception(_is_retryable_lora_error),
-        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
+@retry(
+    retry=retry_if_exception(_is_retryable_lora_error),
+    stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    reraise=True,
+)
+async def _post_lora_adapter(client: AsyncClient, path: str, *, json: dict[str, str]) -> None:
+    """POST ``/load_lora_adapter``, retrying with exponential backoff if the adapter files are
+    not found yet, which can happen due to NFS propagation delays."""
+    get_logger().debug(f"Sending request to load LoRA adapter {json['lora_name']} from {json['lora_path']}")
+    response = await client.post(
+        path, json=json, timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
     )
-    async def _load_lora_adapter(admin_client: AsyncClient) -> None:
-        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
-        response = await admin_client.post(
-            "/load_lora_adapter",
-            json={"lora_name": lora_name, "lora_path": lora_path_posix},
-            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
-        )
-        response.raise_for_status()
-
-    await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
+    response.raise_for_status()
 
 
 async def init_nixl_broadcast(
