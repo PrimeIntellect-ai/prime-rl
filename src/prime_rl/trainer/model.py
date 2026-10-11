@@ -1,4 +1,5 @@
 import time
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -9,12 +10,13 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import _CHECKPOINT_PREFIX, CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
+from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.parallel import parallelize_module
 from transformers import AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -29,28 +31,37 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
-from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
+from prime_rl.trainer.activation_checkpointing import (
+    get_activation_checkpoint_wrapper,
+    get_layer_modes,
+)
+from prime_rl.trainer.distributed.embedding_parallel import (
+    AllToAllEmbeddingParallel,
+    EmbeddingParallel,
+    offload_to_host,
+)
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import PrimeLmOutput, PrimeModel, cast_float_and_contiguous
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Indexer
-from prime_rl.trainer.models.deepseek_v41.engram import ShardedEngramTable
+from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
-from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
+from prime_rl.trainer.models.layers.expert_compute import _fp32_grad_accumulator
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear, replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import use_fused_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.models.registry import get_model_cls, load_model_config
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.pipeline import prune_to_pipeline_stage
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import default_dtype, format_time
@@ -487,13 +498,15 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     # which would all-gather them whole, never manages them. They share FSDP's process group: a
     # second NCCL communicator over the same ranks, running its all-to-alls concurrently with FSDP's
     # prefetch all-gathers, can order the two differently on different GPUs and deadlock.
-    engram_tables = [module for module in model.modules() if isinstance(module, ShardedEngramTable)]
-    if engram_tables and parallel_dims.dp_replicate_enabled:
+    engrams = [module for module in model.modules() if isinstance(module, DeepseekV41Engram)]
+    if engrams and parallel_dims.dp_replicate_enabled:
         raise NotImplementedError("engram tables are sharded over one FSDP group; dp_replicate > 1 is not supported")
-    for table in engram_tables:
-        table.shard_(hsdp_mesh, parallel_dims.fsdp_gradient_divide_factor)
-    ignored_params = {table.weight for table in engram_tables}
-    for engram in getattr(language_model, "engrams", {}).values():
+    for engram in engrams:
+        parallelize_module(
+            engram.embed, hsdp_mesh, AllToAllEmbeddingParallel(parallel_dims.fsdp_gradient_divide_factor)
+        )
+    ignored_params = {engram.embed.weight for engram in engrams}
+    for engram in engrams:
         fully_shard(engram, mesh=hsdp_mesh, ignored_params=ignored_params, **fsdp_config)
 
     fullgraph = config.compile is not None and config.compile.fullgraph
@@ -557,20 +570,23 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         or getattr(language_model, "hyper_connection_mixer", None)
     )
 
+    # A pipeline stage holds the embedding only if it is the first stage, and the head only if it is the last.
     embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-    fully_shard(
-        embed_module,
-        mesh=hsdp_mesh,
-        **fsdp_config,
-    )
-    fully_shard(
-        [model.lm_head, final_module],
-        mesh=hsdp_mesh,
-        mp_policy=mp_policy,
-        offload_policy=offload_policy,
-        reshard_after_forward=False,
-        shard_placement_fn=shard_placement_fn,
-    )
+    if embed_module is not None:
+        fully_shard(
+            embed_module,
+            mesh=hsdp_mesh,
+            **fsdp_config,
+        )
+    if model.lm_head is not None:
+        fully_shard(
+            [model.lm_head, final_module],
+            mesh=hsdp_mesh,
+            mp_policy=mp_policy,
+            offload_policy=offload_policy,
+            reshard_after_forward=False,
+            shard_placement_fn=shard_placement_fn,
+        )
 
     fully_shard(
         model,
@@ -581,6 +597,20 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         shard_placement_fn=shard_placement_fn,
         ignored_params=ignored_params,
     )
+
+    # FP8 experts (and, with `accumulate_wgrad_fp32`, dense FP8 linears) accumulate their weight gradients straight
+    # into FSDP's fp32 buffers.
+    accumulate_dense_wgrad = isinstance(config.quantization, FP8Config) and config.quantization.accumulate_wgrad_fp32
+    for module in model.modules():
+        if isinstance(module, FSDPModule):
+            for group in module._get_fsdp_state()._fsdp_param_groups:
+                for fsdp_param in group.fsdp_params:
+                    info = fsdp_param._module_info
+                    if isinstance(info.module, GroupedExperts):
+                        info.module.__dict__.setdefault("fsdp_params", {})[info.param_name] = fsdp_param
+                    elif accumulate_dense_wgrad and isinstance(info.module, Float8BlockwiseLinear):
+                        info.module.accumulate_wgrad_fp32(partial(_fp32_grad_accumulator, fsdp_param))
+                        _reduce_accumulated_grads_uniformly(group)
 
     if not parallel_dims.ep_enabled:
         return
@@ -628,6 +658,25 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+def _reduce_accumulated_grads_uniformly(group) -> None:
+    """Before a reducing post-backward, give every parameter of `group` an fp32 accumulated gradient. Dense FP8
+    linears with `accumulate_wgrad_fp32` already hold theirs in fp32, and FSDP's reduce-scatter needs one gradient
+    dtype per group; when the reduce is deferred FSDP converts the others itself."""
+    if getattr(group, "_uniform_grad_dtype", False):
+        return
+    group._uniform_grad_dtype = True
+    post_backward = group.post_backward
+
+    def uniform_post_backward(*args, **kwargs):
+        if group.reduce_grads:
+            for fsdp_param in group.fsdp_params:
+                if fsdp_param.unsharded_accumulated_grad is None:
+                    fsdp_param.to_accumulated_grad_if_needed()
+        return post_backward(*args, **kwargs)
+
+    group.post_backward = uniform_post_backward
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     device = "cpu" if config.fsdp_cpu_offload else "cuda"
     model.to_empty(device=device)
@@ -639,6 +688,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        _random_init_(model)
         _move_buffers_to_cuda(model, config)
         return
 
@@ -733,23 +783,46 @@ def reshard_module(model: nn.Module):
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     language_model = get_language_model(model)
-    wrap_block = get_activation_checkpoint_wrapper(ac_config)
-    checkpointed_layers = 0
-
-    for layer_id, (layer_name, transformer_block) in enumerate(language_model.layers.named_children()):
-        if layer_id % ac_config.freq != 0:
-            continue
-
-        language_model.layers.register_module(layer_name, wrap_block(transformer_block))
-        checkpointed_layers += 1
+    layers = dict(language_model.layers.named_children())
+    parts = [getattr(layer, "pipeline_part", None) for layer in layers.values()]
+    modes = get_layer_modes(ac_config, list(layers), language_model.config.num_hidden_layers, parts)
+    for (layer_name, transformer_block), mode in zip(layers.items(), modes):
+        if mode != "none":
+            language_model.layers.register_module(
+                layer_name, get_activation_checkpoint_wrapper(ac_config, mode)(transformer_block)
+            )
+        engrams = getattr(language_model, "engrams", {})
+        if ac_config.recompute_engram and layer_name in engrams and mode in ("full", "full_moe"):
+            engrams[layer_name].recompute = True
 
     get_logger().info(
-        f"Applied {ac_config.mode} activation checkpointing to {checkpointed_layers} layers (freq={ac_config.freq})"
+        f"Applied activation checkpointing to layers {list(layers)} with modes {modes} (freq={ac_config.freq})"
     )
+
+
+# Int args whose value changes between calls. torch.compile treats an int arg as a constant and recompiles
+# whenever it changes, and every other rank waits in collectives until that rank finishes recompiling. Listed
+# here, an arg is symbolic from the first compile instead.
+DYNAMIC_INT_ARGS = (
+    # Longest document in the packed row. FlashAttention uses it to size the attention launch grid.
+    "max_seqlen",
+)
+
+
+def mark_dynamic_int_args() -> None:
+    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+    sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
+    for arg in DYNAMIC_INT_ARGS:
+        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
+        pattern = rf".*\['{arg}'\]"
+        if pattern not in sources:
+            sources.append(pattern)
+    torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
 def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._dynamo.config.capture_scalar_outputs = True
+    mark_dynamic_int_args()
     # Expert-parallel dispatch sizes its all-to-all outputs from routing counts; without this, the
     # resulting graph break inside a checkpointed block sends the whole block back to eager.
     torch._dynamo.config.capture_dynamic_output_shape_ops = True
@@ -760,8 +833,16 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     torch._inductor.config.reorder_for_compute_comm_overlap_passes = ["sink_waits", "raise_comms"]
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
+        layer = language_model.layers[layer_id]
+        if isinstance(layer, CheckpointWrapper) and any(
+            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
+        ):
+            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
+            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
+            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
+            layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -800,6 +881,30 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
+
+
+@torch.no_grad()
+def _random_init_(model: nn.Module, std: float = 0.02) -> None:
+    """Draw every parameter shard: matrices from N(0, std), norm weights and scales one, the rest zero.
+
+    `to_empty` leaves whatever the allocator hands back, so without this a debug run computes on
+    arbitrary values, and kernels whose speed depends on them (top-k selection, routing) time
+    differently from run to run. Each shard is drawn from a seed of its parameter's name and its
+    place in the parameter's mesh, so layouts that shard a parameter alike draw it alike.
+    """
+    for name, param in model.named_parameters():
+        # Activation checkpointing's wrapper is not part of the parameter's identity.
+        name = name.replace(_CHECKPOINT_PREFIX, "")
+        local = param.to_local() if isinstance(param, DTensor) else param
+        if local.ndim >= 2:
+            coordinate = param.device_mesh.get_coordinate() if isinstance(param, DTensor) else []
+            generator = torch.Generator(device=local.device)
+            generator.manual_seed(zlib.crc32(f"{name}:{coordinate}".encode()))
+            local.normal_(mean=0.0, std=std, generator=generator)
+        elif "norm" in name or name.endswith("scale"):
+            local.fill_(1.0)
+        else:
+            local.zero_()
 
 
 def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
@@ -863,6 +968,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    pp_stage: int | None = None,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -878,6 +984,9 @@ def setup_model(
 
     # Build on the meta device; weights are materialized after FSDP sharding.
     model = get_model(config, device=torch.device("meta"), dtype=DTYPE_MAP[config.optimization_dtype])
+    if parallel_dims.pp_enabled:
+        num_stages = parallel_dims.pp * config.pp_stages_per_rank
+        prune_to_pipeline_stage(model, pp_stage, num_stages, config.pp_layers_per_stage)
 
     if config.fusions.enabled and config.lora is not None:
         logger.warning("Skipping runtime model fusions because LoRA targets the unfused projections")
@@ -885,7 +994,7 @@ def setup_model(
         applied = apply_model_fusions(model, config.fusions.enabled)
         logger.info(f"Applied runtime model fusions: {applied}")
 
-    if isinstance(config.fused_lm_head_token_chunk_size, int):
+    if isinstance(config.fused_lm_head_token_chunk_size, int) and model.lm_head is not None:
         use_fused_lm_head(model, chunk_size=config.fused_lm_head_token_chunk_size)
 
     apply_quantization(model, config)
@@ -897,8 +1006,8 @@ def setup_model(
 
     if config.freeze_engram_tables:
         for module in model.modules():
-            if isinstance(module, ShardedEngramTable):
-                module.weight.requires_grad_(False)
+            if isinstance(module, DeepseekV41Engram):
+                module.embed.weight.requires_grad_(False)
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
@@ -908,10 +1017,13 @@ def setup_model(
     # No-op for models without a sparse indexer.
     freeze_sparse_indexer(model)
 
-    if config.debug.force_balanced_routing:
+    # A pipeline stage can hold no MoE: no decoder layers (the head alone) or only an attention block.
+    has_moe = any(isinstance(module, MoE) for module in model.modules())
+    if config.debug.force_balanced_routing and has_moe:
         apply_force_balanced_routing(model)
 
-    configure_moe_runtime(model, config, parallel_dims)
+    if has_moe:
+        configure_moe_runtime(model, config, parallel_dims, pp_stage)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
@@ -924,13 +1036,14 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> Compile -> FSDP
+    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
     if config.ac is not None:
         apply_ac(model, config.ac)
-    if config.compile is not None:
-        apply_compile(model, config.compile)
 
     setup_fsdp(model, config, parallel_dims)
+
+    if config.compile is not None:
+        apply_compile(model, config.compile)
 
     if loading_from_checkpoint_later:
         logger.warning(
@@ -943,6 +1056,12 @@ def setup_model(
         _move_buffers_to_cuda(model, config)
     else:
         load_dcp_from_hf(model, config, parallel_dims)
+
+    if config.engram_offload:
+        for module in model.modules():
+            if isinstance(module, DeepseekV41Engram):
+                offload_to_host(module.embed)
+        torch.cuda.empty_cache()
 
     _reset_runtime_moe_buffers(model)
     return model

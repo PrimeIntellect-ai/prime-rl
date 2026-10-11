@@ -302,7 +302,7 @@ def resolve_ep(config: ModelConfig) -> None:
         return
 
     dp_replicate = config.dp_replicate
-    fsdp_island_size = world_size // dp_replicate  # pp is always 1
+    fsdp_island_size = world_size // (dp_replicate * config.pp)
     resolved_ep = min(fsdp_island_size, 8)
 
     config.ep = resolved_ep
@@ -320,7 +320,7 @@ def get_parallel_dims(config: ModelConfig, seq_len: int | None = None) -> Parall
         dp_replicate=config.dp_replicate,
         dp_shard=-1,
         cp=config.cp,
-        pp=1,
+        pp=config.pp,
         ep=config.ep,
         world_size=dist.get_world_size(),
     )

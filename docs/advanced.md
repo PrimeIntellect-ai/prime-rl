@@ -56,8 +56,8 @@ Dense linear precision and routed-expert precision are configured independently.
 
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
-- `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
-- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
+- `type = "bf16"` (default), with `backend = "torch"` (default), `"sonicmoe"`, or `"prime_kernels"`.
+- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+), with `backend = "torch"` (default) or `"prime_kernels"` (prime-kernels' `moe_experts` FP8 path, which fuses the quantization and the clamped SwiGLU into the passes around DeepGEMM's GEMMs; DeepSeek-V4 / V4.1 experts)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
@@ -77,6 +77,8 @@ backend = "sonicmoe"
 [trainer.model.moe.dispatch]
 type = "torch"
 ```
+
+`backend = "prime_kernels"` runs `prime-kernels`' `moe_experts` (SM90): grouped GEMMs with the clamped SwiGLU fused in, for bias-free gated experts with a clamped SwiGLU (DeepSeek-V4 / V4.1).
 
 ```toml
 [trainer.model.quantization]
@@ -119,7 +121,7 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 `[trainer.model.moe.dispatch]` selects how routed tokens are dispatched and combined:
 
 - **`torch`** (default): torch all-to-all with `transport = "bf16"` or, when MXFP8 expert compute is selected, `transport = "mxfp8"` on SM100.
-- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
+- **`deepep`**: DeepEP custom dispatch/combine kernels. Set `num_sms` and optional `token_chunk_size` in the same table. With `deepgemm_fp8` expert compute, `fp8 = true` sends tokens to the experts as FP8 (1x128 blocks, power-of-two scales, the quantization the experts apply anyway), halving forward dispatch traffic and the received tokens kept for backward; gradients stay bf16. Pre-built H100/H200 binaries use CUDA 13.0 and are installed by `uv sync --all-extras`.
 
 ```toml
 [trainer.model.moe.dispatch]

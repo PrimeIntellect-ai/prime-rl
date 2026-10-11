@@ -1,20 +1,22 @@
 import torch
 import torch.distributed as dist
-from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import DTensor
 from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.muon import DeepSeekMuon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
     _create_cpu_master_weights,
 )
-from prime_rl.trainer.optim.sign_sgd import SignSGD
+from prime_rl.trainer.optim.sign_sgd import SignSGD, sign_sgd_update_
+from prime_rl.trainer.optim.sinkhorn import MuonWithSinkhorn
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
@@ -63,6 +65,18 @@ def setup_optimizer(
     if full_offload_config is not None and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
+    # Tables kept in host memory (`offload_to_host`) are updated by their own streamed step.
+    host_params = [p for _, p in named_params if getattr(p, "host_table", None) is not None and p.requires_grad]
+    named_params = [(n, p) for n, p in named_params if getattr(p, "host_table", None) is None]
+    if host_params and (
+        cpu_offload
+        or full_offload_config is not None
+        or config.type not in ("adamw", "sign_sgd")
+        or getattr(config, "apply_in_backward", False)
+    ):
+        raise ValueError(
+            "host-offloaded engram tables need optim.type adamw or sign_sgd, without optimizer offload or apply_in_backward"
+        )
     optimizer_named_params = named_params
     master_weights = None
     if full_offload_config is not None:
@@ -97,7 +111,47 @@ def setup_optimizer(
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
         return CPUOffloadOptimizer(optimizer), None
 
+    if host_params:
+        optimizer.register_step_post_hook(_HostTableStep(config.type, host_params))
     return optimizer, None
+
+
+class _HostTableStep:
+    """After each optimizer step, gives every host-offloaded table the update the optimizer would have
+    applied to it on the GPU (same kernel, same hyperparameters from the first param group), then
+    drops its gradient, which the optimizer's `zero_grad` does not see."""
+
+    def __init__(self, optim_type: str, params: list[nn.Parameter]) -> None:
+        self.optim_type = optim_type
+        self.params = params
+        # AdamW's fused `state["step"]`, one per parameter.
+        self.steps = [torch.zeros((), dtype=torch.float32, device="cuda") for _ in params]
+
+    @torch.no_grad()
+    def __call__(self, optimizer: Optimizer, args, kwargs) -> None:
+        group = optimizer.param_groups[0]
+        # The update runs later (see `HostTable`), so it binds this step's hyperparameters now.
+        lr, weight_decay = group["lr"], group["weight_decay"]
+        for param, step in zip(self.params, self.steps):
+            if param.grad is None:
+                continue
+            grad = param.grad.to_local() if isinstance(param.grad, DTensor) else param.grad
+            param.host_table.wait()
+            if self.optim_type == "adamw":
+                (beta1, beta2), eps = group["betas"], group["eps"]
+                step += 1
+
+                def update(p, g, state, step=step):
+                    torch._fused_adamw_(
+                        [p], [g], [state[0]], [state[1]], [], [step],
+                        amsgrad=False, lr=lr, beta1=beta1, beta2=beta2,
+                        weight_decay=weight_decay, eps=eps, maximize=False,
+                    )  # fmt: skip
+
+                param.host_table.step(grad, 2, update)
+            else:
+                param.host_table.step(grad, 0, lambda p, g, state: sign_sgd_update_(p, g, lr, weight_decay))
+            param.grad = None
 
 
 def _create_optimizer(
@@ -143,6 +197,52 @@ def _create_optimizer(
             )
 
 
+def _is_embedding_like(name: str) -> bool:
+    """Matrices whose rows are token or n-gram ids: the token embedding, the LM head and Engram hash tables."""
+    return "embed_tokens" in name or "lm_head" in name or _is_engram_table(name)
+
+
+def _is_engram_table(name: str) -> bool:
+    return ".engrams." in name and name.endswith(".embed.weight")
+
+
+def _deepseek_v41_param_class(name: str, param: nn.Parameter) -> str:
+    """Which update DeepSeek-V4.1 (tech report §2.5) gives a parameter: `embedding` (embeddings, LM head,
+    Engram tables), `muon` (linear-layer matrices), `norm` (normalization weights: AdamW with weight
+    decay) or `scale` (biases and scaling factors: AdamW without)."""
+    if _is_embedding_like(name):
+        return "embedding"
+    # The Engram gate's RMSNorm weights for its query (the residual stream) and key, one row per mHC stream.
+    if ".engrams." in name and name.rsplit(".", 1)[-1] in ("q_weight", "k_weight"):
+        return "norm"
+    if param.ndim >= 2:
+        return "muon"
+    return "norm" if "norm" in name else "scale"
+
+
+def _deepseek_v41_row_blocks(model: nn.Module) -> dict[nn.Parameter, tuple[int, ...]]:
+    """DeepSeek-V4.1's logically independent matrices stacked in one 2-D weight: query heads (head-wise Muon,
+    tech report §2.5), the groups of the block-diagonal output projection, the Engram projection's per-stream
+    keys and shared value, and the mHC pre / post / residual mixes."""
+    from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4GroupedLinear
+    from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Attention, DeepseekV41Indexer
+    from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram
+    from prime_rl.trainer.models.deepseek_v41.hyperconnections import DeepseekV41HyperConnection
+
+    blocks = {}
+    for module in model.modules():
+        if isinstance(module, (DeepseekV41Attention, DeepseekV41Indexer)):
+            blocks[module.q_b_proj.weight] = (module.head_dim,) * module.num_heads
+        elif isinstance(module, DeepseekV4GroupedLinear):
+            blocks[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
+        elif isinstance(module, DeepseekV41Engram):
+            blocks[module.wkv.weight] = (module.wkv.out_features // (module.hc_mult + 1),) * (module.hc_mult + 1)
+        elif isinstance(module, DeepseekV41HyperConnection):
+            hc = module.hc_mult
+            blocks[module.fn] = (hc, hc, hc * hc)
+    return blocks
+
+
 def _create_muon_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
@@ -159,22 +259,35 @@ def _create_muon_optimizer(
             return False
         return True
 
+    named_params = [(n, p) for n, p in named_params if p.requires_grad]
+    if config.embedding_update is not None:
+        classes = {n: _deepseek_v41_param_class(n, p) for n, p in named_params}
+    else:
+        classes = {n: "muon" if muon_enabled(n, p) else "norm" for n, p in named_params}
+
     muon_params = []
     expert_params = []
     router_params = []
     adamw_params = []
+    adamw_no_decay_params = []
+    embedding_params = []
+    engram_table_params = []
     for n, p in named_params:
-        if p.requires_grad and muon_enabled(n, p):
-            if "mlp.experts" in n:
+        match classes[n]:
+            case "muon" if "mlp.experts" in n:
                 expert_params.append(p)
-            elif "mlp.router" in n:
+            case "muon" if "mlp.router" in n:
                 router_params.append(p)
-            else:
+            case "muon":
                 muon_params.append(p)
-        elif p.requires_grad:
-            adamw_params.append(p)
-        else:
-            pass
+            case "norm":
+                adamw_params.append(p)
+            case "scale":
+                adamw_no_decay_params.append(p)
+            case "embedding" if _is_engram_table(n):
+                engram_table_params.append(p)
+            case "embedding":
+                embedding_params.append(p)
 
     param_groups = []
 
@@ -206,7 +319,31 @@ def _create_muon_optimizer(
             )
         )
 
-    param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
+    # DeepSeek-V4's AdamW epsilon (§4.2.2); the optimizer's default otherwise.
+    adamw_eps = {"epsilon": 1e-20} if config.recipe == "deepseek" else {}
+    param_groups.append(
+        dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay, **adamw_eps)
+    )
+    if adamw_no_decay_params:
+        param_groups.append(dict(params=adamw_no_decay_params, algorithm="adamw", lr=lr, weight_decay=0.0, **adamw_eps))
+    for params, group_lr in ((embedding_params, lr), (engram_table_params, lr * config.engram_lr_scale)):
+        if not params:
+            continue
+        if config.embedding_update == "sinkhorn":
+            param_groups.append(
+                dict(
+                    params=params,
+                    algorithm="sinkhorn",
+                    lr=group_lr,
+                    weight_decay=0.0,
+                    sinkhorn_iters=config.sinkhorn_iters,
+                    sinkhorn_tau=config.sinkhorn_tau,
+                    sinkhorn_eps=config.sinkhorn_eps,
+                    sinkhorn_lr_scale=config.sinkhorn_lr_scale,
+                )
+            )
+        else:
+            param_groups.append(dict(params=params, algorithm="adamw", lr=group_lr, weight_decay=0.0, **adamw_eps))
 
     if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
         distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
@@ -224,7 +361,30 @@ def _create_muon_optimizer(
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
 
-    optimizer = Muon(
+    if config.recipe == "deepseek":
+        row_blocks = _deepseek_v41_row_blocks(model) if model is not None else {}
+        muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
+        row_blocks = {p: b for p, b in row_blocks.items() if p in muon_params}
+        if overlap := set(row_blocks) & set(matrix_partitions):
+            raise NotImplementedError(f"{len(overlap)} fused parameters also stack independent matrices")
+        optimizer = DeepSeekMuon(
+            params=param_groups,
+            row_blocks={**matrix_partitions, **row_blocks},
+            update_rms=config.update_rms,
+            lr=lr,
+            mu=config.mu,
+            betas=(config.betas1, config.betas2),
+            weight_decay=config.weight_decay,
+            distributed_mesh=distributed_mesh,
+            world_mesh=parallel_dims.world_mesh,
+            fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
+        )
+        _warmup_muon_mesh(distributed_mesh)
+        if expert_params and parallel_dims.ep_enabled:
+            _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
+        return optimizer
+
+    optimizer = MuonWithSinkhorn(
         params=param_groups,
         matrix_partitions=matrix_partitions,
         lr=lr,

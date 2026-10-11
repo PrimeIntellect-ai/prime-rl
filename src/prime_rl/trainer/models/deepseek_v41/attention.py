@@ -41,9 +41,14 @@ from prime_rl.trainer.models.deepseek_v4.attention import (
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import DeepseekV41TextConfig
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
-from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_linear_rope, dsv4_rope, dsv4_rope_inplace
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
-from prime_rl.trainer.models.kernels.dsv41_sparse_attn import dsv41_sparse_attn, flashmla_sparse_attn_available
+from prime_rl.trainer.models.kernels.dsv41_sparse_attn import (
+    dsv41_sparse_attn,
+    dsv41_sparse_attn_rope,
+    flashmla_sparse_attn_available,
+)
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -53,6 +58,17 @@ try:
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
+
+
+def _index_topk_op(num_heads: int, head_dim: int, block_size: int):
+    """prime-kernels' fused indexer top-k when it is built for this GPU and shape, else prime-rl's chunked one."""
+    import prime_kernels
+
+    if "dsa_indexer_topk" in prime_kernels.KERNELS and prime_kernels.is_available("dsa_indexer_topk"):
+        kernel = prime_kernels.load("dsa_indexer_topk")
+        if kernel.unsupported_shape_reason(num_heads, head_dim, block_size) is None:
+            return kernel.dsv41_index_topk
+    return dsv41_index_topk
 
 
 @dataclass(frozen=True)
@@ -126,7 +142,9 @@ class SharedAttnState:
 
     compressed_kv: Tensor | None = None  # (1, 1, n_entries, head_dim) rotated entries
     index_k: Tensor | None = None  # (n_entries, index_head_dim) rotated index keys
-    top_k_indices: Tensor | None = None  # (1, n_queries, index_topk) entry index, IGNORE_SLOT if none
+    # The index source layer's picks as the full gather slot list it built (`SparseAttnInputs.indices`,
+    # window then picks, (1, n_queries, 1, sliding_window + index_topk) int32): its consumers reuse it.
+    top_k_indices: Tensor | None = None
     candidates: Tensor | None = None  # (n_queries, candidate_topk_blocks) int32 doc-local block, -1 if unused
 
     def as_tuple(self) -> tuple[Tensor | None, ...]:
@@ -199,6 +217,7 @@ class DeepseekV41Indexer(nn.Module):
         self.uses_candidates = 0 <= config.candidate_source_layer_id < layer_idx
         self.candidate_block_size = config.candidate_block_size
         self.candidate_topk_blocks = config.candidate_topk_blocks
+        self.index_topk_op = _index_topk_op(self.num_heads, self.head_dim, self.candidate_block_size)
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
         if self.owns_k:
@@ -235,7 +254,7 @@ class DeepseekV41Indexer(nn.Module):
         entry_stop = entry_start + (packed.position_ids[0] + 1) // self.compress_ratio
         emit = self.is_candidate_source and packed.use_candidates
         candidates_in = state.candidates if self.uses_candidates and packed.use_candidates else None
-        top_k, candidates = dsv41_index_topk(
+        top_k, candidates = self.index_topk_op(
             q[0],
             index_k,
             w[0],
@@ -312,8 +331,7 @@ class DeepseekV41Attention(nn.Module):
             )
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))
-        q = self.q_b_proj(q_residual).view(*input_shape, self.num_heads, self.head_dim)
-        q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
+        q = self._query(q_residual, cos_sin_cache, packed.position_ids)
 
         if self.compress_ratio:
             latent = None
@@ -326,17 +344,43 @@ class DeepseekV41Attention(nn.Module):
 
         if cp.cp_enabled:
             kv = wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
+        picked_here = self.compress_ratio and self.indexer is not None
         inputs = SparseAttnInputs.build(
             kv=kv.transpose(1, 2),
             compressed_kv=state.compressed_kv if self.compress_ratio else None,
-            top_k_indices=state.top_k_indices if self.compress_ratio else None,
+            top_k_indices=state.top_k_indices if picked_here else None,
             window_indices=packed.window_indices,
+            indices=state.top_k_indices if self.compress_ratio and not picked_here else None,
         )
-        attn_output, _ = self.sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling)
+        if picked_here:
+            state = SharedAttnState(state.compressed_kv, state.index_k, inputs.indices, state.candidates)
         # Values are the rotated keys; the conjugate rotation at the query position cancels that.
-        attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
+        if self.sparse_attn is dsv41_sparse_attn:
+            # One op that rotates the output in place, keeping only the channels its backward needs unrotated.
+            attn_output, _, _ = dsv41_sparse_attn_rope(
+                q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling, cos_sin_cache, packed.position_ids
+            )
+        else:
+            attn_output, _ = self.sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling)
+            # The attention backward reads its output, so only the gradient (fresh from `o_a_proj`) rotates in place.
+            attn_output = dsv4_rope_inplace(
+                attn_output, cos_sin_cache, packed.position_ids, inverse=True, in_place_forward=False
+            )
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
         return self.o_b_proj(grouped), state
+
+    def _query(self, q_residual: Tensor, cos_sin_cache: Tensor, position_ids: Tensor) -> Tensor:
+        """The rotated `(b, t, heads, head_dim)` query, projected and rotated in one op when the projection
+        is a plain or blockwise-FP8 linear (other wrappers, e.g. LoRA, project then rotate a copy)."""
+        if type(self.q_b_proj) is Float8BlockwiseLinear:
+            return dsv4_linear_rope(
+                q_residual, self.q_b_proj.weight, cos_sin_cache, position_ids, self.head_dim, self.q_b_proj.block_size
+            )
+        if type(self.q_b_proj) is nn.Linear:
+            return dsv4_linear_rope(q_residual, self.q_b_proj.weight, cos_sin_cache, position_ids, self.head_dim, 0)
+        q = self.q_b_proj(q_residual).view(*q_residual.shape[:-1], self.num_heads, self.head_dim)
+        # Selective checkpointing saves the projection's output, so only the query gradient rotates in place.
+        return dsv4_rope_inplace(q, cos_sin_cache, position_ids, in_place_forward=False)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.zeros_(self.sinks)

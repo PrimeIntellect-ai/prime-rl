@@ -5,6 +5,8 @@ from typing import TypedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import triton
+import triton.language as tl
 from torch import Tensor
 
 from prime_rl.utils.logger import get_logger
@@ -292,6 +294,34 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         return grad_hidden, grad_weight, None, None, None, None
 
 
+@triton.jit
+def _cross_entropy_grad_kernel(logits_ptr, labels_ptr, loss_ptr, vocab, stride, BLOCK: tl.constexpr):
+    """One row: its cross-entropy into `loss_ptr`, and its logits overwritten in place by the loss's
+    gradient (softmax minus one-hot, zero where the label is IGNORE_INDEX), softmax in fp32."""
+    row = tl.program_id(0).to(tl.int64)
+    base = logits_ptr + row * stride
+    label = tl.load(labels_ptr + row)
+    cols = tl.arange(0, BLOCK)
+    m = tl.full([BLOCK], float("-inf"), tl.float32)
+    s = tl.zeros([BLOCK], tl.float32)
+    for start in range(0, vocab, BLOCK):
+        x = tl.load(base + start + cols, mask=start + cols < vocab, other=float("-inf")).to(tl.float32)
+        m_new = tl.maximum(m, x)
+        s = s * tl.exp(m - m_new) + tl.exp(x - m_new)
+        m = m_new
+    row_max = tl.max(m, axis=0)
+    lse = row_max + tl.log(tl.sum(s * tl.exp(m - row_max), axis=0))
+    valid = label != -100
+    target = tl.load(base + tl.maximum(label, 0)).to(tl.float32)
+    tl.store(loss_ptr + row, tl.where(valid, lse - target, 0.0))
+    scale = tl.where(valid, 1.0, 0.0)
+    for start in range(0, vocab, BLOCK):
+        idx = start + cols
+        x = tl.load(base + idx, mask=idx < vocab, other=0.0).to(tl.float32)
+        grad = (tl.exp(x - lse) - tl.where(idx == label, 1.0, 0.0)) * scale
+        tl.store(base + idx, grad.to(logits_ptr.dtype.element_ty), mask=idx < vocab)
+
+
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
     """Summed cross-entropy over labels != IGNORE_INDEX, with the gradients computed during forward.
 
@@ -329,16 +359,26 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
             valid = labels_chunk != IGNORE_INDEX
             target = labels_chunk.clamp(min=0).unsqueeze(-1)
 
-            logits = (hidden_chunk @ weight.t()).float()
-            logz = torch.logsumexp(logits, dim=-1)
-            target_logits = logits.gather(1, target).squeeze(1)
-            loss += torch.where(valid, logz - target_logits, 0.0).sum()
-
-            if needs_hidden or needs_weight:
+            logits = hidden_chunk @ weight.t()
+            if logits.is_cuda:
+                # The loss and its gradient (softmax minus one-hot) in two passes over the logits.
+                row_loss = torch.empty(end - start, device=logits.device, dtype=torch.float32)
+                _cross_entropy_grad_kernel[(end - start,)](
+                    logits, labels_chunk, row_loss, logits.shape[1], logits.stride(0), BLOCK=4096, num_warps=8
+                )
+                loss += row_loss.sum()
+                grad_logits = logits
+            else:
+                logits = logits.float()
+                logz = torch.logsumexp(logits, dim=-1)
+                target_logits = logits.gather(1, target).squeeze(1)
+                loss += torch.where(valid, logz - target_logits, 0.0).sum()
                 # dx(loss)/dx(logits) is softmax minus one-hot on valid rows and zero elsewhere so it reuses the logits buffer
                 grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
                 grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
                 grad_logits = grad_logits.mul_(valid.unsqueeze(-1)).to(hidden.dtype)
+
+            if needs_hidden or needs_weight:
                 if needs_hidden:
                     torch.mm(grad_logits, weight, out=grad_hidden[start:end])
                 if needs_weight:

@@ -1,0 +1,16 @@
+# Blockwise FP8 (DeepSeek-V3 recipe: 1x128 activation scales, 128x128 weight blocks) for the dense
+# linears and the routed experts, forward and backward. Faster than bf16 but changes numerics.
+# The experts need prime-kernels' `moe_experts` FP8 path (SM90). Compose last.
+
+[model.quantization]
+type = "fp8"
+# The defaults, plus the 512-wide KV projections and the indexer's query projection, which are no
+# faster in FP8 than in bf16 once their inputs are quantized.
+ignore_patterns = [
+  "lm_head", "router", 'mlp\.gate\.', 'shared_expert\.output_gate', "eh_proj", "weights_proj",
+  "in_proj_a", "in_proj_b", "kv_proj", 'indexer\.q_b_proj',
+]
+
+[model.moe.compute]
+type = "deepgemm_fp8"
+backend = "prime_kernels"

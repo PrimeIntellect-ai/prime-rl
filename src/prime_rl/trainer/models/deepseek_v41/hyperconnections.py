@@ -25,6 +25,17 @@ class _MixesMatmul(torch.autograd.Function):
         return torch.mm(grad, w), torch.mm(grad.t(), x, out_dtype=torch.float32).to(w.dtype)
 
 
+def _fused_hyper_connection():
+    """prime-kernels' fused mHC projection, gates and collapse (the variant that also hands on the
+    streams when the build has it) when it is built for this GPU, else None."""
+    import prime_kernels
+
+    if "mhc_projection" in prime_kernels.KERNELS and prime_kernels.is_available("mhc_projection"):
+        kernel = prime_kernels.load("mhc_projection")
+        return getattr(kernel, "hyper_connection_streams", kernel.hyper_connection)
+    return None
+
+
 class DeepseekV41HyperConnection(nn.Module):
     """V4.1's mHC gates for one sublayer, computed from the streams entering it.
 
@@ -45,6 +56,7 @@ class DeepseekV41HyperConnection(nn.Module):
         self.base = nn.Parameter(torch.empty(mix))
         # One scale per gate: `pre`, `post`, `comb`.
         self.scale = nn.Parameter(torch.empty(3))
+        self.fused = _fused_hyper_connection()
 
     def forward(self, mhc_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hc = self.hc_mult
@@ -65,13 +77,39 @@ class DeepseekV41HyperConnection(nn.Module):
         comb = dsv4_mhc.fused_sinkhorn(comb_logits, self.hc_sinkhorn_iters, self.hc_eps)
         return pre, post, comb
 
+    def gates_and_collapse(
+        self, mhc_states: torch.Tensor, pre_mix: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """`forward`'s gates, the streams collapsed by `pre_mix` (the previous sublayer's `pre`), and the
+        streams for `update_states` to read. The fused kernel returns them as a view whose gradient its
+        backward adds in place of autograd's separate sum of the two stream gradients."""
+        if self.fused is not None:
+            out = self.fused(
+                mhc_states,
+                self.fn,
+                self.scale,
+                self.base,
+                pre_mix,
+                rms_eps=self.input_norm.eps,
+                hc_eps=self.hc_eps,
+                sinkhorn_iters=self.hc_sinkhorn_iters,
+            )
+            return out if len(out) == 5 else (*out, mhc_states)
+        pre, post, comb = self(mhc_states)
+        return pre, post, comb, collapse_streams(mhc_states, pre_mix), mhc_states
+
     @staticmethod
     def update_states(
-        post: torch.Tensor, comb: torch.Tensor, sublayer_out: torch.Tensor, mhc_states: torch.Tensor
+        post: torch.Tensor,
+        comb: torch.Tensor,
+        sublayer_out: torch.Tensor,
+        mhc_states: torch.Tensor,
+        sublayer_out2: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Broadcast the sublayer output over the streams via `post` and remix them via `comb`."""
+        """Broadcast the sublayer output (`sublayer_out + sublayer_out2` when it comes in two parts, summed in the
+        kernel) over the streams via `post` and remix them via `comb`."""
         dtype = mhc_states.dtype
-        return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out)
+        return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out, sublayer_out2)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.fn, mean=0.0, std=init_std)

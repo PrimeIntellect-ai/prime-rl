@@ -48,12 +48,13 @@ class Batch(TypedDict):
 class StatefulIterableDataset(Stateful, IterableDataset):
     """SFT dataset are iterable (infinite) and stateful (can be checkpointed)."""
 
-    def __init__(self, non_dp_size: int = 1):
+    def __init__(self, non_dp_size: int = 1, pp_size: int = 1):
         self.step, self.epoch = 0, 0
         self.num_samples = defaultdict(int)
         self.num_tokens = defaultdict(int)
         self.fast_forward = False
         self.non_dp_size = non_dp_size
+        self.pp_size = pp_size
         self._setup_world_info()
 
     def state_dict(self) -> dict:
@@ -73,9 +74,11 @@ class StatefulIterableDataset(Stateful, IterableDataset):
         else:
             worker_id, num_workers = 0, 1
         world = get_world()
-        assert world.world_size % self.non_dp_size == 0, "world_size must be divisible by non_dp_size"
-        self.data_rank = world.rank // self.non_dp_size * num_workers + worker_id
-        self.data_world_size = world.world_size // self.non_dp_size * num_workers
+        # Pipeline stages are the outermost rank dim; every stage of a pipeline reads the same data.
+        stage_size = world.world_size // self.pp_size
+        assert stage_size % self.non_dp_size == 0, "world_size / pp_size must be divisible by non_dp_size"
+        self.data_rank = world.rank % stage_size // self.non_dp_size * num_workers + worker_id
+        self.data_world_size = stage_size // self.non_dp_size * num_workers
 
 
 class FakeDataset(StatefulIterableDataset):
@@ -89,8 +92,9 @@ class FakeDataset(StatefulIterableDataset):
         input_ids: Literal["increasing", "random"] = "random",
         seed: int = 0,
         non_dp_size: int = 1,
+        pp_size: int = 1,
     ):
-        super().__init__(non_dp_size)
+        super().__init__(non_dp_size, pp_size)
         self.vocab_size = vocab_size
         self.seq_len = seq_len
         self.length = length
@@ -264,13 +268,14 @@ class SFTDataset(StatefulIterableDataset):
         seed: int = 0,
         seq_len: int = 128,
         non_dp_size: int = 1,
+        pp_size: int = 1,
         loss_mask_config: LossMaskConfig = LossMaskConfig(),
         max_examples: int | None = None,
         max_epochs: int | None = None,
         multimodal: bool = False,
         columns: SFTColumnsConfig = SFTColumnsConfig(),
     ):
-        super().__init__(non_dp_size)
+        super().__init__(non_dp_size, pp_size)
         self.logger = get_logger()
         self.dataset = dataset
         self.num_examples = len(self.dataset)
@@ -716,6 +721,7 @@ def setup_dataset(
     config: DataConfig,
     non_dp_size: int = 1,
     *,
+    pp_size: int = 1,
     max_epochs: int | None = None,
     raw_dataset: Dataset | None = None,
     renderer_config: RendererConfig | None = None,
@@ -730,6 +736,7 @@ def setup_dataset(
             input_ids=config.input_ids,
             seed=config.seed,
             non_dp_size=non_dp_size,
+            pp_size=pp_size,
         )
     elif config.type == "sft":
         if renderer_config is None:
@@ -745,6 +752,7 @@ def setup_dataset(
             seq_len=config.seq_len,
             loss_mask_config=config.loss_mask,
             non_dp_size=non_dp_size,
+            pp_size=pp_size,
             max_epochs=max_epochs,
             multimodal=multimodal,
             columns=config.columns,

@@ -30,15 +30,31 @@ class GCConfig(BaseConfig):
     """Run garbage collection every N training steps. Disables Python's automatic GC so every rank collects together and one slow rank can't stall the others."""
 
 
+ActivationCheckpointMode: TypeAlias = Literal["full_moe", "full", "projections", "attention", "matmul", "selective"]
+
+
 class ActivationCheckpointConfig(BaseConfig):
-    mode: Literal["full", "selective"] = "full"
-    """Both modes checkpoint whole transformer blocks. ``selective`` additionally retains selected operations."""
+    mode: ActivationCheckpointMode = "full"
+    """What each checkpointed block keeps for backward; the rest is recomputed. Every mode checkpoints whole transformer blocks and keeps the operations that cannot be replayed (expert dispatch, top-k selections). ``full`` keeps nothing else. ``full_moe`` is ``full`` that also recomputes the FP8 Mega MoE (dispatch, expert GEMMs and combine) instead of keeping its pools; other MoE backends keep theirs. ``projections`` also keeps the projection outputs except the attention query's, so recompute runs the query projection, attention and the elementwise work. ``attention`` also keeps the attention outputs and the mHC collapses, so recompute runs the query projection and the elementwise work. ``matmul`` also keeps the query, so recompute runs no matmul. ``selective`` keeps ``targets``."""
 
     freq: int = Field(1, ge=1)
     """Apply activation checkpointing to every N layers."""
 
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
+
+    layer_modes: (
+        list[
+            ActivationCheckpointMode
+            | Literal["none"]
+            | tuple[ActivationCheckpointMode | Literal["none"], ActivationCheckpointMode | Literal["none"]]
+        ]
+        | None
+    ) = None
+    """Mode of each decoder layer, one entry per layer of the full model (pipeline stages keep the full model's layer indices); ``none`` leaves a layer unchecked. Replaces ``mode`` and ``freq``. Early pipeline stages hold activations for more micro-batches, so they can retain less than later ones. A layer that a pipeline stage boundary cuts in half may take a pair ``[attention half, MoE half]``, one mode for each stage's half."""
+
+    recompute_engram: bool = False
+    """Engram layers (DeepSeek-V4.1) whose decoder layer runs ``full`` or ``full_moe`` also recompute their value/key projection and gate in backward, keeping only their inputs instead of the projection's output (51 KB per token)."""
 
 
 class ActivationOffloadingConfig(BaseConfig):
@@ -47,6 +63,35 @@ class ActivationOffloadingConfig(BaseConfig):
 
     max_inflight_activations: int = Field(5, ge=1)
     """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+
+
+class PipelineActivationOffloadConfig(BaseConfig):
+    """Activation offloading for the ``Async1F1B`` / ``DualPipeV`` pipeline schedules: after a micro-batch's
+    forward, a stage copies the activations it keeps for the backward (its received inputs and its decoder and
+    engram layers' inputs, which activation checkpointing keeps) to pinned host memory and frees them, and copies
+    them back a few ops before that micro-batch's backward. Copies run on side streams beside the compute."""
+
+    min_bytes: int = Field(64 * 2**20, ge=1)
+    """Smallest tensor storage to offload, in bytes."""
+
+    prefetch_ahead: int = Field(2, ge=1)
+    """How many ops (forwards or backwards) before a micro-batch's backward its activations start coming back.
+    Micro-batches whose backward follows their forward more closely stay on the GPU."""
+
+    stages: list[int] | None = None
+    """Pipeline stages that offload. ``None``: every stage."""
+
+    target: Literal["host", "fp8"] = "host"
+    """``host``: copy the activations to pinned host memory (same values). ``fp8``: keep them on the GPU as FP8
+    with one fp32 scale per 128 values (half the bytes of bf16), and dequantize them before the backward; only
+    bf16 tensors whose last dimension is a multiple of 128 are compressed. Changes numerics: the backward (and
+    activation checkpointing's recompute) reads the dequantized values."""
+
+    every: int = Field(1, ge=1)
+    """Offload only the micro-batches whose index is a multiple of ``every``, to keep the copies within the host link's bandwidth (a stage moves one micro-batch's activations each way per offloaded micro-batch)."""
+
+    paced: bool = False
+    """Before the forward of a micro-batch it offloads, the stage's GPU waits until the previous offloaded micro-batch has reached host memory, so back-to-back forwards (pipeline warmup) cannot outrun the copies and pile up memory that is not freed yet. In 1F1B a stage's warmup forwards wait for the first backward anyway."""
 
 
 class OptimizerInBackwardOffloadConfig(BaseConfig):
@@ -166,6 +211,11 @@ class FP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
+    accumulate_wgrad_fp32: bool = False
+    """Add each dense FP8 linear's weight-gradient GEMM straight into FSDP's fp32 gradient accumulator instead of
+    rounding every micro-batch's gradient to bf16 first. Changes numerics (no per-micro-batch bf16 rounding of the
+    dense weight gradients); skips the zero fill, the bf16 cast and the separate fp32 accumulation."""
+
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
@@ -210,14 +260,17 @@ class BF16MoEComputeConfig(MoEComputeConfigBase):
     """Run routed experts in bfloat16."""
 
     type: Literal["bf16"] = "bf16"
-    backend: Literal["torch", "sonicmoe"] = "torch"
-    """Expert compute implementation."""
+    backend: Literal["torch", "sonicmoe", "prime_kernels"] = "torch"
+    """Expert compute implementation. ``prime_kernels`` fuses the clamped SwiGLU into Hopper grouped GEMMs."""
 
 
 class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
+    backend: Literal["torch", "prime_kernels"] = "torch"
+    """``prime_kernels`` fuses the FP8 quantization and the clamped SwiGLU into the passes around DeepGEMM's
+    GEMMs (prime-kernels' ``moe_experts``, SM90)."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
@@ -263,9 +316,82 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     token_chunk_size: int | None = Field(None, ge=1)
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
+    fp8: bool = False
+    """Send tokens to the experts as FP8 (1 x 128 blocks, power-of-two scales), halving the forward
+    dispatch traffic and the received tokens kept for backward. Requires FP8 expert compute, which
+    quantizes its input the same way; gradients travel in bf16 unless ``fp8_grad`` is set."""
+
+    fp8_grad: bool = False
+    """Also send the output gradient to the experts as FP8 in backward (the DeepSeek-V3 recipe), halving
+    that traffic. The experts' backward quantizes it the same way for its data-gradient GEMM, but the
+    router's gradient and the weight-gradient quantization then read the FP8 values. Requires ``fp8``."""
+
+    keep_expert_activations: bool = False
+    """Keep the routed experts' forward activations (their output and what the FP8 expert backward
+    reads) instead of recomputing the expert forward in backward. Costs ~2.5 GB per layer at 16k
+    tokens per GPU; requires prime-kernels' FP8 expert compute."""
+
+    weight_grads_after_combine: bool = False
+    """In backward, send each token chunk's input gradient back (combine) before running its experts'
+    weight-gradient GEMMs, so those GEMMs hide the combine instead of delaying it. Same numerics.
+    Takes effect with prime-kernels' FP8 expert compute when the expert gradients accumulate into
+    FSDP's fp32 buffers."""
+
+
+class MegaMoEDispatchConfig(BaseConfig):
+    """Run each MoE layer as prime-mega-moe's fused BF16 Mega MoE kernel: dispatch, the routed experts'
+    clamped SwiGLU, the shared expert and the combine in one kernel over NVLink symmetric memory.
+    Replaces the expert compute backend for those layers; expert parallelism must stay within a node."""
+
+    type: Literal["mega_moe"] = "mega_moe"
+
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Tokens per rank the symmetric buffer is sized for. Defaults to ``model.seq_len``."""
+
+    num_sms: int | None = Field(None, ge=1)
+    """SMs the Mega MoE kernels run on. Defaults to every SM; fewer leaves room for collectives that
+    overlap them (the kernel's blocks wait on other ranks, so it needs all of its blocks resident)."""
+
+    fp8: bool = False
+    """Use the SM90 FP8 Mega MoE instead: the routed experts in blockwise FP8 (prime-kernels' recipe), with
+    the forward keeping each routed row's FP8 input and bf16 gate/up output so the backward does not
+    recompute it. The shared expert stays with the layer."""
+
+    capacity_factor: float = Field(1.25, gt=0)
+    """FP8 only: routed rows per rank the kept pools hold, as a multiple of ``max_tokens_per_rank * top_k``
+    (plus one partial block per local expert). A rank receiving more rows stops with a device-side error."""
+
+    wgrad_tile_scales: bool = False
+    """FP8 only: quantize the weight gradients' ``x`` and ``dy`` operands per 128 x 128 tile instead of per column
+    over each 128 rows, so the K-grouped GEMMs promote with one FFMA per element (the other operand keeps per-column
+    scales). Changes numerics; ~0.5 ms less per layer in the weight-gradient GEMMs on H200."""
+
+    fp8_transposed_on_demand: bool | list[int] = False
+    """FP8 only: keep only the experts' forward FP8 weights for the step and build the transposed copy the backward
+    reads (an exact transpose of the 128 x 128-block FP8 values and scales) in each backward, freeing it after.
+    1 byte less per local expert parameter (1.7 GB per V4.1 layer at EP8) for one transpose (~1 ms) per MoE backward.
+    Same numerics. A list applies it only on those pipeline stages."""
+
+    free_bf16_expert_weights: bool = False
+    """FP8 only: free the local experts' unsharded bf16 weights once they are quantized for the step, so only the
+    FP8 copies the kernels read stay resident (2 bytes less per local expert parameter: 3.4 GB per V4.1 layer at EP8).
+    FSDP all-gathers them again at the next step's first forward. Same numerics."""
+
+    fused_wgrad_micro_batches: Annotated[int, Field(ge=1, le=4)] | list[Annotated[int, Field(ge=1, le=4)]] = 1
+    """FP8 only: n > 1 holds up to n - 1 micro-batches' expert weight-gradient operands (~1.2 GB each per V4.1 layer
+    at EP8 and 8k tokens) until the n-th micro-batch's backward of the same layer, which adds all n gradients with
+    one K-grouped GEMM launch per weight: bitwise the same as one launch per micro-batch, while each fp32
+    accumulator tile's later read-modify-writes hit L2. The step's last micro-batch never holds; the trainer marks it
+    with ``set_expert_wgrad_final_micro_batch``. At most 2 with ``wgrad_tile_scales``. 1 (default) adds each
+    micro-batch's gradient in its own backward. Memory: n - 1 held micro-batches' operands per MoE layer of the
+    stage (~1.2 GB each at 8k tokens); measured on one EP8 stage: 2 -> -0.77 ms per layer, 4 -> -1.51 ms per layer.
+    Needs prime-mega-moe with ``k_grouped_fp8_gemm_nt_contiguous_multi`` (5827a5b) for n > 1. A list gives one
+    value per pipeline stage (``pp * pp_stages_per_rank`` entries, stage order as ``pp_layers_per_stage``), so
+    memory-bound plans can enable it only on stages with headroom."""
+
 
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -275,6 +401,29 @@ class MoERuntimeConfig(BaseConfig):
 
     compute: MoEComputeConfig = BF16MoEComputeConfig()
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
+
+    reduce_local_expert_grads_once: bool = False
+    """When expert parallelism spans every data-parallel rank, so each expert's FSDP group holds one
+    rank, reduce and reshard the expert parameters only after the last micro-batch's backward instead
+    of after every one: their gradients keep accumulating in FSDP's fp32 buffer, and later micro-batches
+    reuse the bf16 copy the first one cast. Same values up to fp32 summation order."""
+
+    @model_validator(mode="after")
+    def fp8_dispatch_requires_fp8_compute(self):
+        if isinstance(self.dispatch, DeepEPMoEDispatchConfig) and self.dispatch.fp8:
+            if not isinstance(self.compute, DeepGemmFP8MoEComputeConfig):
+                raise ValueError("dispatch.fp8 requires compute.type = 'deepgemm_fp8'")
+        if isinstance(self.dispatch, DeepEPMoEDispatchConfig) and self.dispatch.fp8_grad and not self.dispatch.fp8:
+            raise ValueError("dispatch.fp8_grad requires dispatch.fp8")
+        if isinstance(self.dispatch, MegaMoEDispatchConfig) and not self.dispatch.fp8:
+            for flag in ("free_bf16_expert_weights", "fp8_transposed_on_demand"):
+                if getattr(self.dispatch, flag):
+                    raise ValueError(f"dispatch.{flag} requires dispatch.fp8")
+        if isinstance(self.dispatch, MegaMoEDispatchConfig) and self.dispatch.wgrad_tile_scales:
+            fused = self.dispatch.fused_wgrad_micro_batches
+            if (max(fused) if isinstance(fused, list) else fused) > 2:
+                raise ValueError("dispatch.wgrad_tile_scales supports fused_wgrad_micro_batches <= 2")
+        return self
 
 
 class ModelConfig(BaseModelConfig):
@@ -323,6 +472,41 @@ class ModelConfig(BaseModelConfig):
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
 
+    pp: int = 1
+    """Pipeline parallelism degree. 1 disables PP. The decoder layers are split into ``pp * pp_stages_per_rank`` stages of consecutive layers; each stage is FSDP-sharded (and expert-parallel) over its pipeline rank's devices."""
+
+    pp_schedule: Literal[
+        "1F1B", "Async1F1B", "DualPipeV", "GPipe", "Interleaved1F1B", "InterleavedZeroBubble", "ZBVZeroBubble"
+    ] = "1F1B"
+    """Pipeline schedule. The step's micro-batches are the pipeline's micro-batches. ``1F1B`` and ``GPipe`` run one stage per rank; the interleaved schedules loop ``pp_stages_per_rank`` stages over the ranks; ``ZBVZeroBubble`` places two stages per rank in a V. ``Async1F1B`` (one stage per rank) and ``DualPipeV`` (two stages per rank in a V, DeepSeek's order with full backwards, at least ``2 * pp`` micro-batches) run on an executor that never waits on a stage transfer before it is needed; DualPipeV also hides the transfer time that 1F1B adds to every cycle, at the same worst-rank activation memory."""
+
+    pp_warmup_step: list[Annotated[int, Field(ge=1)]] = [1]
+    """``Async1F1B`` only: how many more warmup forwards each stage runs than the next one, one entry per neighbour pair (``pp - 1``, first pair first) or a single entry for all. 1 is classic 1F1B, which waits for one activation and one gradient transfer every cycle; 2 hides both transfers at one more micro-batch in flight on every earlier stage (all 2: stage s keeps ``2 * (pp - s) - 1``). Memory-bound early stages can keep 1 if they carry about two transfers less work per micro-batch than the bottleneck stage. Larger steps only add in-flight micro-batches (useful to emulate a deeper pipeline's memory)."""
+
+    pp_transport: Literal["nccl", "copy_engine", "put"] = "nccl"
+    """``Async1F1B`` / ``DualPipeV`` stage transfers. ``nccl`` uses send/recv, whose kernels hold SMs while a transfer is in flight and slow persistent kernels (fused MoE, DeepGEMM) that overlap it. ``copy_engine`` sends each micro-batch as an in-place two-rank all-gather of an NCCL symmetric-window buffer with the zero-CTA policy, which NCCL >= 2.32 runs on copy engines only; it costs one buffer of a micro-batch's activations per transfer edge, sends as many bytes back as forward, and needs NCCL >= 2.32 at runtime (older NCCL falls back to SM kernels). ``put`` sends each micro-batch one way with NCCL's one-sided ``ncclPutSignal`` into a symmetric-window buffer of the receiver (zero-CTA policy: a CPU proxy drives the NIC, no SM is held), and the receiver returns a credit with ``ncclSignal`` once it has copied the micro-batch out; it costs one micro-batch buffer per transfer edge end, needs no global transfer order, and needs NCCL >= 2.30 at runtime."""
+
+    pp_defer_expert_weight_grads: bool = False
+    """``Async1F1B`` / ``DualPipeV`` only (1F1B-W): a backward leaves the FP8 Mega MoE experts' weight-gradient GEMMs for after the stage has posted its input-gradient send, so the previous stage gets its gradient one weight-gradient pass earlier and the transfer overlaps that pass. Same values: the GEMMs run in the same order into the same fp32 accumulators. Their operands (about 1 GB per MoE block at 8k tokens) live until they run. A step's last micro-batch runs them in its backward, which starts the gradient reduction."""
+
+    pp_offload_masters: bool = False
+    """``Async1F1B`` / ``DualPipeV`` only: keep the sharded fp32 parameters in pinned host memory from each step's first forward (after FSDP's all-gather, their only reader in the pipeline) until after its last forward, and release the cached memory of the step's reduced gradients after the optimizer step. Frees the sharded master and reduced-gradient memory (8 bytes per parameter / FSDP group size) for the pipeline, for one host round trip of the masters per step on a side stream. Same values."""
+
+    pp_transport_ctas: int | None = Field(None, ge=1)
+    """``nccl`` transport only: CTAs (SMs) each stage send/recv kernel takes. Pin it and shrink the persistent kernels by as many SMs (``moe.dispatch.num_sms``; DeepGEMM via ``pp_gemm_sms``) so a transfer in flight does not slow them. ``None`` leaves NCCL's default."""
+
+    pp_gemm_sms: int | None = Field(None, ge=2, multiple_of=2)
+    """SMs DeepGEMM's dense FP8 GEMMs run on under pipeline parallelism (``deep_gemm.set_num_sms``); with ``pp_transport_ctas`` this keeps their waves off the SMs a transfer holds. ``None`` uses every SM."""
+
+    pp_stages_per_rank: int = Field(1, ge=1)
+    """Pipeline stages each pipeline rank holds."""
+
+    pp_layers_per_stage: list[float] | None = None
+    """Decoder layers of each stage, in stage order (``pp * pp_stages_per_rank`` entries; DualPipeV numbers its stages along the V, so rank 0 holds the first and the last). Multiples of 0.5 cut a layer between its attention and its MoE block (DeepSeek-V4.1); 0 gives a stage with only the embedding or the head. Defaults to an even split of whole layers, earlier stages taking the remainder."""
+
+    pp_activation_offload: PipelineActivationOffloadConfig | None = None
+    """``Async1F1B`` / ``DualPipeV`` only: offload the activations a stage keeps for its in-flight micro-batches to host memory between their forward and backward. ``None`` keeps them on the GPU. (``ac_offloading`` applies only without pipeline parallelism.)"""
+
     cp_style: Literal["ring", "ulysses"] = "ring"
     """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
 
@@ -347,6 +531,13 @@ class ModelConfig(BaseModelConfig):
     """Freeze DeepSeek-V4.1's engram n-gram tables (~98B parameters each). Required for RL: the tables are
     too large to broadcast, so the inference engine keeps serving its own copy."""
 
+    engram_offload: bool = False
+    """Keep each rank's shard of DeepSeek-V4.1's engram tables, with its optimizer state, in pinned host memory
+    instead of on the GPU (prototype). Lookups gather rows from host memory over PCIe ahead of the forward,
+    and the optimizer step streams the whole shard through the GPU with the same update kernel, so every
+    row is updated every step as before. Needs `optim.type` adamw or sign_sgd; checkpointing the
+    tables is not implemented."""
+
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 
@@ -369,6 +560,12 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def pp_activation_offload_requires_async_schedule(self):
+        if self.pp_activation_offload is not None and self.pp_schedule not in ("Async1F1B", "DualPipeV"):
+            raise ValueError("model.pp_activation_offload requires pp_schedule 'Async1F1B' or 'DualPipeV'")
+        return self
+
+    @model_validator(mode="after")
     def ac_offloading_requires_ac(self):
         """Automatically enable activation checkpointing when activation offloading is enabled."""
         if self.ac_offloading is not None and self.ac is None:
@@ -387,6 +584,16 @@ class ModelConfig(BaseModelConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_fused_wgrad_stages(self):
+        fused = getattr(self.moe.dispatch, "fused_wgrad_micro_batches", None)
+        if isinstance(fused, list) and len(fused) != self.pp * self.pp_stages_per_rank:
+            raise ValueError(
+                f"model.moe.dispatch.fused_wgrad_micro_batches has {len(fused)} entries for "
+                f"{self.pp * self.pp_stages_per_rank} pipeline stages"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_moe_runtime(self):
         if self.ep == 1:
             return self
@@ -396,7 +603,7 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif dispatch.transport == "mxfp8":
+        elif isinstance(dispatch, TorchMoEDispatchConfig) and dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
         return self
@@ -510,9 +717,64 @@ class MuonConfig(BaseOptimizerConfig):
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
+    embedding_update: Literal["sinkhorn", "adamw"] | None = None
+    """How the token embedding, the LM head and the Engram hash tables are updated, with DeepSeek-V4.1's
+    split of the other parameters (tech report §2.5): Engram projections go to Muon with the other
+    matrices, normalization weights (the Engram gate's query and key norm weights included) to AdamW with
+    weight decay, biases and scaling factors (mHC bias and scale, attention sinks) to AdamW without.
+    ``"sinkhorn"`` is the report's momentum update with Sinkhorn balancing (one fp32 state per parameter, no
+    weight decay);
+    ``"adamw"`` is AdamW without weight decay. ``None`` sends the embedding and LM head to AdamW and every
+    other 2-D parameter, Engram tables included, to Muon."""
+
+    sinkhorn_iters: int = Field(11, ge=1)
+    """Alternating row / column normalizations of the Sinkhorn update (odd: it starts and ends with rows)."""
+
+    sinkhorn_tau: float = Field(1e-3, ge=0)
+    """Rows of the momentum update whose norm is at most this fraction of the mean row norm are not updated."""
+
+    sinkhorn_eps: float = Field(1e-20, gt=0)
+    """Added to every row and column norm of the Sinkhorn update."""
+
+    sinkhorn_lr_scale: float = Field(0.18, gt=0)
+    """Learning-rate correction of the Sinkhorn update (gamma), which has unit row-wise RMS."""
+
+    engram_lr_scale: float = Field(5.0, gt=0)
+    """Learning-rate multiplier of the Engram hash tables. Only used with ``embedding_update`` set."""
+
+    recipe: Literal["dion", "deepseek"] = "dion"
+    """Muon algorithm. ``"dion"`` is dion's Muon (momentum without Nesterov, 5 Newton-Schulz iterations,
+    learning rate scaled by ``0.2 * sqrt(max(n, m))``, AdamW epsilon 1e-8). ``"deepseek"`` is DeepSeek-V4's
+    (tech report §2.4, V4.1 §2.5): Nesterov momentum, 10 hybrid Newton-Schulz iterations in bf16, each update
+    matrix rescaled to RMS ``update_rms``, one Newton-Schulz per logically independent matrix (each routed
+    expert, each attention and indexer query head, each group of the grouped output projection, the Engram
+    projection's keys and value, the three mHC mixes), AdamW epsilon 1e-20. Parameters whose shard holds whole
+    matrices (the experts) are orthogonalized in place; the others go whole to one owner rank per parameter.
+    Requires ``embedding_update``."""
+
+    update_rms: float = Field(0.18, gt=0)
+    """RMS of each Muon update matrix with ``recipe = "deepseek"``, so AdamW's learning rate carries over."""
+
+    @model_validator(mode="after")
+    def validate_sinkhorn_iters(self):
+        if self.sinkhorn_iters % 2 != 1:
+            raise ValueError(f"optim.sinkhorn_iters must be odd, got {self.sinkhorn_iters}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_recipe(self):
+        if self.recipe == "deepseek" and self.embedding_update is None:
+            raise ValueError('optim.recipe = "deepseek" needs optim.embedding_update ("sinkhorn" for DeepSeek-V4.1)')
+        return self
+
 
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
+
+    apply_in_backward: bool = False
+    """Update each parameter as soon as its gradient is final and free the gradient, so no step holds
+    every gradient at once. SFT only, with one micro-batch per step and no optimizer offload. Exact:
+    sign updates ignore the positive loss scaling and clipping applied after backward."""
 
 
 OptimizerConfig: TypeAlias = Annotated[

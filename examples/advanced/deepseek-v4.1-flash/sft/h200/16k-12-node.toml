@@ -8,11 +8,12 @@ optim_cpu_offload = false
 ac_offloading = "None"
 # V4.1 Flash activates ~16B of its 748B parameters, so at 16k tokens per GPU the run is bound by
 # InfiniBand traffic, not compute. Spreading the experts over every GPU removes their FSDP
-# all-gathers and reduce-scatters, and chunked dispatch hides much of the expert all-to-alls.
+# all-gathers and reduce-scatters. DeepEP sends each token once per node and reduces the combine
+# in flight, and its outputs are kept for backward, so checkpoint recompute resends nothing.
 ep = 96
 
 [model.moe.dispatch]
-overlap_chunks = 2
+type = "deepep"
 
 [model.compile]
 

@@ -227,7 +227,10 @@ class TokenChoiceTopKRouter(nn.Module):
         elif self.force_balanced:
             num_tokens = scores.shape[0]
             arange = torch.arange(num_tokens * self.top_k, device=scores.device)
-            selected_experts_indices = (arange % self.num_experts).view(num_tokens, self.top_k)
+            # A stride coprime with the expert count keeps every expert's load equal while spreading
+            # a token's experts over the expert-parallel ranks (and nodes), as real routing does;
+            # consecutive experts would put all of a token's experts on one rank.
+            selected_experts_indices = (arange * 97 % self.num_experts).view(num_tokens, self.top_k)
             top_scores = scores.gather(dim=1, index=selected_experts_indices)
         else:
             selection_scores = scores
@@ -356,11 +359,15 @@ class MoE(nn.Module):
         self,
         x: torch.Tensor,
         routed_experts: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        *,
+        split_shared_output: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs, slen, top_k)``.
+            split_shared_output (bool): Return the routed and the shared experts' outputs unsummed, for a
+                consumer that adds them itself (the shared one is ``None`` without a separate shared expert).
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -392,6 +399,13 @@ class MoE(nn.Module):
                 routing_confidence_sum,
             )
 
+        if getattr(self.token_dispatcher, "fuses_shared_expert", False):
+            assert not self.score_before_experts, "a fused MoE kernel weights the experts' outputs"
+            output = self.token_dispatcher.run_fused(
+                x, top_scores, selected_experts_indices, self.experts, self.shared_expert
+            ).reshape(bs, slen, dim)
+            return (output, None) if split_shared_output else output
+
         routed_output = self.token_dispatcher.run(
             self.prepare_expert_input(x),
             top_scores,
@@ -407,6 +421,11 @@ class MoE(nn.Module):
         self.token_dispatcher.synchronize()
 
         routed_output = self.prepare_expert_output(routed_output)
+
+        if split_shared_output:
+            if shared_output is not None:
+                shared_output = shared_output.reshape(bs, slen, dim)
+            return routed_output.reshape(bs, slen, dim), shared_output
 
         if shared_output is not None:
             routed_output = routed_output + shared_output

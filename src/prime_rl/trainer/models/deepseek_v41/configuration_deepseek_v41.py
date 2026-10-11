@@ -1,4 +1,4 @@
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import model_validator
 
@@ -63,6 +63,9 @@ class DeepseekV41TextConfig(PrimeModelConfig):
     hc_mult: int = 4
     hc_sinkhorn_iters: int = 20
     hc_eps: float = 1e-6
+    residual_type: Literal["mhc", "gated", "layerscale"] = "mhc"
+    """`mhc`: the published `hc_mult`-stream mHC residual. `gated` (per-token sigmoid gate) and `layerscale`
+    (per-channel scale) are single-stream residuals (`gated_residual.py`) and need `hc_mult = 1`."""
     engram_layer_ids: list[int] = [1, 14]
     engram_num_embeddings: list[int] = [384006168, 384016682]
     engram_max_ngram_size: int = 4
@@ -103,6 +106,8 @@ class DeepseekV41TextConfig(PrimeModelConfig):
         for layer_idx in self.kv_source_layer_ids + self.index_source_layer_ids:
             if layer_idx < n and not self.compress_ratios[layer_idx]:
                 raise ValueError(f"source layer {layer_idx} does not compress")
+        if self.residual_type != "mhc" and self.hc_mult != 1:
+            raise ValueError(f"residual_type {self.residual_type!r} is single-stream and needs hc_mult = 1")
         if len(self.engram_layer_ids) != len(self.engram_num_embeddings):
             raise ValueError("engram_layer_ids and engram_num_embeddings must have the same length")
         return self
@@ -126,18 +131,19 @@ class DeepseekV41TextConfig(PrimeModelConfig):
 
         The generic count in `perf.py` would read V4.1's low-rank query and grouped low-rank output
         projections as full-rank `hidden x heads x head_dim` matrices and miss the compressors,
-        indexers, mHC projections and engram projections, so the architecture counts its own. The
-        attention term on top of it is `perf.py`'s usual one.
+        indexers, mHC (or gate) projections and engram projections, so the architecture counts its own.
         """
         h, hd, nh = self.hidden_size, self.head_dim, self.num_attention_heads
-        mix = (2 + self.hc_mult) * self.hc_mult
+        residual_params = {"mhc": (2 + self.hc_mult) * self.hc_mult**2 * h, "gated": h, "layerscale": 0}[
+            self.residual_type
+        ]
         params = self.vocab_size * h  # lm head
         for layer_idx in range(self.num_hidden_layers):
             ratio = self.compress_ratios[layer_idx]
             params += h * self.q_lora_rank + self.q_lora_rank * nh * hd + h * hd
             params += nh * hd * self.o_lora_rank + self.o_groups * self.o_lora_rank * h
             params += (self.num_experts_per_tok + self.n_shared_experts) * 3 * h * self.moe_intermediate_size
-            params += self.n_routed_experts * h + 2 * mix * self.hc_mult * h
+            params += self.n_routed_experts * h + 2 * residual_params
             if layer_idx in self.kv_source_layer_ids:
                 params += h * hd * (2 if ratio > 1 else 1)
             if layer_idx in self.index_source_layer_ids:

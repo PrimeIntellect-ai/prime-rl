@@ -171,6 +171,8 @@ def train(config: TrainerConfig):
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
     t0 = time.perf_counter()
+    if config.optim.type == "sign_sgd" and config.optim.apply_in_backward:
+        raise ValueError("optim.apply_in_backward is only supported by the SFT trainer")
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
@@ -647,7 +649,7 @@ def train(config: TrainerConfig):
         num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
-        perf_counter = get_perf_counter(model, seq_len)
+        perf_counter = get_perf_counter(model)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB

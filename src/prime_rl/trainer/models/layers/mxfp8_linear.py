@@ -73,7 +73,8 @@ def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, igno
     skipped_modules: list[str] = []
     skipped_unaligned: list[str] = []
     for name, module in dict(model.named_modules()).items():
-        if not isinstance(module, nn.Linear):
+        # Only plain linears: subclasses with their own forward compute something else than `x @ weight.T`.
+        if type(module) is not nn.Linear:
             continue
         if any(re.search(pattern, name) for pattern in ignore_modules):
             skipped_modules.append(name)

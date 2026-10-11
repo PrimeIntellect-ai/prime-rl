@@ -6,6 +6,9 @@ it, its `post`/`comb` gates write its own output back, and its `pre` gate collap
 for the next sublayer. The first attention reads stream 0, and the last FFN's `pre` gate produces
 the final hidden state, so there is no separate head collapse.
 
+`residual_type = "gated" | "layerscale"` swaps mHC for a single-stream gated residual (`gated_residual.py`)
+with the same layout at `hc_mult = 1`.
+
 Engram lookups are added into the streams before `engram_layer_ids`. They sit between decoder
 layers, outside the compiled and checkpointed blocks, because their table lookup is a pair of
 all-to-alls with data-dependent split sizes.
@@ -27,11 +30,8 @@ from prime_rl.trainer.models.deepseek_v41.converting_deepseek_v41 import (
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram, EngramHasher
-from prime_rl.trainer.models.deepseek_v41.hyperconnections import (
-    DeepseekV41HyperConnection,
-    collapse_streams,
-    identity_pre_mix,
-)
+from prime_rl.trainer.models.deepseek_v41.gated_residual import residual_connection
+from prime_rl.trainer.models.deepseek_v41.hyperconnections import collapse_streams, identity_pre_mix
 from prime_rl.trainer.models.deepseek_v41.quantize import quantize_state_dict_
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
@@ -54,8 +54,23 @@ class DeepseekV41DecoderLayer(nn.Module):
         self.mlp = DeepseekV4MoE(config, layer_idx)
         self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.attn_hc = DeepseekV41HyperConnection(config)
-        self.ffn_hc = DeepseekV41HyperConnection(config)
+        # mHC gates, or a single-stream gated residual (`config.residual_type`) behind the same interface.
+        self.attn_hc = residual_connection(config)
+        self.ffn_hc = residual_connection(config)
+        # "attention" or "moe" when a pipeline stage boundary cuts this layer and the stage keeps one block.
+        self.pipeline_part: str | None = None
+
+    def keep_pipeline_part(self, part: str) -> None:
+        """Keep only the attention block (and its mHC gates) or only the MoE block of this layer. Between
+        the two the residual streams and the attention block's `pre` gate are what a layer boundary
+        carries, so a stage boundary can sit there."""
+        if part == "attention":
+            self.mlp = self.post_attention_layernorm = self.ffn_hc = None
+        elif part == "moe":
+            self.self_attn = self.input_layernorm = self.attn_hc = None
+        else:
+            raise ValueError(f"unknown pipeline part {part!r}")
+        self.pipeline_part = part
 
     def forward(
         self,
@@ -69,20 +84,55 @@ class DeepseekV41DecoderLayer(nn.Module):
         *,
         packed: PackedContext,
     ) -> tuple[Tensor, ...]:
+        if self.pipeline_part == "attention":
+            state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
+            attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
+            attn_out, state = self.self_attn(self.input_layernorm(attn_in), packed=packed, state=state)
+            return (self.attn_hc.update_states(post, comb, attn_out, streams), attn_pre, *state.as_tuple())
+        if self.pipeline_part == "moe":
+            ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, pre_mix)
+            mlp_out, shared_out = self.mlp(
+                self.post_attention_layernorm(ffn_in), routed_experts=routed_experts, split_shared_output=True
+            )
+            return (
+                self.dense_after_mlp(post, comb, mlp_out, shared_out, streams),
+                ffn_pre,
+                compressed_kv,
+                index_k,
+                top_k_indices,
+                candidates,
+            )
+        ffn_in, ffn_pre, post, comb, streams, *state = self.dense_before_mlp(
+            mhc_states, pre_mix, compressed_kv, index_k, top_k_indices, candidates, packed=packed
+        )
+        mlp_out, shared_out = self.mlp(ffn_in, routed_experts=routed_experts, split_shared_output=True)
+        return (self.dense_after_mlp(post, comb, mlp_out, shared_out, streams), ffn_pre, *state)
+
+    def dense_before_mlp(
+        self,
+        mhc_states: Tensor,
+        pre_mix: Tensor,
+        compressed_kv: Tensor | None,
+        index_k: Tensor | None,
+        top_k_indices: Tensor | None,
+        candidates: Tensor | None,
+        *,
+        packed: PackedContext,
+    ) -> tuple[Tensor | None, ...]:
+        """mHC gates, attention and the FFN's input gates and norm."""
         state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
+        attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
+        attn_out, state = self.self_attn(self.input_layernorm(attn_in), packed=packed, state=state)
+        mhc_states = self.attn_hc.update_states(post, comb, attn_out, streams)
+        ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
+        return (self.post_attention_layernorm(ffn_in), ffn_pre, post, comb, streams, *state.as_tuple())
 
-        attn_pre, post, comb = self.attn_hc(mhc_states)
-        attn_out, state = self.self_attn(
-            self.input_layernorm(collapse_streams(mhc_states, pre_mix)), packed=packed, state=state
-        )
-        mhc_states = self.attn_hc.update_states(post, comb, attn_out, mhc_states)
-
-        ffn_pre, post, comb = self.ffn_hc(mhc_states)
-        mlp_out = self.mlp(
-            self.post_attention_layernorm(collapse_streams(mhc_states, attn_pre)), routed_experts=routed_experts
-        )
-        mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, mhc_states)
-        return (mhc_states, ffn_pre, *state.as_tuple())
+    def dense_after_mlp(
+        self, post: Tensor, comb: Tensor, mlp_out: Tensor, shared_out: Tensor | None, streams: Tensor
+    ) -> Tensor:
+        """Writes the MoE output (routed plus shared experts, summed by the write-back kernel) back into the
+        residual streams."""
+        return self.ffn_hc.update_states(post, comb, mlp_out, streams, shared_out)
 
 
 # fp32 in the published checkpoint; mirrors V4's list.
@@ -139,6 +189,8 @@ class DeepseekV41TextModel(nn.Module):
         packed.check_position_ids(position_ids)
 
         hash_ids = self.engram_hasher(input_ids, packed.tok_doc_start) if self.engram_hasher is not None else None
+        for engram in self.engrams.values():
+            engram.prefetch(hash_ids[:, engram.engram_idx])
 
         mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         pre_mix = identity_pre_mix(mhc_states)
@@ -220,6 +272,74 @@ class DeepseekV41ForCausalLM(PrimeModel):
     ) -> PrimeLmOutput:
         hidden_states = self.model(input_ids, position_ids, seq_lens, seq_lens_are_pre_shard, routed_experts)
         return self.lm_head(hidden_states, labels, temperature=temperature, sampling_mask=sampling_mask)
+
+    def prune_to_pipeline_stage(self, units: range, *, first: bool, last: bool) -> None:
+        """Keep only this pipeline stage's decoder layers (and engrams), the embedding on the first
+        stage and the final norm and head on the last. `units` are half layers: unit 2i is layer i's
+        attention block, 2i + 1 its MoE block; a layer cut by a stage boundary keeps its stage's block,
+        and its engram goes with the attention block."""
+        from prime_rl.trainer.pipeline import StageLayers
+
+        model = self.model
+        # The residual streams a non-last stage sends come out of an mHC update, whose backward reads only
+        # its inputs, so the executor may free them once sent. The shared attention state is read by later
+        # layers' backward and is kept.
+        self.pipeline_releasable_outputs = () if last else (0,)
+        layer_ids = sorted({unit // 2 for unit in units})
+        model.layers = StageLayers({idx: model.layers[idx] for idx in layer_ids})
+        for idx, layer in zip(layer_ids, model.layers):
+            if 2 * idx not in units:
+                layer.keep_pipeline_part("moe")
+            elif 2 * idx + 1 not in units:
+                layer.keep_pipeline_part("attention")
+        model.engrams = nn.ModuleDict({key: engram for key, engram in model.engrams.items() if 2 * int(key) in units})
+        if len(model.engrams) == 0:
+            model.engram_hasher = None
+        if not first:
+            model.embed_tokens = None
+        if not last:
+            model.norm = None
+            self.lm_head = None
+
+    def pipeline_stage_forward(self, *inputs: Tensor) -> Tensor | tuple[Tensor, ...]:
+        """One pipeline stage. The first stage takes `(input_ids, position_ids, labels)`; later
+        stages take the residual streams, the `pre` gate and the shared attention state (an empty
+        tensor where it is still unset) followed by those three. The last stage returns the summed
+        cross-entropy, the others what the next stage takes.
+
+        Each call reads its micro-batch's document lengths from `pipeline_seq_lens`, host tensors
+        queued in micro-batch order (a stage runs its forwards in that order), so building the
+        packing context never waits on the GPU."""
+        model = self.model
+        seq_lens = self.pipeline_seq_lens.pop(0)
+        if model.embed_tokens is not None:
+            input_ids, position_ids, labels = inputs
+            mhc_states = (
+                model.embed_tokens(input_ids).unsqueeze(2).expand(-1, -1, model.config.hc_mult, -1).contiguous()
+            )
+            pre_mix = identity_pre_mix(mhc_states)
+            shared: list[Tensor | None] = list(SharedAttnState().as_tuple())
+        else:
+            mhc_states, pre_mix, *shared, input_ids, position_ids, labels = inputs
+            shared = [None if tensor.numel() == 0 else tensor for tensor in shared]
+        # Positions were checked against `seq_lens` on the host when the micro-batches were stacked.
+        packed = PackedContext.build(
+            config=model.config, seq_lens=seq_lens, device=input_ids.device, cp_rank=0, cp_world_size=1
+        )
+        hash_ids = model.engram_hasher(input_ids, packed.tok_doc_start) if model.engram_hasher is not None else None
+        for engram in model.engrams.values():
+            engram.prefetch(hash_ids[:, engram.engram_idx])
+        for name, decoder_layer in model.layers.named_children():
+            engram = model.engrams[name] if name in model.engrams else None
+            if engram is not None:
+                mhc_states = engram(mhc_states, hash_ids[:, engram.engram_idx])
+            mhc_states, pre_mix, *shared = decoder_layer(mhc_states, pre_mix, *shared, None, packed=packed)
+        if self.lm_head is not None:
+            hidden_states = model.norm(collapse_streams(mhc_states, pre_mix))
+            # One element per micro-batch: the schedule concatenates the last stage's outputs.
+            return self.lm_head(hidden_states, labels)["loss"].reshape(1)
+        shared = [mhc_states.new_empty(0) if tensor is None else tensor for tensor in shared]
+        return (mhc_states, pre_mix, *shared, input_ids, position_ids, labels)
 
     def init_buffers_post_meta(self) -> None:
         for module in self.modules():

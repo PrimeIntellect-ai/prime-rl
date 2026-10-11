@@ -12,6 +12,7 @@ from datetime import timedelta
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
+from torch import nn
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
@@ -19,10 +20,15 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
+from prime_rl.trainer.models.layers.expert_compute import invalidate_quantized_expert_weights
+from prime_rl.trainer.distributed.mega_moe import flush_pending_expert_wgrads, set_expert_wgrad_final_micro_batch
+from prime_rl.trainer.moe_runtime import set_local_expert_grad_sync
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.pipeline import build_pipeline_schedule, local_stage_ids, queue_seq_lens, stack_micro_batches
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim.sign_sgd import SignSGDInBackward
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
@@ -116,7 +122,8 @@ def train(config: SFTConfig):
     parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
 
     total_micro_batches = config.data.batch_size * config.model.cp
-    micro_batches_per_step = world.world_size * config.data.micro_batch_size
+    # Every stage of a pipeline runs the same micro-batches.
+    micro_batches_per_step = world.world_size // config.model.pp * config.data.micro_batch_size
     assert total_micro_batches % micro_batches_per_step == 0, (
         f"batch_size * cp ({total_micro_batches}) must be divisible by "
         f"world_size * micro_batch_size ({micro_batches_per_step})"
@@ -142,7 +149,16 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    if parallel_dims.pp_enabled:
+        pp_rank = parallel_dims.world_mesh["pp"].get_local_rank()
+        stage_ids = local_stage_ids(
+            pp_rank, parallel_dims.pp, config.model.pp_schedule, config.model.pp_stages_per_rank
+        )
+        model_parts = [setup_model(config.model, parallel_dims, loading_from_ckpt_later, stage) for stage in stage_ids]
+    else:
+        model_parts = [setup_model(config.model, parallel_dims, loading_from_ckpt_later)]
+    # Single-model code paths (logging, MoE stats, checkpoints) see the first part.
+    model = model_parts[0]
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -160,7 +176,7 @@ def train(config: SFTConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
-        list(model.named_parameters()),
+        [named for part in model_parts for named in part.named_parameters()],
         parallel_dims,
         cpu_offload=config.model.optim_cpu_offload,
         full_offload_config=config.model.full_offload,
@@ -169,6 +185,14 @@ def train(config: SFTConfig):
             get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
         ),
     )
+
+    in_backward = None
+    if config.optim.type == "sign_sgd" and config.optim.apply_in_backward:
+        if gradient_manager is not None or config.model.optim_cpu_offload:
+            raise ValueError("optim.apply_in_backward does not combine with optimizer offloading")
+        if grad_accum_steps != 1:
+            raise ValueError(f"optim.apply_in_backward needs one micro-batch per step, got {grad_accum_steps}")
+        in_backward = SignSGDInBackward(optimizer, model)
 
     # Set up the learning rate scheduler
     # skip_scheduler rebuilds a fresh schedule over the remaining steps: size it from the
@@ -188,6 +212,7 @@ def train(config: SFTConfig):
         tokenizer,
         config.data,
         config.model.cp,
+        pp_size=config.model.pp,
         renderer_config=config.renderer,
         processor=processor,
         multimodal=multimodal,
@@ -239,6 +264,29 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
+
+    pp_schedule = None
+    pp_enabled = parallel_dims.pp_enabled
+    if pp_enabled:
+        if config.val is not None or cp_enabled:
+            raise ValueError("pipeline parallelism supports neither validation nor CP yet")
+        if len(model_parts) > 1 and config.ckpt is not None:
+            raise ValueError("checkpoints support one pipeline stage per rank only")
+        pp_group = parallel_dims.world_mesh["pp"].get_group()
+        if config.model.pp_gemm_sms is not None:
+            import deep_gemm
+
+            deep_gemm.set_num_sms(config.model.pp_gemm_sms)
+        num_stages = parallel_dims.pp * config.model.pp_stages_per_rank
+        pp_first, pp_last = 0 in stage_ids, num_stages - 1 in stage_ids
+        # The pipeline rank holding the last stage (rank 0 in V schedules), which computes the loss.
+        pp_loss_rank = next(
+            owner
+            for owner in range(parallel_dims.pp)
+            if num_stages - 1
+            in local_stage_ids(owner, parallel_dims.pp, config.model.pp_schedule, config.model.pp_stages_per_rank)
+        )
+        pp_schedule = None  # built at the first step, from its first micro-batch
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
@@ -453,6 +501,49 @@ def train(config: SFTConfig):
             )
 
         step_tokens_per_expert = 0
+        if pp_enabled:
+            micro_batches = list(micro_batches)
+            # Only the first stage's micro-batches enter the pipeline.
+            local_token_count = torch.tensor(
+                sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches), device="cuda"
+            )
+            dist.broadcast(local_token_count, group_src=0, group=pp_group)
+            if gradient_manager is None:
+                step_local_token_count += local_token_count
+            stage_inputs = stack_micro_batches(micro_batches) if pp_first else ()
+            if pp_schedule is None:
+                queue_seq_lens(model_parts, micro_batches[:1])
+                pp_schedule = build_pipeline_schedule(
+                    model_parts,
+                    parallel_dims,
+                    config.model.pp_schedule,
+                    config.model.pp_stages_per_rank,
+                    grad_accum_steps,
+                    loss_fn=lambda loss_sum, _target: loss_sum.sum() / grad_accum_steps,
+                    first_inputs=tuple(t[:1] for t in stage_inputs) if pp_first else None,
+                    warmup_step=config.model.pp_warmup_step,
+                    transport=config.model.pp_transport,
+                    transport_ctas=config.model.pp_transport_ctas,
+                    offload=config.model.pp_activation_offload,
+                    defer_expert_weight_grads=config.model.pp_defer_expert_weight_grads,
+                    offload_masters=config.model.pp_offload_masters,
+                )
+            queue_seq_lens(model_parts, micro_batches)
+            losses = [] if pp_last else None
+            # The last stage computes the loss itself; the schedule still splits a target per micro-batch.
+            target = torch.zeros(grad_accum_steps, 1, device="cuda") if pp_last else None
+            with maybe_record_function("pipeline"):
+                pp_schedule.step(*stage_inputs, target=target, losses=losses)
+            if pp_last:
+                step_loss_sum += torch.stack(losses).sum().detach() * grad_accum_steps
+            dist.broadcast(step_loss_sum, group_src=pp_loss_rank, group=pp_group)
+            if is_moe_model:
+                moe_stats_step, step_tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in moe_stats_step.items():
+                    moe_stats[f"{name}/mean"] += value
+                    if name == "max_vio":
+                        moe_stats["max_vio/max"] = value
+            micro_batches = []
         for micro_step, micro_batch in enumerate(micro_batches):
             if config.log.log_data:
                 print_sample(
@@ -474,6 +565,9 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
+                if config.model.moe.reduce_local_expert_grads_once:
+                    set_local_expert_grad_sync(model, final_micro_batch=micro_step == grad_accum_steps - 1)
+                    set_expert_wgrad_final_micro_batch(micro_step == grad_accum_steps - 1)
                 begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
                 scaled_loss.backward()
                 finish_backward(gradient_manager)
@@ -486,6 +580,9 @@ def train(config: SFTConfig):
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
                 step_tokens_per_expert += tokens_per_expert
 
+        # The final micro-batch's backward adds every held expert weight gradient; a leftover is added here, or
+        # raises if FSDP already reduced its accumulator.
+        flush_pending_expert_wgrads()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
@@ -495,7 +592,8 @@ def train(config: SFTConfig):
             global_token_count_val = global_step_token_count.item()
             if global_token_count_val > 0:
                 grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+                for part in model_parts:
+                    scale_gradients_(None, part, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -516,12 +614,25 @@ def train(config: SFTConfig):
         nan_loss_count = nan_loss_count.item()
 
         grad_norm: torch.Tensor | None = None
-        if config.optim.max_norm is not None:
+        if in_backward is not None:
+            # Already applied during backward; only the norm is left to report.
+            grad_norm = in_backward.grad_norm(grad_scale if global_token_count_val > 0 else 0.0)
+        elif config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            # A pipeline rank can hold several stages (model parts).
+            grad_norm = clip_grad_norm_(
+                gradient_manager,
+                nn.ModuleList(model_parts) if pp_enabled else model,
+                config.optim.max_norm,
+                pp_group if pp_enabled else None,
+            )
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
+        invalidate_quantized_expert_weights()
+        if config.model.pp_offload_masters:
+            # The freed reduced gradients stay cached on FSDP's reduce-scatter stream, out of the pipeline's reach.
+            torch.cuda.empty_cache()
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
@@ -565,7 +676,7 @@ def train(config: SFTConfig):
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time
-        perf_counter = get_perf_counter(model, config.data.seq_len)
+        perf_counter = get_perf_counter(model)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_tokens, step_time)
