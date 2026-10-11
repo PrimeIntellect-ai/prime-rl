@@ -1,8 +1,8 @@
 # DeepSeek V4 Flash on the `scaleswe` SWE taskset at 131k context with every trainer-side FP8 parity feature on:
 # FP8 dense linears including the grouped attention output projection, DeepGEMM FP8 routed experts, the FP8 KV
 # cache simulation, and a compiled trainer. Same task, sequence length, batch and optimizer as swe-fp8-fp8.toml,
-# with 4 inference replicas (12 nodes total) instead of 8 and no CPU offloading of any kind. For 16 nodes, set
-# num_infer_replicas = 8 and max_inflight = 512 as in swe-fp8-fp8.toml.
+# with 16 nodes (8 trainer, 8 inference replicas) and no CPU offloading of any kind. For 12 nodes, set
+# num_infer_replicas = 4 and max_inflight = 256.
 #
 # Memory, max across the 64 ranks: at cp 4 with activation offload on the peak was 117 GiB, with it off 133 GiB, and a
 # 131k batch then OOMed at step 7. cp 8 halves the tokens each rank holds (16k), so activation offload stays off.
@@ -42,7 +42,7 @@ partition = "all"
 type = "multi_node"
 num_train_nodes = 8
 num_infer_nodes = 1
-num_infer_replicas = 4
+num_infer_replicas = 8
 
 [model]
 name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
@@ -50,8 +50,8 @@ name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
 [monitors.wandb]
 entity = "primeintellect"
 project = "deepseek-v4-flash"
-name = "swe-scaleswe-131k-tfp8full-sfp8-adamw1e-6-bs64g8-8t4i"
-tags = ["swe", "scaleswe", "131k", "fp8", "fp8-train", "fp8-kv-sim", "compile", "adamw", "lr1e-6", "8t4i"]
+name = "swe-scaleswe-131k-tfp8full-sfp8-adamw1e-6-bs64g8-8t8i"
+tags = ["swe", "scaleswe", "131k", "fp8", "fp8-train", "fp8-kv-sim", "compile", "adamw", "lr1e-6", "8t8i"]
 
 [weight_broadcast]
 type = "nccl"
@@ -123,7 +123,8 @@ weight_decay = 0.01
 
 [orchestrator]
 batch_size = 64
-max_off_policy_steps = 32
+# Episodes run up to ~100 min, which spans more than 32 steps once 8 replicas bring a step to ~2 min.
+max_off_policy_steps = 64
 
 [orchestrator.model.client]
 # Each FP8 replica takes 14-19 min to load and quantize the 1.1 TB bf16 checkpoint over NFS, then ~4 min
@@ -132,7 +133,7 @@ wait_for_ready_timeout = 7200
 
 # 64 in flight per replica, as swe-fp8-fp8.toml runs with 8 replicas.
 [orchestrator.concurrency]
-max_inflight = 256
+max_inflight = 512
 
 [orchestrator.train]
 group_size = 8
