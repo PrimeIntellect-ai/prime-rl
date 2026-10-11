@@ -610,7 +610,7 @@ class GradientOffloadManager:
         self._gradient_scale *= factor
 
     @torch.no_grad()
-    def clip_grad_norm_(self, max_norm: float) -> torch.Tensor:
+    def clip_grad_norm_(self, max_norm: float | None) -> torch.Tensor:
         if self._overlap_optimizer:
             raise RuntimeError("Gradient clipping cannot run after optimizer-in-backward has started")
         self.wait()
@@ -623,8 +623,9 @@ class GradientOffloadManager:
         total_norm = torch.tensor(local_squared_norm, dtype=torch.float32, device="cuda")
         dist.all_reduce(total_norm, op=dist.ReduceOp.SUM)
         total_norm.div_(self._dp_replicate).sqrt_()
-        clip_coefficient = torch.clamp(max_norm / (total_norm + 1e-6), max=1.0).item()
-        self._gradient_scale *= clip_coefficient
+        if max_norm is not None:
+            clip_coefficient = torch.clamp(max_norm / (total_norm + 1e-6), max=1.0).item()
+            self._gradient_scale *= clip_coefficient
         return total_norm
 
     def load_cpu_chunk(self, chunk_idx: int, *, wait: bool = True) -> list[torch.Tensor | None]:

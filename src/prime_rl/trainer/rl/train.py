@@ -59,6 +59,7 @@ from prime_rl.trainer.utils import (
     filter_rl_trainer_tensor_stats_for_wandb,
     finish_backward,
     get_ckpt_disk_metrics,
+    is_finite_on_all_ranks,
     prepare_gradient_offload,
     scale_gradients_,
     setup_full_cpu_optimizer_offload,
@@ -572,13 +573,19 @@ def train(config: TrainerConfig):
         if gradient_manager is None:
             scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
 
-        # Optionally, clip the gradients
+        # The global grad norm (clipped to optim.max_norm, if set). Not available once a
+        # CPU-offloaded optimizer has already stepped during backward.
         grad_norm: torch.Tensor | None = None
-        if config.optim.max_norm is not None:
+        if gradient_manager is None or not gradient_manager.optimizer_overlapped:
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
+        skip_step = grad_norm is not None and not is_finite_on_all_ranks(grad_norm)
+        if skip_step:
+            logger.warning(f"Non-finite grad norm ({grad_norm.item()}) at step {progress.step}: skipping the update")
+
         # Update the model parameters
-        optimizer.step()
+        if not skip_step:
+            optimizer.step()
         optimizer.zero_grad()
 
         # Update learning rate scheduler
@@ -680,6 +687,7 @@ def train(config: TrainerConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+        optim_metrics["optim/skipped_step"] = int(skip_step)
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics

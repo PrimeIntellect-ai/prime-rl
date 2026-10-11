@@ -86,8 +86,9 @@ def scale_gradients_(manager: "GradientOffloadManager | None", model: nn.Module,
 def clip_grad_norm_(
     manager: "GradientOffloadManager | None",
     model: nn.Module,
-    max_norm: float,
+    max_norm: float | None,
 ) -> Tensor:
+    """Returns the global grad norm, the same on every rank. Clips to ``max_norm`` unless it is None."""
     if manager is not None:
         grad_norm = manager.clip_grad_norm_(max_norm)
     else:
@@ -103,9 +104,17 @@ def clip_grad_norm_(
             norm = torch.nn.utils.get_total_norm([param.grad for param in parameters])
             norms.append(norm.full_tensor() if isinstance(norm, DTensor) else norm)
         grad_norm = torch.linalg.vector_norm(torch.stack(norms)) if norms else torch.tensor(0.0)
-        for parameters in mesh_parameters.values():
-            torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
+        if max_norm is not None:
+            for parameters in mesh_parameters.values():
+                torch.nn.utils.clip_grads_with_norm_(parameters, max_norm, grad_norm)
     return grad_norm.cuda() if grad_norm.device.type == "cpu" else grad_norm
+
+
+def is_finite_on_all_ranks(value: Tensor) -> bool:
+    """Collective: every rank gets the same answer, so all of them take the same branch."""
+    nonfinite = (~torch.isfinite(value)).to(torch.int32)
+    dist.all_reduce(nonfinite, op=dist.ReduceOp.MAX)
+    return not nonfinite.item()
 
 
 def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
