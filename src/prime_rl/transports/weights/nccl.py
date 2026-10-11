@@ -16,7 +16,7 @@ from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
-from prime_rl.orchestrator.clients import ADMIN_TIMEOUT_S, _admin_post
+from prime_rl.orchestrator.clients import ADMIN_TIMEOUT_S
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
@@ -338,21 +338,23 @@ class NCCLWeightReceiver(WeightReceiver):
             json.dumps({"generation": generation, "port": self.port, "inference_world_size": inference_world_size})
         )
         tmp.replace(group_file)
-        # Not evicting: an engine missing from the rendezvous would hang it, so a failure is fatal
-        await asyncio.gather(
-            *(
-                _admin_post(
-                    client,
-                    "/init_broadcaster",
-                    timeout_s=max(ADMIN_TIMEOUT_S, self.config.timeout),
-                    json={
-                        "host": self.config.host,
-                        "port": self.port,
-                        "rank_offset": index * self.gpus_per_server,
-                        "inference_world_size": inference_world_size,
-                        "timeout": self.config.timeout,
-                    },
-                )
-                for index, client in enumerate(members)
+
+        # Not evicting: an engine missing from the rendezvous would hang it, so a failure is fatal.
+        # One attempt: a retry would destroy a communicator the trainer may already have joined.
+        async def init_broadcaster(client: AsyncClient, rank_offset: int) -> None:
+            response = await client.post(
+                "/init_broadcaster",
+                timeout=max(ADMIN_TIMEOUT_S, self.config.timeout),
+                json={
+                    "host": self.config.host,
+                    "port": self.port,
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "timeout": self.config.timeout,
+                },
             )
+            response.raise_for_status()
+
+        await asyncio.gather(
+            *(init_broadcaster(client, index * self.gpus_per_server) for index, client in enumerate(members))
         )
