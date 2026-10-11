@@ -526,7 +526,7 @@ def rl(config: RLConfig):
             own_ckpt_dir = get_ckpt_dir(ckpt_output_dir if ckpt_output_dir is not None else config.run_dir)
             resume_step = config.resume.step
             if resume_step is None:
-                resume_step = resolve_latest_ckpt_step(own_ckpt_dir, ("trainer", "orchestrator"))
+                resume_step = resolve_latest_ckpt_step(own_ckpt_dir, with_orchestrator=config.trainer.data.fake is None)
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

@@ -298,36 +298,36 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
-# The file each component writes last when it saves a checkpoint step.
-CKPT_COMPLETE_MARKERS = {"trainer": ".metadata", "orchestrator": "progress.pt"}
+def get_complete_ckpt_steps(ckpt_dir: Path, with_orchestrator: bool) -> list[int]:
+    """Steps whose trainer checkpoint is complete (DCP writes ``.metadata`` last, after every
+    rank's shards) and, ``with_orchestrator``, whose orchestrator checkpoint exists (written by
+    atomic rename)."""
+    return [
+        step
+        for step in get_all_ckpt_steps(ckpt_dir)
+        if (get_step_path(ckpt_dir, step) / "trainer" / ".metadata").exists()
+        and (not with_orchestrator or (get_step_path(ckpt_dir, step) / "orchestrator" / "progress.pt").exists())
+    ]
 
 
-def resolve_latest_ckpt_step(ckpt_dir: Path, components: tuple[str, ...]) -> int | None:
-    """Gets the latest checkpoint step that every component in ``components`` finished
-    saving. Steps without a complete checkpoint of each component (a save killed
-    mid-write, or the orchestrator checkpoint of a step the trainer never reached) are
-    skipped. Returns None if there are no checkpoints; raises if there are checkpoints
-    but none is complete."""
+def resolve_latest_ckpt_step(ckpt_dir: Path, with_orchestrator: bool) -> int | None:
+    """Gets the latest complete checkpoint step (``get_complete_ckpt_steps``). Incomplete steps
+    (a save killed mid-write, or the orchestrator checkpoint of a step the trainer never reached)
+    are skipped. Returns None if there are no checkpoints; raises if there are checkpoints but
+    none is complete."""
     logger = get_logger()
     all_steps = get_all_ckpt_steps(ckpt_dir)
     if len(all_steps) == 0:
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
         return None
-    steps = [
-        step
-        for step in all_steps
-        if all(
-            (get_step_path(ckpt_dir, step) / component / CKPT_COMPLETE_MARKERS[component]).exists()
-            for component in components
-        )
-    ]
+    steps = get_complete_ckpt_steps(ckpt_dir, with_orchestrator)
     if len(steps) == 0:
+        parts = "trainer/.metadata" + (" and orchestrator/progress.pt" if with_orchestrator else "")
         raise FileNotFoundError(
-            f"Checkpoint steps {all_steps} in {ckpt_dir} have no complete checkpoint of {list(components)} "
-            f"(markers: {[CKPT_COMPLETE_MARKERS[c] for c in components]}). Enable checkpointing for every "
-            "component (e.g. the shared [ckpt] in an RL run), or pass --resume.step explicitly. If this run set "
-            "ckpt.output_dir before orchestrator checkpoints followed it, move the step_N/orchestrator dirs from "
-            "<run_dir>/checkpoints into the matching step dirs here (or remove stale ones), or unset the override."
+            f"No checkpoint step in {ckpt_dir} ({all_steps}) is complete: each lacks {parts}. "
+            "Pass --resume.step explicitly to resume from one anyway. If this run set ckpt.output_dir before "
+            "orchestrator checkpoints followed it, move the step_N/orchestrator dirs from <run_dir>/checkpoints "
+            "into the matching step dirs here first."
         )
     logger.info(f"Found latest complete checkpoint in {ckpt_dir}: {steps[-1]}")
     return steps[-1]
