@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any
 
 import verifiers.v1 as vf
@@ -17,8 +17,8 @@ from prime_rl.utils.logger import get_logger
 TASK_ERRORS = {"TaskError", "ToolsetError"}
 """Error types raised by a task's own code (setup, finalize, rewards) or its toolset."""
 CONFIRM_GROUPS = 4
-"""Later groups of the env that decide whether a failing task is quarantined (most must
-succeed) or the env was failing as a whole."""
+"""Groups of the env before and after a failing task's group that decide whether it is
+quarantined (most on each side must succeed) or the env was failing as a whole."""
 
 
 class TrainSource:
@@ -48,6 +48,7 @@ class TrainSource:
         self._failed_groups: dict[tuple[str, str], int] = defaultdict(int)
         self._candidates: dict[str, dict[str, tuple[str, list[bool]]]] = {name: {} for name in self.env_names}
         """Per env, tasks waiting for confirmation: their error and whether each later group of the env succeeded."""
+        self._recent_ok: dict[str, deque[bool]] = {name: deque(maxlen=CONFIRM_GROUPS) for name in self.env_names}
         self.num_tasks = {env.name: env.num_tasks for env in self.envs}
 
     def next_task(self, *, step: int) -> TaskRequest:
@@ -64,9 +65,10 @@ class TrainSource:
         """Quarantine a task after ``quarantine_after`` consecutive groups in which every
         episode failed in the task's own code or toolset. Infra errors (sandbox, provider,
         env server) say nothing about the task; timeouts and zero rewards are task results.
-        A task that qualifies is quarantined only once most of the env's next
-        ``CONFIRM_GROUPS`` groups of other tasks succeed, so the start of an outage (e.g. a
-        judge that every reward calls) quarantines nothing."""
+        A task that qualifies is quarantined only if most of the env's ``CONFIRM_GROUPS``
+        groups before it and most of the ``CONFIRM_GROUPS`` groups of other tasks after it
+        did not fully error, so neither the start nor the end of an outage (e.g. a judge that
+        every reward calls) quarantines anything."""
         errors = [
             [*episode.errors, *(error for trace in episode.traces for error in trace.errors)] for episode in group
         ]
@@ -80,13 +82,16 @@ class TrainSource:
                 del candidates[other]
                 if 2 * sum(outcomes) > CONFIRM_GROUPS:
                     self._quarantine(env_name, other, reason)
+        recent = self._recent_ok[env_name]
+        env_healthy = len(recent) == CONFIRM_GROUPS and 2 * sum(recent) > CONFIRM_GROUPS
+        recent.append(not failed)
         if not failed:
             self._failed_groups.pop((env_name, key), None)
             return
         if not all(episode_errors[-1].type in TASK_ERRORS for episode_errors in errors):
             return
         self._failed_groups[(env_name, key)] += 1
-        if self._failed_groups[(env_name, key)] >= self.quarantine_after and key not in candidates:
+        if self._failed_groups[(env_name, key)] >= self.quarantine_after and env_healthy and key not in candidates:
             del self._failed_groups[(env_name, key)]
             last = errors[-1][-1]
             candidates[key] = (f"{last.type}: {last.message}"[:500], [])

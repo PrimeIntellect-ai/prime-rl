@@ -513,7 +513,7 @@ class OrchestratorConfig(BaseConfig):
     """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
     quarantine_after: int | None = Field(1, ge=1)
-    """Stop sampling a train task after this many consecutive groups in which every episode failed in the task's own code or toolset (``TaskError``/``ToolsetError``: a setup that always fails, broken test files). Infra errors (sandbox, provider, env server), timeouts and zero rewards do not count, and a task is quarantined only once most of the env's next 4 groups of other tasks succeed (so the start of an outage quarantines nothing). The quarantined tasks are logged, counted in ``curriculum/<env>/quarantined`` and kept in the checkpoint. None disables it."""
+    """Stop sampling a train task after this many consecutive groups in which every episode failed in the task's own code or toolset (``TaskError``/``ToolsetError``: a setup that always fails, broken test files). Infra errors (sandbox, provider, env server), timeouts and zero rewards do not count, and a task is quarantined only if most of the env's 4 groups before and 4 groups (of other tasks) after its failing group did not fully error, so an outage quarantines nothing. The quarantined tasks are logged, counted in ``curriculum/<env>/quarantined`` and kept in the checkpoint. None disables it."""
 
     batch_size: int = Field(128, ge=1)
     """Samples to train on per step."""
