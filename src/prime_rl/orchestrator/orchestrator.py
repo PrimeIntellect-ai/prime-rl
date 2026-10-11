@@ -688,6 +688,23 @@ class Orchestrator:
                 "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
                 "off_policy/in_queue/max": float(max(in_queue)),
             }
+        # Per sampled turn (live-policy traces only): whether a weight update landed while it was
+        # generated, how many updates it spans, and the age of its oldest version at this step.
+        turns = [
+            versions
+            for episode in effective
+            for trace in episode.traces
+            for versions in trace.info.get("policy_versions", ())
+        ]
+        if turns:
+            spans = [last - first for first, last in turns]
+            ages = [(step - 1) - first for first, _ in turns]
+            metrics |= {
+                "off_policy/turns/spanning_update": sum(span > 0 for span in spans) / len(spans),
+                "off_policy/turns/versions_spanned/mean": sum(spans) / len(spans),
+                "off_policy/turns/age/mean": sum(ages) / len(ages),
+                "off_policy/turns/age/max": float(max(ages)),
+            }
         metrics["off_policy/dropped"] = float(self.train_sink.stale_drops)
         self.train_sink.stale_drops = 0
         for env_name, env_pool in batch.episodes.by_env().items():
