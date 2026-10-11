@@ -31,7 +31,7 @@ from prime_rl.inference.vllm.serving_tokens import (
 def _decode_routed_experts(encoded: dict) -> np.ndarray:
     return np.frombuffer(
         pybase64.b64decode_as_bytearray(encoded["data"]),
-        dtype=np.uint8,
+        dtype=encoded["dtype"],
     ).reshape(encoded["shape"])
 
 
@@ -45,20 +45,21 @@ def test_subclass_overrides_serve_tokens_full_generator():
     assert PrimeRlServingTokens.serve_tokens_full_generator is not upstream.serve_tokens_full_generator
 
 
-def test_serialize_routed_experts_uses_compact_raw_payload():
+def test_serialize_routed_experts_keeps_the_capture_dtype():
+    # A >256-expert model captures uint16 even when every id of a request is below 256.
     routed_experts = np.array(
         [
             [[1, 2], [3, 4]],
             [[5, 6], [7, 8]],
         ],
-        dtype=np.int64,
+        dtype=np.uint16,
     )
 
     encoded = serialize_routed_experts(routed_experts)
     assert encoded is not None
 
     decoded = _decode_routed_experts(encoded)
-    assert decoded.dtype == np.uint8
+    assert decoded.dtype == np.uint16
     np.testing.assert_array_equal(decoded, routed_experts)
 
 

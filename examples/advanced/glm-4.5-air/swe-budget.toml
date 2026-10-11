@@ -23,11 +23,6 @@
 max_steps = 1000
 seq_len = 131072
 
-# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid
-# slow/contended shared-FS caches and FS lock deadlocks.
-[env_vars]
-TRITON_CACHE_DIR = "/tmp/.triton-cache"
-
 [slurm]
 partition = "all"
 
@@ -39,10 +34,6 @@ num_infer_nodes = 1
 [monitors.wandb]
 project = "swe-ablations"
 
-[weight_broadcast]
-type = "nccl"
-timeout = 3600
-
 [ckpt]
 interval = 50
 keep_last = 1
@@ -52,19 +43,16 @@ keep_last = 1
 # --- Trainer ---
 
 [trainer]
-dist_timeout_seconds = 3600
 enable_router_replay = true
 
 [model]
 name = "zai-org/GLM-4.5-Air"
 
 [trainer.model]
-impl = "custom"
 attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
-optim_cpu_offload = false
-full_offload = true
+offload = "full"
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -73,9 +61,6 @@ fused_lm_head_token_chunk_size = 1024
 max_inflight_activations = 1
 
 [trainer.model.compile]
-
-[trainer.ckpt]
-skip_optimizer = true
 
 [trainer.optim]
 type = "sign_sgd"
@@ -113,4 +98,3 @@ FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 [inference.vllm]
 max_model_len = 131072
 tensor_parallel_size = 8
-enable_return_routed_experts = true

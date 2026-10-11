@@ -10,27 +10,28 @@ from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
+from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
+    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
+    NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
     TrainerLogConfig,
+    WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
-    FileSystemWeightBroadcastConfig,
     GCConfig,
     ModelConfig,
-    NCCLWeightBroadcastConfig,
     OptimizerConfig,
     SchedulerConfig,
     TokenizerConfig,
-    WeightBroadcastConfig,
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
@@ -99,6 +100,9 @@ class SFTColumnsConfig(BaseConfig):
 
     tools: str = "tools"
     """Column with the tool schemas in OpenAI function-calling format."""
+
+    message_loss_mask: str = "message_loss_mask"
+    """Optional column of booleans or integer 0/1 flags, one per resolved message (prompt + completion for split rows). Zero excludes a message from loss; one preserves its normal supervision. Missing or null masks leave supervision unchanged."""
 
     renderer: dict[str, str] = {"reasoning_effort": "reasoning_effort"}
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
@@ -269,6 +273,27 @@ class SFTConfig(BaseConfig):
         return self.output_dir / self.run.dir
 
     @model_validator(mode="after")
+    def resolve_moe_router_dtype_auto(self):
+        """Resolve ``model.moe_router_dtype='auto'``: SFT defaults to bf16 routing, skipping the fp32 gate GEMM and its fp32 FSDP unit."""
+        if self.model.moe_router_dtype == "auto":
+            self.model.moe_router_dtype = "bfloat16"
+        return self
+
+    @model_validator(mode="after")
+    def resolve_weight_decay_auto(self):
+        """Resolve ``optim.weight_decay='auto'``: SFT keeps the historical 0.01 default — standard L2 regularization for supervised training."""
+        if self.optim.weight_decay == "auto":
+            self.optim.weight_decay = 0.01
+        return self
+
+    @model_validator(mode="after")
+    def resolve_freeze_moe_router_auto(self):
+        """Resolve ``model.freeze_moe_router='auto'``: SFT trains the router."""
+        if self.model.freeze_moe_router == "auto":
+            self.model.freeze_moe_router = False
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
         default the run directory, W&B run name and platform run name to it when not
@@ -363,13 +388,13 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
-        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
+        if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
         return self
 
     @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
-        if self.model.full_offload and self.optim.max_norm is not None:
+        if self.model.offload == "full" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
@@ -449,7 +474,7 @@ class SFTConfig(BaseConfig):
                 self.weight_broadcast.inference_world_size = (
                     self.deployment.num_infer_nodes * self.deployment.gpus_per_node
                 )
-            self.inference.weight_broadcast.type = self.weight_broadcast.type
+            self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
             if self.max_steps is None:
                 warnings.warn(
                     "Online evals without max_steps: the evals process never sees a final checkpoint, "
@@ -500,7 +525,7 @@ class SFTConfig(BaseConfig):
             vllm.api_server_count = vllm.data_parallel_size
         if self.weight_broadcast.type == "nccl":
             self.weight_broadcast.inference_world_size = vllm.data_parallel_size * vllm.tensor_parallel_size
-        self.inference.weight_broadcast.type = self.weight_broadcast.type
+        self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
 
         host = self.inference.server.host or "localhost"
         client = self.eval.client
@@ -594,19 +619,6 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_scheduler_steps(self):
         validate_scheduler(self.scheduler, self.max_steps)
-        return self
-
-    @model_validator(mode="after")
-    def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
-            raise ValueError("Muon optimizer does not support FSDP CPU offload")
-        return self
-
-    @model_validator(mode="after")
-    def ep_only_with_custom_impl(self):
-        if self.model.ep != 1 and self.model.ep != "auto" and self.model.impl not in ("custom", "auto"):
-            raise ValueError("EP is only supported with the custom implementation or auto mode")
-
         return self
 
     ### Auto-setup and validate shared configs

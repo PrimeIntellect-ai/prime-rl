@@ -2,15 +2,14 @@ clean = true
 
 [env_vars]
 HF_HOME = "/home/huggingface"
-TRITON_CACHE_DIR = "/tmp/.cache/triton_cache"
 
 [model]
 name = "zai-org/GLM-5.3-BF16"
-impl = "custom"
 attn = "flash_attention_2"
 cp = 8
 ep = 8
-optim_cpu_offload = true
+offload = "optimizer"
+dsa_backend = "cudnn_flashmla"
 
 [model.ac]
 freq = 1

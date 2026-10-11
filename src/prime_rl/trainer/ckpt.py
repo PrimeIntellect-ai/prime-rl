@@ -27,7 +27,7 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
-from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path
+from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
 
 
 @dataclass

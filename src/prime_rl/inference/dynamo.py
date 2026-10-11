@@ -10,7 +10,7 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, Field
 
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
 from prime_rl.orchestrator.clients import (
     ADMIN_TIMEOUT_S,
     UPDATE_WEIGHTS_TIMEOUT_S,
@@ -100,7 +100,7 @@ def _discovery_headers(client_config: ClientConfig) -> dict[str, str]:
     return headers
 
 
-def resolve_dynamo_discovery_url(client_config: ClientConfig) -> str:
+def resolve_dynamo_discovery_url(client_config: PolicyClientConfig) -> str:
     dynamo = client_config.dynamo
     if dynamo is None or not dynamo.enabled:
         raise ValueError("Dynamo discovery is not enabled")
@@ -156,7 +156,7 @@ class DynamoAdminPlane(AdminPlane):
 
     def __init__(
         self,
-        client_config: ClientConfig,
+        client_config: PolicyClientConfig,
         model_name: str,
         *,
         poll_interval: float = 1.0,

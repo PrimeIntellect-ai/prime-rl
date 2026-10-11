@@ -27,9 +27,11 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_expert_load_stats,
     get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
+    reshard_module,
     setup_processor,
     setup_tokenizer,
     setup_model,
@@ -98,10 +100,10 @@ def train(config: SFTConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+        enable_gloo=config.model.offload == "full",
     )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
+    if config.model.offload == "full":
+        setup_full_cpu_optimizer_offload()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -111,7 +113,7 @@ def train(config: SFTConfig):
     resolve_ep(config.model)
 
     # Initialize parallel dimensions
-    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+    parallel_dims = get_parallel_dims(config.model)
 
     total_micro_batches = config.data.batch_size * config.model.cp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size
@@ -160,11 +162,10 @@ def train(config: SFTConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
+        offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
     )
 
@@ -190,7 +191,7 @@ def train(config: SFTConfig):
         processor=processor,
         multimodal=multimodal,
     )
-    dataloader = setup_dataloader(dataset, config.data)
+    dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
     val_raw_dataset = None
     if config.val is not None:
@@ -208,13 +209,12 @@ def train(config: SFTConfig):
             model,
             [optimizer],
             scheduler if not skip.skip_scheduler else None,
-            progress if not skip.skip_progress else None,
+            progress,
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
-        if not skip.skip_progress:
-            progress.step += 1
+        progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
@@ -256,7 +256,7 @@ def train(config: SFTConfig):
 
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
-            # pads every pack to seq_len; shard_for_cp raises on violations.
+            # pads every pack to a multiple of it; shard_for_cp raises on violations.
             defer_vlm_cp_to_model = (
                 mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
@@ -344,7 +344,7 @@ def train(config: SFTConfig):
             processor=processor,
             multimodal=multimodal,
         )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data)
+        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
         mean_loss, nan_count = run_eval_loop(val_dataloader)
@@ -449,7 +449,10 @@ def train(config: SFTConfig):
                 overlap_optimizer=not run_validation_this_step,
             )
 
+        step_tokens_per_expert = 0
+        step_local_num_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batches):
+            step_local_num_tokens += micro_batch["input_ids"].shape[1]
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
@@ -475,12 +478,15 @@ def train(config: SFTConfig):
                 finish_backward(gradient_manager)
 
             if is_moe_model:
-                for name, value in get_global_moe_stats(model, ep_group, dp_cp_group).items():
+                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in micro_moe_stats.items():
                     moe_stats[f"{name}/mean"] += value / grad_accum_steps
                     if name == "max_vio":
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
+                step_tokens_per_expert += tokens_per_expert
 
         forward_backward_time = time.perf_counter() - forward_backward_start_time
+        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
@@ -494,6 +500,10 @@ def train(config: SFTConfig):
         # optimizer step (so eval_on_start evaluates untrained weights)
         if run_validation_this_step:
             run_validation(progress.step)
+            # The no-grad validation forward leaves the [lm_head, norm] FSDP2 group unsharded (it
+            # opts out of reshard_after_forward), so clip_grad_norm_ below would skip its grad-less
+            # unsharded parameters. Reshard so clipping sees every gradient.
+            reshard_module(model)
 
         # Compute the global mean loss for logging.
         dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
@@ -507,7 +517,7 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm, parallel_dims.ep_enabled)
+            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -540,26 +550,24 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Compute step metrics. CP shards the same sequences across cp ranks
-        # (sequence-sharded data parallelism on the seq dim), so the unique
-        # training tokens per step is dp_size * (batch_per_dp_rank * seq).
-        # The `dp` mesh excludes cp by construction (parallel_dims.py), mirroring
-        # the RL trainer's accounting (rl/train.py).
-        dp_size = parallel_dims.get_mesh("dp").size()
-        num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
-        num_tokens = dp_size * num_local_tokens
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
+        # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
+        # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
+        step_time = time.perf_counter() - step_start_time
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
-        throughput = perf_counter.get_tokens_per_second() or 0
-        mfu = perf_counter.get_mfu() or 0
+        throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
+        mfu = perf_counter.get_step_mfu(num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
         # Log step metrics
-        step_time = time.perf_counter() - step_start_time
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
@@ -639,7 +647,7 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()}
+        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()} | expert_load_stats
         if moe_log_metrics:
             asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
 

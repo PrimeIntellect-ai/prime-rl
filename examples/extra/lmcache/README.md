@@ -3,10 +3,10 @@
 [`inference.toml`](inference.toml) selects native LMCache MP offload with a 2 GiB
 CPU pool per inference node. It requires the `lmcache` extra.
 
-SLURM starts the daemon automatically. To use it with the two-GPU Wordle example:
+SLURM starts the daemon automatically. To use it with the Wordle example:
 
 ```bash
-uv run --extra lmcache rl @ configs/basic/wordle/rl.toml \
+uv run --extra lmcache rl @ examples/basic/wordle/rl.toml \
   --inference @ examples/extra/lmcache/inference.toml \
   --max-steps 5 --run.name wordle-lmcache --slurm
 ```

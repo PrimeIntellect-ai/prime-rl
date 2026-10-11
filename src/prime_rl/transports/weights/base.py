@@ -8,7 +8,7 @@ from typing import final
 
 import torch.nn as nn
 
-from prime_rl.configs.trainer import WeightBroadcastConfig
+from prime_rl.configs.shared import WeightBroadcastConfig
 from prime_rl.orchestrator.clients import AdminPlane
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -153,7 +153,7 @@ class WeightReceiver(ABC):
         while not sender_ready.exists():
             if cancelled is not None and cancelled():
                 raise asyncio.CancelledError
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
 
     def _ack(self, step: int) -> None:
         """Acknowledge the offered version — unblocks the waiting trainer."""

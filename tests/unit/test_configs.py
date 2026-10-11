@@ -4,6 +4,7 @@ from typing import Annotated, Literal, get_args
 
 import pytest
 import tomli_w
+import verifiers.v1 as vf
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
@@ -17,6 +18,10 @@ from prime_rl.configs.orchestrator import (
     RLOnlineEvalConfig,
     ScheduledEvalConfig,
     TrainConfig,
+    TrainSourceConfig,
+)
+from prime_rl.configs.orchestrator import (
+    ModelConfig as OrchestratorModelConfig,
 )
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
@@ -89,14 +94,11 @@ def test_lmcache_offload_requires_prefix_caching():
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/`, `examples/` or `k8s/`."""
+    """Any TOML file inside `configs/` or `examples/`."""
     config_files = list(Path("configs").rglob("*.toml"))
     example_files = list(Path("examples").rglob("*.toml"))
-    # The k8s example configs are mounted into the chart's containers verbatim, so a
-    # stale key there breaks a deploy with nothing else to catch it.
-    k8s_files = list(Path("k8s").rglob("*.toml"))
 
-    return config_files + example_files + k8s_files
+    return config_files + example_files
 
 
 def can_parse(config_cls: type, args: list[str]) -> bool:
@@ -381,8 +383,27 @@ def test_removed_moe_runtime_fields_are_rejected(removed):
 def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     config = config_cls.model_validate({})
 
-    assert config.model.optim_cpu_offload is True
-    assert config.model.full_offload is None
+    assert config.model.offload == "optimizer"
+
+
+def test_moe_router_dtype_auto_resolves_per_trainer():
+    """``moe_router_dtype='auto'`` (the default) resolves to fp32 for RL and bf16 for SFT; explicit values are kept."""
+    assert TrainerConfig.model_validate({}).model.moe_router_dtype == "float32"
+    assert SFTConfig.model_validate({}).model.moe_router_dtype == "bfloat16"
+
+    for config_cls in (TrainerConfig, SFTConfig):
+        for dtype in ("bfloat16", "float32"):
+            assert config_cls.model_validate({"model": {"moe_router_dtype": dtype}}).model.moe_router_dtype == dtype
+
+
+def test_freeze_moe_router_auto_resolves_per_trainer():
+    """``freeze_moe_router='auto'`` (the default) freezes the router for RL, not SFT; explicit values are kept."""
+    assert TrainerConfig.model_validate({}).model.freeze_moe_router is True
+    assert SFTConfig.model_validate({}).model.freeze_moe_router is False
+
+    for config_cls in (TrainerConfig, SFTConfig):
+        for freeze in (True, False):
+            assert config_cls.model_validate({"model": {"freeze_moe_router": freeze}}).model.freeze_moe_router is freeze
 
 
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
@@ -390,7 +411,7 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
         config = config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"max_norm": 1.0},
             }
         )
@@ -399,31 +420,12 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
 
 
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
-def test_full_optimizer_offload_accepts_debug_backend(config_cls):
-    config = config_cls.model_validate(
-        {
-            "model": {
-                "optim_cpu_offload": False,
-                "full_offload": {
-                    "cpu_optimizer_backend": "torch",
-                },
-            },
-            "optim": {"max_norm": None},
-        }
-    )
-
-    assert config.model.full_offload is not None
-    assert config.model.full_offload.cpu_optimizer_backend == "torch"
-
-
-@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
-@pytest.mark.parametrize("optimizer_type", ["sgd", "muon"])
-def test_full_optimizer_offload_requires_supported_optimizer(config_cls, optimizer_type):
+def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
     with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
         config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
-                "optim": {"type": optimizer_type, "max_norm": None},
+                "model": {"offload": "full"},
+                "optim": {"type": "muon", "max_norm": None},
             }
         )
 
@@ -432,11 +434,11 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls, optimiz
 def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
     config = config_cls.model_validate(
         {
-            "model": {"optim_cpu_offload": False, "full_offload": True},
+            "model": {"offload": "full"},
             "optim": {"type": "sign_sgd", "max_norm": None},
         }
     )
-    assert config.model.full_offload is not None
+    assert config.model.offload == "full"
     assert config.optim.type == "sign_sgd"
 
 
@@ -455,6 +457,36 @@ def test_resolved_json_roundtrips_explicit_none(tmp_path):
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
     assert reloaded == config
+
+
+@pytest.mark.parametrize(
+    "config_class,source_args,expected_url,expected_key",
+    [
+        (
+            EvalConfig,
+            ["--source", '[{"env":{"id":"single_agent"}}]'],
+            "https://configured.pinference.ai/api/v1",
+            "PRIME_API_KEY",
+        ),
+        (
+            SFTOnlineEvalConfig,
+            ["--source", '[{"env":{"id":"single_agent"}}]'],
+            "http://localhost:8000/v1",
+            "VLLM_API_KEY",
+        ),
+        (OrchestratorModelConfig, [], "http://localhost:8000/v1", "VLLM_API_KEY"),
+    ],
+)
+@pytest.mark.parametrize("overrides", [[], ["--client.skip-model-check"], ["--client.wait-for-ready-timeout", "10"]])
+def test_client_defaults_survive_partial_overrides(
+    monkeypatch, config_class, source_args, expected_url, expected_key, overrides
+):
+    monkeypatch.setenv("PRIME_INFERENCE_URL", "https://configured.pinference.ai/api/v1")
+    config = cli(config_class, args=source_args + overrides)
+    assert config.client.base_url == expected_url
+    assert config.client.api_key_var == expected_key
+    reloaded = config_class.model_validate_json(config.model_dump_json())
+    assert reloaded.client == config.client
 
 
 def test_env_algo_inherits_the_group_algo():
@@ -483,11 +515,25 @@ def test_env_algo_inherits_the_group_algo():
     assert [env.algo.type for env in reloaded.train.source] == ["grpo", "echo", "echo"]
 
 
-def test_sources_inherit_the_group_fields_they_leave_unset():
+@pytest.mark.parametrize("group_token_key", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("source_token_key", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("source_token_limit", [200, None])
+@pytest.mark.parametrize("nested_sampling", [False, True])
+def test_sources_inherit_the_group_fields_they_leave_unset(
+    group_token_key, source_token_key, source_token_limit, nested_sampling
+):
+    overrides = {source_token_key: source_token_limit, "top_k": 20}
     config = EvalConfig.model_validate(
         {
             "r": 4,
-            "sampling": {"temperature": 0.5, "extra_body": {"a": 1}},
+            "sampling": {
+                group_token_key: 100,
+                "temperature": 3.0,
+                "reasoning_effort": "xhigh",
+                "top_k": 40,
+                "frequency_penalty": 0.5,
+                "extra_body": {"a": 1},
+            },
             "select": {"limit": 8, "include": {"idx": [":100"]}},
             "env": {"retries": {"max_retries": 3}},
             "source": [
@@ -496,7 +542,11 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
                     "name": "b",
                     "env": {"taskset": {"id": "gsm8k"}},
                     "group_size": 2,
-                    "sampling": {"extra_body": {"b": 2}},
+                    "sampling": {
+                        **({} if nested_sampling else overrides),
+                        "reasoning_effort": "max",
+                        "extra_body": {"b": 2, **(overrides if nested_sampling else {})},
+                    },
                     "select": {"include": {"names": ["x"]}},
                 },
             ],
@@ -504,7 +554,18 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
     )
     a, b = config.source
     assert (a.group_size, b.group_size) == (4, 2)
-    assert b.sampling.temperature == 0.5 and b.sampling.extra_body == {"a": 1, "b": 2}
+    assert isinstance(a.sampling, vf.SamplingConfig) and isinstance(b.sampling, vf.SamplingConfig)
+    assert a.sampling.max_tokens == 100 and b.sampling.max_tokens == source_token_limit
+    assert a.sampling.reasoning_effort == "xhigh" and a.sampling.top_k == 40
+    assert b.sampling.model_dump(exclude_none=True) == {
+        **({"max_tokens": source_token_limit} if source_token_limit is not None else {}),
+        "temperature": 3.0,
+        "reasoning_effort": "max",
+        "top_k": 20,
+        "frequency_penalty": 0.5,
+        "a": 1,
+        "b": 2,
+    }
     assert b.select.limit == 8 and b.select.include.idx == [":100"] and b.select.include.names == ["x"]
     assert a.env.retries.max_retries == 3 and b.env.retries.max_retries == 3
     reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))
@@ -585,6 +646,39 @@ def test_policy_sources_accept_different_top_p_values():
     assert [source.sampling.top_k for source in config.train.source] == [512, 512]
 
 
+@pytest.mark.parametrize("frozen", [False, True])
+@pytest.mark.parametrize(
+    "sampling,agent_sampling,rejected",
+    [
+        ({}, {}, False),
+        ({"top_p": 0.9}, {"max_completion_tokens": 200, "reasoning_effort": "high"}, False),
+        ({}, {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}, False),
+        ({}, {"temperature": 1.0}, True),
+        ({}, {"temperature": None}, True),
+        ({}, {"extra_body": {"top_k": 20}}, True),
+        ({}, {"frequency_penalty": 0.5}, True),
+        ({}, {"extra_body": {"frequency_penalty": 0.5}}, True),
+        ({"extra_body": {"frequency_penalty": 0.5}}, {}, True),
+    ],
+)
+def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, rejected, frozen):
+    source = {
+        "env": {"taskset": {"id": "reverse-text"}, "agent": {"sampling": agent_sampling}},
+        "sampling": sampling,
+    }
+    if frozen:
+        source["algo"] = {
+            "type": "sft",
+            "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8000/v1"}},
+        }
+    if rejected and not frozen:
+        with pytest.raises(ValidationError, match="sampling"):
+            TrainSourceConfig.model_validate(source)
+    else:
+        config = TrainSourceConfig.model_validate(source)
+        assert TrainSourceConfig.model_validate_json(config.model_dump_json()) == config
+
+
 def test_policy_sources_reject_mixed_top_k_capture():
     with pytest.warns(UserWarning, match="defaulting top_k"):
         with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
@@ -625,8 +719,29 @@ def test_single_node_auto_inference_ports_follow_server_port():
 
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size == 2
+    assert config.trainer.weight_broadcast.inference_world_size == 2
+    assert config.orchestrator.weight_broadcast.inference_world_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
+
+
+def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
+    """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
+    import json
+
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"vllm": {"tensor_parallel_size": 1}},
+            "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        }
+    )
+    path = tmp_path / "rl.json"
+    path.write_text(json.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))
+    reloaded = cli(RLConfig, args=["@", str(path)])
+    assert reloaded.trainer.weight_broadcast.inference_world_size == 2
+    assert reloaded == config
 
 
 def test_multi_node_auto_inference_parallelism():
@@ -648,6 +763,24 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size_local == 2
     assert config.inference.vllm.data_parallel_size == 2
+
+
+def test_disaggregated_inference_inherits_deployment_gpus_per_node():
+    config = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": {"tensor_parallel_size": 2}, "deployment": {"type": "disaggregated"}},
+        "deployment": {"type": "multi_node", "gpus_per_node": 4, "num_train_nodes": 1},
+        "slurm": {},
+    }
+    resolved = RLConfig.model_validate(config)
+    assert resolved.inference.deployment.gpus_per_node == 4
+    assert resolved.inference.vllm.data_parallel_size_local == 2
+
+    config["deployment"].pop("gpus_per_node")
+    config["inference"]["deployment"]["gpus_per_node"] = 4
+    with pytest.raises(ValidationError, match="gpus_per_node must match"):
+        RLConfig.model_validate(config)
 
 
 def test_orchestrator_vlm_requires_renderer():
@@ -684,7 +817,6 @@ def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {
             "cp": 2,
-            "impl": "custom",
             "optimization_dtype": "bfloat16",
             "reduce_dtype": "bfloat16",
             "vlm": {
@@ -940,12 +1072,12 @@ def test_shared_and_subconfig_disjoint_fields_coexist():
     config = RLConfig.model_validate(
         {
             "model": {"name": "Qwen/Qwen3-0.6B"},
-            "trainer": {"model": {"impl": "custom"}},
+            "trainer": {"model": {"attn": "flash_attention_3"}},
             "orchestrator": {"renderer": {"name": "default"}},
         }
     )
     assert config.trainer.model.name == "Qwen/Qwen3-0.6B"
-    assert config.trainer.model.impl == "custom"
+    assert config.trainer.model.attn == "flash_attention_3"
 
 
 def test_run_dir_propagates_through_cli(tmp_path):

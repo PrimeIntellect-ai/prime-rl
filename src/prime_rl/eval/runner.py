@@ -34,10 +34,6 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import dispatch_failure_metrics
-from prime_rl.orchestrator.patches import (
-    monkey_patch_chat_completion_logprobs,
-    monkey_patch_oai_iterable_types,
-)
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
@@ -48,9 +44,6 @@ from prime_rl.orchestrator.utils import (
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_config_dir
-
-monkey_patch_oai_iterable_types()
-monkey_patch_chat_completion_logprobs()
 
 # How often ``run_epoch`` re-checks for a superseding checkpoint while it waits for episodes.
 POLL_INTERVAL_S = 2.0
@@ -112,7 +105,7 @@ class EvalRunner:
 
         # Pessimistic per-episode token cost for the controller's starting cap,
         # only used when the engine doesn't report its max context length.
-        fallback_cost = max((source.sampling.max_completion_tokens or 0) for source in config.source) or 8192
+        fallback_cost = max((source.sampling.max_tokens or 0) for source in config.source) or 8192
         self.concurrency = ConcurrencyController(config.concurrency, fallback_cost=fallback_cost)
         self.dispatcher = Dispatcher(
             train_envs=None,
@@ -121,10 +114,11 @@ class EvalRunner:
             eval_source=self.eval_source,
             policy_clients=self.clients,
             policy=self.policy,
+            policy_weights_change=isinstance(config, SFTOnlineEvalConfig),
             progress=None,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            tasks_per_minute=config.tasks_per_minute,
+            dispatch_per_minute=config.dispatch_per_minute,
             max_off_policy_steps=0,
             run_id=self.run_id,
             run_name=self.run_name,

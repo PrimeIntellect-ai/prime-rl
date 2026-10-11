@@ -55,19 +55,16 @@ class CheckpointManager:
             raise FileNotFoundError(f"Orchestrator checkpoint not found at {state_file}")
         get_logger().debug(f"Loading checkpoint from {state_file}")
         start = time.perf_counter()
-        if self.config.skip_progress:
-            get_logger().info("Skipping progress and train source loading from checkpoint")
-        else:
-            with open(state_file, "rb") as f:
-                state = torch.load(f, weights_only=False)
-            saved: Progress = state["progress"]
-            for key, value in asdict(saved).items():
-                if hasattr(progress, key):
-                    setattr(progress, key, value)
-            train_source.load_state_dict(state["train_source"])
-            for name in state["train_source"]["envs"]:
-                if name in train_source.curricula:
-                    get_logger().info(f"Resumed curriculum state for env {name}")
+        with open(state_file, "rb") as f:
+            state = torch.load(f, weights_only=False)
+        saved: Progress = state["progress"]
+        for key, value in asdict(saved).items():
+            if hasattr(progress, key):
+                setattr(progress, key, value)
+        train_source.load_state_dict(state["train_source"])
+        for name in state["train_source"]["envs"]:
+            if name in train_source.curricula:
+                get_logger().info(f"Resumed curriculum state for env {name}")
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
 
 

@@ -9,10 +9,9 @@
 # `dist_timeout_seconds = 14400` is needed on any run that has to build the HF -> prime-rl
 # conversion cache, which takes far longer than the 3600s default.
 #
-# To buy memory back for quicker testing on fewer nodes, set `full_offload = true` under `[model]`,
-# which keeps the fp32 masters, moments and gradients in CPU RAM and needs `optim_cpu_offload =
-# false` and `optim.max_norm = "None"` set alongside it; the lighter `optim_cpu_offload = true` is
-# already the default here.
+# To buy memory back for quicker testing on fewer nodes, set `offload = "full"` under `[model]`,
+# which keeps the fp32 masters, moments and gradients in CPU RAM and disables gradient clipping;
+# the lighter `offload = "optimizer"` is already the default here.
 #
 # There is no `[ckpt]` block. The trainer saves unconditionally at the last step, and a 43-layer
 # checkpoint (fp32 master weights plus two fp32 AdamW moments) is ~3 TiB. Add one with
@@ -23,7 +22,6 @@ max_steps = 20
 
 [model]
 name = "deepseek-ai/DeepSeek-V4-Flash-0731"
-impl = "custom"
 ep = 8
 
 # Torch all-to-all, not DeepEP. At full depth DeepEP dies on the first backward with

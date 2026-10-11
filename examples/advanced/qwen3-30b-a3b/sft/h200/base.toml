@@ -2,11 +2,9 @@ clean = true
 
 [env_vars]
 HF_HOME = "/home/huggingface"
-TRITON_CACHE_DIR = "/tmp/.cache/triton_cache"
 
 [model]
 name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-impl = "custom"
 attn = "flash_attention_3"
 ep = 8
 

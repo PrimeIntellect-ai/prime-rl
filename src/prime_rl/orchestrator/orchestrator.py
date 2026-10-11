@@ -38,6 +38,7 @@ from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.routing import is_trainable
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
+from prime_rl.orchestrator.batch import BatchPacker
 from prime_rl.orchestrator.ckpt import setup_ckpt_manager
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient, setup_admin_plane
 from prime_rl.orchestrator.concurrency import ConcurrencyController
@@ -47,11 +48,6 @@ from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
-from prime_rl.orchestrator.packing import BatchPacker
-from prime_rl.orchestrator.patches import (
-    monkey_patch_chat_completion_logprobs,
-    monkey_patch_oai_iterable_types,
-)
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -78,12 +74,8 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir
-from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step
-
-monkey_patch_oai_iterable_types()
-monkey_patch_chat_completion_logprobs()
-
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
+from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
@@ -93,11 +85,6 @@ SHUTDOWN_TIMEOUT_S = 300
 # dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
-
-# Default wait for the trainer's startup weight broadcast when no ckpt block
-# configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
-# broadcast is always coming, so wait rather than fail immediately.
-STARTUP_WEIGHT_WAIT_TIMEOUT_S = 1200
 
 
 class Orchestrator:
@@ -250,8 +237,7 @@ class Orchestrator:
 
         # The checkpoint finished step ``resume_step``; resume at the next step. Derive the step
         # from ``resume_step`` (not the loaded progress.step) so it stays coordinated with the
-        # trainer even when ``ckpt.skip_progress`` leaves the counter unrestored. The curricula
-        # themselves are restored below, once the envs are loaded.
+        # trainer. The curricula themselves are restored below, once the envs are loaded.
         if self.resume_step is not None:
             self.progress.step = self.resume_step + 1
             get_logger().info(f"Resuming from step {self.resume_step}")
@@ -291,16 +277,12 @@ class Orchestrator:
         get_logger().success(f"Policy inference pool ready after {format_time(time.perf_counter() - t0)}")
         # Build + ready pools for each env's frozen generation source and the
         # algorithm's frozen reference model
-        await asyncio.gather(
-            *(env.generation_source.setup() for env in self.train_envs),
-            *(env.algorithm.setup() for env in self.train_envs),
-        )
+        await asyncio.gather(*(env.setup() for env in self.train_envs))
 
         get_logger().info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
-        # A LoRA run's adapter is registered under the base model name: the
-        # single adapter shadows it (vLLM resolves lora_requests before the
-        # base-model match), so requests keep addressing one stable name.
+        # A LoRA run's adapter is registered under the model name clients send;
+        # the inference server serves the base model as ``<model>-base``.
         self.receiver = setup_weight_receiver(
             get_broadcast_dir(config.output_dir),
             config.weight_broadcast,
@@ -315,9 +297,6 @@ class Orchestrator:
         # scratch). The startup broadcast is always coming, so wait for it rather
         # than failing immediately when it is not there yet.
         sync_version = self.resume_step if self.resume_step is not None else 0
-        wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
-            STARTUP_WEIGHT_WAIT_TIMEOUT_S
-        )
 
         self.eval_source: EvalSource | None = (
             EvalSource(
@@ -343,7 +322,7 @@ class Orchestrator:
             progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            tasks_per_minute=config.tasks_per_minute,
+            dispatch_per_minute=config.dispatch_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
@@ -372,7 +351,6 @@ class Orchestrator:
             train_envs=self.train_envs,
             progress=self.progress,
             batch_size=config.batch_size,
-            token_batch_size=config.token_batch_size,
             on_result=self.train_source.on_result,
         )
 
@@ -397,7 +375,7 @@ class Orchestrator:
 
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
-        await self.watcher.sync_startup(sync_version, timeout=wait_timeout)
+        await self.watcher.sync_startup(sync_version, timeout=config.weight_broadcast.timeout)
         get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
 
     async def start(self) -> None:
@@ -780,7 +758,7 @@ class Orchestrator:
         if self.resume_step == step and self.config.eval is not None and not self.config.eval.retrigger_on_resume:
             return
         is_final = self.config.max_steps is not None and step >= self.config.max_steps
-        fired = self.eval_source.trigger(step, force=is_final)
+        fired, _ = self.eval_source.trigger(step, force=is_final)
         if not fired:
             return
         self.eval_triggered_steps.add(step)
@@ -814,7 +792,7 @@ class Orchestrator:
         inflight_by_env = self.dispatcher.inflight_by_env
         inflight_train = self.dispatcher.inflight_train_count
         inflight_eval = self.dispatcher.inflight_eval_count
-        train_batch, train_target, _train_unit = self.train_sink.batch_progress()
+        train_batch, train_target = self.train_sink.batch_progress()
         train_buffered = self.train_sink.buffered_count()
         train_batch_by_env = self.train_sink.pending_batch_by_env()
         eval_batches = self.eval_sink.batch_progress() if self.eval_sink is not None else []
@@ -1035,11 +1013,9 @@ class Orchestrator:
             if self.admin_plane is not None:
                 await self.admin_plane.aclose()
             if self.train_envs is not None:
-                get_logger().debug("Stopping generation source and algorithm clients")
+                get_logger().debug("Stopping train env clients")
                 for env in self.train_envs:
-                    for clients in (env.generation_source.connected, env.algorithm.connected):
-                        if clients is not None:
-                            await clients.aclose()
+                    await env.aclose()
 
         get_logger().info("Stopping orchestrator components")
         t0 = time.perf_counter()

@@ -25,6 +25,8 @@ uv run eval gsm8k -n 32 -r 4 -c 8                                   # Prime Infe
 uv run eval @ configs/debug/eval/single-turn.toml                   # the same shape as a TOML
 ```
 
+The default endpoint comes from `PRIME_INFERENCE_URL`, then the Prime CLI's `inference_url`, then the standard Prime Inference URL. An explicit `client.base_url` wins. API keys and environment-backed headers are resolved when clients are built; Prime CLI credential and team fallbacks apply only to Prime Inference hosts, including for a separate admin URL.
+
 To evaluate a model you serve yourself, start a `uv run inference` vLLM server (or any OpenAI-compatible API) and point the client at it:
 
 ```bash
@@ -80,7 +82,7 @@ Every source's env server is spawned by the eval process unless the source sets 
 
 ## Resume
 
-An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: the episodes that landed rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch) and only the rollouts still owed run. Errored episodes and the ones the interruption cut off run again.
+An interrupted run resumes from its trace stream. Relaunch with the same `--run.name` and `--resume`: saved episodes with `episode.ok` rejoin the epoch as if they had just arrived (stream, metrics and platform upload cover the whole epoch), and only the rollouts still owed run. Failed episodes and the ones the interruption cut off run again. Saved records that fail schema validation stop the resume before the current stream is archived.
 
 ```bash
 uv run eval @ eval.toml --run.name my-eval
@@ -90,7 +92,7 @@ uv run eval @ eval.toml --run.name my-eval --resume
 
 The previous attempt's `monitors/file` is kept as `monitors/file.attempt_N`; the resumed attempt writes a fresh one. Nothing is deleted, and a resume reads every attempt's stream.
 
-A landed episode counts toward the task with its `task.key`, so `select` and `group_size` may change between the two launches: kept episodes are matched to the new selection and the rest is owed. The resumed config is not checked against the interrupted one: any of it may be overridden, so keep the model, the sampling and each source's env the same when the landed episodes must stay comparable. Rollouts that complete a task's landed group join that group, so pass@k and the dashboard see one group per task. Use `--clean` to start over instead.
+A landed episode counts toward a selected task in the same source when their content hashes (`task.hash`) match. A task whose content changes runs again even if its public `task.key` stays the same. `select` and `group_size` may change between launches: each selected occurrence keeps up to `group_size` matching episodes, and only its missing rollouts run. The resumed config is not checked against the interrupted one: any of it may be overridden, so keep the model, the sampling and each source's env the same when the landed episodes must stay comparable. Each selected occurrence owns a separate group containing its restored and new rollouts, even when the same task is selected more than once, so pass@k and the dashboard see one group per selected occurrence. Use `--clean` to start over instead.
 
 ## Monitors
 

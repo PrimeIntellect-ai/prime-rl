@@ -3,7 +3,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from prime_rl.trainer.batch import _is_multimodal_sample, build_bin_cost, pad_micro_batch, prepare_batch, prepare_sample
+from prime_rl.orchestrator.batch import (
+    _is_multimodal_sample,
+    build_bin_cost,
+    pad_micro_batch,
+    prepare_batch,
+    prepare_sample,
+)
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 

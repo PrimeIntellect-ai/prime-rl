@@ -86,19 +86,16 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 |---|---|
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
-| `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
-| `trainer.model.optim_cpu_offload` | Offload optimizer state to CPU between steps. Enabled by default. |
-| `trainer.model.full_offload` | Offload gradients, FP32 masters, and optimizer state and run the optimizer (AdamW or SignSGD) on CPU during backward. Disabled by default. |
+| `trainer.model.offload` | CPU offloading: `optimizer` (default) offloads optimizer state between steps; `full` offloads gradients, FP32 masters, and optimizer state and runs the optimizer (AdamW or SignSGD) on CPU during backward; `none` disables offloading. |
 
 ### Expert Parallelism
 
-EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput. EP is only available with the custom model implementation (`model.impl = "custom"` or `"auto"` for supported families).
+EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput.
 
-`ep` defaults to `"auto"`, which resolves at startup to the largest valid EP degree up to 8. It loads the model config to read `num_experts`, then picks the biggest divisor of `num_experts` that also divides the FSDP island size (`world_size // dp_replicate`), is a multiple of `cp`, and is at most 8. For non-MoE models, resolves to 1 (no-op). Set `ep` to an explicit integer to override:
+`ep` defaults to `"auto"`. At startup it loads the model config to check whether the model is MoE. For MoE models it resolves to `min(world_size // dp_replicate, 8)`: the FSDP island size, capped at 8. For non-MoE models it resolves to 1 (no-op). `"auto"` does not look at `num_experts` or `cp`; the resolved degree must still be a multiple of `cp` and divide `num_experts`, so set it explicitly when it does not. Set `ep` to an explicit integer to override:
 
 ```toml
 [trainer.model]
-impl = "custom"
 ep = 8  # explicit EP degree; must divide num_experts
 
 [trainer.model.moe.dispatch]
@@ -116,7 +113,6 @@ CP shards a single sequence across multiple GPUs along the token dimension — f
 
 ```toml
 [trainer.model]
-impl = "custom"
 attn = "auto"                # auto = FA3 on Hopper, FA4 on datacenter Blackwell, FA2 otherwise; or flash_attention_2/3/4
 cp = 2                       # CP degree
 cp_style = "ulysses"         # "ring"
@@ -145,19 +141,19 @@ Activation offloading still applies to tensors saved by autograd, but tensors re
 
 ### Optimizer Offloading
 
-State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_offload = true`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
+State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
 
 ### LM Head Chunking
 
-The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `1024` for RL training:
+The vanilla LM head materializes a `[batch * seq, vocab]` logits tensor on every step — a major memory tax when the vocabulary is large (often >100K). `fused_lm_head_token_chunk_size` swaps in a custom fused linear + logprob/entropy kernel that streams through `chunk_size` tokens at a time, avoiding the materialization. It defaults to `8192` for RL training:
 
 ```toml
 [trainer.model]
-fused_lm_head_token_chunk_size = 1024       # default
+fused_lm_head_token_chunk_size = 8192       # default
 # fused_lm_head_token_chunk_size = "disabled"  # vanilla LM head
 ```
 
-Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. SFT training silently disables this (not supported yet). Only available with `model.impl = "custom"`.
+Drop the chunk size further when peak memory is still tight (e.g. with very long sequences); raise it to amortize kernel-launch overhead. SFT training silently disables this (not supported yet).
 
 ## Memory-Tight Recipe
 
@@ -165,7 +161,6 @@ The kitchen-sink config for fitting large MoE on limited GPUs at acceptable thro
 
 ```toml
 [trainer.model]
-impl = "custom"
 ep = 8
 cp = 2
 
@@ -176,7 +171,7 @@ freq = 1
 max_inflight_activations = 1
 ```
 
-The defaults already cover: fused LM head chunking (`1024`), `torch.compile` (fullgraph=False), AC (full mode), AC offloading (`max_inflight_activations=5`), and optimizer CPU offload. Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
+The defaults already cover: fused LM head chunking (`8192`), `torch.compile` (fullgraph=False), AC (full mode), AC offloading (`max_inflight_activations=5`), and optimizer CPU offload. Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
 
 ## SLURM
 
@@ -244,7 +239,7 @@ Set `[weight_broadcast] type = "nixl"` to use receiver-driven NIXL weight transf
 
 ```bash
 bash scripts/install_nixl_from_source.sh
-uv pip install --reinstall --no-deps deps/nixl_cu12-*.whl
+uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
 bash scripts/install_modelexpress.sh
 ```
 

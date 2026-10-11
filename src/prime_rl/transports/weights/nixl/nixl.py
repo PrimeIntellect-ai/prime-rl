@@ -19,7 +19,7 @@ from modelexpress.client import MxClient
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
-from prime_rl.configs.trainer import NIXLWeightBroadcastConfig
+from prime_rl.configs.shared import NIXLWeightBroadcastConfig
 from prime_rl.orchestrator.clients import init_nixl_broadcast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims

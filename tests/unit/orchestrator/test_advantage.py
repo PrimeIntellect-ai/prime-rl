@@ -110,6 +110,7 @@ def _build_episode(
         task=trace.task,
         group=vf.GroupInfo(id="group"),
         traces=[trace],
+        ok=True,
     )
     return episode
 
@@ -151,9 +152,11 @@ def _scalar(episode: vf.Episode) -> float:
     raise AssertionError("episode has no trainable token")
 
 
-def _grpo(group: list[vf.Episode], length_penalty=None) -> list[float]:
+def _grpo(group: list[vf.Episode], length_penalty=None, length_weighted_baseline=False) -> list[float]:
     """Drive ``GRPOAlgorithm.score_group`` and read back each per-rollout scalar."""
-    algo = GRPOAlgorithm(GRPOAlgoConfig(length_penalty=length_penalty), clients=None)
+    algo = GRPOAlgorithm(
+        GRPOAlgoConfig(length_penalty=length_penalty, length_weighted_baseline=length_weighted_baseline), clients=None
+    )
     asyncio.run(algo.score_group(group))
     return [_scalar(episode) for episode in group]
 
@@ -181,6 +184,27 @@ def test_grpo_singleton_group_is_zero():
     assert _grpo([_build_episode(0.7, sampled_lengths=[2])]) == pytest.approx([0.0], abs=1e-6)
 
 
+def test_grpo_length_weighted_baseline():
+    # L = [10 + 20 (two turns, observation excluded), 10]: b = (30 * 1 + 10 * 0) / 40 = 0.75
+    group = [
+        _build_episode(1.0, sampled_lengths=[10, 20], obs_lengths=[5]),
+        _build_episode(0.0, sampled_lengths=[10]),
+    ]
+    advs = _grpo(group, length_weighted_baseline=True)
+    assert advs == pytest.approx([0.25, -0.75])
+    # per-token advantage is zero-mean across the group's trainable tokens
+    assert 30 * advs[0] + 10 * advs[1] == pytest.approx(0.0, abs=1e-6)
+    # with a length penalty, the weighted baseline applies to the shaped rewards:
+    # penalty = mean(r) * 0.5 * L / max(L) = [0.25, 1/12], shaped = [0.75, -1/12], b = (30 * 0.75 - 10 / 12) / 40
+    cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.5, num_input_tokens_weight=0.0, num_turns_weight=0.0)
+    group = [
+        _build_episode(1.0, sampled_lengths=[10, 20], obs_lengths=[5]),
+        _build_episode(0.0, sampled_lengths=[10]),
+    ]
+    advs = _grpo(group, length_penalty=cfg, length_weighted_baseline=True)
+    assert advs == pytest.approx([0.75 - 65 / 120, -1 / 12 - 65 / 120])
+
+
 def test_max_rl_mean_normalized():
     # mean 0.25: the success gets (1 - 0.25)/0.25 = 3, failures (0 - 0.25)/0.25 = -1
     assert _max_rl(_make_group(rewards=[1.0, 0.0, 0.0, 0.0])) == pytest.approx([3.0, -1.0, -1.0, -1.0])
@@ -188,6 +212,17 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[0.0, 0.0])) == pytest.approx([0.0, 0.0])
     # ... and all-success groups center to zero like GRPO
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
+
+
+def test_grpo_prompt_loss_aggregation_weights_sum_to_one_per_group():
+    """Each group's rl weights total 1, spread as 1/T_q over its trainable tokens, whatever its length."""
+    algo = GRPOAlgorithm(GRPOAlgoConfig(loss_aggregation="prompt"), clients=None)
+    for lengths in ([10, 30], [100, 300]):
+        group = _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)
+        asyncio.run(algo.score_group(group))
+        weights = [w for episode in group for sample in trace_to_samples(episode.traces[0]) for w in sample.rl_weights]
+        assert set(weights) == {0.0, 1.0 / sum(lengths)}
+        assert sum(weights) == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------

@@ -249,6 +249,13 @@ class RendererResolver:
             renderer = create_renderer(self.tokenizer, config)
             if self.processor is not None and hasattr(renderer, "_processor"):
                 renderer._processor = self.processor
+            if not getattr(renderer, "is_prefix_stable", False):
+                get_logger().warning(
+                    f"SFT renderer {type(renderer).__name__} does not guarantee prefix stability. "
+                    "SFT renders each conversation once to produce one training sample; "
+                    "it does not expand N assistant turns into N samples. Depending on the template, "
+                    "reasoning from earlier turns may be omitted from the training sample."
+                )
             self.renderers[config] = renderer
         return renderer
 
@@ -279,7 +286,7 @@ class SFTDataset(StatefulIterableDataset):
         # Default names are optional: a dataset carries either messages or
         # prompt/completion, and tools only for tool use. A name set in the
         # config must exist.
-        for field in ("messages", "prompt", "completion", "tools"):
+        for field in ("messages", "prompt", "completion", "tools", "message_loss_mask"):
             column = getattr(columns, field)
             if column != field and column not in dataset.column_names:
                 raise ValueError(f"data.columns.{field} is {column!r}, but the dataset has only {dataset.column_names}")
@@ -342,9 +349,7 @@ class SFTDataset(StatefulIterableDataset):
                 case _:
                     raise ValueError(f"Invalid message role: {message['role']}")
 
-        # Defer to the renderer's sampled_mask by default: a role filter would
-        # drop sampled stop markers attributed to the next message (e.g. GLM's
-        # turn-closing <|user|> / <|observation|>).
+        # Let the renderer identify sampled targets when assistant loss is enabled.
         role_to_mask = None if self.loss_mask_config.assistant else should_mask
 
         # Non-assistant roles are opted into the loss via the renderer's
@@ -359,6 +364,7 @@ class SFTDataset(StatefulIterableDataset):
             tools=tools,
             content_sft_roles=content_sft_roles or None,
             ensure_final_stop=True,
+            message_loss_mask=example.get(self.columns.message_loss_mask),
         )
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
@@ -474,12 +480,13 @@ class SFTDataset(StatefulIterableDataset):
 
 
 class CatDataset(StatefulIterableDataset):
-    """Concatenate text and multimodal samples into one fixed-length row."""
+    """Pack samples into rows of at most `seq_len` tokens, padded to a multiple of `pad_to_multiple_of`."""
 
-    def __init__(self, dataset: StatefulIterableDataset, seq_len: int):
+    def __init__(self, dataset: StatefulIterableDataset, seq_len: int, pad_to_multiple_of: int):
         self.logger = get_logger()
         self.dataset = dataset
         self.seq_len = seq_len
+        self.pad_to_multiple_of = pad_to_multiple_of
         self.pending_sample: Sample | None = None
 
     def state_dict(self) -> dict:
@@ -583,7 +590,7 @@ class CatDataset(StatefulIterableDataset):
             if kept > 0:
                 result["seq_lens"].append(kept)
             remaining -= kept
-        pad_len = seq_len - len(result["input_ids"])
+        pad_len = -len(result["input_ids"]) % self.pad_to_multiple_of
         if pad_len > 0:
             result["input_ids"].extend([0] * pad_len)
             result["position_ids"].extend(range(pad_len))
@@ -753,8 +760,8 @@ def setup_dataset(
         raise ValueError(f"Invalid dataset type: {config.type}")
 
 
-def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig) -> StatefulDataLoader:
-    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size)
+def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig, cp: int) -> StatefulDataLoader:
+    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size, pad_to_multiple_of=cp)
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,

@@ -1,13 +1,9 @@
 import json
 import os
-import signal
 import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
-from subprocess import Popen
-from threading import Event, Thread
 from urllib.parse import urlparse
 
 from prime_rl.configs.algorithm import FrozenModelConfig
@@ -35,11 +31,10 @@ from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_INFERENCE_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
-    cleanup_processes,
-    cleanup_threads,
-    get_physical_gpu_ids,
-    monitor_process,
+    ProcessGroup,
+    partition_gpus,
     set_proc_title,
+    torchrun_cmd,
 )
 
 RL_CONFIG = "rl.json"
@@ -141,25 +136,9 @@ def rl_local(config: RLConfig):
     )
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
-    # Derive launcher-local GPU IDs from deployment config
-    gpu_offset = 0
     num_infer_gpus = config.deployment.num_infer_gpus if config.inference is not None else 0
-    infer_local_gpu_ids = list(range(gpu_offset, gpu_offset + num_infer_gpus))
-    gpu_offset += num_infer_gpus
-    trainer_local_gpu_ids = list(range(gpu_offset, gpu_offset + config.deployment.num_train_gpus))
-
-    total_requested_gpus = num_infer_gpus + config.deployment.num_train_gpus
-    physical_gpu_ids = get_physical_gpu_ids()
-    if total_requested_gpus > len(physical_gpu_ids):
-        raise ValueError(
-            f"Requested {total_requested_gpus} GPUs via deployment settings, but only "
-            f"{len(physical_gpu_ids)} physical GPU(s) are available: {physical_gpu_ids}"
-        )
-    physical_gpu_mapping = {local_id: physical_gpu_ids[local_id] for local_id in range(total_requested_gpus)}
-    logger.info(f"Using local->physical GPU mapping: {physical_gpu_mapping}")
-
-    infer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in infer_local_gpu_ids]
-    trainer_gpu_ids = [physical_gpu_mapping[local_gpu_id] for local_gpu_id in trainer_local_gpu_ids]
+    infer_gpu_ids, trainer_gpu_ids = partition_gpus(num_infer_gpus, config.deployment.num_train_gpus)
+    logger.info(f"Using local->physical GPU mapping: {dict(enumerate(infer_gpu_ids + trainer_gpu_ids))}")
 
     start_command = sys.argv
     logger.debug(f"RL start command: {' '.join(start_command)}")
@@ -185,53 +164,22 @@ def rl_local(config: RLConfig):
                 f"Update the base_url to use port {expected_port} to match the inference server."
             )
 
-    # Start processes
-    processes: list[Popen] = []
-    monitor_threads: list[Thread] = []
-    error_queue: list[Exception] = []
-    stop_events: dict[str, Event] = {}
-
-    def sigterm_handler(signum, frame):
-        logger.warning("Received SIGTERM, terminating all processes...")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        sys.exit(1)
-
-    signal.signal(signal.SIGTERM, sigterm_handler)
-
-    try:
-        # Optionally, start inference process
+    with ProcessGroup() as processes:
         if config.inference:
-            inference_cmd = ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()]
             logger.info(f"Starting inference on GPU(s) {' '.join(map(str, infer_gpu_ids))}")
-            logger.debug(f"Inference start command: {' '.join(inference_cmd)}")
-            # If we don't log stdout, the server hangs
-            with open(log_dir / "inference.log", "w") as log_file:
-                inference_process = Popen(
-                    inference_cmd,
-                    env={
-                        **os.environ,
-                        **DEFAULT_COMMON_ENV_VARS,
-                        **DEFAULT_INFERENCE_ENV_VARS,
-                        **config.env_vars,
-                        **config.inference.env_vars,
-                        "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
-                    },
-                    stdout=log_file,
-                    stderr=log_file,
-                )
-            processes.append(inference_process)
-
-            # Start monitoring thread
-            stop_event = Event()
-            stop_events["inference"] = stop_event
-            monitor_thread = Thread(
-                target=monitor_process,
-                args=(inference_process, stop_event, error_queue, "inference"),
-                daemon=True,
+            processes.start(
+                "inference",
+                ["inference", "@", (config_dir / INFERENCE_CONFIG).as_posix()],
+                env={
+                    **os.environ,
+                    **DEFAULT_COMMON_ENV_VARS,
+                    **DEFAULT_INFERENCE_ENV_VARS,
+                    **config.env_vars,
+                    **config.inference.env_vars,
+                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, infer_gpu_ids)),
+                },
+                log_path=log_dir / "inference.log",
             )
-            monitor_thread.start()
-            monitor_threads.append(monitor_thread)
         else:
             logger.warning(
                 "No [inference] block configured - the policy inference server will not be started here. "
@@ -259,166 +207,64 @@ def rl_local(config: RLConfig):
         # orchestrator start in parallel.
         for split, source in env_servers(config):
             name = source.resolved_name
-            env_server_cmd = ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()]
             logger.info(f"Starting {name} server")
-            logger.debug(f"Env server start command: {' '.join(env_server_cmd)}")
-            env_server_log = log_dir / ENVS_DIR / split / f"{name}.log"
-            env_server_log.parent.mkdir(parents=True, exist_ok=True)
-            with open(env_server_log, "w") as log_file:
-                env_server_process = Popen(
-                    env_server_cmd,
-                    env={
-                        **os.environ,
-                        **DEFAULT_COMMON_ENV_VARS,
-                        **config.env_vars,
-                        **config.orchestrator.env_vars,
-                    },
-                    stdout=log_file,
-                    stderr=log_file,
-                )
-            processes.append(env_server_process)
-
-            # Start monitoring thread
-            stop_event = Event()
-            stop_events[f"env/{split}/{name}"] = stop_event
-            monitor_thread = Thread(
-                target=monitor_process,
-                args=(env_server_process, stop_event, error_queue, f"{split} env server {name}"),
-                daemon=True,
+            processes.start(
+                f"{split} env server {name}",
+                ["env-server", "@", (config_dir / ENVS_DIR / split / f"{name}.json").as_posix()],
+                env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **config.env_vars, **config.orchestrator.env_vars},
+                log_path=log_dir / ENVS_DIR / split / f"{name}.log",
             )
-            monitor_thread.start()
-            monitor_threads.append(monitor_thread)
 
-        orchestrator_cmd = ["orchestrator", "@", (config_dir / ORCHESTRATOR_CONFIG).as_posix()]
         logger.info("Starting orchestrator")
-        logger.debug(f"Orchestrator start command: {' '.join(orchestrator_cmd)}")
-        with open(log_dir / "orchestrator.log", "w") as log_file:
-            orchestrator_process = Popen(
-                orchestrator_cmd,
-                stdout=log_file,
-                stderr=log_file,
-                env={
-                    **os.environ,
-                    **DEFAULT_COMMON_ENV_VARS,
-                    "LOGURU_FORCE_COLORS": "1",
-                    "WANDB_PROGRAM": "uv run rl",
-                    "WANDB_ARGS": json.dumps(start_command),
-                    **config.env_vars,
-                    **config.orchestrator.env_vars,
-                    **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "orchestrator",
-                },
-            )
-        processes.append(orchestrator_process)
-
-        # Start monitoring thread
-        stop_event = Event()
-        stop_events["orchestrator"] = stop_event
-        monitor_thread = Thread(
-            target=monitor_process,
-            args=(orchestrator_process, stop_event, error_queue, "orchestrator"),
-            daemon=True,
+        processes.start(
+            "orchestrator",
+            ["orchestrator", "@", (config_dir / ORCHESTRATOR_CONFIG).as_posix()],
+            env={
+                **os.environ,
+                **DEFAULT_COMMON_ENV_VARS,
+                "LOGURU_FORCE_COLORS": "1",
+                "WANDB_PROGRAM": "uv run rl",
+                "WANDB_ARGS": json.dumps(start_command),
+                **config.env_vars,
+                **config.orchestrator.env_vars,
+                **wandb_shared_env,
+                "WANDB_SHARED_LABEL": "orchestrator",
+            },
+            log_path=log_dir / "orchestrator.log",
         )
-        monitor_thread.start()
-        monitor_threads.append(monitor_thread)
 
-        # Start training process
-        from prime_rl.utils.utils import get_free_port
-
-        trainer_cmd = [
-            "torchrun",
-            "--role=trainer",
-            f"--rdzv-endpoint=localhost:{get_free_port()}",
-            f"--rdzv-id={uuid.uuid4().hex}",
-            # Pipe all logs to file, and only master rank logs to stdout
-            f"--log-dir={log_dir / 'trainer' / 'torchrun'}",
-            f"--local-ranks-filter={','.join(map(str, config.trainer.log.ranks_filter))}",
-            "--redirect=3",
-            "--tee=3",
-            f"--nproc-per-node={len(trainer_gpu_ids)}",
-            "-m",
-            "prime_rl.trainer.rl.train",
-            "@",
-            (config_dir / TRAINER_CONFIG).as_posix(),
-        ]
         logger.info(f"Starting trainer on GPU(s) {' '.join(map(str, trainer_gpu_ids))}")
-        logger.debug(f"Training start command: {' '.join(trainer_cmd)}")
-        with open(log_dir / "trainer.log", "w") as log_file:
-            trainer_process = Popen(
-                trainer_cmd,
-                env={
-                    **os.environ,
-                    **DEFAULT_COMMON_ENV_VARS,
-                    **DEFAULT_TRAINER_ENV_VARS,
-                    "LOGURU_FORCE_COLORS": "1",
-                    "WANDB_PROGRAM": "uv run rl",
-                    "WANDB_ARGS": json.dumps(start_command),
-                    **config.env_vars,
-                    **config.trainer.env_vars,
-                    **wandb_shared_env,
-                    "WANDB_SHARED_LABEL": "trainer",
-                    "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
-                },
-                stdout=log_file,
-                stderr=log_file,
-            )
-        processes.append(trainer_process)
-
-        # Start monitoring thread
-        stop_event = Event()
-        stop_events["trainer"] = stop_event
-        monitor_thread = Thread(
-            target=monitor_process, args=(trainer_process, stop_event, error_queue, "trainer"), daemon=True
+        processes.start(
+            "trainer",
+            torchrun_cmd(
+                "prime_rl.trainer.rl.train",
+                config_dir / TRAINER_CONFIG,
+                len(trainer_gpu_ids),
+                log_dir,
+                config.trainer.log.ranks_filter,
+            ),
+            env={
+                **os.environ,
+                **DEFAULT_COMMON_ENV_VARS,
+                **DEFAULT_TRAINER_ENV_VARS,
+                "LOGURU_FORCE_COLORS": "1",
+                "WANDB_PROGRAM": "uv run rl",
+                "WANDB_ARGS": json.dumps(start_command),
+                **config.env_vars,
+                **config.trainer.env_vars,
+                **wandb_shared_env,
+                "WANDB_SHARED_LABEL": "trainer",
+                "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
+            },
+            log_path=log_dir / "trainer.log",
         )
-        monitor_thread.start()
-        monitor_threads.append(monitor_thread)
 
         logger.success("Launcher complete")
         log_dashboard_url(logger, dashboard_url)
 
         # Trainer and orchestrator completion is the successful stop condition.
-        completion_events = (stop_events["trainer"], stop_events["orchestrator"])
-        while not all(event.is_set() for event in completion_events):
-            if error_queue:
-                error = error_queue[0]
-                logger.error(f"Error: {error}")
-                logger.error("Terminating all processes...")
-                cleanup_threads(monitor_threads)
-                cleanup_processes(processes)
-                sys.exit(1)
-
-            # Small delay to avoid busy waiting
-            time.sleep(1)
-
-        # Check if any critical process failed
-        if orchestrator_process.returncode != 0:
-            logger.error(f"Orchestrator failed with exit code {orchestrator_process.returncode}")
-            cleanup_threads(monitor_threads)
-            cleanup_processes(processes)
-            sys.exit(1)
-
-        if trainer_process.returncode != 0:
-            logger.error(f"Trainer failed with exit code {trainer_process.returncode}")
-            cleanup_threads(monitor_threads)
-            cleanup_processes(processes)
-            sys.exit(1)
-
+        processes.wait("trainer", "orchestrator")
         logger.success("Training finished!")
-
-        # Cleanup threads and processes
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-
-    except KeyboardInterrupt:
-        logger.warning("Received interrupt signal, terminating all processes...")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error occurred: {e}")
-        cleanup_threads(monitor_threads)
-        cleanup_processes(processes)
-        raise
 
 
 def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script_path: Path) -> None:
@@ -466,6 +312,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         "modelexpress_redis_port": 6380 if nixl_broadcast is not None and nixl_broadcast.port == 6379 else 6379,
     }
 
+    ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
@@ -489,6 +337,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
@@ -534,6 +383,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,

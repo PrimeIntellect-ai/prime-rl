@@ -24,7 +24,7 @@ class WeightWatcher:
         policy: Policy,
         observers: list[VersionObserver],
         ckpt_step: int = 0,
-        poll_interval: float = 1.0,
+        poll_interval: float = 0.1,
     ) -> None:
         self.receiver = receiver
         self.policy = policy

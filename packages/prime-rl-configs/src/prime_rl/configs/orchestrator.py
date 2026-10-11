@@ -6,6 +6,7 @@ import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
 from renderers import AutoRendererConfig, RendererConfig
+from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
     AlgoConfig,
@@ -14,32 +15,22 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
-    BaseWeightBroadcastConfig,
-    ClientConfig,
     EnvVars,
+    FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
+    PolicyClientConfig,
     ResumeConfig,
     TransportConfig,
+    WeightBroadcastConfig,
     ZMQTransportConfig,
 )
 from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
-class LoRAConfig(BaseConfig):
-    rank: int | None = Field(None, ge=1)
-    """LoRA rank for this run. Must be ≤ trainer's max rank. If None, uses the trainer's rank."""
-
-    alpha: float | None = Field(None, ge=0)
-    """LoRA alpha for this run. If None, uses the trainer's alpha."""
-
-
 class ModelConfig(BaseModelConfig):
-    lora: LoRAConfig | None = None
-    """Per-run LoRA configuration. If None, LoRA is disabled."""
-
-    client: ClientConfig = ClientConfig()
+    client: PolicyClientConfig = Field(default_factory=PolicyClientConfig)
     """Client of the live deployment (``[orchestrator.model.client]``)."""
 
 
@@ -88,70 +79,6 @@ class TrainSamplingConfig(BaseConfig):
                 "sampling config instead (they drive sampling replay)."
             )
         return self
-
-    def to_sampling_args(self) -> dict[str, Any]:
-        """Convert to OAI-compatible sampling args dict, omitting None values."""
-        args: dict[str, Any] = {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "logprobs": True,
-        }
-        if self.max_completion_tokens is not None:
-            args["max_completion_tokens"] = self.max_completion_tokens
-
-        # top_k rides extra_body (like EvalSamplingConfig), overriding the sentinel.
-        extra_body = dict(self.extra_body)
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if extra_body:
-            args["extra_body"] = extra_body
-
-        return args
-
-
-class EvalSamplingConfig(BaseConfig):
-    temperature: float | None = Field(None, ge=0, le=2.0)
-    """Sampling temperature. None defers to the inference server default."""
-
-    top_p: float | None = None
-    """Nucleus sampling threshold. None defers to the inference server default."""
-
-    top_k: int | None = None
-    """Top-k sampling. None defers to the inference server default."""
-
-    min_p: float | None = Field(None, ge=0)
-    """Min-p sampling threshold. None defers to the inference server default."""
-
-    max_completion_tokens: int | None = None
-    """Maximum output tokens per turn. None defers to the inference server default."""
-
-    reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
-    """Reasoning effort constraint for reasoning models."""
-
-    extra_body: dict[str, Any] = {}
-    """Extra body parameters forwarded to the inference server."""
-
-    def to_sampling_args(self) -> dict[str, Any]:
-        """Convert to OAI-compatible sampling args dict. Only includes non-None fields."""
-        args: dict[str, Any] = {}
-        if self.temperature is not None:
-            args["temperature"] = self.temperature
-        if self.top_p is not None:
-            args["top_p"] = self.top_p
-        if self.max_completion_tokens is not None:
-            args["max_completion_tokens"] = self.max_completion_tokens
-        if self.reasoning_effort is not None:
-            args["reasoning_effort"] = self.reasoning_effort
-
-        extra_body = dict(self.extra_body)
-        if self.top_k is not None:
-            extra_body["top_k"] = self.top_k
-        if self.min_p is not None:
-            extra_body["min_p"] = self.min_p
-        if extra_body:
-            args["extra_body"] = extra_body
-
-        return args
 
 
 class EnvConfig(BaseConfig):
@@ -315,9 +242,37 @@ class TrainSourceConfig(EnvConfig):
     """User-authored task sampler and admission gates. The default cycles
     through the taskset and admits every finalized group."""
 
+    @model_validator(mode="after")
+    def validate_policy_sampling(self):
+        if self.algo.sampling.source != "policy":
+            return self
+        # The source owns the distribution replayed by the trainer; agents may
+        # change generation limits and rendering without changing that distribution.
+        agent_options = {"max_tokens", "reasoning_effort", "chat_template_kwargs"}
+        supported = (
+            agent_options
+            | TrainSamplingConfig.model_fields.keys()
+            | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
+        )
+        sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
+        if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
+            raise ValueError(
+                f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
+            )
+        for name, agent in agent_config_fields(self.env).items():
+            if agent.sampling is None:
+                continue
+            if unsupported := agent.sampling.model_dump(exclude_unset=True).keys() - agent_options:
+                raise ValueError(
+                    f"Agent '{name}' in policy source '{self.resolved_name}' sets sampling {sorted(unsupported)}. "
+                    "Set distribution parameters on the source's sampling config; agent sampling only supports "
+                    f"{sorted(agent_options)}."
+                )
+        return self
+
 
 class EvalSourceConfig(EnvConfig):
-    sampling: EvalSamplingConfig = EvalSamplingConfig()
+    sampling: vf.SamplingConfig = vf.SamplingConfig()
     """Per-env sampling overrides. Unset fields inherit from the group-level eval sampling config."""
 
     group_size: int = Field(1, ge=1)
@@ -408,7 +363,7 @@ class EvalSourcesConfig(SourceGroupConfig):
     source: list[EvalSourceConfig] = Field(default_factory=list)
     """Evaluation sources."""
 
-    sampling: EvalSamplingConfig = Field(default_factory=EvalSamplingConfig)
+    sampling: vf.SamplingConfig = Field(default_factory=vf.SamplingConfig)
     """Sampling that every eval source inherits; can differ from training sampling."""
 
     select: vf.SelectConfig = vf.SelectConfig()
@@ -471,64 +426,11 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 
-    wait_for_weights_timeout: int | None = Field(None, ge=1)
-    """Wait up to this many seconds for the startup weight directory to appear (the trainer broadcasts the incoming policy — v0 from scratch, the resumed step's version on resume — before the first step). If None, fall back to a default timeout. Raise this for large models on slow shared filesystems."""
-
-    keep_last: int | None = Field(None, ge=1)
-    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
-
-    keep_interval: int | None = Field(None, ge=1)
-    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
-
-    skip_progress: bool = False
-    """Skip loading the progress from checkpoint."""
-
-
-class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    type: Literal["filesystem"] = "filesystem"
-
-
-class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
-    host: str = "localhost"
-    """Weight transfer host."""
-
-    port: int
-    """Weight transfer port."""
-
-    inference_world_size: int = Field(1, ge=1)
-    """Total inference workers across all servers."""
-
-
-class NCCLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nccl"] = "nccl"
-
-    port: int = 29501
-    """Port for the NCCL broadcast rendezvous."""
-
-
-class NIXLWeightBroadcastConfig(InMemoryWeightBroadcastConfig):
-    type: Literal["nixl"] = "nixl"
-
-    port: int = 8001
-    """ModelExpress gRPC port."""
-
-    session_id: str = "default"
-    """ModelExpress session ID."""
-
-    overlap_transfer_and_replay: bool = False
-    """Allocate two transfer arenas so inference can replay one weight group while receiving the next."""
-
-
-WeightBroadcastConfig: TypeAlias = Annotated[
-    FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig | NIXLWeightBroadcastConfig,
-    Field(discriminator="type"),
-]
-
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
-    in-flight episode cap from engine KV capacity and learned per-env episode
-    costs; these fields only bound and seed it."""
+    in-flight episode cap from engine KV pressure; these fields only bound and
+    seed it."""
 
     initial_inflight: int | None = Field(None, ge=1)
     """Optional initial in-flight episodes to start from. Set it when a good value is known to skip the initial ramp; otherwise auto-derive a pessimistic bound at runtime."""
@@ -593,10 +495,10 @@ class OrchestratorConfig(BaseConfig):
     """Role for each policy admin client when collecting P/D inference metrics."""
 
     ckpt: CheckpointConfig | None = None
+    """Checkpoint configuration."""
 
     resume: ResumeConfig | None = None
     """Resume the orchestrator from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
-    """Checkpoint configuration."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
@@ -607,17 +509,14 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
-    batch_size: int | None = Field(None, ge=1)
-    """Samples to train on per step (rollout-based batching). Set this OR ``token_batch_size``."""
+    batch_size: int = Field(128, ge=1)
+    """Samples to train on per step."""
 
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
-
-    token_batch_size: int | None = Field(None, ge=1)
-    """Tokens to train on per step (token-based batching). Set this OR ``batch_size``."""
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
@@ -663,6 +562,19 @@ class OrchestratorConfig(BaseConfig):
         """Let each algorithm reject environments it cannot score correctly."""
         for env_cfg in self.train.source:
             env_cfg.algo.validate_env(env_cfg.env)
+        return self
+
+    @model_validator(mode="after")
+    def validate_loss_aggregation(self):
+        """The trainer divides the rl loss by the batch's summed rl weights, so token-mean (weight
+        1 per token) and prompt-mean (weight 1 per group) envs can't share a batch."""
+        algos = [env.algo for env in self.train.source if env.algo.action_loss_type == "rl"]
+        aggregations = {algo.loss_aggregation if isinstance(algo, GRPOAlgoConfig) else "token" for algo in algos}
+        if len(aggregations) > 1:
+            raise ValueError(
+                "All train envs with an rl loss must use the same loss_aggregation: a prompt-mean group "
+                "would weigh as much as a single token of a token-mean env."
+            )
         return self
 
     @model_validator(mode="after")
@@ -755,17 +667,8 @@ class OrchestratorConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_batching(self):
-        has_rollout_batch = self.batch_size is not None
-        has_token_batch = self.token_batch_size is not None
-
-        if has_rollout_batch and has_token_batch:
-            raise ValueError("Set exactly one of batch_size or token_batch_size")
-
-        if not has_rollout_batch and not has_token_batch:
-            self.batch_size = 128
-
         group_sizes = [source.group_size for source in self.train.source] or [self.train.group_size]
-        if self.batch_size is not None and any(self.batch_size % size for size in group_sizes):
+        if any(self.batch_size % size for size in group_sizes):
             raise ValueError(
                 f"Batch size {self.batch_size} must be divisible by every train source's group_size {sorted(set(group_sizes))}"
             )

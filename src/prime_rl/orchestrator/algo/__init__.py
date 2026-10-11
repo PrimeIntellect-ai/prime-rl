@@ -2,8 +2,8 @@
 
 The config side (``prime_rl.configs.algorithm``) defines *what* an algorithm
 is — a bundle of sampling and the per-token training signal. This package
-turns the signal half into runtime objects (the sampling half is the env's
-:class:`~prime_rl.orchestrator.generation_source.GenerationSource`):
+turns the signal half into runtime objects (the sampling half is interpreted by
+:class:`~prime_rl.orchestrator.envs.TrainEnv`):
 
 - one module per algorithm (``grpo``, ``echo``, ``max_rl``, ``rae``,
   ``hierarchical_grpo``, ``opd``, ``opsd``, ``sft``, ``debug``) — each named
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from prime_rl.orchestrator.algo.base import Algorithm, connect_frozen_client
+from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.algo.debug import DebugAlgorithm
 from prime_rl.orchestrator.algo.echo import EchoAlgorithm
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
@@ -55,9 +55,8 @@ ALGORITHM_CLASSES: dict[str, type[Algorithm]] = {
 
 def build_algorithm(config: AlgoConfig, clients: InferenceClient) -> Algorithm:
     cls = ALGORITHM_CLASSES[config.type]
-    assert cls.action_loss_type == config.action_loss_type  # config and runtime declare in two places
     # The Algorithm is the runtime of the algorithm config's training signal
-    # (its sibling GenerationSource interprets the sampling half). Every algorithm is
+    # (its TrainEnv interprets the sampling half). Every algorithm is
     # handed the live policy pool — opsd self-distills against it, others may
     # judge against it or ignore it. Other models (a frozen teacher, a hint
     # renderer) are built from the algorithm's own config in setup().
@@ -76,7 +75,6 @@ __all__ = [
     "RAEAlgorithm",
     "SFTDistillAlgorithm",
     "build_algorithm",
-    "connect_frozen_client",
     "assign_advantages",
     "stamp_loss_routing",
 ]

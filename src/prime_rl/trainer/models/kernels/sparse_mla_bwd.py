@@ -13,9 +13,13 @@ except Exception:
     # This is expected on CPU-only machines
     pass
 
+import math
+
 import tilelang
 import torch
 from tilelang import language as T
+
+from prime_rl.configs.trainer import DSABackend
 
 
 @tilelang.jit(out_idx=[-1])
@@ -276,8 +280,32 @@ def bwd(
     return sparse_mla_bwd_kernel
 
 
-@torch.library.custom_op("prime_rl::sparse_mla_backward", mutates_args=())
-def sparse_mla_backward(
+_CUDNN_SM100_CAPABILITIES = ((10, 0), (10, 3))
+
+
+def cudnn_backward_arch(q: torch.Tensor, kv: torch.Tensor) -> str | None:
+    """The cuDNN DSA backward variant for this device ("sm90" / "sm100"), or None if unsupported."""
+    if kv.shape[2] != 1:
+        return None
+    capability = torch.cuda.get_device_capability(q.device)
+    if capability[0] == 9:
+        return "sm90"
+    if capability in _CUDNN_SM100_CAPABILITIES:
+        return "sm100"
+    return None
+
+
+def flat_kv_indices(indices: torch.Tensor, S_kv: int) -> torch.Tensor:
+    """Global indices into the batch-flattened KV, with sentinel / out-of-range indices as -1.
+
+    `indices` is [B, S, kv_group, topk]; valid entries live in [0, S_kv - 1) (see sparse_mla_fwd).
+    """
+    B = indices.shape[0]
+    batch_offset = torch.arange(B, device=indices.device, dtype=indices.dtype).view(B, 1, 1, 1) * S_kv
+    return torch.where(indices <= S_kv - 2, indices + batch_offset, -1)
+
+
+def tilelang_sparse_mla_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
     out: torch.Tensor,
@@ -286,20 +314,13 @@ def sparse_mla_backward(
     lse: torch.Tensor,
     sm_scale: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    assert q.is_contiguous()
-    assert kv.is_contiguous()
-    assert indices.is_contiguous()
-    assert lse.is_contiguous()
+    """TileLang backward; takes a natural-log LSE."""
     grad_out = grad_out.contiguous()
-    B, S, H, dim_plus_tail_dim = q.shape
-    _, S_kv, kv_group, _ = kv.shape
-    assert kv.shape[-1] == dim_plus_tail_dim
-    assert kv.shape[0] == B
+    H, dim_plus_tail_dim = q.shape[2:]
+    kv_group = kv.shape[2]
     D = 512
     D_tail = dim_plus_tail_dim - D
     topk = indices.shape[-1]
-    assert indices.shape == (B, S, kv_group, topk)
-    assert lse.shape == (B, S, H)
 
     preprocess_kernel = preprocess(H, D)
     bwd_kernel = bwd(H, D, D_tail, topk, kv_group, sm_scale, True)
@@ -307,9 +328,82 @@ def sparse_mla_backward(
 
     delta = preprocess_kernel(out, grad_out)
     dkv = torch.zeros_like(kv, dtype=torch.float32)
-    dq = bwd_kernel(q, kv, grad_out, indices, lse, delta, dkv)
+    dq = bwd_kernel(q, kv, grad_out, indices, lse * math.log2(math.e), delta, dkv)
     dkv = postprocess_kernel(dkv)
+    return dq, dkv
 
+
+def cudnn_sparse_mla_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    sm_scale: float | None,
+    arch: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """cuDNN-frontend CuTe-DSL DSA backward (single KV head with K=V).
+
+    The cuDNN kernels take flat (tokens, ...) tensors with global indices, skip
+    negative indices (no KV load, no dKV atomics) and expect a natural-log LSE.
+    """
+    B, S, H, D_qk = q.shape
+    S_kv = kv.shape[1]
+    topk = indices.shape[-1]
+    args = (
+        q.view(B * S, H, D_qk),
+        kv.view(B * S_kv, D_qk),
+        out.view(B * S, H, -1),
+        grad_out.contiguous().view(B * S, H, -1),
+        lse.view(B * S, H),
+    )
+    flat_indices = flat_kv_indices(indices, S_kv).view(B * S, topk)
+    if arch == "sm90":
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+
+        dq, dkv = flash_attn_bwd_sm90(*args, softmax_scale=sm_scale, topk_idxs=flat_indices)
+    else:
+        # Untested: no SM100 hardware has run this path. A -inf sink leaves the softmax unchanged.
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
+
+        no_sink = torch.full((H,), float("-inf"), dtype=torch.float32, device=q.device)
+        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale)
+    return dq.view_as(q), dkv.view_as(kv)
+
+
+@torch.library.custom_op(
+    "prime_rl::sparse_mla_backward",
+    mutates_args=(),
+    schema="(Tensor q, Tensor kv, Tensor out, Tensor grad_out, Tensor indices, Tensor lse, str backend, float? sm_scale=None) -> (Tensor, Tensor)",
+)
+def sparse_mla_backward(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    out: torch.Tensor,
+    grad_out: torch.Tensor,
+    indices: torch.Tensor,
+    lse: torch.Tensor,
+    backend: DSABackend,
+    sm_scale: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sparse MLA backward for the `backend` route (see `sparse_mla`); `lse` is natural-log."""
+    assert q.is_contiguous()
+    assert kv.is_contiguous()
+    assert indices.is_contiguous()
+    assert lse.is_contiguous()
+    B, S, H, dim_plus_tail_dim = q.shape
+    _, S_kv, kv_group, _ = kv.shape
+    assert kv.shape[-1] == dim_plus_tail_dim
+    assert kv.shape[0] == B
+    topk = indices.shape[-1]
+    assert indices.shape == (B, S, kv_group, topk)
+    assert lse.shape == (B, S, H)
+
+    if backend == "cudnn_flashmla":
+        dq, dkv = cudnn_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale, cudnn_backward_arch(q, kv))
+    else:
+        dq, dkv = tilelang_sparse_mla_backward(q, kv, out, grad_out, indices, lse, sm_scale)
     return dq, dkv
 
 
@@ -321,6 +415,7 @@ def _sparse_mla_backward_fake(
     grad_out: torch.Tensor,
     indices: torch.Tensor,
     lse: torch.Tensor,
+    backend: DSABackend,
     sm_scale: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv)

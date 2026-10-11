@@ -68,7 +68,7 @@ class DifficultyPoolSampler(TaskSampler):
             trace.reward
             for episode in group
             for trace in episode.traces
-            if not trace.has_error and trace.agent.trainable
+            if episode.ok and not trace.has_error and trace.agent.trainable and trace.num_turns > 0
         ]
         if not rewards:
             return

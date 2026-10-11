@@ -19,11 +19,6 @@
 max_steps = 1000
 seq_len = 131072
 
-# Redirect compile/JIT caches to node-local /tmp (per user + job) to avoid
-# slow/contended shared-FS caches and FS lock deadlocks.
-[env_vars]
-TRITON_CACHE_DIR = "/tmp/.triton-cache"
-
 [slurm]
 job_name = "glm45air-swe"
 partition = "all"
@@ -40,10 +35,6 @@ num_infer_replicas = 4
 project = "swe-ablations"
 name = "glm45air-scaleswe"
 
-[weight_broadcast]
-type = "nccl"
-timeout = 3600
-
 [ckpt]
 interval = 50
 keep_last = 1
@@ -53,14 +44,12 @@ keep_last = 1
 # --- Trainer ---
 
 [trainer]
-dist_timeout_seconds = 3600
 enable_router_replay = true
 
 [model]
 name = "zai-org/GLM-4.5-Air"
 
 [trainer.model]
-impl = "custom"
 attn = "flash_attention_3"
 cp = 4
 cp_style = "ulysses"
@@ -129,4 +118,3 @@ gpu_memory_utilization = 0.85
 max_model_len = 131072
 tensor_parallel_size = 8
 enable_expert_parallel = true
-enable_return_routed_experts = true

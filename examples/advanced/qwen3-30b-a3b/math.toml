@@ -6,9 +6,6 @@ level = "debug"
 [model]
 name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
 
-[weight_broadcast]
-type = "nccl"
-
 [deployment]
 type = "multi_node"
 num_train_nodes = 2
@@ -24,7 +21,6 @@ interval = 100
 project = "qwen30b-math"
 
 [trainer.model]
-impl = "custom"
 attn = "flash_attention_3"
 ep = 8
 
@@ -34,7 +30,6 @@ ep = 8
 max_inflight_activations = 5
 
 [trainer.model.ac]
-freq = 1
 
 [trainer.optim]
 type = "adamw"
