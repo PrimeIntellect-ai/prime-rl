@@ -48,7 +48,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes, dispatch_failure_metrics
+from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -489,7 +489,8 @@ class Orchestrator:
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
-                await self.report_rollouts(force=True)
+                if metrics := self.take_rollout_metrics():
+                    await monitors.log(metrics, step=self.progress.step)
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
@@ -543,25 +544,20 @@ class Orchestrator:
     async def handle_train_result(self, batch: TrainBatch | None) -> None:
         if self.heart is not None:
             self.heart.beat()
-        # Flush before shipping so checkpointed totals include this batch's arrivals.
-        await self.report_rollouts(force=batch is not None and bool(batch.samples))
         while batch is not None and not self.draining and not self.stopped.is_set():
             await self.finalize_train_batch(batch)
             if self.draining or self.stopped.is_set():
                 return
             batch = self.train_sink.take_batch()
-            await self.report_rollouts(force=batch is not None and bool(batch.samples))
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
             self.train_sink.discard_queued()
 
-    async def report_rollouts(self, *, force: bool = False) -> None:
-        window = self.train_sink.take_rollout_window(force=force)
-        if window is not None:
-            await self.finalize_rollout_window(window)
-
-    async def finalize_rollout_window(self, window: RolloutWindow) -> None:
+    def take_rollout_metrics(self) -> dict[str, float]:
+        window = self.train_sink.take_rollout_window(force=True)
+        if window is None:
+            return {}
         self.progress.rollout_window += 1
         self.progress.total_tokens += window.tokens
         self.progress.total_samples += window.traces
@@ -585,7 +581,6 @@ class Orchestrator:
             "progress/total_rollouts": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
         }
-        await monitors.log(metrics, step=self.progress.step)
         if window.attempts and window.discarded / window.attempts > 0.5:
             get_logger().warning(
                 f"Discarded {window.discarded}/{window.attempts} episodes "
@@ -594,6 +589,7 @@ class Orchestrator:
                 f"no_signal={window.discarded - window.stale - window.errored - window.cancelled}. "
                 "Review max_off_policy_steps, episode errors, and reward signal."
             )
+        return metrics
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
@@ -640,6 +636,10 @@ class Orchestrator:
                 f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
+        # Update arrival totals before checkpointing; publish all and effective
+        # statistics together in one scalar record for this training batch.
+        rollout_metrics = self.take_rollout_metrics()
+
         # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}.
         # Without this, fast envs fill batches from buffered rollouts and the
         # orchestrator races arbitrarily far ahead of the trainer. Always
@@ -676,7 +676,7 @@ class Orchestrator:
         save_ckpt_time = await self.maybe_save_ckpt(step)
         trim_process_memory()
 
-        metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+        metrics = rollout_metrics | effective.metrics.to_wandb(prefix="train/agg", subset="effective")
         for env_name, env_pool in effective.by_env().items():
             metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset="effective")
         num_input = sum(record.trace.num_input_tokens for record in effective.records)
