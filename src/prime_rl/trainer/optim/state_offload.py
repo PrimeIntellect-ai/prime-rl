@@ -80,7 +80,13 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             self._initialized = True
             return result
 
-        if closure is None and self.pin_memory and isinstance(self.optimizer, AdamW):
+        # A parameter without state yet (no grad on any earlier step) is initialized by the full path below.
+        if (
+            closure is None
+            and self.pin_memory
+            and isinstance(self.optimizer, AdamW)
+            and all(p in self.state for group in self.param_groups for p in group["params"] if p.grad is not None)
+        ):
             return self._chunked_step()
 
         # Move states to GPU
@@ -122,7 +128,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         for group in groups:
             group["params"] = [param for param in group["params"] if param in params]
         try:
-            return self.optimizer.step()
+            self.optimizer.step()
         finally:
             for group, group_params in zip(groups, all_params):
                 group["params"] = group_params
@@ -137,6 +143,8 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         h2d, d2h = self._streams
         compute = torch.cuda.current_stream()
         chunks, buffer_bytes = self._plan_chunks()
+        if not chunks:
+            return
         state = self.optimizer.state
         # Allocated on the compute stream, so the caching allocator reuses the same blocks every step.
         buffers = [torch.empty(buffer_bytes, dtype=torch.uint8, device="cuda") for _ in range(2)]
@@ -160,12 +168,11 @@ class CPUOffloadOptimizer(OffloadOptimizer):
                     state[param][key] = _with_local(cpu_value, gpu_local)
                 return h2d.record_event()
 
-        result = None
-        loaded = load(0) if chunks else None
+        loaded = load(0)
         for i, (params, _) in enumerate(chunks):
             next_loaded = load(i + 1) if i + 1 < len(chunks) else None
             compute.wait_event(loaded)
-            result = self._step_params(params)
+            self._step_params(params)
             d2h.wait_stream(compute)
             with torch.cuda.stream(d2h):
                 for (param, key), cpu_value in cpu_values[i % 2].items():
@@ -173,11 +180,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
                     state[param][key] = cpu_value
                 written_back[i % 2] = d2h.record_event()
             loaded = next_loaded
-        if not chunks:
-            result = self.optimizer.step()
-        compute.wait_stream(d2h)
         torch.cuda.synchronize()
-        return result
 
     def zero_grad(self, set_to_none: bool = True):
         self.optimizer.zero_grad(set_to_none=set_to_none)
