@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Callable
 
@@ -20,6 +21,18 @@ from prime_rl.utils.logger import get_logger
 # Module key -> callable returning the fp32 buffer its weight gradient accumulates into
 # (`Float8BlockwiseLinear.accumulate_wgrad_fp32`).
 _wgrad_accumulators: dict[int, Callable[[], torch.Tensor]] = {}
+
+
+@functools.cache
+def _fp8_dual_cast_op():
+    """prime-kernels' one-pass per-token + transposed e4m3 casts (optionally after DeepSeek-V4's inverse RoPE),
+    when it is built for this GPU."""
+    import prime_kernels
+
+    if "fp8_dual_cast" in prime_kernels.KERNELS and prime_kernels.is_available("fp8_dual_cast"):
+        prime_kernels.load("fp8_dual_cast")
+        return torch.ops.prime_kernels.fp8_dual_cast
+    return None
 
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_mm", mutates_args=())
@@ -69,9 +82,15 @@ def _fp8_blockwise_mm_backward(
     needs_grad_x: bool,
     needs_grad_weight: bool,
     wgrad_key: int = 0,
+    grad_fp8: torch.Tensor | None = None,
+    grad_sf: torch.Tensor | None = None,
+    grad_t_fp8: torch.Tensor | None = None,
+    grad_t_sf: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """With an fp32 accumulator registered for `wgrad_key`, the weight gradient is added straight into it and the
-    returned weight gradient is empty."""
+    returned weight gradient is empty. `grad_fp8` / `grad_sf` and `grad_t_fp8` / `grad_t_sf`, when given, are
+    `grad_output`'s per-token and transposed per-token casts as computed here (the scales as the casts return
+    them), and `grad_output` is not read."""
     import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
@@ -80,8 +99,18 @@ def _fp8_blockwise_mm_backward(
     grad_x = x.new_empty(x.shape)
     grad_weight = weight.new_empty(weight.shape)
 
+    dual_cast = _fp8_dual_cast_op() if grad_fp8 is None and needs_grad_x and needs_grad_weight else None
+    if dual_cast is not None and block_size == 128 and not use_ue8m0 and grad_output_2d.dtype == torch.bfloat16:
+        # Both casts of the gradient in one pass over it, bit for bit with the two below.
+        grad_fp8, grad_sf, grad_t_fp8, grad_t_sf = dual_cast(grad_output_2d, None, None, block_size)
+        rows = grad_output_2d.size(0)
+        grad_sf, grad_t_sf = grad_sf[:, :rows].T, grad_t_sf.T
+
     if needs_grad_x:
-        grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
+        if grad_fp8 is None:
+            grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
+        else:
+            grad_output_fp8 = (grad_fp8, grad_sf)
         weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, use_ue8m0, block_size)
         grad_x_2d = torch.empty_like(x_2d)
         deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)
@@ -89,7 +118,10 @@ def _fp8_blockwise_mm_backward(
 
     if needs_grad_weight:
         # The transposed casts zero-pad the token dimension, as DeepGEMM's (1, 1, 128) recipe requires.
-        grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
+        if grad_t_fp8 is None:
+            grad_output_t_fp8 = per_token_cast_to_fp8_tp_triton(grad_output_2d, use_ue8m0, block_size)
+        else:
+            grad_output_t_fp8 = (grad_t_fp8, grad_t_sf)
         x_t_fp8 = per_token_cast_to_fp8_tp_triton(x_2d, use_ue8m0, block_size)
         accumulator = _wgrad_accumulators.get(wgrad_key)
         grad_weight_fp32 = (
@@ -118,6 +150,10 @@ def _fp8_blockwise_mm_backward_fake(
     needs_grad_x: bool,
     needs_grad_weight: bool,
     wgrad_key: int = 0,
+    grad_fp8: torch.Tensor | None = None,
+    grad_sf: torch.Tensor | None = None,
+    grad_t_fp8: torch.Tensor | None = None,
+    grad_t_sf: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     accumulates = needs_grad_weight and wgrad_key in _wgrad_accumulators
     return x.new_empty(x.shape), weight.new_empty(0) if accumulates else weight.new_empty(weight.shape)

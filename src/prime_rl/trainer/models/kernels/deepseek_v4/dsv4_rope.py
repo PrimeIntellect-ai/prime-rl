@@ -13,6 +13,8 @@ import torch
 import triton
 import triton.language as tl
 
+from prime_rl.trainer.models.kernels.fp8_utils import ue8m0_for_device
+from prime_rl.trainer.models.layers import fp8_linear
 from prime_rl.trainer.models.layers.norms import get_quack_rmsnorm
 
 
@@ -290,9 +292,41 @@ def _dsv4_linear_rope_setup_context(ctx, inputs, output) -> None:
 
 def _dsv4_linear_rope_autograd_backward(ctx, grad: torch.Tensor):
     x, weight, cos_sin_cache, position_ids = ctx.saved_tensors
+    needs_grad_x, needs_grad_weight = ctx.needs_input_grad[:2]
+    dual_cast = (
+        fp8_linear._fp8_dual_cast_op() if ctx.fp8_block_size == 128 and not ue8m0_for_device(grad.device) else None
+    )
+    if dual_cast is not None:
+        # The rotation and both casts of the query gradient in one pass, bit for bit with the path below.
+        head_dim = grad.shape[-1]
+        grad = grad.flatten(-2)
+        rows = grad.numel() // grad.shape[-1]
+        grad_fp8, grad_sf, grad_t_fp8, grad_t_sf = dual_cast(
+            grad.reshape(rows, -1).contiguous(), cos_sin_cache, position_ids, head_dim
+        )
+        grad_x, grad_weight = torch.ops.prime_rl.fp8_blockwise_mm_backward(
+            grad,
+            x,
+            weight,
+            ctx.fp8_block_size,
+            needs_grad_x,
+            needs_grad_weight,
+            0,
+            grad_fp8,
+            grad_sf[:, :rows].T,
+            grad_t_fp8,
+            grad_t_sf.T,
+        )
+        return (
+            grad_x if needs_grad_x else None,
+            grad_weight if needs_grad_weight else None,
+            None,
+            None,
+            None,
+            None,
+        )
     # The output feeds attention alone, whose query gradient is fresh: rotate it in place.
     grad = _rope_in_place_or_copy(grad, cos_sin_cache, position_ids, True).flatten(-2)
-    needs_grad_x, needs_grad_weight = ctx.needs_input_grad[:2]
     if ctx.fp8_block_size:
         grad_x, grad_weight = torch.ops.prime_rl.fp8_blockwise_mm_backward(
             grad, x, weight, ctx.fp8_block_size, needs_grad_x, needs_grad_weight
