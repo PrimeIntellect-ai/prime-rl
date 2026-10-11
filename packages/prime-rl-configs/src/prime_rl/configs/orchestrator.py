@@ -561,9 +561,6 @@ class OrchestratorConfig(BaseConfig):
     stall_timeout: float | None = Field(1800.0, gt=0)
     """Seconds without a new trainable sample before the orchestrator logs which envs are stuck. None disables the check."""
 
-    fail_on_stall: bool = False
-    """Exit with an error after ``stall_timeout`` instead of logging and waiting."""
-
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:

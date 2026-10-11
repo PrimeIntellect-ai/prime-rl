@@ -540,8 +540,7 @@ class Orchestrator:
                 await self.finalize_train_batch(train_batch)
 
     def _check_stall(self) -> None:
-        """Name the stuck envs when no trainable sample arrived for ``stall_timeout``;
-        exit with an error instead when ``fail_on_stall`` is set."""
+        """Name the stuck envs when no trainable sample arrived for ``stall_timeout``."""
         timeout = self.config.stall_timeout
         if timeout is None or self.draining or self.dispatcher.train_scheduling_disabled:
             return
@@ -554,12 +553,9 @@ class Orchestrator:
             return
         self.stall_checked_at = now
         envs = "\n".join(f"  {line}" for line in self.dispatcher.stall_report())
-        message = (
+        get_logger().warning(
             f"No new trainable sample in {now - last_progress:.0f}s (stall_timeout={timeout:.0f}s). Train envs:\n{envs}"
         )
-        if self.config.fail_on_stall:
-            raise RuntimeError(message)
-        get_logger().warning(message)
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""

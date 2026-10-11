@@ -722,10 +722,10 @@ class Dispatcher:
                 f"Episode failed in group {meta.group_id} ({meta.env_name})"
                 + (f" — {error.type}: {error.message}" if error is not None else "")
             )
-        # A stage timeout says the task ran long, not that the env is down: it neither
-        # trips nor resets the breaker.
+        # A stage timeout says the task ran long, and a ProviderError says inference failed,
+        # not that the env is down: neither trips nor resets the breaker.
         errors = [*episode.errors, *(error for trace in episode.traces for error in trace.errors)]
-        failure = next((error for error in reversed(errors) if error.type != "Timeout"), None)
+        failure = next((error for error in reversed(errors) if error.type not in ("Timeout", "ProviderError")), None)
         if failure is not None:
             self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
         elif episode.ok:
