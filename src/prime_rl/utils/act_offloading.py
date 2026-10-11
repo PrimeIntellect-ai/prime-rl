@@ -26,9 +26,9 @@ class OffloadActivations(saved_tensors_hooks):
     min_offload_size bytes will be offloaded to CPU in the forward and brought back in the backward.
     This is in contrast to maintaining the activation on GPU VRAM throughout the program.
 
-    This manager contains the option of using one additional CUDA stream to handle the communication
-    between CUDA and CPU, which is intended to overlap with the default computation stream to improve
-    runtime. We designed synchronization with a few heuristics for optimizing the tradeoff between
+    This manager uses one additional CUDA stream, shared by the whole process, to handle the communication
+    between CUDA and CPU, which overlaps with the default computation stream to improve runtime.
+    We designed synchronization with a few heuristics for optimizing the tradeoff between
     runtime vs memory usage.
 
     Args:
@@ -149,10 +149,7 @@ class OffloadActivations(saved_tensors_hooks):
                 self.s1.wait_stream(self.s0)
 
                 with self.s1:
-                    try:
-                        cpu_tensor = torch.empty_like(activation, pin_memory=self.use_pin_memory, device="cpu")
-                    except NotImplementedError as e:
-                        raise e
+                    cpu_tensor = torch.empty_like(activation, pin_memory=self.use_pin_memory, device="cpu")
                     cpu_tensor.copy_(activation, non_blocking=True)
                     self.tracker[tensor_id] = (
                         cpu_tensor,
