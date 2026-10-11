@@ -36,7 +36,6 @@ HF_HOME = "$HOME/.cache/huggingface"
 [slurm]
 job_name = "dsv4-swe-fp8-full"
 partition = "all"
-pre_run_command = 'timeout 120 prime sandbox delete --label "dsv4-swe-fp8-full" -y || true'
 
 # Router replay rules out disaggregated prefill/decode, so inference is independent one-node replicas.
 [deployment]
