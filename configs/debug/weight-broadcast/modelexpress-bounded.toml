@@ -1,0 +1,5 @@
+[weight_broadcast]
+type = "modelexpress"
+# Bounded receiver staging: streams the update through two 1 GiB buffers.
+staging_buffer_bytes = 1073741824
+staging_buffers_count = 2

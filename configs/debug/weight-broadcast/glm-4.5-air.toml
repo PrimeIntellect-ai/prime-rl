@@ -45,6 +45,12 @@ env.agent.runtime.type = "subprocess"
 
 [inference]
 
+# Node-local compile caches: concurrent DP servers race on a shared NFS cache.
+[inference.env_vars]
+VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
+FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
+TRITON_CACHE_DIR = "/tmp/.triton-cache"
+
 [inference.vllm]
 max_model_len = 2048
 tensor_parallel_size = 4

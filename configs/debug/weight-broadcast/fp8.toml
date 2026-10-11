@@ -1,0 +1,4 @@
+# Serve the BF16 checkpoint the trainer broadcasts, quantized online to per-block FP8 (as in the GLM-5 recipes).
+[inference.vllm]
+quantization = "fp8_per_block"
+gpu_memory_utilization = 0.6
