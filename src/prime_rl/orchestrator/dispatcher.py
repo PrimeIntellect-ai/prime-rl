@@ -722,10 +722,14 @@ class Dispatcher:
                 f"Episode failed in group {meta.group_id} ({meta.env_name})"
                 + (f" — {error.type}: {error.message}" if error is not None else "")
             )
-        # A stage timeout says the task ran long, and a ProviderError says inference failed,
-        # not that the env is down: neither trips nor resets the breaker.
+        # A stage timeout says the task ran long, not that the env is down: it neither trips
+        # nor resets the breaker. Neither does a ProviderError from the live policy (inference
+        # health is not the env's); one from a frozen or external provider still counts.
+        ignored = ("Timeout",)
+        if meta.kind == "eval" or self.train_envs.get(meta.env_name).uses_live_policy:
+            ignored = ("Timeout", "ProviderError")
         errors = [*episode.errors, *(error for trace in episode.traces for error in trace.errors)]
-        failure = next((error for error in reversed(errors) if error.type not in ("Timeout", "ProviderError")), None)
+        failure = next((error for error in reversed(errors) if error.type not in ignored), None)
         if failure is not None:
             self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
         elif episode.ok:
