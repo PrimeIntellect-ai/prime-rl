@@ -25,6 +25,8 @@
 # releases its allocation instead of holding nodes after a crash.
 set -e
 
+trap 'for pid in ${LMCACHE_PID:-} ${RL_PID:-} ${MODEL_EXPRESS_PID:-} ${REDIS_PID:-}; do kill -TERM "$pid" 2>/dev/null || true; done' EXIT
+
 export PROJECT_DIR={{ project_dir }}
 export PRL_ATTEMPT_CONFIG_DIR={{ config_dir }}
 export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
@@ -82,7 +84,6 @@ mkdir -p "$MX_STATE_DIR/cache"
     --dir "$MX_STATE_DIR" \
     > "$MX_STATE_DIR/redis.log" 2>&1 &
 REDIS_PID=$!
-trap '[ -z "${MODEL_EXPRESS_PID:-}" ] || kill -TERM "$MODEL_EXPRESS_PID" 2>/dev/null; kill -TERM "$REDIS_PID" 2>/dev/null || true' EXIT
 
 for _ in $(seq 1 60); do
     timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/{{ modelexpress_redis_port }}" 2>/dev/null && break
@@ -123,4 +124,17 @@ timeout 1 bash -c "echo > /dev/tcp/$WEIGHT_BROADCAST_HOST/$MODEL_EXPRESS_PORT" 2
     exit 1
 }
 {% endif %}
+{% if kv_offload and kv_offload.type == "lmcache" %}
+LOG_DIR="$PRL_ATTEMPT_LOG_DIR"
+INFER_NODE_RANK=0
+ulimit -l unlimited
+{% include "_lmcache_store.sh.j2" %}
+uv run rl @ {{ config_path }}{% if use_nixl_broadcast %} --weight-broadcast.host "$WEIGHT_BROADCAST_HOST"{% endif %} &
+RL_PID=$!
+EXIT_CODE=0
+wait -n -p FINISHED_PID "$RL_PID" "$LMCACHE_PID" || EXIT_CODE=$?
+if [ "$FINISHED_PID" = "$LMCACHE_PID" ]; then EXIT_CODE=1; fi
+exit "$EXIT_CODE"
+{% else %}
 uv run rl @ {{ config_path }}{% if use_nixl_broadcast %} --weight-broadcast.host "$WEIGHT_BROADCAST_HOST"{% endif %}
+{% endif %}

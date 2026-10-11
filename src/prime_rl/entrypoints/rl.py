@@ -278,14 +278,6 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     template = env.get_template(config.slurm.template_path.name)
 
     offload = config.inference.kv_cache_offload if config.inference is not None else None
-    is_mooncake = offload is not None and offload.type == "mooncake"
-    mooncake_vars = dict(
-        kv_offload=offload is not None,
-        kv_offload_mooncake=is_mooncake,
-        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
-        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
-        kv_offload_device_name=offload.device_name if is_mooncake else "",
-    )
 
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the
     # user's config merged on top. Runtime wiring stays in the template.
@@ -326,6 +318,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         script = template.render(
             **config.slurm.template_vars,
             **modelexpress_vars,
+            kv_offload=offload,
             config_path=config_dir / RL_CONFIG,
             config_dir=config_dir,
             log_dir=log_dir,
@@ -373,7 +366,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
             dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
-            **mooncake_vars,
+            kv_offload=offload,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
@@ -412,7 +405,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             dp_per_node=(config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size)
             if config.inference
             else 1,
-            **mooncake_vars,
+            kv_offload=offload,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
             ranks_filter=",".join(map(str, config.trainer.log.ranks_filter)),
