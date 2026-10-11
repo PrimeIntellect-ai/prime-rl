@@ -977,9 +977,10 @@ class Orchestrator:
         return time.perf_counter() - t
 
     async def save_ckpt(self, step: int) -> None:
-        await self.ckpt_manager.save(
-            self.progress, self.train_source, self.train_sink, self.dispatcher.open_train_groups(), step
-        )
+        # Resumed groups not yet handed to the dispatcher are still open
+        open_groups = self.dispatcher.open_train_groups()
+        open_groups |= {request.group_id: (request.env_name, request.task) for request in self.train_source.resumed}
+        await self.ckpt_manager.save(self.progress, self.train_source, self.train_sink, open_groups, step)
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs
