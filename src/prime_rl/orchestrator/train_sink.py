@@ -418,7 +418,10 @@ class TrainSink:
         )
 
     def process_batch(self) -> TrainBatch:
-        selected = list(self.pending_batch.items())[: self.batch_size]
+        # Oldest policy version first, so leftovers are the traces with the most staleness budget left.
+        selected = sorted(self.pending_batch.items(), key=lambda item: self.queued[item[0]].policy_start)[
+            : self.batch_size
+        ]
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
