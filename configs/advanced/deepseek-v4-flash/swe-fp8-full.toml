@@ -4,8 +4,8 @@
 # with 4 inference replicas (12 nodes total) instead of 8 and no CPU offloading of any kind. For 16 nodes, set
 # num_infer_replicas = 8 and max_inflight = 512 as in swe-fp8-fp8.toml.
 #
-# With optimizer offload off and activation offload on, steady-state peak reserved memory measured 92-116 GiB per GPU.
-# Activation offload is now off as well, which keeps every checkpointed block input on the GPU, so recheck the peak.
+# Memory, max across the 64 ranks: at cp 4 with activation offload on the peak was 117 GiB, with it off 133 GiB, and a
+# 131k batch then OOMed at step 7. cp 8 halves the tokens each rank holds (16k), so activation offload stays off.
 
 max_steps = 100
 seq_len = 131072
@@ -72,7 +72,7 @@ ep = 8
 # Ring is the default and the only supported style: DeepSeek V4 declares ring-only CP support and
 # dispatches unconditionally to the TileLang sparse-attention kernel, so cp_style = "ulysses" is a
 # startup ValueError despite what docs/scaling.md recommends.
-cp = 4
+cp = 8
 fused_lm_head_token_chunk_size = 1024
 optim_cpu_offload = false
 ac_offloading = "None"
