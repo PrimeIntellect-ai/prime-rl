@@ -112,7 +112,6 @@ members = [
     "pi-officeqa-pro-v2",
     "pi-programbench",
     "pi-swe-sweep",
-    "pi-terminal-bench-2",
     "pi-terminalbench2-1",
     "pinchbench",
     "prime-rl",
@@ -1353,7 +1352,7 @@ wheels = [
 
 [[package]]
 name = "deep-swe"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "deps/prime-envs/environments/swe/deep_swe" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -4755,17 +4754,6 @@ dependencies = [
 requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.2.dev165" }]
 
 [[package]]
-name = "pi-terminal-bench-2"
-version = "0.1.0"
-source = { editable = "deps/prime-envs/environments/terminal/pi_terminal_bench_2" }
-dependencies = [
-    { name = "verifiers", extra = ["harbor"] },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.3.1" }]
-
-[[package]]
 name = "pi-terminalbench2-1"
 version = "0.2.2"
 source = { editable = "deps/prime-envs/environments/terminal/pi_terminalbench2_1" }
@@ -6820,7 +6808,7 @@ wheels = [
 
 [[package]]
 name = "swe-sweep"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/swe/swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
@@ -7013,7 +7001,7 @@ wheels = [
 
 [[package]]
 name = "terminal-bench-2"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/terminal/terminal_bench_2" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
