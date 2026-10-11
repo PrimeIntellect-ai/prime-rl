@@ -118,8 +118,9 @@ class NCCLWeightUpdateWorker(Worker):
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
 
-        # A restarted trainer/orchestrator re-initializes engines that outlived them; drop the
-        # previous run's communicator first (abort-based, safe without the old peers).
+        # Set only when this worker already joined a broadcast group: the engine outlived a
+        # trainer/orchestrator restart (or survivors are regrouped) and the new orchestrator calls
+        # /init_broadcaster again. Drop the old communicator first (abort-based, safe without the old peers).
         previous = getattr(self, "nccl_broadcast_receiver", None)
         if previous is not None:
             previous.communicator.destroy()
