@@ -9,6 +9,7 @@ from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffload
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.muon import DeepSeekMuon
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -211,12 +212,35 @@ def _deepseek_v41_param_class(name: str, param: nn.Parameter) -> str:
     decay) or `scale` (biases and scaling factors: AdamW without)."""
     if _is_embedding_like(name):
         return "embedding"
-    # The Engram gate weights are per-channel scales stored as (hc_mult, hidden) matrices.
+    # The Engram gate's RMSNorm weights for its query (the residual stream) and key, one row per mHC stream.
     if ".engrams." in name and name.rsplit(".", 1)[-1] in ("q_weight", "k_weight"):
-        return "scale"
+        return "norm"
     if param.ndim >= 2:
         return "muon"
     return "norm" if "norm" in name else "scale"
+
+
+def _deepseek_v41_row_blocks(model: nn.Module) -> dict[nn.Parameter, tuple[int, ...]]:
+    """DeepSeek-V4.1's logically independent matrices stacked in one 2-D weight: query heads (head-wise Muon,
+    tech report §2.5), the groups of the block-diagonal output projection, the Engram projection's per-stream
+    keys and shared value, and the mHC pre / post / residual mixes."""
+    from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4GroupedLinear
+    from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Attention, DeepseekV41Indexer
+    from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram
+    from prime_rl.trainer.models.deepseek_v41.hyperconnections import DeepseekV41HyperConnection
+
+    blocks = {}
+    for module in model.modules():
+        if isinstance(module, (DeepseekV41Attention, DeepseekV41Indexer)):
+            blocks[module.q_b_proj.weight] = (module.head_dim,) * module.num_heads
+        elif isinstance(module, DeepseekV4GroupedLinear):
+            blocks[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
+        elif isinstance(module, DeepseekV41Engram):
+            blocks[module.wkv.weight] = (module.wkv.out_features // (module.hc_mult + 1),) * (module.hc_mult + 1)
+        elif isinstance(module, DeepseekV41HyperConnection):
+            hc = module.hc_mult
+            blocks[module.fn] = (hc, hc, hc * hc)
+    return blocks
 
 
 def _create_muon_optimizer(
@@ -295,9 +319,13 @@ def _create_muon_optimizer(
             )
         )
 
-    param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
+    # DeepSeek-V4's AdamW epsilon (§4.2.2); the optimizer's default otherwise.
+    adamw_eps = {"epsilon": 1e-20} if config.recipe == "deepseek" else {}
+    param_groups.append(
+        dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay, **adamw_eps)
+    )
     if adamw_no_decay_params:
-        param_groups.append(dict(params=adamw_no_decay_params, algorithm="adamw", lr=lr, weight_decay=0.0))
+        param_groups.append(dict(params=adamw_no_decay_params, algorithm="adamw", lr=lr, weight_decay=0.0, **adamw_eps))
     for params, group_lr in ((embedding_params, lr), (engram_table_params, lr * config.engram_lr_scale)):
         if not params:
             continue
@@ -315,7 +343,7 @@ def _create_muon_optimizer(
                 )
             )
         else:
-            param_groups.append(dict(params=params, algorithm="adamw", lr=group_lr, weight_decay=0.0))
+            param_groups.append(dict(params=params, algorithm="adamw", lr=group_lr, weight_decay=0.0, **adamw_eps))
 
     if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
         distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
@@ -332,6 +360,29 @@ def _create_muon_optimizer(
             partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
+
+    if config.recipe == "deepseek":
+        row_blocks = _deepseek_v41_row_blocks(model) if model is not None else {}
+        muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
+        row_blocks = {p: b for p, b in row_blocks.items() if p in muon_params}
+        if overlap := set(row_blocks) & set(matrix_partitions):
+            raise NotImplementedError(f"{len(overlap)} fused parameters also stack independent matrices")
+        optimizer = DeepSeekMuon(
+            params=param_groups,
+            row_blocks={**matrix_partitions, **row_blocks},
+            update_rms=config.update_rms,
+            lr=lr,
+            mu=config.mu,
+            betas=(config.betas1, config.betas2),
+            weight_decay=config.weight_decay,
+            distributed_mesh=distributed_mesh,
+            world_mesh=parallel_dims.world_mesh,
+            fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,
+        )
+        _warmup_muon_mesh(distributed_mesh)
+        if expert_params and parallel_dims.ep_enabled:
+            _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
+        return optimizer
 
     optimizer = MuonWithSinkhorn(
         params=param_groups,

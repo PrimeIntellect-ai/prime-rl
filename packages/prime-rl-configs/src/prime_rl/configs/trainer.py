@@ -720,9 +720,10 @@ class MuonConfig(BaseOptimizerConfig):
     embedding_update: Literal["sinkhorn", "adamw"] | None = None
     """How the token embedding, the LM head and the Engram hash tables are updated, with DeepSeek-V4.1's
     split of the other parameters (tech report §2.5): Engram projections go to Muon with the other
-    matrices, normalization weights to AdamW with weight decay, biases and scaling factors (Engram gate
-    weights, mHC bias and scale, attention sinks) to AdamW without. ``"sinkhorn"`` is the report's
-    momentum update with Sinkhorn balancing (one fp32 state per parameter, no weight decay);
+    matrices, normalization weights (the Engram gate's query and key norm weights included) to AdamW with
+    weight decay, biases and scaling factors (mHC bias and scale, attention sinks) to AdamW without.
+    ``"sinkhorn"`` is the report's momentum update with Sinkhorn balancing (one fp32 state per parameter, no
+    weight decay);
     ``"adamw"`` is AdamW without weight decay. ``None`` sends the embedding and LM head to AdamW and every
     other 2-D parameter, Engram tables included, to Muon."""
 
@@ -741,10 +742,29 @@ class MuonConfig(BaseOptimizerConfig):
     engram_lr_scale: float = Field(5.0, gt=0)
     """Learning-rate multiplier of the Engram hash tables. Only used with ``embedding_update`` set."""
 
+    recipe: Literal["dion", "deepseek"] = "dion"
+    """Muon algorithm. ``"dion"`` is dion's Muon (momentum without Nesterov, 5 Newton-Schulz iterations,
+    learning rate scaled by ``0.2 * sqrt(max(n, m))``, AdamW epsilon 1e-8). ``"deepseek"`` is DeepSeek-V4's
+    (tech report §2.4, V4.1 §2.5): Nesterov momentum, 10 hybrid Newton-Schulz iterations in bf16, each update
+    matrix rescaled to RMS ``update_rms``, one Newton-Schulz per logically independent matrix (each routed
+    expert, each attention and indexer query head, each group of the grouped output projection, the Engram
+    projection's keys and value, the three mHC mixes), AdamW epsilon 1e-20. Parameters whose shard holds whole
+    matrices (the experts) are orthogonalized in place; the others go whole to one owner rank per parameter.
+    Requires ``embedding_update``."""
+
+    update_rms: float = Field(0.18, gt=0)
+    """RMS of each Muon update matrix with ``recipe = "deepseek"``, so AdamW's learning rate carries over."""
+
     @model_validator(mode="after")
     def validate_sinkhorn_iters(self):
         if self.sinkhorn_iters % 2 != 1:
             raise ValueError(f"optim.sinkhorn_iters must be odd, got {self.sinkhorn_iters}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_recipe(self):
+        if self.recipe == "deepseek" and self.embedding_update is None:
+            raise ValueError('optim.recipe = "deepseek" needs optim.embedding_update ("sinkhorn" for DeepSeek-V4.1)')
         return self
 
 
