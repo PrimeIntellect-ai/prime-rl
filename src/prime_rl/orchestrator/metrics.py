@@ -247,7 +247,9 @@ class TraceMetrics(StatGroup):
         for record in self.records:
             groups.setdefault(episode_group_id(record.episode), []).append(record.trace)
         num_groups = len(groups)
-        solved_none = sum(sum(trace.reward for trace in group) == 0 for group in groups.values())
+        # A group solved none when no trace scored above zero. Summing instead lets rewards cancel,
+        # so a zero-sum group like [1.0, -1.0] reads as solved none even though a trace solved it.
+        solved_none = sum(max(trace.reward for trace in group) <= 0 for group in groups.values())
         solved_all = sum(all(trace.reward == 1.0 for trace in group) for group in groups.values())
         return {
             "solved_none": solved_none / num_groups,
