@@ -16,7 +16,6 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
@@ -833,13 +832,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         layer = language_model.layers[layer_id]
-        if isinstance(layer, CheckpointWrapper) and any(
-            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
-        ):
-            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
-            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
-            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
-            layer = layer._checkpoint_wrapped_module
+        # Compile the checkpoint wrapper as one region: an eager fallback during
+        # recomputation must not change the operations observed by an eager SAC context.
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
         layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
@@ -993,7 +987,7 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
+    # Keep the checkpoint wrapper inside the compiled region and apply FSDP before tracing.
     if config.ac is not None:
         apply_ac(model, config.ac)
 
