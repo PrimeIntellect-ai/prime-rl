@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal
 
@@ -333,6 +333,10 @@ class DynamoAdminPlane(AdminPlane):
         transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        # Dynamo pins one worker and never evicts it, so the eviction hooks are unused
+        on_membership_change: Callable[[list[httpx.AsyncClient], int], Awaitable[None]] | None = None,
+        abort_marker: Callable[[], Path] | None = None,
+        resend: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         if transport != "nccl":
             async with self._mutation_lock:
