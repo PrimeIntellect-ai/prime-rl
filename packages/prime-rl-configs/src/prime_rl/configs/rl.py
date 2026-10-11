@@ -684,11 +684,8 @@ class RLConfig(BaseConfig):
                         f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
                         f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
                     )
-                set_derived(
-                    self.trainer.model,
-                    "dp_replicate",
-                    self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group,
-                    "trainer.model.dp_replicate",
+                self.trainer.model.dp_replicate = (
+                    self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
                 )
 
             if (
