@@ -109,7 +109,7 @@ DTYPE_MAP = {
     "float32": torch.float32,
 }
 
-# The one-time HF <-> PrimeRL conversion runs on the master alone; DeepSeek-V4-Flash takes over an hour.
+# The one-time HF <-> PrimeRL conversion runs on the master alone and can take hours for large models.
 CONVERSION_TIMEOUT_S = 4 * 3600
 
 # We increase the torch.compile recompile limit and cache size as we found this
