@@ -107,10 +107,12 @@ class TrainSink:
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
         self.queued: dict[str, QueuedTrace] = {}
-        # By-handle payload files the latest checkpoint points into (and the oldest
-        # policy version among them): a resume from it needs them, so they outlive
-        # their samples until the next checkpoint. ``held_back`` are pinned files
-        # that would otherwise have been deleted.
+        # By-handle payload files each saved checkpoint points into (and the oldest
+        # policy version among them), by step. Resume picks the newest committed
+        # step, and a saved step becomes it once the trainer commits it, so the files
+        # outlive their samples until a newer step is committed. ``pinned`` is the
+        # union; ``held_back`` are pinned files that would otherwise have been deleted.
+        self.pins: dict[int, tuple[set[str], float]] = {}
         self.pinned: set[str] = set()
         self.pinned_version = math.inf
         self.held_back: set[str] = set()
@@ -183,10 +185,12 @@ class TrainSink:
             requests.append(
                 TaskRequest(env_name=env_name, task=task, step=self.progress.step, rollouts=rollouts, group_id=group_id)
             )
-        self.pinned = self._sample_files(self.pending_batch) | payload_files(
-            episode for group in self.pending_groups.values() for episode in group
+        self.pin(
+            self.progress.step - 1,
+            self._sample_files(self.pending_batch)
+            | payload_files(episode for group in self.pending_groups.values() for episode in group),
+            min_version,
         )
-        self.pinned_version = min_version
         get_logger().info(
             f"Resuming with {len(self.pending_batch)} queued traces and {len(requests)} open groups "
             f"({kept} finished episodes kept)"
@@ -202,11 +206,22 @@ class TrainSink:
             for segment in sample.payload or ()
         }
 
-    def pin_snapshot(self) -> set[str]:
-        """Protect the payload files of the last ``state_dict`` snapshot (now written to a
-        checkpoint) until the next one replaces it. Returns the previously pinned files
-        whose deletion was held back and that the new checkpoint no longer needs."""
-        self.pinned, self.pinned_version = self._snapshot
+    def pin(self, step: int, files: set[str], version: float) -> None:
+        self.pins[step] = (files, version)
+        self.pinned |= files
+        self.pinned_version = min(self.pinned_version, version)
+
+    def pin_snapshot(self, step: int) -> None:
+        """Protect the payload files of the last ``state_dict`` snapshot, now written as
+        ``step``'s checkpoint, until a newer step is committed."""
+        self.pin(step, *self._snapshot)
+
+    def unpin_before(self, step: int) -> set[str]:
+        """``step`` is committed: drop the pins of older steps. Returns the held-back files
+        that no pin needs any more."""
+        self.pins = {pinned_step: pin for pinned_step, pin in self.pins.items() if pinned_step >= step}
+        self.pinned = set().union(*(files for files, _ in self.pins.values()))
+        self.pinned_version = min((version for _, version in self.pins.values()), default=math.inf)
         released = self.held_back - self.pinned
         self.held_back -= released
         return released

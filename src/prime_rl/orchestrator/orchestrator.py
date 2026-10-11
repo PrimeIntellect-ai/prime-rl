@@ -78,7 +78,13 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
+from prime_rl.utils.pathing import (
+    CKPT_COMMITTED_MARKER,
+    get_broadcast_dir,
+    get_config_dir,
+    get_step_path,
+    resolve_latest_ckpt_step,
+)
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -981,7 +987,7 @@ class Orchestrator:
         open_groups = self.dispatcher.open_train_groups()
         open_groups |= {request.group_id: (request.env_name, request.task) for request in self.train_source.resumed}
         await self.ckpt_manager.save(self.progress, self.train_source, self.train_sink, open_groups, step)
-        self.delete_payloads(self.train_sink.pin_snapshot())
+        self.train_sink.pin_snapshot(step)
 
     def update_dispatch_gate(self) -> None:
         """Pause/resume the dispatcher based on how far the in-flight batch runs
@@ -1015,6 +1021,14 @@ class Orchestrator:
         self.version_advanced.set()
         if self.config.payload_root is None:
             return
+        # Once the trainer committed a checkpoint step, older checkpoints are no resume point
+        committed = [
+            s
+            for s in self.train_sink.pins
+            if (get_step_path(self.ckpt_manager.ckpt_dir, s) / CKPT_COMMITTED_MARKER).exists()
+        ]
+        if committed:
+            self.delete_payloads(self.train_sink.unpin_before(max(committed)))
         # The trainer read batch `step` before publishing v{step}.
         read = [s for s in self.unread_payloads if s <= step]
         self.delete_payloads(set().union(*(self.unread_payloads.pop(s) for s in read)))

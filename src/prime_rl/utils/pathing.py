@@ -298,6 +298,11 @@ def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
     return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
 
 
+# Written into ``step_N/`` by the trainer master once every component's checkpoint of step N is
+# on disk. Resume only picks committed steps.
+CKPT_COMMITTED_MARKER = "COMMITTED"
+
+
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
     steps = get_all_ckpt_steps(ckpt_dir)
