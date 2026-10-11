@@ -3,7 +3,7 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_config import BaseConfig
 from renderers import CustomRendererConfig, RendererConfig
 
