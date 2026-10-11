@@ -215,7 +215,7 @@ With more than one engine behind the router and NCCL or filesystem weight broadc
   - the trainer and the other engines abort the collective (`ncclCommAbort`);
   - the group is rebuilt and the trainer sends the version again.
   - The inference nodes must see the run's output directory for this.
-- **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update. It returns to the router only after that update succeeds.
+- **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update. It returns to the router only after that update succeeds. An engine evicted for a stall rejoins only once its requests finish or progress again, or after a restart.
 - **Router.** A `vllm-router` that crashes is restarted in place by the launcher, with the same port and worker list.
 - **Still fatal:**
   - the last engine dying;
