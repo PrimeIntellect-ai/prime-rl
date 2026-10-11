@@ -74,7 +74,7 @@ from prime_rl.transports.weights import WeightReceiver, setup_weight_receiver
 from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, safe_cancel
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
-from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
+from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step, write_standalone_config
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -126,6 +126,7 @@ class Orchestrator:
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
+        write_standalone_config(config.output_dir, config, "orchestrator")
         setup_logger(config.log.level, json_logging=config.log.json_logging)
         # Route the in-process v1 library logging through our handler. The
         # env server runs in a child process, so its logging is separate.
