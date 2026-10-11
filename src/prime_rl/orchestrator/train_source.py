@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any
 
 import verifiers.v1 as vf
@@ -13,6 +13,9 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.types import TaskRequest
 from prime_rl.orchestrator.utils import episode_env_name
 from prime_rl.utils.logger import get_logger
+
+TASK_ERRORS = {"TaskError", "ToolsetError"}
+"""Error types raised by a task's own code (setup, finalize, rewards) or its toolset."""
 
 
 class TrainSource:
@@ -40,6 +43,8 @@ class TrainSource:
         self.quarantined: dict[str, dict[str, str]] = {name: {} for name in self.env_names}
         """Per env, the keys of tasks no longer sampled, with the error that put them there."""
         self._failed_groups: dict[tuple[str, str], int] = defaultdict(int)
+        self._recent_failed: dict[str, deque[bool]] = {name: deque(maxlen=20) for name in self.env_names}
+        """Per env, whether each of its last 20 groups fully errored, for any reason."""
         self.num_tasks = {env.name: env.num_tasks for env in self.envs}
 
     def next_task(self, *, step: int) -> TaskRequest:
@@ -54,16 +59,24 @@ class TrainSource:
 
     def _track_failures(self, env_name: str, group: list[vf.Episode]) -> None:
         """Quarantine a task after ``quarantine_after`` consecutive groups in which every
-        episode errored. Errors only: a timeout or a zero reward is a task result."""
+        episode failed in the task's own code or toolset. Infra errors (sandbox, provider,
+        env server) say nothing about the task; timeouts and zero rewards are task results.
+        Nothing is quarantined while most of the env's recent groups fail (an outage, e.g.
+        a judge that every reward calls)."""
         errors = [
             [*episode.errors, *(error for trace in episode.traces for error in trace.errors)] for episode in group
         ]
+        failed = all(errors)
+        recent = self._recent_failed[env_name]
+        recent.append(failed)
         key = group[0].task.key
-        if not all(errors):
+        if not failed:
             self._failed_groups.pop((env_name, key), None)
             return
+        if not all(episode_errors[-1].type in TASK_ERRORS for episode_errors in errors):
+            return
         self._failed_groups[(env_name, key)] += 1
-        if self._failed_groups[(env_name, key)] < self.quarantine_after:
+        if self._failed_groups[(env_name, key)] < self.quarantine_after or 2 * sum(recent) > len(recent):
             return
         del self._failed_groups[(env_name, key)]
         last = errors[-1][-1]
@@ -71,8 +84,8 @@ class TrainSource:
         self.quarantined[env_name][key] = reason
         get_logger().warning(
             f"Quarantined task {key} of env {env_name}: every episode of its last {self.quarantine_after} "
-            f"groups errored (last: {reason}). It is no longer sampled ({len(self.quarantined[env_name])} "
-            f"quarantined in {env_name})."
+            f"group(s) failed in task code (last: {reason}). It is no longer sampled "
+            f"({len(self.quarantined[env_name])} quarantined in {env_name})."
         )
 
     def on_result(self, group: list[vf.Episode]) -> bool:
