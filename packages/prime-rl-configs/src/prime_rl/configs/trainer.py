@@ -385,7 +385,7 @@ class MegaMoEDispatchConfig(BaseConfig):
     with ``set_expert_wgrad_final_micro_batch``. At most 2 with ``wgrad_tile_scales``. 1 (default) adds each
     micro-batch's gradient in its own backward. Memory: n - 1 held micro-batches' operands per MoE layer of the
     stage (~1.2 GB each at 8k tokens); measured on one EP8 stage: 2 -> -0.77 ms per layer, 4 -> -1.51 ms per layer.
-    Needs prime-mega-moe with ``k_grouped_fp8_gemm_nt_contiguous_multi`` (b6460ed) for n > 1. A list gives one
+    Needs prime-mega-moe with ``k_grouped_fp8_gemm_nt_contiguous_multi`` (5827a5b) for n > 1. A list gives one
     value per pipeline stage (``pp * pp_stages_per_rank`` entries, stage order as ``pp_layers_per_stage``), so
     memory-bound plans can enable it only on stages with headroom."""
 
