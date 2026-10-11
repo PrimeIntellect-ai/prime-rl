@@ -159,6 +159,8 @@ class Orchestrator:
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
         self.release_future: asyncio.Future | None = None
+        # Results received while a train batch ships; routed before new ``out_q`` items.
+        self.backlog: deque[vf.Episode | DispatchFailure | GroupCancellation] = deque()
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -490,19 +492,18 @@ class Orchestrator:
         Native episodes are persisted as verifier artifacts. Dispatch failures
         and group cancellations remain internal accounting events.
 
-        The sinks return a finalized batch (or ``None``); we just dispatch on
-        the result."""
-        backlog: deque[vf.Episode | DispatchFailure | GroupCancellation] = deque()
+        The train sink reports when a batch is ready; results that arrive while
+        it ships are routed from ``backlog`` first."""
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
-            if self.draining and not backlog and self.dispatcher.is_idle:
+            if self.draining and not self.backlog and self.dispatcher.is_idle:
                 await self.report_rollouts(force=True)
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
 
-            if backlog:
-                item = backlog.popleft()
+            if self.backlog:
+                item = self.backlog.popleft()
             else:
                 try:
                     item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
@@ -513,7 +514,7 @@ class Orchestrator:
             if isinstance(item, GroupCancellation):
                 assert item.kind == "train"  # eval groups are never dropped
                 train_batch = await self.train_sink.cancel(item)
-                await self.handle_train_result(train_batch, backlog)
+                await self.handle_train_result(train_batch)
                 continue
             if isinstance(item, DispatchFailure):
                 if item.kind == "eval":
@@ -523,7 +524,7 @@ class Orchestrator:
                         await self.finalize_eval_batch(eval_batch)
                 else:
                     train_batch = await self.train_sink.fail(item)
-                    await self.handle_train_result(train_batch, backlog)
+                    await self.handle_train_result(train_batch)
                 continue
             episode = item
 
@@ -548,27 +549,26 @@ class Orchestrator:
                 continue
 
             train_batch = await self.train_sink.add(episode)
-            await self.handle_train_result(train_batch, backlog)
+            await self.handle_train_result(train_batch)
 
-    async def handle_train_result(self, batch_ready: bool, backlog: deque | None = None) -> None:
+    async def handle_train_result(self, batch_ready: bool) -> None:
         if self.heart is not None:
             self.heart.beat()
         if self.draining or self.stopped.is_set():
             self.train_sink.discard_queued()
         elif batch_ready:
-            assert backlog is not None
-            await self.ship_train_batch(backlog)
+            await self.ship_train_batch()
 
-    async def ship_train_batch(self, backlog: deque) -> None:
+    async def ship_train_batch(self) -> None:
         """Receive results during shipping; route them in order after publication."""
 
         async def drain_out_q() -> None:
             while True:
-                backlog.append(await self.dispatcher.out_q.get())
+                self.backlog.append(await self.dispatcher.out_q.get())
 
         drain_task = asyncio.create_task(drain_out_q())
         try:
-            while self.train_sink._batch_ready():
+            while self.train_sink.batch_ready():
                 batch = await self.train_sink.process_batch()
                 await self.report_rollouts(force=bool(batch.samples))
                 if self.draining or self.stopped.is_set():
@@ -579,11 +579,7 @@ class Orchestrator:
                     break
                 await self.finalize_train_batch(batch)
         finally:
-            drain_task.cancel()
-            try:
-                await drain_task
-            except asyncio.CancelledError:
-                pass
+            await safe_cancel(drain_task)
 
     async def report_rollouts(self, *, force: bool = False) -> None:
         window = self.train_sink.take_rollout_window(force=force)

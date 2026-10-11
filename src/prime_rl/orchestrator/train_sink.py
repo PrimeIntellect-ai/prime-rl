@@ -117,7 +117,7 @@ class TrainSink:
         if not self._group_complete(group_id, env_name):
             return False
         await self.process_group(group_id)
-        return self._batch_ready()
+        return self.batch_ready()
 
     async def cancel(self, cancellation: GroupCancellation) -> bool:
         """Process a dropped group's terminal marker: its ``count`` completes
@@ -129,7 +129,7 @@ class TrainSink:
         if not self._group_complete(cancellation.group_id, cancellation.env_name):
             return False
         await self.process_group(cancellation.group_id)
-        return self._batch_ready()
+        return self.batch_ready()
 
     async def fail(self, failure: DispatchFailure) -> bool:
         """Count a request failure toward its group without presenting it as
@@ -140,7 +140,7 @@ class TrainSink:
         if not self._group_complete(failure.group_id, failure.env_name):
             return False
         await self.process_group(failure.group_id)
-        return self._batch_ready()
+        return self.batch_ready()
 
     def _group_complete(self, group_id: str, env_name: str) -> bool:
         cancellation = self.pending_group_cancellations.get(group_id)
@@ -148,8 +148,8 @@ class TrainSink:
         failed = len(self.pending_group_failures[group_id])
         return len(self.pending_groups[group_id]) + failed + cancelled >= self.group_size_for(env_name)
 
-    def _batch_ready(self) -> bool:
-        """Sweep stale queued traces, then cut a batch if the survivors still
+    def batch_ready(self) -> bool:
+        """Sweep stale queued traces, then report whether the survivors still
         meet the threshold."""
         self._drop_stale()
         return len(self.pending_batch) >= self.batch_size

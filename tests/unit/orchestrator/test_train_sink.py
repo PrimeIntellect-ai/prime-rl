@@ -155,7 +155,7 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
         assert s.take_rollout_window(force=True).attempts == 1
         del old
         s.progress.step = 4
-        assert not s._batch_ready()
+        assert not s.batch_ready()
         gc.collect()
         assert ref() is None
         window = s.take_rollout_window(force=True)
