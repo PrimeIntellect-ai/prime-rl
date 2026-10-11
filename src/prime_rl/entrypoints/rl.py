@@ -36,7 +36,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
-from prime_rl.utils.sandboxes import run_label, stable_run_id, sweep_on_exit
+from prime_rl.utils.sandboxes import run_label, stable_run_id, sweep_on_exit, sweep_previous_run
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -510,6 +510,8 @@ def rl(config: RLConfig):
     resuming = config.resume is not None
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
+    if clean and not resuming:
+        sweep_previous_run(config.run_dir)
     validate_run_dir(
         config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
     )

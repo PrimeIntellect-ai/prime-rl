@@ -1,7 +1,7 @@
 """Run-scoped cleanup and accounting of the Prime sandboxes a run creates.
 
 Every sandbox carries ``prl-run:<id>`` (``set_base_sandbox_labels``), where the id is
-minted on the run's first launch and kept in its run dir, so every resume and requeue
+minted on the run's first launch and kept in its run dir (``launcher/run_id``), so every resume and requeue
 of the run shares it and a restarted run finds what its predecessor leaked (a SIGKILL
 skips every teardown path). ``run.name`` is not unique (every run of one config shares
 a name set in it), so it is only a readable label, never swept by. Sandboxes of a
@@ -26,12 +26,26 @@ ENV_LABEL_PREFIX = "prl-env:"
 METRICS_INTERVAL_S = 60
 
 
+def run_id_file(run_dir: Path) -> Path:
+    # Under launcher/, which the run-dir reuse check does not count as a prior run's output.
+    return run_dir / "launcher" / "run_id"
+
+
 def stable_run_id(run_dir: Path) -> str:
-    """The id kept in ``<run_dir>/run_id``, minted on the run's first launch."""
-    path = run_dir / "run_id"
+    """The id kept in ``<run_dir>/launcher/run_id``, minted on the run's first launch."""
+    path = run_id_file(run_dir)
     if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(uuid.uuid4().hex)
     return path.read_text().strip()
+
+
+def sweep_previous_run(run_dir: Path) -> None:
+    """Sweep the sandboxes of the run that last used ``run_dir``. A clean start deletes
+    the run dir and its id with it, so its sandboxes can only be swept before."""
+    path = run_id_file(run_dir)
+    if path.exists():
+        sweep_sandboxes(f"{RUN_LABEL_PREFIX}{path.read_text().strip()}")
 
 
 def run_label() -> str | None:
