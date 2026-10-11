@@ -140,10 +140,6 @@ class GroupedExperts(nn.Module):
 
 
 class TokenChoiceTopKRouter(nn.Module):
-    learned_selection = True
-    """Whether inference picks the experts as the top-k of this router's scores (unlike a hash
-    router's token-id lookup), so replayed routes can be checked against the router's own."""
-
     """Route each token to its top-k experts.
 
     Args:
@@ -159,6 +155,10 @@ class TokenChoiceTopKRouter(nn.Module):
             expert selection but not routing weights.
         topk_sorted (bool): Whether selected experts are returned in descending score order.
     """
+
+    learned_selection = True
+    """Whether inference picks the experts as the top-k of this router's scores (unlike a hash
+    router's token-id lookup), so replayed routes can be checked against the router's own."""
 
     def __init__(
         self,
