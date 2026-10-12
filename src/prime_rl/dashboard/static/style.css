@@ -819,7 +819,14 @@ mark.hit {
 #trace-modal.semantic-view { grid-template-columns: minmax(0, 1fr); }
 #trace-modal.semantic-view #tm-left,
 #trace-modal.semantic-view #tm-right { display: none; }
-#trace-modal.semantic-view #tm-main { grid-column: 1; position: relative; }
+#trace-modal.semantic-view #tm-main {
+  grid-column: 1;
+  position: relative;
+  display: grid;
+  grid-template: auto auto minmax(0, 1fr) / minmax(0, 1fr);
+}
+/* The graph and its inspector share the row below the toolbar and episode errors. */
+#trace-modal.semantic-view #tm-timeline { grid-area: 3 / 1; }
 .tm-head {
   display: flex;
   align-items: center;
@@ -828,6 +835,7 @@ mark.hit {
   border-bottom: 1px solid var(--hairline);
   min-height: 48px;
 }
+#tm-main > .tm-head:first-child { flex-wrap: wrap; flex-shrink: 0; }
 .tm-tabs-row {
   min-width: 0;
   overflow-x: auto;
@@ -1192,7 +1200,8 @@ mark.hit {
 
 #sg-inspector {
   position: absolute;
-  top: 62px;
+  grid-area: 3 / 1;
+  top: 14px;
   right: 14px;
   bottom: 14px;
   z-index: 20;
@@ -1281,14 +1290,14 @@ mark.hit {
 
 /* numbered collapsible message entries */
 details.entry { border: 1px solid var(--hairline); margin-bottom: 8px; }
-details.entry.pending { opacity: 0.55; border-style: dashed; }
-details.entry.semantic-origin {
+details.entry.pending, .tool-result.pending { opacity: 0.55; border-style: dashed; }
+details.entry.semantic-origin, .tool-result.semantic-origin {
   border-color: var(--accent);
   outline: 1px solid rgba(182, 255, 60, 0.55);
   outline-offset: 2px;
   scroll-margin-block: 80px;
 }
-details.entry.semantic-origin > summary { background: rgba(182, 255, 60, 0.08); }
+details.entry.semantic-origin > summary, .tool-result.semantic-origin > summary { background: rgba(182, 255, 60, 0.08); }
 details.entry > summary {
   display: flex;
   align-items: center;
@@ -1318,7 +1327,7 @@ details.entry[open] > summary { border-bottom: 1px solid var(--hairline); }
 }
 details.entry[open] > summary > .entry-preview { visibility: hidden; }
 .entry-chev { color: var(--grey-4); font-size: 10px; transition: transform 0.12s; }
-details.entry[open] .entry-chev { transform: rotate(90deg); }
+details.entry[open] > summary .entry-chev { transform: rotate(90deg); }
 .entry-body { padding: 10px 14px; font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--grey-5); }
 .chip {
   font-size: 10px;
@@ -1496,6 +1505,11 @@ details.meta-fold > pre { margin: 0; border: none; border-top: 1px solid var(--h
   white-space: pre-wrap;
   word-break: break-word;
 }
+.tool-result { margin-top: 8px; border-top: 1px solid var(--hairline); }
+.tool-result-meta { display: flex; align-items: center; gap: 10px; padding-top: 7px; color: var(--grey-4); font-size: 10px; }
+.tool-result-meta .icon-btn { margin-left: auto; }
+.tool-result[open] > summary .entry-chev { transform: rotate(90deg); }
+.tool-result > .entry-body { padding: 7px 0 0; }
 
 /* terminal replay follows the trace's wall clock; message text is revealed
    across its recorded model-call span because providers do not persist per-token timestamps */
@@ -1677,7 +1691,7 @@ mark.hl-quote {
 }
 mark.hl-quote[data-tip] { cursor: help; }
 .tok-tip.note { max-width: 420px; white-space: normal; }
-details.entry.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pulse 1.6s ease-out 2; }
+details.entry.hl-entry, .tool-result.hl-entry { border-color: rgba(182, 255, 60, 0.5); animation: hl-pulse 1.6s ease-out 2; }
 @keyframes hl-pulse {
   0% { box-shadow: 0 0 0 0 rgba(182, 255, 60, 0.45); }
   70% { box-shadow: 0 0 0 6px rgba(182, 255, 60, 0); }

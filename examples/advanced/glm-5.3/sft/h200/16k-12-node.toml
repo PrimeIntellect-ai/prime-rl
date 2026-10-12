@@ -1,0 +1,19 @@
+# 12-node, 16k-token overlay: enough GPUs that the model state fits without CP or offloading,
+# so each GPU runs one 16k sequence per micro-batch and blocks compile with fullgraph.
+# Compose after the data overlay, e.g. base.toml @ math-10k.toml @ 16k-12-node.toml.
+
+[model]
+cp = 1
+offload = "none"
+ac_offloading = "None"
+
+[model.compile]
+fullgraph = true
+
+[data]
+seq_len = 16384
+batch_size = 96
+micro_batch_size = 1
+
+[deployment]
+num_train_nodes = 12

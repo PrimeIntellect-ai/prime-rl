@@ -9,7 +9,7 @@ In this example, we demonstrate how to train `Qwen3-4B-Instruct-2507` to answer 
 - **LLM judges**: Uses an LLM judge to evaluate answer quality alongside tool execution metrics
 - **Online difficulty buffer**: Uses difficulty-based sampling to ensure rollouts have strictly non-zero advantages
 
-> This example runs on 8 GPUs (6 for inference, 2 for training).
+> This example runs on 8 GPUs (6 for inference, 2 for training). To run on 2 GPUs (1 inference, 1 trainer), add `--deployment.num-train-gpus 1 --deployment.num-infer-gpus 1 --orchestrator.batch-size 128` to the `rl` command.
 
 ## Setup
 

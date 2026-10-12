@@ -8,20 +8,21 @@ import torch
 from torch import nn
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, eager_reference
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
-from prime_rl.trainer.models.deepseek_v4.eager_reference import (
-    apply_rotary_pos_emb_interleaved,
-    dense_mask_from_indices,
-    eager_attention_with_sinks,
-)
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
+from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
+from tests.unit.train.models.deepseek_v4_eager_reference import (
+    apply_rotary_pos_emb_interleaved,
+    dense_mask_from_indices,
+    eager_attention_with_sinks,
+)
 
 try:
     import tilelang
