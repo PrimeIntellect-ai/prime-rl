@@ -159,11 +159,6 @@ env.taskset.task.judge.model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 [inference]
 
-# vLLM + FlashInfer caches on node-local /tmp.
-[inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
-
 [inference.vllm]
 max_model_len = 131072
 tensor_parallel_size = 8

@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed.tensor import DTensor
 
@@ -51,7 +50,6 @@ class FileSystemWeightSender(WeightSender):
                     dropout=self.lora_config.dropout,
                 )
         else:
-            dist.barrier()
             state_dict = gather_weights_parallel(model)
             state_dict = convert_state_dict_to_hf(model, state_dict)
             self.logger.debug(f"Saving weights to {step_dir}")

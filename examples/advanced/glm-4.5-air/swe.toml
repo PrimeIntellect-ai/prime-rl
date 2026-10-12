@@ -108,11 +108,6 @@ env.agent.timeout.rollout = 3600
 
 [inference]
 
-# vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
-[inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
-
 [inference.vllm]
 gpu_memory_utilization = 0.85
 max_model_len = 131072
