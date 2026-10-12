@@ -27,6 +27,7 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
+from prime_rl.utils import fault
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
 
@@ -285,6 +286,7 @@ class CheckpointManager:
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         torch.distributed.barrier(group=get_dcp_group())
 
+        fault.inject("ckpt_write_fail", step)
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
 

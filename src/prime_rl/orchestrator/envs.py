@@ -33,6 +33,7 @@ from prime_rl.configs.algorithm import FrozenModelConfig
 from prime_rl.configs.orchestrator import EnvConfig, EvalSourceConfig, TrainSourceConfig
 from prime_rl.orchestrator.algo import Algorithm, build_algorithm
 from prime_rl.orchestrator.clients import InferenceClient, connect_frozen_client
+from prime_rl.utils import fault
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import env_address_file
 
@@ -126,6 +127,7 @@ class Env:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
         change of one of the episode's traces — as it lands."""
+        await fault.inject_env(self.name)
         return await self.env_client.run(
             task_data=task_data,
             client=client,
