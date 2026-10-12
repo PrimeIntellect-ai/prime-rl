@@ -47,6 +47,13 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return False
 
+    def quantization_ignore_patterns(self) -> list[str]:
+        """Dense linear modules that stay BF16 under ``model.quantization``, beyond the configured patterns.
+
+        For linears that inference keeps in BF16 when it quantizes the rest of the model.
+        """
+        return []
+
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
         """Public from_config that mirrors the Auto class API."""

@@ -350,8 +350,12 @@ def _grouped_per_block_fp8_kernel(
     row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     mask = (pid_g < groups) & (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
+    # All experts' weights together can exceed 2**31 elements (e.g. 288 experts of 2048 x 4096).
+    group_i64 = pid_g.to(tl.int64)
+    row_offsets_i64 = row_offsets.to(tl.int64)
+    col_offsets_i64 = col_offsets.to(tl.int64)
     x = tl.load(
-        x_ptr + pid_g * stride_xg + row_offsets[:, None] * stride_xm + col_offsets[None, :] * stride_xn,
+        x_ptr + group_i64 * stride_xg + row_offsets_i64[:, None] * stride_xm + col_offsets_i64[None, :] * stride_xn,
         mask=mask,
         other=0.0,
     ).to(tl.float32)
@@ -361,7 +365,7 @@ def _grouped_per_block_fp8_kernel(
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
     y = x / scale
     tl.store(
-        out_ptr + pid_g * stride_yg + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
+        out_ptr + group_i64 * stride_yg + row_offsets_i64[:, None] * stride_ym + col_offsets_i64[None, :] * stride_yn,
         y.to(tl.float8e4nv),
         mask=mask,
     )
