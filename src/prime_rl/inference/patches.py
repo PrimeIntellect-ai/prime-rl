@@ -50,16 +50,23 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
 
 
 def monkey_patch_deepseek_v4_c128_boundary():
-    """Always run DeepSeek V4's C128 compressor store, as vLLM 0.29 did under Model Runner V2.
+    """Fix DeepSeek V4 long-context KV corruption under piecewise CUDA graphs.
 
-    ``DeepseekCompressor.forward`` returns before the C128 compress, norm, RoPE and KV-store
-    kernel when the step is not a FULL CUDA graph and ``c128_boundary is False``. vLLM 0.30+
-    (vllm-project/vllm#55353), including the pinned 0.31.0, derives that flag from
-    ``seq_lens_cpu_upper_bound``, which Model Runner V2 sets, so piecewise capture on dummy
-    batches bakes the early return into every piecewise graph: mixed batches of up to 512 tokens
-    never write C128 entries, and later queries read stale compressed KV. In 0.29 the flag read
-    ``_num_computed_tokens_cpu``, which Model Runner V2 never sets, so it was always None and the
-    kernel always ran. Returning None restores that.
+    On vLLM 0.30+, including the pinned 0.31.0, the piecewise CUDA graphs are captured on a step
+    that skips writing C128 compressed KV, so every replay skips it too. Mixed batches of up to
+    512 tokens never store their C128 entries, later queries attend over stale compressed KV, and
+    long-context rollouts drift from the trainer, inflating mismatch KL.
+
+    The skip is an optimization: ``DeepseekCompressor.forward`` returns early when
+    ``_get_c128_boundary`` reports that no request completes a 128-token block this step.
+    vllm-project/vllm#55353 made that helper return a bool under Model Runner V2, so capture on
+    dummy batches records the early return. Returning None instead disables the skip, which is
+    the path vLLM already takes under async speculative decoding and the one 0.29 always took.
+
+    The upstream fix, vllm-project/vllm#59709, keeps the skip on eager steps and only stops it
+    from being captured. That change sits inline in ``forward``, so matching it here would mean
+    copying the whole method. Patching the helper costs one extra compress kernel launch on eager
+    steps that complete no block, and the kernel already skips those tokens on the GPU.
 
     Remove this patch once vllm-project/vllm#59709 lands in the pinned vLLM version.
     """
@@ -78,32 +85,15 @@ def monkey_patch_deepseek_v4_c128_boundary():
 
 
 def monkey_patch_deepseek_v4_attn_sink_loading():
-    """Route DeepSeek V4's attention sinks through vLLM's weight loaders.
+    """Fix DeepSeek V4 weight updates silently keeping the boot-time attention sinks.
 
-    ``DeepseekV4Model.load_weights`` writes the sinks with a bare
-    ``params_dict[name][:n].copy_(narrow_weight)`` instead of going through
-    ``param.weight_loader``. Layerwise reload works by moving a layer's tensors to meta
-    and wrapping each loader to buffer the incoming tensor, so that copy lands in a meta
-    tensor and is discarded: ``meta[:n].copy_(real)`` succeeds silently. The module's
-    ``load_numel`` stays 0, finalize restores the boot value with only a warning, and the
-    loader still does ``loaded_params.add(name)``, so a ``named_parameters() -
-    loaded_params`` diff cannot see the loss either. Attention sinks are trainable, so
-    every reload keeps serving the sinks the server booted with.
+    ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
+    ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
+    that go through a loader, so the copy is silently dropped. This pads this rank's heads back
+    to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
 
-    The parameter is padded to the platform's Q head count (``torch.full((padded_heads,),
-    -inf)`` in ``vllm/models/deepseek_v4/attention.py``), which is why upstream writes a
-    prefix rather than the whole tensor. Padding this rank's heads back up with ``-inf``,
-    the parameter's own init value meaning no sink, makes it an ordinary full-parameter
-    load, so ``load_numel`` reaches ``load_numel_total`` and no new loader contract is
-    needed. The loader must be reached through ``param.weight_loader`` rather than
-    attached to the parameter later, because ``initialize_layerwise_reload`` captures the
-    original loader at the moment it wraps.
-
-    Remove this patch when the pinned vLLM version loads ``attn_sink`` through a weight
-    loader. 0.31.0 still writes the bare slice copy. The same fix appears only in
-    vllm-project/vllm#54955, an open draft marked do-not-merge, so no release carries it.
-    This covers ``nvidia/model.py`` only: ``nvidia/mtp.py``, ``nvidia/dspark.py`` and the
-    ``amd/``, ``cpu/`` and ``xpu/`` model variants carry the same bare copy and are not covered.
+    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
+    ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
     """
     from vllm.logger import init_logger
     from vllm.model_executor.model_loader.weight_utils import default_weight_loader
