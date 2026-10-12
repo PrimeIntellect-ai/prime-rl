@@ -487,7 +487,7 @@ class AdminPlane:
                             "/update_weights",
                             attempts=1,
                             timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                            json={"weight_dir": self.weight_dir(version).as_posix(), "version": version},
+                            json={"weight_dir": self.weight_dir(version).as_posix()},
                         )
                         for client in group
                     )

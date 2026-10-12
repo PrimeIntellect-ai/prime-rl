@@ -232,7 +232,7 @@ With `orchestrator.model.client.elastic = true`, inference engine groups can joi
   - filesystem broadcast: it loads the newest broadcast directory at once;
   - NCCL: it joins at the next weight update. The broadcast group is rebuilt once per update, so groups that register between two updates join together.
 
-  The group enters the router only when all its engines report the current version on `GET /weight_version`. The inference metrics then also scrape it, so the adaptive concurrency limit can grow.
+  The group enters the router only after every engine in it loaded the current policy. The inference metrics then also scrape it, so the adaptive concurrency limit can grow.
 - **Drain.** A `draining` group leaves the router and the weight updates at once. Its running requests finish on the weights it has. Once none are left (or after 600 s), the orchestrator deletes the group's file and forgets the group. The last serving group is never drained.
 - **Removal.** If a group's file disappears, the group is dropped; a serving group is evicted. A dead engine is evicted as described in [Dead engines](#dead-engines).
 - **Limits.**
