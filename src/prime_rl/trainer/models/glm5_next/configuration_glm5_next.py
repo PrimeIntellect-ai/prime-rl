@@ -120,18 +120,11 @@ class Glm5NextTextConfig(PretrainedConfig):
         self.num_nextn_predict_layers = num_nextn_predict_layers
         self.use_cache = use_cache
 
-        for unused in (
-            "dtype",
-            "head_dim",
-            "mhc",
-            "mla_use_nope",
-            "index_share_for_mtp_iteration",
-            "indexer_rope_interleave",
-            "moe_router_dtype",
-            "output_router_logits",
-            "router_aux_loss_coef",
-            "topk_method",
-        ):
+        # The remaining checkpoint keys pass through untouched so an export's config.json still
+        # carries them: vLLM reads topk_method (selection bias), moe_router_dtype (fp32 routing)
+        # and indexer_rope_interleave off it. head_dim is 0 in the checkpoint, which generic
+        # head_dim readers (perf accounting) would take literally.
+        for unused in ("dtype", "head_dim"):
             kwargs.pop(unused, None)
         super().__init__(
             pad_token_id=pad_token_id,
@@ -156,16 +149,7 @@ class Glm5NextConfig(PretrainedConfig):
             text_config = Glm5NextTextConfig(**text_config)
         self.text_config = text_config or Glm5NextTextConfig()
 
-        for unused in (
-            "vision_config",
-            "image_token_id",
-            "video_token_id",
-            "image_start_token_id",
-            "image_end_token_id",
-            "video_start_token_id",
-            "video_end_token_id",
-        ):
-            kwargs.pop(unused, None)
+        # Vision keys are not modelled but pass through, so an export's config.json keeps them.
         kwargs.setdefault("pad_token_id", self.text_config.pad_token_id)
         kwargs.setdefault("bos_token_id", self.text_config.bos_token_id)
         kwargs.setdefault("eos_token_id", self.text_config.eos_token_id)

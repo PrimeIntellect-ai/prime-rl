@@ -30,12 +30,15 @@ def config(request):
         num_experts_per_tok=2,
         hc_mult=2,
         pad_token_id=0,
+        topk_method="noaux_tc",
     )
     return Glm5NextConfig(text_config=text) if request.param else text
 
 
 def test_config_and_checkpoint_roundtrip(config):
     restored = type(config).from_dict(config.to_dict())
+    # vLLM reads checkpoint keys the trainer does not model (e.g. topk_method) off an export's config.
+    assert getattr(restored, "text_config", restored).topk_method == "noaux_tc"
     model = Glm5NextForCausalLM(restored)
     model.init_buffers_post_meta()
     assert len(get_language_model(model).layers) == 2
