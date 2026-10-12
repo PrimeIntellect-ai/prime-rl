@@ -13,7 +13,9 @@ except Exception:
     # This is expected on CPU-only machines
     pass
 
+import importlib.util
 import math
+from typing import Literal
 
 import tilelang
 import torch
@@ -190,6 +192,20 @@ def sparse_mla_fwd(
             T.copy(sumexp, Lse[b_i, s_i, H0:H1])
 
     return main
+
+
+def resolve_dsa_backend(backend: DSABackend | Literal["auto"], num_heads: int) -> DSABackend:
+    """Resolve ``auto``: ``cudnn_flashmla`` on SM90 with FlashMLA installed and a head count FlashMLA supports, else ``tilelang``."""
+    if backend != "auto":
+        return backend
+    if (
+        torch.cuda.is_available()
+        and torch.cuda.get_device_capability()[0] == 9
+        and num_heads % 64 == 0
+        and importlib.util.find_spec("flash_mla") is not None
+    ):
+        return "cudnn_flashmla"
+    return "tilelang"
 
 
 def flashmla_sparse_mla_forward(
