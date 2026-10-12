@@ -31,6 +31,15 @@ VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
 QuantizationType = Literal["fp8_per_block"]
 
+_ONLINE_PER_BLOCK_FP8_NAMES = frozenset(("fp8_per_block", "fp8_per_block_static"))
+
+
+def _selects_online_per_block_fp8(spec: Any) -> bool:
+    """Whether a vLLM ``quantization_config`` spec (a name or a ``{weight, activation}`` dict) quantizes weights to per-block FP8."""
+    if isinstance(spec, dict):
+        spec = spec.get("weight")
+    return spec in _ONLINE_PER_BLOCK_FP8_NAMES
+
 
 class VllmConfig(BaseConfig):
     """Arguments forwarded to the vLLM server, under vLLM's own argument names
@@ -112,6 +121,20 @@ class VllmConfig(BaseConfig):
 
     enable_return_routed_experts: bool = False
     """Return routed experts in responses."""
+
+    def uses_online_per_block_fp8(self) -> bool:
+        """Whether vLLM quantizes linear or MoE weights online to per-block FP8, resolved as in vLLM's ``resolve_quantization_config``."""
+        quantization_config = (self.model_extra or {}).get("quantization_config") or {}
+        targets = quantization_config.get("targets") or {}
+        if any(_selects_online_per_block_fp8(spec) for spec in targets.values()):
+            return True
+        for layer_kind in ("linear", "moe"):
+            spec = quantization_config.get(layer_kind)
+            if spec is None:
+                spec = self.quantization
+            if _selects_online_per_block_fp8(spec):
+                return True
+        return False
 
     @model_validator(mode="before")
     @classmethod
@@ -470,6 +493,20 @@ class InferenceConfig(BaseConfig):
     def validate_multi_node_requires_slurm(self):
         if self.deployment.type in ("multi_node", "disaggregated") and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node / disaggregated deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_online_fp8_rounding_requires_online_per_block_fp8(self):
+        """The FP8 weight-rounding options patch vLLM's online per-block FP8 caster, so they do nothing without it."""
+        enabled = [
+            name for name in ("fp8_ue8m0_weight_scales", "fp8_stochastic_weight_rounding") if getattr(self, name)
+        ]
+        if enabled and not self.vllm.uses_online_per_block_fp8():
+            raise ValueError(
+                f"{' and '.join(enabled)} can only take effect with online per-block FP8 weight quantization. Set "
+                'inference.vllm.quantization = "fp8_per_block" or select fp8_per_block for linear or MoE layers '
+                "in inference.vllm.quantization_config."
+            )
         return self
 
     @model_validator(mode="after")

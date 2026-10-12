@@ -21,6 +21,8 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    DeepGemmFP8MoEComputeConfig,
+    FP8Config,
     TokenizerConfig,
     TrainerConfig,
 )
@@ -472,6 +474,21 @@ class RLConfig(BaseConfig):
     def validate_eplb(self):
         if self.inference is not None and self.inference.vllm.enable_eplb:
             raise ValueError("inference.vllm.enable_eplb is not supported with RL weight updates.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_stochastic_fp8_rounding_with_fp8_trainer(self):
+        """Reject inference-side stochastic FP8 weight rounding with an FP8 trainer, without checking which layers each side quantizes."""
+        if self.inference is None or not self.inference.fp8_stochastic_weight_rounding:
+            return self
+        model = self.trainer.model
+        if isinstance(model.quantization, FP8Config) or isinstance(model.moe.compute, DeepGemmFP8MoEComputeConfig):
+            raise ValueError(
+                "inference.fp8_stochastic_weight_rounding is not supported with an FP8 trainer "
+                "(trainer.model.quantization of type fp8 or trainer.model.moe.compute of type deepgemm_fp8). "
+                "The trainer re-quantizes its weights with round-to-nearest every step, so stochastic rounding "
+                "on the inference side only adds trainer/inference mismatch."
+            )
         return self
 
     @model_validator(mode="after")

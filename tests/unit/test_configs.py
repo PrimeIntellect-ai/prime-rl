@@ -1178,6 +1178,75 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
 
+def test_online_fp8_rounding_defaults_off():
+    config = InferenceConfig()
+
+    assert config.fp8_ue8m0_weight_scales is False
+    assert config.fp8_stochastic_weight_rounding is False
+
+
+@pytest.mark.parametrize("option", ["fp8_ue8m0_weight_scales", "fp8_stochastic_weight_rounding"])
+@pytest.mark.parametrize(
+    "vllm",
+    [
+        {},
+        {"quantization_config": {"linear": "fp8_per_tensor", "moe": "fp8_per_channel"}},
+        {
+            "quantization": "fp8_per_block",
+            "quantization_config": {"linear": "fp8_per_tensor", "moe": {"weight": "mxfp8"}},
+        },
+    ],
+)
+def test_online_fp8_rounding_requires_online_per_block_fp8(option, vllm):
+    with pytest.raises(ValidationError, match=f"{option} can only take effect with online per-block FP8"):
+        InferenceConfig(**{option: True, "vllm": vllm})
+
+
+@pytest.mark.parametrize(
+    "vllm",
+    [
+        {"quantization": "fp8_per_block"},
+        {"quantization": "fp8_per_block", "quantization_config": {"linear": "fp8_per_tensor"}},
+        {"quantization_config": {"moe": "fp8_per_block"}},
+        {"quantization_config": {"linear": {"weight": "fp8_per_block_static"}}},
+        {"quantization_config": {"targets": {"re:.*experts.*": "fp8_per_block"}}},
+    ],
+)
+def test_online_fp8_rounding_accepts_online_per_block_fp8(vllm):
+    config = InferenceConfig(fp8_ue8m0_weight_scales=True, fp8_stochastic_weight_rounding=True, vllm=vllm)
+
+    assert config.fp8_ue8m0_weight_scales is True
+    assert config.fp8_stochastic_weight_rounding is True
+
+
+def _rl_config_with_stochastic_fp8_rounding(trainer_model: dict) -> dict:
+    return {
+        "trainer": {"model": trainer_model},
+        "orchestrator": {},
+        "inference": {"fp8_stochastic_weight_rounding": True, "vllm": {"quantization": "fp8_per_block"}},
+    }
+
+
+@pytest.mark.parametrize(
+    "trainer_model",
+    [{"quantization": {"type": "fp8"}}, {"moe": {"compute": {"type": "deepgemm_fp8"}}}],
+)
+def test_stochastic_fp8_rounding_rejects_fp8_trainer(trainer_model):
+    with pytest.raises(ValidationError, match="re-quantizes its weights with round-to-nearest"):
+        RLConfig.model_validate(_rl_config_with_stochastic_fp8_rounding(trainer_model))
+
+
+@pytest.mark.parametrize(
+    "trainer_model",
+    [{}, {"quantization": {"type": "mxfp8"}}, {"moe": {"compute": {"type": "mxfp8"}}}],
+)
+def test_stochastic_fp8_rounding_accepts_non_fp8_trainer(trainer_model):
+    config = RLConfig.model_validate(_rl_config_with_stochastic_fp8_rounding(trainer_model))
+
+    assert config.inference is not None
+    assert config.inference.fp8_stochastic_weight_rounding is True
+
+
 CUSTOM_RENDERER_SOURCE = """
 from typing import Literal
 
