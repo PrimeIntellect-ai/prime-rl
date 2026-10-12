@@ -110,7 +110,6 @@ class KPoolIndexer(nn.Module):
         self.weights_proj = nn.Linear(hidden_size, num_heads, bias=False)
         self.index_kpool_compress_ape = nn.Parameter(torch.zeros(pool_size, head_dim))
         self.index_kpool_compress_gate = nn.Parameter(torch.zeros(head_dim, hidden_size))
-        self.requires_grad_(False)
 
         self.cp_context = CPContext()
 

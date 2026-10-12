@@ -54,6 +54,7 @@ from prime_rl.trainer.models.fusions import (
     get_fsdp_shard_placement_fn,
     write_back_loaded_packed_parameters,
 )
+from prime_rl.trainer.models.glm5_next.sparse_attention import KPoolIndexer
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
@@ -182,7 +183,7 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, (Indexer, DeepseekV4Indexer, SparseAttentionIndexer)):
+        if isinstance(module, (Indexer, DeepseekV4Indexer, SparseAttentionIndexer, KPoolIndexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
@@ -872,6 +873,8 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         return
 
     ignore_modules = quant.ignore_patterns + quant.extra_ignore_patterns
+    if isinstance(model, PreTrainedModelPrimeRL):
+        ignore_modules += model.quantization_ignore_patterns()
     if isinstance(quant, FP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] not in (9, 10):

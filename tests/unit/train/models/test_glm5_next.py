@@ -1,9 +1,11 @@
 import pytest
 import torch
 
-from prime_rl.trainer.model import get_full_offload_dtype_policy
+from prime_rl.configs.trainer import FP8Config, ModelConfig
+from prime_rl.trainer.model import apply_quantization, freeze_sparse_indexer, get_full_offload_dtype_policy
 from prime_rl.trainer.models.conversion_ops import Drop, apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig, sparse_attention
+from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
 from prime_rl.trainer.vlm import get_language_model
 
 
@@ -34,6 +36,45 @@ def config(request):
         topk_method="noaux_tc",
     )
     return Glm5NextConfig(text_config=text) if request.param else text
+
+
+def test_fp8_matches_vllm_bf16_modules(monkeypatch):
+    # 128-aligned dims, so only the ignore patterns decide what stays BF16.
+    config = Glm5NextTextConfig(
+        vocab_size=256,
+        hidden_size=128,
+        intermediate_size=128,
+        moe_intermediate_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=1,
+        num_key_value_heads=1,
+        layer_types=["linear_attention", "deepseek_sparse_attention"],
+        mlp_layer_types=["dense", "sparse"],
+        linear_attn_config={"num_heads": 1, "head_dim": 128, "short_conv_kernel_size": 4, "gate_lower_bound": -5.0},
+        q_lora_rank=128,
+        kv_lora_rank=128,
+        qk_nope_head_dim=128,
+        v_head_dim=128,
+        index_n_heads=1,
+        index_head_dim=128,
+        index_topk=64,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        hc_mult=2,
+        pad_token_id=0,
+    )
+    with torch.device("meta"):
+        model = Glm5NextForCausalLM(config)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: (9, 0))  # DeepGEMM's SM90 check
+    apply_quantization(model, ModelConfig(name="glm5_next", quantization=FP8Config()))
+    freeze_sparse_indexer(model)
+    fp8 = {name for name, module in model.named_modules() if isinstance(module, Float8BlockwiseLinear)}
+    # vLLM serves all attention in BF16 and quantizes the MLPs and experts.
+    assert not {name for name in fp8 if ".self_attn." in name}
+    assert {"model.layers.0.mlp.down_proj", "model.layers.1.mlp.shared_expert.up_proj"} <= fp8
+    # The k-pool indexer is frozen like the other sparse indexers.
+    indexer_params = [param for name, param in model.named_parameters() if ".indexer." in name]
+    assert indexer_params and not any(param.requires_grad for param in indexer_params)
 
 
 def test_config_and_checkpoint_roundtrip(config):

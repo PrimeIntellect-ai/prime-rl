@@ -67,6 +67,14 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
             return f"cp={cp} must divide the {q_heads} attention heads and divide or be a multiple of the {kv_heads} KV heads for Ulysses CP"
         return None
 
+    def quantization_ignore_patterns(self) -> list[str]:
+        """Regex patterns (matched with ``re.search`` on module names) for dense linears that ``model.quantization`` leaves unquantized.
+
+        For linears that inference keeps in BF16 when it quantizes the rest of the model. They always apply,
+        on top of ``ignore_patterns`` and ``extra_ignore_patterns``.
+        """
+        return []
+
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
         """Whether a tensor goes to inference in FP32 instead of the transfer dtype.
