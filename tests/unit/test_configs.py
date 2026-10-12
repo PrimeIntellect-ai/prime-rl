@@ -746,6 +746,11 @@ def test_trainer_rejects_vlm_cp_with_ring():
         TrainerConfig.model_validate(config)
 
 
+def test_trainer_vlm_requires_bf16():
+    with pytest.raises(ValidationError, match="optimization_dtype='bfloat16'"):
+        TrainerConfig.model_validate({"model": {"vlm": {}}})
+
+
 def test_ac_none_disables_ac_offloading():
     config = TrainerModelConfig.model_validate({"ac": None})
     assert config.ac is None

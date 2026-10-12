@@ -163,6 +163,8 @@ reduce_dtype = "bfloat16"
 # freeze_vision_encoder = true  # default; set false to fine-tune the encoder
 ```
 
+For `rl`, keep `[model.vlm]` in the shared `[model]` block but set the dtypes under `[trainer.model]` (see `configs/ci/nightly/multimodal_color_codeword.toml`).
+
 VLM training requires a registered custom PrimeRL implementation.
 
 ### Limitations
