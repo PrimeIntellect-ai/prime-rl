@@ -42,7 +42,7 @@ uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenar
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
 | [`cpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/cpu_tests.yaml) | every PR + push to `main` | `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`) | `ubuntu-latest` |
-| [`gpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu_tests.yaml) | every non-draft PR + push to `main` | `pytest tests/unit -m gpu`, plus a matrix of named integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `reverse_text_sft_lora`, `alphabet_sort`, `benchmark_regression`) | self-hosted GPU runners (`vm`, `4xa6000`) |
+| [`gpu_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/gpu_tests.yaml) | relevant changes in non-draft PRs; full suite on push to `main` or manual dispatch | `pytest tests/unit -m gpu`, plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`) with `max-parallel: 5`; separate hosted `gsm8k_eval` job | self-hosted `prime-rl-2xh200` k8s scale set (2xH200); `ubuntu-latest` for test selection and hosted eval |
 | [`nightly_tests.yaml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/nightly_tests.yaml) | 03:00 PST daily + manual `workflow_dispatch` (single-file filter optional) | every file in `tests/nightly/`, one matrix job per file | `research-cluster` |
 
 The GPU + Nightly workflows skip drafts — open the PR as **Draft** until you're ready to consume CI compute, then mark it ready for review to trigger the GPU matrix.
@@ -117,7 +117,6 @@ Then run the full RL stack on reverse-text:
 ```bash
 uv run rl @ configs/ci/integration/reverse-text-moe/start.toml \
   --model.name samsja/mini-glm-moe \
-  --trainer.model.impl custom \
   --inference.vllm.gpu-memory-utilization 0.7 \
   --inference.vllm.max-model-len 2048
 ```

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from ring_flash_attn import substitute_hf_flash_attn, update_ring_flash_attn_params
+from ring_flash_attn import update_ring_flash_attn_params
 
 from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.logger import get_logger
@@ -46,12 +46,10 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
         # prime_rl.utils — a top-level import would deadlock at startup.
         from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 
-        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
         substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.attn)
     elif config.cp_style == "ulysses":
-        from prime_rl.trainer.models.layers.ulysses_attn import substitute_hf_ulysses_attn, substitute_ulysses_attn
+        from prime_rl.trainer.models.layers.ulysses_attn import substitute_ulysses_attn
 
-        substitute_hf_ulysses_attn(cp_group)
         substitute_ulysses_attn(cp_group, attn_impl=config.attn)
     else:
         raise ValueError(f"Unknown cp_style: {config.cp_style}")

@@ -85,11 +85,11 @@ dist_timeout_seconds = 1800
 
 [trainer.model]
 name = "zai-org/GLM-5.3-BF16"
-impl = "custom"
 attn = "flash_attention_2" # ignored with GLM5
 fused_lm_head_token_chunk_size = 1024
 cp = 4 # context parallel for the 131K seq len
 ep = 8
+dsa_backend = "cudnn_flashmla"
 
 [trainer.model.quantization]
 type = "fp8"
@@ -98,7 +98,6 @@ type = "fp8"
 type = "deepgemm_fp8"
 
 [trainer.model.ac]
-freq = 1
 
 [trainer.model.compile]
 

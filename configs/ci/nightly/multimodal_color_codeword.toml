@@ -35,7 +35,6 @@ env.agent.runtime.type = "subprocess"
 [trainer]
 
 [trainer.model]
-impl = "custom"
 optimization_dtype = "bfloat16"
 reduce_dtype = "bfloat16"
 

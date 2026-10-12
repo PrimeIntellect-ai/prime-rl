@@ -1,26 +1,33 @@
+import os
+
 import torch
 
 
 def apply_shared_vllm_patches():
-    """vLLM general plugin: prime-rl patches that must run in every vLLM process.
+    """vLLM general plugin and the single place prime-rl applies its vLLM patches; vLLM runs it once in every process.
 
-    Registered as a ``vllm.general_plugins`` entry-point so it runs automatically
-    in every vLLM process, including spawned workers. Note vLLM swallows plugin
-    load failures (``load_plugins_by_group`` logs and continues), so a broken
+    vLLM swallows plugin load failures (``load_plugins_by_group`` logs and continues), so a broken
     entry-point target silently skips ALL of these patches.
     """
     from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
+    from prime_rl.inference.vllm.qwen38_weight_loading import patch_qwen38_weight_loading
 
     patch_gpt_oss_weight_loading()
+    patch_qwen38_weight_loading()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
-    monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
-    monkey_patch_deepseek_v4_request_tools_placement()
+    monkey_patch_tokenize_params_validation()
+    monkey_patch_strip_routed_experts_from_chat()
+    monkey_patch_dp_coordinator_startup_timeout()
+    monkey_patch_minimax_m2_for_lora()
+    # Set by `server()` when the LoRA target modules include no expert layers.
+    if os.environ.get("PRIME_NO_MOE_LORA") == "1":
+        monkey_patch_no_moe_lora()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -38,64 +45,6 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
 
     allow_deepseek_v4_layer_types()
-
-
-def monkey_patch_deepseek_v4_request_tools_placement():
-    """Attach request-level tools to the first existing DSV4 system message.
-
-    vLLM 0.29.0's Python DeepSeek-V4 tokenizer always prepends a synthetic
-    system message for request-level tools. That puts the tool schema before
-    an existing system prompt, unlike DeepSeek's reference encoder, vLLM's
-    Rust renderer, and prime-rl's training renderer. Upstream fixed this in
-    https://github.com/vllm-project/vllm/pull/51856 (commit 2909ad8f).
-    The fix is expected to ship in vLLM 0.31.
-
-    Wrap the tokenizer factory so existing-system requests take the corrected
-    path through the stock implementation: shallow-copy the conversation,
-    attach tools to its first system message, and suppress the stock synthetic
-    insertion. Requests without a system message retain the stock behavior.
-    Remove this patch once the vLLM pin includes the upstream fix (likely 0.31).
-    """
-    import copy
-
-    from vllm.tokenizers import deepseek_v4 as dsv4_tokenizer
-
-    original_get_tokenizer = dsv4_tokenizer.get_deepseek_v4_tokenizer
-    if getattr(original_get_tokenizer, "_prime_rl_places_request_tools", False):
-        return
-
-    def _get_deepseek_v4_tokenizer(tokenizer):
-        wrapped = original_get_tokenizer(tokenizer)
-        tokenizer_cls = wrapped.__class__
-        original_apply_chat_template = tokenizer_cls.apply_chat_template
-
-        # Each factory call creates a fresh dynamic tokenizer subclass, but be
-        # defensive if vLLM starts caching that class in a future release.
-        if getattr(original_apply_chat_template, "_prime_rl_places_request_tools", False):
-            return wrapped
-
-        def _apply_chat_template(self, messages, tools=None, **kwargs):
-            if tools:
-                conversation = kwargs.get("conversation", messages)
-                system_idx = next(
-                    (i for i, message in enumerate(conversation) if message.get("role") == "system"),
-                    None,
-                )
-                if system_idx is not None:
-                    conversation = conversation.copy()
-                    conversation[system_idx] = copy.copy(conversation[system_idx])
-                    conversation[system_idx]["tools"] = tools
-                    kwargs["conversation"] = conversation
-                    tools = None
-
-            return original_apply_chat_template(self, messages, tools=tools, **kwargs)
-
-        _apply_chat_template._prime_rl_places_request_tools = True
-        tokenizer_cls.apply_chat_template = _apply_chat_template
-        return wrapped
-
-    _get_deepseek_v4_tokenizer._prime_rl_places_request_tools = True
-    dsv4_tokenizer.get_deepseek_v4_tokenizer = _get_deepseek_v4_tokenizer
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -232,51 +181,6 @@ def monkey_patch_minimax_m2_think_end_passthrough():
         )
 
     minimax_m2.minimax_m2_config = _patched_config
-
-
-def monkey_patch_return_routed_experts_with_nixl_connector():
-    from vllm.config.vllm import VllmConfig
-    from vllm.logger import init_logger
-
-    logger = init_logger(__name__)
-    original_post_init = VllmConfig.__post_init__
-
-    if getattr(original_post_init, "_prime_rl_allows_nixl_routed_experts", False):
-        return
-
-    def _is_nixl_routed_experts_pd_config(config: VllmConfig) -> bool:
-        kv_transfer_config = config.kv_transfer_config
-        return (
-            config.model_config is not None
-            and config.model_config.enable_return_routed_experts
-            and kv_transfer_config is not None
-            and kv_transfer_config.kv_connector == "NixlConnector"
-            and kv_transfer_config.is_kv_transfer_instance
-        )
-
-    def _post_init(config: VllmConfig):
-        if not _is_nixl_routed_experts_pd_config(config):
-            return original_post_init(config)
-
-        if config.parallel_config.pipeline_parallel_size > 1:
-            raise ValueError("--enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).")
-        if config.use_v2_model_runner:
-            raise ValueError(
-                "Routed-expert capture with NIXL requires the V1 model runner. Set VLLM_USE_V2_MODEL_RUNNER=0."
-            )
-
-        # vLLM rejects every KV connector, but our P/D path uses NIXL and
-        # stitches prefill/decode routed experts in the router. CPU KV offload
-        # remains rejected by prime-rl config validation.
-        config.model_config.enable_return_routed_experts = False
-        try:
-            return original_post_init(config)
-        finally:
-            config.model_config.enable_return_routed_experts = True
-
-    _post_init._prime_rl_allows_nixl_routed_experts = True
-    VllmConfig.__post_init__ = _post_init
-    logger.warning("Enabled vLLM routed-experts capture with NIXL connector patch.")
 
 
 def monkey_patch_strip_routed_experts_from_chat():
@@ -422,6 +326,7 @@ def _patch_lora_key_prefix():
                 if skip_prefixes and cls._should_skip_module(lora_module, skip_prefixes):
                     continue
                 module_name, _ = parse_fine_tuned_lora_name(lora_module, weights_mapper)
+                base_name = module_name.rsplit(".", 1)[-1]
                 # Case for expert lora weights.
                 ## START PATCHED CODE (upstream only accepts the qualified form)
                 if ".experts" in module_name:
@@ -431,7 +336,7 @@ def _patch_lora_key_prefix():
                         unexpected_modules.append(module_name)
                 ## END PATCHED CODE
 
-                elif module_name.rsplit(".", 1)[-1] not in expected_lora_modules:
+                elif base_name not in expected_lora_modules and base_name not in (peft_helper.modules_to_save or ()):
                     unexpected_modules.append(module_name)
 
             if unexpected_modules:
@@ -574,8 +479,8 @@ def monkey_patch_minimax_m2_for_lora():
     """Patch vLLM's MiniMaxM2 model for LoRA compatibility.
 
     These patches are only needed when using LoRA with MiniMax M2 but are safe
-    to apply unconditionally (verified with non-LoRA runs). We apply them at
-    import time because the worker __init__ runs before the vLLM config is
+    to apply unconditionally (verified with non-LoRA runs). We apply them
+    unconditionally because the vLLM plugin runs before the vLLM config is
     available, so we can't check if LoRA is enabled.
 
     Problem 1 — Gate dtype mismatch:

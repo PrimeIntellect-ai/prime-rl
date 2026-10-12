@@ -1,6 +1,8 @@
 import os
+from collections.abc import Iterator
 
 import pynvml
+import torch
 
 from prime_rl.utils.logger import get_logger
 
@@ -40,3 +42,24 @@ def disable_nccl_p2p_if_unavailable() -> None:
             )
     finally:
         pynvml.nvmlShutdown()
+
+
+def iter_tensor_buckets(
+    tensor_info: list[tuple[str, torch.Size, int]],
+    dtype: torch.dtype,
+    max_bytes: int = 512 * 1024**2,
+) -> Iterator[list[tuple[str, torch.Size, int]]]:
+    """Group whole tensors without exceeding the budget, except for a single oversized tensor."""
+    itemsize = dtype.itemsize
+    bucket = []
+    bucket_bytes = 0
+    for info in tensor_info:
+        size = info[2] * itemsize
+        if bucket and bucket_bytes + size > max_bytes:
+            yield bucket
+            bucket = []
+            bucket_bytes = 0
+        bucket.append(info)
+        bucket_bytes += size
+    if bucket:
+        yield bucket
