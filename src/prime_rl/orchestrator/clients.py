@@ -126,9 +126,16 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
-        self._init_membership()
+        self._init_membership(client_config.admin_engine_groups)
 
-    def _init_membership(self) -> None:
+    def _init_membership(self, engine_groups: list[int] | None = None) -> None:
+        # Engines that fail together (one multi-node EP or P/D role replica) are evicted and
+        # readmitted as a block. Each client maps to the clients of its group.
+        group_ids = engine_groups or list(range(len(self.clients)))
+        self.group_of = {
+            client: tuple(other for other, other_id in zip(self.clients, group_ids) if other_id == group_id)
+            for client, group_id in zip(self.clients, group_ids)
+        }
         # Engine eviction (``monitor_health``): engines that failed a health check or an
         # admin op leave ``clients`` for ``evicted``; ``recovered`` are evicted engines that
         # answer again and rejoin at the next weight update.
@@ -232,7 +239,7 @@ class AdminPlane:
                     if on_paused is not None:
                         on_paused()
                         on_paused = None
-                    members, retry = await self._transfer(members, weight_dir_posix, abort_marker, resend)
+                    members, retry = await self._transfer(members, weight_dir_posix, step, abort_marker, resend)
                     if not retry:
                         break
             finally:
@@ -252,40 +259,55 @@ class AdminPlane:
             "/load_lora_adapter",
             post=_post_lora_adapter,
             json={"lora_name": lora_name, "lora_path": lora_path.as_posix()},
+            params={"version": step},
         )
         await self._readmit(rejoining, loaded, step)
 
     def _rejoining(self) -> list[AsyncClient]:
-        return [client for client in self.evicted if client in self.recovered]
+        """Evicted engines whose whole group answers again."""
+        return [client for client in self.evicted if all(other in self.recovered for other in self.group_of[client])]
 
     async def _readmit(self, rejoining: list[AsyncClient], updated: list[AsyncClient], step: int) -> None:
-        """Put the rejoining engines that took the new weights back into ``clients`` and the router."""
-        for client in rejoining:
-            if client in updated:
+        """Put the rejoining groups whose engines all took the new weights and report policy
+        v{step} back into ``clients`` and the router."""
+        groups = {self.group_of[client] for client in rejoining}
+        for group in groups:
+            if not all(client in updated for client in group):
+                continue
+            versions = await asyncio.gather(*(_weight_version(client) for client in group))
+            if any(version != step for version in versions):
+                get_logger().warning(
+                    f"Inference engines {_urls(group)} report weight versions {versions} instead of v{step}; "
+                    "they stay out of the router"
+                )
+                self.recovered.difference_update(group)
+                continue
+            for client in group:
                 self.evicted.remove(client)
                 self.recovered.discard(client)
                 self.clients.append(client)
                 await self._set_routed(client, True)
-                get_logger().info(f"Inference engine {client.base_url} rejoined at policy v{step}")
+            get_logger().info(f"Inference engines {_urls(group)} rejoined at policy v{step}")
 
     async def _transfer(
         self,
         members: list[AsyncClient],
         weight_dir: str | None,
+        step: int,
         abort_marker: Callable[[], Path] | None,
         resend: Callable[[], Awaitable[bool]] | None,
     ) -> tuple[list[AsyncClient], bool]:
         """Run ``/update_weights`` on ``members``. Returns the members still standing and whether
         the transfer was aborted and must run again."""
+        json = {"weight_dir": weight_dir, "version": step}
         if not self.evicting or abort_marker is None or resend is None:
-            json = {"weight_dir": weight_dir}
             return await self._each(members, "/update_weights", json=json, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S), False
 
         async def update(client: AsyncClient) -> None:
             # One attempt: retrying a collective receive cannot succeed on its own.
             response = await client.post(
                 "/update_weights",
-                json={"weight_dir": weight_dir},
+                json=json,
                 timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
             )
             response.raise_for_status()
@@ -343,7 +365,7 @@ class AdminPlane:
                 continue
             await self._sync_router()
             clients = self.clients + self.evicted
-            live = await asyncio.gather(*(_is_live(client) for client in clients))
+            live = dict(zip(clients, await asyncio.gather(*(_is_live(client) for client in clients))))
             probed = self.clients + [client for client in stalled if client in self.evicted]
             counters = dict(zip(probed, await asyncio.gather(*(_generation_counters(client) for client in probed))))
             now = time.monotonic()
@@ -358,8 +380,11 @@ class AdminPlane:
                     await self._evict(
                         client, f"no token generated for {now - last[0]:.0f}s with {running:.0f} running requests"
                     )
-            for client, ok in zip(clients, live):
+            for client in clients:
+                ok = live[client]
                 if client in self.evicted:
+                    # A group recovers only once all its engines answer
+                    ok = all(live.get(other, False) for other in self.group_of[client])
                     if ok and client in stalled:
                         running, tokens = counters[client]
                         if running and tokens == stalled[client]:
@@ -367,7 +392,7 @@ class AdminPlane:
                     stalled.pop(client, None)
                     if ok and client not in self.recovered:
                         get_logger().info(
-                            f"Evicted inference engine {client.base_url} answers again; it rejoins at the next weight update"
+                            f"Evicted inference engine {client.base_url} answers again; its group rejoins at the next weight update"
                         )
                         self.recovered.add(client)
                     elif not ok:
@@ -379,18 +404,25 @@ class AdminPlane:
                     await self._evict(client, f"{failures} failed /liveness probes")
 
     async def _evict(self, client: AsyncClient, reason: str) -> None:
-        self.recovered.discard(client)  # a rejoining engine that fails waits for the next recovery
-        if client not in self.clients:
+        """Evict ``client`` together with the rest of its engine group."""
+        group = self.group_of[client]
+        self.recovered.difference_update(group)  # a rejoining group that fails waits for the next recovery
+        evicted = [other for other in group if other in self.clients]
+        if not evicted:
             return
-        self.clients.remove(client)
-        self.evicted.append(client)
-        self.recovered.discard(client)
-        get_logger().warning(f"Evicted inference engine {client.base_url} ({reason}); {len(self.clients)} engines left")
+        for other in evicted:
+            self.clients.remove(other)
+            self.evicted.append(other)
+        get_logger().warning(
+            f"Evicted inference engines {_urls(evicted)} ({reason} on {client.base_url}); "
+            f"{len(self.clients)} engines left"
+        )
         if self.on_evict is not None:
             self.on_evict()
         if not self.clients:
             raise RuntimeError("Every inference engine was evicted")
-        await self._set_routed(client, False)
+        for other in evicted:
+            await self._set_routed(other, False)
 
     async def _sync_router(self) -> None:
         """Drop evicted engines that the router lists again, e.g. after it was restarted with
@@ -612,6 +644,20 @@ async def _generation_counters(client: AsyncClient) -> tuple[float, float]:
     return running, tokens
 
 
+def _urls(clients) -> str:
+    return ", ".join(str(client.base_url) for client in clients)
+
+
+async def _weight_version(client: AsyncClient) -> int | None:
+    """The policy version the engine last loaded, or None if it cannot tell."""
+    try:
+        response = await client.get("/weight_version", timeout=10.0)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    return response.json().get("version")
+
+
 async def _is_live(client: AsyncClient) -> bool:
     try:
         response = await client.get("/liveness", timeout=60.0)
@@ -697,12 +743,17 @@ LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
     wait=wait_exponential(multiplier=1, min=1, max=10),
     reraise=True,
 )
-async def _post_lora_adapter(client: AsyncClient, path: str, *, json: dict[str, str]) -> None:
+async def _post_lora_adapter(
+    client: AsyncClient, path: str, *, json: dict[str, str], params: dict[str, int] | None = None
+) -> None:
     """POST ``/load_lora_adapter``, retrying with exponential backoff if the adapter files are
     not found yet, which can happen due to NFS propagation delays."""
     get_logger().debug(f"Sending request to load LoRA adapter {json['lora_name']} from {json['lora_path']}")
     response = await client.post(
-        path, json=json, timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
+        path,
+        json=json,
+        params=params,
+        timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
     )
     response.raise_for_status()
 

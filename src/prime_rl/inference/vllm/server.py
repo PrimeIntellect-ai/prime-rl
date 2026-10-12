@@ -54,11 +54,18 @@ async def resume(request: Request):
 async def update_weights(request: Request):
     data = await request.json()
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    request.app.state.weight_version = data.get("version")
     return {"status": "ok"}
 
 
+@router.get("/weight_version")
+async def weight_version(request: Request):
+    """The policy version of the last weight update or LoRA adapter load; None before the first."""
+    return {"version": getattr(request.app.state, "weight_version", None)}
+
+
 @router.post("/load_lora_adapter")
-async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
+async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, version: int | None = None):
     """Wrapper around vLLM's /v1/load_lora_adapter.
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
@@ -86,6 +93,7 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
         stored.load_inplace = False
     if isinstance(response, ErrorResponse):
         return JSONResponse(content=response.model_dump(), status_code=response.error.code)
+    raw_request.app.state.weight_version = version
     return {"status": "ok"}
 
 
