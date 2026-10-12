@@ -27,7 +27,7 @@ Nightly, from cron on a SLURM login node (the GitHub nightly runner is a single 
 For each scenario, after every run:
 - **Outcome:** the exit code, or `hung` if the run did not end within the scenario's time budget (it is then killed).
 - **Progress:** the last trainer step. A run that did not reach step 12 is resumed once with `--resume`, which is what a requeue does. Step faults are one-shot (`PRIME_FAULT_DIR` is the scenario's `faults/` dir), so the resumed run does not hit the fault again. The step the trainer resumed from is reported.
-- **Leftovers:** processes (`vllm`, `prime_rl`, `torchrun`, `env-server`, orchestrator) and GPU contexts still alive on either node.
+- **Leftovers:** processes (`vllm`, `prime_rl`, `torchrun`, `env-server`, `orchestrator`) and GPU contexts still alive on either node 30 s after the run ended.
 
 The result is `finished in the first run`, `finished after a resume`, or `not finished`.
 

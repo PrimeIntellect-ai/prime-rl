@@ -29,7 +29,7 @@ SCENARIOS = {
     "env_hang": ("env_hang@reverse-text-b", 1800),
 }
 # Matches every process a run leaves behind, but not this script or pgrep's own shell.
-LEFTOVERS = "[v]llm|[p]rime_rl|[t]orchrun|[e]nv-server|[o]rchestrator"
+LEFTOVERS = "[v]llm|[p]rime_rl|[t]orchrun|[b]in/env-server|[b]in/orchestrator"
 
 
 def sh(cmd: str) -> str:
@@ -87,19 +87,20 @@ def run(config: str, run_dir: Path, fault: str, timeout: int, extra: list[str], 
 
 
 def resumed_from(run_dir: Path) -> str:
-    text = (run_dir / "logs" / "latest" / "trainer.log").read_text(errors="ignore")
+    text = (run_dir / "launcher" / "run_resume.log").read_text(errors="ignore")
     found = re.findall(r"Resuming from step (\d+)", text)
     return found[-1] if found else "-"
 
 
 def leftovers() -> str:
-    """Processes and GPU contexts still alive on any node after a run."""
+    """Processes and GPU contexts still alive on any node 30 s after a run ended."""
+    time.sleep(30)
     out = sh(
         "srun --overlap --ntasks-per-node=1 bash -c "
-        f'\'echo $(hostname) procs=$(pgrep -fc "{LEFTOVERS}") '
-        "gpu_procs=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l)'"
+        f'\'echo $(hostname): $(pgrep -f "{LEFTOVERS}" | xargs -r ps -o comm= -p) '
+        "$(nvidia-smi --query-compute-apps=process_name --format=csv,noheader)'"
     )
-    return " ".join(line for line in out.splitlines() if not line.endswith("procs=0 gpu_procs=0")) or "none"
+    return "; ".join(line for line in out.splitlines() if not line.rstrip().endswith(":")) or "none"
 
 
 def main():
