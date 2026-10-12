@@ -6,10 +6,10 @@ from datasets import Dataset
 from pydantic import ValidationError
 from torch import nn
 
-from prime_rl.configs.sft import SFTConfig, SFTObjectiveConfig
+from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTConfig, SFTObjectiveConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.sft.data import CatDataset, SFTObjectiveDataset, cat_collate
+from prime_rl.trainer.sft.data import CatDataset, SFTDataset, SFTObjectiveDataset, cat_collate
 from prime_rl.trainer.sft.objective import (
     ObjectiveInputs,
     ObjectiveOutputs,
@@ -127,7 +127,7 @@ def test_load_objective():
     assert isinstance(objective, SFTObjective) and objective.offset == 1
     with pytest.raises(TypeError, match="must implement"):
         load_objective(SFTObjectiveConfig(import_path="collections.OrderedDict"))
-    with pytest.raises(TypeError, match="exactly one argument"):
+    with pytest.raises(TypeError, match="one positional argument"):
         load_objective(SFTObjectiveConfig(import_path=f"{__name__}.OldSignatureObjective"))
 
 
@@ -144,12 +144,19 @@ class BrokenObjective(PairObjective):
             sample["input_ids"] = tuple(sample["input_ids"])
         elif self.bad == "seq_lens":
             sample["seq_lens"] = [1, len(sample["input_ids"]) - 1]
+        elif self.bad == "dict":
+            return list(sample.items())
         return sample
 
 
 @pytest.mark.parametrize(
     "bad, message",
-    [("lengths", "different lengths"), ("type", "must return a list"), ("seq_lens", "one entry per sample")],
+    [
+        ("lengths", "different lengths"),
+        ("type", "must return a list"),
+        ("seq_lens", "one entry per sample"),
+        ("dict", "must return a dict"),
+    ],
 )
 def test_malformed_samples_are_rejected_at_the_source(bad, message):
     rows = Dataset.from_list([{"text": "ab", "label": 0.0}])
@@ -173,9 +180,6 @@ class RenderingObjective:
 
 
 def test_render_follows_columns_and_loss_mask(dummy_renderer):
-    from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig
-    from prime_rl.trainer.sft.data import SFTDataset
-
     rows = Dataset.from_list(
         [{"q": [{"role": "user", "content": "hi"}], "a": [{"role": "assistant", "content": "yo"}]}]
     )

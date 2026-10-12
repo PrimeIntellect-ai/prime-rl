@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, NotRequired, TypedDict, cast
@@ -56,6 +57,20 @@ class Batch(TypedDict):
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
     objective_data: NotRequired[list[dict[str, Any]]]
+
+
+@dataclass
+class SampleInputs:
+    """Inputs for a custom objective (``[objective]``) building one sample from a dataset row."""
+
+    example: dict
+    """The row, with the dataset's columns plus ``__subset``, ``__split`` and ``__index``."""
+    renderer: Renderer
+    """The model's renderer (chat template, stop tokens)."""
+    render: Callable[[], RenderedTrainingSample]
+    """Stock SFT's rendering of this row: the chat from ``data.columns`` as token ids plus a loss mask over the roles
+    ``[loss_mask]`` selects, unshifted. Call it to start from what stock SFT would train on; rows without a chat
+    (no ``messages``, or ``prompt`` and ``completion``) raise."""
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -506,14 +521,14 @@ class SFTObjectiveDataset(SFTDataset):
         self.objective = objective
 
     def _process(self, example: dict) -> dict | None:
-        from prime_rl.trainer.sft.objective import SampleInputs
-
         renderer = self.renderers(example)
         inputs = SampleInputs(example=example, renderer=renderer, render=partial(self.render, example, renderer))
         sample = self.objective.make_sample(inputs)
         if sample is None:
             return None
         where = f"example {example.get('__index', '')}"
+        if not isinstance(sample, dict):
+            raise ValueError(f"{where}: make_sample must return a dict or None, got {type(sample).__name__}")
         for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
             if not isinstance(sample.get(key), list):
                 raise ValueError(

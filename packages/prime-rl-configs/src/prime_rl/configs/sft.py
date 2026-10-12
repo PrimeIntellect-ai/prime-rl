@@ -164,13 +164,13 @@ class SFTDataConfig(BaseDataConfig):
 
 
 class SFTObjectiveConfig(BaseConfig):
-    """A custom SFT objective: it builds each sample from a dataset row and computes the loss from the backbone's
-    final hidden states, in place of chat-message rendering and token cross-entropy."""
+    """A custom SFT objective: it builds each sample from a dataset row (optionally starting from the stock
+    rendering) and computes the loss from the backbone's final hidden states, in place of token cross-entropy."""
 
     import_path: str
     """Import path to the objective class (e.g. ``my_module.MyObjective``), instantiated with ``kwargs``. It implements
-    ``make_sample(example, renderer)`` and ``loss(inputs: ObjectiveInputs) -> ObjectiveOutputs`` (see
-    ``prime_rl.trainer.sft.objective.SFTObjective``)."""
+    ``make_sample(inputs: SampleInputs) -> Sample | None`` and ``loss(inputs: ObjectiveInputs) -> ObjectiveOutputs``
+    (see ``prime_rl.trainer.sft.objective.SFTObjective``)."""
 
     kwargs: dict[str, Any] = Field(default_factory=dict)
     """Kwargs forwarded to the objective's constructor."""
