@@ -41,8 +41,6 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
-from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
-
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
 
@@ -90,9 +88,12 @@ class _PackedOutputs:
         async for request_output in self._generator:
             for output in request_output.outputs:
                 fields = self.fields.setdefault(output.index, {})
-                routed_experts = serialize_routed_experts(output.routed_experts, start=self._routed_experts_start)
-                if routed_experts is not None:
-                    fields["routed_experts"] = routed_experts
+                if output.routed_experts is not None:
+                    # vLLM's capturer picks uint8 or uint16 from the model's expert count.
+                    fields["routed_experts"] = {
+                        **encode_array(output.routed_experts),
+                        "start": self._routed_experts_start,
+                    }
                     output.routed_experts = None
                 if isinstance(output.logprobs, FlatLogprobs):
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
