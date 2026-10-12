@@ -6,7 +6,8 @@ from prime_rl.utils import sandboxes
 def test_clean_start_sweeps_the_previous_run_id(tmp_path, monkeypatch):
     deleted = []
     client = SimpleNamespace(
-        bulk_delete=lambda labels: deleted.append(labels) or SimpleNamespace(succeeded=[], failed=[])
+        bulk_delete=lambda labels, team_id: deleted.append(labels) or SimpleNamespace(succeeded=[], failed=[]),
+        client=SimpleNamespace(config=SimpleNamespace(team_id=None)),
     )
     monkeypatch.setattr(sandboxes, "_client", lambda: client)
 

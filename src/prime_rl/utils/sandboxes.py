@@ -71,7 +71,7 @@ def sweep_sandboxes(label: str) -> None:
         client = _client()
         if client is None:
             return
-        response = client.bulk_delete(labels=[label])
+        response = client.bulk_delete(labels=[label], team_id=client.client.config.team_id)
     except Exception as e:
         get_logger().warning(f"Could not sweep the sandboxes labeled {label}: {e}")
         return
