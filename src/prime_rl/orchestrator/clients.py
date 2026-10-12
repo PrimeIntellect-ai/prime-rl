@@ -482,7 +482,8 @@ class AdminPlane:
                     self.recovered.discard(client)
             else:
                 succeeded.append(client)
-        return succeeded
+        # A failure evicts the whole engine group, including engines that succeeded
+        return self._standing(succeeded)
 
     async def verify_weight_checksums(
         self, members: list[AsyncClient], step: int, config: WeightChecksumConfig
