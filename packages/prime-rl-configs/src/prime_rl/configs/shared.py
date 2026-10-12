@@ -39,9 +39,10 @@ EnvVars: TypeAlias = Annotated[dict[str, str], AfterValidator(reject_protected_e
 
 
 class BaseWeightBroadcastConfig(BaseConfig):
-    timeout: int = 1200
-    """Timeout in seconds for the broadcast handshake and transfer. The trainer
-    fails the run when no consumer acknowledges an offered version in time."""
+    timeout: int = 3600
+    """Timeout in seconds for the broadcast handshake and transfer, including the orchestrator's wait
+    for the trainer's startup broadcast. The trainer fails the run when no consumer acknowledges an
+    offered version in time. Raise it for large models on slow shared filesystems."""
 
 
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
@@ -122,8 +123,8 @@ class ResumeConfig(BaseConfig):
 
 
 class SlurmConfig(BaseConfig):
-    job_name: str = "prime-rl"
-    """SLURM job name."""
+    job_name: str | None = None
+    """SLURM job name. Defaults to ``run.name`` for ``rl`` and ``sft``, and to ``inference`` for ``inference``."""
 
     project_dir: Path = Path(".")
     """Path to the project root, used to source .env, activate .venv, and run uv sync."""
@@ -131,8 +132,8 @@ class SlurmConfig(BaseConfig):
     template_path: Path | None = None
     """SLURM template file. If None, uses the bundled single-node or multi-node template."""
 
-    partition: str = "cluster"
-    """SLURM partition (#SBATCH --partition)."""
+    partition: str | None = None
+    """SLURM partition (#SBATCH --partition). If None, the job goes to the cluster's default partition."""
 
     nodelist: str | None = None
     """Comma-separated list of specific nodes to run on (#SBATCH --nodelist)."""
@@ -153,7 +154,7 @@ class SlurmConfig(BaseConfig):
     """Start a job-scoped ModelExpress service for NIXL weight transfer."""
 
     cleanup_grace_period: int = Field(3600, ge=0)
-    """Seconds to wait before tearing down a multi-node RL job that hit a non-zero exit, letting in-flight checkpoints flush. Set to 0 to tear down immediately."""
+    """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""
 
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
@@ -223,15 +224,19 @@ class ClientConfig(BaseClientConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
-    dynamo: DynamoConfig | None = None
-    """Dynamo RL worker-discovery configuration."""
-
 
 class VLLMClientConfig(ClientConfig):
     """Client defaults for the live inference deployment managed by training."""
 
     base_url: str = "http://localhost:8000/v1"
     api_key_var: str = "VLLM_API_KEY"
+
+
+class PolicyClientConfig(VLLMClientConfig):
+    """Client of the policy deployment the orchestrator drives (weight updates, admin plane)."""
+
+    dynamo: DynamoConfig | None = None
+    """Dynamo RL worker-discovery configuration."""
 
 
 class LogConfig(BaseConfig):

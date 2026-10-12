@@ -28,10 +28,11 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on episode dispatch, in tasks per minute. Use it for
-    sandbox-backed environments to pace provisioning during autoscaling. None disables
-    rate limiting."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch: at most this many episodes start per minute. Each
+    episode counts once, so a group of ``group_size`` episodes counts ``group_size``
+    times. Use it for sandbox-backed environments to pace provisioning during
+    autoscaling. None disables it."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat for the run: pinged by landed episodes — the first

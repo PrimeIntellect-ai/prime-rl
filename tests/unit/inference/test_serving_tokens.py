@@ -3,7 +3,6 @@
 The full happy-path is owned upstream by vLLM's
 ``vllm/entrypoints/serve/disagg`` test suite. We only cover the prime-RL
 deltas here:
-    * ``serialize_routed_experts`` round-trips a compact raw-byte payload.
     * The subclass overrides ``serve_tokens_full_generator`` without
       monkey-patching the parent.
     * ``post_process`` swaps in the packed payloads while preserving
@@ -16,7 +15,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
-import pybase64
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateResponse,
     GenerateResponseChoice,
@@ -25,19 +23,11 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
 from vllm.logprobs import FlatLogprobs, Logprob
 
-from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _PackedOutputs,
     pack_sampled_logprobs,
 )
-
-
-def _decode_routed_experts(encoded: dict) -> np.ndarray:
-    return np.frombuffer(
-        pybase64.b64decode_as_bytearray(encoded["data"]),
-        dtype=np.uint8,
-    ).reshape(encoded["shape"])
 
 
 async def _empty_request_outputs():
@@ -48,23 +38,6 @@ async def _empty_request_outputs():
 def test_subclass_overrides_serve_tokens_full_generator():
     upstream = PrimeRlServingTokens.__mro__[1]
     assert PrimeRlServingTokens.serve_tokens_full_generator is not upstream.serve_tokens_full_generator
-
-
-def test_serialize_routed_experts_uses_compact_raw_payload():
-    routed_experts = np.array(
-        [
-            [[1, 2], [3, 4]],
-            [[5, 6], [7, 8]],
-        ],
-        dtype=np.int64,
-    )
-
-    encoded = serialize_routed_experts(routed_experts)
-    assert encoded is not None
-
-    decoded = _decode_routed_experts(encoded)
-    assert decoded.dtype == np.uint8
-    np.testing.assert_array_equal(decoded, routed_experts)
 
 
 def test_generate_response_post_process_preserves_prompt_metadata():

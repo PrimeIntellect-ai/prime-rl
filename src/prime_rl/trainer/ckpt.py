@@ -25,6 +25,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_optimizer_state,
 )
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
+from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_all_ckpt_steps, get_ckpt_dir, get_step_path
@@ -204,11 +205,11 @@ class CheckpointManager:
             # FileExistsError (EEXIST + stale is_dir() metadata).
             if self.world.is_master:
                 dataloader_dir.mkdir(parents=True, exist_ok=True)
-            torch.distributed.barrier()
+            torch.distributed.barrier(group=get_dcp_group())
             torch.save(dataloader.state_dict(), dataloader_dir / f"rank_{self.world.rank}.pt")
 
         # Save sharded state
-        dcp_save(state_dict, checkpoint_id=path)
+        dcp_save(state_dict, checkpoint_id=path, process_group=get_dcp_group())
 
         self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
 
@@ -228,7 +229,7 @@ class CheckpointManager:
         # Load sharded state
         app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
         state_dict = {"app": app_state}
-        dcp_load(state_dict=state_dict, checkpoint_id=path)
+        dcp_load(state_dict=state_dict, checkpoint_id=path, process_group=get_dcp_group())
         if self.skip_optimizer:
             for optimizer in optimizers:
                 if isinstance(optimizer, OffloadOptimizer):
@@ -282,7 +283,7 @@ class CheckpointManager:
         # re-raise FileExistsError on a parallel FS (see save_to_path).
         if self.world.is_master:
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.distributed.barrier()
+        torch.distributed.barrier(group=get_dcp_group())
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
         bisect.insort(self.ckpt_steps, step)
