@@ -64,6 +64,7 @@ from prime_rl.orchestrator.utils import (
     episode_staleness,
     eval_work,
     intercept_vf_logging,
+    release_and_trim,
     set_default_executor,
     trim_process_memory,
 )
@@ -155,6 +156,7 @@ class Orchestrator:
         self.wait_for_policy_time = 0.0
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
+        self.release_future: asyncio.Future | None = None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -443,7 +445,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced)")
-            trim_process_memory()
+            await asyncio.to_thread(trim_process_memory)
 
     async def wait_for_version(self, version: int, reason: str) -> None:
         """Bounded wait until the watcher has applied v{version}."""
@@ -549,7 +551,7 @@ class Orchestrator:
             await self.finalize_train_batch(batch)
             if self.draining or self.stopped.is_set():
                 return
-            batch = self.train_sink.take_batch()
+            batch = await self.train_sink.take_batch()
             await self.report_rollouts(force=batch is not None and bool(batch.samples))
         if self.draining or self.stopped.is_set():
             if batch is not None:
@@ -676,7 +678,6 @@ class Orchestrator:
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
-        trim_process_memory()
 
         def shipped_metrics() -> dict[str, float]:
             metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
@@ -739,7 +740,11 @@ class Orchestrator:
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
-        trim_process_memory()
+        # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
+        if self.release_future is not None:
+            await asyncio.shield(self.release_future)
+        payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
+        self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
     async def start_draining(self, reason: str) -> None:
         """Stop scheduling train work and let the pipeline empty; triggered
@@ -986,6 +991,8 @@ class Orchestrator:
         async def teardown() -> None:
             get_logger().debug("Closing micro batch sender")
             self.sender.close()
+            if self.release_future is not None:
+                await self.release_future
             if self.dispatcher is not None:
                 get_logger().debug("Stopping dispatcher")
                 await self.dispatcher.stop()

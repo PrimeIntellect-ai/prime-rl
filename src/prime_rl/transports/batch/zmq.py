@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import zmq
@@ -74,7 +75,7 @@ class ZMQBatchSender(BatchSender):
 
         self.logger.debug(f"Sending micro batch grid for step {self._current_step}")
         for data_rank in range(self.data_world_size):
-            buffer = self.encoder.encode(micro_batch_grid[data_rank])
+            buffer = await asyncio.to_thread(self.encode, micro_batch_grid[data_rank])
             topic = self._topic_prefix + str(data_rank).encode("utf-8") + b"|"
             await self.socket.send_multipart([topic, buffer], copy=False)
         self._current_step += 1
