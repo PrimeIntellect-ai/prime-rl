@@ -1,0 +1,37 @@
+# Full-depth SFT of DeepSeek-V4.1-Flash: EP 8 + FSDP, no context or pipeline parallelism.
+# Compose with a data overlay: base.toml @ math-10k.toml (or @ fake.toml for a dry run).
+clean = true
+
+[model]
+# A bf16 PrimeRL-format copy of deepseek-ai/DeepSeek-V4.1-Flash written by
+# tools/convert_deepseek_v41_to_prime.py (see the README).
+name = "/shared/models/DeepSeek-V4.1-Flash-bf16"  # FILL IN
+ep = 8
+# The two engram tables hold ~197B of the model's ~748B parameters. Frozen, they cost only their
+# (row-sharded) weights: no gradient and no optimizer state.
+freeze_engram_tables = true
+
+[model.ac]
+freq = 1
+
+[optim]
+type = "sign_sgd"
+lr = 5e-5
+weight_decay = 0.01
+
+[scheduler]
+type = "linear"
+warmup_steps = 50
+decay_steps = 0
+
+[renderer]
+name = "custom"
+import_path = "examples/advanced/deepseek-v4.1-flash/renderer.py:DeepSeekV41Renderer"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 12
+
+[slurm]
+job_name = "dsv41-sft"
+partition = "all"  # FILL IN
