@@ -118,9 +118,7 @@ def fuse_qkv_projections(module: nn.Module) -> None:
         projection.bias = None
 
 
-def apply_model_fusions(
-    model: nn.Module, requested_fusions: Sequence[str], raise_on_fail: bool = True
-) -> dict[str, int]:
+def apply_model_fusions(model: nn.Module, requested_fusions: Sequence[str]) -> dict[str, int]:
     """Apply each requested fusion to every module that supports it; returns the module count per fusion."""
     fused_module_counts: dict[str, int] = {}
     for fusion_name in requested_fusions:
@@ -132,10 +130,9 @@ def apply_model_fusions(
             fusion(module)
             num_fused_modules += 1
         if num_fused_modules == 0:
-            message = f"The model does not support the {fusion_name!r} runtime fusion"
-            if raise_on_fail:
-                raise ValueError(message)
-            get_logger().warning(f"{message}; continuing without it")
+            get_logger().warning(
+                f"The model does not support the {fusion_name!r} runtime fusion; continuing without it"
+            )
             continue
         fused_module_counts[fusion_name] = num_fused_modules
     return fused_module_counts

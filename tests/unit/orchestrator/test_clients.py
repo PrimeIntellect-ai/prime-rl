@@ -93,6 +93,8 @@ def test_setup_client_creates_renderer_client():
         base_url="http://worker-a:8000/v1",
         api_key_var="PRIME_API_KEY",
         headers={"X-Test": "test"},
+        headers_from_env={"X-Token": "PROVIDER_TOKEN"},
+        timeout={"read": 12},
     )
 
     renderer_settings = Qwen3VLRendererConfig()
@@ -108,6 +110,8 @@ def test_setup_client_creates_renderer_client():
     assert client.base_url == "http://worker-a:8000/v1"
     assert "X-data-parallel-rank" not in client.headers
     assert client.headers["X-Test"] == "test"
+    assert client.headers_from_env == {"X-Token": "PROVIDER_TOKEN"}
+    assert client.timeout.read == 12
 
 
 def test_check_health_retries_non_success_status():

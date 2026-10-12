@@ -37,7 +37,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 | `uv run inference` | vLLM server. | Always use this entrypoint over `vllm serve` — it adds `/update_weights`, `/load_lora_adapter`, and `/init_broadcaster`. |
 | `uv run orchestrator` | Standalone orchestrator process. | Pair with a separately-launched inference server and one `env-server` per source. |
 | `uv run eval` | Multi-env evals against a live inference server. | One epoch per source, pinned (or adaptive) concurrency, cursor checkpoints + `--resume`, dashboard + optional platform upload; see [Eval](eval.md). |
-| `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source; each binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/<split>/<name>.address` for the orchestrator); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. their own k8s pod) and the launcher expects the server to already run there. |
+| `uv run env-server` | Standalone env server for one environment. | The `rl` launcher starts these automatically (one per train/eval source; each binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/<split>/<name>.address` for the orchestrator); only needed when running the orchestrator standalone, or for sources with an explicit `serve.address` — those are externally managed (e.g. on their own host) and the launcher expects the server to already run there. |
 
 ## RL Trainer
 
@@ -62,6 +62,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.train.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
+| `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -150,9 +151,19 @@ Two accepted layouts:
 - **Prompt-completion**: a HF dataset with `prompt` and `completion` columns ([TRL format](https://huggingface.co/docs/trl/en/dataset_formats#prompt-completion)). The trainer masks out the prompt and computes loss only over the completion.
 - **Messages**: a HF dataset with a single `messages` column containing a list of chat turns. The trainer interprets the whole conversation as one sample, applies role-based loss masking, and trains over all assistant turns.
 
-If both columns are present, `messages` takes precedence.
+If both columns are present, `messages` takes precedence. A dataset that stores these under other names maps them in `[data.columns]`; the trainer renames the columns at load time:
 
-**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column (OpenAI function-calling format) or `tool_defs` ([`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) rollout format). Each row's value can be either a list of dicts or a JSON-encoded string of a list — both are accepted, and `tool_defs` rows are auto-converted to OAI shape before being passed into the renderer.
+```toml
+[data.columns]
+messages = "conversation"
+tools = "schemas"
+```
+
+**Per-message loss selection.** An optional `message_loss_mask` column contains one boolean or integer 0/1 per message. For example, `[0, 0, 0, 1]` on a user/assistant/user/assistant conversation trains only the final assistant turn while retaining the full context. For prompt-completion rows, the mask covers the concatenated prompt and completion messages. Zero excludes a message; one preserves the normal role and renderer loss settings. A missing or null mask leaves those settings unchanged. The renderer applies selection without changing token IDs, including ownership of assistant closing tokens. Invalid mask lengths or entries raise an error.
+
+To read a differently named column, set `data.columns.message_loss_mask = "selection"`.
+
+**Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list.
 
 Renderer-backed SFT reads template controls from the typed `[renderer]` config in the SFT TOML. For example:
 
@@ -162,13 +173,30 @@ name = "qwen3"
 enable_thinking = false
 ```
 
-A `reasoning_effort` column in the dataset sets the renderer's `reasoning_effort` field per row, on top of the `[renderer]` config. The column requires a typed renderer that has that field (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`); rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one.
+Dataset columns can set renderer template controls per row, on top of the `[renderer]` config. `[data.columns.renderer]` maps renderer fields to columns and defaults to `reasoning_effort = "reasoning_effort"`, so a `reasoning_effort` column sets that field on renderers that have it (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`). Rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one:
+
+```toml
+# The renderer field is reasoning_effort; this dataset stores it in an effort column.
+[data.columns.renderer]
+reasoning_effort = "effort"
+```
 
 If a model needs another template control, add it to that model's renderer config in `renderers` (for example a new field on the relevant `*RendererConfig`) and consume it in the renderer implementation.
 
+**Custom renderers.** A renderer can also live outside the `renderers` package. Set `name = "custom"` and point `import_path` at the class, as `my_module.Class` or `path/to/file.py:Class`; relative file paths resolve against the launch directory. The class sets `config_class` to its own `BaseRendererConfig` subclass, which validates the remaining `[renderer]` keys and declares its template controls:
+
+```toml
+[renderer]
+name = "custom"
+import_path = "my_renderers.glm53_no_thinking.NoThinkingGLM53Renderer"
+clear_thinking = true
+```
+
+The same config selects the renderer for RL under `[orchestrator.renderer]`. The [`renderers` README](https://github.com/PrimeIntellect-ai/renderers#custom-renderers) shows the class behind this example.
+
 **Renderer-backed tokenization.** SFT tokenization is renderer-only. The [`renderers`](algorithms.md#renderers) package owns message-to-token conversion and loss attribution end-to-end, so position-dependent chat templates (for example templates that strip past `<think>` blocks across user turns) do not corrupt the loss mask. `[renderer]` defaults to `name = "auto"`; set a typed renderer config only when you need model-specific template controls. Hand-coded renderers ship for Qwen3, Qwen3.5, GLM-5, GLM-4.5, Kimi K2/K2.5, MiniMax M2, DeepSeek V3, Nemotron 3, GPT-OSS, and VLM families such as Qwen3-VL/Qwen3.5.
 
-**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) requires `model.impl = "custom"` and only works for models with a registered PrimeRL VLM class (currently Qwen3.5 dense and MoE).
+**VLM training requires a custom PrimeRL implementation.** Training a model with `[model.vlm]` set (SFT or RL) only works for models with a registered PrimeRL VLM class (currently Qwen3.5 dense and MoE).
 
 See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectories) for the full picture.
 
@@ -257,6 +285,7 @@ Pulled from the console log and mirrored to W&B.
 - `optim/grad_norm` — spikes precede divergence.
 - `optim/lr` — LR schedule.
 - For MoE: `max_vio/mean`, `max_vio/max` — mean and max over the step's microsteps of the largest load-balancing violation across layers and EP groups, computed from expert token counts summed across each EP group. `routing_confidence/mean` — mean routing confidence.
+- For MoE: `expert_load/{cv,max_mean,cold_frac}/{mean,max}` — expert load per layer over the whole step, from token counts summed across all ranks, as the mean and max over MoE layers. `cv` is std/mean of the per-expert token counts, `max_mean` the busiest expert's count over the mean, and `cold_frac` the fraction of experts receiving under 0.1x the mean. A trainable router that drifts shows up as a rising `cv`/`cold_frac` (MiMo-V2.6 §5.4).
 
 **Performance:**
 

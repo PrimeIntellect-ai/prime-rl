@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -7,6 +7,8 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -47,8 +49,11 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Materialized immediately before this microbatch's forward pass.
+    # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
+    # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
     mm_refs: MMRefs | None
+    mm_kwargs: NotRequired[dict[str, Tensor] | None]
+    mm_forward_policy: NotRequired[ForwardPolicy | None]
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -170,6 +175,23 @@ class FakeDataLoader:
             "ce_weights": None,
             "ref_kl_weights": None,
         }
+
+
+def prepare_micro_batch(
+    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+) -> TensorMicroBatch:
+    """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
+    micro_batch["mm_kwargs"] = None
+    micro_batch["mm_forward_policy"] = None
+    mm_refs = micro_batch.get("mm_refs")
+    if mm_refs is not None:
+        if processor is None or mm_adapter is None:
+            raise ValueError("Received multimodal samples but [model.vlm] is not set")
+        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+        micro_batch["mm_kwargs"] = materialized.kwargs
+        micro_batch["mm_forward_policy"] = materialized.forward_policy
+        micro_batch["mm_refs"] = None
+    return micro_batch
 
 
 class DataLoader:

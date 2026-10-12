@@ -4,10 +4,9 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
-from prime_rl.trainer.model import is_tt_moe_model
-from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts
+from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
-from prime_rl.trainer.models.layers.activations import ActivationDispatch
+from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
@@ -69,7 +68,7 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
         pytest.param(GroupedExperts, {"activation": "relu2"}, True, "standard SwiGLU", id="relu2"),
         pytest.param(GroupedExperts, {"activation": "clamped_swiglu"}, True, "standard SwiGLU", id="clamped-swiglu"),
         pytest.param(GroupedExperts, {"bias": True}, True, "bias-free", id="bias"),
-        pytest.param(DeepseekV4Experts, {"swiglu_limit": 10.0}, True, "standard SwiGLU", id="deepseek-v4"),
+        pytest.param(GroupedExperts, {"activation": ClampedSilu(10.0)}, True, "standard SwiGLU", id="deepseek-v4"),
     ],
 )
 def test_set_compute_validates_sonic_expert_structure(expert_cls, kwargs, fused, error):
@@ -235,3 +234,20 @@ def test_expert_type_and_activation_are_independent(expert_type, activation):
     assert moe.experts.activation is ActivationDispatch[activation]
     assert (moe.shared_expert.gate_proj is not None) == has_gate
     assert moe.shared_expert.activation is ActivationDispatch[activation]
+
+
+def test_expert_load_stats():
+    # Layer 0 is balanced; layer 1 sends 8 of 16 tokens to one expert and leaves one expert cold (< 0.1x mean).
+    tokens_per_expert = torch.tensor([[4.0, 4.0, 4.0, 4.0], [8.0, 4.0, 4.0, 0.0]])
+    stats = compute_expert_load_stats(tokens_per_expert)
+    expected = {
+        "expert_load/cv/mean": 2**0.5 / 4,
+        "expert_load/cv/max": 2**0.5 / 2,
+        "expert_load/max_mean/mean": 1.5,
+        "expert_load/max_mean/max": 2.0,
+        "expert_load/cold_frac/mean": 0.125,
+        "expert_load/cold_frac/max": 0.25,
+    }
+    assert stats.keys() == expected.keys()
+    for name, value in expected.items():
+        assert stats[name].item() == pytest.approx(value)

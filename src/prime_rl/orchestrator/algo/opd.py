@@ -24,8 +24,6 @@ class OPDAlgorithm(Algorithm):
     credit is assigned — rollouts keep ``advantages=None`` and samples ship no
     advantage stream; ``group_size`` only fans out sampling."""
 
-    action_loss_type = "ref_kl"
-
     def __init__(self, config: OPDAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.teacher = config.teacher

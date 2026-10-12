@@ -15,32 +15,6 @@ from vllm.logger import init_logger
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 from prime_rl.configs.inference import InferenceConfig
-from prime_rl.utils.logger import get_logger
-
-logger = get_logger()
-from prime_rl.inference.patches import (
-    monkey_patch_dp_coordinator_startup_timeout,
-    monkey_patch_nano_v3_reasoning_parser,
-    monkey_patch_strip_routed_experts_from_chat,
-    monkey_patch_tokenize_params_validation,
-)
-
-# NOTE: Monkeypatch TokenizeParams to fix overly conservative validation
-# Still needed in vLLM 0.30 — upstream rejects prompt_len > max_model_len - max_tokens
-monkey_patch_tokenize_params_validation()
-# NOTE: Register Nano V3 reasoning parser so configs can use
-# `reasoning_parser = "nano_v3"` without a vLLM plugin file.
-monkey_patch_nano_v3_reasoning_parser()
-# NOTE: routed_experts are consumed only via the serialized /generate path (router
-# replay). The chat-completions path encodes them as a base64 np.save string the PD
-# router cannot merge, which fails eval rollouts (they use chat completions). Strip
-# routed_experts from chat responses since the server-wide enable flag has no
-# per-request toggle.
-monkey_patch_strip_routed_experts_from_chat()
-# NOTE: vLLM hard-codes a 120s DP coordinator startup timeout, which the rank-0
-# API server blows through when all engine-core ranks on the node are loading
-# weights concurrently (multi-node disaggregated deployments).
-monkey_patch_dp_coordinator_startup_timeout()
 
 logger = init_logger("vllm.entrypoints.launchers.api_server.entry")
 
@@ -88,14 +62,12 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     """Wrapper around vLLM's /v1/load_lora_adapter.
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
-    changes per policy version; the name is constant — the base model name, which
-    the adapter shadows: ``_maybe_get_adapters`` resolves ``lora_requests`` before
-    the base-model match, so requests keep addressing one stable name. If a future
-    vLLM rejects registering an adapter under a served model name, fall back to a
-    distinct constant adapter name set once at startup.) vLLM's native loader
-    rejects a same-name reload unless ``load_inplace=True``, so we force it here —
-    that makes the worker re-read the new weights during ``add_lora``, reusing the
-    existing ``lora_int_id``.
+    changes per policy version; the name is constant — the model name every client
+    sends. vLLM rejects an adapter named like a served base model, so with LoRA on
+    the base model is served as ``<model>-base``; see ``InferenceConfig.to_namespace``.)
+    vLLM's native loader rejects a same-name reload unless ``load_inplace=True``, so
+    we force it here — that makes the worker re-read the new weights during
+    ``add_lora``, reusing the existing ``lora_int_id``.
 
     We then reset the stored request's flag back to ``False``. ``load_inplace`` is
     a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
