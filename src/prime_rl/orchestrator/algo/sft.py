@@ -10,5 +10,3 @@ class SFTDistillAlgorithm(Algorithm):
     Assigns no advantage — the ``ce`` loss ignores credit, and SFT trains on
     every sampled token. A curriculum can reject results using reward or any
     other finalized rollout data."""
-
-    action_loss_type = "ce"

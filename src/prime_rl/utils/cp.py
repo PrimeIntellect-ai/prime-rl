@@ -41,19 +41,14 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
     if config.cp_style == "ring":
-        # Delayed imports: ring_flash_attn imports flash_attn at module scope, which only the ring
-        # path needs; attn lives under trainer.models, which imports back into prime_rl.utils — a
-        # top-level import would deadlock at startup.
-        from ring_flash_attn import substitute_hf_flash_attn
-
+        # Delayed imports: both modules live under trainer.models, which imports back into
+        # prime_rl.utils — a top-level import would deadlock at startup.
         from prime_rl.trainer.models.layers.attn import substitute_ring_attn
 
-        substitute_hf_flash_attn(cp_group, heads_k_stride=1)
         substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.attn)
     elif config.cp_style == "ulysses":
-        from prime_rl.trainer.models.layers.ulysses_attn import substitute_hf_ulysses_attn, substitute_ulysses_attn
+        from prime_rl.trainer.models.layers.ulysses_attn import substitute_ulysses_attn
 
-        substitute_hf_ulysses_attn(cp_group)
         substitute_ulysses_attn(cp_group, attn_impl=config.attn)
     else:
         raise ValueError(f"Unknown cp_style: {config.cp_style}")
