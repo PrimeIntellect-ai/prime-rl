@@ -42,6 +42,9 @@ class WeightChecksumConfig(BaseConfig):
     fail_on_mismatch: bool = False
     """Raise instead of logging a warning when the engines' weight checksums disagree."""
 
+    evict_mismatched: bool = False
+    """Evict the engine group of an engine whose checksums differ from the majority of the engines that hold the same shard; it rejoins at a later weight update. Needs at least three such engines and engine eviction (more than one engine, filesystem or NCCL broadcast). Mismatches without a majority still warn or raise."""
+
 
 class BaseWeightBroadcastConfig(BaseConfig):
     timeout: int = 3600

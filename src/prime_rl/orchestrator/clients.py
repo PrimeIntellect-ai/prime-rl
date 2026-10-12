@@ -248,7 +248,8 @@ class AdminPlane:
                     if not retry:
                         break
                 if checksum is not None:
-                    await self.verify_weight_checksums(step, fail_on_mismatch=checksum.fail_on_mismatch)
+                    await self.verify_weight_checksums(members, step, checksum)
+                    members = self._standing(members)
             finally:
                 resumed = await self._each(members, "/resume")
         finally:
@@ -483,11 +484,14 @@ class AdminPlane:
                 succeeded.append(client)
         return succeeded
 
-    async def verify_weight_checksums(self, step: int, *, fail_on_mismatch: bool) -> None:
-        """Compare the weight checksums of engine workers that hold the same shard."""
+    async def verify_weight_checksums(
+        self, members: list[AsyncClient], step: int, config: WeightChecksumConfig
+    ) -> None:
+        """Compare the weight checksums of engine workers that hold the same shard. With
+        ``evict_mismatched``, engines outvoted by the other holders of a shard are evicted."""
         start = time.perf_counter()
         responses = await asyncio.gather(
-            *[_admin_post(client, "/weight_checksums", timeout_s=UPDATE_WEIGHTS_TIMEOUT_S) for client in self.clients]
+            *[_admin_post(client, "/weight_checksums", timeout_s=UPDATE_WEIGHTS_TIMEOUT_S) for client in members]
         )
         engines = [response.json()["checksums"] for response in responses]
         mismatches = find_checksum_mismatches(engines)
@@ -502,7 +506,13 @@ class AdminPlane:
         message = (
             f"Weight checksums of policy v{step} mismatch for {len(mismatches)} tensors: {', '.join(mismatches[:10])}"
         )
-        if fail_on_mismatch:
+        outliers = find_checksum_outliers(engines) if config.evict_mismatched and self.evicting else set()
+        if outliers:
+            get_logger().warning(message)
+            for engine in sorted(outliers):
+                await self._evict(members[engine], f"weight checksums of policy v{step} differ from the majority")
+            return
+        if config.fail_on_mismatch:
             raise RuntimeError(message)
         get_logger().warning(message)
 
@@ -525,6 +535,24 @@ def find_checksum_mismatches(engines: list[list[dict]]) -> list[str]:
                 if expected.get(name) != actual.get(name):
                     mismatches.append(f"engine{engine}/{worker['shard']}/{name} != engine{ref_engine}")
     return mismatches
+
+
+def find_checksum_outliers(engines: list[list[dict]]) -> set[int]:
+    """Engines with a worker whose checksums differ from those of a strict majority of the (at
+    least three) workers that hold the same shard. Same input as ``find_checksum_mismatches``."""
+    holders: dict[str, list[tuple[int, dict[str, int]]]] = {}
+    for engine, workers in enumerate(engines):
+        for worker in workers:
+            holders.setdefault(worker["shard"], []).append((engine, worker["checksums"]))
+    outliers = set()
+    for shard_holders in holders.values():
+        if len(shard_holders) < 3:
+            continue
+        votes = Counter(tuple(sorted(checksums.items())) for _, checksums in shard_holders)
+        majority, count = votes.most_common(1)[0]
+        if 2 * count > len(shard_holders):
+            outliers |= {engine for engine, checksums in shard_holders if tuple(sorted(checksums.items())) != majority}
+    return outliers
 
 
 def setup_admin_plane(client_config: PolicyClientConfig, model_name: str) -> AdminPlane:

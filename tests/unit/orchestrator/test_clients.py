@@ -11,6 +11,7 @@ from prime_rl.orchestrator.clients import (
     _is_retryable_lora_error,
     check_health,
     find_checksum_mismatches,
+    find_checksum_outliers,
     setup_client,
 )
 
@@ -212,3 +213,12 @@ def test_find_checksum_mismatches():
         "engine1/tp0/b != engine0",
         "engine1/tp1/c != engine0",
     ]
+
+
+def test_find_checksum_outliers():
+    def engine(a):
+        return [{"shard": "tp0", "checksums": {"w": a}}]
+
+    assert find_checksum_outliers([engine(1), engine(1), engine(2)]) == {2}
+    assert find_checksum_outliers([engine(1), engine(2)]) == set()
+    assert find_checksum_outliers([engine(1), engine(2), engine(3)]) == set()
