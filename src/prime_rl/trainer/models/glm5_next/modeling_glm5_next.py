@@ -219,7 +219,8 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             seq_lens.to(inputs_embeds.device),
             total_tokens=inputs_embeds.shape[1] * self.cp_context.cp_world_size,
         )
-        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        # A hint, not a constraint: a one-document row (2-entry cu_seqlens) gets its own graph.
+        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
         pool_layout = PoolLayout.build(
             cu_seqlens,
             inputs_embeds.shape[1],

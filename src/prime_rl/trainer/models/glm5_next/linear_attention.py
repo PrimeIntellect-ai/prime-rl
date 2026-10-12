@@ -1,15 +1,18 @@
 import torch
 from fla.modules import FusedRMSNormGated
-from fla.modules.conv import causal_conv1d as fla_causal_conv1d
+from fla.modules.conv import causal_conv1d
 from fla.ops.cp import build_cp_context
 from fla.ops.kda import chunk_kda
 from torch import nn
 
 from prime_rl.utils.cp import CPContext
 
-# FLA's convolution derives chunk metadata from `cu_seqlens`, which Dynamo would specialize on
-# (one-document rows fail the dynamic-size constraint), and under CP carries a process group.
-causal_conv1d = torch.compiler.disable(fla_causal_conv1d)
+# Dynamo lowers all-gather to concatenation, then fails to copy the result into
+# FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
+# https://github.com/pytorch/pytorch/issues/155632
+causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
+# CP setup searchsorts tensor-valued sequence boundaries; keep it outside the compiled graph.
+build_cp_context_eager = torch.compiler.disable(build_cp_context)
 
 
 class KimiDeltaAttention(nn.Module):
@@ -68,10 +71,14 @@ class KimiDeltaAttention(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.LongTensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
+        # FLA memoizes cu_seqlens metadata by tensor identity. A per-layer copy makes every layer
+        # miss that cache in the forward and in its activation-checkpoint recompute alike, so both
+        # run the same ops and checkpoint replay (matched by op invocation order) stays aligned.
+        cu_seqlens = cu_seqlens.clone()
 
         context = None
         if self.cp_context.cp_enabled:
-            context = build_cp_context(
+            context = build_cp_context_eager(
                 cu_seqlens=cu_seqlens.to(device=hidden_states.device, dtype=torch.int32),
                 group=self.cp_context.cp_group,
                 conv1d_kernel_size=self.conv_kernel_size,
@@ -85,7 +92,7 @@ class KimiDeltaAttention(nn.Module):
         if context is None:
             mixed_qkv, _ = causal_conv1d(**convolution, cu_seqlens=cu_seqlens)
         else:
-            mixed_qkv, _ = causal_conv1d(**convolution, cp_context=context)
+            mixed_qkv, _ = causal_conv1d_with_context_parallelism(**convolution, cp_context=context)
 
         head_shape = (batch_size, sequence_length, self.num_heads, self.head_dim)
         query, key, value = (part.reshape(head_shape) for part in mixed_qkv.chunk(3, dim=-1))
