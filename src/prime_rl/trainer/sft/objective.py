@@ -64,6 +64,7 @@ class SFTObjective(Protocol):
         through a model class that derives boundaries from ``position_ids`` restarting at 0). Samples longer than
         ``seq_len`` are skipped. An optional ``objective_data`` dict of plain values carries what the loss needs
         beyond tokens (e.g. targets) to ``batch["objective_data"]``: one dict per sample of the micro-batch, in order.
+        Runs in the dataloader workers: the objective must be picklable.
         """
         ...
 
