@@ -54,7 +54,7 @@ def objective_dataset(texts, seq_len, **kwargs):
 
 def test_objective_samples_pack_with_their_objective_data():
     # Samples of 4, 6, 2 and 8 tokens; packs of 10 tokens.
-    packs = list(CatDataset(objective_dataset(["ab", "cde", "f", "ghij"], seq_len=10, max_epochs=1), seq_len=10))
+    packs = list(CatDataset(objective_dataset(["ab", "cde", "f", "ghij"], seq_len=10, max_epochs=1), 10, 1))
 
     assert [pack["seq_lens"] for pack in packs] == [[4, 6], [2, 8]]
     assert [[data["label"] for data in pack["objective_data"]] for pack in packs] == [[0.0, 1.0], [2.0, 3.0]]
@@ -67,8 +67,8 @@ def test_objective_samples_pack_with_their_objective_data():
 
 
 def test_padded_pack_keeps_one_objective_data_per_sample():
-    (pack,) = CatDataset(objective_dataset(["ab", "c"], seq_len=16, max_epochs=1), seq_len=16)
-    assert pack["seq_lens"] == [4, 2 + 10]  # the padding joins the last sample
+    (pack,) = CatDataset(objective_dataset(["ab", "c"], seq_len=16, max_epochs=1), 16, pad_to_multiple_of=8)
+    assert pack["seq_lens"] == [4, 2 + 2]  # the padding to a multiple of 8 joins the last sample
     assert [data["label"] for data in pack["objective_data"]] == [0.0, 1.0]
 
 
@@ -79,14 +79,14 @@ def test_overlong_samples_are_skipped():
 
 def test_resume_keeps_the_pending_sample_and_its_objective_data():
     texts = ["ab", "cd", "efg", "h", "ij"]  # 4 + 4 tokens, then "efg" (6) overflows and waits as the pending sample
-    reference = list(CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), seq_len=10))
+    reference = list(CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), 10, 1))
 
-    packing = CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), seq_len=10)
+    packing = CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), 10, 1)
     first = next(iter(packing))
     state = packing.state_dict()
     assert state["pending_sample"]["objective_data"] == {"label": 2.0}
 
-    resumed = CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), seq_len=10)
+    resumed = CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), 10, 1)
     resumed.load_state_dict(state)
     assert [first, *resumed] == reference
 
@@ -101,13 +101,13 @@ def test_packs_without_objective_data_are_unchanged():
         "mm_kwargs": None,
         "mm_token_type_ids": None,
     }
-    pack = next(iter(CatDataset([sample, sample], seq_len=4)))
+    pack = next(iter(CatDataset([sample, sample], 4, 1)))
     assert "objective_data" not in pack
     assert "objective_data" not in cat_collate([pack])
 
 
 def test_objective_loss_on_a_collated_batch():
-    (pack,) = CatDataset(objective_dataset(["ab", "c"], seq_len=8, max_epochs=1), seq_len=8)
+    (pack,) = CatDataset(objective_dataset(["ab", "c"], seq_len=8, max_epochs=1), 8, pad_to_multiple_of=8)
     batch = cat_collate([pack])
     hidden_states = torch.ones(1, 8, 3)
     outputs = PairObjective().loss(ObjectiveInputs(model=None, hidden_states=hidden_states, batch=batch))

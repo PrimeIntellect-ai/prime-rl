@@ -602,8 +602,10 @@ class SFTConfig(BaseConfig):
             return self
         if self.data.type != "sft" or (self.val is not None and self.val.data.type != "sft"):
             raise ValueError("objective requires data.type='sft' (and val.data.type='sft')")
-        if self.model.cp > 1 or self.model.vlm is not None or self.model.full_offload is not None:
-            raise ValueError("objective is not supported with context parallelism, VLM training or full_offload")
+        if self.model.cp > 1 or self.model.vlm is not None or self.model.offload == "full":
+            raise ValueError(
+                "objective is not supported with context parallelism, VLM training or model.offload='full'"
+            )
         return self
 
     @model_validator(mode="after")
