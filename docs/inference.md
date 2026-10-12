@@ -224,6 +224,46 @@ With more than one engine behind the router and NCCL or filesystem weight broadc
   - the last engine dying;
   - NIXL broadcast, which pins its receivers. On SLURM, an engine exit then ends the job, and the same holds for a deployment with a single engine.
 
+### Elastic inference
+
+With `orchestrator.model.client.elastic = true`, inference engine groups can join and leave a running RL job. This works with NCCL and filesystem weight broadcast. The orchestrator owns membership through a registry directory, `<output_dir>/broadcasts/members/`. Each group there is one file, `<group_id>.json`, with its admin URLs and a state (`ready` or `draining`). The orchestrator reads the directory every 10 s.
+
+- **Join.** A new `ready` group gets the current policy before it is routed:
+  - filesystem broadcast: it loads the newest broadcast directory at once;
+  - NCCL: it joins at the next weight update. The broadcast group is rebuilt once per update, so groups that register between two updates join together.
+
+  The group enters the router only when all its engines report the current version on `GET /weight_version`. The inference metrics then also scrape it, so the adaptive concurrency limit can grow.
+- **Drain.** A `draining` group leaves the router and the weight updates at once. Its running requests finish on the weights it has. Once none are left (or after 600 s), the orchestrator deletes the group's file and forgets the group. The last serving group is never drained.
+- **Removal.** If a group's file disappears, the group is dropped; a serving group is evicted. A dead engine is evicted as described in [Dead engines](#dead-engines).
+- **Limits.**
+  - With NCCL, every engine needs the same GPU count as the engines at launch.
+  - P/D groups cannot join, because `vllm-router` has no API to add a prefill or decode worker.
+  - NIXL is not supported. A pull-based NIXL join with a per-version peer list is a possible follow-up.
+
+`python -m prime_rl.inference.register` writes the record for a group. It waits until every engine answers `/health`, then registers the group. On SIGTERM or SIGINT it marks the group `draining`. When the orchestrator has deleted the record, it exits, and the engines can be stopped.
+
+To add capacity to a running job from a separate inference-only SLURM job (here one engine on one node; `/shared/run` is the RL job's `output_dir`):
+
+```bash
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --exclusive
+# The joining engine: no router, same weight broadcast type and GPUs per engine as the RL job
+uv run inference @ join.toml --server.port 8100 --weight-broadcast.type nccl &
+ENGINE=$!
+uv run python -m prime_rl.inference.register \
+    --registry /shared/run/broadcasts/members \
+    --admin-urls http://$(hostname):8100/v1 \
+    --group-id join-$SLURM_JOB_ID &
+REGISTER=$!
+# `scancel --signal=TERM --batch <job>` drains the group, then the job ends
+trap 'kill -TERM $REGISTER' TERM
+wait $REGISTER; wait $REGISTER
+kill $ENGINE
+```
+
+`join.toml` sets `router = "None"`, the model, and the same `[vllm]` settings as the RL job's inference. With NCCL, the trainer's `weight_broadcast.host` must be an address the joining node can reach (not `localhost`).
+
 ## Adaptive Concurrency
 
 The orchestrator continuously sizes how many episodes run against the inference engines at once. A static cap cannot be right: too low starves the engines, too high crosses into KV thrash — the engines evict prefix cache, re-prefill the evicted work, and throughput collapses. The optimal value depends on the model, the deployment, and the workload's episode lengths, and it moves as training changes the policy.
