@@ -329,6 +329,11 @@ class Glm5NextForCausalLM(Glm5NextPreTrainedModel):
                 if module.router.selection_bias is not None:
                     module.router.selection_bias.zero_()
 
+    def quantization_ignore_patterns(self) -> list[str]:
+        # vLLM keeps all attention in BF16 (KDA, sparse MLA and its indexer) and quantizes only the
+        # MLPs and experts, for the FP8 checkpoint and online FP8 alike.
+        return [r"\.self_attn\."]
+
 
 __all__ = [
     "Glm5NextDecoderLayer",
