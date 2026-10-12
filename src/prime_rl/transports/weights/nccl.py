@@ -19,6 +19,7 @@ from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.orchestrator.clients import ADMIN_TIMEOUT_S
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
+from prime_rl.trainer.world import wait_for_master
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
@@ -231,14 +232,8 @@ class NCCLWeightSender(WeightSender):
 
     @torch.no_grad()
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
-        # The master enters only after the receiver acknowledged the handshake,
-        # but all ranks must be held back until then: the broadcast preparation
-        # (DTensor resolution, checkpoint conversion) enqueues collectives on non-master
-        # ranks, and if those start before the receiver has paused inference,
-        # the collectives sit unmatched until NCCL's watchdog kills the process.
+        attempt = 0
         while True:
-            if self.world.world_size > 1:
-                dist.barrier()
             abort_marker = step_dir / f".abort_{self.nccl_broadcast_sender.port}" if self.world.is_master else None
             aborted = torch.tensor([self.nccl_broadcast_sender.send(model, abort_marker)], device="cuda")
             if self.world.world_size > 1:
@@ -253,6 +248,9 @@ class NCCLWeightSender(WeightSender):
                     if time.monotonic() > deadline:
                         raise TimeoutError(f"No NCCL group to resend v{step} to within {self.timeout}s")
                     time.sleep(0.1)
+            # Hold the other ranks on the store while the master waits for the new group
+            attempt += 1
+            wait_for_master(f"weight_broadcast/{step}/resend/{attempt}", self.timeout)
             self.logger.info(f"Resending policy v{step} to the remaining inference engines")
 
     def _wait_hook(self) -> None:
