@@ -5,26 +5,28 @@ import pytest
 from prime_rl.inference.patches import _first_loaded_block, _routed_experts_load_limit, _track_externally_loaded_blocks
 
 
-def _request(prompt_start, kv_transfer_params=None):
+def _request(prompt_start, kv_transfer_params=None, num_output_tokens=0):
     return SimpleNamespace(
         sampling_params=SimpleNamespace(routed_experts_prompt_start=prompt_start),
         kv_transfer_params=kv_transfer_params,
+        num_output_tokens=num_output_tokens,
     )
 
 
 @pytest.mark.parametrize(
-    ("prompt_start", "num_computed_tokens", "kv_transfer_params", "limit"),
+    ("prompt_start", "num_computed_tokens", "kv_transfer_params", "num_output_tokens", "limit"),
     [
-        (0, 0, None, 0),  # first turn: no external load
-        (100, 0, None, 64),  # multi-turn: load up to the block before prompt_start
-        (100, 64, None, 0),  # local prefix hit already covers it
-        (200, 64, None, 128),
-        (200, 0, {"do_remote_decode": True, "remote_engine_id": None}, 192),  # P/D prefill
-        (0, 64, {"do_remote_prefill": False, "remote_engine_id": "p0"}, None),  # P/D decode
+        (0, 0, None, 0, 0),  # first turn: no external load
+        (100, 0, None, 0, 64),  # multi-turn: load up to the block before prompt_start
+        (100, 64, None, 0, 0),  # local prefix hit already covers it
+        (200, 64, None, 0, 128),
+        (200, 0, {"do_remote_decode": True, "remote_engine_id": None}, 0, 192),  # P/D prefill
+        (0, 64, {"do_remote_prefill": False, "remote_engine_id": "p0"}, 0, None),  # P/D decode
+        (0, 0, None, 5, None),  # resumed after preemption
     ],
 )
-def test_routed_experts_load_limit(prompt_start, num_computed_tokens, kv_transfer_params, limit):
-    request = _request(prompt_start, kv_transfer_params)
+def test_routed_experts_load_limit(prompt_start, num_computed_tokens, kv_transfer_params, num_output_tokens, limit):
+    request = _request(prompt_start, kv_transfer_params, num_output_tokens)
     assert _routed_experts_load_limit(request, num_computed_tokens, block_size=64) == limit
 
 
