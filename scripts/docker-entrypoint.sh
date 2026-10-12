@@ -113,8 +113,7 @@ HEAVY_PINS_PY
     echo "[prime-rl] syncing ${DEST} into /app/.venv"
     ( cd "$DEST" && uv sync --inexact --locked --no-dev --all-packages \
         --extra gpu --extra dashboard --extra flash-attn --extra flash-attn-3 \
-        --extra flash-attn-cute --extra disagg --extra quack --extra kernels \
-        --group mamba-ssm )
+        --extra flash-attn-cute --extra flash-mla --extra disagg --extra quack --extra kernels )
     # The chart's `uv run --no-sync <entrypoint>` commands resolve the
     # project from the cwd; the venv itself stays /app/.venv via
     # UV_PROJECT_ENVIRONMENT above.

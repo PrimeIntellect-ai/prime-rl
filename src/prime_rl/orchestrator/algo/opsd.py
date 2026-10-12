@@ -31,8 +31,6 @@ class OPSDAlgorithm(Algorithm):
     multimodal prompts and any number of turns. No scalar advantage is
     assigned."""
 
-    action_loss_type = "ref_kl"
-
     def __init__(self, config: OPSDAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.demo_key = config.demo_key

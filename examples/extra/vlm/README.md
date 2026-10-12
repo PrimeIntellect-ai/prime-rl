@@ -1,6 +1,6 @@
 # VLM SFT
 
-Multimodal (VLM) supervised fine-tuning configs, dense and MoE. VLM training requires a custom PrimeRL implementation (`impl = "custom"`, `[model.vlm]` set — see [Advanced § Multimodal Training](../../../docs/advanced.md#multimodal-training)); these configs use the Qwen3.5 dense and Qwen3.6 MoE VLM implementations. Both LoRA-finetune with a frozen vision encoder and assistant-only loss masking.
+Multimodal (VLM) supervised fine-tuning configs, dense and MoE. VLM training (`[model.vlm]` set) requires a PrimeRL VLM implementation (see [Advanced § Multimodal Training](../../../docs/advanced.md#multimodal-training)); these configs use the Qwen3.5 dense and Qwen3.6 MoE VLM implementations. Both LoRA-finetune with a frozen vision encoder and assistant-only loss masking.
 
 | Config | Model | Hardware |
 |---|---|---|

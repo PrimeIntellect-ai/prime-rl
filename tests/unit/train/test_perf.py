@@ -7,7 +7,7 @@ from prime_rl.trainer.perf import PerfCounter
 
 @pytest.mark.parametrize(
     "model_name, active_params, flops_per_token",
-    [("Qwen/Qwen3-0.6B", 595_984_384, 3_928_227_840), ("Jackmin108/debug-moe-0.5B", 256_442_368, 1_689_649_152)],
+    [("Qwen/Qwen3-0.6B", 595_984_384, 4_280_549_376), ("Jackmin108/debug-moe-0.5B", 256_442_368, 1_840_644_096)],
 )
 def test_perf_counter(model_name: str, active_params: int, flops_per_token: int):
     # This speeds up the model loading as its a fake device

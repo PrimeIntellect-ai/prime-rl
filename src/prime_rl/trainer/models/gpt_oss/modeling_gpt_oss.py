@@ -148,7 +148,7 @@ class GptOssModel(GptOssPreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
         for layer_idx, decoder_layer in enumerate(self.layers):
-            layer_routed_experts = routed_experts[:, :, layer_idx] if routed_experts is not None else None
+            layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings,

@@ -11,11 +11,7 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 project = "alphabet-sort"
 name = "alphabet-sort"
 
-[trainer.model]
-impl = "auto"
-
 [trainer.model.ac]
-freq = 1
 
 [trainer.model.lora]
 rank = 32

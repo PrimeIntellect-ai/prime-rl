@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import verifiers.v1 as vf
 
+from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.curriculum.gates import AdmissionGate
 from prime_rl.orchestrator.curriculum.samplers import TaskSampler
 
@@ -48,7 +49,7 @@ class Curriculum:
             self.gates[name] = gate
 
     def on_result(self, group: list[vf.Episode]) -> bool:
-        """Observe every result, evaluate every gate, and combine with AND."""
+        """Observe every result and admit trainable groups that pass every gate."""
         if not group:
             raise ValueError("Cannot report an empty rollout group")
         task_keys = {episode.task.key for episode in group}
@@ -63,7 +64,7 @@ class Curriculum:
             if not isinstance(decision, bool):
                 raise TypeError(f"AdmissionGate {name!r}.admit() must return bool, got {type(decision).__name__}")
             decisions.append(decision)
-        return all(decisions)
+        return all(decisions) and any(iter_trainable_traces(group))
 
     def state_dict(self) -> dict[str, Any]:
         return {

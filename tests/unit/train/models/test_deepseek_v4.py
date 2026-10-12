@@ -8,13 +8,14 @@ from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
-from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM, eager_reference
+from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config, DeepseekV4ForCausalLM
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers import norms
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
+from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
 
 # Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
 # the kernel it would dispatch to, so the whole file needs tilelang even though nothing here calls it.
@@ -324,13 +325,15 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
         meta_model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     expected = tables[0]
 
-    def fake_dcp_load(state_dict, storage_reader=None):
+    def fake_dcp_load(state_dict, storage_reader=None, process_group=None):
         buffer = state_dict["model.layers.0.mlp.router.tid2eid"]
         buffer.copy_(expected.to(device=buffer.device))
 
     monkeypatch.setattr("prime_rl.trainer.model.dcp_load", fake_dcp_load)
     monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: meta_model.state_dict().keys())
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
 
     load_dcp_from_hf(meta_model, ModelConfig(name=str(tmp_path)), parallel_dims=MagicMock())
 

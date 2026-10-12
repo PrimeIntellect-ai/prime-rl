@@ -12,24 +12,16 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     if routed_experts is None:
         return None
 
-    array = np.asarray(routed_experts)
-    assert array.ndim == 3
-    assert np.issubdtype(array.dtype, np.integer)
-    dtype = np.uint8
-    if array.size:
-        assert array.min() >= 0
-        if array.max() > np.iinfo(np.uint8).max:
-            # Models with >256 experts (e.g. NemotronH Super/Ultra: 512) need wider
-            # indices. The payload self-describes via "dtype" so consumers pick it up.
-            assert array.max() <= np.iinfo(np.uint16).max
-            dtype = np.uint16
-
-    compact = np.ascontiguousarray(array.astype(dtype, copy=False))
+    # vLLM's capturer picks uint8 or uint16 from the model's expert count, so every request of a
+    # model has the same dtype and the orchestrator can pack them into one micro batch.
+    compact = np.ascontiguousarray(routed_experts)
+    assert compact.ndim == 3
+    assert compact.dtype in (np.uint8, np.uint16), compact.dtype
     return {
         "data": pybase64.b64encode(memoryview(compact)).decode("ascii"),
         "shape": list(compact.shape),
         "start": start,
-        "dtype": np.dtype(dtype).name,
+        "dtype": compact.dtype.name,
     }
 
 
