@@ -400,7 +400,6 @@ class Orchestrator:
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
-        self.stall_checked_at = self.last_batch_at
 
         # ``clean_exit`` stays False if ``main_loop`` raises (signal-driven
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
@@ -482,7 +481,6 @@ class Orchestrator:
         the result."""
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
-            self._check_stall()
             if self.draining and self.dispatcher.is_idle:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
@@ -539,24 +537,6 @@ class Orchestrator:
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
 
-    def _check_stall(self) -> None:
-        """Name the stuck envs when no trainable sample arrived for ``stall_timeout``."""
-        timeout = self.config.stall_timeout
-        if timeout is None or self.draining or self.dispatcher.train_scheduling_disabled:
-            return
-        now = time.perf_counter()
-        if self.dispatcher.mode == DispatcherMode.PREFER_EVAL:
-            self.stall_checked_at = now
-            return
-        last_progress = max(self.last_batch_at, self.train_sink.last_sample_at)
-        if now - max(last_progress, self.stall_checked_at) < timeout:
-            return
-        self.stall_checked_at = now
-        envs = "\n".join(f"  {line}" for line in self.dispatcher.stall_report())
-        get_logger().warning(
-            f"No new trainable sample in {now - last_progress:.0f}s (stall_timeout={timeout:.0f}s). Train envs:\n{envs}"
-        )
-
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
         for task in self.component_tasks:
@@ -610,22 +590,9 @@ class Orchestrator:
         # ``wait_for_final_broadcast`` keeps the watcher alive through the last
         # rendezvous after the pipeline drains.
         required_version = step - 1 - TARGET_LAG
-        if self.policy.version < required_version:
-            get_logger().info(
-                f"Holding batch {step} until inference applies policy v{required_version} "
-                f"(currently v{self.policy.version})"
-            )
-            hold_start = time.perf_counter()
-            while True:
-                self.version_advanced.clear()
-                if self.policy.version >= required_version:
-                    break
-                self._raise_if_component_stopped()
-                try:
-                    await asyncio.wait_for(self.version_advanced.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    pass
-            self.wait_for_policy_time += time.perf_counter() - hold_start
+        hold_start = time.perf_counter()
+        await self.wait_for_version(required_version, reason=f"before shipping batch {step}")
+        self.wait_for_policy_time += time.perf_counter() - hold_start
 
         # The effective (clean, trained-on) subset is logged at ship time as annotation
         # records against each trace's arrival record - membership, advantages, the step

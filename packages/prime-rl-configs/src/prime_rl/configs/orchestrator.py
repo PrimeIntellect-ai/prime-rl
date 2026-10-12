@@ -453,12 +453,14 @@ class ConcurrencyConfig(BaseConfig):
 
 class CircuitBreakerConfig(BaseConfig):
     """Per-env circuit breaker for train dispatch. An env whose episodes keep
-    failing (sandbox API, grader or env-server outage) stops getting new
+    failing on infrastructure (sandbox, tool server, model interception, a frozen
+    or external model provider, or the env server itself) stops getting new
     rollouts, so the other envs keep filling batches; after ``cooldown`` one
-    probe episode tests whether it recovered."""
+    probe episode tests whether it recovered. Harness, task and env-hook errors
+    and stage timeouts do not count, since the policy's output can cause them."""
 
-    failures: int = Field(32, ge=1)
-    """Consecutive failed episodes of one env that open its breaker."""
+    failures: int = Field(8, ge=1)
+    """Consecutive failed groups of one env that open its breaker."""
 
     cooldown: float = Field(60.0, gt=0)
     """Seconds an open breaker waits before letting one probe episode through. Doubles after each failed probe."""
@@ -557,9 +559,6 @@ class OrchestratorConfig(BaseConfig):
 
     circuit_breaker: CircuitBreakerConfig | None = CircuitBreakerConfig()
     """Pause a train env whose episodes keep failing so the other envs keep training. None disables it."""
-
-    stall_timeout: float | None = Field(1800.0, gt=0)
-    """Seconds without a new trainable sample before the orchestrator logs which envs are stuck. None disables the check."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
