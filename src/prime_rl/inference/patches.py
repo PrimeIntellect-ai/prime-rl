@@ -28,6 +28,7 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    monkey_patch_deepseek_v4_c128_boundary()
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -45,6 +46,34 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
 
     allow_deepseek_v4_layer_types()
+
+
+def monkey_patch_deepseek_v4_c128_boundary():
+    """Always run DeepSeek V4's C128 compressor store, as vLLM 0.29 did under Model Runner V2.
+
+    ``DeepseekCompressor.forward`` returns before the C128 compress, norm, RoPE and KV-store
+    kernel when the step is not a FULL CUDA graph and ``c128_boundary is False``. vLLM 0.30+
+    (vllm-project/vllm#55353), including the pinned 0.31.0, derives that flag from
+    ``seq_lens_cpu_upper_bound``, which Model Runner V2 sets, so piecewise capture on dummy
+    batches bakes the early return into every piecewise graph: mixed batches of up to 512 tokens
+    never write C128 entries, and later queries read stale compressed KV. In 0.29 the flag read
+    ``_num_computed_tokens_cpu``, which Model Runner V2 never sets, so it was always None and the
+    kernel always ran. Returning None restores that.
+
+    Remove this patch once vllm-project/vllm#59709 lands in the pinned vLLM version.
+    """
+    from vllm.logger import init_logger
+    from vllm.models.deepseek_v4 import compressor
+
+    if getattr(compressor._get_c128_boundary, "_prime_rl_always_compresses", False):
+        return
+
+    def _get_c128_boundary(metadata):
+        return None
+
+    _get_c128_boundary._prime_rl_always_compresses = True
+    compressor._get_c128_boundary = _get_c128_boundary
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 C128 compressor store runs on every step.")
 
 
 def monkey_patch_online_fp8_parameter_cast():
