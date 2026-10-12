@@ -39,7 +39,7 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
+from prime_rl.trainer.distributed.embedding_parallel import AllToAllEmbeddingParallel, EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -50,6 +50,8 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Indexer
+from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -205,13 +207,27 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, (Indexer, DeepseekV4Indexer, SparseAttentionIndexer)):
+        if isinstance(module, (Indexer, DeepseekV4Indexer, DeepseekV41Indexer, SparseAttentionIndexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
 
     if num_frozen > 0:
         logger.info(f"Froze {num_frozen} sparse indexer parameters")
+
+
+def freeze_engram_tables(model: nn.Module) -> None:
+    """Freeze DeepSeek-V4.1's engram n-gram tables, keeping their projections and gates trainable.
+
+    A frozen table needs no fp32 master, so it is kept in bf16, the dtype its rows are looked up in.
+    """
+    num_frozen = 0
+    for module in model.modules():
+        if isinstance(module, DeepseekV41Engram):
+            module.embed.weight = nn.Parameter(module.embed.weight.to(torch.bfloat16), requires_grad=False)
+            num_frozen += 1
+    if num_frozen > 0:
+        get_logger().info(f"Froze {num_frozen} engram tables")
 
 
 def apply_force_balanced_routing(model: nn.Module) -> None:
@@ -549,6 +565,22 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
+    # DeepSeek-V4.1's engram tables (~98B parameters each) are row-sharded over the FSDP mesh and
+    # looked up by all-to-all, so FSDP, which would all-gather them whole, never manages them. They
+    # share FSDP's process group: a second communicator over the same ranks, running its all-to-alls
+    # concurrently with FSDP's prefetch all-gathers, can order the two differently on different GPUs
+    # and deadlock.
+    engrams = [module for module in model.modules() if isinstance(module, DeepseekV41Engram)]
+    if engrams and parallel_dims.dp_replicate_enabled:
+        raise NotImplementedError("engram tables are sharded over one FSDP group; dp_replicate > 1 is not supported")
+    for engram in engrams:
+        parallelize_module(
+            engram.embed, hsdp_mesh, AllToAllEmbeddingParallel(parallel_dims.fsdp_gradient_divide_factor)
+        )
+    ignored_params = {engram.embed.weight for engram in engrams}
+    for engram in engrams:
+        fully_shard(engram, mesh=hsdp_mesh, ignored_params=ignored_params, **fsdp_config)
+
     fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
@@ -637,6 +669,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
+        ignored_params=ignored_params or None,
     )
 
     if not parallel_dims.ep_enabled:
@@ -990,6 +1023,9 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    if config.freeze_engram_tables:
+        freeze_engram_tables(model)
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)

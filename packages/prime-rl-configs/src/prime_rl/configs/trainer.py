@@ -290,6 +290,9 @@ class ModelConfig(BaseModelConfig):
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
 
+    freeze_engram_tables: bool = False
+    """Freeze DeepSeek-V4.1's engram n-gram tables (~98B parameters each), so they carry no gradient or optimizer state and are stored in bf16. Their projections and gates still train. A no-op on other models."""
+
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 
