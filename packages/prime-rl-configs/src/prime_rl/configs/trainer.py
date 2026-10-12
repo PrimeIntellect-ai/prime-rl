@@ -118,14 +118,14 @@ class LoRAConfig(BaseConfig):
         "in_proj_b",
         "in_proj_a",
         r"linear_attn\.out_proj$",
-        "gate_proj",
+        r"(?<!indexer\.compressor)\.gate_proj$",
         "up_proj",
         "down_proj",
         "experts",
         "fc1_latent_proj",
         "fc2_latent_proj",
     ]
-    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. MLA note: ``kv_b_proj`` is left out by default because vLLM's MLA decode (and sparse MLA) path uses ``kv_b_proj`` weights folded in at load time, so a LoRA delta on it would not reach inference. DeepSeek-V4 note: the indexer's ``q_b_proj`` runs under ``no_grad``, so it is excluded. Gated DeltaNet note: ``in_proj_*`` and ``linear_attn.out_proj`` adapt the linear-attention mixer. NemotronH note: ``experts`` matches the ReLU² grouped experts; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
+    """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. MLA note: ``kv_b_proj`` is left out by default because vLLM's MLA decode (and sparse MLA) path uses ``kv_b_proj`` weights folded in at load time, so a LoRA delta on it would not reach inference. DeepSeek-V4 note: the indexer (``q_b_proj`` and its compressor's ``gate_proj``) runs under ``no_grad``, so it is excluded. Gated DeltaNet note: ``in_proj_*`` and ``linear_attn.out_proj`` adapt the linear-attention mixer. NemotronH note: ``experts`` matches the ReLU² grouped experts; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
 
     modules_to_save: list[str] = []
     """Module names or regex patterns to keep fully trainable (not freeze). Same matching rules as ``target_modules``."""
