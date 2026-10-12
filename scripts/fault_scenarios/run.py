@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -106,9 +107,10 @@ def main():
     parser.add_argument("config", help="multi-node rl TOML with two train sources, one named reverse-text-b")
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("--only", nargs="+", choices=SCENARIOS, default=list(SCENARIOS))
-    parser.add_argument("extra", nargs=argparse.REMAINDER, help="extra rl arguments, after --")
-    args = parser.parse_args()
-    extra = args.extra[1:] if args.extra[:1] == ["--"] else args.extra
+    argv = sys.argv[1:]
+    split = argv.index("--") if "--" in argv else len(argv)
+    args = parser.parse_args(argv[:split])
+    extra = argv[split + 1 :]  # passed to every rl call
 
     rows = []
     for name in args.only:
