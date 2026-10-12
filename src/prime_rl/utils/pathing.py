@@ -228,9 +228,7 @@ def env_address_file(config_dir: Path, split: str, name: str) -> Path:
     return config_dir / "envs" / split / f"{name}.address"
 
 
-def write_env_server_config(
-    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, sandbox_lifetime: float | None = None
-) -> Path:
+def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log: LogConfig) -> Path:
     """Write the ``EnvServerConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
     blocks carry over; its other knobs (sampling, algo, name, ...) stay client-side. The
@@ -243,7 +241,6 @@ def write_env_server_config(
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
-        "sandbox_lifetime": sandbox_lifetime,
         "sandbox_labels": [f"{ENV_LABEL_PREFIX}{source.resolved_name}"],
     }
     path = env_dir / f"{source.resolved_name}.json"
