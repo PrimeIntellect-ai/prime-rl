@@ -33,36 +33,19 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
     }
 
 
-def pad_to_start(routed_experts: Any, num_rows: int) -> Any:
-    """Left-pad routing rows with zero rows up to ``num_rows``.
-
-    A P/D decode instance returns rows only from its first forward (the last prompt token). The
-    router (v0.2.2) drops as many leading decode rows as the prefill instance returned, so the
-    decode rows must start at ``routed_experts_prompt_start`` like the prefill rows. The padding
-    is never used: the router replaces it with the prefill rows.
-    """
-    if routed_experts is None or len(routed_experts) >= num_rows:
-        return routed_experts
-    array = np.asarray(routed_experts)
-    padding = np.zeros((num_rows - len(array), *array.shape[1:]), dtype=array.dtype)
-    return np.concatenate((padding, array))
-
-
 class RoutedExpertsCapture:
-    def __init__(self, generator: AsyncIterator[RequestOutput], start: int = 0, remote_prefill: bool = False):
+    def __init__(self, generator: AsyncIterator[RequestOutput]):
         self._generator = generator
-        self._start = start
-        self._remote_prefill = remote_prefill
         self.routed_experts: dict[int, dict[str, Any]] = {}
 
     async def __aiter__(self):
         async for request_output in self._generator:
             for output in request_output.outputs:
                 routed_experts = getattr(output, "routed_experts", None)
-                if self._remote_prefill:
-                    num_rows = len(request_output.prompt_token_ids) + len(output.token_ids) - 1 - self._start
-                    routed_experts = pad_to_start(routed_experts, num_rows)
-                encoded = serialize_routed_experts(routed_experts, start=self._start)
-                if encoded is not None:
-                    self.routed_experts[output.index] = encoded
+                if routed_experts is None:
+                    continue
+                # Rows end at the last forwarded token. A P/D decode instance's rows begin at its first
+                # forward (the last prompt token); the router cuts them by this start (router >= v0.2.3).
+                start = len(request_output.prompt_token_ids) + len(output.token_ids) - 1 - len(routed_experts)
+                self.routed_experts[output.index] = serialize_routed_experts(routed_experts, start=start)
             yield request_output
