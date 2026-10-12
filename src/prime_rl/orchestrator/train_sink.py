@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -46,6 +47,10 @@ class QueuedTrace:
     policy_start: float
     """Policy version the trace's group was dispatched at; ``inf`` for frozen-sourced
     traces, which never go stale."""
+
+
+def _files_exist(files: Iterable[str]) -> bool:
+    return all(os.path.exists(file) for file in files)
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -144,8 +149,15 @@ class TrainSink:
         ``max_off_policy_steps`` of the resumed step. Returns one request per saved
         group for its missing members (same task, same group id), which the train
         source hands out before any new task."""
-        self.pending_batch = state_dict["pending_batch"]
-        self.queued = state_dict["queued"]
+        # By-handle payload files are deleted once the trainer has read them, which can be after
+        # the checkpoint was taken: drop what points at a missing file.
+        self.pending_batch = {
+            trace_id: samples
+            for trace_id, samples in state_dict["pending_batch"].items()
+            if _files_exist(segment.file for sample in samples for segment in sample.payload or ())
+        }
+        self.queued = {trace_id: state_dict["queued"][trace_id] for trace_id in self.pending_batch}
+        missing = len(state_dict["pending_batch"]) - len(self.pending_batch)
         self._drop_stale()
         min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
         requests = []
@@ -154,7 +166,8 @@ class TrainSink:
             fresh = [
                 episode
                 for episode in map(vf.WireEpisode.model_validate_json, episodes)
-                if (policy := train_work(episode).policy) is None or policy.start >= min_version
+                if ((policy := train_work(episode).policy) is None or policy.start >= min_version)
+                and _files_exist(payload_files([episode]))
             ]
             if fresh:
                 self.pending_groups[group_id] = fresh
@@ -165,7 +178,7 @@ class TrainSink:
             )
         get_logger().info(
             f"Resuming with {len(self.pending_batch)} queued traces and {len(requests)} open groups "
-            f"({kept} finished episodes kept)"
+            f"({kept} finished episodes kept, {missing} queued traces dropped for missing payload files)"
         )
         return requests
 
