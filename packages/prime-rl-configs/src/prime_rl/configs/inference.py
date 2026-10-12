@@ -533,11 +533,15 @@ class InferenceConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_hisparse_decode_offload(self):
         """A HiSparse decode instance keeps its sparse-MLA KV in a host-resident layout: native offload rejects it, and Mooncake stores it under the same keys as prefill's regular layout, so prefill fails to load it."""
-        if self.hisparse is not None and self.kv_cache_offload_by_role.get("decode") is not None:
+        if self.hisparse is None:
+            return self
+        if self.kv_cache_offload_by_role.get("decode") is not None:
             raise ValueError(
                 "HiSparse runs on decode, which cannot also offload KV: set "
                 "inference.deployment.decode_kv_cache_offload = None (prefill offload is supported)."
             )
+        if isinstance(self.kv_cache_offload_by_role.get("all"), NativeKVCacheOffloadConfig):
+            raise ValueError("HiSparse does not work with native KV cache offload: use Mooncake or no offload.")
         return self
 
     @model_validator(mode="after")

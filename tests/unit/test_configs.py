@@ -1050,6 +1050,11 @@ def test_pd_role_connectors():
     assert [c["kv_connector"] for c in decode] == ["NixlConnector", "HiSparseConnector"]
     assert config.for_pd_role("prefill").hisparse is None
 
+    with pytest.raises(ValidationError, match="native KV cache offload"):
+        InferenceConfig(
+            kv_cache_offload={"type": "native", "cpu": {"num_bytes": 1000}}, hisparse={"host_pool_gib": 160}
+        )
+
 
 CUSTOM_RENDERER_SOURCE = """
 from typing import Literal
