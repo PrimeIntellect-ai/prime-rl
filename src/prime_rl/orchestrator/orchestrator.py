@@ -86,11 +86,6 @@ SHUTDOWN_TIMEOUT_S = 300
 # resumed when the watcher advances ``policy.version``.
 TARGET_LAG = 1
 
-# Default wait for the trainer's startup weight broadcast when no ckpt block
-# configures ``wait_for_weights_timeout`` (e.g. a from-scratch run). The
-# broadcast is always coming, so wait rather than fail immediately.
-STARTUP_WEIGHT_WAIT_TIMEOUT_S = 1200
-
 
 class Orchestrator:
     # Set in ``__init__``
@@ -302,9 +297,6 @@ class Orchestrator:
         # scratch). The startup broadcast is always coming, so wait for it rather
         # than failing immediately when it is not there yet.
         sync_version = self.resume_step if self.resume_step is not None else 0
-        wait_timeout = (config.ckpt.wait_for_weights_timeout if config.ckpt else None) or (
-            STARTUP_WEIGHT_WAIT_TIMEOUT_S
-        )
 
         self.eval_source: EvalSource | None = (
             EvalSource(
@@ -330,7 +322,7 @@ class Orchestrator:
             progress=self.progress,
             initial_max_inflight=self.concurrency.max_inflight,
             max_inflight_ceiling=config.concurrency.max_inflight,
-            tasks_per_minute=config.tasks_per_minute,
+            dispatch_per_minute=config.dispatch_per_minute,
             max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
@@ -383,7 +375,7 @@ class Orchestrator:
 
         get_logger().info(f"Syncing inference to the trainer's startup broadcast (v{sync_version})")
         t0 = time.perf_counter()
-        await self.watcher.sync_startup(sync_version, timeout=wait_timeout)
+        await self.watcher.sync_startup(sync_version, timeout=config.weight_broadcast.timeout)
         get_logger().debug(f"Synced inference to policy v{sync_version} in {format_time(time.perf_counter() - t0)}")
 
     async def start(self) -> None:
@@ -412,16 +404,20 @@ class Orchestrator:
         # CancelledError, KeyboardInterrupt, or a real error), so the teardown
         # logs a forced-cleanup warning instead of a clean-exit success.
         clean_exit = False
+        loop_done = False
         try:
             await self.main_loop()
+            loop_done = True
             await self.wait_for_final_broadcast()
             clean_exit = True
         finally:
             elapsed = format_time(time.perf_counter() - start_time)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
-            # first ship). Saved before finalize, which tells the launcher the run is done.
-            if self.config.ckpt is not None and self.progress.step > 1:
+            # first ship). Saved before finalize, which tells the launcher the run is done. Only once the
+            # step loop finished (the last step is fully shipped); a crash mid-loop leaves no consistent
+            # state for that step, and the trainer has no checkpoint for it.
+            if loop_done and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
                 self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
@@ -438,7 +434,7 @@ class Orchestrator:
                 await monitors.finalize()
             else:
                 get_logger().warning(f"Orchestrator interrupted after {elapsed} — forcing cleanup (not a clean exit)")
-            await self.stop()
+            await self.stop(clean_exit)
             if clean_exit:
                 get_logger().success("Orchestrator finished")
             else:
@@ -991,7 +987,7 @@ class Orchestrator:
         self.update_dispatch_gate()
         self.version_advanced.set()
 
-    async def stop(self) -> None:
+    async def stop(self, clean_exit: bool) -> None:
         """Bounded best-effort teardown of all components. Has a global
         timeout so a wedged peer can't keep the process alive forever —
         training artifacts are already persisted before this is reached."""
@@ -1034,7 +1030,7 @@ class Orchestrator:
                 f"Orchestrator shutdown did not complete within {SHUTDOWN_TIMEOUT_S}s; "
                 "forcing process exit. Training artifacts are already persisted."
             )
-            os._exit(0)
+            os._exit(0 if clean_exit else 1)
         await task
         get_logger().debug(f"Stopped orchestrator components in {format_time(time.perf_counter() - t0)}")
 

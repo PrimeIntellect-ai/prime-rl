@@ -86,8 +86,8 @@ def propagate_shared_fields(data: Any) -> Any:
     # ``orchestrator.ckpt`` has no ``output_dir`` field — trainer-only.
     propagate("ckpt.output_dir", "trainer.ckpt.output_dir")
     propagate("ckpt.interval", "trainer.ckpt.interval", "orchestrator.ckpt.interval")
-    propagate("ckpt.keep_last", "trainer.ckpt.keep_last", "orchestrator.ckpt.keep_last")
-    propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval", "orchestrator.ckpt.keep_interval")
+    propagate("ckpt.keep_last", "trainer.ckpt.keep_last")
+    propagate("ckpt.keep_interval", "trainer.ckpt.keep_interval")
 
     # [monitors.wandb] leaves. (Bare empty ``[monitors.wandb]`` block enablement is at the end.)
     # ``monitors.wandb.name`` flows verbatim to both sub-configs — shared W&B mode is
@@ -132,6 +132,10 @@ def propagate_shared_fields(data: Any) -> Any:
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")
+
+    # [deployment] gpus_per_node → inference: the nested inference deployment sizes its
+    # engines per node from its own copy.
+    propagate("deployment.gpus_per_node", "inference.deployment.gpus_per_node")
 
     # [slurm] → inference: a multi-node RL run drives its inference deployment under
     # the same SLURM allocation, so the nested inference inherits [slurm]. This is
