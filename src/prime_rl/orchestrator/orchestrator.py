@@ -26,7 +26,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import set_base_sandbox_labels
+from verifiers.v1.runtimes import set_base_sandbox_labels, set_default_sandbox_lifetime
 
 if TYPE_CHECKING:
     from transformers.tokenization_utils import PreTrainedTokenizer
@@ -212,6 +212,7 @@ class Orchestrator:
         self.run_name = os.environ.get("PRL_RUN_NAME")
         self.run_label = run_label()
         set_base_sandbox_labels([label for label in (self.run_name, self.run_label) if label])
+        set_default_sandbox_lifetime(config.sandbox_lifetime)
         if self.run_label:
             # Nothing of this run is in flight yet: a labeled sandbox was leaked by an
             # earlier attempt of the run.
