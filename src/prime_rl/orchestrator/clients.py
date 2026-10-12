@@ -474,7 +474,8 @@ class AdminPlane:
                     self.recovered.discard(client)
             else:
                 succeeded.append(client)
-        return succeeded
+        # A failure evicts the whole engine group, including engines that succeeded
+        return self._standing(succeeded)
 
     async def aclose(self) -> None:
         for client in self.clients + self.evicted + self._router_clients:
