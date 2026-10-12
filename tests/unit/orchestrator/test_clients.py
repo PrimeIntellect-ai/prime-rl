@@ -52,7 +52,6 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
     mock_client.post.assert_called_once_with(
         "/load_lora_adapter",
         json={"lora_name": "test-lora", "lora_path": "/test/path"},
-        params={"version": 0},
         timeout=httpx.Timeout(connect=10.0, read=30.0, write=60.0, pool=10.0),
     )
 
@@ -60,7 +59,6 @@ def test_load_lora_adapter_succeeds_on_first_attempt():
 def test_load_lora_adapter_readmits_recovered_engine():
     serving, recovered = AsyncMock(), AsyncMock()
     serving.post.return_value = recovered.post.return_value = MagicMock()
-    recovered.get.return_value = MagicMock(**{"json.return_value": {"version": 3}})
     admin_plane = AdminPlane(ClientConfig())
     admin_plane.clients = [serving]
     admin_plane.group_of = {serving: (serving,), recovered: (recovered,)}
@@ -192,9 +190,7 @@ def test_engine_group_is_evicted_and_readmitted_as_one():
     admin_plane.recovered = {a}
     assert admin_plane._rejoining() == []
     admin_plane.recovered = {a, b}
-    with patch("prime_rl.orchestrator.clients._weight_version", AsyncMock(side_effect=[5, 4, 5, 5])):
-        asyncio.run(admin_plane._readmit([a, b], [a, b], step=5))
-        assert admin_plane.clients == [c] and not admin_plane.recovered
-        admin_plane.recovered = {a, b}
-        asyncio.run(admin_plane._readmit([a, b], [a, b], step=5))
+    asyncio.run(admin_plane._readmit([a, b], [a], step=5))
+    assert admin_plane.clients == [c]
+    asyncio.run(admin_plane._readmit([a, b], [a, b], step=5))
     assert admin_plane.clients == [c, a, b] and not admin_plane.evicted

@@ -156,9 +156,6 @@ class SlurmConfig(BaseConfig):
     cleanup_grace_period: int = Field(3600, ge=0)
     """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""
 
-    max_engine_restarts: int = Field(3, ge=0)
-    """Times each inference engine group (one engine, or one multi-rank DP/EP group) is restarted after it exits, in multi-node SLURM deployments. An engine group runs as its own SLURM step, so its exit does not end the job: the orchestrator evicts it and readmits it at the next weight update once it is back. After the last restart the group stays down. With NIXL weight broadcast or a single engine, an engine exit still ends the job."""
-
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
 
@@ -176,7 +173,6 @@ class SlurmConfig(BaseConfig):
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
             "shared_fs": self.shared_fs,
-            "max_engine_restarts": self.max_engine_restarts,
         }
 
     @model_validator(mode="after")

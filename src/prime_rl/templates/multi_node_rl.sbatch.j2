@@ -96,41 +96,60 @@ INFER_HOSTS=( ${HOSTNAMES[@]:0:$NUM_INFER_NODES} )
 INFER_URLS="http://${INFER_HOSTS[0]}:${ROUTER_PORT}/v1"
 ADMIN_URLS=""
 ROUTER_ARGS=""
+# Engine groups are the engines that fail together. Each one is evicted and readmitted
+# as a block (ADMIN_GROUPS: the group of each admin URL) and runs as its own SLURM step
+# (ENGINE_GROUPS: "<first inference node> <nodes> [<local DP rank>]" per group, run by
+# run_engine_group below). Both come from this one loop so they cannot disagree.
+ADMIN_GROUPS=""
+ENGINE_GROUPS=()
+group=-1
 {% if is_disaggregated -%}
 # External-LB: one prefill/decode endpoint per DP rank (PORT + k) on each node.
-# ADMIN_GROUPS: the engine group of each admin URL (one group per P/D role replica).
-ADMIN_GROUPS=""
-group=0
+# One group per P/D role replica: its DP ranks span its nodes.
 for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
     replica_base=$((r * NODES_PER_INFER_REPLICA))
     for ((p=0; p<NUM_PREFILL_NODES; p++)); do
+        if ((p % NODES_PER_PREFILL_REPLICA == 0)); then
+            group=$((group + 1))
+            ENGINE_GROUPS+=("$((replica_base + p)) $NODES_PER_PREFILL_REPLICA")
+        fi
         host="${INFER_HOSTS[$((replica_base + p))]}"
         for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((PREFILL_PORT + k))/v1"
-            ADMIN_GROUPS="${ADMIN_GROUPS:+$ADMIN_GROUPS }$((group + p / NODES_PER_PREFILL_REPLICA))"
+            ADMIN_GROUPS="${ADMIN_GROUPS:+$ADMIN_GROUPS }$group"
             ROUTER_ARGS="$ROUTER_ARGS --prefill http://${host}:$((PREFILL_PORT + k))"
         done
     done
-    group=$((group + NUM_PREFILL_NODES / NODES_PER_PREFILL_REPLICA))
     for ((d=0; d<NUM_DECODE_NODES; d++)); do
+        if ((d % NODES_PER_DECODE_REPLICA == 0)); then
+            group=$((group + 1))
+            ENGINE_GROUPS+=("$((replica_base + NUM_PREFILL_NODES + d)) $NODES_PER_DECODE_REPLICA")
+        fi
         host="${INFER_HOSTS[$((replica_base + NUM_PREFILL_NODES + d))]}"
         for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
             ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((DECODE_PORT + k))/v1"
-            ADMIN_GROUPS="${ADMIN_GROUPS:+$ADMIN_GROUPS }$((group + d / NODES_PER_DECODE_REPLICA))"
+            ADMIN_GROUPS="${ADMIN_GROUPS:+$ADMIN_GROUPS }$group"
             ROUTER_ARGS="$ROUTER_ARGS --decode http://${host}:$((DECODE_PORT + k))"
         done
     done
-    group=$((group + NUM_DECODE_NODES / NODES_PER_DECODE_REPLICA))
 done
 {%- else -%}
 # External-LB: one endpoint per DP rank (BACKEND_PORT + dp_local) on each node.
-# ADMIN_GROUPS: the engine group of each admin URL (a node's DP ranks form one EP group).
-ADMIN_GROUPS=""
+# With expert parallelism over more than one rank, a replica's DP ranks form one EP group
+# (possibly spanning nodes); otherwise every engine is its own group.
 for ((n=0; n<NUM_INFER_NODES; n++)); do
     host="${INFER_HOSTS[$n]}"
     for ((k=0; k<INFERENCE_DP_LOCAL; k++)); do
+        if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ $((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL)) -gt 1 ]; then
+            if ((n % NODES_PER_INFER_REPLICA == 0 && k == 0)); then
+                group=$((group + 1))
+                ENGINE_GROUPS+=("$n $NODES_PER_INFER_REPLICA")
+            fi
+        else
+            group=$((group + 1))
+            ENGINE_GROUPS+=("$n 1 $k")
+        fi
         ADMIN_URLS="${ADMIN_URLS:+$ADMIN_URLS }http://${host}:$((BACKEND_PORT + k))/v1"
-        if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ]; then group=$n; else group=$((n * INFERENCE_DP_LOCAL + k)); fi
         ADMIN_GROUPS="${ADMIN_GROUPS:+$ADMIN_GROUPS }$group"
         ROUTER_ARGS="$ROUTER_ARGS http://${host}:$((BACKEND_PORT + k))"
     done
@@ -668,12 +687,11 @@ MAIN_PID=$!
 # orchestrator evicts the group's engines and readmits them at the next weight update
 # once the restarted group answers again. NIXL broadcast pins its receivers and a
 # single engine has no peer to fall back to, so there an engine exit ends the job.
-MAX_ENGINE_RESTARTS={{ max_engine_restarts }}
 ENGINE_EXIT_FATAL={{ "1" if use_nixl_broadcast else "0" }}
 [ "$(wc -w <<< "$ADMIN_URLS")" -gt 1 ] || ENGINE_EXIT_FATAL=1
-# run_engine_group <first_infer_node> <num_nodes> <local_dp_ranks|"" for all>
+# run_engine_group <first_infer_node> <num_nodes> [<local_dp_rank>; all when omitted]
 run_engine_group() {
-    local first=$1 count=$2 ranks=$3 restarts=0 code
+    local first=$1 count=$2 ranks=${3:-} code
     local hosts
     hosts=$(IFS=,; echo "${INFER_HOSTS[*]:$first:$count}")
     while true; do
@@ -690,41 +708,13 @@ run_engine_group() {
             kill -TERM "$MAIN_PID"
             return 0
         fi
-        if [ "$restarts" -ge "$MAX_ENGINE_RESTARTS" ]; then
-            echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - no restarts left, leaving it down"
-            return 0
-        fi
-        restarts=$((restarts + 1))
-        echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - restart $restarts of $MAX_ENGINE_RESTARTS"
+        echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - restarting it"
         sleep 10
     done
 }
-{% if is_disaggregated -%}
-# One group per P/D role replica: its DP ranks span its nodes.
-for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
-    base=$((r * NODES_PER_INFER_REPLICA))
-    for ((p=0; p<NUM_PREFILL_NODES; p+=NODES_PER_PREFILL_REPLICA)); do
-        run_engine_group $((base + p)) "$NODES_PER_PREFILL_REPLICA" "" &
-    done
-    for ((d=0; d<NUM_DECODE_NODES; d+=NODES_PER_DECODE_REPLICA)); do
-        run_engine_group $((base + NUM_PREFILL_NODES + d)) "$NODES_PER_DECODE_REPLICA" "" &
-    done
+for engine_group in "${ENGINE_GROUPS[@]}"; do
+    run_engine_group $engine_group &
 done
-{%- else -%}
-if [ "$INFERENCE_ENABLE_EXPERT_PARALLEL" -eq 1 ] && [ $((NODES_PER_INFER_REPLICA * INFERENCE_DP_LOCAL)) -gt 1 ]; then
-    # One group per replica: its DP ranks form one EP group.
-    for ((r=0; r<NUM_INFER_REPLICAS; r++)); do
-        run_engine_group $((r * NODES_PER_INFER_REPLICA)) "$NODES_PER_INFER_REPLICA" "" &
-    done
-else
-    # Independent engines: one group each.
-    for ((n=0; n<NUM_INFER_NODES; n++)); do
-        for ((d=0; d<INFERENCE_DP_LOCAL; d++)); do
-            run_engine_group "$n" 1 "$d" &
-        done
-    done
-fi
-{%- endif %}
 {%- endif %}
 
 # The job ends with the main step; engine group steps end with the job.

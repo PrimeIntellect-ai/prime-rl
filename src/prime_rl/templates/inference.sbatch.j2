@@ -386,10 +386,9 @@ MAIN_PID=$!
 # DP/EP group) runs as its own step, so its exit ends only that step and not the job.
 # An RL orchestrator using this deployment evicts the group's engines and readmits
 # them at the next weight update once the restarted group answers again.
-MAX_ENGINE_RESTARTS={{ max_engine_restarts }}
 # run_engine_group <first_node> <num_nodes> <local_dp_ranks|"" for all>
 run_engine_group() {
-    local first=$1 count=$2 ranks=$3 restarts=0 code
+    local first=$1 count=$2 ranks=$3 code
     local hosts
     hosts=$(IFS=,; echo "${HOSTNAMES[*]:$first:$count}")
     while true; do
@@ -401,12 +400,7 @@ run_engine_group() {
         if [ "$code" -eq 0 ] || ! kill -0 "$MAIN_PID" 2>/dev/null; then
             return 0
         fi
-        if [ "$restarts" -ge "$MAX_ENGINE_RESTARTS" ]; then
-            echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - no restarts left, leaving it down"
-            return 0
-        fi
-        restarts=$((restarts + 1))
-        echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - restart $restarts of $MAX_ENGINE_RESTARTS"
+        echo "Engine group on $hosts (ranks ${ranks:-all}) exited with code $code - restarting it"
         sleep 10
     done
 }

@@ -238,7 +238,7 @@ class AdminPlane:
                     if on_paused is not None:
                         on_paused()
                         on_paused = None
-                    members, retry = await self._transfer(members, weight_dir_posix, step, abort_marker, resend)
+                    members, retry = await self._transfer(members, weight_dir_posix, abort_marker, resend)
                     if not retry:
                         break
             finally:
@@ -258,7 +258,6 @@ class AdminPlane:
             "/load_lora_adapter",
             post=_post_lora_adapter,
             json={"lora_name": lora_name, "lora_path": lora_path.as_posix()},
-            params={"version": step},
         )
         await self._readmit(rejoining, loaded, step)
 
@@ -267,19 +266,10 @@ class AdminPlane:
         return [client for client in self.evicted if all(other in self.recovered for other in self.group_of[client])]
 
     async def _readmit(self, rejoining: list[AsyncClient], updated: list[AsyncClient], step: int) -> None:
-        """Put the rejoining groups whose engines all took the new weights and report policy
-        v{step} back into ``clients`` and the router."""
-        groups = {self.group_of[client] for client in rejoining}
-        for group in groups:
+        """Put the rejoining groups whose engines all took the new weights back into ``clients``
+        and the router."""
+        for group in {self.group_of[client] for client in rejoining}:
             if not all(client in updated for client in group):
-                continue
-            versions = await asyncio.gather(*(_weight_version(client) for client in group))
-            if any(version != step for version in versions):
-                get_logger().warning(
-                    f"Inference engines {_urls(group)} report weight versions {versions} instead of v{step}; "
-                    "they stay out of the router"
-                )
-                self.recovered.difference_update(group)
                 continue
             for client in group:
                 self.evicted.remove(client)
@@ -292,21 +282,20 @@ class AdminPlane:
         self,
         members: list[AsyncClient],
         weight_dir: str | None,
-        step: int,
         abort_marker: Callable[[], Path] | None,
         resend: Callable[[], Awaitable[bool]] | None,
     ) -> tuple[list[AsyncClient], bool]:
         """Run ``/update_weights`` on ``members``. Returns the members still standing and whether
         the transfer was aborted and must run again."""
-        json = {"weight_dir": weight_dir, "version": step}
         if not self.evicting or abort_marker is None or resend is None:
+            json = {"weight_dir": weight_dir}
             return await self._each(members, "/update_weights", json=json, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S), False
 
         async def update(client: AsyncClient) -> None:
             # One attempt: retrying a collective receive cannot succeed on its own.
             response = await client.post(
                 "/update_weights",
-                json=json,
+                json={"weight_dir": weight_dir},
                 timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
             )
             response.raise_for_status()
@@ -647,16 +636,6 @@ def _urls(clients) -> str:
     return ", ".join(str(client.base_url) for client in clients)
 
 
-async def _weight_version(client: AsyncClient) -> int | None:
-    """The policy version the engine last loaded, or None if it cannot tell."""
-    try:
-        response = await client.get("/weight_version", timeout=10.0)
-        response.raise_for_status()
-    except httpx.HTTPError:
-        return None
-    return response.json().get("version")
-
-
 async def _is_live(client: AsyncClient) -> bool:
     try:
         response = await client.get("/liveness", timeout=60.0)
@@ -743,17 +722,12 @@ LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
     wait=wait_exponential(multiplier=1, min=1, max=10),
     reraise=True,
 )
-async def _post_lora_adapter(
-    client: AsyncClient, path: str, *, json: dict[str, str], params: dict[str, int] | None = None
-) -> None:
+async def _post_lora_adapter(client: AsyncClient, path: str, *, json: dict[str, str]) -> None:
     """POST ``/load_lora_adapter``, retrying with exponential backoff if the adapter files are
     not found yet, which can happen due to NFS propagation delays."""
     get_logger().debug(f"Sending request to load LoRA adapter {json['lora_name']} from {json['lora_path']}")
     response = await client.post(
-        path,
-        json=json,
-        params=params,
-        timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
+        path, json=json, timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
     )
     response.raise_for_status()
 
