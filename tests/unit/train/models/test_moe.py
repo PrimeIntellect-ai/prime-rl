@@ -121,12 +121,14 @@ def test_local_token_dispatcher(score_before_experts):
         score_before_experts=score_before_experts,
     )
 
-    expected = torch.zeros_like(x)
-    for token in range(len(x)):
+    x_ref = x.detach().clone().requires_grad_()
+    scores_ref = scores.detach().clone().requires_grad_()
+    expected = torch.zeros_like(x_ref)
+    for token in range(len(x_ref)):
         for route in range(selected.shape[1]):
-            score = scores[token, route]
+            score = scores_ref[token, route]
             expert_scale = selected[token, route] + 1
-            expert_input = x[token] * score if score_before_experts else x[token]
+            expert_input = x_ref[token] * score if score_before_experts else x_ref[token]
             contribution = expert_input.square() * expert_scale
             if not score_before_experts:
                 contribution = contribution * score
@@ -134,8 +136,9 @@ def test_local_token_dispatcher(score_before_experts):
 
     torch.testing.assert_close(actual, expected)
     actual.sum().backward()
-    assert x.grad is not None
-    assert scores.grad is not None
+    expected.sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(scores.grad, scores_ref.grad)
 
 
 def test_local_token_dispatcher_handles_empty_input_and_unused_experts():

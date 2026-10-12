@@ -1,0 +1,34 @@
+# Standalone online-FP8 serving pre-flight, run directly on one already-allocated 8xH200 node, no [slurm] block:
+#
+#   uv run inference @ configs/advanced/deepseek-v4-flash/inference_fp8_online.toml
+#
+# Same bf16 checkpoint as inference_bf16.toml, quantized by vLLM at load time instead of served as
+# bf16. This is the serving half of the FP8 RL recipe: the trainer broadcasts bf16 either way.
+
+# Mandatory with online FP8, not an optimization. DeepSeek V4's o_proj never calls `wo_a`: it
+# reads `wo_a.weight` directly and hands it to DeepGEMM's grouped `fp8_einsum`, which needs the
+# 3D `[groups, rank, dim]` layout. Only `DeepGemmFp8BlockScaledMMKernel` honors the layer's
+# `is_bmm` flag and builds that layout, and it is skipped unless `VLLM_USE_DEEP_GEMM` is on.
+use_deep_gemm = true
+
+[env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[server]
+port = 8000
+
+[vllm]
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
+model = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+dtype = "bfloat16"
+quantization = "fp8_per_block"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+# Not needed to serve, but the RL configs get it force-enabled by `trainer.enable_router_replay`.
+# Setting it here keeps the pre-flight on the same capture and model-runner path as the RL runs.
+enable_return_routed_experts = true
+gpu_memory_utilization = 0.85
+max_model_len = 8192
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256

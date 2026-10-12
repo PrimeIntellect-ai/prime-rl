@@ -111,11 +111,6 @@ DTYPE_MAP = {
 # The one-time HF <-> PrimeRL conversion runs on the master alone and can take hours for large models.
 CONVERSION_TIMEOUT_S = 4 * 3600
 
-# We increase the torch.compile recompile limit and cache size as we found this
-# necessary for training INTELLECT-3 with Muon.
-torch._dynamo.config.recompile_limit = 16  # default: 8
-torch._dynamo.config.cache_size_limit = 64  # default: 8
-
 
 def freeze_vision_encoder(model: nn.Module, override_attr: str | None = None) -> None:
     logger = get_logger()
@@ -356,6 +351,12 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
+    elif config.dsv4_kv_precision != "bf16":
+        raise ValueError(
+            f"dsv4_kv_precision={config.dsv4_kv_precision!r} is only implemented for DeepSeek V4, not {model_config.model_type!r}."
+        )
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -831,13 +832,13 @@ def mark_dynamic_int_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig):
+def apply_compile(model: nn.Module, compile_config: CompileConfig, recompile_limit: int):
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode, recompile_limit=recompile_limit)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -931,6 +932,7 @@ def setup_model(
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
 ) -> nn.Module:
+    torch._dynamo.config.recompile_limit = config.recompile_limit
     resolve_auto_attn(config)
 
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
@@ -993,7 +995,7 @@ def setup_model(
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile is not None:
-        apply_compile(model, config.compile)
+        apply_compile(model, config.compile, config.recompile_limit)
 
     setup_fsdp(model, config, parallel_dims)
 

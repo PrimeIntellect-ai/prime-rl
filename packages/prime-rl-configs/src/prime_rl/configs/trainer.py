@@ -243,6 +243,9 @@ class ModelConfig(BaseModelConfig):
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
 
+    recompile_limit: Annotated[int, Field(ge=1)] = 64
+    """Recompiles dynamo allows per compiled function, for compiled model blocks and every other ``torch.compile`` in the trainer."""
+
     fusions: FusionsConfig = FusionsConfig()
     """Runtime parameter fusions, on by default."""
 
@@ -286,6 +289,9 @@ class ModelConfig(BaseModelConfig):
 
     dsa_backend: DSABackend = "tilelang"
     """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
+
+    dsv4_kv_precision: Literal["bf16", "fp8"] = "bf16"
+    """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
