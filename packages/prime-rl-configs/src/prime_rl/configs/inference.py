@@ -430,6 +430,9 @@ class InferenceConfig(BaseConfig):
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
+    fp8_ue8m0_weight_scales: bool = False
+    """Quantize online block-wise FP8 weights with power-of-two (UE8M0) block scales instead of ``amax / 448``. Weights of a dequantized FP8 release (e.g. ``PrimeIntellect/DeepSeek-V4-Flash-0731-bf16``) already sit on the e4m3 grid under power-of-two scales, so they round-trip exactly instead of picking up e4m3 rounding error. Sets ``PRIME_FP8_UE8M0_WEIGHT_SCALES=1`` for the vLLM workers."""
+
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None

@@ -20,6 +20,7 @@ def apply_shared_vllm_patches():
     monkey_patch_minimax_m2_think_end_passthrough()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
+    monkey_patch_fp8_ue8m0_weight_scales()
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_tokenize_params_validation()
     monkey_patch_strip_routed_experts_from_chat()
@@ -152,6 +153,36 @@ def monkey_patch_online_fp8_parameter_cast():
 
     _per_block_cast_to_fp8._prime_rl_unwraps_parameters = True
     fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+
+
+def monkey_patch_fp8_ue8m0_weight_scales():
+    """Off unless ``PRIME_FP8_UE8M0_WEIGHT_SCALES=1`` (``inference.fp8_ue8m0_weight_scales``): power-of-two block scales.
+
+    vLLM's online block-FP8 linear and MoE methods call
+    ``per_block_cast_to_fp8(..., use_ue8m0=False)``, which picks the scale ``amax / 448``. A
+    dequantized FP8 release already lies on the e4m3 grid under power-of-two block scales, so
+    forcing ``use_ue8m0=True`` restores that grid and the weights round-trip exactly. The scales
+    stay fp32, so no kernel change is involved.
+    """
+    if os.environ.get("PRIME_FP8_UE8M0_WEIGHT_SCALES") != "1":
+        return
+
+    from vllm.logger import init_logger
+    from vllm.model_executor.layers.quantization.online import fp8
+
+    original_cast = fp8.per_block_cast_to_fp8
+    if getattr(original_cast, "_prime_rl_forces_ue8m0", False):
+        return
+
+    def _per_block_cast_to_fp8(x, *args, **kwargs):
+        kwargs["use_ue8m0"] = True
+        return original_cast(x, *args, **kwargs)
+
+    _per_block_cast_to_fp8._prime_rl_forces_ue8m0 = True
+    fp8.per_block_cast_to_fp8 = _per_block_cast_to_fp8
+    init_logger("vllm.prime_rl.fp8").info(
+        "PRIME_FP8_UE8M0_WEIGHT_SCALES=1: quantizing online FP8 weights with power-of-two block scales."
+    )
 
 
 def monkey_patch_kv_xfer_finished_tolerate_freed():
