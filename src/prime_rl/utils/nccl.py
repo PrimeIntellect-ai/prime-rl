@@ -3,6 +3,7 @@ from collections.abc import Iterator
 
 import pynvml
 import torch
+from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 
 from prime_rl.utils.logger import get_logger
 
@@ -42,6 +43,15 @@ def disable_nccl_p2p_if_unavailable() -> None:
             )
     finally:
         pynvml.nvmlShutdown()
+
+
+def abort_communicator(communicator: PyNcclCommunicator) -> None:
+    """Abort the communicator's in-flight collective from another thread. It is marked disabled
+    first, so calls the released thread makes next are no-ops instead of NCCL errors."""
+    communicator.disabled = True
+    with torch.cuda.device(communicator.device):
+        communicator.nccl.ncclCommAbort(communicator.comm)
+    communicator.available = False
 
 
 def iter_tensor_buckets(

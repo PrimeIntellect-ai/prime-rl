@@ -208,7 +208,7 @@ With more than one engine behind the router and NCCL or filesystem weight broadc
   - a weight-update call to it fails.
 - **After eviction:**
   - the engine leaves the router and the weight updates;
-  - its in-flight requests fail, or are dropped after 300 s without progress if the engine hangs.
+  - its in-flight requests fail. Requests stuck on a hung engine are cancelled once their group falls `max_off_policy_steps` behind.
 - **NCCL.** The broadcast group is rebuilt over the remaining engines at the next weight update, on a new port.
 - **Death mid-transfer (NCCL).** If an engine dies during the transfer:
   - the orchestrator writes an abort marker into the step's broadcast directory;

@@ -226,6 +226,8 @@ def inference_local(config: InferenceConfig):
             while router_process.wait() is not None and not router_stopping.is_set():
                 logger.error(f"Router exited with code {router_process.returncode} - restarting it")
                 time.sleep(2)
+                if router_stopping.is_set():
+                    break
                 router_process = start_router(router_config)
 
         Thread(target=watch_router, daemon=True).start()
