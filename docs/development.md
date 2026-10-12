@@ -170,5 +170,3 @@ PRIME_FAULT="trainer_crash@5,ckpt_write_fail@10" PRIME_FAULT_DIR=/shared/faults 
 | `env_hang` | env name | orchestrator, every request to that env | never returns (a stuck env-server request) |
 
 Step faults are one-shot when `PRIME_FAULT_DIR` is set: the first process to reach one creates a marker file there, so exactly one rank or engine fires it, and a resumed or requeued run does not fire it again. Use a directory every node can see. Without `PRIME_FAULT_DIR`, every matching process fires every time.
-
-[`scripts/fault_scenarios/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/scripts/fault_scenarios) runs one short multi-node RL job per fault on 2 SLURM nodes and checks how the run ends; see its README for the scenarios and how to run it.
