@@ -4,7 +4,9 @@ The stream records what landed, so it is what a resume continues from. Successfu
 episodes rejoin the epoch through the monitors as if they had just arrived,
 so the rebuilt stream, the epoch's metrics and the platform upload cover the
 whole epoch - and only the rollouts still owed run. Failed episodes and the in-flight
-ones the interruption cut off are owed again.
+ones the interruption cut off are owed again. A streaming env (an infinite taskset)
+keeps none: its tasks are not known up front, and the relaunched taskset re-yields the
+work it has not seen reported, which then runs whole.
 
 The shared Verifiers rollout planner matches these episodes to the current tasks
 by content hash. The resumed config is not checked against the interrupted one:

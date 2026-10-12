@@ -9,7 +9,16 @@ until the pool drains.
 
 Env servers belong to the launcher (``eval``, ``sft``), like the orchestrator's belong to
 ``rl``: a source without an explicit ``serve.address`` is found through the address file
-its server publishes; one with an address is reached directly."""
+its server publishes; one with an address is reached directly.
+
+Every rollout the dispatcher runs reports back to its env's taskset exactly once, from
+``run_epoch`` on the event loop as the dispatcher's result arrives: ``observe(task,
+episode)`` with the final episode (after the env's own retries and ``finalize``), or
+``on_failed(task, error)`` when the request produced no episode (the env server died,
+the request raised). An exception from either stops the run. Rollouts that never
+finish get neither: those cancelled on shutdown or superseded by a newer checkpoint
+(an online eval). A relaunched streaming taskset re-yields its unfinished work.
+Episodes restored on ``--resume`` were reported by the attempt that ran them."""
 
 from __future__ import annotations
 
@@ -37,6 +46,7 @@ from prime_rl.orchestrator.metrics import dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation, Policy
 from prime_rl.orchestrator.utils import (
+    episode_env_name,
     eval_work,
     intercept_vf_logging,
     set_default_executor,
@@ -123,6 +133,7 @@ class EvalRunner:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            record_eval_tasks=True,
         )
         # No ``on_overload``: eval episodes are measurements and are never
         # cancelled — a cut only blocks admission until the pool drains.
@@ -219,23 +230,23 @@ class EvalRunner:
                 )
 
             try:
-                if superseding_step is not None or any(env.feed is not None for env in self.eval_envs):
-                    item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=POLL_INTERVAL_S)
-                else:
-                    item = await self.dispatcher.out_q.get()
+                item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=POLL_INTERVAL_S)
             except asyncio.TimeoutError:
                 if cancellation_task is not None and cancellation_task.done():
                     cancellation_task.result()
+                self.raise_if_dispatcher_stopped()
                 continue
 
             if isinstance(item, GroupCancellation):
                 eval_batch = self.eval_sink.cancel(item)
             elif isinstance(item, DispatchFailure):
+                self.report_failed(item)
                 eval_batch = self.eval_sink.fail(item)
             else:
                 stamp_arrival([item], "eval", eval_work(item).step)
                 if self.heart is not None:
                     self.heart.beat()
+                self.observe(item)
                 await self.land(item, pending)
                 continue
             if eval_batch is not None:
@@ -248,6 +259,40 @@ class EvalRunner:
                 f"Cancelled {cancelled} unfinished eval episodes for step {step}; advancing to checkpoint {newer_step}"
             )
 
+    def raise_if_dispatcher_stopped(self) -> None:
+        """A dead dispatcher delivers no more results: fail the epoch rather than wait."""
+        task = self.dispatcher_task
+        if task is None or not task.done():
+            return
+        if not task.cancelled() and (error := task.exception()) is not None:
+            raise error
+        raise RuntimeError("The dispatcher stopped while an eval epoch was still running")
+
+    def observe(self, episode: vf.Episode) -> None:
+        """Hand a dispatched rollout's final episode to its taskset, before the episode
+        is persisted or counted. A ``--resume`` keeps only episodes it finds persisted,
+        so every kept episode was observed by the attempt that ran it."""
+        task = self.dispatcher.eval_tasks.pop(episode.id)
+        env_name = episode_env_name(episode)
+        taskset = self.eval_envs.get(env_name).taskset
+        try:
+            taskset.observe(task, episode)
+        except Exception:
+            get_logger().error(f"{type(taskset).__name__}.observe failed for task {task.key} in {env_name}")
+            raise
+
+    def report_failed(self, failure: DispatchFailure) -> None:
+        """Tell the taskset a dispatched rollout produced no episode."""
+        assert failure.task is not None and failure.exception is not None  # the dispatcher attaches them
+        taskset = self.eval_envs.get(failure.env_name).taskset
+        try:
+            taskset.on_failed(failure.task, failure.exception)
+        except Exception:
+            get_logger().error(
+                f"{type(taskset).__name__}.on_failed failed for task {failure.task_key} in {failure.env_name}"
+            )
+            raise
+
     def stream_done(self, env_name: str) -> bool:
         """Whether a streaming env's taskset ended and every rollout it dispatched landed."""
         return (
@@ -257,8 +302,8 @@ class EvalRunner:
         )
 
     async def land(self, episode: vf.Episode, pending: set[str]) -> None:
-        """One episode of the epoch, arrived or restored: through the monitors and into
-        its env's batch, which is finalized once the epoch is complete."""
+        """One episode of the epoch, arrived (and observed) or restored: through the
+        monitors and into its env's batch, which is finalized once the epoch is complete."""
         step = eval_work(episode).step
         await monitors.log([episode], step, "eval", "all")
         eval_batch = self.eval_sink.add(episode)

@@ -54,9 +54,8 @@ class EvalSource:
             self.intervals[env.name] = intervals[env.name] if intervals is not None else 1
 
         self.queue: deque[TaskRequest] = deque()
-        self.streams: dict[str, tuple[int, dict[str, tuple[int, str]]]] = {}
-        """Fired streaming envs: their step, and per task hash with restored episodes the
-        rollouts it still owes and the group they join."""
+        self.streams: dict[str, int] = {}
+        """Fired streaming envs and their step."""
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
@@ -83,7 +82,9 @@ class EvalSource:
         restored: list[vf.WireEpisode] = []
         for name in fired:
             if name in self.feeds:
-                self.streams[name] = (step, self.restore_stream(saved[name], self.group_sizes[name], restored))
+                # a stream keeps nothing: its relaunched taskset re-yields the work it has
+                # not seen reported, and that runs whole
+                self.streams[name] = step
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
@@ -105,34 +106,14 @@ class EvalSource:
                     )
         return fired, restored
 
-    @staticmethod
-    def restore_stream(
-        saved: list[vf.WireEpisode], group_size: int, restored: list[vf.WireEpisode]
-    ) -> dict[str, tuple[int, str]]:
-        """A stream's tasks are not known up front: restore up to a group of each task's
-        saved episodes, as ``plan_rollouts`` does, and return what each task hash still owes."""
-        by_hash: dict[str, list[vf.WireEpisode]] = defaultdict(list)
-        for episode in {episode.id: episode for episode in saved}.values():
-            by_hash[episode.task.hash or vf.Task(episode.task.data).hash].append(episode)
-        owed: dict[str, tuple[int, str]] = {}
-        for task_hash, episodes in by_hash.items():
-            group = vf.GroupInfo(id=str(uuid.uuid4()))
-            for episode in episodes[:group_size]:
-                episode.group = group
-                restored.append(episode)
-            owed[task_hash] = (group_size - len(episodes[:group_size]), group.id)
-        return owed
-
     def next_task(self) -> TaskRequest | None:
         """Pop the next eval task, or ``None`` when the queue is empty and no stream has a
         task ready."""
         if self.queue:
             return self.queue.popleft()
-        for env_name, (step, owed) in self.streams.items():
-            while (task := self.feeds[env_name].poll()) is not None:
-                rollouts, group_id = owed.pop(task.hash, (self.group_sizes[env_name], None))
-                if rollouts > 0:
-                    return TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
+        for env_name, step in self.streams.items():
+            if (task := self.feeds[env_name].poll()) is not None:
+                return TaskRequest(env_name=env_name, task=task, step=step, rollouts=self.group_sizes[env_name])
         return None
 
     def streaming(self, env_name: str) -> bool:

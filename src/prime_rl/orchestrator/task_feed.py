@@ -2,7 +2,8 @@
 
 An infinite taskset's ``next()`` may block, e.g. a generator waiting for its next task
 to be ready. A feed calls it on its own thread, one task ahead, so the dispatcher polls
-without blocking."""
+without blocking, and the taskset's ``observe``/``on_failed``, called on the event loop,
+can make the work ready that ``next()`` waits for."""
 
 from __future__ import annotations
 

@@ -71,6 +71,9 @@ class Env:
         self.sampling_args: dict = {}
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
+        self.taskset: vf.Taskset | None = None
+        """The selected taskset view, set at ``start()``. Its ``observe``/``on_failed``
+        hooks hear each dispatched eval rollout's outcome (``EvalRunner``)."""
         self.tasks: Iterator[vf.Task] | None = None
         """The env's selected tasks (``select``), client-side, set at
         ``start()``. A bounded selection is materialized (``num_tasks`` is its count)
@@ -99,6 +102,7 @@ class Env:
         # the orchestrator), so poll until it answers.
         await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
         taskset = vf.load_taskset(self.config.env.taskset).select(self.config.select)
+        self.taskset = taskset
         if taskset.bounded:
             # Materialize off the event loop — iterating may pull a dataset.
             materialized = await asyncio.to_thread(lambda: list(taskset))
@@ -186,7 +190,11 @@ class EvalEnv(Env):
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[vf.Task] = []
         self.feed: TaskFeed | None = None
-        """An infinite taskset, streamed through a single epoch (a standalone eval)."""
+        """An infinite taskset, streamed through a single epoch (a standalone eval). Its
+        ``load()`` runs on the feed's own thread, so it may block until the taskset's
+        ``observe`` (called on the event loop) makes more work ready. A bounded taskset is
+        materialized whole at ``start()``, before anything is dispatched: its ``load()``
+        must not wait on ``observe``."""
 
     async def start(self) -> None:
         await super().start()

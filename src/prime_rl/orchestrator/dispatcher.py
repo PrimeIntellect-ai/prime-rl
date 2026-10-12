@@ -145,6 +145,7 @@ class Dispatcher:
         run_name: str | None,
         policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
+        record_eval_tasks: bool = False,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -161,6 +162,11 @@ class Dispatcher:
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
         self.on_episode_complete = on_episode_complete
+        self.record_eval_tasks = record_eval_tasks
+        self.eval_tasks: dict[str, vf.Task] = {}
+        """With ``record_eval_tasks``: the dispatched task of each eval episode put on
+        ``out_q``, by episode id, until the consumer pops it (``EvalRunner`` hands it to
+        the taskset's ``observe``)."""
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -670,6 +676,8 @@ class Dispatcher:
                         message=str(exc),
                         traceback="".join(traceback.format_exception(exc)),
                     ),
+                    task=meta.task,
+                    exception=exc,
                 )
             )
             return
@@ -734,6 +742,8 @@ class Dispatcher:
         )
         run = vf.TrainRunInfo(id=self.run_id, name=self.run_name, work=work)
         episode.record_run(run)
+        if self.record_eval_tasks and meta.kind == "eval":
+            self.eval_tasks[episode.id] = meta.task
         await self.out_q.put(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:

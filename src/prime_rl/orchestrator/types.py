@@ -66,6 +66,10 @@ class DispatchFailure:
     task_key: str
     task_hash: str
     error: vf.Error
+    task: vf.Task | None = field(default=None, compare=False)
+    """The dispatched task, for the taskset's ``on_failed`` hook."""
+    exception: BaseException | None = field(default=None, compare=False, repr=False)
+    """What the request raised, for the taskset's ``on_failed`` hook."""
 
 
 if TYPE_CHECKING:

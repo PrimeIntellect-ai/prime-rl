@@ -72,6 +72,25 @@ def test_plan_keeps_landed_rollouts_up_to_the_target_and_owes_the_rest(
     assert all(len(kept) + missing == rollouts for _, kept, missing in plan)
 
 
+def test_a_resumed_stream_keeps_nothing_and_runs_what_its_taskset_re_yields() -> None:
+    """An infinite taskset re-yields the work it has not seen reported; a task that landed
+    before the interruption but was never reported to it runs again, whole, so the
+    taskset hears of it (skipping it would leave the taskset waiting for its report)."""
+    stream = SimpleNamespace(
+        name="pipeline",
+        examples=[],
+        feed=SimpleNamespace(poll=iter([_task("j1"), None]).__next__, done=False),
+        config=SimpleNamespace(group_size=2),
+    )
+    episodes = [vf.WireEpisode.model_validate(_record("pipeline", "j1")) for _ in range(2)]
+
+    source = EvalSource([stream])
+    assert source.trigger(0, completed=episodes) == (["pipeline"], [])
+    request = source.next_task()
+    assert (request.task.key, request.rollouts, request.group_id) == ("j1", 2, None)
+    assert source.next_task() is None
+
+
 def test_trigger_queues_only_owed_rollouts() -> None:
     source = EvalSource([_env("math", ["m0", "m1", "m1"], group_size=2), _env("code", ["m1"])])
     episodes = [vf.WireEpisode.model_validate(_record("math", key)) for key in ["m0", "m0", "m1"]]
