@@ -143,7 +143,6 @@ class AdminPlane:
         self.recovered: set[AsyncClient] = set()
         self.evicting = False
         self.updating = False
-        self.on_evict: Callable[[], None] | None = None
         # The engines taking part in weight updates and a counter bumped whenever that set
         # changes. Transports that pin their receivers (NCCL) rebuild on a new generation.
         self.members = list(self.clients)
@@ -369,7 +368,8 @@ class AdminPlane:
             probed = self.clients + [client for client in stalled if client in self.evicted]
             counters = dict(zip(probed, await asyncio.gather(*(_generation_counters(client) for client in probed))))
             now = time.monotonic()
-            for client in list(self.clients):
+            # A weight update can readmit an engine while the probes above run
+            for client in [client for client in self.clients if client in counters]:
                 running, tokens = counters[client]
                 last = progress.get(client)
                 if running == 0 or last is None or tokens != last[1]:
@@ -417,8 +417,6 @@ class AdminPlane:
             f"Evicted inference engines {_urls(evicted)} ({reason} on {client.base_url}); "
             f"{len(self.clients)} engines left"
         )
-        if self.on_evict is not None:
-            self.on_evict()
         if not self.clients:
             raise RuntimeError("Every inference engine was evicted")
         for other in evicted:
@@ -664,7 +662,7 @@ async def _is_live(client: AsyncClient) -> bool:
         response = await client.get("/liveness", timeout=60.0)
     except httpx.HTTPError:
         return False
-    return response.status_code in (200, 404)
+    return response.status_code == 200
 
 
 def _is_retryable_admin_error(exception: BaseException) -> bool:
@@ -688,7 +686,8 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
-# can take longer than the other admin ops.
+# can take longer than the other admin ops. Keep it below the trainer's collective timeout:
+# it is what detects an engine that hangs during the transfer.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 

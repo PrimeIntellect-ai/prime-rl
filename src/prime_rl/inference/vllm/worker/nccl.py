@@ -10,7 +10,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.nccl import abort_communicator, disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -159,7 +159,7 @@ class NCCLWeightUpdateWorker(Worker):
             while not done.wait(0.5):
                 if abort_marker.exists():
                     logger.warning("Aborting the NCCL weight receive: another engine died")
-                    receiver.communicator.destroy()
+                    abort_communicator(receiver.communicator)
                     return
 
         threading.Thread(target=abort_on_marker, daemon=True).start()
@@ -170,6 +170,10 @@ class NCCLWeightUpdateWorker(Worker):
                 self.model_runner.model_config,
                 self.vllm_config,
             )
+        except Exception:
+            # An abort can surface as an NCCL error, or as garbage from the no-op receives after it
+            if not receiver.communicator.disabled:
+                raise
         finally:
             done.set()
         if receiver.communicator.disabled:

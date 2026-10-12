@@ -209,7 +209,7 @@ With more than one engine behind the router and NCCL or filesystem weight broadc
 - **Engine groups.** Engines that fail together are evicted together: the DP ranks of a multi-node expert-parallel replica, or of a P/D role replica. `orchestrator.model.client.admin_engine_groups` gives the group of each `admin_base_url` entry. The multi-node SLURM launcher sets it, and the default is one group per engine.
 - **After eviction:**
   - the group's engines leave the router and the weight updates;
-  - its in-flight requests fail, or are dropped after 300 s without progress if the engine hangs.
+  - their in-flight requests fail. Requests stuck on a hung engine are cancelled once their group falls `max_off_policy_steps` behind.
 - **NCCL.** The broadcast group is rebuilt over the remaining engines at the next weight update, on a new port.
 - **Death mid-transfer (NCCL).** If an engine dies during the transfer:
   - the orchestrator writes an abort marker into the step's broadcast directory;

@@ -22,7 +22,7 @@ from prime_rl.trainer.utils import get_world
 from prime_rl.trainer.world import wait_for_master
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.nccl import abort_communicator, disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 from prime_rl.utils.pathing import get_broadcast_dir
 from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import resolve_wire_dtype
@@ -182,7 +182,7 @@ class NCCLBroadcaster:
         while not done.wait(0.5):
             if marker.exists():
                 self.logger.warning("Aborting the NCCL weight broadcast: an inference engine died")
-                self.communicator.destroy()
+                abort_communicator(self.communicator)
                 return
 
     def _send(self, model: nn.Module) -> None:
@@ -192,7 +192,7 @@ class NCCLBroadcaster:
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
         if self.world.is_master:
-            broadcast_integer(num_state_dict_to_send, self.communicator)
+            self._unless_aborted(broadcast_integer, num_state_dict_to_send)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
@@ -200,7 +200,16 @@ class NCCLBroadcaster:
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
             if self.world.is_master:
-                broadcast_state_dict(layer_state_dict, self.communicator)
+                self._unless_aborted(broadcast_state_dict, layer_state_dict)
+
+    def _unless_aborted(self, broadcast: Callable, payload) -> None:
+        """The watchdog's abort can land while ``broadcast`` is inside a collective; that error
+        is expected, and the master keeps walking the layers for the other ranks' gathers."""
+        try:
+            broadcast(payload, self.communicator)
+        except RuntimeError:
+            if not self.communicator.disabled:
+                raise
 
 
 def nccl_group_file(broadcast_dir: Path) -> Path:
