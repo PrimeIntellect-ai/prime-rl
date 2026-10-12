@@ -12,7 +12,14 @@ from datasets import Dataset, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
-from renderers.base import MultiModalData, PlaceholderRange, Renderer, build_training_sample, create_renderer
+from renderers.base import (
+    MultiModalData,
+    PlaceholderRange,
+    RenderedTrainingSample,
+    Renderer,
+    build_training_sample,
+    create_renderer,
+)
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset, get_worker_info
@@ -309,7 +316,10 @@ class SFTDataset(StatefulIterableDataset):
             self.num_examples = min(self.num_examples, self.max_examples)
             self.dataset = self.dataset.take(self.max_examples)
 
-    def _process(self, example: dict) -> dict | None:
+    def render(self, example: dict, renderer: Renderer) -> RenderedTrainingSample:
+        """Render one row's chat into tokens and a loss mask, following ``data.columns`` and ``[loss_mask]``.
+        The stock SFT sample is this, shifted by one token; a custom objective can start from it too."""
+
         def resolve_messages(example: dict) -> list[dict]:
             # `messages` takes precedence over explicit split fields and is interpreted
             # as a whole-chat training sample with an empty prompt. Null-check rather
@@ -362,8 +372,7 @@ class SFTDataset(StatefulIterableDataset):
         # body-only path: the message content is trained, not the role
         # scaffolding (e.g. <|im_start|>assistant) the harness emits.
         content_sft_roles = {role for role in ("user", "system", "tool") if getattr(self.loss_mask_config, role)}
-        renderer = self.renderers(example)
-        sample = build_training_sample(
+        return build_training_sample(
             renderer,
             messages,
             role_to_mask=role_to_mask,
@@ -372,6 +381,10 @@ class SFTDataset(StatefulIterableDataset):
             ensure_final_stop=True,
             message_loss_mask=example.get(self.columns.message_loss_mask),
         )
+
+    def _process(self, example: dict) -> dict | None:
+        renderer = self.renderers(example)
+        sample = self.render(example, renderer)
         input_ids = list(sample.token_ids)
         loss_mask = list(sample.loss_mask)
         mm = sample.multi_modal_data
@@ -493,14 +506,31 @@ class SFTObjectiveDataset(SFTDataset):
         self.objective = objective
 
     def _process(self, example: dict) -> dict | None:
-        sample = self.objective.make_sample(example, self.renderers(example))
+        from prime_rl.trainer.sft.objective import SampleInputs
+
+        renderer = self.renderers(example)
+        inputs = SampleInputs(example=example, renderer=renderer, render=partial(self.render, example, renderer))
+        sample = self.objective.make_sample(inputs)
         if sample is None:
             return None
-        if len(sample["input_ids"]) > self.seq_len:
-            # Packing would cut the sample, and the objective's targets would no longer match its tokens.
-            self.logger.warning(
-                f"Skipping example {example.get('__index', '')}: {len(sample['input_ids'])} tokens exceed seq_len ({self.seq_len})"
+        where = f"example {example.get('__index', '')}"
+        for key in ("input_ids", "position_ids", "loss_mask", "target_ids"):
+            if not isinstance(sample.get(key), list):
+                raise ValueError(
+                    f"{where}: make_sample must return a list for {key!r}, got {type(sample.get(key)).__name__}"
+                )
+        num_tokens = len(sample["input_ids"])
+        lengths = {key: len(sample[key]) for key in ("input_ids", "position_ids", "loss_mask", "target_ids")}
+        if len(set(lengths.values())) != 1:
+            raise ValueError(f"{where}: make_sample returned fields of different lengths: {lengths}")
+        if sample.setdefault("seq_lens", [num_tokens]) != [num_tokens]:
+            # Packing records one entry per sample; a sample's inner boundaries are the model's business.
+            raise ValueError(
+                f"{where}: seq_lens must be [{num_tokens}] (one entry per sample), got {sample['seq_lens']}"
             )
+        if num_tokens > self.seq_len:
+            # Packing would cut the sample, and the objective's targets would no longer match its tokens.
+            self.logger.warning(f"Skipping {where}: {num_tokens} tokens exceed seq_len ({self.seq_len})")
             return None
         return {"mm_kwargs": None, "mm_token_type_ids": None, **sample}
 

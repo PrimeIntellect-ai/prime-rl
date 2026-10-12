@@ -302,7 +302,7 @@ def train(config: SFTConfig):
                 outputs = objective.loss(ObjectiveInputs(model=model, hidden_states=hidden_states, batch=batch))
             if metrics is not None:
                 for name, value in outputs.metrics.items():
-                    metrics[name] = metrics.get(name, 0.0) + value.detach().float()
+                    metrics[name] = metrics.get(name, 0.0) + value.detach().float().to("cuda")
             return outputs.loss, torch.as_tensor(outputs.count, dtype=torch.int64, device="cuda")
 
         token_count = loss_mask.sum(dtype=torch.int64)
@@ -396,7 +396,8 @@ def train(config: SFTConfig):
             monitors.log(
                 {
                     "val/loss": mean_loss,
-                    "val/perplexity": math.exp(min(mean_loss, 20)),
+                    # perplexity is exp(cross-entropy); an objective's loss need not be one
+                    **({} if objective is not None else {"val/perplexity": math.exp(min(mean_loss, 20))}),
                     **{f"val/{name}": value for name, value in mean_metrics.items()},
                     "step": step,
                 },
@@ -673,7 +674,7 @@ def train(config: SFTConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
-            "loss/perplexity": math.exp(min(batch_loss, 20)),
+            **({} if objective is not None else {"loss/perplexity": math.exp(min(batch_loss, 20))}),
             "loss/nan_count": nan_loss_count,
             **objective_metrics,
             "step": progress.step,

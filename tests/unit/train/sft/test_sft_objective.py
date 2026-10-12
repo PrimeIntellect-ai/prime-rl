@@ -10,7 +10,13 @@ from prime_rl.configs.sft import SFTConfig, SFTObjectiveConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.sft.data import CatDataset, SFTObjectiveDataset, cat_collate
-from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs, SFTObjective, load_objective
+from prime_rl.trainer.sft.objective import (
+    ObjectiveInputs,
+    ObjectiveOutputs,
+    SampleInputs,
+    SFTObjective,
+    load_objective,
+)
 
 
 class PairObjective:
@@ -19,7 +25,8 @@ class PairObjective:
     def __init__(self, offset: int = 0):
         self.offset = offset
 
-    def make_sample(self, example, renderer):
+    def make_sample(self, inputs: SampleInputs):
+        example = inputs.example  # rows without a chat: inputs.render() is never called
         ids = [ord(char) + self.offset for char in example["text"]]
         sequences = [ids, ids[::-1]]
         input_ids = [token for sequence in sequences for token in sequence]
@@ -28,7 +35,6 @@ class PairObjective:
             "target_ids": [0] * len(input_ids),
             "loss_mask": [i == len(s) - 1 for s in sequences for i in range(len(s))],
             "position_ids": [i for s in sequences for i in range(len(s))],
-            "seq_lens": [len(s) for s in sequences],
             "objective_data": {"label": example["label"]},
         }
 
@@ -46,7 +52,7 @@ def objective_dataset(texts, seq_len, **kwargs):
     return SFTObjectiveDataset(rows, lambda example: None, PairObjective(), shuffle=False, seq_len=seq_len, **kwargs)
 
 
-def test_objective_samples_pack_with_their_extras():
+def test_objective_samples_pack_with_their_objective_data():
     # Samples of 4, 6, 2 and 8 tokens; packs of 10 tokens.
     packs = list(CatDataset(objective_dataset(["ab", "cde", "f", "ghij"], seq_len=10, max_epochs=1), seq_len=10))
 
@@ -60,7 +66,7 @@ def test_objective_samples_pack_with_their_extras():
     assert batch["objective_data"] == packs[0]["objective_data"]
 
 
-def test_padded_pack_keeps_one_extra_per_sample():
+def test_padded_pack_keeps_one_objective_data_per_sample():
     (pack,) = CatDataset(objective_dataset(["ab", "c"], seq_len=16, max_epochs=1), seq_len=16)
     assert pack["seq_lens"] == [4, 2 + 10]  # the padding joins the last sample
     assert [data["label"] for data in pack["objective_data"]] == [0.0, 1.0]
@@ -71,7 +77,7 @@ def test_overlong_samples_are_skipped():
     assert [sample["objective_data"]["label"] for sample in samples] == [0.0, 2.0]
 
 
-def test_resume_keeps_the_pending_sample_and_its_extras():
+def test_resume_keeps_the_pending_sample_and_its_objective_data():
     texts = ["ab", "cd", "efg", "h", "ij"]  # 4 + 4 tokens, then "efg" (6) overflows and waits as the pending sample
     reference = list(CatDataset(objective_dataset(texts, seq_len=10, max_epochs=1), seq_len=10))
 
@@ -85,7 +91,7 @@ def test_resume_keeps_the_pending_sample_and_its_extras():
     assert [first, *resumed] == reference
 
 
-def test_packs_without_extras_are_unchanged():
+def test_packs_without_objective_data_are_unchanged():
     sample = {
         "input_ids": [1, 2],
         "target_ids": [2, 3],
@@ -110,12 +116,82 @@ def test_objective_loss_on_a_collated_batch():
     assert outputs.loss.item() == pytest.approx((3 - 0) ** 2 + (3 - 1) ** 2)
 
 
+class OldSignatureObjective(PairObjective):
+    def make_sample(self, example, renderer):  # the pre-SampleInputs form
+        return None
+
+
 def test_load_objective():
     config = SFTObjectiveConfig(import_path=f"{__name__}.PairObjective", kwargs={"offset": 1})
     objective = load_objective(config)
     assert isinstance(objective, SFTObjective) and objective.offset == 1
     with pytest.raises(TypeError, match="must implement"):
         load_objective(SFTObjectiveConfig(import_path="collections.OrderedDict"))
+    with pytest.raises(TypeError, match="exactly one argument"):
+        load_objective(SFTObjectiveConfig(import_path=f"{__name__}.OldSignatureObjective"))
+
+
+class BrokenObjective(PairObjective):
+    def __init__(self, bad: str):
+        super().__init__()
+        self.bad = bad
+
+    def make_sample(self, inputs):
+        sample = super().make_sample(inputs)
+        if self.bad == "lengths":
+            sample["loss_mask"] = sample["loss_mask"][:-1]
+        elif self.bad == "type":
+            sample["input_ids"] = tuple(sample["input_ids"])
+        elif self.bad == "seq_lens":
+            sample["seq_lens"] = [1, len(sample["input_ids"]) - 1]
+        return sample
+
+
+@pytest.mark.parametrize(
+    "bad, message",
+    [("lengths", "different lengths"), ("type", "must return a list"), ("seq_lens", "one entry per sample")],
+)
+def test_malformed_samples_are_rejected_at_the_source(bad, message):
+    rows = Dataset.from_list([{"text": "ab", "label": 0.0}])
+    dataset = SFTObjectiveDataset(
+        rows, lambda example: None, BrokenObjective(bad), shuffle=False, seq_len=8, max_epochs=1
+    )
+    with pytest.raises(ValueError, match=message):
+        next(iter(dataset))
+
+
+class RenderingObjective:
+    """Stock rendering through inputs.render(): what stock SFT trains on, unshifted."""
+
+    def make_sample(self, inputs):
+        rendered = inputs.render()
+        ids, mask = list(rendered.token_ids), list(rendered.loss_mask)
+        return {"input_ids": ids, "position_ids": list(range(len(ids))), "loss_mask": mask, "target_ids": ids}
+
+    def loss(self, inputs):
+        raise NotImplementedError
+
+
+def test_render_follows_columns_and_loss_mask(dummy_renderer):
+    from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig
+    from prime_rl.trainer.sft.data import SFTDataset
+
+    rows = Dataset.from_list(
+        [{"q": [{"role": "user", "content": "hi"}], "a": [{"role": "assistant", "content": "yo"}]}]
+    )
+    columns = SFTColumnsConfig(prompt="q", completion="a")
+    for loss_mask in (LossMaskConfig(), LossMaskConfig(user=True)):
+        kwargs = dict(shuffle=False, seq_len=64, max_epochs=1, columns=columns, loss_mask_config=loss_mask)
+        stock = next(iter(SFTDataset(rows, lambda _: dummy_renderer, **kwargs)))
+        ours = next(iter(SFTObjectiveDataset(rows, lambda _: dummy_renderer, RenderingObjective(), **kwargs)))
+        # stock = the rendering shifted by one token
+        assert ours["input_ids"][1:] == stock["target_ids"] and ours["input_ids"][:-1] == stock["input_ids"]
+        assert ours["loss_mask"][1:] == stock["loss_mask"]
+    # [loss_mask] reaches the rendering: without the assistant role nothing is trainable (the dummy renderer renders
+    # the last message only), and the objective dataset hands that back instead of skipping the row
+    kwargs["loss_mask_config"] = LossMaskConfig(assistant=False)
+    none = next(iter(SFTObjectiveDataset(rows, lambda _: dummy_renderer, RenderingObjective(), **kwargs)))
+    assert not any(none["loss_mask"]) and any(ours["loss_mask"])
 
 
 class TinyCausalLM(nn.Module):

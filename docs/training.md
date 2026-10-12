@@ -271,26 +271,24 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Custom Objective
 
-`[objective]` replaces two parts of the SFT trainer: how a dataset row becomes a sample (in place of chat-message rendering) and the loss (in place of token cross-entropy). Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: you write a class whose `loss` returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss).
+`[objective]` replaces two parts of the SFT trainer: how a dataset row becomes a sample and the loss (in place of token cross-entropy). The stock rendering stays available to it: `inputs.render()` gives the row's chat as tokens plus a loss mask, following `data.columns` and `[loss_mask]`, so an objective can start from what stock SFT would train on, or build samples from any other columns. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: you write a class whose `loss` returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss).
 
 ```python
 # my_module.py
-from renderers.base import build_training_sample
-from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs
+from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs, SampleInputs
 
 class WeightedSFT:
-    """Token cross-entropy on the assistant's tokens, with one weight per sample from the dataset's `weight` column."""
+    """Stock SFT's cross-entropy, with one weight per sample from the dataset's `weight` column."""
 
-    def make_sample(self, example, renderer):
-        rendered = build_training_sample(renderer, example["messages"], ensure_final_stop=True)
+    def make_sample(self, inputs: SampleInputs):
+        rendered = inputs.render()  # the chat as tokens + loss mask, per data.columns and [loss_mask]
         ids, mask = list(rendered.token_ids), list(rendered.loss_mask)
         return {  # next-token targets, as stock SFT builds them
             "input_ids": ids[:-1],
             "position_ids": list(range(len(ids) - 1)),
             "target_ids": ids[1:],
             "loss_mask": mask[1:],
-            "seq_lens": [len(ids) - 1],
-            "objective_data": {"weight": example["weight"]},  # travels with the sample to the loss
+            "objective_data": {"weight": inputs.example["weight"]},  # travels with the sample to the loss
         }
 
     def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
@@ -319,6 +317,12 @@ The dataclasses:
 
 ```python
 @dataclass
+class SampleInputs:
+    example: dict                                      # the dataset row
+    renderer: Renderer                                 # the model's renderer
+    render: Callable[[], RenderedTrainingSample]       # stock rendering of the row (token_ids, loss_mask), unshifted
+
+@dataclass
 class ObjectiveInputs:
     model: nn.Module
     hidden_states: Float[Tensor, "batch seq hidden"]  # post-norm, no vocabulary projection
@@ -331,7 +335,7 @@ class ObjectiveOutputs:
     metrics: dict[str, Tensor] = {}           # summed; divided like the loss, same names on every call
 ```
 
-The loss can use any module of the model, such as its LM head above (`lm_head(hidden_states, labels)` returns the summed cross-entropy). Constructor arguments come from `[objective.kwargs]`. Packing records one `seq_lens` entry per sample, so a sample holding several independent sequences must keep them apart itself. Samples longer than `data.seq_len` are skipped. Not supported with context parallelism, VLM training or `model.full_offload`.
+The loss can use any module of the model, such as its LM head above (`lm_head(hidden_states, labels)` returns the summed cross-entropy). Constructor arguments come from `[objective.kwargs]`; metrics must be tensors. A sample's four token fields are lists of one length; `seq_lens` may be omitted. Packing records one entry per sample, so a sample holding several independent sequences must keep them apart itself. Samples longer than `data.seq_len` are skipped. `objective_data` holds plain values (it is pickled into the dataloader checkpoint). Stock SFT asserts that a stop token is among the targets; an objective that masks or drops tokens decides that itself. Not supported with context parallelism, VLM training or `model.full_offload`.
 
 ### Important Metrics
 
@@ -341,7 +345,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
-- With `[objective]`: `loss/<name>` and `val/<name>` for each metric the objective returns, averaged like the loss.
+- With `[objective]`: `loss/<name>` and `val/<name>` for each metric the objective returns, averaged like the loss; the perplexities are not logged, since the loss need not be a cross-entropy.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
