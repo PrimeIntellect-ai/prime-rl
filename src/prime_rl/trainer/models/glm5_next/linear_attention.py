@@ -1,14 +1,15 @@
 import torch
 from fla.modules import FusedRMSNormGated
-from fla.modules.conv import causal_conv1d
+from fla.modules.conv import causal_conv1d as fla_causal_conv1d
 from fla.ops.cp import build_cp_context
 from fla.ops.kda import chunk_kda
 from torch import nn
 
 from prime_rl.utils.cp import CPContext
 
-# FLA's context carries a process group that Dynamo cannot trace through the convolution.
-causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
+# FLA's convolution derives chunk metadata from `cu_seqlens`, which Dynamo would specialize on
+# (one-document rows fail the dynamic-size constraint), and under CP carries a process group.
+causal_conv1d = torch.compiler.disable(fla_causal_conv1d)
 
 
 class KimiDeltaAttention(nn.Module):
@@ -84,7 +85,7 @@ class KimiDeltaAttention(nn.Module):
         if context is None:
             mixed_qkv, _ = causal_conv1d(**convolution, cu_seqlens=cu_seqlens)
         else:
-            mixed_qkv, _ = causal_conv1d_with_context_parallelism(**convolution, cp_context=context)
+            mixed_qkv, _ = causal_conv1d(**convolution, cp_context=context)
 
         head_shape = (batch_size, sequence_length, self.num_heads, self.head_dim)
         query, key, value = (part.reshape(head_shape) for part in mixed_qkv.chunk(3, dim=-1))

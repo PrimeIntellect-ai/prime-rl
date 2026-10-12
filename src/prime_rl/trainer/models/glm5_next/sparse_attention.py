@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -25,6 +27,52 @@ def hadamard_128(x: torch.Tensor) -> torch.Tensor:
         a, b = pairs.unbind(-2)
         x = torch.stack((a + b, a - b), dim=-2)
     return x.reshape(shape) * 0.08838834764831845
+
+
+@dataclass(frozen=True)
+class PoolLayout:
+    """Where each document's k-pools and each local query sit in the packed row.
+
+    Pools are laid out document by document, starting at each document's first token; a document's
+    partial last pool gets none. Built once per forward from `cu_seqlens`, outside the compiled
+    decoder layers, so they never compute on the dynamic `cu_seqlens` themselves.
+    """
+
+    pool_start_tokens: torch.Tensor
+    """`[total_tokens // pool_size]` first token of each pool slot; slots past the real pools are unused."""
+    query_tokens: torch.Tensor
+    """`[local_tokens]` row index of each local query."""
+    query_positions: torch.Tensor
+    """`[local_tokens]` position of each local query within its document."""
+    first_pool: torch.Tensor
+    """`[local_tokens]` slot of the first pool of each query's document."""
+    visible_pools: torch.Tensor
+    """`[local_tokens]` complete pools that end at or before each query."""
+
+    @classmethod
+    def build(cls, cu_seqlens: torch.Tensor, local_tokens: int, cp_rank: int, cp_world_size: int, pool_size: int):
+        total_tokens = local_tokens * cp_world_size
+        token_indices = torch.arange(total_tokens, dtype=cu_seqlens.dtype, device=cu_seqlens.device)
+        token_documents = torch.searchsorted(cu_seqlens[1:], token_indices, right=True)
+        token_positions = token_indices - cu_seqlens[:-1][token_documents]
+        is_pool_start = (token_positions.remainder(pool_size) == 0) & (
+            token_indices + pool_size <= cu_seqlens[1:][token_documents]
+        )
+        max_pools = total_tokens // pool_size
+        pool_slots = (is_pool_start.cumsum(0) - 1).masked_fill(~is_pool_start, max_pools)
+        pool_start_tokens = torch.zeros(max_pools + 1, dtype=torch.long, device=cu_seqlens.device)
+        pool_start_tokens.scatter_(0, pool_slots.long(), token_indices.long())
+
+        query_tokens = token_indices[cp_rank * local_tokens :][:local_tokens]
+        query_positions = token_positions[query_tokens]
+        pools_per_document = torch.diff(cu_seqlens).div(pool_size, rounding_mode="floor")
+        return cls(
+            pool_start_tokens=pool_start_tokens[:-1],
+            query_tokens=query_tokens,
+            query_positions=query_positions,
+            first_pool=F.pad(pools_per_document.cumsum(0), (1, 0))[token_documents[query_tokens]],
+            visible_pools=(query_positions + 1).div(pool_size, rounding_mode="floor"),
+        )
 
 
 class KPoolIndexer(nn.Module):
@@ -89,7 +137,7 @@ class KPoolIndexer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         q_latent: torch.Tensor,
-        cu_seqlens: torch.LongTensor,
+        layout: PoolLayout,
     ) -> torch.Tensor:
         """Returns `[1, local_tokens, 1, output_width]` key indices; the sentinel is `total_tokens`."""
         local_tokens = hidden_states.shape[1]
@@ -106,51 +154,31 @@ class KPoolIndexer(nn.Module):
             key_and_gate = gather_for_cp(key_and_gate.unsqueeze(0), self.cp_context.cp_group)[0]
         key, gate = key_and_gate.chunk(2, dim=-1)
         total_tokens = key.shape[0]
-
-        # Pool slots are laid out document by document; a document's partial last pool gets none.
-        token_indices = torch.arange(total_tokens, dtype=cu_seqlens.dtype, device=device)
-        token_documents = torch.searchsorted(cu_seqlens[1:], token_indices, right=True)
-        token_positions = token_indices - cu_seqlens[:-1][token_documents]
-        is_pool_start = (token_positions.remainder(self.pool_size) == 0) & (
-            token_indices + self.pool_size <= cu_seqlens[1:][token_documents]
-        )
-        max_pools = total_tokens // self.pool_size
-        pool_slots = (is_pool_start.cumsum(0) - 1).masked_fill(~is_pool_start, max_pools)
-        pool_start_tokens = torch.zeros(max_pools + 1, dtype=torch.long, device=device)
-        pool_start_tokens.scatter_(0, pool_slots.long(), token_indices.long())
-        pool_start_tokens = pool_start_tokens[:-1]
-        pooled_key = self._pool_keys(key, gate, pool_start_tokens)
-
-        query_tokens = token_indices[self.cp_context.cp_rank * local_tokens :][:local_tokens]
-        query_documents = token_documents[query_tokens]
-        query_positions = token_positions[query_tokens]
-        pools_per_document = (cu_seqlens[1:] - cu_seqlens[:-1]).div(self.pool_size, rounding_mode="floor")
-        first_pool = F.pad(pools_per_document.cumsum(0), (1, 0))[query_documents]
-        visible_pools = (query_positions + 1).div(self.pool_size, rounding_mode="floor")
+        max_pools = layout.pool_start_tokens.shape[0]
         selected_pools = fp8_indexer(
             query,
-            pooled_key,
+            self._pool_keys(key, gate, layout.pool_start_tokens),
             head_weights,
-            first_pool.to(torch.int32),
-            (first_pool + visible_pools).to(torch.int32),
+            layout.first_pool.to(torch.int32),
+            (layout.first_pool + layout.visible_pools).to(torch.int32),
             self.pool_budget,
         )
 
         # Selected pools fill the front of each row (fp8_indexer ranks invalid slots last); the
         # incomplete pool's tokens follow them, and the rest of the row is the sentinel.
         sentinel = total_tokens
-        pool_start_tokens = F.pad(pool_start_tokens, (0, 1), value=sentinel)
+        pool_start_tokens = F.pad(layout.pool_start_tokens, (0, 1), value=sentinel)
         offsets = torch.arange(self.pool_size, device=device)
         selected_tokens = pool_start_tokens[selected_pools.long()][:, :, None] + offsets
         selected_tokens = selected_tokens.masked_fill((selected_pools == max_pools)[:, :, None], sentinel)
         indices = torch.full((local_tokens, self.output_width), sentinel, dtype=torch.int32, device=device)
         indices[:, : self.token_budget] = selected_tokens.flatten(1).to(torch.int32)
 
-        tail_length = (query_positions + 1).remainder(self.pool_size)
+        tail_length = (layout.query_positions + 1).remainder(self.pool_size)
         tail_offsets = offsets[:-1]
-        tail_tokens = (query_tokens - tail_length + 1)[:, None] + tail_offsets
+        tail_tokens = (layout.query_tokens - tail_length + 1)[:, None] + tail_offsets
         tail_tokens = tail_tokens.masked_fill(tail_offsets >= tail_length[:, None], sentinel)
-        tail_columns = visible_pools.clamp(max=self.pool_budget)[:, None] * self.pool_size + tail_offsets
+        tail_columns = layout.visible_pools.clamp(max=self.pool_budget)[:, None] * self.pool_size + tail_offsets
         indices.scatter_(1, tail_columns.long(), tail_tokens.to(torch.int32))
         return indices.view(1, local_tokens, 1, self.output_width)
 
@@ -204,14 +232,14 @@ class SparseMlaAttention(nn.Module):
 
         self.cp_context = CPContext()
 
-    def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.LongTensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, layout: PoolLayout) -> torch.Tensor:
         batch_size, local_tokens, _ = hidden_states.shape
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))
         kv_latent = self.kv_a_layernorm(self.kv_a_proj_with_mqa(hidden_states))
         if self.cp_context.cp_enabled:
             kv_latent = gather_for_cp(kv_latent, self.cp_context.cp_group)
 
-        indices = self.indexer(hidden_states, q_latent, cu_seqlens)
+        indices = self.indexer(hidden_states, q_latent, layout)
 
         kv_b_weight = self.kv_b_proj.weight.view(self.num_heads, self.qk_head_dim + self.v_head_dim, self.kv_lora_rank)
         key_weight, value_weight = kv_b_weight.split((self.qk_head_dim, self.v_head_dim), dim=1)
@@ -225,4 +253,4 @@ class SparseMlaAttention(nn.Module):
         return self.o_proj(out.reshape(batch_size, local_tokens, self.num_heads * self.v_head_dim))
 
 
-__all__ = ["KPoolIndexer", "SparseMlaAttention", "hadamard_128"]
+__all__ = ["KPoolIndexer", "PoolLayout", "SparseMlaAttention", "hadamard_128"]

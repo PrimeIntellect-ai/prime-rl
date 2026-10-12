@@ -22,7 +22,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
-from prime_rl.trainer.models.glm5_next.sparse_attention import SparseMlaAttention
+from prime_rl.trainer.models.glm5_next.sparse_attention import PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -118,10 +118,15 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
         self,
         mhc_states: torch.Tensor,
         cu_seqlens: torch.LongTensor,
+        pool_layout: PoolLayout,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         post, comb, collapsed = self.attn_hc(mhc_states)
-        attn_output = self.self_attn(self.input_layernorm(collapsed), cu_seqlens)
+        attention_input = self.input_layernorm(collapsed)
+        if self.layer_type == "linear_attention":
+            attn_output = self.self_attn(attention_input, cu_seqlens)
+        else:
+            attn_output = self.self_attn(attention_input, pool_layout)
         mhc_states = self.attn_hc.update_states(post, comb, attn_output, mhc_states)
 
         post, comb, collapsed = self.ffn_hc(mhc_states)
@@ -215,11 +220,18 @@ class Glm5NextTextModel(Glm5NextPreTrainedModel):
             total_tokens=inputs_embeds.shape[1] * self.cp_context.cp_world_size,
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        pool_layout = PoolLayout.build(
+            cu_seqlens,
+            inputs_embeds.shape[1],
+            self.cp_context.cp_rank,
+            self.cp_context.cp_world_size,
+            self.config.index_kpool,
+        )
 
         mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
             layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
-            mhc_states = decoder_layer(mhc_states, cu_seqlens, routed_experts=layer_routed_experts)
+            mhc_states = decoder_layer(mhc_states, cu_seqlens, pool_layout, routed_experts=layer_routed_experts)
         return BaseModelOutput(last_hidden_state=self.norm(mhc_states.mean(dim=2)))
 
 
