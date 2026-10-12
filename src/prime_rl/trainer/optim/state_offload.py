@@ -32,16 +32,13 @@ class CPUOffloadOptimizer(OffloadOptimizer):
     at the same time: peak memory becomes max(activations, opt_states) instead of sum.
     """
 
-    def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
+    def __init__(self, optimizer: Optimizer):
         self.optimizer = optimizer
-        self.pin_memory = pin_memory
         self._initialized = False
         self._cpu_buffers: dict[tuple[torch.Tensor, str], torch.Tensor] = {}
         self._streams: tuple[torch.cuda.Stream, torch.cuda.Stream] | None = None
 
     def _offload_to_cpu(self, param: torch.Tensor, key: str, src: torch.Tensor) -> torch.Tensor:
-        if not self.pin_memory:
-            return src.to("cpu", non_blocking=True)
         buffer = self._cpu_buffers.get((param, key))
         if buffer is None or buffer.shape != src.shape or buffer.dtype != src.dtype:
             buffer = torch.empty(src.shape, dtype=src.dtype, device="cpu", pin_memory=True)
@@ -81,11 +78,8 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return result
 
         # A parameter without state yet (no grad on any earlier step) is initialized by the full path below.
-        if (
-            closure is None
-            and self.pin_memory
-            and isinstance(self.optimizer, AdamW)
-            and all(p in self.state for group in self.param_groups for p in group["params"] if p.grad is not None)
+        if isinstance(self.optimizer, AdamW) and all(
+            p in self.state for group in self.param_groups for p in group["params"] if p.grad is not None
         ):
             return self._chunked_step()
 
