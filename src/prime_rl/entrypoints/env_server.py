@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 
 from verifiers.v1 import pool_serve_kwargs
-from verifiers.v1.runtimes import set_base_sandbox_labels
+from verifiers.v1.runtimes import set_base_sandbox_labels, set_default_sandbox_lifetime
 from verifiers.v1.serve import env_config_data, serve_env
 
 from prime_rl.configs.env_server import EnvServerConfig
@@ -17,9 +17,12 @@ from prime_rl.utils.sandboxes import run_label
 from prime_rl.utils.utils import clean_exit
 
 
-def setup_worker(log_level: str | None, json_logging: bool, sandbox_labels: list[str]) -> None:
+def setup_worker(
+    log_level: str | None, json_logging: bool, sandbox_labels: list[str], sandbox_lifetime: float | None
+) -> None:
     setup_env_server_logging(log_level, json_logging)
     set_base_sandbox_labels(sandbox_labels)
+    set_default_sandbox_lifetime(sandbox_lifetime)
 
 
 def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:
@@ -46,7 +49,9 @@ def run_server(config: EnvServerConfig):
         **pool_serve_kwargs(config.serve.pool),
         address=config.serve.address or "tcp://127.0.0.1:0",
         address_queue=addresses,
-        log_setup=partial(setup_worker, config.log.level, config.log.json_logging, sandbox_labels),
+        log_setup=partial(
+            setup_worker, config.log.level, config.log.json_logging, sandbox_labels, config.sandbox_lifetime
+        ),
         config_data=env_config_data(config.env),
         max_concurrent=config.serve.max_concurrent,
     )
