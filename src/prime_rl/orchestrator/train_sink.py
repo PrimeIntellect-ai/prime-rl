@@ -22,7 +22,7 @@ from prime_rl.orchestrator.metrics import TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import (
-    delete_files,
+    delete_files_in_background,
     episode_env_name,
     episode_group_id,
     min_fresh_version,
@@ -199,8 +199,7 @@ class TrainSink:
             del self.episode_by_trace[trace_id]
             self.pending_episodes.cancelled.add(episode.id)
             dropped += 1
-        if files:
-            asyncio.get_running_loop().run_in_executor(None, delete_files, files)
+        delete_files_in_background(files)
         if dropped:
             self.stale_drops += dropped
             get_logger().warning(
@@ -222,7 +221,7 @@ class TrainSink:
         if files:
             queued = (self.pending_batch.get(trace.id, ()) for episode in group for trace in episode.traces)
             files -= {segment.file for samples in queued for sample in samples for segment in sample.payload or ()}
-            await asyncio.to_thread(delete_files, files)
+            delete_files_in_background(files)
 
     async def _process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])

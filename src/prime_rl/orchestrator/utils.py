@@ -58,6 +58,13 @@ def delete_files(files: Iterable[str]) -> None:
         Path(file).unlink(missing_ok=True)
 
 
+def delete_files_in_background(files: set[str]) -> None:
+    """Delete files off the event loop: on a shared filesystem, unlinking a step's ~10^4-10^5
+    payload files takes seconds."""
+    if files:
+        asyncio.get_running_loop().run_in_executor(None, delete_files, files)
+
+
 def delete_payloads_before(payload_root: Path, version: int) -> None:
     """Delete the by-handle payload directories ``v<k>`` with ``k < version``."""
     for path in payload_root.glob("v*"):

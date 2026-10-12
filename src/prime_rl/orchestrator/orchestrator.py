@@ -61,7 +61,7 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
-    delete_files,
+    delete_files_in_background,
     delete_payloads_before,
     episode_group_id,
     episode_staleness,
@@ -580,12 +580,12 @@ class Orchestrator:
         # A resume can start past the end (checkpoint written at the final
         # step, or a lowered ``max_steps``): never ship beyond the budget.
         if config.max_steps is not None and step > config.max_steps:
-            self.delete_payloads(batch.payload_files)
+            delete_files_in_background(batch.payload_files)
             await self.start_draining(f"Step {step} exceeds max_steps={config.max_steps}")
             return
 
         if not batch.samples:
-            self.delete_payloads(batch.payload_files)
+            delete_files_in_background(batch.payload_files)
             get_logger().warning(
                 f"Step {step}: skipping empty train batch after {len(batch.episodes)} finalized episodes"
             )
@@ -1003,17 +1003,11 @@ class Orchestrator:
             return
         # The trainer read batch `step` before publishing v{step}.
         read = [s for s in self.unread_payloads if s <= step]
-        self.delete_payloads(set().union(*(self.unread_payloads.pop(s) for s in read)))
+        delete_files_in_background(set().union(*(self.unread_payloads.pop(s) for s in read)))
         # Orphans (in-flight episodes that were cancelled or failed, files from before a resume):
         # unread batches only hold rollouts dispatched at min_fresh_version(step + 1) or later.
         oldest = min_fresh_version(step + 1, self.config.max_off_policy_steps)
         asyncio.get_running_loop().run_in_executor(None, delete_payloads_before, self.config.payload_root, oldest)
-
-    def delete_payloads(self, files: set[str]) -> None:
-        """Delete payload files in the background: on a shared filesystem, unlinking a step's
-        ~10^4-10^5 files must not hold up the weight update this runs under."""
-        if files:
-            asyncio.get_running_loop().run_in_executor(None, delete_files, files)
 
     async def stop(self, clean_exit: bool) -> None:
         """Bounded best-effort teardown of all components. Has a global
