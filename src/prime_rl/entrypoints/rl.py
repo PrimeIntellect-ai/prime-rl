@@ -22,6 +22,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    get_trainer_step_path,
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -322,6 +323,11 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     }
 
     ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
+    requeue_vars = {
+        "trainer_step_path": get_trainer_step_path(config.run_dir),
+        "ckpt_with_orchestrator": config.trainer.data.fake is None,
+        "resume_latest": config.resume is not None and config.resume.dir is None and config.resume.step is None,
+    }
 
     if config.deployment.type == "single_node":
         script = template.render(
@@ -331,7 +337,9 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
@@ -347,6 +355,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             output_dir=config.run_dir,
             ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=infer_deploy.num_nodes * config.deployment.num_infer_replicas,
@@ -393,6 +402,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             output_dir=config.run_dir,
             ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
             num_infer_nodes=config.deployment.total_infer_nodes,
