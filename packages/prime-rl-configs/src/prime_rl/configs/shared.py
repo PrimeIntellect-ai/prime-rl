@@ -247,6 +247,9 @@ class PolicyClientConfig(VLLMClientConfig):
     dynamo: DynamoConfig | None = None
     """Dynamo RL worker-discovery configuration."""
 
+    elastic: bool = False
+    """Let inference engine groups join and leave mid-run by registering in ``<output_dir>/broadcasts/members/`` (``python -m prime_rl.inference.register``). Needs filesystem or NCCL weight broadcast; joining engines need the same GPU count per engine as the others with NCCL."""
+
 
 class LogConfig(BaseConfig):
     level: str = Field(default_factory=lambda: os.environ.get("PRIME_LOG_LEVEL", "info"))

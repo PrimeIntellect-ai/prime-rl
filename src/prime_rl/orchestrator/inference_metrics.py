@@ -282,6 +282,8 @@ class InferenceMetricsCollector:
         log_metrics: bool = True,
     ):
         self.endpoints = build_metrics_endpoints(admin_clients, roles=roles)
+        # The admin plane's live client list: engines that join mid-run are scraped too
+        self.admin_clients = admin_clients
         self.previous: dict[tuple[str, str], TimedSnapshot] = {}
         self.max_model_len_by_endpoint: dict[str, int] = {}
         self.task: asyncio.Task | None = None
@@ -322,6 +324,14 @@ class InferenceMetricsCollector:
 
     async def collect_and_log(self):
         now = time.monotonic()
+        known = {endpoint.client for endpoint in self.endpoints}
+        if not any(endpoint.role for endpoint in self.endpoints):
+            for client in self.admin_clients:
+                if client not in known:
+                    key = str(client.base_url).rstrip("/")
+                    self.endpoints.append(
+                        MetricsEndpoint(client=client, role=None, key=key, name=f"server{len(self.endpoints)}")
+                    )
 
         async def fetch(endpoint: MetricsEndpoint) -> str | None:
             try:
