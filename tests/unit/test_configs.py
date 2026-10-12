@@ -715,6 +715,18 @@ def test_rl_rejects_conflicting_launcher_owned_fields(overrides, match):
         RLConfig.model_validate(data)
 
 
+def test_rl_nccl_broadcast_needs_two_gpus():
+    with pytest.raises(ValidationError, match="at least 2 GPUs"):
+        RLConfig.model_validate(
+            {
+                "trainer": {"data": {"fake": {}}},
+                "orchestrator": {},
+                "weight_broadcast": {"type": "nccl"},
+                "deployment": {"type": "single_node", "gpus_per_node": 1, "num_train_gpus": 1, "num_infer_gpus": 0},
+            }
+        )
+
+
 def test_multi_node_auto_inference_parallelism():
     config = RLConfig.model_validate(
         {
