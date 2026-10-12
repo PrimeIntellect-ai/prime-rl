@@ -119,7 +119,8 @@ def setup_single_process_env() -> None:
 def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
     model.config.save_pretrained(output_dir)
-    if model.generation_config:
+    # Models without GenerationMixin (e.g. hybrid linear-attention models) have no generation_config.
+    if getattr(model, "generation_config", None):
         # training sets use_cache=False which can conflict with cache_implementation —
         # save with use_cache=True without mutating the model's config
         gen_config = deepcopy(model.generation_config)
