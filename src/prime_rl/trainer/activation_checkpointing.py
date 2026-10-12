@@ -33,6 +33,7 @@ MANDATORY_SAVE_OPERATIONS = frozenset(
     {
         "aten::topk",
         "prime_rl::fp8_indexer",
+        "prime_rl::dsv41_index_topk",
         "prime_kernels::select_indexed_blocks",
         "prime_rl::record_moe_routing_statistics",
     }
@@ -69,6 +70,7 @@ DEFAULT_SELECTIVE_SAVE_OPERATIONS = frozenset(
         "aten::mm",
         "prime_rl::dsv4_sparse_attn",
         "prime_rl::fp8_blockwise_bmm",
+        "prime_rl::dsv41_sparse_attn",
         "prime_rl::fp8_blockwise_mm",
         "prime_rl::mega_moe_forward",
         "prime_rl::grouped_fp8_gemm",
