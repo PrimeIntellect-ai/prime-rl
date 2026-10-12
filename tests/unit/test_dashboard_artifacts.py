@@ -6,7 +6,13 @@ from verifiers.v1.serve import EpisodeAssembly
 
 from prime_rl.dashboard import server
 from prime_rl.monitors.file.traces.live import LiveFolds
-from prime_rl.utils.pathing import create_attempt_dirs, get_config_dir, write_standalone_config
+from prime_rl.utils.pathing import (
+    create_attempt_dirs,
+    get_config_dir,
+    launcher_attempt_env,
+    prepare_attempt_dirs,
+    write_standalone_config,
+)
 
 
 def test_standalone_components_populate_dashboard(tmp_path, monkeypatch):
@@ -60,8 +66,9 @@ def test_standalone_components_populate_dashboard(tmp_path, monkeypatch):
 
 def test_launcher_configs_are_preserved(tmp_path, monkeypatch):
     config_dir, log_dir = create_attempt_dirs(tmp_path)
-    monkeypatch.setenv("PRL_ATTEMPT_CONFIG_DIR", str(config_dir))
-    monkeypatch.setenv("PRL_ATTEMPT_LOG_DIR", str(log_dir))
+    for key, value in launcher_attempt_env(config_dir, log_dir).items():
+        monkeypatch.setenv(key, value)
+    assert prepare_attempt_dirs(tmp_path) == (config_dir, log_dir)
     original = '{"model": {"name": "launcher-model"}}'
     (config_dir / "trainer.json").write_text(original)
     config_type = create_model("RunConfig", model=(dict, ...))

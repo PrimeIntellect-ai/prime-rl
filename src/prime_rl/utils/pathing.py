@@ -74,6 +74,11 @@ def prepare_attempt_dirs(run_dir: Path) -> tuple[Path, Path]:
     return resolved_config_dir, attempt_log_dir
 
 
+def launcher_attempt_env(config_dir: Path, log_dir: Path) -> dict[str, str]:
+    """Env that pins a launcher's child processes to its attempt (see ``prepare_attempt_dirs``)."""
+    return {"PRL_ATTEMPT_CONFIG_DIR": str(config_dir), "PRL_ATTEMPT_LOG_DIR": str(log_dir)}
+
+
 def create_attempt_log_dir(run_dir: Path) -> Path:
     """Create a log-only attempt for standalone processes without config dumps."""
     logs_dir = get_log_dir(run_dir)
@@ -176,7 +181,8 @@ def write_standalone_config(output_dir: Path, config: BaseModel, name: str) -> N
 
     Independently launched components share the unnumbered config directory;
     allocating an attempt in each process would split one run across attempts.
-    Launcher-managed processes already have their launch artifacts.
+    ``PRL_ATTEMPT_CONFIG_DIR`` is set by launchers that pin children to their
+    attempt (``launcher_attempt_env``), whose configs are already saved, so skip.
     """
     if os.environ.get("PRL_ATTEMPT_CONFIG_DIR"):
         return
