@@ -100,10 +100,10 @@ def train(config: SFTConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+        enable_gloo=config.model.offload == "full",
     )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
+    if config.model.offload == "full":
+        setup_full_cpu_optimizer_offload()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -113,7 +113,7 @@ def train(config: SFTConfig):
     resolve_ep(config.model)
 
     # Initialize parallel dimensions
-    parallel_dims = get_parallel_dims(config.model, config.data.seq_len)
+    parallel_dims = get_parallel_dims(config.model)
 
     total_micro_batches = config.data.batch_size * config.model.cp
     micro_batches_per_step = world.world_size * config.data.micro_batch_size
@@ -162,11 +162,10 @@ def train(config: SFTConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
+        offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
     )
 
@@ -210,13 +209,12 @@ def train(config: SFTConfig):
             model,
             [optimizer],
             scheduler if not skip.skip_scheduler else None,
-            progress if not skip.skip_progress else None,
+            progress,
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=resume_dir / "trainer" if resume_dir is not None else None,
         )
         # The checkpoint finished step ``checkpoint_step``; resume training at the next step.
-        if not skip.skip_progress:
-            progress.step += 1
+        progress.step += 1
         # This redundant setup is necessary because loading the optimizer's state has side effects on the scheduler state dict
         if skip.skip_scheduler:
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
@@ -258,7 +256,7 @@ def train(config: SFTConfig):
 
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
-            # pads every pack to seq_len; shard_for_cp raises on violations.
+            # pads every pack to a multiple of it; shard_for_cp raises on violations.
             defer_vlm_cp_to_model = (
                 mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
             )
@@ -464,8 +462,10 @@ def train(config: SFTConfig):
             )
 
         step_tokens_per_expert = 0
+        step_local_num_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             step_real_tokens += micro_batch["num_tokens"]
+            step_local_num_tokens += micro_batch["input_ids"].shape[1]
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
@@ -568,14 +568,10 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # Compute step metrics. CP shards the same sequences across cp ranks
-        # (sequence-sharded data parallelism on the seq dim), so the unique
-        # training tokens per step is dp_size * (batch_per_dp_rank * seq).
-        # The `dp` mesh excludes cp by construction (parallel_dims.py), mirroring
-        # the RL trainer's accounting (rl/train.py).
-        dp_size = parallel_dims.get_mesh("dp").size()
-        num_local_tokens = config.data.seq_len * (config.data.batch_size // dp_size)
-        num_tokens = dp_size * num_local_tokens
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]

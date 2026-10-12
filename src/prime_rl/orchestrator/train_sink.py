@@ -242,7 +242,7 @@ class TrainSink:
 
         survivors = [trace for _, trace in iter_trainable_traces(group)]
         if survivors:
-            await env.algorithm.finalize_group(group)
+            await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False
         if not survivors or not admitted:
             self.pending_episodes.extend(group, admitted=admitted)
@@ -255,7 +255,7 @@ class TrainSink:
             return
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
-        temperature = env.sampling_args["temperature"]
+        temperature = env.config.sampling.temperature
         for trace in survivors:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:

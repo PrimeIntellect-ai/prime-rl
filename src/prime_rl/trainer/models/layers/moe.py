@@ -13,11 +13,11 @@ from torch import nn
 
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher, TokenDispatcher
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
-from prime_rl.trainer.models.layers.activations import ActivationDispatch, ActivationType
+from prime_rl.trainer.models.layers.activations import Activation, ActivationDispatch, ActivationType
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, ExpertCompute
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
-ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax"]
+ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax", "sqrtsoftplus"]
 
 
 @torch.library.custom_op(
@@ -76,7 +76,7 @@ class GroupedExperts(nn.Module):
         num_experts: int,
         *,
         expert_type: ExpertType = "gated",
-        activation: ActivationType = "silu",
+        activation: ActivationType | Activation = "silu",
         bias: bool = False,
         compute: ExpertCompute | None = None,
     ):
@@ -93,7 +93,7 @@ class GroupedExperts(nn.Module):
         self.up_proj_bias = nn.Parameter(torch.empty(num_experts, hidden_dim)) if bias else None
         self.down_proj_bias = nn.Parameter(torch.empty(num_experts, dim)) if bias else None
 
-        self.activation = ActivationDispatch[activation]
+        self.activation = ActivationDispatch[activation] if isinstance(activation, str) else activation
         if expert_type == "non_gated":
             self.supported_fusions = {}
         self.set_compute(compute or BF16ExpertCompute())
@@ -136,8 +136,8 @@ class TokenChoiceTopKRouter(nn.Module):
         dim (int): Dimension of input tokens.
         num_experts (int): Number of experts in each moe layer.
         top_k (int): Number of experts each token will be routed to in token-choice routing.
-        score_func (Literal["softmax", "sigmoid", "topk_softmax"]): Score transform. ``topk_softmax``
-            selects experts from the logits and normalizes only the selected logits.
+        score_func (ScoreFuncType): Score transform. ``topk_softmax`` selects experts from the logits
+            and normalizes only the selected logits. ``sqrtsoftplus`` is DeepSeek V4's ``sqrt(softplus(.))``.
         route_norm (bool): Whether to normalize the routing scores when using sigmoid.
         route_scale (float): Scaling factor applied to the routing scores.
         gate_bias (bool): Whether the gate has a trainable logit bias.
@@ -151,7 +151,7 @@ class TokenChoiceTopKRouter(nn.Module):
         dim: int,
         num_experts: int,
         top_k: int,
-        score_func: Literal["softmax", "sigmoid", "topk_softmax"],
+        score_func: ScoreFuncType,
         route_norm: bool,
         route_scale: float,
         *,
@@ -214,6 +214,8 @@ class TokenChoiceTopKRouter(nn.Module):
             scores = F.softmax(logits.float(), dim=1)
         elif self.score_func == "topk_softmax":
             scores = logits
+        elif self.score_func == "sqrtsoftplus":
+            scores = F.softplus(logits.float()).sqrt()
         else:
             raise NotImplementedError(f"Unknown score function {self.score_func}")
 

@@ -89,13 +89,17 @@ def test_tensor_materialization_matches_sample_fields():
         )
     descriptors = [SampleDescriptor(0, 7), SampleDescriptor(1, 3)]
     real, empty = materialize_rows([descriptors, []], samples, 16)
-    expected = cat_collate([next(iter(CatDataset(reference, 16)))])
+    expected = cat_collate([next(iter(CatDataset(reference, 16, pad_to_multiple_of=16)))])
     for key in ("input_ids", "target_ids", "position_ids", "loss_mask", "seq_lens"):
         torch.testing.assert_close(real[key], expected[key], rtol=0, atol=0)
     assert real["num_tokens"] == 10
     assert real["sample_ids"] == [0, 1]
     assert empty["sample_ids"] == [] and empty["num_tokens"] == 0
     assert not empty["loss_mask"].any() and empty["seq_lens"].tolist() == [16]
+    for multiple, padded_length in [(1, 10), (4, 12)]:
+        partial = next(iter(CatDataset(reference, 16, pad_to_multiple_of=multiple)))
+        assert len(partial["input_ids"]) == padded_length
+        assert partial["num_tokens"] == 10
 
 
 @pytest.mark.parametrize("workers,chunk_size", [(1, 1), (2, 3)])

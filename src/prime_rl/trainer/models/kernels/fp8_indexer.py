@@ -12,6 +12,7 @@ import triton.language as tl
 FP8_MAX = 448.0
 FP8_MIN = -448.0
 FP8_EPS = 1e-10
+KEY_ALIGNMENT = 16
 
 
 @triton.jit
@@ -88,17 +89,6 @@ def per_token_group_quant_fp8(
     return x_q, x_s
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=2),
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=8, num_stages=2),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=3),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=8, num_stages=3),
-    ],
-    key=["S_Q", "S_K_BUCKET", "H", "D"],
-)
 @triton.jit
 def _triton_fp8_indexer_kernel(
     Q_fp8,
@@ -116,7 +106,6 @@ def _triton_fp8_indexer_kernel(
     stride_ws,
     H: tl.constexpr,
     D: tl.constexpr,
-    S_K_BUCKET: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
@@ -201,6 +190,8 @@ def fp8_indexer(
 
     q_flat = q.reshape(S_q * H, D).contiguous()
     q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True)
+    S_k_aligned = triton.cdiv(S_k, KEY_ALIGNMENT) * KEY_ALIGNMENT
+    k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
     k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True)
 
     q_fp8 = q_fp8.view(S_q, H, D).permute(1, 0, 2).contiguous()
@@ -209,12 +200,10 @@ def fp8_indexer(
     q_scales = q_scales.view(S_q, H)
     w = w * q_scales
 
-    logits = torch.empty(S_q, S_k, dtype=torch.float32, device=device)
+    logits = torch.empty(S_q, S_k_aligned, dtype=torch.float32, device=device)
 
-    grid = lambda meta: (
-        triton.cdiv(S_q, meta["BLOCK_M"]),
-        triton.cdiv(S_k, meta["BLOCK_N"]),
-    )
+    BLOCK_M, BLOCK_N = 64, 128
+    grid = (triton.cdiv(S_q, BLOCK_M), triton.cdiv(S_k_aligned, BLOCK_N))
     _triton_fp8_indexer_kernel[grid](
         q_fp8,
         k_fp8,
@@ -224,16 +213,17 @@ def fp8_indexer(
         ks,
         ke,
         S_q,
-        S_k,
+        S_k_aligned,
         q_fp8.stride(0),
         q_fp8.stride(1),
         k_fp8.stride(0),
         w.stride(0),
         H=H,
         D=D,
-        # Packed document tails change S_k between batches. Reuse tuning within
-        # a size bucket; exact S_k still controls strides and all bounds masks.
-        S_K_BUCKET=triton.next_power_of_2(S_k),
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        num_warps=4,
+        num_stages=2,
     )
 
     actual_topk = min(topk, S_k)

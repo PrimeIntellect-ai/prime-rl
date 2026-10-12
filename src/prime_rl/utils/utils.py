@@ -2,32 +2,13 @@ import asyncio
 import functools
 import importlib
 import math
-import os
 import sys
-from collections import defaultdict
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Callable
 
 import wandb
 
 from prime_rl.utils.logger import get_logger
-
-# TODO: Change all imports to use utils.pathing
-# ruff: noqa: F401
-from prime_rl.utils.pathing import (
-    get_all_ckpt_steps,
-    get_batch_dir,
-    get_broadcast_dir,
-    get_ckpt_dir,
-    get_eval_dir,
-    get_file_monitor_dir,
-    get_log_dir,
-    get_step_path,
-    resolve_latest_ckpt_step,
-    sync_wait_for_path,
-    wait_for_path,
-)
 
 
 def import_object(dotted_path: str) -> Any:

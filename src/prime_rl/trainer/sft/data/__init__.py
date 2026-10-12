@@ -17,7 +17,7 @@ def setup_dataloader(
     dataset = datasets.setup_dataset(tokenizer, config, cp_size, **dataset_kwargs)
     if isinstance(dataset, datasets.SFTDataset) and not dataset.multimodal:
         return PackedDataLoader(dataset, config, cp_size, timeout_seconds=timeout_seconds, validation=validation)
-    return datasets.setup_local_dataloader(dataset, config)
+    return datasets.setup_local_dataloader(dataset, config, cp=cp_size)
 
 
 def get_dataset_state(dataloader: PackedDataLoader | StatefulDataLoader) -> dict:
