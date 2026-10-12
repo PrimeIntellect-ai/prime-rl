@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
@@ -163,6 +163,19 @@ class SFTDataConfig(BaseDataConfig):
         return self
 
 
+class SFTObjectiveConfig(BaseConfig):
+    """A custom SFT objective: it builds each sample from a dataset row and computes the loss from the backbone's
+    final hidden states, in place of chat-message rendering and token cross-entropy."""
+
+    import_path: str
+    """Import path to the objective class (e.g. ``my_module.MyObjective``), instantiated with ``kwargs``. It implements
+    ``make_sample(example, renderer)`` and ``loss(inputs: ObjectiveInputs) -> ObjectiveOutputs`` (see
+    ``prime_rl.trainer.sft.objective.SFTObjective``)."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the objective's constructor."""
+
+
 class SFTValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -247,6 +260,9 @@ class SFTConfig(BaseConfig):
     optim: OptimizerConfig = AdamWConfig()
 
     scheduler: SchedulerConfig = ConstantSchedulerConfig()
+
+    objective: SFTObjectiveConfig | None = None
+    """Custom SFT objective. If None, trains with token cross-entropy on rendered chat messages."""
 
     ckpt: CheckpointConfig | None = None
 
@@ -578,6 +594,16 @@ class SFTConfig(BaseConfig):
                 raise ValueError("Micro batch size must be 1 when CP is enabled")
             if self.val is not None and self.val.data.micro_batch_size != 1:
                 raise ValueError("Validation micro batch size must be 1 when CP is enabled")
+        return self
+
+    @model_validator(mode="after")
+    def validate_objective(self):
+        if self.objective is None:
+            return self
+        if self.data.type != "sft" or (self.val is not None and self.val.data.type != "sft"):
+            raise ValueError("objective requires data.type='sft' (and val.data.type='sft')")
+        if self.model.cp > 1 or self.model.vlm is not None or self.model.full_offload is not None:
+            raise ValueError("objective is not supported with context parallelism, VLM training or full_offload")
         return self
 
     @model_validator(mode="after")

@@ -2,8 +2,9 @@ import json
 import time
 import uuid
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 import torch
@@ -24,6 +25,9 @@ from prime_rl.utils.chat_template import deserialize_tool_calls, normalize_messa
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
 
+if TYPE_CHECKING:
+    from prime_rl.trainer.sft.objective import SFTObjective
+
 
 class Sample(TypedDict):
     input_ids: list[int]
@@ -33,6 +37,7 @@ class Sample(TypedDict):
     seq_lens: list[int]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: list[int] | None
+    objective_data: NotRequired[dict[str, Any]]
 
 
 class Batch(TypedDict):
@@ -43,6 +48,7 @@ class Batch(TypedDict):
     seq_lens: Int[Tensor, "packed"]
     mm_kwargs: dict[str, Tensor] | None
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
+    objective_data: NotRequired[list[dict[str, Any]]]
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -479,6 +485,26 @@ class SFTDataset(StatefulIterableDataset):
             yield processed_example
 
 
+class SFTObjectiveDataset(SFTDataset):
+    """An SFT dataset whose samples are built by a custom objective (``[objective]``)."""
+
+    def __init__(self, dataset: Dataset, renderers: Callable[[dict], Renderer], objective: "SFTObjective", **kwargs):
+        super().__init__(dataset, renderers, **kwargs)
+        self.objective = objective
+
+    def _process(self, example: dict) -> dict | None:
+        sample = self.objective.make_sample(example, self.renderers(example))
+        if sample is None:
+            return None
+        if len(sample["input_ids"]) > self.seq_len:
+            # Packing would cut the sample, and the objective's targets would no longer match its tokens.
+            self.logger.warning(
+                f"Skipping example {example.get('__index', '')}: {len(sample['input_ids'])} tokens exceed seq_len ({self.seq_len})"
+            )
+            return None
+        return {"mm_kwargs": None, "mm_token_type_ids": None, **sample}
+
+
 class CatDataset(StatefulIterableDataset):
     """Pack samples into rows of at most `seq_len` tokens, padded to a multiple of `pad_to_multiple_of`."""
 
@@ -540,6 +566,8 @@ class CatDataset(StatefulIterableDataset):
                 assert isinstance(value, list)
                 packed_samples[key].extend(value)
             packed_samples["seq_lens"].append(sample_len)
+            if "objective_data" in sample:
+                packed_samples["objective_data"].append(sample["objective_data"])
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
@@ -597,6 +625,9 @@ class CatDataset(StatefulIterableDataset):
             result["loss_mask"].extend([False] * pad_len)
             result["target_ids"].extend([0] * pad_len)
             result["seq_lens"][-1] += pad_len
+        if "objective_data" in packed:
+            # One entry per sample that kept tokens; only a lone overlong sample is ever cut.
+            result["objective_data"] = packed["objective_data"][: len(result["seq_lens"])]
         result["mm_kwargs"] = packed["mm_kwargs"]
         if packed["mm_token_type_ids"] is not None:
             result["mm_token_type_ids"] = packed["mm_token_type_ids"][:seq_len] + [0] * pad_len
@@ -610,7 +641,7 @@ def cat_collate(samples: list[Sample]) -> Batch:
     (sample,) = samples
     mm_kwargs = sample.get("mm_kwargs")
     mm_token_type_ids = sample.get("mm_token_type_ids")
-    return {
+    batch: Batch = {
         "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long).unsqueeze(0),
         "position_ids": torch.tensor(sample["position_ids"], dtype=torch.long).unsqueeze(0),
         "loss_mask": torch.tensor(sample["loss_mask"], dtype=torch.bool).unsqueeze(0),
@@ -621,6 +652,9 @@ def cat_collate(samples: list[Sample]) -> Batch:
             torch.tensor(mm_token_type_ids, dtype=torch.long).unsqueeze(0) if mm_token_type_ids is not None else None
         ),
     }
+    if "objective_data" in sample:
+        batch["objective_data"] = sample["objective_data"]
+    return batch
 
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
@@ -728,6 +762,7 @@ def setup_dataset(
     renderer_config: RendererConfig | None = None,
     processor: Any | None = None,
     multimodal: bool = False,
+    objective: "SFTObjective | None" = None,
 ) -> StatefulIterableDataset:
     if config.type == "fake":
         return FakeDataset(
@@ -744,7 +779,8 @@ def setup_dataset(
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
         renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
-        return SFTDataset(
+        dataset_cls = partial(SFTObjectiveDataset, objective=objective) if objective is not None else SFTDataset
+        return dataset_cls(
             raw_dataset,
             renderers,
             shuffle=config.shuffle,

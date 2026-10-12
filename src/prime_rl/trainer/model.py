@@ -1027,6 +1027,7 @@ def forward(
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
     seq_lens_are_pre_shard: bool = False,
+    return_hidden_states: bool = False,
 ) -> PrimeLmOutput:
     kwargs = {
         "input_ids": input_ids,
@@ -1054,5 +1055,7 @@ def forward(
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+    if return_hidden_states:
+        kwargs["return_hidden_states"] = True
 
     return cast_float_and_contiguous(model(**kwargs))

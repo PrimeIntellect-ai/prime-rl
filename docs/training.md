@@ -16,6 +16,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
   - [Dataset Format](#dataset-format)
   - [Launch](#launch-1)
   - [SFT-Specific Knobs](#sft-specific-knobs)
+  - [Custom Objective](#custom-objective)
   - [Important Metrics](#important-metrics-1)
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
@@ -268,6 +269,70 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
 
+### Custom Objective
+
+`[objective]` replaces two parts of the SFT trainer: how a dataset row becomes a sample (in place of chat-message rendering) and the loss (in place of token cross-entropy). Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: you write a class whose `loss` returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss).
+
+```python
+# my_module.py
+from renderers.base import build_training_sample
+from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs
+
+class WeightedSFT:
+    """Token cross-entropy on the assistant's tokens, with one weight per sample from the dataset's `weight` column."""
+
+    def make_sample(self, example, renderer):
+        rendered = build_training_sample(renderer, example["messages"], ensure_final_stop=True)
+        ids, mask = list(rendered.token_ids), list(rendered.loss_mask)
+        return {  # next-token targets, as stock SFT builds them
+            "input_ids": ids[:-1],
+            "position_ids": list(range(len(ids) - 1)),
+            "target_ids": ids[1:],
+            "loss_mask": mask[1:],
+            "seq_lens": [len(ids) - 1],
+            "objective_data": {"weight": example["weight"]},  # travels with the sample to the loss
+        }
+
+    def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
+        batch = inputs.batch
+        labels = batch["target_ids"].masked_fill(~batch["loss_mask"], -100)
+        loss = ce = 0.0
+        start = 0
+        for length, data in zip(batch["seq_lens"].tolist(), batch["objective_data"]):  # one entry per sample
+            end = start + length
+            # the model's LM head returns the summed cross-entropy over labels != -100
+            sample_ce = inputs.model.lm_head(inputs.hidden_states[:, start:end], labels[:, start:end])["loss"]
+            loss = loss + data["weight"] * sample_ce
+            ce = ce + sample_ce.detach()
+            start = end
+        return ObjectiveOutputs(loss=loss, count=batch["loss_mask"].sum(), metrics={"ce": ce})
+```
+
+Wire it up:
+
+```toml
+[objective]
+import_path = "my_module.WeightedSFT"
+```
+
+The dataclasses:
+
+```python
+@dataclass
+class ObjectiveInputs:
+    model: nn.Module
+    hidden_states: Float[Tensor, "batch seq hidden"]  # post-norm, no vocabulary projection
+    batch: Batch                                       # on the device; batch["objective_data"]: one dict per sample
+
+@dataclass
+class ObjectiveOutputs:
+    loss: Float[Tensor, ""]                   # summed; divided by the global `count`
+    count: int | Tensor                       # e.g. samples or tokens in this micro-batch
+    metrics: dict[str, Tensor] = {}           # summed; divided like the loss, same names on every call
+```
+
+The loss can use any module of the model, such as its LM head above (`lm_head(hidden_states, labels)` returns the summed cross-entropy). Constructor arguments come from `[objective.kwargs]`. Packing records one `seq_lens` entry per sample, so a sample holding several independent sequences must keep them apart itself. Samples longer than `data.seq_len` are skipped. Not supported with context parallelism, VLM training or `model.full_offload`.
+
 ### Important Metrics
 
 Pulled from the console log and mirrored to W&B.
@@ -276,6 +341,7 @@ Pulled from the console log and mirrored to W&B.
 
 - `loss/mean`, `loss/perplexity` — main signal. Should decrease through the run.
 - `val/loss`, `val/perplexity` — validation metrics when `[val]` is set, logged every `val.interval` steps.
+- With `[objective]`: `loss/<name>` and `val/<name>` for each metric the objective returns, averaged like the loss.
 - `eval/{env}/...` — online eval metrics when `[eval]` is set, logged at each evaluated checkpoint step.
 - `progress/epoch`, `progress/num_samples`, `progress/num_tokens` — dataset progress.
 - `progress/<subset>/ratio_{samples,tokens}` — when training on multiple HF subsets/splits, the realized mixing ratio.
