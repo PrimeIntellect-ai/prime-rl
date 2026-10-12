@@ -2,7 +2,8 @@ from typing import Iterable
 
 import torch
 from torch.nn import Module
-from vllm.config import set_current_vllm_config
+from vllm.config import ParallelConfig, set_current_vllm_config
+from vllm.distributed import get_pp_group, get_tensor_model_parallel_rank
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
 
@@ -21,6 +22,37 @@ def load_weights_checkpoint_layerwise(
         initialize_layerwise_reload(model)
         model.load_weights(state_iter)  # type: ignore
         finalize_layerwise_reload(model, model_config)
+
+
+@torch.no_grad()
+def compute_weight_checksums(model: Module, chunk_numel: int = 2**22) -> dict[str, int]:
+    """Position-weighted integer sum of each parameter's raw bits, computed on GPU.
+
+    Exact and deterministic, so engines with the same parallel layout and weights
+    produce identical values. Any changed or reordered element changes the sum."""
+    names, sums = [], []
+    for name, param in model.named_parameters():
+        words = param.detach().reshape(-1).view(torch.uint8)
+        if words.numel() % 4 == 0:
+            words = words.view(torch.int32)
+        total = torch.zeros((), dtype=torch.int64, device=words.device)
+        for start in range(0, words.numel(), chunk_numel):
+            chunk = words[start : start + chunk_numel].long()
+            positions = torch.arange(start + 1, start + 1 + chunk.numel(), dtype=torch.int64, device=chunk.device)
+            total += (chunk * positions).sum()
+        names.append(name)
+        sums.append(total)
+    return dict(zip(names, torch.stack(sums).tolist()))
+
+
+def collect_weight_checksums(model: Module, parallel_config: ParallelConfig) -> dict:
+    """Checksums of this worker's parameters, keyed by the shard it holds. Workers of
+    different engines with the same shard must hold identical weights. With expert
+    parallelism each DP rank holds different experts, so the DP rank is part of the shard."""
+    shard = f"tp{get_tensor_model_parallel_rank()}-pp{get_pp_group().rank_in_group}"
+    if parallel_config.enable_expert_parallel:
+        shard = f"dp{parallel_config.data_parallel_rank}-{shard}"
+    return {"shard": shard, "checksums": compute_weight_checksums(model)}
 
 
 @torch.no_grad()

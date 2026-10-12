@@ -64,6 +64,12 @@ async def weight_version(request: Request):
     return {"version": getattr(request.app.state, "weight_version", None)}
 
 
+@router.post("/weight_checksums")
+async def weight_checksums(request: Request):
+    """Per-parameter checksums of every worker of DP rank 0, in worker rank order."""
+    return {"checksums": await engine_client(request).collective_rpc("weight_checksums")}
+
+
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request, version: int | None = None):
     """Wrapper around vLLM's /v1/load_lora_adapter.

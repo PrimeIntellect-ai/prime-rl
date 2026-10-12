@@ -307,6 +307,7 @@ class NCCLWeightReceiver(WeightReceiver):
             transport="nccl",
             step=step,
             on_paused=lambda: self._ack(step),
+            checksum=self.config.checksum,
             on_membership_change=self.on_membership_change,
             abort_marker=lambda: self.step_dir(step) / f".abort_{self.port}",
             resend=lambda: self._resend(step),

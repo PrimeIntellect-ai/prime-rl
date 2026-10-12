@@ -10,6 +10,7 @@ from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
     check_health,
+    find_checksum_mismatches,
     setup_client,
 )
 
@@ -198,3 +199,16 @@ def test_engine_group_is_evicted_and_readmitted_as_one():
         admin_plane.recovered = {a, b}
         asyncio.run(admin_plane._readmit([a, b], [a, b], step=5))
     assert admin_plane.clients == [c, a, b] and not admin_plane.evicted
+
+
+def test_find_checksum_mismatches():
+    def worker(shard, **checksums):
+        return {"shard": shard, "checksums": checksums}
+
+    engine = [worker("tp0", a=1, b=2), worker("tp1", a=3)]
+    assert find_checksum_mismatches([engine, engine]) == []
+    changed = [worker("tp0", a=1, b=5), worker("tp1", a=3, c=4)]
+    assert find_checksum_mismatches([engine, changed, [worker("tp2", a=9)]]) == [
+        "engine1/tp0/b != engine0",
+        "engine1/tp1/c != engine0",
+    ]

@@ -10,7 +10,7 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, Field
 
-from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
+from prime_rl.configs.shared import ClientConfig, PolicyClientConfig, WeightChecksumConfig
 from prime_rl.orchestrator.clients import (
     ADMIN_TIMEOUT_S,
     UPDATE_WEIGHTS_TIMEOUT_S,
@@ -334,11 +334,14 @@ class DynamoAdminPlane(AdminPlane):
         transport: Literal["filesystem", "nccl", "nixl"],
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
+        checksum: WeightChecksumConfig | None = None,
         # Dynamo pins one worker and never evicts it, so the eviction hooks are unused
         on_membership_change: Callable[[list[httpx.AsyncClient], int], Awaitable[None]] | None = None,
         abort_marker: Callable[[], Path] | None = None,
         resend: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
+        if checksum is not None:
+            raise ValueError("Weight checksums are not supported with Dynamo")
         if transport != "nccl":
             async with self._mutation_lock:
                 await self.ensure_topology_current()
