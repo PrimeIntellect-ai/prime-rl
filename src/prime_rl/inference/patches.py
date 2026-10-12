@@ -292,10 +292,10 @@ def _routed_experts_load_limit(request, num_computed_tokens: int, block_size: in
     the KV. A loaded block whose rows are not in that store fails the engine step
     (``BlockObjectStoreError``) once a request needs its rows. vLLM returns rows only from
     ``routed_experts_prompt_start`` on (the client already holds the rows before it), so loads
-    that stop at that block boundary are always safe. Decode-side P/D requests are not bounded:
-    they emit rows only from their first forward on this instance.
+    that stop at that block boundary are always safe. Requests resumed after preemption and
+    decode-side P/D requests are not bounded: they emit rows only from their first forward.
     """
-    if _is_pd_decode_request(request):
+    if request.num_output_tokens or _is_pd_decode_request(request):
         return None
     prompt_start = request.sampling_params.routed_experts_prompt_start
     return max(0, prompt_start // block_size * block_size - num_computed_tokens)
