@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from io import BytesIO
 from pathlib import Path
 
 import msgspec
@@ -20,6 +21,24 @@ class BatchSender(ABC):
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
         """Send grid of micro batches to the trainers."""
         pass
+
+    def encode(self, micro_batches: list[MicroBatch]) -> bytes:
+        """Byte-identical to ``self.encoder.encode(micro_batches)``, but encodes one
+        micro batch at a time so a worker thread releases the GIL between them."""
+        n = len(micro_batches)
+        if n <= 1:
+            return self.encoder.encode(micro_batches)
+        if n < 16:
+            header = bytes([0x90 | n])
+        elif n < 2**16:
+            header = b"\xdc" + n.to_bytes(2, "big")
+        else:
+            header = b"\xdd" + n.to_bytes(4, "big")
+        with BytesIO() as payload:
+            payload.write(header)
+            for micro_batch in micro_batches:
+                payload.write(self.encoder.encode(micro_batch))
+            return payload.getvalue()
 
     def close(self) -> None:
         """Clean up any resources. Override if needed."""

@@ -64,6 +64,7 @@ from prime_rl.orchestrator.utils import (
     episode_staleness,
     eval_work,
     intercept_vf_logging,
+    release_and_trim,
     set_default_executor,
     trim_process_memory,
 )
@@ -155,6 +156,7 @@ class Orchestrator:
         self.wait_for_policy_time = 0.0
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
+        self.release_future: asyncio.Future | None = None
 
         # Always assigned by ``setup()``; None-initialized so teardown can run
         # on a partially completed setup with plain attribute checks
@@ -443,7 +445,7 @@ class Orchestrator:
                 get_logger().success("Orchestrator finished")
             else:
                 get_logger().warning("Orchestrator cleanup complete (forced)")
-            trim_process_memory()
+            await asyncio.to_thread(trim_process_memory)
 
     async def wait_for_version(self, version: int, reason: str) -> None:
         """Bounded wait until the watcher has applied v{version}."""
@@ -548,7 +550,7 @@ class Orchestrator:
             await self.finalize_train_batch(batch)
             if self.draining or self.stopped.is_set():
                 return
-            batch = self.train_sink.take_batch()
+            batch = await self.train_sink.take_batch()
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
@@ -629,7 +631,7 @@ class Orchestrator:
         self.last_batch_at = now
 
         effective = batch.cohort.effective
-        n_trainable = sum(is_trainable(record.trace) for record in effective.records)
+        n_trainable = await asyncio.to_thread(lambda: sum(is_trainable(record.trace) for record in effective.records))
         if effective.num_traces and n_trainable / effective.num_traces <= 0.1:
             get_logger().warning(
                 f"Only {n_trainable}/{effective.num_traces} effective traces are trainable "
@@ -663,8 +665,11 @@ class Orchestrator:
         # The effective (clean, trained-on) subset is logged at ship time as annotation
         # records against each trace's arrival record - membership, advantages, the step
         # it shipped at - never a second episode copy.
-        await monitors.log(effective.vf_episodes, step, "train", "effective")
-        await monitors.log_annotations(stamp_batch(effective.vf_episodes, step))
+        effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
+        # Monitors may retain the list for asynchronous upload after publication.
+        await monitors.log(effective_episodes.copy(), step, "train", "effective")
+        annotations = await asyncio.to_thread(stamp_batch, effective_episodes, step)
+        await monitors.log_annotations(annotations)
 
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
@@ -674,54 +679,58 @@ class Orchestrator:
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
-        trim_process_memory()
 
-        metrics = rollout_metrics | effective.metrics.to_wandb(prefix="train/agg", subset="effective")
-        for env_name, env_pool in effective.by_env().items():
-            metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset="effective")
-        num_input = sum(record.trace.num_input_tokens for record in effective.records)
-        num_output = sum(record.trace.num_output_tokens for record in effective.records)
-        metrics |= {
-            "progress/input_tokens": num_input,
-            "progress/output_tokens": num_output,
-            "time/step": step_time,
-            "time/pack": pack_time,
-            "time/save_ckpt": save_ckpt_time,
-            "time/wait_for_policy": self.wait_for_policy_time,
-            "step": step,
-        }
-        # Staleness of the shipped cohort, decomposed into its in-flight and
-        # in-queue shares. Queue drops are reported with rollout windows.
-        staleness = [episode_staleness(episode, step) for episode in effective]
-        if staleness:
-            totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
+        def shipped_metrics() -> dict[str, float]:
+            metrics = effective.metrics.to_wandb(prefix="train/agg", subset="effective")
+            for env_name, env_pool in effective.by_env().items():
+                metrics |= env_pool.metrics.to_wandb(prefix=f"train/{env_name}", subset="effective")
+            num_input = sum(record.trace.num_input_tokens for record in effective.records)
+            num_output = sum(record.trace.num_output_tokens for record in effective.records)
             metrics |= {
-                "off_policy/mean": sum(totals) / len(totals),
-                "off_policy/max": float(max(totals)),
-                "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
-                "off_policy/in_flight/max": float(max(in_flight)),
-                "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
-                "off_policy/in_queue/max": float(max(in_queue)),
+                "progress/input_tokens": num_input,
+                "progress/output_tokens": num_output,
+                "time/step": step_time,
+                "time/pack": pack_time,
+                "time/save_ckpt": save_ckpt_time,
+                "step": step,
             }
-        for env_name, env_pool in effective.by_env().items():
-            metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
-        metrics |= self.train_source.metrics()
+            # Staleness of the shipped cohort, decomposed into its in-flight and
+            # in-queue shares. Queue drops are reported with rollout windows.
+            staleness = [episode_staleness(episode, step) for episode in effective]
+            if staleness:
+                totals, in_flight, in_queue = (list(values) for values in zip(*staleness))
+                metrics |= {
+                    "off_policy/mean": sum(totals) / len(totals),
+                    "off_policy/max": float(max(totals)),
+                    "off_policy/in_flight/mean": sum(in_flight) / len(in_flight),
+                    "off_policy/in_flight/max": float(max(in_flight)),
+                    "off_policy/in_queue/mean": sum(in_queue) / len(in_queue),
+                    "off_policy/in_queue/max": float(max(in_queue)),
+                }
+            for env_name, env_pool in effective.by_env().items():
+                metrics[f"batch/{env_name}"] = env_pool.num_traces / effective.num_traces
+            return metrics
+
+        source_metrics = self.train_source.metrics()
+        metrics = await asyncio.to_thread(shipped_metrics)
+        wait_for_policy_time = self.wait_for_policy_time
+        self.wait_for_policy_time = 0.0
+        metrics = rollout_metrics | metrics | source_metrics
+        metrics["time/wait_for_policy"] = wait_for_policy_time
         await monitors.log(metrics, step=step)
 
-        active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
-        if step_time > 0 and self.wait_for_policy_time >= active_step_time:
+        active_step_time = max(step_time - wait_for_policy_time, 0.0)
+        if step_time > 0 and wait_for_policy_time >= active_step_time:
             get_logger().warning(
-                f"Orchestrator waited {format_time(self.wait_for_policy_time)} for policy updates, at least as long "
+                f"Orchestrator waited {format_time(wait_for_policy_time)} for policy updates, at least as long "
                 f"as its {format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
                 "add more trainer nodes."
             )
 
-        self.wait_for_policy_time = 0.0
-
         if self.heart is not None:
             self.heart.beat()
 
-        self.log_train_batch(batch, step=step, step_time=step_time)
+        await asyncio.to_thread(self.log_train_batch, batch, step=step, step_time=step_time)
 
         if config.max_steps is not None and step >= config.max_steps:
             await self.wait_for_version(step, reason="before shutdown")
@@ -731,7 +740,11 @@ class Orchestrator:
         # versions it would need are never broadcast).
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
-        trim_process_memory()
+        # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
+        if self.release_future is not None:
+            await asyncio.shield(self.release_future)
+        payload = (batch.samples, batch.cohort.episodes, effective_episodes, *micro_batch_grid)
+        self.release_future = asyncio.get_running_loop().run_in_executor(None, release_and_trim, *payload)
 
     async def start_draining(self, reason: str) -> None:
         """Stop scheduling train work and let the pipeline empty; triggered
@@ -978,6 +991,8 @@ class Orchestrator:
         async def teardown() -> None:
             get_logger().debug("Closing micro batch sender")
             self.sender.close()
+            if self.release_future is not None:
+                await self.release_future
             if self.dispatcher is not None:
                 get_logger().debug("Stopping dispatcher")
                 await self.dispatcher.stop()

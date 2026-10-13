@@ -28,7 +28,7 @@ class FileSystemBatchSender(BatchSender):
 
     def _encode_and_write(self, micro_batch_grid: list[list[MicroBatch]], step_path: Path) -> None:
         for data_rank in range(self.data_world_size):
-            buffer = self.encoder.encode(micro_batch_grid[data_rank])
+            buffer = self.encode(micro_batch_grid[data_rank])
             tmp_path = step_path / f"rank_{data_rank}.bin.tmp"
             with open(tmp_path, "wb") as f:
                 f.write(buffer)
