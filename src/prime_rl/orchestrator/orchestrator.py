@@ -48,7 +48,7 @@ from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
-from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes, dispatch_failure_metrics
+from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
@@ -491,7 +491,8 @@ class Orchestrator:
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
-                await self.report_rollouts(force=True)
+                if metrics := self.take_rollout_metrics():
+                    await monitors.log(metrics, step=self.progress.step)
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
@@ -545,25 +546,20 @@ class Orchestrator:
     async def handle_train_result(self, batch: TrainBatch | None) -> None:
         if self.heart is not None:
             self.heart.beat()
-        # Flush before shipping so checkpointed totals include this batch's arrivals.
-        await self.report_rollouts(force=batch is not None and bool(batch.samples))
         while batch is not None and not self.draining and not self.stopped.is_set():
             await self.finalize_train_batch(batch)
             if self.draining or self.stopped.is_set():
                 return
             batch = await self.train_sink.take_batch()
-            await self.report_rollouts(force=batch is not None and bool(batch.samples))
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
             self.train_sink.discard_queued()
 
-    async def report_rollouts(self, *, force: bool = False) -> None:
-        window = self.train_sink.take_rollout_window(force=force)
-        if window is not None:
-            await self.finalize_rollout_window(window)
-
-    async def finalize_rollout_window(self, window: RolloutWindow) -> None:
+    def take_rollout_metrics(self) -> dict[str, float]:
+        window = self.train_sink.take_rollout_window(force=True)
+        if window is None:
+            return {}
         self.progress.rollout_window += 1
         self.progress.total_tokens += window.tokens
         self.progress.total_samples += window.traces
@@ -587,7 +583,6 @@ class Orchestrator:
             "progress/total_rollouts": self.progress.total_samples,
             "progress/total_tasks": self.progress.total_problems,
         }
-        await monitors.log(metrics, step=self.progress.step)
         if window.attempts and window.discarded / window.attempts > 0.5:
             get_logger().warning(
                 f"Discarded {window.discarded}/{window.attempts} episodes "
@@ -596,6 +591,7 @@ class Orchestrator:
                 f"no_signal={window.discarded - window.stale - window.errored - window.cancelled}. "
                 "Review max_off_policy_steps, episode errors, and reward signal."
             )
+        return metrics
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
@@ -642,6 +638,10 @@ class Orchestrator:
                 f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
+        # Update arrival totals before checkpointing; publish all and effective
+        # statistics together in one scalar record for this training batch.
+        rollout_metrics = self.take_rollout_metrics()
+
         # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}.
         # Without this, fast envs fill batches from buffered rollouts and the
         # orchestrator races arbitrarily far ahead of the trainer. Always
@@ -666,7 +666,8 @@ class Orchestrator:
         # records against each trace's arrival record - membership, advantages, the step
         # it shipped at - never a second episode copy.
         effective_episodes = await asyncio.to_thread(lambda: effective.vf_episodes)
-        await monitors.log(effective_episodes, step, "train", "effective")
+        # Monitors may retain the list for asynchronous upload after publication.
+        await monitors.log(effective_episodes.copy(), step, "train", "effective")
         annotations = await asyncio.to_thread(stamp_batch, effective_episodes, step)
         await monitors.log_annotations(annotations)
 
@@ -691,7 +692,6 @@ class Orchestrator:
                 "time/step": step_time,
                 "time/pack": pack_time,
                 "time/save_ckpt": save_ckpt_time,
-                "time/wait_for_policy": wait_for_policy_time,
                 "step": step,
             }
             # Staleness of the shipped cohort, decomposed into its in-flight and
@@ -712,20 +712,20 @@ class Orchestrator:
             return metrics
 
         source_metrics = self.train_source.metrics()
-        wait_for_policy_time = self.wait_for_policy_time
         metrics = await asyncio.to_thread(shipped_metrics)
-        metrics |= source_metrics
+        wait_for_policy_time = self.wait_for_policy_time
+        self.wait_for_policy_time = 0.0
+        metrics = rollout_metrics | metrics | source_metrics
+        metrics["time/wait_for_policy"] = wait_for_policy_time
         await monitors.log(metrics, step=step)
 
-        active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
-        if step_time > 0 and self.wait_for_policy_time >= active_step_time:
+        active_step_time = max(step_time - wait_for_policy_time, 0.0)
+        if step_time > 0 and wait_for_policy_time >= active_step_time:
             get_logger().warning(
-                f"Orchestrator waited {format_time(self.wait_for_policy_time)} for policy updates, at least as long "
+                f"Orchestrator waited {format_time(wait_for_policy_time)} for policy updates, at least as long "
                 f"as its {format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
                 "add more trainer nodes."
             )
-
-        self.wait_for_policy_time = 0.0
 
         if self.heart is not None:
             self.heart.beat()
