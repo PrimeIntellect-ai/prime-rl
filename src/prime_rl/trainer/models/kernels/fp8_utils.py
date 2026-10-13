@@ -331,7 +331,7 @@ def _grouped_per_channel_fp8_kernel(
 
 @triton.jit
 def _stochastic_round_fp8(x, seed, index):
-    magnitude = tl.minimum(tl.abs(x), FP8_MAX)
+    magnitude = tl.minimum(tl.abs(x), FP8_MAX, propagate_nan=tl.PropagateNan.ALL)
     exponent = ((magnitude.to(tl.int32, bitcast=True) >> 23) & 255) - 127
     # E4M3 has three fraction bits and subnormal spacing 2**-9.
     spacing_exponent = tl.maximum(exponent - 3, -9)

@@ -183,3 +183,14 @@ def test_block_cast_large_expert_stride(stochastic):
     qr, sr = grouped_per_block_cast_to_fp8_triton(x.contiguous(), False, rounding_seed=seed)
     assert torch.equal(q.view(torch.uint8), qr.view(torch.uint8))
     assert torch.equal(s, sr)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_sr_preserves_nonfinite_weights(value):
+    x = torch.ones(128, 128, dtype=torch.bfloat16, device="cuda")
+    x[0, 0] = value
+    q, s = per_block_cast_to_fp8_triton(x, False, rounding_seed=torch.tensor(5, device="cuda"))
+    qr, sr = per_block_cast_to_fp8_triton(x, False)
+    assert torch.equal(q.float().isnan(), qr.float().isnan())
+    assert q.float()[0, 0].isnan()
+    assert torch.equal(s, sr)
