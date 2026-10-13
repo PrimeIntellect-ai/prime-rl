@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import math
 import os
+import socket
 import sys
 import threading
 import time
@@ -2140,6 +2141,73 @@ def get_episode_timeline(run: str, line: int) -> dict:
     return project_episode_timeline(read_episode_at(require_stream(run_dir), line, episode_at(run_dir, line)))
 
 
+# ---------------------------------------------------------------------- run control
+#
+# Steer a running eval from its live traces. The dashboard only proxies to
+# the run's own control endpoint (``prime_rl.eval.control``, address in
+# ``<run>/control.json``), and only when it was started with --allow-control: every
+# other route only reads files.
+
+allow_control = False
+CONTROL_SENDER = "dashboard"
+
+
+def control_client(run: str):
+    """The run control client of a run that serves one on this host."""
+    if not allow_control:
+        raise HTTPException(403, "run control is off: start the dashboard with --allow-control")
+    from prime_rl.eval.control import Client, ControlError
+
+    try:
+        return Client(get_run_dir(run))
+    except ControlError as error:
+        raise HTTPException(404, f"run {run} serves no run control: {error}") from None
+
+
+def control_call(run: str, call):
+    from prime_rl.eval.control import ControlError
+
+    client = control_client(run)
+    try:
+        return call(client)
+    except ControlError as error:
+        raise HTTPException(502, str(error)) from None
+
+
+def control_text(body: dict, key: str) -> str | None:
+    value = body.get(key)
+    if value is not None and (not isinstance(value, str) or not value):
+        raise HTTPException(400, f"{key} must be a non-empty string")
+    return value
+
+
+@app.get("/api/control")
+def control_enabled() -> dict:
+    """Whether this dashboard proxies run control (the UI shows its buttons only then)."""
+    return {"enabled": allow_control}
+
+
+@app.get("/api/runs/{run}/control")
+def control_status(run: str) -> dict:
+    """The run's in-flight episodes as its control endpoint reports them."""
+    return control_call(run, lambda client: client.status())
+
+
+@app.post("/api/runs/{run}/control/steer")
+def control_steer(run: str, body: dict) -> dict:
+    """Send a user message to running agents: ``{text, trace_id | task_key, seat?}``.
+    Answers the run's receipts, one per steered trace."""
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(400, "text must be a non-empty message")
+    targets = {key: control_text(body, key) for key in ("trace_id", "task_key")}
+    if sum(value is not None for value in targets.values()) != 1:
+        raise HTTPException(400, "steer exactly one of trace_id or task_key")
+    seat = control_text(body, "seat")
+    receipts = control_call(run, lambda client: client.steer(text, seat=seat, sender=CONTROL_SENDER, **targets))
+    return {"receipts": receipts}
+
+
 # -------------------------------------------------------------------------- static
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -2182,8 +2250,6 @@ def render_status(url: str):
 def free_port(host: str, start: int) -> int:
     """The first free port at or above `start`, so several dashboards on one node
     (e.g. a cluster head node) never collide."""
-    import socket
-
     for port in range(start, start + 100):
         with socket.socket() as sock:
             # match uvicorn's own listener: without SO_REUSEADDR a just-killed
@@ -2222,7 +2288,7 @@ def release_daemon() -> None:
 
 
 def main() -> None:
-    global output_dirs, isolated, _view_url
+    global output_dirs, isolated, _view_url, allow_control
     parser = argparse.ArgumentParser(description="prime-rl run dashboard")
     parser.add_argument("output_dirs", nargs="*", default=[default_output_dir()], type=Path, metavar="output_dir")
     parser.add_argument("--port", type=int, default=7788)
@@ -2233,8 +2299,15 @@ def main() -> None:
         help="serve only the given dirs: don't join the per-user registry, don't remember "
         "these dirs, and don't claim discovery (launchers will ignore this instance)",
     )
+    parser.add_argument(
+        "--allow-control",
+        action="store_true",
+        help="show a steer box on live traces of evals running on this host "
+        "(proxied to each run's control endpoint, <run>/control.json)",
+    )
     args = parser.parse_args()
     isolated = args.isolated
+    allow_control = args.allow_control
     output_dirs = [d for d in args.output_dirs if d.is_dir()]
     for missing in set(args.output_dirs) - set(output_dirs):
         print(f"warning: output dir {missing} does not exist", file=sys.stderr)

@@ -50,6 +50,8 @@ def apply(meta: InflightEpisode, delta: dict[str, Any]) -> None:
     trace = meta.live.setdefault(trace_id, LiveTrace())
     trace.turns += len(delta.get("calls") or [])
     changed = delta.get("set") or {}
+    if isinstance(changed.get("agent"), dict):
+        trace.seat = changed["agent"].get("name")
     if delta.get("errors"):
         trace.stage = "error"
     elif "timing" in changed:

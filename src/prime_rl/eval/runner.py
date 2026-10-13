@@ -37,6 +37,7 @@ import verifiers.v1 as vf
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.eval.control import ControlServer
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
@@ -87,6 +88,7 @@ class EvalRunner:
         self.inference_metrics: InferenceMetricsCollector | None = None
         self.periodic_logger: PeriodicLogger | None = None
         self.heart: Heartbeat | None = None
+        self.control: ControlServer | None = None
 
     async def setup(self, *, skip_first_step: bool = False, is_resumed: bool = False) -> None:
         config = self.config
@@ -184,6 +186,8 @@ class EvalRunner:
     async def start(self) -> None:
         self.dispatcher_task = asyncio.create_task(self.dispatcher.start(), name="dispatcher")
         await self.periodic_logger.start()
+        self.control = ControlServer(self)
+        await self.control.start()
 
     async def run_epoch(
         self,
@@ -290,14 +294,21 @@ class EvalRunner:
                 if (env.name, key) in self.reported:
                     continue
                 get_logger().info(f"{type(env.taskset).__name__} cancelled task {key} in {env.name}")
-                if not self.dispatcher.has_eval_group(env.name, key):
-                    # not off the source yet (or every rollout landed, then reported soon)
-                    self.dispatcher.requested_cancels.add((env.name, key))
-                    continue
-                self.cancel_tasks.add(
-                    asyncio.create_task(self.dispatcher.cancel_eval_task(env.name, key), name=f"cancel-{key}")
-                )
+                self.cancel_task(env.name, key)
         self.reported.clear()
+
+    def cancel_task(self, env_name: str, key: str) -> None:
+        """Stop eval task ``key`` of ``env_name``: its open group is dropped (in-flight
+        rollouts aborted) off the epoch loop, or, with no group yet, the task is dropped
+        unrun when it comes off the source. Either way each unlanded rollout reaches the
+        taskset's ``on_cancelled``."""
+        if not self.dispatcher.has_eval_group(env_name, key):
+            # not off the source yet (or every rollout landed, then reported soon)
+            self.dispatcher.requested_cancels.add((env_name, key))
+            return
+        self.cancel_tasks.add(
+            asyncio.create_task(self.dispatcher.cancel_eval_task(env_name, key), name=f"cancel-{key}")
+        )
 
     def raise_if_dispatcher_stopped(self) -> None:
         """A dead dispatcher delivers no more results: fail the epoch rather than wait."""
@@ -453,6 +464,8 @@ class EvalRunner:
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
+        if self.control is not None:
+            await self.control.stop()
         if self.periodic_logger is not None:
             await self.periodic_logger.stop()
         if self.inference_metrics is not None:

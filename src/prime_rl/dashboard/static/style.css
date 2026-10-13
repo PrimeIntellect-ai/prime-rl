@@ -1247,6 +1247,9 @@ mark.hit {
 #tm-episode-errors { padding: 12px 16px 0; border-bottom: 1px solid var(--hairline); }
 #tm-episode-errors .trace-errors { margin-top: 0; margin-bottom: 12px; }
 #tm-episode-errors .trace-recovered { margin-bottom: 12px; }
+#tm-control { gap: 8px; }
+#tm-steer-text { flex: 1; min-width: 0; }
+#tm-control-out { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
 .trace-recovered { margin-bottom: 14px; border: 1px solid var(--grey-3); color: var(--grey-6); }
 .trace-recovered > summary {
   display: flex;

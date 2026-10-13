@@ -239,6 +239,14 @@
       <button id="drawer-close" class="btn">✕</button>
     </div>
     <div id="tm-episode-errors" hidden></div>
+    <!-- run control of a live trace: only with `dashboard --allow-control`, for evals on this host -->
+    <form class="tm-head" id="tm-control" hidden>
+      <span class="t-label">steer</span>
+      <span id="tm-control-seat" class="badge"></span>
+      <input id="tm-steer-text" class="search" type="text" placeholder="a user message to this agent" autocomplete="off">
+      <button id="tm-steer" class="btn" type="submit">send</button>
+      <span id="tm-control-out" class="muted"></span>
+    </form>
     <div class="tm-head tm-tabs-row" id="tm-tabs-row" hidden>
       <div id="tm-trace-tabs" class="seg" hidden></div>
       <div id="tm-branch-tabs" class="seg" hidden></div>

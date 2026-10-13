@@ -117,6 +117,8 @@ class ConcurrencyController:
     def __init__(self, config: ConcurrencyConfig, *, fallback_cost: int) -> None:
         self.config = config
         self.floor = config.min_inflight
+        self.ceiling = config.max_inflight
+        """The band's top; ``resize`` moves it (and the floor of a pinned band) live."""
         self.fallback_cost = fallback_cost
         """Pessimistic per-unit cost for the starting cap when the engine reports no max context."""
 
@@ -294,6 +296,20 @@ class ConcurrencyController:
 
     # ── internals ────────────────────────────────────────────────────────────
 
+    def resize(self, max_inflight: int) -> None:
+        """An operator's live change of the band's top (``eval control resize``). A
+        pinned band (``min_inflight = max_inflight``) stays pinned at the new value; an
+        adaptive band keeps its floor (lowered to the new top if above it) and its cap
+        is clamped into the new band. Lowering sheds nothing in flight: admission stays
+        blocked until the pool drains below the new cap."""
+        if max_inflight < 1:
+            raise ValueError("max_inflight must be at least 1")
+        pinned = self.ceiling is not None and self.floor == self.ceiling
+        self.ceiling = max_inflight
+        self.floor = max_inflight if pinned else min(self.floor, max_inflight)
+        self.cap = self.clamp(self.cap)
+        self.apply_limit(int(self.cap), reason="operator resize")
+
     def resize_down(self, target: int, inflight: int, *, reason: str, cancel: bool = True) -> None:
         """Lower the cap (never raise) and, with ``cancel``, shed the
         in-flight excess; without it, admission stays blocked until the pool
@@ -318,7 +334,7 @@ class ConcurrencyController:
             self.set_limit(n_max)
 
     def clamp(self, n_max: float) -> float:
-        ceiling = self.config.max_inflight or math.inf
+        ceiling = self.ceiling or math.inf
         return min(max(n_max, float(self.floor)), float(ceiling))
 
     @property

@@ -8,7 +8,8 @@ agent timeline, and terminal replay views; timeline activities open the
 corresponding transcript call. Needs the `dashboard` extra. Every instance also serves
 the dirs registered by launchers in `~/.cache/prime-rl/dashboard/dirs.json`
 (one dashboard per host per user); `--isolated` serves only the given dirs and
-skips the registry. See `skills/dashboard/SKILL.md` for discovery,
+skips the registry; `--allow-control` adds steering to the live traces of evals
+running on this host (proxied to each run's `control.json` endpoint). See `skills/dashboard/SKILL.md` for discovery,
 kill/restart commands, and the local view-command/report contract.
 
 Opening a trace adds `trace=<id>` to the URL. Bookmarking or reopening that URL

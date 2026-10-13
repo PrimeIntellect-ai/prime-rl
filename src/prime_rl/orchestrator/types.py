@@ -102,6 +102,8 @@ class TaskRequest:
 class LiveTrace:
     stage: str = "pending"
     turns: int = 0
+    seat: str | None = None
+    """The env agent running the trace (``Trace.agent.name``), once streamed."""
 
 
 @dataclass

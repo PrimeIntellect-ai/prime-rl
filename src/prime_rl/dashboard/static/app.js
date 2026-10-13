@@ -8,6 +8,22 @@ const api = async (path) => {
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return res.json();
 };
+const postApi = async (path, body) => {
+  const res = await fetch(path.replace(/^\//, ""), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let detail = text;
+    try {
+      detail = JSON.parse(text).detail ?? text;
+    } catch {}
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return res.json();
+};
 
 /* accent-first line palette, then the prime-context chart palette */
 const PALETTE = ["#b6ff3c", "#b7a6fa", "#78f8a5", "#fcdaa4", "#4a9eff", "#ff6b4a", "#bcbcbc"];
@@ -3483,7 +3499,10 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
     const qs = refresh && currentLiveEtag ? `?etag=${encodeURIComponent(currentLiveEtag)}` : "";
     episode = await api(`/api/runs/${encodeURIComponent(state.run)}/live/${encodeURIComponent(traceId)}${qs}`);
   } catch {
-    if (currentLive === traceId) $("#tm-live-label").textContent = "finished · now in the stream";
+    if (currentLive === traceId) {
+      $("#tm-live-label").textContent = "finished · now in the stream";
+      $("#tm-control").hidden = true;
+    }
     return;
   }
   if (currentLive !== traceId || requestVersion !== episodeOpenVersion || episode.unchanged) return;
@@ -3491,6 +3510,7 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
   currentEpisode = episode;
   const live = episode.live || {};
   $("#tm-live-label").innerHTML = `<span class="badge stage stage-${esc(live.stage)}">${esc(live.stage)}</span> live · ${esc(live.task ?? "")}`;
+  renderLiveControl(episode);
   // follow the rollout: stay pinned to the newest turn unless the reader scrolled up, and
   // keep the entries they folded or unfolded the way they left them
   const messages = $("#tm-messages");
@@ -3502,6 +3522,56 @@ async function openLiveTrace(traceId, { refresh = false } = {}) {
     if (folded.has(entry.dataset.node)) entry.open = folded.get(entry.dataset.node);
   messages.scrollTop = pinned ? messages.scrollHeight : scrollTop;
 }
+
+/* ------------------------------------------------------------ run control */
+/* `dashboard --allow-control` proxies steer to a running eval's control
+   endpoint (<run>/control.json): the bar shows on a live trace of such a run only */
+let controlEnabled = null;
+let controlTarget = null; // {run, trace} of the live trace the bar acts on
+
+async function renderLiveControl(episode) {
+  if (controlEnabled === null) {
+    try {
+      controlEnabled = (await api("/api/control")).enabled;
+    } catch {
+      controlEnabled = false;
+    }
+  }
+  const trace = episode.traces?.[0];
+  const bar = $("#tm-control");
+  if (!controlEnabled || !trace?.id || currentLive !== trace.id) return void (bar.hidden = true);
+  const fresh = controlTarget?.trace !== trace.id;
+  controlTarget = { run: state.run, trace: trace.id };
+  $("#tm-control-seat").textContent = trace.agent?.name ?? "agent";
+  if (fresh) {
+    $("#tm-steer-text").value = "";
+    $("#tm-control-out").textContent = "";
+  }
+  bar.hidden = false;
+}
+
+function controlUrl(target, action) {
+  return `/api/runs/${encodeURIComponent(target.run)}/control/${action}`;
+}
+
+$("#tm-control").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const target = controlTarget;
+  const text = $("#tm-steer-text").value.trim();
+  if (!target || !text) return;
+  const out = $("#tm-control-out");
+  out.textContent = "sending…";
+  try {
+    const { receipts } = await postApi(controlUrl(target, "steer"), { trace_id: target.trace, text });
+    const queued = receipts.filter((r) => r.queued);
+    out.textContent = queued.length
+      ? `queued (${queued.map((r) => r.delivery ?? "?").join(", ")})`
+      : `refused: ${receipts.map((r) => r.reason).join("; ")}`;
+    if (queued.length) $("#tm-steer-text").value = "";
+  } catch (err) {
+    out.textContent = `steer failed: ${err.message}`;
+  }
+});
 
 async function refreshTraces() {
   const traces = state.traces;
@@ -3750,6 +3820,7 @@ function resetTranscript(html) {
 async function openEpisode(line, target = {}) {
   currentLive = null;
   $("#tm-live-label").textContent = "";
+  $("#tm-control").hidden = true;
   stopReplay();
   const requestVersion = ++episodeOpenVersion;
   episodeEnrichmentVersion++;
@@ -3795,6 +3866,7 @@ async function openEpisode(line, target = {}) {
 function closeDrawer() {
   currentLive = null;
   $("#tm-live-label").textContent = "";
+  $("#tm-control").hidden = true;
   stopReplay();
   episodeOpenVersion++;
   episodeEnrichmentVersion++;
@@ -6168,58 +6240,71 @@ function quoteMarkedHtml(text, marks) {
 
 /* Citation resolution uses the same read endpoints as the trace viewer. Lookup
    promises live only for the current report render: duplicate references share
-   work, while a changed report or rewritten trace never inherits stale evidence. */
+   work, while a changed report or rewritten trace never inherits stale evidence.
+   A citation addresses its episode by step/kind/subset/episode, or by trace_id
+   alone (flow's reports), which the episodes lookup resolves to its episode. */
 const CITATION_KEYS = new Set([
   "run", "step", "kind", "subset", "episode", "trace", "branch",
   "node", "field", "quote", "prefix", "suffix", "note",
 ]);
+const TRACE_CITATION_KEYS = new Set(["run", "trace_id", "node", "field", "quote", "prefix", "suffix", "note"]);
+
+function cachedApi(cache, key) {
+  if (!cache.has(key))
+    cache.set(
+      key,
+      api(key).catch((err) => {
+        cache.delete(key);
+        throw err;
+      })
+    );
+  return cache.get(key);
+}
 
 async function resolveCitation(c, cache) {
   if (!c) return { matched: false, reason: "missing citation definition" };
   if (typeof c !== "object" || c._invalid) return { matched: false, reason: "invalid citation JSON" };
-  const unknown = Object.keys(c).filter((key) => !CITATION_KEYS.has(key));
-  if (unknown.length) return { matched: false, reason: `unknown fields: ${unknown.join(", ")}` };
+  const byTrace = c.trace_id != null;
+  const known = byTrace ? TRACE_CITATION_KEYS : CITATION_KEYS;
+  const unknown = Object.keys(c).filter((key) => !known.has(key));
+  if (unknown.length) return { matched: false, reason: `unknown fields${byTrace ? " for a trace_id citation" : ""}: ${unknown.join(", ")}` };
   const run = c.run || state.run;
   if (typeof run !== "string" || !run) return { matched: false, reason: "citation needs a run" };
-  if (!Number.isInteger(c.step) || !["train", "eval"].includes(c.kind) || !["all", "effective"].includes(c.subset))
-    return { matched: false, reason: "citation needs a valid step, kind, and subset" };
-  for (const key of ["trace", "node"])
-    if (c[key] != null && (!Number.isInteger(c[key]) || c[key] < 0)) return { matched: false, reason: `${key} must be a non-negative integer` };
-  if (c.branch != null && (!Number.isInteger(c.branch) || c.branch < -1))
-    return { matched: false, reason: "branch must be an integer >= -1" };
+  if (byTrace) {
+    if (typeof c.trace_id !== "string" || !c.trace_id) return { matched: false, reason: "trace_id must be a non-empty string" };
+  } else {
+    if (!Number.isInteger(c.step) || !["train", "eval"].includes(c.kind) || !["all", "effective"].includes(c.subset))
+      return { matched: false, reason: "citation needs a valid step, kind, and subset (or a trace_id)" };
+    if (c.trace != null && (!Number.isInteger(c.trace) || c.trace < 0)) return { matched: false, reason: "trace must be a non-negative integer" };
+    if (c.branch != null && (!Number.isInteger(c.branch) || c.branch < -1))
+      return { matched: false, reason: "branch must be an integer >= -1" };
+    if (typeof c.episode !== "string" || !c.episode) return { matched: false, reason: "citation needs an episode id" };
+  }
+  if (c.node != null && (!Number.isInteger(c.node) || c.node < 0)) return { matched: false, reason: "node must be a non-negative integer" };
   if (c.field != null && !["content", "reasoning"].includes(c.field))
     return { matched: false, reason: "field must be content or reasoning" };
-  if (typeof c.episode !== "string" || !c.episode) return { matched: false, reason: "citation needs an episode id" };
   if (typeof c.quote !== "string" || !c.quote.trim()) return { matched: false, reason: "citation needs a verbatim quote" };
   if (typeof c.note !== "string" || !c.note.trim()) return { matched: false, reason: "citation needs a note" };
   for (const key of ["prefix", "suffix"])
     if (c[key] != null && typeof c[key] !== "string") return { matched: false, reason: `${key} must be a string` };
   const base = `/api/runs/${encodeURIComponent(run)}/episodes`;
-  const summaryKey = `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`;
-  if (!cache.summaries.has(summaryKey))
-    cache.summaries.set(
-      summaryKey,
-      api(summaryKey).catch((err) => {
-        cache.summaries.delete(summaryKey);
-        throw err;
-      })
-    );
-  const list = await cache.summaries.get(summaryKey);
-  if (!list.total) return { matched: false, reason: `episode ${c.episode} not found` };
-  if (list.total > 1) return { matched: false, reason: `episode ${c.episode} is not unique` };
-  const line = list.episodes[0].line;
-  const epKey = `${base}/${line}`;
-  if (!cache.episodes.has(epKey))
-    cache.episodes.set(
-      epKey,
-      api(epKey).catch((err) => {
-        cache.episodes.delete(epKey);
-        throw err;
-      })
-    );
-  const ep = await cache.episodes.get(epKey);
-  const trace = (ep.traces || [])[c.trace ?? 0];
+  const what = byTrace ? `trace ${c.trace_id}` : `episode ${c.episode}`;
+  const list = await cachedApi(
+    cache.summaries,
+    byTrace ? `${base}?trace=${encodeURIComponent(c.trace_id)}&limit=2` : `${base}?episode=${encodeURIComponent(c.episode)}&limit=2`
+  );
+  if (!list.total) return { matched: false, reason: `${what} not found` };
+  if (list.total > 1) return { matched: false, reason: `${what} is not unique` };
+  const row = list.episodes[0];
+  const line = row.line;
+  const ep = await cachedApi(cache.episodes, `${base}/${line}`);
+  const traceIdx = byTrace ? (ep.traces || []).findIndex((t) => t.id === c.trace_id) : c.trace ?? 0;
+  const trace = (ep.traces || [])[traceIdx];
   if (!trace) return { matched: false, reason: "trace not found", line };
+  // where the viewer opens it: a trace_id citation reads its episode in the stream
+  const address = byTrace
+    ? { step: row.step ?? undefined, kind: row.kind, subset: "all", episode: row.id, trace: traceIdx, branch: -1 }
+    : { step: c.step, kind: c.kind, subset: c.subset, episode: c.episode, trace: c.trace, branch: c.branch ?? -1 };
   let nodes = c.node != null ? [[c.node, (trace.nodes || [])[c.node]]] : (trace.nodes || []).map((n, i) => [i, n]);
   nodes = nodes.filter(([, n]) => n);
   if (c.branch != null && c.branch !== -1) {
@@ -6241,7 +6326,7 @@ async function resolveCitation(c, cache) {
   if (!matches.length)
     return { matched: false, reason: c.node != null ? "quote not found in node" : "quote not found in any node", line };
   if (matches.length > 1) return { matched: false, reason: "quote is ambiguous — add node and prefix or suffix", line };
-  return { matched: true, line, ...matches[0] };
+  return { matched: true, line, address, ...matches[0] };
 }
 
 function paintCitation(id, res) {
@@ -6299,13 +6384,8 @@ async function openCitation(id) {
   await applyViewCommand({
     run: c.run || state.run,
     tab: "traces",
-    step: c.step,
-    kind: c.kind,
-    subset: c.subset,
-    episode: c.episode,
+    ...res.address,
     line: res.line,
-    trace: c.trace,
-    branch: c.branch ?? -1,
     highlight: [{ node: res.nodeIdx, field: res.field, quote: c.quote, prefix: c.prefix, suffix: c.suffix, reason: c.note }],
   });
   $("#tm-back").hidden = $("#trace-modal").hidden; // way back to the report

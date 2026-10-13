@@ -24,6 +24,7 @@ USAGE = """\
 usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-s] [-r N] [-c N] [-m MODEL] [options]
        uv run eval @ eval.toml [options]                                  multi-source runs ([[source]] blocks)
        uv run eval @ eval.toml --run.name <name> --resume                 resume an interrupted run
+       uv run eval control --run <dir> status|steer|resize               control a running eval
 
 Shorthands:
   <taskset-id>             the taskset of the run's only source
@@ -108,8 +109,13 @@ def toml_defines_source(path: Path) -> bool:
 
 
 def main():
-    set_proc_title("Eval")
     argv = sys.argv[1:]
+    if argv[:1] == ["control"]:
+        from prime_rl.eval.control import main as control_main
+
+        control_main(argv[1:])
+        return
+    set_proc_title("Eval")
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
