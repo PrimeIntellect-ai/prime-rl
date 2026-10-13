@@ -5,7 +5,7 @@
 # compute, fp32 gradient reduce, FA4 varlen attention, torch.compile with fullgraph per block,
 # everything on GPU (no CPU offloading), 20 steps. Routing is forced round-robin balanced so the
 # step time does not depend on the data; drop [model.debug] for the checkpoint's real routing.
-# See docs/scaling.md#max-throughput-recipe. Around 46% MFU on 4 x 8 B300.
+# See docs/scaling.md#max-trainer-throughput-recipe. Around 46% MFU on 4 x 8 B300.
 #
 #   uv run sft @ examples/advanced/qwen3-235b-a22b/sft-max-perf.toml
 #

@@ -17,7 +17,7 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [Optimizer Offloading](#optimizer-offloading)
   - [LM Head Chunking](#lm-head-chunking)
 - [Memory-Tight Recipe](#memory-tight-recipe)
-- [Max-Throughput Recipe](#max-throughput-recipe)
+- [Max Trainer Throughput Recipe](#max-trainer-throughput-recipe)
 - [SLURM](#slurm)
   - [Activation](#activation)
   - [`[deployment]` Block](#deployment-block)
@@ -174,9 +174,9 @@ max_inflight_activations = 1
 
 The defaults already cover: fused LM head chunking (`8192`), `torch.compile` (fullgraph=False), AC (full mode), AC offloading (`max_inflight_activations=5`), and optimizer CPU offload. Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
 
-## Max-Throughput Recipe
+## Max Trainer Throughput Recipe
 
-The defaults are tuned for memory, not speed: optimizer CPU offload, AC offloading, and `torch.compile` without `fullgraph` let large models fit on few GPUs, at a throughput cost. When you have enough GPUs to keep the model state and activations on GPU, turn them off:
+The trainer defaults are tuned for memory, not speed: optimizer CPU offload, AC offloading, and `torch.compile` without `fullgraph` let large models fit on few GPUs, at a throughput cost. When you have enough GPUs to keep the model state and activations on GPU, turn them off:
 
 ```toml
 [model]
