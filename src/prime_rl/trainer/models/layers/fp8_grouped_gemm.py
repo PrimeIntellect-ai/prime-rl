@@ -91,7 +91,14 @@ def _compute_grad_weight(
 
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm", mutates_args=())
-def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+def _grouped_fp8_gemm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    offs: torch.Tensor,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+    rounding_offset: int = 0,
+) -> torch.Tensor:
     import deep_gemm
 
     (
@@ -120,6 +127,9 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
         weight.transpose(1, 2),
         use_ue8m0,
         GROUP_ALIGNMENT,
+        rounding_seed=rounding_seed,
+        rounding_salt=rounding_salt,
+        rounding_offset=rounding_offset,
     )
 
     out_padded = torch.empty((padded_total_m, weight.size(2)), device=x.device, dtype=x.dtype)
@@ -141,7 +151,14 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
 
 
 @_grouped_fp8_gemm.register_fake
-def _grouped_fp8_gemm_fake(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+def _grouped_fp8_gemm_fake(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    offs: torch.Tensor,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+    rounding_offset: int = 0,
+) -> torch.Tensor:
     return x.new_empty((x.shape[0], weight.shape[2]))
 
 
@@ -153,6 +170,9 @@ def _grouped_fp8_gemm_backward(
     offs: torch.Tensor,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+    rounding_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     (
         _,
@@ -196,7 +216,15 @@ def _grouped_fp8_gemm_backward(
             use_ue8m0,
             GROUP_ALIGNMENT,
         )
-        weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
+        weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(
+            weight,
+            use_ue8m0,
+            GROUP_ALIGNMENT,
+            rounding_seed=rounding_seed,
+            rounding_salt=rounding_salt,
+            rounding_offset=rounding_offset,
+            rng_transpose=True,
+        )
         grad_x_padded = torch.empty(
             (padded_total_m, weight.size(1)),
             device=grad_output.device,
@@ -229,18 +257,23 @@ def _grouped_fp8_gemm_backward_fake(
     offs: torch.Tensor,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+    rounding_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return x.new_empty(x.shape), weight.new_empty(weight.shape)
 
 
 def _grouped_fp8_gemm_setup_context(ctx, inputs, output) -> None:
-    x, weight, offs = inputs
-    ctx.save_for_backward(x, weight, offs)
+    x, weight, offs, rounding_seed, rounding_salt, rounding_offset = inputs
+    ctx.save_for_backward(x, weight, offs, rounding_seed)
+    ctx.rounding_salt = rounding_salt
+    ctx.rounding_offset = rounding_offset
 
 
 def _grouped_fp8_gemm_autograd_backward(ctx, grad_output: torch.Tensor):
-    x, weight, offs = ctx.saved_tensors
-    needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
+    x, weight, offs, rounding_seed = ctx.saved_tensors
+    needs_grad_x, needs_grad_weight = ctx.needs_input_grad[:2]
     grad_x, grad_weight = _grouped_fp8_gemm_backward(
         grad_output,
         x.detach(),
@@ -248,8 +281,11 @@ def _grouped_fp8_gemm_autograd_backward(ctx, grad_output: torch.Tensor):
         offs,
         needs_grad_x,
         needs_grad_weight,
+        rounding_seed,
+        ctx.rounding_salt,
+        ctx.rounding_offset,
     )
-    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
+    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None, None, None, None
 
 
 _grouped_fp8_gemm.register_autograd(
@@ -262,6 +298,9 @@ def grouped_fp8_gemm(
     x: torch.Tensor,
     weight: torch.Tensor,
     offs: torch.Tensor,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+    rounding_offset: int = 0,
 ) -> torch.Tensor:
     """FP8 grouped GEMM, drop-in replacement for torch._grouped_mm.
 
@@ -273,4 +312,4 @@ def grouped_fp8_gemm(
     Returns:
         (M, N) output tensor in bfloat16.
     """
-    return _grouped_fp8_gemm(x, weight, offs)
+    return _grouped_fp8_gemm(x, weight, offs, rounding_seed, rounding_salt, rounding_offset)

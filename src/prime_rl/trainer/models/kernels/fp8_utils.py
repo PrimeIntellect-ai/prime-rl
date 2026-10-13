@@ -324,6 +324,23 @@ def _grouped_per_channel_fp8_kernel(
 
 
 @triton.jit
+def _stochastic_round_fp8(x, seed, index):
+    magnitude = tl.minimum(tl.abs(x), FP8_MAX)
+    exponent = ((magnitude.to(tl.int32, bitcast=True) >> 23) & 255) - 127
+    # E4M3 has three fraction bits and subnormal spacing 2**-9.
+    spacing_exponent = tl.maximum(exponent - 3, -9)
+    spacing = ((spacing_exponent + 127) << 23).to(tl.float32, bitcast=True)
+    inverse_spacing = ((127 - spacing_exponent) << 23).to(tl.float32, bitcast=True)
+    scaled = magnitude * inverse_spacing
+    lower = tl.floor(scaled) * spacing
+    probability = scaled - tl.floor(scaled)
+    uniform = tl.rand(seed, index.to(tl.uint64))
+    rounded = lower + tl.where(uniform < probability, spacing, 0.0)
+    sign = x.to(tl.int32, bitcast=True) & -2147483648
+    return (rounded.to(tl.int32, bitcast=True) | sign).to(tl.float32, bitcast=True).to(tl.float8e4nv)
+
+
+@triton.jit
 def _grouped_per_block_fp8_kernel(
     x_ptr,
     out_ptr,
@@ -340,6 +357,7 @@ def _grouped_per_block_fp8_kernel(
     stride_sg,
     stride_sm,
     stride_sn,
+    SCALE_ONLY: tl.constexpr,
     USE_UE8M0: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -359,13 +377,54 @@ def _grouped_per_block_fp8_kernel(
     scale = tl.maximum(amax / FP8_MAX, 1e-4)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
-    y = x / scale
-    tl.store(
-        out_ptr + pid_g * stride_yg + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
-        y.to(tl.float8e4nv),
-        mask=mask,
-    )
+    if not SCALE_ONLY:
+        y = x / scale
+        tl.store(
+            out_ptr + pid_g * stride_yg + row_offsets[:, None] * stride_ym + col_offsets[None, :] * stride_yn,
+            y.to(tl.float8e4nv),
+            mask=mask,
+        )
     tl.store(sf_ptr + pid_g * stride_sg + pid_m * stride_sm + pid_n * stride_sn, scale, mask=pid_g < groups)
+
+
+@triton.jit
+def _grouped_per_block_sr_kernel(
+    x_ptr,
+    out_ptr,
+    sf_ptr,
+    rows,
+    cols,
+    stride_xg,
+    stride_xm,
+    stride_xn,
+    stride_yg,
+    stride_ym,
+    stride_yn,
+    stride_sg,
+    stride_sm,
+    stride_sn,
+    rounding_seed,
+    rounding_salt,
+    rounding_offset,
+    RNG_TRANSPOSE: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    group = tl.program_id(0).to(tl.int64)
+    pid_m = tl.program_id(1)
+    pid_n = tl.program_id(2)
+    row = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)[:, None]
+    col = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N)).to(tl.int64)[None, :]
+    mask = (row < rows) & (col < cols)
+    x = tl.load(x_ptr + group * stride_xg + row * stride_xm + col * stride_xn, mask, other=0).to(tl.float32)
+    scale = tl.load(sf_ptr + group * stride_sg + (pid_m * BLOCK_M // 128) * stride_sm + pid_n * stride_sn)
+    index = group * rows * cols + rounding_offset
+    if RNG_TRANSPOSE:
+        index += col * rows + row
+    else:
+        index += row * cols + col
+    y = _stochastic_round_fp8(x / scale, tl.load(rounding_seed) ^ rounding_salt, index)
+    tl.store(out_ptr + group * stride_yg + row * stride_ym + col * stride_yn, y, mask)
 
 
 # ---------------------------------------------------------------------------
@@ -565,8 +624,61 @@ def grouped_per_channel_cast_to_fp8_rowmajor_triton(
     return out, sf
 
 
+def _cast_per_block(
+    x: torch.Tensor,
+    out: torch.Tensor,
+    sf: torch.Tensor,
+    use_ue8m0: bool,
+    gran_k: int,
+    rounding_seed: torch.Tensor | None,
+    rounding_salt: int,
+    rounding_offset: int,
+    rng_transpose: bool,
+) -> None:
+    groups, rows, cols = x.shape
+    strides = (*x.stride(), *out.stride(), *sf.stride())
+    _grouped_per_block_fp8_kernel[(groups, ceil_div(rows, gran_k), ceil_div(cols, gran_k))](
+        x,
+        out,
+        sf,
+        groups,
+        rows,
+        cols,
+        *strides,
+        SCALE_ONLY=rounding_seed is not None,
+        USE_UE8M0=use_ue8m0,
+        BLOCK_M=gran_k,
+        BLOCK_N=gran_k,
+        num_warps=8,
+    )
+    if rounding_seed is not None:
+        # Smaller tiles keep Philox's live state in registers; scales still cover 128x128 weights.
+        _grouped_per_block_sr_kernel[(groups, ceil_div(rows, 16), ceil_div(cols, gran_k))](
+            x,
+            out,
+            sf,
+            rows,
+            cols,
+            *strides,
+            rounding_seed,
+            rounding_salt,
+            rounding_offset,
+            RNG_TRANSPOSE=rng_transpose,
+            BLOCK_M=16,
+            BLOCK_N=gran_k,
+            num_warps=4,
+        )
+
+
 def grouped_per_block_cast_to_fp8_triton(
-    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+    x: torch.Tensor,
+    use_ue8m0: bool,
+    gran_k: int = GROUP_ALIGNMENT,
+    *,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+    rounding_offset: int = 0,
+    rng_transpose: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 3
     assert gran_k == GROUP_ALIGNMENT
@@ -577,45 +689,36 @@ def grouped_per_block_cast_to_fp8_triton(
         device=x.device,
         dtype=torch.float32,
     )
-    grid = (groups, ceil_div(rows, gran_k), ceil_div(cols, gran_k))
-    _grouped_per_block_fp8_kernel[grid](
-        x,
-        out,
-        sf,
-        groups,
-        rows,
-        cols,
-        x.stride(0),
-        x.stride(1),
-        x.stride(2),
-        out.stride(0),
-        out.stride(1),
-        out.stride(2),
-        sf.stride(0),
-        sf.stride(1),
-        sf.stride(2),
-        USE_UE8M0=use_ue8m0,
-        BLOCK_M=gran_k,
-        BLOCK_N=gran_k,
-        num_warps=8,
-    )
+    _cast_per_block(x, out, sf, use_ue8m0, gran_k, rounding_seed, rounding_salt, rounding_offset, rng_transpose)
     return out, sf
 
 
 def per_block_cast_to_fp8_triton(
-    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+    x: torch.Tensor,
+    use_ue8m0: bool,
+    gran_k: int = GROUP_ALIGNMENT,
+    *,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 2
     out, sf = grouped_per_block_cast_to_fp8_triton(
         x.unsqueeze(0),
         use_ue8m0,
         gran_k,
+        rounding_seed=rounding_seed,
+        rounding_salt=rounding_salt,
     )
     return out[0], sf[0]
 
 
 def per_block_cast_to_fp8_tp_triton(
-    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+    x: torch.Tensor,
+    use_ue8m0: bool,
+    gran_k: int = GROUP_ALIGNMENT,
+    *,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Block-fp8 cast of ``x.T`` without materializing the transpose."""
     assert x.dim() == 2
@@ -624,29 +727,8 @@ def per_block_cast_to_fp8_tp_triton(
     x3 = x.unsqueeze(0)
     out = torch.empty((cols, rows), device=x.device, dtype=torch.float8_e4m3fn)
     sf = torch.empty((ceil_div(cols, gran_k), ceil_div(rows, gran_k)), device=x.device, dtype=torch.float32)
-    grid = (1, ceil_div(rows, gran_k), ceil_div(cols, gran_k))
-    _grouped_per_block_fp8_kernel[grid](
-        x3,
-        out,
-        sf,
-        1,
-        rows,
-        cols,
-        x3.stride(0),
-        x3.stride(1),
-        x3.stride(2),
-        # transposed output: x's element (row, col) lands at out[col, row]
-        cols * rows,
-        1,
-        rows,
-        # transposed scales: x's tile (pid_m, pid_n) lands at sf[pid_n, pid_m]
-        ceil_div(cols, gran_k) * ceil_div(rows, gran_k),
-        1,
-        ceil_div(rows, gran_k),
-        USE_UE8M0=use_ue8m0,
-        BLOCK_M=gran_k,
-        BLOCK_N=gran_k,
-        num_warps=8,
+    _cast_per_block(
+        x3, out.T.unsqueeze(0), sf.T.unsqueeze(0), use_ue8m0, gran_k, rounding_seed, rounding_salt, 0, False
     )
     return out, sf
 

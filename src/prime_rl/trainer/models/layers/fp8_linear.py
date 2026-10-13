@@ -16,13 +16,21 @@ from prime_rl.utils.logger import get_logger
 
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_mm", mutates_args=())
-def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) -> torch.Tensor:
+def _fp8_blockwise_mm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: int,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+) -> torch.Tensor:
     import deep_gemm
 
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     use_ue8m0 = ue8m0_for_device(x.device)
     x_fp8 = per_token_cast_to_fp8_triton(x_2d, use_ue8m0, block_size)
-    weight_fp8 = per_block_cast_to_fp8_triton(weight, use_ue8m0, block_size)
+    weight_fp8 = per_block_cast_to_fp8_triton(
+        weight, use_ue8m0, block_size, rounding_seed=rounding_seed, rounding_salt=rounding_salt
+    )
 
     out = torch.empty((x_2d.size(0), weight.size(0)), device=x.device, dtype=torch.bfloat16)
     deep_gemm.fp8_gemm_nt(x_fp8, weight_fp8, out)
@@ -30,7 +38,13 @@ def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) ->
 
 
 @_fp8_blockwise_mm.register_fake
-def _fp8_blockwise_mm_fake(x: torch.Tensor, weight: torch.Tensor, block_size: int) -> torch.Tensor:
+def _fp8_blockwise_mm_fake(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: int,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
+) -> torch.Tensor:
     return x.new_empty((*x.shape[:-1], weight.shape[0]), dtype=torch.bfloat16)
 
 
@@ -42,6 +56,8 @@ def _fp8_blockwise_mm_backward(
     block_size: int,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     import deep_gemm
 
@@ -53,7 +69,9 @@ def _fp8_blockwise_mm_backward(
 
     if needs_grad_x:
         grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
-        weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, use_ue8m0, block_size)
+        weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(
+            weight, use_ue8m0, block_size, rounding_seed=rounding_seed, rounding_salt=rounding_salt
+        )
         grad_x_2d = torch.empty_like(x_2d)
         deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)
         grad_x = grad_x_2d.reshape(x.shape)
@@ -89,19 +107,22 @@ def _fp8_blockwise_mm_backward_fake(
     block_size: int,
     needs_grad_x: bool,
     needs_grad_weight: bool,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return x.new_empty(x.shape), weight.new_empty(weight.shape)
 
 
 def _fp8_blockwise_mm_setup_context(ctx, inputs, output) -> None:
-    x, weight, block_size = inputs
-    ctx.save_for_backward(x, weight)
+    x, weight, block_size, rounding_seed, rounding_salt = inputs
+    ctx.save_for_backward(x, weight, rounding_seed)
+    ctx.rounding_salt = rounding_salt
     ctx.block_size = block_size
 
 
 def _fp8_blockwise_mm_autograd_backward(ctx, grad_output: torch.Tensor):
-    x, weight = ctx.saved_tensors
-    needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
+    x, weight, rounding_seed = ctx.saved_tensors
+    needs_grad_x, needs_grad_weight = ctx.needs_input_grad[:2]
     grad_x, grad_weight = _fp8_blockwise_mm_backward(
         grad_output,
         x.detach(),
@@ -109,8 +130,10 @@ def _fp8_blockwise_mm_autograd_backward(ctx, grad_output: torch.Tensor):
         ctx.block_size,
         needs_grad_x,
         needs_grad_weight,
+        rounding_seed,
+        ctx.rounding_salt,
     )
-    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
+    return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None, None, None
 
 
 _fp8_blockwise_mm.register_autograd(
@@ -132,9 +155,18 @@ class Float8BlockwiseLinear(nn.Linear):
     def __init__(self, *args, block_size: int = 128, dtype=torch.bfloat16, **kwargs):
         super().__init__(*args, **kwargs)
         self.block_size = block_size
+        self.stochastic_rounding = False
+        self.fp8_rounding = None
+        self.rounding_salt = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return _fp8_blockwise_mm(x, self.weight, self.block_size)
+        return _fp8_blockwise_mm(
+            x,
+            self.weight,
+            self.block_size,
+            self.fp8_rounding.seed if self.fp8_rounding is not None else None,
+            self.rounding_salt,
+        )
 
     @classmethod
     def from_linear(cls, mod: nn.Linear) -> "Float8BlockwiseLinear":
@@ -150,7 +182,9 @@ class Float8BlockwiseLinear(nn.Linear):
         return new_mod
 
 
-def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: list[str]) -> None:
+def replace_linear_with_fp8_blockwise_linear(
+    model: nn.Module, ignore_modules: list[str], stochastic_rounding: bool = False
+) -> None:
     """Replace nn.Linear in `model` with Float8BlockwiseLinear, skipping any
     module whose qualified name matches an ignore pattern (substring or regex).
 
@@ -187,7 +221,9 @@ def replace_linear_with_fp8_blockwise_linear(model: nn.Module, ignore_modules: l
             continue
         parent_name, attr_name = name.rsplit(".", 1) if "." in name else ("", name)
         parent = model.get_submodule(parent_name) if parent_name else model
-        setattr(parent, attr_name, Float8BlockwiseLinear.from_linear(module))
+        replacement = Float8BlockwiseLinear.from_linear(module)
+        replacement.stochastic_rounding = stochastic_rounding
+        setattr(parent, attr_name, replacement)
         replaced_modules.append(name)
 
     logger.info(
