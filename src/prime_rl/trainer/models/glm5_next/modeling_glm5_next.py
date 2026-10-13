@@ -21,7 +21,7 @@ from prime_rl.trainer.models.glm5_next.converting_glm5_next import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
-from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention
+from prime_rl.trainer.models.glm5_next.linear_attention import KimiDeltaAttention, KimiDeltaAttentionDecay
 from prime_rl.trainer.models.glm5_next.sparse_attention import PoolLayout, SparseMlaAttention
 from prime_rl.trainer.models.layers.activations import ClampedSilu
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
@@ -148,9 +148,19 @@ class Glm5NextPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
+        # The checkpoint stores hc fn in bf16, but it trains in fp32 with the rest of the
+        # hyper-connection (see fp32_modules), and vLLM holds it in fp32.
         return name.endswith(
-            ("hc.base", "hc.scale", "self_attn.A_log", "self_attn.dt_bias", "mlp.router.selection_bias")
+            ("hc.fn", "hc.base", "hc.scale", "decay.A_log", "decay.dt_bias", "mlp.router.selection_bias")
         )
+
+    def fp32_modules(self) -> list[nn.Module]:
+        # vLLM computes the hyper-connections and KDA's decay parameters in fp32.
+        return [
+            module
+            for module in self.modules()
+            if isinstance(module, (DeepseekV4HyperConnection, KimiDeltaAttentionDecay))
+        ]
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

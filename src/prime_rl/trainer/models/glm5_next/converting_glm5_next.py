@@ -3,6 +3,8 @@
 * MoE layers convert exactly like GLM-4 MoE (stacked experts, router renames).
 * The checkpoint stores each mHC's three tensors flat on the layer
   (``hc_attn_fn``); PrimeRL keeps them on the hyper-connection module (``attn_hc.fn``).
+* KDA's ``A_log`` and ``dt_bias`` sit on a decay submodule (``self_attn.decay.A_log``) so they can
+  train in fp32.
 * The vision tower and the MTP layer have no PrimeRL counterpart and are dropped.
 """
 
@@ -21,6 +23,9 @@ def conversion_chain(config) -> list[ConvOp]:
         for sublayer in ("attn", "ffn"):
             for tensor in ("fn", "base", "scale"):
                 ops.append(Rename(f"{layer_prefix}.hc_{sublayer}_{tensor}", f"{layer_prefix}.{sublayer}_hc.{tensor}"))
+        if text_config.layer_types[layer_idx] == "linear_attention":
+            for tensor in ("A_log", "dt_bias"):
+                ops.append(Rename(f"{layer_prefix}.self_attn.{tensor}", f"{layer_prefix}.self_attn.decay.{tensor}"))
         if text_config.mlp_layer_types[layer_idx] == "sparse":
             ops.extend(glm_moe_layer_ops(layer_idx, layers_prefix))
     for mtp_idx in range(text_config.num_nextn_predict_layers):

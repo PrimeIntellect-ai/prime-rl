@@ -53,6 +53,7 @@ def test_config_and_checkpoint_roundtrip(config):
     apply_prime_to_hf(converted, operations)
     assert model.is_hf_state_dict(converted) and not model.is_prime_state_dict(converted)
     assert any(name.endswith("layers.0.hc_attn_fn") for name in converted)
+    assert any(name.endswith("layers.0.self_attn.A_log") for name in converted)
     assert any(name.endswith("layers.1.mlp.experts.3.down_proj.weight") for name in converted)
     apply_hf_to_prime(converted, operations)
     assert converted.keys() == original.keys()

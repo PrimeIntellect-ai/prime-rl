@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from torch import Tensor
+from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.utils.cp import CPContext
@@ -46,6 +46,15 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         Runtime upcasts for training or inference do not change the wire dtype.
         """
         return False
+
+    def fp32_modules(self) -> list[nn.Module]:
+        """Small modules whose parameters train and compute in fp32 instead of the bf16 compute dtype.
+
+        Each becomes its own FSDP unit with an fp32 policy (fp32 compute dtype under full offload), so
+        it must own only fp32 parameters. FSDP does not cast its inputs, and its parameters stay
+        unsharded from its forward until the backward, so its forward may return them.
+        """
+        return []
 
     def quantization_ignore_patterns(self) -> list[str]:
         """Dense linear modules that stay BF16 under ``model.quantization``, beyond the configured patterns.

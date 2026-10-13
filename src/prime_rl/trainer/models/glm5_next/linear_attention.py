@@ -15,6 +15,21 @@ causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
 build_cp_context_eager = torch.compiler.disable(build_cp_context)
 
 
+class KimiDeltaAttentionDecay(nn.Module):
+    """The forget gate's decay parameters, which the checkpoint stores and vLLM computes in fp32.
+
+    Its forward hands them to the KDA kernel, so they can train in an fp32 FSDP unit of their own.
+    """
+
+    def __init__(self, num_heads: int, projection_size: int) -> None:
+        super().__init__()
+        self.A_log = nn.Parameter(torch.zeros(num_heads))
+        self.dt_bias = nn.Parameter(torch.zeros(projection_size))
+
+    def forward(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.A_log, self.dt_bias
+
+
 class KimiDeltaAttention(nn.Module):
     """Kimi Delta Attention with GLM-5.3's safe (lower-bounded) forget gate.
 
@@ -48,8 +63,7 @@ class KimiDeltaAttention(nn.Module):
 
         self.f_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
         self.f_b_proj = nn.Linear(head_dim, self.projection_size, bias=False)
-        self.A_log = nn.Parameter(torch.zeros(num_heads))
-        self.dt_bias = nn.Parameter(torch.zeros(self.projection_size))
+        self.decay = KimiDeltaAttentionDecay(num_heads, self.projection_size)
         self.b_proj = nn.Linear(hidden_size, num_heads, bias=False)
 
         self.g_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
@@ -97,6 +111,7 @@ class KimiDeltaAttention(nn.Module):
         head_shape = (batch_size, sequence_length, self.num_heads, self.head_dim)
         query, key, value = (part.reshape(head_shape) for part in mixed_qkv.chunk(3, dim=-1))
         forget_gate = self.f_b_proj(self.f_a_proj(hidden_states)).reshape(head_shape)
+        A_log, dt_bias = self.decay()
 
         delta_rule = {
             "q": query,
@@ -104,8 +119,8 @@ class KimiDeltaAttention(nn.Module):
             "v": value,
             "g": forget_gate,
             "beta": self.b_proj(hidden_states),
-            "A_log": self.A_log,
-            "dt_bias": self.dt_bias,
+            "A_log": A_log,
+            "dt_bias": dt_bias,
             "use_qk_l2norm_in_kernel": True,
             "use_gate_in_kernel": True,
             "use_beta_sigmoid_in_kernel": True,
@@ -126,4 +141,4 @@ class KimiDeltaAttention(nn.Module):
         return self.o_proj(core_output.reshape(batch_size, sequence_length, self.projection_size))
 
 
-__all__ = ["KimiDeltaAttention"]
+__all__ = ["KimiDeltaAttention", "KimiDeltaAttentionDecay"]

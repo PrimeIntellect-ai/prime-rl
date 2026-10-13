@@ -172,6 +172,11 @@ def apply_fp32_moe_router(model: nn.Module) -> None:
         logger.info(f"Running {num_routers} MoE router gates in fp32")
 
 
+def get_fp32_modules(model: nn.Module) -> list[nn.Module]:
+    """Modules the model keeps in fp32 for compute (see `PreTrainedModelPrimeRL.fp32_modules`)."""
+    return model.fp32_modules() if isinstance(model, PreTrainedModelPrimeRL) else []
+
+
 def get_full_offload_dtype_policy(
     model: nn.Module,
     config: ModelConfig,
@@ -179,11 +184,12 @@ def get_full_offload_dtype_policy(
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
     policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
-    if config.moe_router_dtype != "float32":
-        return policy
+    fp32_modules = get_fp32_modules(model)
+    if config.moe_router_dtype == "float32":
+        fp32_modules += [moe.router for moe in iter_moe_blocks(model)]
 
-    for moe in iter_moe_blocks(model):
-        for param in moe.router.parameters():
+    for module in fp32_modules:
+        for param in module.parameters():
             if param.is_floating_point():
                 policy[id(param)] = (torch.float32, torch.float32)
     return policy
@@ -550,6 +556,25 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     transformer_layers = language_model.layers
 
     fullgraph = config.compile is not None and config.compile.fullgraph
+    fp32_modules = get_fp32_modules(model)
+    if fp32_modules and fullgraph:
+        raise ValueError(
+            "model.compile.fullgraph=true is not supported for this model: its fp32 modules are FSDP units "
+            "inside the compiled blocks, and dynamo cannot trace FSDP hooks."
+        )
+    for module in fp32_modules:
+        # The module converts its inputs itself, and the code around it may use the parameters its
+        # forward returns, so they stay unsharded until the backward.
+        fully_shard(
+            module,
+            mesh=hsdp_mesh,
+            mp_policy=MixedPrecisionPolicy(
+                param_dtype=torch.float32, reduce_dtype=torch.float32, cast_forward_inputs=False
+            ),
+            offload_policy=offload_policy,
+            reshard_after_forward=False,
+            shard_placement_fn=shard_placement_fn,
+        )
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
             if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
@@ -973,6 +998,9 @@ def setup_model(
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
+
+    for module in get_fp32_modules(model):
+        module.to(torch.float32)
 
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
