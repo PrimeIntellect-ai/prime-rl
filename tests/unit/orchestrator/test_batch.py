@@ -13,6 +13,72 @@ from prime_rl.orchestrator.batch import (
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
 
 
+def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training_example):
+    import msgspec
+
+    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.transports.batch.types import TopLogprobs
+
+    sample = make_training_example()
+    sample.top_logprobs = TopLogprobs(
+        ids=np.array([3, 7, 4], np.int32).tobytes(),
+        logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
+        counts=np.array([0, 0, 2, 1], np.int32).tobytes(),
+    )
+    truncated = prepare_sample(sample, seq_len=3)
+    np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.counts, np.int32), [0, 0, 2])
+    np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
+    plain = make_training_example(rl_weights=[0.0] * 4)
+    batches = prepare_batch([sample, plain], seq_len=12, num_train_workers=2, bin_cost=build_bin_cost(None))
+    packed = next(b for worker in batches for b in worker if any(b.loss_mask) and b.top_logprobs is not None)
+    packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed), type=MicroBatch)
+    tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    ids, values = tensor["top_logprobs_ids"], tensor["top_logprobs_values"]
+    assert ids.shape == values.shape
+    assert ids.shape[1] == len(packed.input_ids)
+    assert (ids >= 0).sum() == 3
+    np.testing.assert_allclose(values[ids >= 0].numpy(), [-0.3, -1.8, -0.2])
+    # The source evidence is immutable under truncation and packing.
+    np.testing.assert_array_equal(np.frombuffer(sample.top_logprobs.counts, np.int32), [0, 0, 2, 1])
+
+
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support", "sampled"])
+def test_top_logprobs_validate_only_rl_tokens_and_require_complete_ipo_support(corruption):
+    import torch
+
+    from prime_rl.trainer.rl.data import validate_score_centering_data
+
+    batch = {
+        "input_ids": torch.tensor([[0, 3, 6]]),
+        "loss_mask": torch.tensor([[False, True, True]]),
+        "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
+        "top_logprobs_ids": torch.tensor([[[-1, -1], [3, 7], [-1, -1]]]),
+        "top_logprobs_values": torch.tensor([[[1.0, 1.0], [0.75, 0.25], [1.0, 1.0]]]).log(),
+        "inference_logprobs": torch.tensor([[1.0, 0.75, 1.0]]).log(),
+        "sampling_mask": torch.tensor([[[-1, -1], [3, 7], [6, -1]]]),
+    }
+    validate_score_centering_data(batch, vocab_size=9, exact=True)
+    if corruption is None:
+        batch["sampling_mask"][0, 1] = -1
+        validate_score_centering_data(batch, vocab_size=9, exact=False)
+        return
+    match corruption:
+        case "missing":
+            batch["top_logprobs_ids"] = None
+        case "duplicate":
+            batch["top_logprobs_ids"][0, 1, 1] = 3
+        case "vocab":
+            batch["top_logprobs_ids"][0, 1, 1] = 9
+        case "mass":
+            batch["top_logprobs_values"][0, 1] = 0
+        case "support":
+            batch["sampling_mask"][0, 1, 1] = -1
+        case "sampled":
+            batch["inference_logprobs"][0, 1] = -0.1
+    with pytest.raises(ValueError):
+        validate_score_centering_data(batch, vocab_size=9, exact=True)
+
+
 def _routed_experts(data, dtype=np.uint8):
     routed_experts = np.asarray(data, dtype=dtype)
     return RoutedExperts(

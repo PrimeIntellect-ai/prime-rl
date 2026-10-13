@@ -48,6 +48,8 @@ class TensorMicroBatch(TypedDict):
     # Sampling-mask token ids per position, padded with -1 to the micro batch's
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
+    top_logprobs_ids: Int[Tensor, "batch seq head"] | None
+    top_logprobs_values: Float[Tensor, "batch seq head"] | None
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
     # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
@@ -137,6 +139,8 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "top_logprobs_ids": None,
+            "top_logprobs_values": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -169,6 +173,8 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "top_logprobs_ids": None,
+            "top_logprobs_values": None,
             "mm_refs": None,
             "mm_token_type_ids": None,
             "rl_weights": None,
@@ -242,6 +248,17 @@ class DataLoader:
             padded = np.full((len(counts), max_mask_size), -1, dtype=np.int32)
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
+        top_ids = top_values = None
+        if (head := micro_batch.top_logprobs) is not None:
+            counts = np.frombuffer(head.counts, dtype=np.int32)
+            width = max(int(counts.max(initial=0)), 1)
+            valid = np.arange(width)[None, :] < counts[:, None]
+            ids = np.full((len(counts), width), -1, dtype=np.int32)
+            values = np.zeros((len(counts), width), dtype=np.float32)
+            ids[valid] = np.frombuffer(head.ids, dtype=np.int32)
+            values[valid] = np.frombuffer(head.logprobs, dtype=np.float32)
+            top_ids = torch.from_numpy(ids).unsqueeze(0)
+            top_values = torch.from_numpy(values).unsqueeze(0)
         return TensorMicroBatch(
             input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
             position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
@@ -265,6 +282,8 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
+            top_logprobs_ids=top_ids,
+            top_logprobs_values=top_values,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
             if micro_batch.rl_weights is not None
             else None,
@@ -275,6 +294,52 @@ class DataLoader:
             if micro_batch.ref_kl_weights is not None
             else None,
         )
+
+
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, exact: bool) -> None:
+    """Validate sampler evidence on the CPU before the LM head consumes it."""
+    mask = batch["loss_mask"]
+    if batch["rl_weights"] is not None:
+        mask = mask & (batch["rl_weights"] != 0)
+    if not mask.any():
+        return
+    ids, values = batch["top_logprobs_ids"], batch["top_logprobs_values"]
+    if ids is None or values is None:
+        raise ValueError("Score centering requires top logprobs on every RL token")
+    ids, values = ids[mask], values[mask]
+    valid = ids >= 0
+    if not valid.any(-1).all() or (ids >= vocab_size).any():
+        raise ValueError("Missing or out-of-vocabulary sampler top logprobs")
+    if not torch.isfinite(values[valid]).all() or (values[valid] > 1e-6).any():
+        raise ValueError("Sampler top logprobs must be finite and nonpositive")
+    ordered = ids.sort(-1).values
+    if ((ordered[:, 1:] == ordered[:, :-1]) & (ordered[:, 1:] >= 0)).any():
+        raise ValueError("Duplicate sampler head ids")
+    q = values.exp().masked_fill(~valid, 0.0)
+    if (q.sum(-1) > 1.0001).any():
+        raise ValueError("Sampler head mass exceeds one")
+    if exact:
+        replay = batch["sampling_mask"]
+        if replay is None:
+            raise ValueError("IPO score centering requires a sampling mask")
+        replay = replay[mask]
+        width = max(replay.shape[-1], ids.shape[-1])
+        head_sorted = torch.nn.functional.pad(ids, (0, width - ids.shape[-1]), value=-1).sort(-1).values
+        mask_sorted = torch.nn.functional.pad(replay, (0, width - replay.shape[-1]), value=-1).sort(-1).values
+        if not torch.equal(head_sorted, mask_sorted):
+            raise ValueError(
+                "IPO score centering requires every sampling-mask probability; increase sampling.logprobs for ties"
+            )
+        if not torch.allclose(q.sum(-1), torch.ones_like(q[:, 0]), atol=1e-4, rtol=0):
+            raise ValueError("IPO sampler probabilities must normalize over the sampling mask")
+        sampled = ids == batch["input_ids"][mask].unsqueeze(-1)
+        sampled_logp = values.masked_fill(~sampled, 0.0).sum(-1)
+        if not sampled.any(-1).all() or not torch.allclose(
+            sampled_logp, batch["inference_logprobs"][mask], atol=1e-4, rtol=1e-5
+        ):
+            raise ValueError("Sampler head and sampled-token logprob disagree")
+    elif batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
+        raise ValueError("Top-k score centering requires untruncated sampling")
 
 
 def _torch_dtype(name: str) -> torch.dtype:

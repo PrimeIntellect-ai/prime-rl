@@ -124,6 +124,35 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+@pytest.mark.parametrize("loss_type", ["score_centering", "ipo", "ipo_tis", "icepop"])
+def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
+    from prime_rl.entrypoints.rl import write_config
+
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "examples/basic/reverse-text/rl.toml",
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--run.name",
+            "roundtrip",
+            "--trainer.loss.type",
+            loss_type,
+            *(["--trainer.loss.score-centering"] if loss_type != "score_centering" else []),
+            "--trainer.loss.topk" if loss_type == "score_centering" else "--trainer.loss.score-centering-topk",
+            "4",
+        ],
+    )
+    write_config(config, tmp_path, exclude={"slurm", "dry_run", "clean"})
+    reloaded = cli(RLConfig, args=["@", str(tmp_path / "rl.json")])
+    assert reloaded.run_dir == config.run_dir
+    assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
+    assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
+    assert reloaded.inference.vllm.max_logprobs >= 6
+    assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})
@@ -196,6 +225,9 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
+    for invalid in ({"ratio_high": float("inf")}, {"ratio_low": float("nan")}, {"score_centering_topk": 128}):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": {"type": "icepop", **invalid}})
     assert config.loss.ratio_low == 0.2
     assert config.loss.ratio_high == 5.0
 
@@ -204,6 +236,17 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
     assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
+    ipo_tis = TrainerConfig.model_validate({"loss": {"type": "ipo_tis"}}).loss
+    assert ipo_tis.eps == 0.2
+    assert ipo_tis.ratio_cap == 2.0
+    assert not ipo_tis.score_centering
+    assert default_config.loss.eps == 0.3
+    assert default_config.loss.max_importance_ratio == 1e4
+    for cap in (0.5, float("inf"), float("nan")):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "ratio_cap": cap}})
+    with pytest.raises(ValidationError, match="score_centering_topk requires"):
+        TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "score_centering_topk": 128}})
 
     with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
