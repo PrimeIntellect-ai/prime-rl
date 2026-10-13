@@ -172,3 +172,35 @@ def test_find_checksum_mismatches():
         "engine1/tp0/b != engine0",
         "engine1/tp1/c != engine0",
     ]
+
+
+def test_hung_engine_is_dropped_from_a_transfer_the_others_wait_behind():
+    """All engines in a transfer hit the deadline together; only the one whose server does not
+    answer is dropped, and the others then finish."""
+    dropped = asyncio.Event()
+
+    async def hung_post(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    async def waiting_post(*args, **kwargs):
+        await dropped.wait()
+        return MagicMock()
+
+    hung, waiting = AsyncMock(), AsyncMock()
+    hung.post.side_effect, hung.get.side_effect = hung_post, httpx.ConnectTimeout("no answer")
+    waiting.post.side_effect, waiting.get.return_value = waiting_post, MagicMock(status_code=200)
+    admin_plane = AdminPlane(ClientConfig())
+    admin_plane._router_clients = []
+    admin_plane.clients = [hung, waiting]
+    admin_plane.evicting = True
+    aborted = []
+
+    def abort(client):
+        aborted.append(client)
+        dropped.set()
+
+    with patch("prime_rl.orchestrator.clients.UPDATE_WEIGHTS_TIMEOUT_S", 0.1):
+        standing, retry = asyncio.run(admin_plane._transfer([hung, waiting], None, abort, None))
+
+    assert aborted == [hung] and standing == [waiting] and not retry
+    assert admin_plane.evicted == [hung]
