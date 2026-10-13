@@ -50,7 +50,16 @@ Pretraining sets `model.debug.random_init = true`: weights are not downloaded or
 | LM head | std / m_N | lr / m_N | eps | wd m_N |
 | Norm weights | 1 | lr | eps / m_N | 0 |
 
-CompleteP scales each residual branch by 1/m_L and the logits by 1/m_N. These multipliers are folded into `o_proj`, `down_proj` and the LM head (the last three rows), so the model, its checkpoints and the exported weights are plain Llama. CompleteP needs AdamW, `model.offload = "none"`, and `scheduler.min_lr = 0` with the cosine scheduler. Keep `head_dim` and the ratios `intermediate_size / hidden_size` and `num_attention_heads / num_key_value_heads` fixed across shapes.
+CompleteP scales each residual branch by 1/m_L and the logits by 1/m_N. These multipliers are folded into `o_proj`, `down_proj` and the LM head, so the model, its checkpoints and the exported weights are plain Llama.
+
+With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are trained by Muon (`rms_norm` learning-rate adjustment), the rest by AdamW with the rules above. Muon's `rms_norm` update grows as sqrt(m_N), so its groups use:
+
+| Parameters | Init std | Learning rate | Weight decay |
+|---|---|---|---|
+| Hidden matrices | std / sqrt(m_N) | lr / sqrt(m_N) | wd sqrt(m_N) |
+| `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (sqrt(m_N) m_L) | wd sqrt(m_N) m_L |
+
+CompleteP works with dense models, needs `model.offload = "none"`, and `scheduler.min_lr = 0` with the cosine scheduler. Keep `head_dim` and the ratios `intermediate_size / hidden_size` and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
 For `sft` and `rl`, `random_init_mode` resolves to `skip`: the weights keep arbitrary memory contents, which is the fastest option for throughput benchmarks.
 
