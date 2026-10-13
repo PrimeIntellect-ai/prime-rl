@@ -81,9 +81,10 @@ from prime_rl.utils.utils import clean_exit
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Maximum batches the orchestrator may run ahead of the trainer. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
-# resumed when the watcher advances ``policy.version``.
+# Maximum shipped batches that inference has not applied the policy for yet. The
+# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded; resumed
+# when the watcher advances ``policy.version``. Shipping itself is paced by the
+# trainer: a batch goes out only once every trainer rank requested it.
 TARGET_LAG = 1
 
 
@@ -144,10 +145,8 @@ class Orchestrator:
         self.last_batch_at = None
         # Trigger timestamps so eval success logs can report epoch duration
         self.eval_triggered_at = {}
-        self.gate_closed_at = None
-        # Pulsed after inference applies a policy so held work can re-check it.
+        # Pulsed after inference applies a policy, waking wait_for_version.
         self.version_advanced = asyncio.Event()
-        self.wait_for_policy_time = 0.0
         self.eval_triggered_steps: set[int] = set()
         self.component_tasks = []
 
@@ -586,26 +585,6 @@ class Orchestrator:
                 f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
-        # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}.
-        # Without this, fast envs fill batches from buffered rollouts and the
-        # orchestrator races arbitrarily far ahead of the trainer. Always
-        # satisfiable: the trainer broadcasts every version, and
-        # ``wait_for_final_broadcast`` keeps the watcher alive through the last
-        # rendezvous after the pipeline drains.
-        required_version = step - 1 - TARGET_LAG
-        if self.policy.version < required_version:
-            get_logger().info(
-                f"Holding batch {step} until inference applies policy v{required_version} "
-                f"(currently v{self.policy.version})"
-            )
-            hold_start = time.perf_counter()
-            while True:
-                self.version_advanced.clear()
-                if self.policy.version >= required_version:
-                    break
-                await self.version_advanced.wait()
-            self.wait_for_policy_time += time.perf_counter() - hold_start
-
         # The effective (clean, trained-on) subset is logged at ship time as annotation
         # records against each trace's arrival record - membership, advantages, the step
         # it shipped at - never a second episode copy.
@@ -615,7 +594,11 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
-        await self.sender.send(micro_batch_grid)
+        # Sending blocks until every trainer rank requested the batch, so the wait is the time
+        # the orchestrator spent waiting on the trainer for the next policy.
+        send_start_time = time.perf_counter()
+        send_batch_time = await self.sender.send(micro_batch_grid)
+        wait_for_policy_time = time.perf_counter() - send_start_time - send_batch_time
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -667,7 +650,8 @@ class Orchestrator:
             "time/step": step_time,
             "time/pack": pack_time,
             "time/save_ckpt": save_ckpt_time,
-            "time/wait_for_policy": self.wait_for_policy_time,
+            "time/send_batch": send_batch_time,
+            "time/wait_for_policy": wait_for_policy_time,
             "step": step,
         }
         # Staleness of the shipped cohort, decomposed into its in-flight and
@@ -691,10 +675,10 @@ class Orchestrator:
         metrics |= self.train_source.metrics()
         await monitors.log(metrics, step=step)
 
-        active_step_time = max(step_time - self.wait_for_policy_time, 0.0)
-        if step_time > 0 and self.wait_for_policy_time >= active_step_time:
+        active_step_time = max(step_time - wait_for_policy_time, 0.0)
+        if step_time > 0 and wait_for_policy_time >= active_step_time:
             get_logger().warning(
-                f"Orchestrator waited {format_time(self.wait_for_policy_time)} for policy updates, at least as long "
+                f"Orchestrator waited {format_time(wait_for_policy_time)} for policy updates, at least as long "
                 f"as its {format_time(active_step_time)} active step time. Train-inference compute is imbalanced; "
                 "add more trainer nodes."
             )
@@ -722,7 +706,6 @@ class Orchestrator:
                 f"stale={num_stale}, errored={num_errored}, no_signal={num_no_signal}. Review max_off_policy_steps, "
                 "episode errors, and reward signal."
             )
-        self.wait_for_policy_time = 0.0
 
         if self.heart is not None:
             self.heart.beat()
@@ -972,14 +955,10 @@ class Orchestrator:
                     f"Pausing dispatcher until inference applies policy v{self.progress.step - 1 - TARGET_LAG} "
                     f"(currently v{self.policy.version})"
                 )
-                self.gate_closed_at = time.perf_counter()
             gate.clear()
         else:
             if not was_set:
                 get_logger().info(f"Resuming dispatcher (policy v{self.policy.version})")
-                if self.gate_closed_at is not None:
-                    self.wait_for_policy_time += time.perf_counter() - self.gate_closed_at
-                    self.gate_closed_at = None
             gate.set()
 
     async def on_policy_update(self, _step: int) -> None:
