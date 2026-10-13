@@ -45,16 +45,15 @@ class Feature:
     layout: Layout = FSDP8_EP8
 
 
-FEATURES = (
-    Feature("ac_off", {"model.ac": None}),
-    Feature("ac_selective", {"model.ac.mode": "selective"}),
-    Feature("act_offload_off", {"model.ac_offloading": None}),
-    Feature("optim_offload_off", {"model.offload": "none"}),
-    Feature("full_offload", {"model.offload": "full"}),
-    Feature("eager", {"model.compile": None}),
-    Feature("unfused", {"model.fusions.enabled": []}),
-    Feature("bf16_router", {"model.moe_router_dtype": "bfloat16"}, layout=CP2_RING_EP4),
-)
+AC_OFF = Feature("ac_off", {"model.ac": None})
+AC_SELECTIVE = Feature("ac_selective", {"model.ac.mode": "selective"})
+ACT_OFFLOAD_OFF = Feature("act_offload_off", {"model.ac_offloading": None})
+OPTIM_OFFLOAD_OFF = Feature("optim_offload_off", {"model.offload": "none"})
+FULL_OFFLOAD = Feature("full_offload", {"model.offload": "full"})
+EAGER = Feature("eager", {"model.compile": None})
+UNFUSED = Feature("unfused", {"model.fusions.enabled": []})
+BF16_ROUTER = Feature("bf16_router", {"model.moe_router_dtype": "bfloat16"}, layout=CP2_RING_EP4)
+FEATURES = (AC_OFF, AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLOAD, EAGER, UNFUSED, BF16_ROUTER)
 
 
 @dataclass(frozen=True, eq=False)
