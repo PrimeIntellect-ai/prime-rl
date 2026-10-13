@@ -15,7 +15,8 @@ from prime_rl.utils.logger import get_logger
 def sweep_run_leftovers(run_name: str) -> None:
     """Delete the sandboxes and tunnels labelled ``run_name``. A no-op without Prime
     credentials (a run on local runtimes); failures are logged, never raised."""
-    from verifiers.v1.runtimes.sweep import prime_authenticated, sweep
+    from verifiers.v1.runtimes.sweep import sweep
+    from verifiers.v1.utils.prime import prime_authenticated
 
     logger = get_logger()
     if not prime_authenticated():
