@@ -269,31 +269,48 @@ class AdminPlane:
             return await self._each(members, "/update_weights", json=json, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S), False
 
         async def update(client: AsyncClient) -> None:
-            # One attempt: retrying a collective receive cannot succeed on its own.
+            # One attempt: retrying a collective receive cannot succeed on its own. No read timeout:
+            # the deadline below tells a hung engine from the ones waiting behind it.
             response = await client.post(
                 "/update_weights",
                 json={"weight_dir": weight_dir},
-                timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
+                timeout=httpx.Timeout(connect=10.0, read=None, write=60.0, pool=10.0),
             )
             response.raise_for_status()
 
         tasks = {asyncio.create_task(update(client)): client for client in members}
         dead: list[AsyncClient] = []
         failed: list[AsyncClient] = []
+
+        def drop(client: AsyncClient, error: object) -> None:
+            dead.append(client)
+            abort(client)
+            get_logger().warning(f"Aborting the weight transfer to {client.base_url} ({error!r})")
+
         pending = set(tasks)
         while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(
+                pending, timeout=UPDATE_WEIGHTS_TIMEOUT_S, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                # The engines still in the transfer wait for each other, so they all hit the deadline.
+                # The ones whose server does not answer are hung and the others get another round.
+                # If every server answers, all of them are dropped.
+                answers = await asyncio.gather(*(_answers(tasks[task]) for task in pending))
+                hung = {task for task, ok in zip(pending, answers) if not ok} or set(pending)
+                for task in hung:
+                    task.cancel()
+                    drop(tasks[task], f"no answer after {UPDATE_WEIGHTS_TIMEOUT_S:.0f}s")
+                pending -= hung
+                continue
             for task in done:
-                client = tasks[task]
                 error = task.exception()
-                # Gone or hung: the transfer cannot finish while the others wait for it. Without a
-                # resend the survivors are not aborted, so any failure means it stopped pulling.
+                # Gone: the transfer cannot finish while the others wait for it. Without a resend
+                # the survivors are not aborted, so any failure means it stopped pulling.
                 if isinstance(error, httpx.TransportError) or (error is not None and resend is None):
-                    dead.append(client)
-                    abort(client)
-                    get_logger().warning(f"Aborting the weight transfer to {client.base_url} ({error!r})")
+                    drop(tasks[task], error)
                 elif error is not None:
-                    failed.append(client)
+                    failed.append(tasks[task])
         for client in dead:
             await self._evict(client, "weight update failed")
         if dead and resend is not None and await resend():
@@ -590,6 +607,14 @@ async def _generation_counters(client: AsyncClient) -> tuple[float, float]:
     return running, tokens
 
 
+async def _answers(client: AsyncClient) -> bool:
+    try:
+        response = await client.get("/health", timeout=10.0)
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
+
+
 async def _is_live(client: AsyncClient) -> bool:
     try:
         response = await client.get("/liveness", timeout=60.0)
@@ -619,8 +644,8 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
-# can take longer than the other admin ops. Keep it below the trainer's collective timeout:
-# it is what detects an engine that hangs during the transfer.
+# can take longer than the other admin ops. Keep it below the trainer's collective timeout
+# and the NIXL weight_broadcast.timeout: it is what detects an engine that hangs during the transfer.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
