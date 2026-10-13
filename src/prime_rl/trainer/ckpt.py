@@ -154,11 +154,13 @@ class AppState(Stateful):
 
         # state_dict is the same dict object that dcp_load held internally; clearing
         # it drops the last references to the loaded tensor wrappers so the cuda
-        # allocator can release whatever blocks it cached during the read.
-        if has_cpu_offload:
-            state_dict.clear()
-            gc.collect()
-            torch.cuda.empty_cache()
+        # allocator can release whatever blocks it cached during the read. The
+        # non-offload path needs this most: its optimizer state is resident on the
+        # GPU, and under expandable_segments a cached block stays mapped and so is
+        # unavailable to NCCL and cuBLAS workspaces until empty_cache returns it.
+        state_dict.clear()
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 class CheckpointManager:

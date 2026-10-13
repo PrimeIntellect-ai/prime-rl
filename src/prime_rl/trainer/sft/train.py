@@ -389,6 +389,12 @@ def train(config: SFTConfig):
         if world.is_master:
             prune_broadcasts_beyond(config.run_dir, startup_version)
         logger.info(f"Broadcasting startup policy weights (v{startup_version}) for online evals")
+        # The per-layer gather peaks well above the resident weights, and on a resume
+        # it lands on the pool the checkpoint load just left behind. Release cached
+        # blocks first, draining pending work so empty_cache cannot free a block out
+        # from under a running kernel. Mirrors the RL trainer's broadcast.
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
         weight_sender.broadcast(model, startup_version)
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
