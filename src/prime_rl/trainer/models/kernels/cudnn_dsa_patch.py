@@ -46,7 +46,7 @@ def _main_kernel_key(key: tuple) -> tuple:
     if not have_topk_length:
         return key
     if _topk_clamp is None:
-        raise RuntimeError("a cuDNN DSA backward call with topk_length must go through cudnn_dsa_compile")
+        raise RuntimeError("a cuDNN DSA backward call with topk_length must go through cudnn_dsa_patch")
     if max_topk > _topk_clamp:
         raise ValueError(f"slot width {max_topk} exceeds the cuDNN DSA backward's compiled clamp {_topk_clamp}")
     return (*static_key, have_topk_length, _topk_clamp)
@@ -94,7 +94,7 @@ class _ExecutorCache(dict):
         get_logger().info(f"Compiled the cuDNN DSA backward {self.kernel} kernel{max_topk} in {seconds:.2f}s")
 
 
-def _install() -> None:
+def _patch_sm90_compile_cache() -> None:
     if kernel_sm90.FlashAttentionDSABackwardSm90.__init__ is _init_with_clamped_max_topk:
         return
     kernel_sm90.FlashAttentionDSABackwardSm90.__init__ = _init_with_clamped_max_topk
@@ -107,7 +107,7 @@ def _install() -> None:
 def flash_attn_bwd_sm90(*args, max_slots: int | None = None, **kwargs) -> tuple[torch.Tensor, ...]:
     """The frontend's `flash_attn_bwd_sm90`; a call with `topk_length` serves widths up to `max_slots`."""
     global _topk_clamp
-    _install()
+    _patch_sm90_compile_cache()
     if kwargs.get("topk_length") is not None:
         if max_slots is None:
             raise ValueError("a cuDNN DSA backward call with topk_length needs max_slots, its widest slot width")
@@ -122,7 +122,7 @@ def _sm100_main_kernel_key(key: tuple) -> tuple:
     if backend != "generic_m64" or not has_topk_length:
         return key
     if _sm100_topk_clamp is None:
-        raise RuntimeError("a cuDNN SM100 DSA backward call with topk_length must go through cudnn_dsa_compile")
+        raise RuntimeError("a cuDNN SM100 DSA backward call with topk_length must go through cudnn_dsa_patch")
     if max_topk > _sm100_topk_clamp:
         raise ValueError(f"slot width {max_topk} exceeds the cuDNN DSA backward's compiled clamp {_sm100_topk_clamp}")
     if max_topk % 64 != 0:
@@ -138,7 +138,7 @@ def _sm100_init_with_clamped_max_topk(self, element_dtype, head_dim, head_dim_v,
     _sm100_stock_init(self, element_dtype, head_dim, head_dim_v, block_tile, max_topk)
 
 
-def _install_sm100() -> None:
+def _patch_sm100_compile_cache() -> None:
     if kernel_sm100.FlashAttentionDSABackwardSm100.__init__ is _sm100_init_with_clamped_max_topk:
         return
     kernel_sm100.FlashAttentionDSABackwardSm100.__init__ = _sm100_init_with_clamped_max_topk
@@ -150,7 +150,7 @@ def _install_sm100() -> None:
 def flash_attn_bwd_sm100(*args, max_slots: int | None = None, **kwargs) -> tuple[torch.Tensor, ...]:
     """The frontend's `flash_attn_bwd_sm100`; a call with `topk_length` serves widths up to `max_slots`."""
     global _sm100_topk_clamp
-    _install_sm100()
+    _patch_sm100_compile_cache()
     if kwargs.get("topk_length") is None:
         return interface_sm100.flash_attn_bwd_sm100(*args, **kwargs)
     if max_slots is None:

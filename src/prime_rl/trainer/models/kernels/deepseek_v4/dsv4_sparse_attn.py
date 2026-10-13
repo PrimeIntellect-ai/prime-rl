@@ -150,7 +150,7 @@ def _tilelang_forward(
 
 # FlashMLA's SM90 sparse prefill reads slots two 64-wide tiles at a time, so it needs a multiple of 128, which
 # SM100 accepts too and which meets the clamped SM100 cuDNN backward's multiple of 64. The cuDNN backward
-# compiles one kernel for every width (`cudnn_dsa_compile`), so nothing pads further.
+# compiles one kernel for every width (`cudnn_dsa_patch`), so nothing pads further.
 CUDNN_FLASHMLA_SLOT_TILE = 128
 
 
@@ -309,7 +309,7 @@ def _cudnn_flashmla_backward(
         flash_attn_bwd_sm100_workspace_size,
     )
 
-    from prime_rl.trainer.models.kernels.cudnn_dsa_compile import flash_attn_bwd_sm90, flash_attn_bwd_sm100
+    from prime_rl.trainer.models.kernels.cudnn_dsa_patch import flash_attn_bwd_sm90, flash_attn_bwd_sm100
 
     batch, seq_len, heads, dim = q.shape
     n_positions = kv.shape[1]

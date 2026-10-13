@@ -511,7 +511,7 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
 def test_cudnn_flashmla_backward_compiles_one_main_kernel_for_every_width():
     """Slot widths from 128 to 8320 share one cuDNN main kernel, and each matches the reference.
 
-    The cuDNN frontend keys its main-kernel compile on the slot width. `cudnn_dsa_compile` keys it on a
+    The cuDNN frontend keys its main-kernel compile on the slot width. `cudnn_dsa_patch` keys it on a
     clamp instead, through private frontend internals that an upgrade could move without an error. 8320 is
     DeepSeek-V4-Flash's widest HCA layer, `128 + 1048576 // 128`.
     """
