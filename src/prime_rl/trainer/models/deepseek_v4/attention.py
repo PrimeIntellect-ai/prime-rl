@@ -161,11 +161,7 @@ def _kernel_blocker(num_heads: int, head_dim: int, backend: str) -> str | None:
 
 
 def max_sparse_attn_slots(config: DeepseekV4Config) -> int:
-    """The widest slot axis any layer of `config` can hand the kernel, at the longest document it allows.
-
-    A layer reads its `sliding_window` and then `index_topk` CSA picks or one HCA pick per completed entry of
-    the query's document, and `PackedContext.build` bounds a document by `max_position_embeddings`.
-    """
+    """The widest slot axis any layer of `config` can hand the kernel, at the longest document it allows."""
     hca_rate = config.compress_rates.get("heavily_compressed_attention")
     hca_picks = config.max_position_embeddings // hca_rate if hca_rate is not None else 0
     return config.sliding_window + max(config.index_topk, hca_picks)
