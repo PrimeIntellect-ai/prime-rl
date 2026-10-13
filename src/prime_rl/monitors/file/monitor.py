@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
@@ -11,10 +14,16 @@ import orjson
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
-from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_trace_stream
+from prime_rl.monitors.file.traces import (
+    get_annotations_dir,
+    get_index_path,
+    get_labels_index_path,
+    get_trace_stream,
+)
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
-from prime_rl.monitors.file.traces.live import get_live_dir, get_pending_dir
+from prime_rl.monitors.file.traces.labels import label_row, trace_labels, trace_moments
+from prime_rl.monitors.file.traces.live import end_line, get_live_dir, get_partial_dir, get_pending_dir, read_live
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
@@ -23,6 +32,43 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+
+ENDED_CAP = 10_000
+"""How many ended traces' ids the monitor remembers, to drop deltas that straggle in
+after their trace's file moved to ``partial/``."""
+
+
+class LiveTraceIndex:
+    """What the labels index needs of one live trace, gathered from its deltas."""
+
+    __slots__ = ("labels", "start", "checkpoint", "dispatch")
+
+    def __init__(self, dispatch: str | None) -> None:
+        self.labels: dict[str, Any] = {}
+        self.start: float | None = None
+        self.checkpoint: float | None = None
+        self.dispatch = dispatch
+
+    def apply(self, delta: dict[str, Any]) -> bool:
+        """Fold one delta in; whether anything the index row holds changed."""
+        before = (self.labels, self.start, self.checkpoint)
+        changed = delta.get("set") or {}
+        if isinstance(changed.get("info"), dict):
+            self.labels = trace_labels({"info": changed["info"]})
+        if isinstance(changed.get("timing"), dict) and self.start is None:
+            self.start, _ = trace_moments({"timing": changed["timing"]})
+        _, checkpoint = trace_moments({"checkpoints": delta.get("checkpoints") or []})
+        if checkpoint is not None and (self.checkpoint is None or checkpoint > self.checkpoint):
+            self.checkpoint = checkpoint
+        return (self.labels, self.start, self.checkpoint) != before
+
+    @classmethod
+    def of(cls, dispatch: dict[str, Any], trace: dict[str, Any]) -> LiveTraceIndex:
+        """From a folded live file (a trace the process restarted under)."""
+        held = cls(dispatch.get("id"))
+        held.labels = trace_labels(trace)
+        held.start, held.checkpoint = trace_moments(trace)
+        return held
 
 
 class FileMonitor(Monitor):
@@ -43,6 +89,13 @@ class FileMonitor(Monitor):
         # Line-buffered append so a concurrently-running dashboard can tail the file.
         self.file = open(self.path, "a", buffering=1)  # noqa: SIM115
         self._streams: dict[Path, tuple[ChunkedJsonl, BinaryIO]] = {}
+        # the labels index: written from log_live and log_episodes, which run on threads
+        self._labels_index: BinaryIO | None = None
+        self._labels_lock = threading.Lock()
+        self._live_index: dict[str, LiveTraceIndex] = {}
+        # one batch at a time: a flush cancelled mid-write keeps writing on its thread
+        self._live_lock = threading.Lock()
+        self._ended: OrderedDict[str, None] = OrderedDict()
         self.logger.info(f"Logging metrics and episodes to the local filesystem ({output_dir})")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
@@ -70,25 +123,42 @@ class FileMonitor(Monitor):
 
     async def log_live(self, events: list[dict[str, Any]]) -> None:
         """Append each delta to its trace's file under ``traces/live/`` (the first line
-        carrying the dispatch identity); a finished or discarded trace's file goes away.
-        A dispatched episode holds a placeholder under ``traces/live/pending/`` until its
+        carrying the dispatch identity). A trace whose episode landed loses its file (the
+        finished stream has it); one that ended otherwise (``done`` with an ``end``, or a
+        ``discard``) keeps it, moved to ``traces/partial/`` with its ending as the last
+        line. Each labelled trace's row in the labels index follows it (``lookup``). A
+        dispatched episode holds a placeholder under ``traces/live/pending/`` until its
         first trace streams."""
         live_dir = get_live_dir(self.output_dir)
         pending_dir = get_pending_dir(self.output_dir)
-        # A previous attempt's live traces are stale: nothing streams into them again. Only
-        # the process that streams clears them - every process of a run shares this monitor.
-        clear = not self._live_cleared
+        # A previous process's live traces are over: nothing streams into them again. Only
+        # the process that streams recovers them - every process of a run shares this monitor.
+        recover = not self._live_cleared
         self._live_cleared = True
 
         def write() -> None:
-            if clear:
-                shutil.rmtree(live_dir, ignore_errors=True)
+            with self._live_lock:
+                write_batch()
+
+        def write_batch() -> None:
+            if recover:
+                self._recover_live(live_dir, pending_dir)
             pending_dir.mkdir(parents=True, exist_ok=True)
             appends: dict[Path, list[bytes]] = {}
+            touched: dict[str, None] = {}
+            rows: list[dict[str, Any]] = []
             for event in events:
                 if "done" in event:
-                    appends.pop(live_dir / f"{event['done']}.jsonl", None)
-                    (live_dir / f"{event['done']}.jsonl").unlink(missing_ok=True)
+                    trace_id = event["done"]
+                    path = live_dir / f"{trace_id}.jsonl"
+                    touched.pop(trace_id, None)
+                    end = event.get("end", "landed")
+                    if end == "landed":
+                        appends.pop(path, None)
+                        path.unlink(missing_ok=True)
+                        self._live_index.pop(trace_id, None)
+                    else:
+                        rows.extend(self._keep_partial(path, appends.pop(path, []), end))
                     continue
                 if "pending" in event:
                     path = pending_dir / f"{event['pending']}.json"
@@ -100,11 +170,21 @@ class FileMonitor(Monitor):
                     (pending_dir / f"{event['dispatched']}.json").unlink(missing_ok=True)
                     continue
                 delta = event["delta"]
-                path = live_dir / f"{delta['trace']}.jsonl"
+                trace_id = delta["trace"]
+                path = live_dir / f"{trace_id}.jsonl"
                 if delta.get("discard"):
-                    appends.pop(path, None)
-                    path.unlink(missing_ok=True)
+                    touched.pop(trace_id, None)
+                    rows.extend(self._keep_partial(path, appends.pop(path, []), "discarded"))
                     continue
+                if trace_id in self._ended:
+                    if "open" not in delta:
+                        continue  # straggling in after its trace ended: its file has moved
+                    del self._ended[trace_id]  # streaming again (a durable call reusing it)
+                held = self._live_index.get(trace_id)
+                if held is None:
+                    held = self._live_index[trace_id] = LiveTraceIndex((event.get("dispatch") or {}).get("id"))
+                if held.apply(delta) and held.labels:
+                    touched[trace_id] = None
                 # Training arrays stay on the wire; live records only need display data.
                 line = {key: value for key, value in delta.items() if key != "routing_repairs"}
                 if "nodes" in line:
@@ -122,8 +202,74 @@ class FileMonitor(Monitor):
             for path, lines in appends.items():
                 with path.open("ab") as f:
                     f.write(b"".join(line + b"\n" for line in lines))
+            # after the files: a row a reader sees points at what it says
+            for trace_id in touched:
+                held = self._live_index[trace_id]
+                rows.append(
+                    label_row(
+                        trace_id,
+                        held.labels,
+                        "live",
+                        start=held.start,
+                        checkpoint=held.checkpoint,
+                        dispatch=held.dispatch,
+                    )
+                )
+            self._write_label_rows(rows)
 
         await asyncio.to_thread(write)
+
+    def _keep_partial(self, path: Path, lines: list[bytes], end: str) -> list[dict[str, Any]]:
+        """Move a live trace's file to ``partial/``, its unwritten deltas and its ending
+        appended first; returns its labels index row (none for an unlabelled trace)."""
+        trace_id = path.stem
+        held = self._live_index.pop(trace_id, None)
+        self._ended[trace_id] = None
+        while len(self._ended) > ENDED_CAP:
+            self._ended.popitem(last=False)
+        if not lines and not path.exists():
+            return []  # nothing of it ever streamed
+        with path.open("ab") as f:
+            f.write(b"".join(line + b"\n" for line in lines) + end_line(end))
+        partial_dir = get_partial_dir(self.output_dir)
+        partial_dir.mkdir(parents=True, exist_ok=True)
+        os.replace(path, partial_dir / path.name)
+        if held is None or not held.labels:
+            return []
+        return [
+            label_row(
+                trace_id,
+                held.labels,
+                "partial",
+                start=held.start,
+                checkpoint=held.checkpoint,
+                dispatch=held.dispatch,
+                end=end,
+            )
+        ]
+
+    def _recover_live(self, live_dir: Path, pending_dir: Path) -> None:
+        """Keep the live traces a dead process left as ``crashed`` partials; its pending
+        placeholders are gone with it."""
+        shutil.rmtree(pending_dir, ignore_errors=True)
+        rows: list[dict[str, Any]] = []
+        for path in sorted(live_dir.glob("*.jsonl")) if live_dir.is_dir() else []:
+            folded = read_live(path)
+            if folded is not None:
+                self._live_index[path.stem] = LiveTraceIndex.of(*folded)
+            rows.extend(self._keep_partial(path, [], "crashed"))
+        self._write_label_rows(rows)
+
+    def _write_label_rows(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        with self._labels_lock:
+            if self._labels_index is None:
+                path = get_labels_index_path(self.output_dir)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                self._labels_index = open(path, "ab")  # noqa: SIM115
+            self._labels_index.write(b"".join(orjson.dumps(row, default=str, option=OPTS) for row in rows))
+            self._labels_index.flush()
 
     def _stream(self, directory: Path) -> tuple[ChunkedJsonl, BinaryIO]:
         """A stream and its index, opened on first use and kept open. Writers flush the
@@ -147,13 +293,31 @@ class FileMonitor(Monitor):
             # An index row goes out with every episode: summarising the record here,
             # while it is already in hand, saves every reader from parsing a stream
             # that outgrows memory long before the run does.
+            rows = []
             for episode in episodes:
                 record = episode.to_record(float_decimals=self.config.float_decimals)
                 chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
                 self._logged += 1
                 index.write(orjson.dumps(index_row(self._logged, record, chunk, offset), default=str, option=OPTS))
+                # every labelled trace by its own labels, so a durable call finds it
+                for trace in record.get("traces") or []:
+                    if (labels := trace_labels(trace)) and trace.get("id"):
+                        start, checkpoint = trace_moments(trace)
+                        rows.append(
+                            label_row(
+                                trace["id"],
+                                labels,
+                                "finished",
+                                start=start,
+                                checkpoint=checkpoint,
+                                episode=record.get("id"),
+                                chunk=chunk,
+                                offset=offset,
+                            )
+                        )
             stream.flush()
             index.flush()
+            self._write_label_rows(rows)
 
         # Record serialization is heavy pure-Python work; keep it off the event loop.
         # Awaited (not fire-and-forget) so appends to one stream never interleave.
@@ -181,4 +345,8 @@ class FileMonitor(Monitor):
         for stream, index in self._streams.values():
             stream.close()
             index.close()
+        with self._labels_lock:
+            if self._labels_index is not None:
+                self._labels_index.close()
+                self._labels_index = None
         self.logger.info(f"Finalized metrics at {self.path}")

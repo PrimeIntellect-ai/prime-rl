@@ -5,8 +5,12 @@ trace's header when it is minted, then each committed turn and each phase change
 file monitor appends those deltas to ``traces/live/<trace_id>.jsonl`` — the first line
 also carries the ``dispatch`` identity (kind, env, group, task, step) — and deletes the
 file when the episode lands in the finished stream, so the directory only ever holds
-in-flight work. Reading one live trace is folding one small file; ``ls`` lists what is
-in flight; finished traces are untouched (the stream and its index).
+in-flight work. A trace that ends without landing (its request failed, it was
+cancelled or discarded, or the process died under it) keeps its file: it moves to
+``traces/partial/`` with a last line saying how it ended (``{"end": ...}``), so a
+durable call run again finds it (``lookup``). Reading one live trace is folding one
+small file; ``ls`` lists what is in flight; finished traces are untouched (the stream
+and its index).
 
     uv run python -m prime_rl.monitors.file.traces <run_dir>            # a table of live rollouts
     uv run python -m prime_rl.monitors.file.traces <run_dir> <trace_id> # one assembled trace
@@ -41,6 +45,27 @@ def live_path(output_dir: Path, trace_id: str) -> Path:
     return get_live_dir(output_dir) / f"{trace_id}.jsonl"
 
 
+def get_partial_dir(output_dir: Path) -> Path:
+    """Traces that ended without landing, one live file each, its last line the ending."""
+    return get_trace_dir(output_dir) / "partial"
+
+
+def partial_path(output_dir: Path, trace_id: str) -> Path:
+    return get_partial_dir(output_dir) / f"{trace_id}.jsonl"
+
+
+ENDINGS = ("failed", "cancelled", "discarded", "crashed")
+"""How a trace that never landed ended, on the last line of its partial file:
+``failed`` (its request raised, or its episode landed without it), ``cancelled`` (its
+episode was dropped or shut down), ``discarded`` (the env abandoned the attempt that
+made it, retrying), ``crashed`` (the process that streamed it died; found on restart)."""
+
+
+def end_line(end: str) -> bytes:
+    """The line a partial file ends with."""
+    return orjson.dumps({"end": end, "time": time.time()}) + b"\n"
+
+
 def get_pending_dir(output_dir: Path) -> Path:
     """Dispatched episodes whose first trace has not streamed yet, one JSON of dispatch
     identity each; the file goes away once a trace streams or the episode ends."""
@@ -68,6 +93,8 @@ def fold_lines(data: bytes, dispatch: dict[str, Any], assembly: EpisodeAssembly)
         if not line.strip():
             continue
         delta = orjson.loads(line)
+        if "trace" not in delta:  # a partial file's ending, not a delta
+            continue
         dispatch = delta.pop("dispatch", dispatch)
         assembly.apply(delta)  # KeyError("open") when a file lost its header line
     return end, dispatch
