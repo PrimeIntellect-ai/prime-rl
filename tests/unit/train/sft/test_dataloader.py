@@ -5,7 +5,7 @@ import pytest
 import torch
 from datasets import Dataset
 
-from prime_rl.configs.sft import FakeDataConfig, SFTDataConfig
+from prime_rl.configs.sft import FakeDataConfig, HFDatasetConfig, HFDatasetSourceConfig
 from prime_rl.trainer.sft.data import FakeDataset, SFTDataset, get_dataset_progress, get_dataset_state, setup_dataloader
 from prime_rl.trainer.world import reset_world
 
@@ -162,7 +162,8 @@ def test_dataloader_shards_across_ranks_and_workers(
         os.environ["LOCAL_RANK"] = str(rank)
         os.environ["LOCAL_WORLD_SIZE"] = str(world_size)
 
-        config = SFTDataConfig(
+        config = HFDatasetConfig(
+            source=[HFDatasetSourceConfig(dataset="org/data")],
             batch_size=1,
             micro_batch_size=1,
             seq_len=7,
@@ -172,13 +173,7 @@ def test_dataloader_shards_across_ranks_and_workers(
 
         def setup_epoch_dataloader():
             raw_dataset = Dataset.from_list(
-                [
-                    {
-                        "messages": [{"role": "assistant", "content": str(index) * 6}],
-                        "__split": "fake",
-                    }
-                    for index in range(num_examples)
-                ]
+                [{"messages": [{"role": "assistant", "content": str(index) * 6}]} for index in range(num_examples)]
             )
             dataset = SFTDataset(
                 raw_dataset,
@@ -186,6 +181,7 @@ def test_dataloader_shards_across_ranks_and_workers(
                 shuffle=False,
                 seq_len=config.seq_len,
                 non_dp_size=non_dp_size,
+                name="fake",
             )
             return setup_dataloader(dataset, config, cp=1)
 
