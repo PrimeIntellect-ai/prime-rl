@@ -1,23 +1,12 @@
-"""The cuDNN frontend's SM90 and SM100 DSA backwards, with a main kernel that compiles once for every slot width.
+"""Compile the cuDNN frontend's DSA backward main kernel once for every slot width.
 
-The SM90 main kernel reads `max_topk` only to clamp each query's `topk_length`: it sizes no shared memory and
-unrolls nothing. The frontend still keys the compile on `max_topk = topk_idxs.shape[-1]`, so every new slot
-width would compile a new kernel. When the caller passes `topk_length`, this builds the kernel with `max_topk`
-at a fixed clamp and keys it on the clamp. Without `topk_length`, `max_topk` stands in for the length, so that
-path (GLM's) keeps the frontend's behavior. Every compile of the three SM90 backward kernels (preprocess, main,
-postprocess) is logged at INFO. It leans on private frontend internals (the `compile_cache*` attributes, the
-main key ending in `(have_topk_length, max_topk)`, the `max_topk` kwarg) and raises if they move.
-
-The SM100 `generic_m64` kernel also reads `max_topk` only as a bound on slot loads, plus two launch-geometry
-choices at 1024 and 2048, so it gets the same clamp. A bound above the real width lets the last 64-slot tile
-read past the end of a `topk_idxs` row, so a clamped call refuses a width that is not a multiple of 64. The
-SM100 frontend picks the kernel from the real width before building the key; the clamp applies to
-`generic_m64` only, and the tuned H128 two-CTA kernels keep one compile per width they serve. SM100 has one
-cache, whose single compile is logged, keyed `(backend, ..., max_topk, has_topk_length)`; this raises if that
-layout moves. The `__init__` patch cannot see `topk_length`, so the clamp is set only for the duration of a
-call that passes it.
+The frontend keys each compile on the slot width, but the main kernel reads `max_topk` only as an upper bound on
+`topk_length`. Calls that pass `topk_length` therefore build and key the kernel at one fixed `max_topk`; calls
+without it keep the frontend's behavior. On SM100 this covers the `generic_m64` kernel only and needs slot widths
+that are a multiple of 64. It patches private frontend internals and raises if they move.
 """
 
+import math
 import time
 from collections.abc import Callable
 
@@ -41,12 +30,12 @@ _SM100_GENERIC_KERNELS = (
 
 
 def topk_clamp(max_slots: int) -> int:
-    """The `max_topk` the main kernel is built with to serve every width up to `max_slots`.
+    """The `max_topk` the main kernel is built with: the smallest power of two that is at least `max_slots`.
 
-    A power of two: at 16384 the SASS equals the stock 640-wide kernel's apart from four immediates, while
-    `2**31 - 1` adds 120 instructions and costs 1% of forward+backward.
+    A power of two compiles to nearly the stock kernel's SASS, where `2**31 - 1` costs 1% of forward+backward.
     """
-    return 1 << (max_slots - 1).bit_length()
+    exponent = math.ceil(math.log2(max_slots))
+    return 2**exponent
 
 
 def _main_kernel_key(key: tuple) -> tuple:

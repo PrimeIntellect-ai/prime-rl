@@ -112,11 +112,6 @@ SHAPE_ERRORS = {"tilelang": _tilelang_shape_error, "cudnn_flashmla": _cudnn_flas
 
 
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int, backend: str = "tilelang") -> str | None:
-    """The reason `backend`'s kernels cannot serve this shape, or ``None`` if they can.
-
-    The forward, the backward and the constructor check in `deepseek_v4/attention.py` all need
-    the same answer, so the constraints live here only.
-    """
     return SHAPE_ERRORS[backend](heads, kv_group, dim)
 
 
