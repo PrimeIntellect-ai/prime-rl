@@ -16,10 +16,9 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
-from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
@@ -63,7 +62,8 @@ from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIn
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.world import get_world
+from prime_rl.trainer.utils import get_dcp_group
+from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
@@ -107,6 +107,9 @@ DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
     "float32": torch.float32,
 }
+
+# The one-time HF <-> PrimeRL conversion runs on the master alone and can take hours for large models.
+CONVERSION_TIMEOUT_S = 4 * 3600
 
 # We increase the torch.compile recompile limit and cache size as we found this
 # necessary for training INTELLECT-3 with Muon.
@@ -353,22 +356,15 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
-    if config.index_cache is not None:
+    # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
+    # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
+    indexer_types = getattr(model_config, "indexer_types", None)
+    if indexer_types and any(t == "shared" for t in indexer_types):
         model_config.use_index_cache = True
-        model_config.index_topk_freq = config.index_cache.topk_freq
-        model_config.index_topk_pattern = config.index_cache.topk_pattern
-        # Explicit override supersedes the model's native IndexShare schedule.
-        model_config.indexer_types = None
-    else:
-        # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
-        # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
-        indexer_types = getattr(model_config, "indexer_types", None)
-        if indexer_types and any(t == "shared" for t in indexer_types):
-            model_config.use_index_cache = True
-            logger.info(
-                f"Auto-enabled IndexShare from indexer_types schedule "
-                f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
-            )
+        logger.info(
+            f"Auto-enabled IndexShare from indexer_types schedule "
+            f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
+        )
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -509,7 +505,7 @@ def _expert_shard_placement_fn(
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
+    offload_policy: OffloadPolicy = OffloadPolicy()
 
     fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
@@ -695,7 +691,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
 
 
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    device = "cpu" if config.fsdp_cpu_offload else "cuda"
+    device = "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
 
@@ -705,7 +701,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        _move_buffers_to_cuda(model, config)
         return
 
     if not Path(config.name).exists():
@@ -760,7 +755,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
-    torch.distributed.barrier()
+    wait_for_master(f"model_conversion:{config.name}", timeout=CONVERSION_TIMEOUT_S)
     if snapshot_path.name == "prime" and not (snapshot_path / ".prime-v1").is_file():
         raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 
@@ -773,9 +768,9 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
+        process_group=get_dcp_group(),
     )
     write_back_loaded_packed_parameters(model, state_dict)
-    _move_buffers_to_cuda(model, config)
 
     lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
     if lora_modules:
@@ -841,16 +836,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
-        layer = language_model.layers[layer_id]
-        if isinstance(layer, CheckpointWrapper) and any(
-            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
-        ):
-            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
-            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
-            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
-            layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -889,15 +876,6 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
-
-
-def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
-    """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
-    if not config.fsdp_cpu_offload:
-        return
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "cpu":
-            buffer.data = buffer.data.to("cuda")
 
 
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
@@ -1011,24 +989,22 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-
-    setup_fsdp(model, config, parallel_dims)
-
     if config.compile is not None:
         apply_compile(model, config.compile)
+
+    setup_fsdp(model, config, parallel_dims)
 
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
         )
-        device = "cpu" if config.fsdp_cpu_offload else "cuda"
+        device = "cuda"
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-        _move_buffers_to_cuda(model, config)
     else:
         load_dcp_from_hf(model, config, parallel_dims)
 
