@@ -199,3 +199,45 @@ def dsv4_q_norm_rope(
     """
     out, _ = _dsv4_q_norm_rope(q, cos_sin_cache, position_ids, eps)
     return out
+
+
+@triton.jit
+def _inverse_rope_fp8_kernel(X, OUT, SCALES, COS_SIN, POS, HEADS: tl.constexpr, DIM: tl.constexpr, ROPE: tl.constexpr):
+    token = tl.program_id(0).to(tl.int64)
+    head = tl.program_id(1)
+    offsets = tl.arange(0, DIM)
+    base = (token * HEADS + head) * DIM
+    x = tl.load(X + base + offsets).to(tl.float32)
+    local = offsets - (DIM - ROPE)
+    is_rope = local >= 0
+    partner = tl.load(X + base + (offsets ^ 1), is_rope, other=0.0).to(tl.float32)
+    cache = COS_SIN + tl.load(POS + token).to(tl.int64) * ROPE
+    pair = tl.maximum(local >> 1, 0)
+    cos = tl.load(cache + pair, is_rope, other=1.0)
+    sin = tl.load(cache + ROPE // 2 + pair, is_rope, other=0.0)
+    # Match vLLM's fused inverse-RoPE contraction before the FP8 rounding boundary.
+    add = x * cos + partner * sin
+    sub = x * cos - partner * sin
+    rotated = tl.where((local & 1) == 0, add, sub)
+    x = tl.where(is_rope, rotated, x)
+    tiles = x.reshape(DIM // 128, 128)
+    amax = tl.maximum(tl.max(tl.abs(tiles), axis=1), 1e-10)
+    scale = tl.exp2(tl.ceil(tl.log2(amax * (1.0 / 448.0))))
+    q = tl.clamp(tiles / scale[:, None], -448.0, 448.0).to(tl.float8e4nv)
+    tl.store(OUT + base + offsets, q.reshape(DIM))
+    tl.store(SCALES + (token * HEADS + head) * (DIM // 128) + tl.arange(0, DIM // 128), scale)
+
+
+def inverse_rope_cast_to_fp8(
+    x: torch.Tensor, cos_sin_cache: torch.Tensor, position_ids: torch.Tensor, groups: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize the FP32 inverse rotation directly, as vLLM's fused output projection does."""
+    heads, dim = x.shape[-2:]
+    assert heads % groups == 0 and dim % 128 == 0
+    x = x.contiguous()
+    out = torch.empty_like(x, dtype=torch.float8_e4m3fn)
+    scales = torch.empty((*x.shape[:-1], dim // 128), device=x.device, dtype=torch.float32)
+    _inverse_rope_fp8_kernel[(position_ids.numel(), heads)](
+        x, out, scales, cos_sin_cache, position_ids.contiguous(), heads, dim, cos_sin_cache.shape[-1], num_warps=4
+    )
+    return out.view(-1, groups, heads // groups * dim), scales.view(-1, groups, heads // groups * dim // 128)

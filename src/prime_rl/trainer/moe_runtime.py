@@ -47,6 +47,10 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             raise RuntimeError(
                 f"DeepGEMM FP8 expert compute requires SM90 or newer, but this device is SM{capability[0]}{capability[1]}."
             )
+        if compute.qat:
+            from prime_rl.trainer.models.layers.fp8_qat import FP8QATExpertCompute
+
+            return FP8QATExpertCompute(compute.stochastic_rounding)
         return DeepGemmFP8ExpertCompute(stochastic_rounding=compute.stochastic_rounding)
     if isinstance(compute, MXFP8MoEComputeConfig):
         import prime_kernels

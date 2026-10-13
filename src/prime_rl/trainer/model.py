@@ -30,6 +30,7 @@ from transformers.utils.import_utils import is_flash_attn_3_available
 from prime_rl.configs.trainer import (
     ActivationCheckpointConfig,
     CompileConfig,
+    DeepGemmFP8MoEComputeConfig,
     FP8Config,
     ModelConfig,
     MXFP8Config,
@@ -357,6 +358,13 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
+        model_config.fp8_qat = (isinstance(config.quantization, FP8Config) and config.quantization.qat) or (
+            isinstance(config.moe.compute, DeepGemmFP8MoEComputeConfig) and config.moe.compute.qat
+        )
+    elif config.dsv4_kv_precision != "bf16":
+        raise ValueError("dsv4_kv_precision is only supported for DeepSeek V4.")
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -854,9 +862,14 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         return
 
     if isinstance(quant, FP8Config):
-        replace_linear_with_fp8_blockwise_linear(
-            model, ignore_modules=quant.ignore_patterns, stochastic_rounding=quant.stochastic_rounding
-        )
+        if quant.qat:
+            from prime_rl.trainer.models.layers.fp8_qat import replace_linear_with_fp8_qat
+
+            replace_linear_with_fp8_qat(model, quant.ignore_patterns, quant.stochastic_rounding)
+        else:
+            replace_linear_with_fp8_blockwise_linear(
+                model, ignore_modules=quant.ignore_patterns, stochastic_rounding=quant.stochastic_rounding
+            )
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] < 10:

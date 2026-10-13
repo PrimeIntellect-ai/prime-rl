@@ -176,6 +176,7 @@ def _per_token_fp8_kernel(
     USE_UE8M0: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    SCALE_FLOOR: tl.constexpr = 0.0,
 ):
     pid_m = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1)
@@ -190,7 +191,7 @@ def _per_token_fp8_kernel(
         other=0.0,
     ).to(tl.float32)
     amax = tl.maximum(tl.max(tl.abs(x), axis=1), 1e-10)
-    scale = tl.math.div_rn(amax, FP8_MAX)
+    scale = tl.maximum(tl.math.div_rn(amax, FP8_MAX), SCALE_FLOOR)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
     y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
@@ -222,6 +223,7 @@ def _grouped_per_token_fp8_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_K: tl.constexpr,
     GROUP_BLOCK_M: tl.constexpr,
+    SCALE_FLOOR: tl.constexpr = 0.0,
 ):
     pid_blk = tl.program_id(axis=0)
     pid_sub = tl.program_id(axis=1)
@@ -244,7 +246,7 @@ def _grouped_per_token_fp8_kernel(
         other=0.0,
     ).to(tl.float32)
     amax = tl.maximum(tl.max(tl.abs(x), axis=1), 1e-10)
-    scale = tl.math.div_rn(amax, FP8_MAX)
+    scale = tl.maximum(tl.math.div_rn(amax, FP8_MAX), SCALE_FLOOR)
     if USE_UE8M0:
         scale = tl.exp2(tl.ceil(tl.log2(scale)))
     y = tl.clamp(tl.math.div_rn(x, scale[:, None]), FP8_MIN, FP8_MAX)
@@ -469,7 +471,7 @@ def unpack_rows_triton(
 
 
 def per_token_cast_to_fp8_triton(
-    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT
+    x: torch.Tensor, use_ue8m0: bool, gran_k: int = GROUP_ALIGNMENT, *, scale_floor: float = 0.0
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 2
     assert gran_k == GROUP_ALIGNMENT
@@ -490,6 +492,7 @@ def per_token_cast_to_fp8_triton(
         sf.stride(0),
         sf.stride(1),
         USE_UE8M0=use_ue8m0,
+        SCALE_FLOOR=scale_floor,
         BLOCK_M=32,
         BLOCK_K=gran_k,
         num_warps=4,
@@ -506,6 +509,8 @@ def grouped_per_token_cast_to_fp8_triton(
     block_starts_tensor: torch.Tensor,
     use_ue8m0: bool,
     gran_k: int = GROUP_ALIGNMENT,
+    *,
+    scale_floor: float = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 2
     assert gran_k == GROUP_ALIGNMENT
@@ -534,6 +539,7 @@ def grouped_per_token_cast_to_fp8_triton(
         sf.stride(0),
         sf.stride(1),
         USE_UE8M0=use_ue8m0,
+        SCALE_FLOOR=scale_floor,
         BLOCK_M=32,
         BLOCK_K=gran_k,
         GROUP_BLOCK_M=GROUP_ALIGNMENT,

@@ -1,0 +1,6 @@
+[model]
+cp = 2
+
+[data]
+# One microbatch per optimizer step on sixteen GPUs with CP2.
+batch_size = 8

@@ -12,8 +12,8 @@ from datetime import timedelta
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
-from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.models.fp8_rounding import set_fp8_rounding_step
+from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
@@ -401,6 +401,7 @@ def train(config: SFTConfig):
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     while True:
+        set_fp8_rounding_step(model, progress.step)
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
@@ -412,7 +413,6 @@ def train(config: SFTConfig):
         )
 
         step_start_time = time.perf_counter()
-        set_fp8_rounding_step(model, progress.step)
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")

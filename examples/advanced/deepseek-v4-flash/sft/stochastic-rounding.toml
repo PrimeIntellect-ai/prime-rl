@@ -1,0 +1,5 @@
+[model.quantization]
+stochastic_rounding = true
+
+[model.moe.compute]
+stochastic_rounding = true

@@ -109,3 +109,19 @@ def test_selection_agreement(segments):
     mean, p1 = agreement.mean().item(), agreement.quantile(0.01).item()
     assert mean > AGREEMENT_MEAN, f"mean set agreement {mean} below {AGREEMENT_MEAN}"
     assert p1 > AGREEMENT_P1, f"p1 set agreement {p1} below {AGREEMENT_P1}"
+
+
+@pytest.mark.parametrize("input_scale", [1.0, 1e-6])
+def test_dsv4_indexer_quant_matches_vllm(input_scale):
+    from vllm.models.deepseek_v4.common.ops.fused_indexer_q import fused_indexer_q_rope_quant
+
+    from prime_rl.trainer.models.kernels.fp8_indexer import per_token_group_quant_fp8
+
+    q = torch.randn((257, 8, 128), device="cuda", dtype=torch.bfloat16) * input_scale
+    positions = torch.zeros(257, device="cuda", dtype=torch.int64)
+    cache = torch.cat((torch.ones(32, device="cuda"), torch.zeros(32, device="cuda"))).unsqueeze(0)
+    weights = torch.ones((257, 8), device="cuda", dtype=torch.bfloat16)
+    reference, scales = fused_indexer_q_rope_quant(positions, q, cache, weights, 1.0, 1.0)
+    actual, actual_scales = per_token_group_quant_fp8(q.reshape(-1, 128), 128, eps=1e-4)
+    assert torch.equal(actual.view(torch.uint8).reshape_as(reference), reference.view(torch.uint8))
+    assert torch.equal(actual_scales.reshape_as(scales), scales)
