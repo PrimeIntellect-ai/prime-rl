@@ -10,13 +10,10 @@ from prime_rl.configs.shared import EnvVars, HeartbeatConfig, ResumeConfig, RunC
 from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
-    ConstantSchedulerConfig,
     GCConfig,
     ModelConfig,
     OptimizerConfig,
-    SchedulerConfig,
     TokenizerConfig,
-    validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
@@ -118,6 +115,85 @@ class ValConfig(BaseConfig):
     """Held-out sets. With ``data.holdout_docs > 0`` the training holdout is added as ``holdout``."""
 
 
+StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Field(gt=0, lt=1)]
+
+
+def resolve_steps(value: int | float, total_steps: int | None) -> int:
+    """Steps as given, or a fraction of ``total_steps``."""
+    return round(value * total_steps) if isinstance(value, float) else value
+
+
+class WSDScheduleConfig(BaseConfig):
+    """Warmup, stable at 1, decay. ``f(0) = start_ratio``, the warmup reaches 1 at its last update
+    (``warmup - 1``; a warmup of 0 or 1 starts at 1), and the decay reaches ``end_ratio`` at the last
+    update of the run."""
+
+    type: Literal["wsd"] = "wsd"
+
+    warmup: StepsOrFraction = 0.1
+    """Warmup updates, or a fraction of ``max_steps``."""
+
+    decay: StepsOrFraction = 0.2
+    """Decay updates at the end of the run, or a fraction of ``max_steps``."""
+
+    start_ratio: float = Field(0.0, ge=0)
+    """Multiplier of the first update."""
+
+    end_ratio: float = Field(0.0, ge=0)
+    """Multiplier of the last update."""
+
+    decay_shape: Literal["linear", "cosine", "1-sqrt"] = "linear"
+    """Shape of the decay from 1 to ``end_ratio``."""
+
+
+class CosineScheduleConfig(BaseConfig):
+    """Linear warmup, then cosine decay from 1 to ``end_ratio`` over the remaining updates."""
+
+    type: Literal["cosine"] = "cosine"
+
+    warmup: StepsOrFraction = 0.1
+    """Warmup updates, or a fraction of ``max_steps``."""
+
+    start_ratio: float = Field(0.0, ge=0)
+    """Multiplier of the first update."""
+
+    end_ratio: float = Field(0.0, ge=0)
+    """Multiplier of the last update."""
+
+
+class ConstantScheduleConfig(BaseConfig):
+    """Multiplier 1 at every step."""
+
+    type: Literal["constant"] = "constant"
+
+
+class CustomScheduleConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+
+    import_path: str
+    """Import path to the schedule function, called as ``fn(step, total_steps=max_steps, **kwargs)`` and returning the multiplier."""
+
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    """Kwargs forwarded to the schedule function."""
+
+
+ScheduleConfig: TypeAlias = Annotated[
+    WSDScheduleConfig | CosineScheduleConfig | ConstantScheduleConfig | CustomScheduleConfig,
+    Field(discriminator="type"),
+]
+
+
+class SchedulesConfig(BaseConfig):
+    """Each schedule is a multiplier ``f(step)``: update ``step`` (counted from 0) uses ``base * f(step)``,
+    where ``base`` is the configured value of each param group."""
+
+    optim: dict[str, ScheduleConfig] = Field(default_factory=lambda: {"lr": WSDScheduleConfig()})
+    """Schedules for optimizer hyperparameters, keyed by their ``optim`` field name (``lr``, ``weight_decay``, ``betas1``, ``betas2``, and ``mu`` for Muon). Unscheduled ones stay constant."""
+
+    clip_norm: ScheduleConfig | None = None
+    """Schedule for the gradient clipping norm ``optim.max_norm``. If None, it stays constant."""
+
+
 class PretrainDeploymentConfig(BaseConfig):
     num_train_gpus: int = Field(1, ge=1)
     """GPUs for the trainer, on this node."""
@@ -138,7 +214,8 @@ class PretrainConfig(BaseConfig):
 
     optim: OptimizerConfig = AdamWConfig()
 
-    scheduler: SchedulerConfig = ConstantSchedulerConfig()
+    schedules: SchedulesConfig = SchedulesConfig()
+    """Hyperparameter schedules. Defaults to a WSD learning rate schedule."""
 
     ckpt: CheckpointConfig | None = CheckpointConfig()
     """Checkpointing. Defaults to a checkpoint at the end of training."""
@@ -256,6 +333,29 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_scheduler_steps(self):
-        validate_scheduler(self.scheduler, self.max_steps)
+    def validate_schedules(self):
+        unsupported = set(self.schedules.optim) - set(self.optim.schedulable)
+        if unsupported:
+            raise ValueError(
+                f"schedules.optim: {sorted(unsupported)} cannot be scheduled with optim.type = {self.optim.type!r} "
+                f"(schedulable: {sorted(self.optim.schedulable)})"
+            )
+        if self.schedules.clip_norm is not None and self.optim.max_norm is None:
+            raise ValueError("schedules.clip_norm needs optim.max_norm")
+        named = {f"schedules.optim.{name}": schedule for name, schedule in self.schedules.optim.items()}
+        named["schedules.clip_norm"] = self.schedules.clip_norm
+        for name, schedule in named.items():
+            if isinstance(schedule, WSDScheduleConfig):
+                phases = [schedule.warmup, schedule.decay]
+                needs_max_steps = schedule.decay != 0 or isinstance(schedule.warmup, float)
+            elif isinstance(schedule, CosineScheduleConfig):
+                phases = [schedule.warmup]
+                needs_max_steps = True
+            else:
+                continue
+            if self.max_steps is None:
+                if needs_max_steps:
+                    raise ValueError(f"{name} needs max_steps (it decays or has fractional phases)")
+            elif sum(resolve_steps(phase, self.max_steps) for phase in phases) > self.max_steps:
+                raise ValueError(f"{name}: its phases exceed max_steps ({self.max_steps})")
         return self

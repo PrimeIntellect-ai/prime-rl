@@ -1,6 +1,6 @@
 # Pretraining
 
-`uv run pretrain` trains a model from scratch on raw text. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, scheduler, checkpointing and monitors as the SFT trainer. It runs on a single node.
+`uv run pretrain` trains a model from scratch on raw text. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, checkpointing and monitors as the SFT trainer. It runs on a single node.
 
 ```bash
 uv run pretrain @ examples/pretrain/llama3/17m.toml
@@ -38,6 +38,37 @@ Pretraining sets `model.debug.random_init = true`: weights are not downloaded or
 | `model.init.seed` | Seed. Every rank initializes only its own shard, and the values depend only on the seed and the parameter name, not on the number of GPUs. |
 
 For `sft` and `rl`, `random_init_mode` resolves to `skip`: the weights keep arbitrary memory contents, which is the fastest option for throughput benchmarks.
+
+## Schedules
+
+A schedule is a multiplier `f(step)`, where `step` counts the optimizer updates completed so far (0 for the first update). Update `step` uses `base * f(step)` for every param group, with `base` the group's own configured value, so ratios between param groups hold at every step. Each optimizer hyperparameter gets its own schedule under `[schedules.optim.<name>]`, keyed by its `optim` field name: `lr`, `weight_decay`, `betas1`, `betas2`, and `mu` for Muon. `[schedules.clip_norm]` scales `optim.max_norm`. Hyperparameters without a schedule stay constant. The default is a WSD schedule on `lr`; setting `schedules.optim` replaces it, so include `lr` when scheduling other hyperparameters.
+
+```toml
+[schedules.optim.lr]
+type = "wsd"
+warmup = 0.05       # fraction of max_steps, or a number of steps
+decay = 0.2
+end_ratio = 0.1
+decay_shape = "1-sqrt"
+
+[schedules.optim.betas2]
+type = "cosine"
+warmup = 0
+end_ratio = 1.05
+```
+
+| `type` | Shape |
+|---|---|
+| `wsd` (default) | Linear warmup, stable at 1, then a `linear`, `cosine` or `1-sqrt` decay over the last `decay` updates. Defaults: `warmup = 0.1`, `decay = 0.2`. |
+| `cosine` | Linear warmup, then cosine decay over all remaining updates. |
+| `constant` | 1 at every step. |
+| `custom` | `fn(step, total_steps=max_steps, **kwargs) -> float` imported from `import_path`, with `kwargs` from the config. |
+
+The configured endpoints are exactly what the first and last updates use: `f(0) = start_ratio`, the warmup reaches 1 at its last update (`warmup - 1`; a warmup of 0 or 1 starts at 1), and the decay reaches `end_ratio` at the last update (`max_steps - 1`). Both ratios default to 0. Fractions resolve against `max_steps`, so fractional phases and decays need `max_steps`.
+
+AdamW and Muon apply weight decay as `lr * weight_decay`, so a learning rate schedule already scales the decay.
+
+The values are recomputed from the step, so checkpoints hold no schedule state. Resuming with `ckpt.skip_scheduler = true` restarts every schedule at the resumed step, spanning the remaining steps. Each scheduled value is logged as `optim/<name>` (the first param group's value) and its multiplier as `schedule/<name>`.
 
 ## Data
 

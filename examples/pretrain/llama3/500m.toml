@@ -35,10 +35,10 @@ holdout_docs = 10000
 lr = 6e-4
 betas2 = 0.95
 
-[scheduler]
+[schedules.optim.lr]
 type = "cosine"
-warmup_steps = 950
-min_lr = 6e-05
+warmup = 950
+end_ratio = 0.1
 
 [val]
 interval = 950
