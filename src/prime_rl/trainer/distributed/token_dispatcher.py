@@ -165,7 +165,8 @@ def _combine_routed_output(
     dim = routed_output.shape[-1]
     # There is one output row per selected expert per token.
     top_k = routed_output.shape[0] // num_tokens
-    # Restore token/route order; the permutation writes every row exactly once.
+    # Undo expert-ID sorting so each token's routes can be summed without atomic additions.
+    # Each row is written once, so the buffer needs no initialization.
     output = torch.empty_like(routed_output)
     output[route_indices_experts_sorted] = routed_output
     accumulation_dtype = torch.float32 if output.dtype in (torch.bfloat16, torch.float16) else output.dtype
