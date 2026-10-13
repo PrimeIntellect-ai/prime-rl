@@ -368,11 +368,11 @@ def _grouped_per_block_fp8_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
-    pid_g = tl.program_id(axis=0)
+    pid_g = tl.program_id(axis=0).to(tl.int64)
     pid_m = tl.program_id(axis=1)
     pid_n = tl.program_id(axis=2)
-    row_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    col_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    row_offsets = (pid_m * BLOCK_M + tl.arange(0, BLOCK_M)).to(tl.int64)
+    col_offsets = (pid_n * BLOCK_N + tl.arange(0, BLOCK_N)).to(tl.int64)
     mask = (pid_g < groups) & (row_offsets[:, None] < rows) & (col_offsets[None, :] < cols)
     x = tl.load(
         x_ptr + pid_g * stride_xg + row_offsets[:, None] * stride_xm + col_offsets[None, :] * stride_xn,
