@@ -163,7 +163,7 @@ def test_resume_validates_saved_episodes(tmp_path, ok, traces, valid) -> None:
         {"client": {"base_url": "https://different.invalid/v1"}},
         {"env": {"timeout": {"episode": 60}}},
         {"log": {"level": "debug"}, "dashboard": False},
-        {"concurrency": {"min_inflight": 8, "max_inflight": 8}, "tasks_per_minute": 10},
+        {"concurrency": {"min_inflight": 8, "max_inflight": 8}, "dispatch_per_minute": 10},
         {"output_dir": "./another-output-location"},
     ],
 )
@@ -205,7 +205,9 @@ def test_take_landed_checks_archived_config_before_rotating(tmp_path, updates, s
 )
 @pytest.mark.parametrize("skip_checks", [False, True])
 def test_take_landed_requires_saved_config(tmp_path, missing, skip_checks) -> None:
-    config = EvalConfig(source=[{"env": {"id": "single_agent"}}], resume={"skip_checks": skip_checks})
+    config = EvalConfig(
+        source=[{"env": {"id": "single_agent"}}], sampling={"temperature": 1.0}, resume={"skip_checks": skip_checks}
+    )
     directory = get_file_monitor_dir(tmp_path)
     directory.mkdir(parents=True)
     if missing is not None:
@@ -229,7 +231,8 @@ def test_take_landed_requires_saved_config(tmp_path, missing, skip_checks) -> No
 @pytest.mark.parametrize("reorder", [False, True])
 def test_take_landed_checks_source_order_and_shared_defaults(tmp_path, reorder) -> None:
     saved = EvalConfig(
-        source=[{"env": {"id": "single_agent"}}, {"env": {"id": "single_agent"}, "name": "other", "group_size": 2}]
+        source=[{"env": {"id": "single_agent"}}, {"env": {"id": "single_agent"}, "name": "other", "group_size": 2}],
+        sampling={"temperature": 1.0},
     )
     updated = saved.model_dump(mode="json")
     if reorder:
