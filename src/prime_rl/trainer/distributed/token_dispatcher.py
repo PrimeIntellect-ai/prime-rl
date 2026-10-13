@@ -156,7 +156,18 @@ def _combine_routed_output(
     num_tokens: int,
     route_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
+    use_fused: bool = False,
 ) -> torch.Tensor:
+    if (
+        use_fused
+        and num_tokens > 0
+        and routed_output.is_cuda
+        and routed_output.dtype in (torch.float16, torch.bfloat16)
+    ):
+        from prime_rl.trainer.distributed.fused_moe_combine import fused_moe_combine
+
+        return fused_moe_combine(routed_output, route_indices_experts_sorted, scores_after_experts, num_tokens)
+
     if scores_after_experts is not None:
         routed_output = (routed_output.float() * scores_after_experts.reshape(-1, 1)).to(routed_output.dtype)
 
@@ -176,9 +187,12 @@ def _combine_routed_output(
 
 
 class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
-    def __init__(self, num_experts: int, top_k: int, token_group_alignment: int) -> None:
+    def __init__(
+        self, num_experts: int, top_k: int, token_group_alignment: int, *, use_fused_combine: bool = False
+    ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.top_k = top_k
+        self.use_fused_combine = use_fused_combine
 
     def dispatch(
         self,
@@ -223,6 +237,7 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
             num_tokens=state.num_tokens,
             route_indices_experts_sorted=state.route_indices_experts_sorted,
             scores_after_experts=state.scores_after_experts,
+            use_fused=self.use_fused_combine,
         )
 
 
@@ -233,10 +248,13 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         top_k: int,
         token_group_alignment: int,
         group: ProcessGroup,
+        *,
+        use_fused_combine: bool = False,
     ) -> None:
         super().__init__(num_experts, token_group_alignment)
         self.top_k = top_k
         self.group = group
+        self.use_fused_combine = use_fused_combine
 
     def _dispatch_tokens(
         self,
@@ -312,6 +330,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
             num_tokens=state.num_tokens,
             route_indices_experts_sorted=state.route_indices_experts_sorted,
             scores_after_experts=state.scores_after_experts,
+            use_fused=self.use_fused_combine,
         )
 
 
@@ -322,8 +341,10 @@ class MXFP8TorchTokenDispatcher(TorchTokenDispatcher):
         top_k: int,
         token_group_alignment: int,
         group: ProcessGroup,
+        *,
+        use_fused_combine: bool = False,
     ) -> None:
-        super().__init__(num_experts, top_k, token_group_alignment, group)
+        super().__init__(num_experts, top_k, token_group_alignment, group, use_fused_combine=use_fused_combine)
 
     def _dispatch_tokens(
         self,
