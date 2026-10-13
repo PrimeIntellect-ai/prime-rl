@@ -830,7 +830,7 @@ DYNAMIC_INT_ATTRS = (
 
 
 def mark_dynamic_int_args() -> None:
-    """Add DYNAMIC_INT_ARGS and DYNAMIC_INT_ATTRS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+    """Add the DYNAMIC_INT_ARGS and DYNAMIC_INT_ATTRS patterns to torch.compiler.config.dynamic_sources."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
     # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
     patterns = [rf".*\['{arg}'\]" for arg in DYNAMIC_INT_ARGS]
