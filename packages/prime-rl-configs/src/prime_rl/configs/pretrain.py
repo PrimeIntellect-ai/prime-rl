@@ -236,8 +236,8 @@ class PretrainConfig(BaseConfig):
     def validate_completep(self):
         if self.model.init.scheme != "completep":
             return self
-        if self.optim.type != "adamw" or self.model.offload != "none":
-            raise ValueError("model.init.scheme = 'completep' needs optim.type = 'adamw' and model.offload = 'none'.")
+        if self.optim.type not in ("adamw", "muon") or self.model.offload != "none":
+            raise ValueError("model.init.scheme = 'completep' needs AdamW or Muon and model.offload = 'none'.")
         if self.scheduler.type == "cosine" and self.scheduler.min_lr > 0:
             # CosineAnnealingLR decays every parameter group to the same absolute min_lr.
             raise ValueError("model.init.scheme = 'completep' needs scheduler.min_lr = 0 with the cosine scheduler.")

@@ -11,7 +11,6 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch import nn
-from torch.optim import AdamW
 from transformers import AutoConfig
 
 from prime_rl import monitors
@@ -143,21 +142,21 @@ def train(config: PretrainConfig):
 
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    if config.model.init.scheme == "completep":
-        param_groups = completep_param_groups(model, config.model.init, config.optim)
-        optimizer = AdamW(param_groups, betas=(config.optim.betas1, config.optim.betas2), fused=True)
-        gradient_manager = None
-    else:
-        optimizer, gradient_manager = setup_optimizer(
-            config.optim,
-            list(model.named_parameters()),
-            parallel_dims,
-            offload=config.model.offload,
-            model=model,
-            full_offload_dtype_policy=(
-                get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
-            ),
-        )
+    optimizer, gradient_manager = setup_optimizer(
+        config.optim,
+        list(model.named_parameters()),
+        parallel_dims,
+        offload=config.model.offload,
+        model=model,
+        full_offload_dtype_policy=(
+            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
+        ),
+        param_groups=(
+            completep_param_groups(model, config.model.init, config.optim)
+            if config.model.init.scheme == "completep"
+            else None
+        ),
+    )
 
     scheduler_steps = (
         config.max_steps - checkpoint_step
