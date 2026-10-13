@@ -210,6 +210,20 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
 
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
+    fp8 = TrainerModelConfig.model_validate(
+        {"quantization": {"type": "fp8"}, "moe": {"compute": {"type": "deepgemm_fp8"}}}
+    )
+    assert not fp8.quantization.stochastic_rounding
+    assert not fp8.moe.compute.stochastic_rounding
+    sr = TrainerModelConfig.model_validate(
+        {
+            "quantization": {"type": "fp8", "stochastic_rounding": True},
+            "moe": {"compute": {"type": "deepgemm_fp8", "stochastic_rounding": True}},
+            "fp8_rounding_seed": 42,
+        }
+    )
+    assert sr.quantization.stochastic_rounding and sr.moe.compute.stochastic_rounding
+    assert sr.fp8_rounding_seed == 42
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
 
     assert config.quantization is not None and config.quantization.type == "mxfp8"

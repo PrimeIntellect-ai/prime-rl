@@ -1,0 +1,57 @@
+max_steps = 5
+output_dir = "outputs/fp8-sr"
+dashboard = false
+
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-Base-bf16"
+ep = 8
+fp8_rounding_seed = 20261013
+
+[model.moe.dispatch]
+type = "torch"
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[model.quantization]
+type = "fp8"
+# Preserve DeepSeek V4's grouped projection semantics.
+ignore_patterns = ["lm_head", "router", "mlp.gate.", "shared_expert.output_gate", "weights_proj", "eh_proj", "in_proj_a", "in_proj_b", "o_a_proj"]
+
+[model.moe.compute]
+type = "deepgemm_fp8"
+
+[data]
+name = "PrimeIntellect/INTELLECT-4-SFT"
+revision = "22e1ce974e3c5b20ad229674ea1712172f77c1f3"
+subsets = ["i3-math--null--low"]
+seq_len = 1024
+batch_size = 32
+seed = 42
+
+[renderer]
+name = "deepseek-v4"
+
+[optim]
+lr = 1e-5
+
+[monitors.wandb]
+project = "fp8-train-sr"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+
+[slurm]
+partition = "all"
+time = "02:00:00"
+
+[env_vars]
+HF_HUB_CACHE = "/home/huggingface/hub"
+HF_DATASETS_CACHE = "/home/huggingface/datasets"
+TRITON_CACHE_DIR = "/tmp/phi-fp8-sr-triton"
+TORCHINDUCTOR_CACHE_DIR = "/tmp/phi-fp8-sr-inductor"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
