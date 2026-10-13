@@ -222,9 +222,9 @@ class CheckpointManager:
         app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
         state_dict = {"app": app_state}
         dcp_load(state_dict=state_dict, checkpoint_id=path, process_group=get_dcp_group())
-        # The load peaks well above the steady state: DCP materializes the optimizer state with a
-        # zero-grad step, which allocates a full set of gradients. Left in the allocator cache, those
-        # blocks fragment the pool and the first step reserves on top of them instead of reusing them.
+        # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
+        # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
+        # reserves on top of them instead of reusing them.
         gc.collect()
         torch.cuda.empty_cache()
         if self.skip_optimizer:
