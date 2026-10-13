@@ -152,14 +152,6 @@ class AppState(Stateful):
             for key, value in state_dict["progress"].items():
                 setattr(self.progress, key, value)
 
-        # state_dict is the same dict object that dcp_load held internally; clearing
-        # it drops the last references to the loaded tensor wrappers so the cuda
-        # allocator can release whatever blocks it cached during the read.
-        if has_cpu_offload:
-            state_dict.clear()
-            gc.collect()
-            torch.cuda.empty_cache()
-
 
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
