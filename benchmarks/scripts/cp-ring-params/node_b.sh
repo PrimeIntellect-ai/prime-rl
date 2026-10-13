@@ -1,8 +1,8 @@
 #!/bin/bash
-# Node B: #3925-layout crash re-test and smoke runs on GPUs 0-2 (serial), numerics trainer arms on GPUs 3-7.
-# usage: node_b.sh <branch-worktree> <main-worktree> <e3925-worktree>
+# Node B: smoke runs on GPUs 0-2 (serial), numerics trainer arms on GPUs 3-7.
+# usage: node_b.sh <branch-worktree> <main-worktree>
 set -u
-BR=$1; MAIN=$2; E3925=$3
+BR=$1; MAIN=$2
 HERE=$(cd "$(dirname "$0")" && pwd)
 COMMON="--model.moe-router-dtype bfloat16 --model.offload none --model.ac-offloading None"
 RING="--model.cp 2 --model.cp-style ring"
@@ -33,9 +33,6 @@ lane_ring > "$HOME/tmp/cp-ring-params/lane_ring.log" 2>&1 &
 lane_uly > "$HOME/tmp/cp-ring-params/lane_uly.log" 2>&1 &
 lane_cp1 > "$HOME/tmp/cp-ring-params/lane_cp1.log" 2>&1 &
 arm() { echo "$(date +%T) start $1"; "$HERE/run_rl_arm.sh" "$2" "$1" 0,1,2 "${@:3}"; echo "$(date +%T) end $1"; }
-# The crash layout: #3925 on top of the branch, defaults (fp32 router, AC offloading on).
-arm e0-ring-3925 "$E3925" 10 --trainer.model.cp 2 --trainer.model.cp-style ring
-arm e2-uly-3925  "$E3925" 10 --trainer.model.cp 2 --trainer.model.cp-style ulysses
 echo "$(date +%T) start sft-ring"; "$HERE/run_sft_arm.sh" "$BR" sft-ring 0,1 2 --model.cp 2 --model.cp-style ring --model.compile --max-steps 10; echo "$(date +%T) end sft-ring"
 # VLMs only allow ulysses CP (config validator), which takes the deferred CP path in the model.
 CP_RING_RL_CONFIG=configs/ci/nightly/multimodal_color_codeword.toml arm vlm-uly "$BR" 5 \
