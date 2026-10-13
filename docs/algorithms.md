@@ -211,6 +211,8 @@ The knobs under `[trainer.loss]` are:
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 
+See [IPO](ipo.md) for why IPO masks by probability instead of ratio, and the GLM-4.5-Air ablation against IcePop behind `eps = 0.3`.
+
 ### IcePop Loss
 
 IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
