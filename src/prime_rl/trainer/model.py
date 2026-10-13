@@ -38,6 +38,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
+from prime_rl.trainer.init import init_weights
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -700,7 +701,13 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
 
     logger = get_logger()
     if config.debug.random_init:
-        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        if config.debug.random_init_mode == "init":
+            logger.info(f"Randomly initializing model weights ({config.init})")
+            init_weights(model, config.init)
+        else:
+            logger.warning(
+                "Skipping weight loading. Parameters keep arbitrary memory contents (random_init_mode='skip')."
+            )
         return
 
     if not Path(config.name).exists():
