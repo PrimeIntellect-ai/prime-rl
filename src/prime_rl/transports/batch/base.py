@@ -8,7 +8,13 @@ from prime_rl.utils.logger import get_logger
 
 
 class BatchSender(ABC):
-    """Base class for sending micro batches from the orchestrator to the train workers."""
+    """Base class for sending micro batches from the orchestrator to the train workers.
+
+    Trainer ranks pull: a rank receives a step only after asking for it, so the
+    trainer never holds more than the batch it is training on. A transport holds
+    at most one step that no rank has picked up yet, which is what makes
+    ``send`` block.
+    """
 
     def __init__(self, output_dir: Path, data_world_size: int):
         self.logger = get_logger()
@@ -18,7 +24,8 @@ class BatchSender(ABC):
 
     @abstractmethod
     async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
-        """Send grid of micro batches to the trainers."""
+        """Hand the grid of micro batches to the transport. Blocks until every
+        trainer rank has picked up the previous step."""
         pass
 
     def close(self) -> None:
@@ -37,17 +44,12 @@ class BatchReceiver(ABC):
 
     @abstractmethod
     def wait(self) -> None:
-        """Wait for a micro batch to be available."""
-        pass
-
-    @abstractmethod
-    def can_receive(self) -> bool:
-        """Check if a micro batch is available."""
+        """Ask the orchestrator for the current step and block until it is available."""
         pass
 
     @abstractmethod
     def receive(self) -> list[MicroBatch]:
-        """Receive a micro batch from the orchestrator."""
+        """Read the micro batches ``wait`` asked for."""
         pass
 
     def close(self) -> None:

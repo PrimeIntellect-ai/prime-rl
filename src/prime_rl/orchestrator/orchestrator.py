@@ -81,9 +81,10 @@ from prime_rl.utils.utils import clean_exit
 # shutdown wedges (env-server ZMQ recv, vLLM admin aclose, etc)
 SHUTDOWN_TIMEOUT_S = 300
 
-# Maximum batches the orchestrator may run ahead of the trainer. The
-# dispatcher is paused via ``update_dispatch_gate`` once this is exceeded;
-# resumed when the watcher advances ``policy.version``.
+# Maximum shipped batches that inference has not applied yet. The dispatcher
+# is paused via ``update_dispatch_gate`` once this is exceeded; resumed when
+# the watcher advances ``policy.version``. Shipping itself is paced by the
+# trainer: a batch leaves the sender only when a rank asks for it.
 TARGET_LAG = 1
 
 
@@ -586,26 +587,6 @@ class Orchestrator:
                 f"({n_trainable / effective.num_traces:.1%}) — consider reviewing task difficulty"
             )
 
-        # Ship batch ``step`` only once inference has applied v{step-1-TARGET_LAG}.
-        # Without this, fast envs fill batches from buffered rollouts and the
-        # orchestrator races arbitrarily far ahead of the trainer. Always
-        # satisfiable: the trainer broadcasts every version, and
-        # ``wait_for_final_broadcast`` keeps the watcher alive through the last
-        # rendezvous after the pipeline drains.
-        required_version = step - 1 - TARGET_LAG
-        if self.policy.version < required_version:
-            get_logger().info(
-                f"Holding batch {step} until inference applies policy v{required_version} "
-                f"(currently v{self.policy.version})"
-            )
-            hold_start = time.perf_counter()
-            while True:
-                self.version_advanced.clear()
-                if self.policy.version >= required_version:
-                    break
-                await self.version_advanced.wait()
-            self.wait_for_policy_time += time.perf_counter() - hold_start
-
         # The effective (clean, trained-on) subset is logged at ship time as annotation
         # records against each trace's arrival record - membership, advantages, the step
         # it shipped at - never a second episode copy.
@@ -615,7 +596,12 @@ class Orchestrator:
         pack_start_time = time.perf_counter()
         micro_batch_grid = await asyncio.to_thread(self.packer.pack, batch.samples)
         pack_time = time.perf_counter() - pack_start_time
+        # Trainer ranks pull their batches, so this blocks while the transport
+        # still holds the previous step. Rollouts keep arriving meanwhile; the
+        # dispatch gate below is what bounds how far they run ahead.
+        send_start_time = time.perf_counter()
         await self.sender.send(micro_batch_grid)
+        send_time = time.perf_counter() - send_start_time
         self.progress.step += 1
         self.update_dispatch_gate()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
@@ -666,6 +652,7 @@ class Orchestrator:
             "progress/total_tasks": self.progress.total_problems,
             "time/step": step_time,
             "time/pack": pack_time,
+            "time/send": send_time,
             "time/save_ckpt": save_ckpt_time,
             "time/wait_for_policy": self.wait_for_policy_time,
             "step": step,
