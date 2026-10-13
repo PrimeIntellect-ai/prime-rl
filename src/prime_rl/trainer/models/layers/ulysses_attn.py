@@ -179,8 +179,7 @@ def substitute_ulysses_attn(
         flash_attn_version = 2
 
     def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen, ring_params=None):
-        # Under CP the model passes cu_seqlens / max_seqlen for the *full* sequence,
-        # which is what each rank holds after the seq->head all-to-all.
+        # cu_seqlens / max_seqlen cover the full sequence, which each rank holds after the all-to-all.
         window_size = (-1, -1)
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:

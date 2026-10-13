@@ -819,9 +819,8 @@ DYNAMIC_INT_ARGS = (
     "max_seqlen",
 )
 
-# Int fields of per-micro-batch dataclass args, which change between calls for the same reason.
 DYNAMIC_INT_ATTRS = (
-    # RingParams: this rank's longest query and key document, and the range of gathered keys it attends to.
+    # RingParams fields, which change every micro batch: this rank's longest query and key document and its key range.
     "max_seqlen_q",
     "max_seqlen_k",
     "local_k_start",
