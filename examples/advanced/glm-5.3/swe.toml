@@ -73,6 +73,8 @@ max_model_len = 131072
 tool_call_parser = "glm47"
 reasoning_parser = "glm45"
 gpu_memory_utilization = 0.75
+# FP8 MLA KV cache: ~1.8x KV tokens per rank, ~1.3x long-context decode throughput
+kv_cache_dtype = "fp8"
 enable_expert_parallel = true
 enable_eplb = false
 safetensors_load_strategy = "prefetch"
