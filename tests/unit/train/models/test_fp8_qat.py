@@ -88,23 +88,36 @@ def test_qat_cast_matches_vllm_bytes(ue8m0, sr, shape, scale):
 @pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("groups", [1, 8])
 @pytest.mark.parametrize("sr", [False, True])
-def test_qat_linear_backward_is_bf16(groups, sr, compiled):
+@pytest.mark.parametrize("inverse_rope", [False, True])
+def test_qat_linear_backward_is_bf16(groups, sr, compiled, inverse_rope):
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
+
+    if compiled:
+        torch.compiler.reset()
     torch.manual_seed(42)
     shape = (2, 64, 256) if groups == 1 else (2, 64, groups, 256)
+    if inverse_rope:
+        shape = (2, 64, groups * 2, 128)
     x = torch.randn(shape, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     w = torch.randn((groups * 128, 256), device="cuda", dtype=torch.bfloat16, requires_grad=True)
     op = torch.compile(fp8_qat_linear, fullgraph=True) if compiled else fp8_qat_linear
     step = torch.tensor(7, device="cuda", dtype=torch.int64)
-    out = op(x, w, groups, sr, step, 1234, 19)
+    cache, positions = None, None
+    if inverse_rope:
+        angles = torch.randn((128, 32), device="cuda")
+        cache = torch.cat((angles.cos(), angles.sin()), -1)
+        positions = torch.arange(128, device="cuda")
+    out = op(x, w, groups, sr, step, 1234, torch.tensor(19, device="cuda"), cache, positions)
     rounded = _decoded_weight(w.detach(), sr, step)
     step.add_(1)
     grad = torch.randn_like(out)
     actual = torch.autograd.grad(out, (x, w), grad)
+    reference_x = dsv4_rope(x, cache, positions, inverse=True).reshape(2, 64, groups, 256) if inverse_rope else x
     if groups == 1:
-        reference = torch.nn.functional.linear(x, w + (rounded - w).detach())
+        reference = torch.nn.functional.linear(reference_x, w + (rounded - w).detach())
     else:
         reference = torch.bmm(
-            x.reshape(-1, groups, 256).transpose(0, 1),
+            reference_x.reshape(-1, groups, 256).transpose(0, 1),
             (w + (rounded - w).detach()).view(groups, 128, 256).transpose(1, 2),
         )
         reference = reference.transpose(0, 1).reshape_as(out)
@@ -117,13 +130,15 @@ def test_qat_linear_backward_is_bf16(groups, sr, compiled):
 @pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("sr", [False, True])
 def test_qat_expert_backward_is_bf16(sr, compiled):
+    if compiled:
+        torch.compiler.reset()
     torch.manual_seed(44)
     x = torch.randn((256, 256), device="cuda", dtype=torch.bfloat16, requires_grad=True)
     w = torch.randn((4, 128, 256), device="cuda", dtype=torch.bfloat16).transpose(1, 2).requires_grad_()
     offs = torch.tensor([64, 64, 192, 256], dtype=torch.int32, device="cuda")
     op = torch.compile(fp8_qat_grouped_mm, fullgraph=True) if compiled else fp8_qat_grouped_mm
     step = torch.tensor(7, device="cuda", dtype=torch.int64)
-    out = op(x, w, offs, sr, step, 1234, 19, 0)
+    out = op(x, w, offs, sr, step, 1234, torch.tensor(19, device="cuda"), 0)
     rounded = _decoded_weight(w.detach().transpose(1, 2), sr, step).transpose(1, 2)
     grad = torch.randn_like(out)
     actual = torch.autograd.grad(out, (x, w), grad)
@@ -141,6 +156,8 @@ def test_qat_checkpoint_replays_rounding(mode, compiled):
     from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
     from prime_rl.trainer.models.layers.fp8_qat import FP8QATLinear, initialize_qat_rounding
 
+    if compiled:
+        torch.compiler.reset()
     model = (
         torch.nn.Sequential(
             FP8QATLinear(128, 128, bias=False, stochastic_rounding=True),
@@ -238,7 +255,9 @@ def test_distributed_qat_shared_weight(qat_process_group, split_tokens):
         torch.rand((rank + 1) * 139, device="cuda")
         x = (whole_input.chunk(2)[rank] if split_tokens else whole_input).detach().requires_grad_()
         actual = model(x)
-        reference = fp8_qat_linear(x, original_weight, 1, True, model._fp8_rounding_step, 1234, key)
+        reference = fp8_qat_linear(
+            x, original_weight, 1, True, model._fp8_rounding_step, 1234, torch.tensor(key, device="cuda")
+        )
         torch.testing.assert_close(actual, reference, atol=0, rtol=0)
         actual.sum().backward()
         actual_dx = x.grad.clone()
@@ -288,3 +307,27 @@ def test_distributed_qat_expert_shard(qat_process_group):
     actual_dx = torch.autograd.grad(actual.sum(), x)[0]
     expected_dx = torch.autograd.grad(expected.sum(), x)[0]
     torch.testing.assert_close(actual_dx, expected_dx, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("input_scale", [1.0, 1e-8, 1e-12])
+def test_inverse_rope_fp8_cast_matches_vllm(input_scale):
+    from vllm.models.deepseek_v4.common.ops.fused_inv_rope_fp8_quant import fused_inv_rope_fp8_quant
+
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope, inverse_rope_cast_to_fp8
+    from prime_rl.trainer.models.kernels.fp8_utils import per_token_cast_to_fp8_triton
+
+    torch.manual_seed(59)
+    x = torch.randn((257, 64, 512), device="cuda", dtype=torch.bfloat16) * input_scale
+    x[0] = 0.0
+    x[1] = -0.0
+    angles = torch.randn((257, 32), device="cuda")
+    cache = torch.cat((angles.cos(), angles.sin()), -1)
+    positions = torch.arange(257, device="cuda")
+    expected, expected_scales = fused_inv_rope_fp8_quant(x, positions, cache, 8, 8)
+    actual, actual_scales = inverse_rope_cast_to_fp8(x, cache, positions, 8)
+    assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
+    assert torch.equal(actual_scales, expected_scales[:257])
+    if input_scale == 1.0:
+        rounded = dsv4_rope(x, cache, positions, inverse=True)
+        old, _ = per_token_cast_to_fp8_triton(rounded.reshape(-1, 4096), True)
+        assert not torch.equal(old.view(torch.uint8).reshape_as(actual), actual.view(torch.uint8))
