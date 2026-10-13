@@ -108,7 +108,11 @@ def main() -> None:
         logs = rank0_logs(run)
         launcher_logs = [run / "rl.log", run / "trainer.log", run / "sft.log"]
         tail = [
-            line for log in launcher_logs if log.exists() for line in log.read_text().splitlines() if line.startswith("exit=")
+            line
+            for log in launcher_logs
+            if log.exists()
+            for line in log.read_text().splitlines()
+            if line.startswith("exit=")
         ]
         summary[run.name] = {
             "sha": (run / "sha").read_text().strip() if (run / "sha").exists() else None,
