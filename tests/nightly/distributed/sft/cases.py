@@ -1,4 +1,23 @@
-"""The SFT functionality matrix: archs x 8-GPU layouts x feature rows, rendered as `uv run sft` arguments."""
+"""The SFT functionality matrix, rendered as `uv run sft` arguments.
+
+Every case runs on one 8-GPU node from `base.toml`, which is the `ModelConfig` defaults plus an fp32 MoE router.
+Each arch contributes two kinds of case:
+
+- A base case on every layout in `LAYOUTS`. It trains, saves a checkpoint, then resumes in a fresh process.
+- One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
+
+`Arch.skip` removes a layout (along with the feature cases pinned to it) or a single feature, and the reason shows
+in the pytest report. Case ids read `{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k`
+selects cases by arch, layout or feature name. For example, one case:
+
+    uv run pytest tests/nightly/distributed -k "qwen3_moe and cp2_ring_ep4 and base"
+
+or every case on one layout, including the feature cases pinned to it:
+
+    uv run pytest tests/nightly/distributed -k cp2_ring_ep4
+
+`scripts/ci/run_distributed_nightly.sh` runs the same pytest command and passes extra args through to it.
+"""
 
 import json
 import math
