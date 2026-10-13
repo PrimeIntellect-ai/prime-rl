@@ -25,6 +25,7 @@ from renderers.configs import DeepSeekV4RendererConfig
 from renderers.deepseek_v4 import DeepSeekV4Renderer
 
 SYSTEM_TOKEN = "<｜System｜>"
+THINK_START, THINK_END = "<think>", "</think>"
 EFFORT_BUDGETS = {"low": 50, "high": 75, "max": 100}
 
 
@@ -36,6 +37,21 @@ class DeepSeekV41RendererConfig(DeepSeekV4RendererConfig):
 
     reasoning_effort: Literal["low", "high", "max"] | int = "high"  # type: ignore[assignment]
     """Thinking-only budget: an int in [1, 100] or "low" / "high" / "max" (50 / 75 / 100)."""
+
+
+def _split_inline_reasoning(message: Message) -> Message:
+    """Move a leading `<think>...</think>` out of an assistant's content into `reasoning_content`.
+
+    Many SFT datasets (e.g. INTELLECT-3-SFT) keep the reasoning inline in the content; rendered as
+    is, it would follow an empty think block instead of filling it.
+    """
+    content = message.get("content")
+    if message["role"] != "assistant" or message.get("reasoning_content") is not None or not isinstance(content, str):
+        return message
+    if not content.startswith(THINK_START) or THINK_END not in content:
+        return message
+    reasoning, content = content.removeprefix(THINK_START).split(THINK_END, 1)
+    return {**message, "reasoning_content": reasoning, "content": content}
 
 
 class DeepSeekV41Renderer(DeepSeekV4Renderer):
@@ -59,6 +75,7 @@ class DeepSeekV41Renderer(DeepSeekV4Renderer):
             raise NotImplementedError("the DeepSeek-V4.1 renderer does not render tools")
         if any(message["role"] == "system" for message in messages[1:]):
             raise NotImplementedError("the DeepSeek-V4.1 renderer does not render mid-conversation system messages")
+        messages = [_split_inline_reasoning(message) for message in messages]
         if messages and messages[0]["role"] == "system" and not self.config.enable_thinking:
             # Without an effort prefix, the system message itself opens with the System token.
             first = {**messages[0], "content": SYSTEM_TOKEN + (messages[0].get("content") or "")}
