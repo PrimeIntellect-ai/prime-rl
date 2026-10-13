@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import NamedTuple
 
 import dion
@@ -6,6 +7,7 @@ import torch
 from torch.distributed.checkpoint import load as dcp_load
 from torch.distributed.checkpoint import save as dcp_save
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LinearLR
 
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
@@ -139,4 +141,31 @@ def test_checkpoint_resume_restores_param_groups(tmp_path) -> None:
     dcp_load({"app": AppState(resumed_model, [resumed_optimizer], None, None)}, checkpoint_id=tmp_path)
     assert [group["step"] for group in resumed_optimizer.param_groups] == [3, 3]
     run_steps(resumed_model, resumed_optimizer, num_steps=2, seed=2)
+    assert_params_equal(model, resumed_model)
+
+
+def test_checkpoint_resume_restores_lr_schedule(tmp_path: Path) -> None:
+    """Linear and cosine schedules continue from group["lr"], which an in-place offloaded load does not reach."""
+
+    def make_run() -> tuple[torch.nn.Module, CPUOffloadOptimizer, LinearLR]:
+        model = make_model(0)
+        optimizer = CPUOffloadOptimizer(torch.optim.AdamW(model.parameters(), lr=1e-2))
+        scheduler = LinearLR(optimizer.base_optimizer, start_factor=1e-8, total_iters=4)
+        return model, optimizer, scheduler
+
+    model, optimizer, scheduler = make_run()
+    for step in range(3):
+        run_steps(model, optimizer, num_steps=1, seed=step)
+        scheduler.step()
+    dcp_save({"app": AppState(model, [optimizer], scheduler, None)}, checkpoint_id=tmp_path)
+
+    resumed_model, resumed_optimizer, resumed_scheduler = make_run()
+    dcp_load({"app": AppState(resumed_model, [resumed_optimizer], resumed_scheduler, None)}, checkpoint_id=tmp_path)
+    assert resumed_optimizer.param_groups[0]["lr"] == optimizer.param_groups[0]["lr"]
+
+    for step in range(3, 5):
+        run_steps(model, optimizer, num_steps=1, seed=step)
+        scheduler.step()
+        run_steps(resumed_model, resumed_optimizer, num_steps=1, seed=step)
+        resumed_scheduler.step()
     assert_params_equal(model, resumed_model)
