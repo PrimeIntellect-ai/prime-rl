@@ -41,11 +41,16 @@ def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
             state = FP8RoundingState(base_seed, torch.empty((), device="cuda", dtype=torch.int64))
             state.set_step(0)
         module.fp8_rounding = state
+        # Tensor stream IDs let identical blocks share a compiled graph.
         if dense:
-            module.rounding_salt = _stream_id(parameter_names[id(module.weight)])
+            module.rounding_salt = torch.tensor(
+                _stream_id(parameter_names[id(module.weight)]), device=state.seed.device, dtype=torch.int64
+            )
         else:
             module.rounding_salts = {
-                name: _stream_id(parameter_names[id(parameter)])
+                name: torch.tensor(
+                    _stream_id(parameter_names[id(parameter)]), device=state.seed.device, dtype=torch.int64
+                )
                 for name, parameter in module.named_parameters(recurse=False)
             }
             if not hasattr(module, "fp8_expert_offset"):

@@ -412,6 +412,7 @@ def _grouped_per_block_sr_kernel(
     rounding_seed,
     rounding_salt,
     rounding_offset,
+    HAS_SALT: tl.constexpr,
     RNG_TRANSPOSE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
@@ -429,7 +430,10 @@ def _grouped_per_block_sr_kernel(
         index += col * rows + row
     else:
         index += row * cols + col
-    y = _stochastic_round_fp8(x / scale, tl.load(rounding_seed) ^ rounding_salt, index)
+    seed = tl.load(rounding_seed)
+    if HAS_SALT:
+        seed ^= tl.load(rounding_salt)
+    y = _stochastic_round_fp8(x / scale, seed, index)
     tl.store(out_ptr + group * stride_yg + row * stride_ym + col * stride_yn, y, mask)
 
 
@@ -637,7 +641,7 @@ def _cast_per_block(
     use_ue8m0: bool,
     gran_k: int,
     rounding_seed: torch.Tensor | None,
-    rounding_salt: int,
+    rounding_salt: torch.Tensor | None,
     rounding_offset: int,
     rng_transpose: bool,
 ) -> None:
@@ -669,6 +673,7 @@ def _cast_per_block(
             rounding_seed,
             rounding_salt,
             rounding_offset,
+            HAS_SALT=rounding_salt is not None,
             RNG_TRANSPOSE=rng_transpose,
             BLOCK_M=16,
             BLOCK_N=gran_k,
@@ -682,7 +687,7 @@ def grouped_per_block_cast_to_fp8_triton(
     gran_k: int = GROUP_ALIGNMENT,
     *,
     rounding_seed: torch.Tensor | None = None,
-    rounding_salt: int = 0,
+    rounding_salt: torch.Tensor | None = None,
     rounding_offset: int = 0,
     rng_transpose: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -705,7 +710,7 @@ def per_block_cast_to_fp8_triton(
     gran_k: int = GROUP_ALIGNMENT,
     *,
     rounding_seed: torch.Tensor | None = None,
-    rounding_salt: int = 0,
+    rounding_salt: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.dim() == 2
     out, sf = grouped_per_block_cast_to_fp8_triton(
@@ -724,7 +729,7 @@ def per_block_cast_to_fp8_tp_triton(
     gran_k: int = GROUP_ALIGNMENT,
     *,
     rounding_seed: torch.Tensor | None = None,
-    rounding_salt: int = 0,
+    rounding_salt: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Block-fp8 cast of ``x.T`` without materializing the transpose."""
     assert x.dim() == 2

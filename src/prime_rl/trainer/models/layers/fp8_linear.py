@@ -22,7 +22,7 @@ def _fp8_blockwise_mm(
     weight: torch.Tensor,
     block_size: int,
     rounding_seed: torch.Tensor | None = None,
-    rounding_salt: int = 0,
+    rounding_salt: torch.Tensor | None = None,
 ) -> torch.Tensor:
     import deep_gemm
 
@@ -44,7 +44,7 @@ def _fp8_blockwise_mm_fake(
     weight: torch.Tensor,
     block_size: int,
     rounding_seed: torch.Tensor | None = None,
-    rounding_salt: int = 0,
+    rounding_salt: torch.Tensor | None = None,
 ) -> torch.Tensor:
     return x.new_empty((*x.shape[:-1], weight.shape[0]), dtype=torch.bfloat16)
 
@@ -58,7 +58,7 @@ def _fp8_blockwise_mm_backward(
     needs_grad_x: bool,
     needs_grad_weight: bool,
     rounding_seed: torch.Tensor | None = None,
-    rounding_salt: int = 0,
+    rounding_salt: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     import deep_gemm
 
@@ -109,20 +109,19 @@ def _fp8_blockwise_mm_backward_fake(
     needs_grad_x: bool,
     needs_grad_weight: bool,
     rounding_seed: torch.Tensor | None = None,
-    rounding_salt: int = 0,
+    rounding_salt: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return x.new_empty(x.shape), weight.new_empty(weight.shape)
 
 
 def _fp8_blockwise_mm_setup_context(ctx, inputs, output) -> None:
     x, weight, block_size, rounding_seed, rounding_salt = inputs
-    ctx.save_for_backward(x, weight, rounding_seed)
-    ctx.rounding_salt = rounding_salt
+    ctx.save_for_backward(x, weight, rounding_seed, rounding_salt)
     ctx.block_size = block_size
 
 
 def _fp8_blockwise_mm_autograd_backward(ctx, grad_output: torch.Tensor):
-    x, weight, rounding_seed = ctx.saved_tensors
+    x, weight, rounding_seed, rounding_salt = ctx.saved_tensors
     needs_grad_x, needs_grad_weight = ctx.needs_input_grad[:2]
     grad_x, grad_weight = _fp8_blockwise_mm_backward(
         grad_output,
@@ -132,7 +131,7 @@ def _fp8_blockwise_mm_autograd_backward(ctx, grad_output: torch.Tensor):
         needs_grad_x,
         needs_grad_weight,
         rounding_seed,
-        ctx.rounding_salt,
+        rounding_salt,
     )
     return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None, None, None
 
@@ -158,7 +157,7 @@ class Float8BlockwiseLinear(nn.Linear):
         self.block_size = block_size
         self.stochastic_rounding = False
         self.fp8_rounding = None
-        self.rounding_salt = 0
+        self.rounding_salt = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _fp8_blockwise_mm(
