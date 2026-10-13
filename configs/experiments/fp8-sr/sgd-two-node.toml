@@ -1,0 +1,17 @@
+# Momentum-free SGD reduces memory for full-depth FP8 validation.
+[model]
+ep = 16
+
+[data]
+batch_size = 16
+seq_len = 512
+
+[optim]
+type = "sgd"
+
+[deployment]
+num_train_nodes = 2
+
+[env_vars]
+NCCL_BUFFSIZE = "1048576"
+NCCL_MAX_CTAS = "4"
