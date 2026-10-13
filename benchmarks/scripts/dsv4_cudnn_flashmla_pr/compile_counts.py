@@ -9,9 +9,9 @@ CASE is one of:
   two-clamps  the `wide` widths up to 640 under max_slots 8320, then again under max_slots 640
 
 Each call runs the forward and the backward through `prime_rl::dsv4_sparse_attn`. The cuDNN count is read from
-the frontend's three executor caches, which works on every commit; on commits that log compiles it is also
-counted from the `Compiled the cuDNN DSA backward` log lines. TileLang logs compiles but not disk loads, so its
-cache is read as its file count before and after (set TILELANG_CACHE_DIR).
+the frontend's executor caches (three on SM90, one on SM100), which works on every commit; on commits that log
+compiles it is also counted from the `Compiled the cuDNN DSA backward` log lines. TileLang logs compiles but not
+disk loads, so its cache is read as its file count before and after (set TILELANG_CACHE_DIR).
 """
 
 import argparse
@@ -84,7 +84,10 @@ def op_takes_max_slots() -> bool:
 
 def cudnn_cache_sizes() -> dict[str, int]:
     from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
 
+    if torch.cuda.get_device_capability()[0] == 10:
+        return {"main": len(flash_attn_bwd_sm100.compile_cache)}
     return {
         "preprocess": len(flash_attn_bwd_sm90.compile_cache_pre),
         "main": len(flash_attn_bwd_sm90.compile_cache),
