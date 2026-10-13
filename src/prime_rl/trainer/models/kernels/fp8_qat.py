@@ -22,6 +22,7 @@ def _weight_quant_kernel(
     USE_UE8M0: tl.constexpr,
     STOCHASTIC: tl.constexpr,
     DEQUANTIZE: tl.constexpr,
+    KEY_IS_TENSOR: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     block_m = tl.program_id(0)
@@ -37,6 +38,8 @@ def _weight_quant_kernel(
     amax = tl.maximum(tl.max(tl.abs(x)), 1e-4)
     scale = amax * (1.0 / 448.0)
     if STOCHASTIC:
+        if KEY_IS_TENSOR:
+            weight_key = tl.load(weight_key)
         stream = seed.to(tl.uint64) ^ weight_key.to(tl.uint64)
         stream ^= tl.load(STEP).to(tl.uint64) * 0x9E3779B97F4A7C15
         # Smaller random-generation tiles keep Philox state in registers.
@@ -108,7 +111,7 @@ def cast_qat_weight(
     *,
     step: torch.Tensor | None = None,
     seed: int = 0,
-    weight_key: int = 0,
+    weight_key: int | torch.Tensor = 0,
     expert_start: int = 0,
     dequantize: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -152,6 +155,7 @@ def cast_qat_weight(
         USE_UE8M0=use_ue8m0,
         STOCHASTIC=stochastic_rounding,
         DEQUANTIZE=dequantize,
+        KEY_IS_TENSOR=isinstance(weight_key, torch.Tensor),
         BLOCK=128,
         num_warps=8,
         enable_fp_fusion=False,

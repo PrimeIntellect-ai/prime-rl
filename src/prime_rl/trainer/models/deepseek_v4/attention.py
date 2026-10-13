@@ -138,6 +138,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.fp8_qat import FP8QATLinear
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear as DeepseekV4GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -761,10 +762,11 @@ class DeepseekV4Attention(nn.Module):
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
-        attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
-
-        # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
-        grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
+        if isinstance(self.o_a_proj, FP8QATLinear):
+            grouped = self.o_a_proj(attn_output, cos_sin_cache, packed.position_ids).flatten(2)
+        else:
+            attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
+            grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
         return self.o_b_proj(grouped), None  # (b, t, hidden_size)
 
     def init_weights(self, init_std: float) -> None:

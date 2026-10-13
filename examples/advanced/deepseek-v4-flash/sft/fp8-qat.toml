@@ -1,0 +1,14 @@
+[model]
+# KV simulation is independent of dense and expert weight quantization.
+dsv4_kv_precision = "fp8"
+fp8_rounding_seed = 20261012
+
+[model.quantization]
+type = "fp8"
+qat = true
+stochastic_rounding = false
+
+[model.moe.compute]
+type = "deepgemm_fp8"
+qat = true
+stochastic_rounding = false
