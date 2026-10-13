@@ -169,3 +169,17 @@ def test_sr_rounding_probabilities():
     frequency = (sample == 1.125).float().mean().item()
     assert abs(frequency - 0.25) < 0.002
     assert set(sample.unique().tolist()) == {1.0, 1.125}
+
+
+@pytest.mark.parametrize("stochastic", [False, True])
+def test_block_cast_large_expert_stride(stochastic):
+    from prime_rl.trainer.models.kernels.fp8_utils import grouped_per_block_cast_to_fp8_triton
+
+    # The last expert starts beyond the signed 32-bit element-offset limit.
+    x = torch.empty_strided((3, 128, 128), (2**30, 128, 1), dtype=torch.bfloat16, device="cuda")
+    x.copy_(torch.randn(x.shape, device="cuda", dtype=x.dtype))
+    seed = torch.tensor(17, device="cuda") if stochastic else None
+    q, s = grouped_per_block_cast_to_fp8_triton(x, False, rounding_seed=seed)
+    qr, sr = grouped_per_block_cast_to_fp8_triton(x.contiguous(), False, rounding_seed=seed)
+    assert torch.equal(q.view(torch.uint8), qr.view(torch.uint8))
+    assert torch.equal(s, sr)
