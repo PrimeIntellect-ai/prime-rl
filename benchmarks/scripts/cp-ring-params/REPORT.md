@@ -16,8 +16,9 @@ worktree with a fresh Inductor cache. Scripts are in this directory, raw runs ar
   layout without activation offloading, main recompiles 143 times, hits the recompile limit twice and takes
   61.9 s per step. The branch recompiles 17 times, none on CP fields, and takes 10.6 s per step.
 - Numerics match main within the same-code noise floor for ring, ulysses and cp1, compile off and on.
-- On main's current `compile(AC(block))` layout, reverse-text-moe runs its MoE blocks eagerly, so branch and
-  main perform the same there.
+- With `fullgraph=False` on main's current layout, reverse-text-moe runs its MoE blocks eagerly, so branch and
+  main perform the same there. With `fullgraph=True` and a bf16 router the blocks compile, and ring CP
+  crashes on main at the recompile limit while the branch runs (4.38 s forward plus backward).
 - The #3925 layout with activation offloading still fails for ring (E0), now on a checkpoint replay error on
   one rank. It passes once `dynamic_sources` is visible to the autograd thread (see E0 below).
 
@@ -51,6 +52,27 @@ On reverse-text-moe under main's layout both trees show the same 3 recompiles: t
 length change and one for the dense first layer. The MoE blocks break the graph inside the checkpoint (EP
 `all_to_all` has a data-dependent output shape), so they run eagerly and never read the CP globals inside a
 compiled frame. That is why this workload shows no `DATA_PARAMS` churn on main.
+
+## Fullgraph with a bf16 router on main's layout
+
+Run on 2026-10-13 on one node (job 4007). bf16 router, `ep=2`, offloading off. With `fullgraph=False` the EP
+`all_to_all` (a custom op whose fake returns a data-dependent size) breaks the graph inside the checkpoint,
+so MoE blocks run eagerly. `fullgraph=True` also enables capture of data-dependent output shapes
+(`torch/_dynamo/output_graph.py:735`, `allow_dynamic_output_shape_ops=one_graph or ...`), so the same blocks
+compile with no breaks. The fake-data control shows it directly: compile on with fullgraph off gives 2
+breaks at `all_to_all_single`, fullgraph on gives 0.
+
+| Arm (fullgraph on) | Tree | Steps | Recompiles | CP guards | Fwd+bwd median |
+|---|---|---|---|---|---|
+| RL reverse-text-moe, ring cp2 | main | crash after 3 (recompile limit) | 64 | 961 | 111.3 s |
+| RL reverse-text-moe, ring cp2 | branch | 6/6 | 3 | 0 | 4.38 s |
+| RL reverse-text-moe, cp1 | main | 6/6 | 3 | 0 | 1.62 s |
+| Fake-data trainer, ring cp2 | main | crash at step 4 (recompile limit) | 115 | `DATA_PARAMS['max_seqlen_k']` | |
+| Fake-data trainer, ring cp2 | branch | 20/20 | 2 | 0 | |
+| Fake-data trainer, cp1 | main and branch | 20/20 | 2 | 0 | |
+
+Ring CP with fullgraph therefore does not run on main today, and runs on the branch. For comparison, the
+same RL ring cp2 arm with fullgraph off (MoE blocks eager) takes 7.71 s forward plus backward.
 
 ## Performance on main's layout
 
