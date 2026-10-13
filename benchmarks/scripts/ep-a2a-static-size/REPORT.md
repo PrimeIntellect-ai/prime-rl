@@ -18,15 +18,60 @@ median `time/forward_backward` over steps 5 to 20 with min and max, in seconds. 
 
 - With `fullgraph=false`, main breaks the graph twice per MoE block on the all-to-all, so every MoE block runs
   eagerly. The branch has 0 breaks and its step time matches main with `fullgraph=true`.
-- The size of the speedup here says little about real models. mini-glm-moe is host bound (the GPU is busy 17%
-  of the traced step on main), so removing eager kernel launches shrinks its step far more than it would on a
-  GPU-bound model. Speedup magnitudes come from the end-to-end runs on Qwen3-30B-A3B and GLM-4.5-Air.
+- End to end, the step takes 25% less time on Qwen3-30B-A3B (5.97 s to 4.48 s) and 14% less on GLM-4.5-Air with
+  8 layers (2.96 s to 2.54 s), in both cases matching main with `fullgraph=true` within 0.01 s.
+- The mini-glm-moe proxy runs below show a 2x speedup that does not transfer: the model is host bound (the GPU
+  is busy 17% of the traced step on main), so removing eager kernel launches shrinks its step far more than on
+  a GPU-bound model. Use the proxy only for the graph-break, recompile and CP results.
 - Recompiles are unchanged without CP (2 or 3 per frame in every arm, the switch to dynamic shapes).
 - With `cp=2`, compiling the MoE blocks exposes the CP attention-params recompiles (`max_seqlen_k` guards):
   64 recompiles and the recompile limit, on the branch with fullgraph off and on main with fullgraph on.
   With fullgraph on, main and branch both crash at the limit. With the CP fix on top (combo), recompiles drop
   to 3 and the step takes 1.54 s against 2.38 s on main. Neither fix alone compiles CP+EP MoE blocks.
 - Loss and grad norm match main within the same-code noise floor. Peak memory is identical.
+
+## End-to-end: Qwen3-30B-A3B and GLM-4.5-Air
+
+Run on 2026-10-13 on one exclusive 8 x H200 node (job 4104), every arm alone and serial (`e2e.sh`,
+`run_e2e_arm.sh`). SFT, `ep=8`, bf16 router, FA3, no offloading, seq len 16384, batch 16, micro-batch 1, so
+32k tokens per GPU per step, 20 steps. Qwen3-30B-A3B is the full model on fake data with balanced routing.
+GLM-4.5-Air keeps its first 8 layers (1 dense, 7 MoE) on real SFT data (`INTELLECT-3-SFT-10K`, `math`).
+Median `time/step` over steps 5 to 20 with min and max, in seconds. Lower is better.
+
+| Arm | Qwen3-30B-A3B step s | Qwen MFU | GLM-4.5-Air 8L step s | GLM MFU |
+|---|---|---|---|---|
+| main, fullgraph off | 5.965 (5.924 to 5.992) | 31.6% | 2.957 (2.847 to 3.049) | 31.5% |
+| main, fullgraph off, repeat | 5.970 (5.928 to 5.987) | 31.6% | 2.960 (2.837 to 3.065) | 31.7% |
+| branch, fullgraph off | 4.484 (4.469 to 4.508) | 42.0% | 2.544 (2.412 to 18.01) | 36.6% |
+| branch, fullgraph off, repeat | 4.487 (4.461 to 4.512) | 42.0% | 2.537 (2.425 to 18.34) | 36.4% |
+| main, fullgraph on | 4.486 (4.461 to 4.511) | 42.0% | 2.542 (2.409 to 18.49) | 36.5% |
+
+- Qwen3-30B-A3B: 5.97 s to 4.48 s, 25% less time per step. GLM-4.5-Air 8 layers: 2.96 s to 2.54 s, 14% less.
+  In both, the branch with fullgraph off matches main with fullgraph on within 0.01 s.
+- Peak memory: 76.7 to 76.7 GiB (Qwen) and 56.2 to 55.1 GiB (GLM).
+- The GLM maxima are recompile stalls at steps 2, 4, 8 and 14 (10 to 18 s each). Main with fullgraph on stalls at
+  the same steps for the same time, so they come from compiled MoE blocks on real variable-length data, not
+  from this change. Main with fullgraph off avoids them only because its MoE blocks never compile.
+- Numerics: the loss and grad norm curves of all five arms overlap per step on both workloads, with no gap that
+  grows. On GLM, compiled runs are less deterministic than eager ones: the branch repeat differs by up to 1.6e-2
+  in loss, and main fullgraph on vs off differs by 5.1e-2, more than branch vs main (2.7e-2).
+
+Trace accounting (`step_accounting.py`, all 8 ranks, last clean traced step, ms per step, lower is better):
+
+| Row | Qwen main | Qwen branch | GLM main | GLM branch |
+|---|---|---|---|---|
+| eager elementwise, copy, index | 2253 | 177 | 659 | 130 |
+| Inductor (fused Triton) | 0 | 497 | 0 | 141 |
+| GEMMs and flash attention | 2443 | 2567 | 1265 | 1301 |
+| exposed communication | 946 | 1003 | 885 | 824 |
+| idle and other compute | 390 | 268 | 161 | 143 |
+| traced step window | 6032 | 4512 | 2970 | 2538 |
+| untraced median step | 5965 | 4484 | 2957 | 2544 |
+
+GPU activities per step drop from 41.7k to 23.8k (Qwen) and 7.2k to 4.2k (GLM). The traced and untraced
+deltas agree (Qwen -1520 vs -1481 ms, GLM -432 vs -413 ms). `qwen-layer2-forward.png` shows one layer's
+forward: main fills the gaps between GEMMs, attention and all-to-alls with eager elementwise kernels, and the
+branch replaces them with a few fused Inductor kernels (layer 2 forward 16.3 ms to 11.0 ms).
 
 ## Fake-data RL trainer, 2 GPUs
 
@@ -102,4 +147,4 @@ cannot separate from transfer time.
 
 - MXFP8 dispatch (`_mxfp8_all_to_all`) needs Blackwell and was not run.
 - The fp32 router keeps MoE blocks eager for an unrelated reason and was not measured.
-- All results above are on the 24-layer mini-glm-moe proxy, not a full-size model.
+- GLM-4.5-Air ran with 8 of its 46 layers, so its absolute step times are not full-model times.
