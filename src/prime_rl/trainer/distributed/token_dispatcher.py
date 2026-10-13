@@ -144,6 +144,7 @@ def _local_reorder(
     ).to(torch.int64)
     route_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
     top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
+    # A route slot is token_index * top_k + expert_slot.
     routed_input = x[route_indices_experts_sorted // top_k]
     return routed_input, route_indices_experts_sorted, top_scores_experts_sorted, num_tokens_per_expert
 
@@ -162,6 +163,7 @@ def _combine_routed_output(
         return routed_output
 
     dim = routed_output.shape[-1]
+    # There is one output row per selected expert per token.
     top_k = routed_output.shape[0] // num_tokens
     # Restore unique token/route slots before summing, avoiding BF16 atomic additions.
     output = torch.empty_like(routed_output)
