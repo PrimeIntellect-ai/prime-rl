@@ -765,6 +765,7 @@ def test_trainer_rejects_vlm_cp_with_ring():
     config = {
         "model": {
             "cp": 2,
+            "cp_style": "ring",
             "optimization_dtype": "bfloat16",
             "reduce_dtype": "bfloat16",
             "vlm": {

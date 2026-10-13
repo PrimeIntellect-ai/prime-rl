@@ -270,8 +270,8 @@ class ModelConfig(BaseModelConfig):
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
 
-    cp_style: Literal["ring", "ulysses"] = "ring"
-    """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
+    cp_style: Literal["auto", "ring", "ulysses"] = "auto"
+    """CP communication style. ``auto`` (default) resolves to ``ulysses`` when the model supports it and the CP degree shards its attention heads, else ``ring`` (e.g. DeepSeek-V4). ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
 
     optimization_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for model optimization."""
@@ -301,7 +301,7 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def vlm_cp_requires_ulysses(self):
-        if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
+        if self.vlm is not None and self.cp > 1 and self.cp_style == "ring":
             raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
         return self
 
