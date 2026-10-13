@@ -336,7 +336,7 @@ select = ["F", "I"]
 "src/prime_rl/trainer/model.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/data.py" = ["F722", "F821"]
 "src/prime_rl/trainer/rl/loss.py" = ["F722", "F821"]
-"src/prime_rl/trainer/sft/data.py" = ["F722", "F821"]
+"src/prime_rl/trainer/sft/data/dataset.py" = ["F722", "F821"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["prime_rl"]
