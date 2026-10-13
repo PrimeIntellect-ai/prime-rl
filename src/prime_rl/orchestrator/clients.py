@@ -262,7 +262,11 @@ def setup_client(
             "renderer": renderer_config,
             "renderer_model_name": renderer_model_name,
         }
-    return config_cls(**client_config.model_dump(include=set(BaseClientConfig.model_fields)), **renderer_extra)
+    fields = set(BaseClientConfig.model_fields)
+    if is_renderer:
+        # the request gate is for external APIs; the renderer client talks to our own engines
+        fields.discard("request_gate")
+    return config_cls(**client_config.model_dump(include=fields), **renderer_extra)
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
