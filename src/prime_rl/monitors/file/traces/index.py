@@ -15,6 +15,8 @@ that land with it for the first time; the ones already landed are listed under
 
 from collections.abc import Collection
 
+from prime_rl.monitors.file.traces.labels import trace_labels
+
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
     """Flatten a trace timing tree to phase -> seconds (same walk as the viewer)."""
@@ -97,17 +99,6 @@ def model_usage(rec: dict, skip: Collection[str] = ()) -> dict[str, dict]:
         for usage in trace.get("extra_usage") or []:
             add(JUDGE_MODEL, usage, False)
     return models
-
-
-def episode_labels(rec: dict) -> dict:
-    """What the env labelled the episode with (``Env.trace_labels``): verifiers puts the
-    same labels into every trace's ``info["labels"]``, so the first trace that has them
-    speaks for the episode."""
-    for trace in rec.get("traces") or []:
-        labels = (trace.get("info") or {}).get("labels")
-        if isinstance(labels, dict):
-            return labels
-    return {}
 
 
 def summarize_episode(line: int, rec: dict, offset: int | None = None, landed: Collection[str] = ()) -> dict:
@@ -193,8 +184,9 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None, landed: C
         "dispatch": (first_info.get("dispatch") or {}).get("time"),
         "arrival": (first_info.get("arrival") or {}).get("time"),
         "duration": _episode_duration(first_info, timing),
-        # what the env labelled the episode with and where its calls went
-        "labels": episode_labels(rec),
+        # what the env labelled the episode with (``Env.trace_labels``, on every trace, so
+        # the first labelled trace speaks for it) and where its calls went
+        "labels": next((labels for trace in rec.get("traces") or [] if (labels := trace_labels(trace))), {}),
         "models": models,
     }
 

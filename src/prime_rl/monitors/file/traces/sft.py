@@ -124,7 +124,7 @@ def trace_rows(episode: vf.WireEpisode, trace: vf.Trace, images: Images | None =
                 "task": episode.task.key,
                 "agent": trace.agent.name,
                 "reward": trace.reward,
-                "labels": trace.info.get("labels") or {},
+                "labels": trace.labels,
             },
         }
 
