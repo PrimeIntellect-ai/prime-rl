@@ -99,7 +99,7 @@ def setup_cp_params(
     cp_rank: int,
     cp_world_size: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Shard input_ids and position_ids along the sequence; the model forward builds full-sequence attention metadata."""
+    """Shard input_ids and position_ids along the sequence."""
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     return input_ids, position_ids
