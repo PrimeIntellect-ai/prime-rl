@@ -444,7 +444,15 @@ class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
 
 
-OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
+class SGDConfig(BaseOptimizerConfig):
+    """SGD without momentum or optimizer state."""
+
+    type: Literal["sgd"] = "sgd"
+
+
+OptimizerConfig: TypeAlias = Annotated[
+    AdamWConfig | MuonConfig | SignSGDConfig | SGDConfig, Field(discriminator="type")
+]
 
 
 class CheckpointConfig(BaseConfig):

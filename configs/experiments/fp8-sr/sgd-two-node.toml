@@ -1,0 +1,6 @@
+# Momentum-free SGD reduces memory for full-depth FP8 validation.
+[optim]
+type = "sgd"
+
+[deployment]
+num_train_nodes = 2
