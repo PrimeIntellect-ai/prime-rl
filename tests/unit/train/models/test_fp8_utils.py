@@ -132,8 +132,11 @@ def test_sr_transpose_replay_and_expert_shards(use_ue8m0, shape):
     torch.manual_seed(17)
     weights = torch.randn(4, *shape, device="cuda", dtype=torch.bfloat16)
     seed = torch.tensor(1123581321, dtype=torch.int64, device="cuda")
-    kwargs = dict(rounding_seed=seed, rounding_salt=987654321)
+    salt = torch.tensor(987654321, dtype=torch.int64, device="cuda")
+    kwargs = dict(rounding_seed=seed, rounding_salt=salt)
     q, s = grouped_per_block_cast_to_fp8_triton(weights, use_ue8m0, **kwargs)
+    combined, _ = grouped_per_block_cast_to_fp8_triton(weights, use_ue8m0, rounding_seed=seed ^ salt)
+    assert torch.equal(q.view(torch.uint8), combined.view(torch.uint8))
     _, rne_s = grouped_per_block_cast_to_fp8_triton(weights, use_ue8m0)
     assert torch.equal(s, rne_s)
     qt, st = grouped_per_block_cast_to_fp8_triton(weights.transpose(1, 2), use_ue8m0, rng_transpose=True, **kwargs)
@@ -152,9 +155,7 @@ def test_sr_transpose_replay_and_expert_shards(use_ue8m0, shape):
     torch.rand(1000, device="cuda")
     replay, _ = grouped_per_block_cast_to_fp8_triton(weights, use_ue8m0, **kwargs)
     assert torch.equal(q.view(torch.uint8), replay.view(torch.uint8))
-    changed, _ = grouped_per_block_cast_to_fp8_triton(
-        weights, use_ue8m0, rounding_seed=seed + 1, rounding_salt=987654321
-    )
+    changed, _ = grouped_per_block_cast_to_fp8_triton(weights, use_ue8m0, rounding_seed=seed + 1, rounding_salt=salt)
     assert not torch.equal(q.view(torch.uint8), changed.view(torch.uint8))
 
 

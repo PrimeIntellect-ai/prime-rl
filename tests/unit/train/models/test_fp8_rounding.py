@@ -31,11 +31,12 @@ def test_dense_backward_uses_forward_weights(compiled, stochastic):
     w = torch.randn(512, 256, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     dy = torch.randn(137, 512, device="cuda", dtype=torch.bfloat16)
     seed = torch.tensor(2**50 + 31, device="cuda") if stochastic else None
+    salt = torch.tensor(42, device="cuda") if stochastic else None
     fn = torch.compile(_fp8_blockwise_mm, fullgraph=True) if compiled else _fp8_blockwise_mm
-    y = fn(x, w, 128, seed, 42)
+    y = fn(x, w, 128, seed, salt)
     y.backward(dy)
     mode = ue8m0_for_device(x.device)
-    q, s = per_block_cast_to_fp8_triton(w, mode, rounding_seed=seed, rounding_salt=42)
+    q, s = per_block_cast_to_fp8_triton(w, mode, rounding_seed=seed, rounding_salt=salt)
     expected = torch.empty_like(x)
     deep_gemm.fp8_gemm_nt(per_token_cast_to_fp8_triton(dy, mode), (q.T.contiguous(), s.T.contiguous()), expected)
     assert torch.equal(x.grad, expected)
@@ -56,11 +57,12 @@ def test_grouped_backward_uses_forward_weights(compiled):
     dy = torch.randn(384, 256, device="cuda", dtype=torch.bfloat16)
     offs = torch.tensor([128, 128, 384], device="cuda", dtype=torch.int32)
     seed = torch.tensor(12345, device="cuda")
+    salt = torch.tensor(83, device="cuda")
     fn = torch.compile(grouped_fp8_gemm, fullgraph=True) if compiled else grouped_fp8_gemm
-    fn(x, w, offs, seed, 83, 4 * 128 * 256).backward(dy)
+    fn(x, w, offs, seed, salt, 4 * 128 * 256).backward(dy)
     mode = ue8m0_for_device(x.device)
     q, s = grouped_per_block_cast_to_fp8_triton(
-        w.transpose(1, 2), mode, rounding_seed=seed, rounding_salt=83, rounding_offset=4 * 128 * 256
+        w.transpose(1, 2), mode, rounding_seed=seed, rounding_salt=salt, rounding_offset=4 * 128 * 256
     )
     total, padded, layout, blocks, _, starts, sizes, block_starts = build_grouped_layout(offs, total_m=x.shape[0])
     dyq = grouped_per_token_cast_to_fp8_triton(dy, padded, blocks, starts, sizes, block_starts, mode)
@@ -127,3 +129,35 @@ def test_expert_runtime_rounding():
     assert all(torch.isfinite(p.grad).all() for p in experts.parameters())
     set_fp8_rounding_step(experts, 1)
     assert not torch.equal(y, experts(x, counts))
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_rounding_streams_share_compiled_graph(grouped):
+    torch._dynamo.reset()
+    graphs = []
+
+    def backend(graph, inputs):
+        graphs.append(graph)
+        return graph.forward
+
+    if grouped:
+        model = torch.nn.ModuleList(
+            [GroupedExperts(128, 256, 3, compute=DeepGemmFP8ExpertCompute(True)) for _ in range(3)]
+        ).to("cuda", torch.bfloat16)
+        for parameter in model.parameters():
+            torch.nn.init.normal_(parameter, std=0.02)
+    else:
+        model = torch.nn.ModuleList(
+            [torch.nn.Linear(128, 128, bias=False, device="cuda", dtype=torch.bfloat16) for _ in range(3)]
+        )
+        replace_linear_with_fp8_blockwise_linear(model, [], stochastic_rounding=True)
+    setup_fp8_rounding(model, 123)
+    for module in model:
+        module.compile(backend=backend, fullgraph=True)
+    for step, rows in enumerate((128, 128, 256)):
+        set_fp8_rounding_step(model, step)
+        x = torch.randn(rows, 128, device="cuda", dtype=torch.bfloat16)
+        inputs = (x, torch.tensor([rows, 0, 0], device="cuda")) if grouped else (x,)
+        for module in model:
+            assert torch.equal(module(*inputs), module.forward(*inputs))
+        assert len(graphs) == (2 if step == 2 else 1)
