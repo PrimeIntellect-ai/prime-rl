@@ -1,0 +1,33 @@
+{# One node-local CPU pool shared by all inference ranks. Requires LOG_DIR and INFER_NODE_RANK. #}
+    mkdir -p "$LOG_DIR/lmcache"
+    LMCACHE_LOG="$LOG_DIR/lmcache/node_${INFER_NODE_RANK}.log"
+    # Never attach a new training run to an old daemon whose policy salts may overlap.
+    for port in {{ kv_offload.port }} {{ kv_offload.http_port }}; do
+        if timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+            echo "LMCache port $port is already in use; choose unused port/http_port values" >&2
+            exit 1
+        fi
+    done
+    lmcache server \
+        --host 127.0.0.1 --port {{ kv_offload.port }} \
+        --http-host 127.0.0.1 --http-port {{ kv_offload.http_port }} \
+        --l1-size-gb {{ kv_offload.cpu.num_bytes / 1073741824 }} \
+        --chunk-size {{ kv_offload.chunk_size }} --eviction-policy LRU \
+        > "$LMCACHE_LOG" 2>&1 &
+    LMCACHE_PID=$!
+    for _ in $(seq 1 120); do
+        if ! kill -0 "$LMCACHE_PID" 2>/dev/null; then
+            tail -50 "$LMCACHE_LOG" >&2
+            exit 1
+        fi
+        if curl --fail --silent --max-time 1 "http://127.0.0.1:{{ kv_offload.http_port }}/healthcheck" > /dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    if ! curl --fail --silent --max-time 1 "http://127.0.0.1:{{ kv_offload.http_port }}/healthcheck" > /dev/null; then
+        tail -50 "$LMCACHE_LOG" >&2
+        kill -TERM "$LMCACHE_PID" 2>/dev/null || true
+        echo "LMCache did not become ready" >&2
+        exit 1
+    fi

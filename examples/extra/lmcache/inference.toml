@@ -1,0 +1,7 @@
+# Compose with an RL config using --inference @ this-file.toml.
+# SLURM starts one daemon per inference node; local runs start it separately.
+[kv_cache_offload]
+type = "lmcache"
+
+[kv_cache_offload.cpu]
+num_bytes = 2147483648 # 2 GiB shared by the inference engines on each node
