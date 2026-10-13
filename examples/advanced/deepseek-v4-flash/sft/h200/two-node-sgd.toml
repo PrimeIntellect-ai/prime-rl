@@ -1,0 +1,18 @@
+# Full-depth validation with momentum-free SGD and one expert shard per GPU.
+[model]
+ep = 16
+offload = "optimizer"
+
+[data]
+batch_size = 16
+seq_len = 512
+
+[optim]
+type = "sgd"
+
+[deployment]
+num_train_nodes = 2
+
+[env_vars]
+NCCL_BUFFSIZE = "1048576"
+NCCL_MAX_CTAS = "4"

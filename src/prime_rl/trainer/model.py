@@ -50,6 +50,7 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.fp8_rounding import setup_fp8_rounding
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -873,11 +874,11 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         if quant.qat:
             from prime_rl.trainer.models.layers.fp8_qat import replace_linear_with_fp8_qat
 
-            replace_linear_with_fp8_qat(
-                model, quant.ignore_patterns, quant.stochastic_rounding, config.fp8_rounding_seed
-            )
+            replace_linear_with_fp8_qat(model, quant.ignore_patterns, quant.stochastic_rounding)
         else:
-            replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+            replace_linear_with_fp8_blockwise_linear(
+                model, ignore_modules=quant.ignore_patterns, stochastic_rounding=quant.stochastic_rounding
+            )
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] < 10:
@@ -1001,6 +1002,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    setup_fp8_rounding(model, config.fp8_rounding_seed)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
@@ -1034,19 +1036,7 @@ def setup_model(
         load_dcp_from_hf(model, config, parallel_dims)
 
     _reset_runtime_moe_buffers(model)
-    dense_qat = isinstance(config.quantization, FP8Config) and config.quantization.qat
-    expert_qat = isinstance(config.moe.compute, DeepGemmFP8MoEComputeConfig) and config.moe.compute.qat
-    if dense_qat or expert_qat:
-        from prime_rl.trainer.models.layers.fp8_qat import initialize_qat_rounding
-
-        initialize_qat_rounding(model)
     return model
-
-
-def set_fp8_qat_step(model: nn.Module, step: int) -> None:
-    rounding_step = getattr(model, "_fp8_rounding_step", None)
-    if rounding_step is not None:
-        rounding_step.fill_(step)
 
 
 def forward(

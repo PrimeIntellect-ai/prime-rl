@@ -50,8 +50,8 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
         if compute.qat:
             from prime_rl.trainer.models.layers.fp8_qat import FP8QATExpertCompute
 
-            return FP8QATExpertCompute(compute.stochastic_rounding, config.fp8_rounding_seed)
-        return DeepGemmFP8ExpertCompute()
+            return FP8QATExpertCompute(compute.stochastic_rounding)
+        return DeepGemmFP8ExpertCompute(stochastic_rounding=compute.stochastic_rounding)
     if isinstance(compute, MXFP8MoEComputeConfig):
         import prime_kernels
 
@@ -89,26 +89,17 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
     ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
 
-    qat_compute = isinstance(config.moe.compute, DeepGemmFP8MoEComputeConfig) and config.moe.compute.qat
-    weight_keys = {}
-    if qat_compute:
-        from prime_rl.trainer.models.layers.fp8_qat import logical_weight_keys
-
-        weight_keys = logical_weight_keys(model)
     for moe in moe_layers:
         compute = selected_compute if moe in selected_moes else bf16_compute
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
-        if qat_compute and moe in selected_moes:
-            moe.experts.fp8_qat_keys = {
-                name: weight_keys[id(weight)] for name, weight in moe.experts.named_parameters(recurse=False)
-            }
-            moe.experts.fp8_qat_expert_start = (
+        moe.experts.set_compute(compute)
+        if isinstance(compute, DeepGemmFP8ExpertCompute) and compute.stochastic_rounding:
+            moe.experts.fp8_expert_offset = (
                 ep_mesh.get_local_rank() * (moe.experts.num_experts // parallel_dims.ep) if ep_mesh is not None else 0
             )
-        moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
