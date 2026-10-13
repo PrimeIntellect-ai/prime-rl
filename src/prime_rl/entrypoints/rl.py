@@ -528,6 +528,10 @@ def rl(config: RLConfig):
     else:
         get_logger().info("Training from scratch, cleaning any stale rollouts and broadcasts")
         clean_future_steps(config.run_dir, -1)
+    if resuming and not config.dry_run:
+        from prime_rl.utils.sandboxes import sweep_run_leftovers
+
+        sweep_run_leftovers(config.run.name)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model

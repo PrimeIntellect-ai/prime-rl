@@ -171,6 +171,10 @@ def main():
         logger.info(f"Configs:\n{format_config_message(config_dir, 'eval', components)}")
         logger.success("Dry run complete. To start the eval, remove --dry-run from your command.")
         return
+    if config.resume:
+        from prime_rl.utils.sandboxes import sweep_run_leftovers
+
+        sweep_run_leftovers(config.run.name)
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
     from prime_rl.eval.eval import run_eval
