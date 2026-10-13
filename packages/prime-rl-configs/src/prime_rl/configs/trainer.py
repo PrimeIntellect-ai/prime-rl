@@ -42,11 +42,10 @@ class ActivationCheckpointConfig(BaseConfig):
 
 
 class ActivationOffloadingConfig(BaseConfig):
-    pin_memory: bool = True
-    """Pin offloaded activations to CPU memory."""
+    """Offload tensors saved for backward to pinned CPU memory during the forward pass."""
 
     max_inflight_activations: int = Field(5, ge=1)
-    """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+    """Max activations kept on GPU while their offload copies are in flight on the side stream. Higher values give more copy/compute overlap at the cost of GPU memory."""
 
 
 OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
@@ -282,6 +281,9 @@ class ModelConfig(BaseModelConfig):
 
     moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
     """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
+
+    reduce_scatter_max_input_buffers: int = Field(1, ge=1)
+    """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
 
     quantization: QuantizationConfig | None = None
 
