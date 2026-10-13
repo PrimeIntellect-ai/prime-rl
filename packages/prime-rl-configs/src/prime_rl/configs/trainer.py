@@ -130,15 +130,9 @@ class FP8Config(BaseConfig):
     qat: bool = False
     """Use FP8 forward and BF16 backward matmuls, reusing the forward-rounded weights for input gradients."""
     stochastic_rounding: bool = False
-    """Stochastically round QAT weights with masks shared across ranks and forward/backward; activations round to nearest."""
+    """Stochastically round weights with masks shared across ranks and forward/backward; activations round to nearest."""
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
-
-    @model_validator(mode="after")
-    def stochastic_rounding_requires_qat(self):
-        if self.stochastic_rounding and not self.qat:
-            raise ValueError("FP8 stochastic_rounding requires qat=true.")
-        return self
 
 
 class MXFP8Config(BaseConfig):
@@ -195,13 +189,7 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     qat: bool = False
     """Use FP8 expert forward and BF16 backward matmuls, reusing the forward-rounded weights for input gradients."""
     stochastic_rounding: bool = False
-    """Stochastically round QAT expert weights with masks keyed by logical weight, step, and global expert index."""
-
-    @model_validator(mode="after")
-    def stochastic_rounding_requires_qat(self):
-        if self.stochastic_rounding and not self.qat:
-            raise ValueError("FP8 stochastic_rounding requires qat=true.")
-        return self
+    """Stochastically round expert weights with masks keyed by logical weight, step, and global expert index."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
@@ -308,7 +296,7 @@ class ModelConfig(BaseModelConfig):
     """DeepSeek V4 KV precision; fp8 simulates vLLM's fp8_ds_mla cache with an identity straight-through gradient."""
 
     fp8_rounding_seed: int = 0
-    """Base seed for QAT Philox masks keyed by logical weight, optimizer step, and global element index."""
+    """Base seed for FP8 Philox masks keyed by logical weight, optimizer step, and global element index."""
 
     dsa_backend: DSABackend = "tilelang"
     """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
@@ -463,7 +451,15 @@ class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
 
 
-OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
+class SGDConfig(BaseOptimizerConfig):
+    """SGD without momentum or optimizer state."""
+
+    type: Literal["sgd"] = "sgd"
+
+
+OptimizerConfig: TypeAlias = Annotated[
+    AdamWConfig | MuonConfig | SignSGDConfig | SGDConfig, Field(discriminator="type")
+]
 
 
 class CheckpointConfig(BaseConfig):

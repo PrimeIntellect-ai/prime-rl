@@ -1,8 +1,10 @@
-"""Block weight quantization matching vLLM and PR #3627's stochastic rounding."""
+"""vLLM block weight casting with shared FP8 stochastic rounding."""
 
 import torch
 import triton
 import triton.language as tl
+
+from prime_rl.trainer.models.kernels.fp8_utils import _stochastic_round_fp8
 
 
 @triton.jit
@@ -10,10 +12,9 @@ def _weight_quant_kernel(
     X,
     OUT,
     SCALES,
-    STEP,
-    seed,
-    weight_key,
-    expert_start,
+    rounding_seed,
+    rounding_salt,
+    rounding_offset,
     stride_xg,
     rows,
     cols,
@@ -22,7 +23,7 @@ def _weight_quant_kernel(
     USE_UE8M0: tl.constexpr,
     STOCHASTIC: tl.constexpr,
     DEQUANTIZE: tl.constexpr,
-    KEY_IS_TENSOR: tl.constexpr,
+    HAS_SALT: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
     block_m = tl.program_id(0)
@@ -38,34 +39,17 @@ def _weight_quant_kernel(
     amax = tl.maximum(tl.max(tl.abs(x)), 1e-4)
     scale = amax * (1.0 / 448.0)
     if STOCHASTIC:
-        if KEY_IS_TENSOR:
-            weight_key = tl.load(weight_key)
-        stream = seed.to(tl.uint64) ^ weight_key.to(tl.uint64)
-        stream ^= tl.load(STEP).to(tl.uint64) * 0x9E3779B97F4A7C15
+        stream = tl.load(rounding_seed)
+        if HAS_SALT:
+            stream ^= tl.load(rounding_salt)
         # Smaller random-generation tiles keep Philox state in registers.
         for sub in range(4):
             sm = block_m * BLOCK + sub * 32 + tl.arange(0, 32)
             sub_mask = (sm[:, None] < rows) & (n[None, :] < cols)
             sx = tl.load(X + sm[:, None] * stride_xm + n[None, :] * stride_xn, sub_mask, other=0).to(tl.float32)
             scaled = sx * tl.div_rn(1.0, scale)
-            near = scaled.to(tl.float8e4nv).to(tl.float32)
-            farther = tl.abs(scaled) > tl.abs(near)
-            near_bits = near.to(tl.int32, bitcast=True)
-            magnitude_bits = near_bits & 0x7FFFFFFF
-            # E4M3 spacing halves toward zero at normal power-of-two boundaries.
-            step_exponent = (magnitude_bits >> 23) - 3
-            step_exponent -= ((magnitude_bits & 0x7FFFFF) == 0) & ~farther
-            spacing = (tl.maximum(step_exponent, 118) << 23).to(tl.float32, bitcast=True)
-            neighbor_abs = tl.minimum(tl.maximum(tl.abs(near) + tl.where(farther, spacing, -spacing), 0.0), 448.0)
-            neighbor = (neighbor_abs.to(tl.int32, bitcast=True) | (near_bits & -2147483648)).to(
-                tl.float32, bitcast=True
-            )
-            gap = neighbor - near
-            probability = tl.where(gap != 0, tl.div_rn(scaled - near, gap), 0.0)
-            probability = tl.minimum(tl.maximum(probability, 0.0), 1.0)
-            counter = ((group + expert_start).to(tl.uint64) * rows + sm[:, None]) * cols + n[None, :]
-            uniform = tl.rand(stream, counter)
-            rounded = tl.where(uniform < probability, neighbor, near).to(tl.float8e4nv)
+            counter = (group * rows + sm[:, None]) * cols + n[None, :] + rounding_offset
+            rounded = _stochastic_round_fp8(scaled, stream, counter)
             tl.store(OUT + sm[:, None] * cols + n[None, :], rounded, sub_mask)
         tl.store(SCALES + block_m * tl.cdiv(cols, BLOCK) + block_n, scale)
         return
@@ -107,23 +91,18 @@ def _requantize_weight_kernel(
 def cast_qat_weight(
     weight: torch.Tensor,
     use_ue8m0: bool,
-    stochastic_rounding: bool = False,
     *,
-    step: torch.Tensor | None = None,
-    seed: int = 0,
-    weight_key: int | torch.Tensor = 0,
-    expert_start: int = 0,
+    rounding_seed: torch.Tensor | None = None,
+    rounding_salt: torch.Tensor | None = None,
+    rounding_offset: int = 0,
     dequantize: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Match vLLM online casting and optional DeepGEMM UE8M0 requantization.
 
-    SR uses Philox(seed XOR weight_key XOR step*golden_ratio, global_element).
-    Its stream is independent of rank, launch geometry, and ambient CUDA RNG.
-    EP callers pass their first global expert index; FSDP calls after gathering.
+    The seed, parameter salt, and global element offset use the shared FP8
+    rounding contract. FSDP calls after gathering complete quantization blocks.
     """
     assert weight.ndim in (2, 3)
-    if stochastic_rounding and step is None:
-        raise ValueError("Stochastic QAT requires an explicit optimizer-step tensor.")
     rows, cols = weight.shape[-2:]
     out = torch.empty(weight.shape, device=weight.device, dtype=torch.bfloat16 if dequantize else torch.float8_e4m3fn)
     scales = torch.empty(
@@ -132,6 +111,7 @@ def cast_qat_weight(
         dtype=torch.float32,
     )
     groups = weight.shape[0] if weight.ndim == 3 else 1
+    stochastic_rounding = rounding_seed is not None
     needs_requant = stochastic_rounding and (use_ue8m0 or dequantize)
     first = (
         torch.empty_like(weight, dtype=torch.float8_e4m3fn, memory_format=torch.contiguous_format)
@@ -143,10 +123,9 @@ def cast_qat_weight(
         weight,
         first,
         first_scales,
-        step if step is not None else out,
-        seed,
-        weight_key,
-        expert_start,
+        rounding_seed,
+        rounding_salt,
+        rounding_offset,
         weight.stride(0) if weight.ndim == 3 else 0,
         rows,
         cols,
@@ -155,7 +134,7 @@ def cast_qat_weight(
         USE_UE8M0=use_ue8m0,
         STOCHASTIC=stochastic_rounding,
         DEQUANTIZE=dequantize,
-        KEY_IS_TENSOR=isinstance(weight_key, torch.Tensor),
+        HAS_SALT=rounding_salt is not None,
         BLOCK=128,
         num_warps=8,
         enable_fp_fusion=False,
