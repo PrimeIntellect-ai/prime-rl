@@ -9,7 +9,6 @@ import torch.nn as nn
 
 from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 if TYPE_CHECKING:
     from prime_rl.configs.trainer import ModelConfig
@@ -99,32 +98,8 @@ def setup_cp_params(
     position_ids: torch.Tensor,
     cp_rank: int,
     cp_world_size: int,
-    *,
-    seq_lens: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Prepare the input for context parallelism and set required attention params.
-
-    Ulysses attention needs cu_seqlens computed from the full, unsharded sequence
-    lengths, published via ULYSSES_PARAMS.
-
-    Returns the sequence-sharded input_ids and position_ids — the rest of the
-    model still runs sequence-sharded; only attention sees the full sequence.
-    """
-    setup_cp_attention_params(position_ids, seq_lens=seq_lens)
-
+    """Shard input_ids and position_ids along the sequence; the model forward builds full-sequence attention metadata."""
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     return input_ids, position_ids
-
-
-def setup_cp_attention_params(position_ids: torch.Tensor, *, seq_lens: torch.Tensor) -> None:
-    # Delayed import: ulysses_attn lives under trainer.models, which imports
-    # back into prime_rl.utils — top-level import would deadlock at startup.
-    from prime_rl.trainer.models.layers.ulysses_attn import update_ulysses_params
-
-    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-        seq_lens.to(device=position_ids.device),
-        total_tokens=position_ids.shape[-1],
-    )
-    update_ulysses_params(cu_seqlens, max_seqlen)
