@@ -48,12 +48,13 @@ def test_dense_backward_uses_forward_weights(compiled, stochastic):
 
 
 @pytest.mark.parametrize("compiled", [False, True])
-def test_grouped_backward_uses_forward_weights(compiled):
+@pytest.mark.parametrize("requires_x,requires_weight", [(True, True), (True, False), (False, True)])
+def test_grouped_backward_uses_forward_weights(compiled, requires_x, requires_weight):
     import deep_gemm
 
     torch.manual_seed(24)
-    x = torch.randn(384, 128, device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    w = torch.randn(3, 256, 128, device="cuda", dtype=torch.bfloat16).transpose(1, 2).requires_grad_()
+    x = torch.randn(384, 128, device="cuda", dtype=torch.bfloat16, requires_grad=requires_x)
+    w = torch.randn(3, 256, 128, device="cuda", dtype=torch.bfloat16).transpose(1, 2).requires_grad_(requires_weight)
     dy = torch.randn(384, 256, device="cuda", dtype=torch.bfloat16)
     offs = torch.tensor([128, 128, 384], device="cuda", dtype=torch.int32)
     seed = torch.tensor(12345, device="cuda")
@@ -75,11 +76,17 @@ def test_grouped_backward_uses_forward_weights(compiled):
         use_psum_layout=False,
     )
     expected = unpack_rows_triton(expected_padded, total, blocks, starts, sizes, block_starts)
-    assert torch.equal(x.grad, expected)
-    assert torch.count_nonzero(w.grad[1]) == 0
+    if requires_x:
+        assert torch.equal(x.grad, expected)
+    else:
+        assert x.grad is None
     xr, wr = x.detach().requires_grad_(), w.detach().requires_grad_()
     grouped_fp8_gemm(xr, wr, offs).backward(dy)
-    assert torch.equal(w.grad, wr.grad)
+    if requires_weight:
+        assert torch.count_nonzero(w.grad[1]) == 0
+        assert torch.equal(w.grad, wr.grad)
+    else:
+        assert w.grad is None
 
 
 @pytest.mark.parametrize("compiled", [False, True])

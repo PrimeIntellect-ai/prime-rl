@@ -2,6 +2,10 @@
 [model]
 ep = 16
 
+[data]
+batch_size = 16
+seq_len = 512
+
 [optim]
 type = "sgd"
 
