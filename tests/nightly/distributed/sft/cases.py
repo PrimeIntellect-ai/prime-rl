@@ -2,13 +2,14 @@
 
 import json
 import math
-import tomllib
 from dataclasses import dataclass, field
 from itertools import permutations
 from pathlib import Path
 from typing import Literal
 
 import pytest
+
+from tests.nightly.distributed.tiny_models import TOKENIZERS
 
 CONFIG_DIR = Path("configs/ci/nightly/distributed/sft")
 Overrides = dict[str, object]
@@ -62,14 +63,6 @@ class Arch:
     features: tuple[Feature, ...] = ()
     skip: dict[Layout | Feature, str] = field(default_factory=dict)
 
-    @property
-    def overlay(self) -> Path:
-        return CONFIG_DIR / f"{self.name}.toml"
-
-    @property
-    def tokenizer(self) -> str:
-        return tomllib.loads(self.overlay.read_text())["tokenizer"]["name"]
-
 
 @dataclass(frozen=True, eq=False)
 class Case:
@@ -119,10 +112,10 @@ def sft_args(case: Case, model_name: str) -> list[str]:
     return [
         "@",
         (CONFIG_DIR / "base.toml").as_posix(),
-        "@",
-        case.arch.overlay.as_posix(),
         "--model.name",
         model_name,
+        "--tokenizer.name",
+        TOKENIZERS[case.arch.name],
         "--deployment.num-train-gpus",
         "8",
         *to_cli(case.overrides()),

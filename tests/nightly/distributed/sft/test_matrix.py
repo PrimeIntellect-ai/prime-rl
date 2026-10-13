@@ -2,6 +2,7 @@ import pytest
 from huggingface_hub import snapshot_download
 
 from tests.nightly.distributed.sft.cases import CASES, assert_training_rows, load_metrics, sft_args
+from tests.nightly.distributed.tiny_models import TOKENIZERS
 
 pytestmark = [pytest.mark.distributed, pytest.mark.gpu]
 
@@ -11,7 +12,7 @@ TRAIN_STEPS, RESUME_STEPS, TIMEOUT = 5, 3, 900
 @pytest.mark.parametrize("case", [case.param() for case in CASES])
 def test_sft(case, tiny_checkpoint, run_process, tmp_path):
     model_name = tiny_checkpoint(case.arch.name).as_posix()
-    snapshot_download(case.arch.tokenizer, allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"])
+    snapshot_download(TOKENIZERS[case.arch.name], allow_patterns=["*.json", "*.txt", "tokenizer*", "*.jinja"])
 
     def sft(*extra: str) -> None:
         cmd = ["uv", "run", "sft", *sft_args(case, model_name), "--output-dir", tmp_path.as_posix()]
