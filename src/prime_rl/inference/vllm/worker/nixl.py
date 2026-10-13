@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import wraps
 from math import prod
-from threading import Event
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import torch
@@ -23,6 +24,7 @@ from prime_rl.transports.weights.nixl.agent import (
     NixlAgent,
     NixlPeer,
     PreparedRead,
+    drop_marker,
     group_notification,
     make_agent_name,
     set_ucx_env_defaults,
@@ -139,7 +141,6 @@ class NIXLWeightUpdateWorker(Worker):
         copies = self.trace_weight_loads(table)
         plan = self.build_transfer_plan(table, copies)
         self.weight_transfer_plan = plan
-        self.group_generations = [0] * len(plan.groups)
         logger.info(
             "Initialized NIXL transfer plan on rank %d with %d groups",
             self.model_express.rank,
@@ -477,12 +478,11 @@ class NIXLWeightUpdateWorker(Worker):
         return pulls
 
     @torch.no_grad()
-    def update_weights_from_path(self, weight_dir: str | None = None) -> None:
-        del weight_dir
+    def update_weights_from_path(self, weight_dir: str) -> None:
         plan = self.initialize_transfer()
 
         started = time.perf_counter()
-        self.apply_transfer_plan(plan)
+        self.apply_transfer_plan(plan, Path(weight_dir))
         update_mla_absorbed_weights(self.raw_model)
         torch.cuda.synchronize(self.device)
         logger.info(
@@ -491,7 +491,7 @@ class NIXLWeightUpdateWorker(Worker):
             time.perf_counter() - started,
         )
 
-    def apply_transfer_plan(self, plan: WeightTransferPlan) -> None:
+    def apply_transfer_plan(self, plan: WeightTransferPlan, step_dir: Path) -> None:
         from vllm.model_executor.layers.quantization.base_config import QuantizeMethodBase
         from vllm.model_executor.model_loader.reload.layerwise import (
             LAYERWISE_INFO,
@@ -503,11 +503,23 @@ class NIXLWeightUpdateWorker(Worker):
         from vllm.model_executor.model_loader.reload.utils import get_layer_tensors
 
         model = self.raw_model
-        cancelled = Event()
+        # The version names the notifications, so a relaunched engine agrees with the trainer
+        step = int(step_dir.name.removeprefix("step_"))
+        cancelled = threading.Event()
+        # The orchestrator drops this rank from the transfer when its engine died or hung
+        dropped = drop_marker(step_dir, self.model_express.rank)
+
+        def cancel_when_dropped() -> None:
+            while not cancelled.wait(0.5):
+                if dropped.exists():
+                    logger.warning("Dropped from the NIXL weight transfer by the orchestrator; stopping the pull")
+                    cancelled.set()
+
+        threading.Thread(target=cancel_when_dropped, daemon=True).start()
 
         def pull_group(group_index: int) -> WeightTransferGroup:
             transfer_group = plan.groups[group_index]
-            notification = group_notification(group_index, self.group_generations[group_index])
+            notification = group_notification(group_index, step)
             self.nixl_agent.wait_for_notification(
                 plan.trainer_peers,
                 notification,
@@ -525,7 +537,6 @@ class NIXLWeightUpdateWorker(Worker):
                     cancelled=cancelled.is_set,
                 )
 
-            self.group_generations[group_index] += 1
             return transfer_group
 
         def prefetch_group(group_index: int) -> WeightTransferGroup:

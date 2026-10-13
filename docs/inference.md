@@ -201,7 +201,7 @@ The policies you might want to configure are:
 
 ### Dead engines
 
-With more than one engine behind the router and NCCL or filesystem weight broadcast, the orchestrator keeps training when an engine dies or hangs.
+With more than one engine behind the router and NCCL (the default) or NIXL weight broadcast, the orchestrator keeps training when an engine dies or hangs. Filesystem broadcast (LoRA, external inference) does not evict: an engine failure there fails the run.
 - **Eviction.** An engine is evicted when any of these happens:
   - three `/liveness` probes in a row fail (10 s apart). The probe is a worker RPC, so a stuck engine core fails it even when the API server answers;
   - it has running requests but generates no token for 300 s;
@@ -209,17 +209,18 @@ With more than one engine behind the router and NCCL or filesystem weight broadc
 - **After eviction:**
   - the engine leaves the router and the weight updates;
   - its in-flight requests fail. Requests stuck on a hung engine are cancelled once their group falls `max_off_policy_steps` behind.
-- **NCCL.** The broadcast group is rebuilt over the remaining engines at the next weight update, on a new port.
-- **Death mid-transfer (NCCL).** If an engine dies during the transfer:
-  - the orchestrator writes an abort marker into the step's broadcast directory;
-  - the trainer and the other engines abort the collective (`ncclCommAbort`);
-  - the group is rebuilt and the trainer sends the version again.
+- **Next weight update.** The orchestrator publishes the remaining engines in the broadcast directory before it acknowledges the version:
+  - NCCL: the broadcast group is rebuilt over them on a new port (`nccl_group.json`);
+  - NIXL: the trainer reads `nixl_group.json` and stops waiting for the evicted engines' inference ranks.
+- **Death mid-transfer.** If an engine dies during the transfer, or its `/update_weights` call times out:
+  - NCCL: the orchestrator writes an abort marker into the step's broadcast directory, the trainer and the other engines abort the collective (`ncclCommAbort`), the group is rebuilt and the trainer sends the version again;
+  - NIXL: the orchestrator writes a drop marker per inference rank of the engine. The trainer stops waiting for those ranks, the engine's workers stop pulling, and the other engines finish their pulls. Nothing is resent.
   - The inference nodes must see the run's output directory for this.
 - **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update. It returns to the router only after that update succeeds. An engine evicted for a stall rejoins only once its requests finish or progress again, or after a restart.
+  - NCCL: the group is rebuilt with the engine.
+  - NIXL: the orchestrator calls `/init_broadcaster` on the engine first. It publishes a fresh NIXL agent to ModelExpress under its old inference ranks, the trainer connects to it, and the engine pulls the full weights.
 - **Router.** A `vllm-router` that crashes is restarted in place by the launcher, with the same port and worker list.
-- **Still fatal:**
-  - the last engine dying;
-  - NIXL broadcast, which pins its receivers.
+- **Still fatal:** the last engine dying.
 
 ## Adaptive Concurrency
 
