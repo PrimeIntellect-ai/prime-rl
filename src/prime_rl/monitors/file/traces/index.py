@@ -5,7 +5,15 @@ The file monitor writes a row as each episode lands, when the record is already 
 hand and summarising it is nearly free, and records the chunk and byte offset it wrote
 the episode at so a reader can seek straight to one. A stream another producer wrote
 has no index, so its reader derives the same rows itself.
+
+A trace can land more than once: a durable agent call reuses a finished trace
+(``vf.Trace.kept``), so an episode that failed after the call lands it and the retry
+lands it again. Its calls were paid for once, so a row counts the usage of the traces
+that land with it for the first time; the ones already landed are listed under
+``reused`` and count toward no usage.
 """
+
+from collections.abc import Collection
 
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
@@ -50,13 +58,14 @@ UNKNOWN_MODEL = "?"
 """The ``models`` key of calls that recorded no model."""
 
 
-def model_usage(rec: dict) -> dict[str, dict]:
-    """Per requested model, its calls summed over every trace: ``calls``, ``errors``
-    (calls that ended in one), and verifiers' ``Usage`` counts - ``prompt_tokens``
-    (cache reads excluded), ``cached_input_tokens``, ``completion_tokens`` - and
-    ``cost``, null unless some call reported one. This is what a provider bills: every
-    call's whole request, where the row's ``input_tokens`` counts fed-in tokens once.
-    Judge calls (``Trace.extra_usage``) count under ``JUDGE_MODEL``."""
+def model_usage(rec: dict, skip: Collection[str] = ()) -> dict[str, dict]:
+    """Per requested model, its calls summed over every trace but those in ``skip`` (by
+    id): ``calls``, ``errors`` (calls that ended in one), and verifiers' ``Usage``
+    counts - ``prompt_tokens`` (cache reads excluded), ``cached_input_tokens``,
+    ``completion_tokens`` - and ``cost``, null unless some call reported one. This is
+    what a provider bills: every call's whole request, where the row's ``input_tokens``
+    counts fed-in tokens once. Judge calls (``Trace.extra_usage``) count under
+    ``JUDGE_MODEL``."""
     models: dict[str, dict] = {}
 
     def add(model: str, usage: object, error: bool) -> None:
@@ -80,6 +89,8 @@ def model_usage(rec: dict) -> dict[str, dict]:
             row["cost"] = (row["cost"] or 0.0) + cost
 
     for trace in rec.get("traces") or []:
+        if trace.get("id") in skip:
+            continue
         for call in trace.get("calls") or []:
             add(call.get("model") or UNKNOWN_MODEL, call.get("usage"), call.get("error") is not None)
         # Judge calls the env made outside the agent record usage without a model.
@@ -99,14 +110,18 @@ def episode_labels(rec: dict) -> dict:
     return {}
 
 
-def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
+def summarize_episode(line: int, rec: dict, offset: int | None = None, landed: Collection[str] = ()) -> dict:
     """One index row: what the table, the filters, the chart and the sort need.
 
     ``line`` numbers the episode within the stream from 1, so the last of n reads as
-    n — it is what a reader sees and what addresses the episode."""
+    n — it is what a reader sees and what addresses the episode. ``landed`` holds the
+    ids of traces that landed with earlier episodes of the stream: those of this one
+    are ``reused`` and count toward none of its usage (``models``, ``cost``,
+    ``input_tokens``, ``output_tokens``)."""
     rewards, advantages = [], []
-    input_tokens = rec.get("num_input_tokens")
-    output_tokens = rec.get("num_output_tokens")
+    reused = [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id")) in landed]
+    input_tokens = _unreused(rec, "num_input_tokens", reused)
+    output_tokens = _unreused(rec, "num_output_tokens", reused)
     turns = branches = 0
     stop_condition = None
     truncated = False
@@ -144,7 +159,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         truncated = truncated or trace_truncated(trace)
         timeout = timeout or bool(trace.get("is_timeout"))
     first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
-    models = model_usage(rec)
+    models = model_usage(rec, skip=reused)
     costs = [usage["cost"] for usage in models.values() if usage["cost"] is not None]
     return {
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
@@ -156,6 +171,8 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "id": rec.get("id"),
         "kind": episode_kind(rec),
         "trace_ids": [trace_id for trace in rec.get("traces") or [] if (trace_id := trace.get("id"))],
+        # traces an earlier episode landed (a durable call reused them): not counted again
+        "reused": reused,
         # the env's name is the orchestrator's key for it (two sources can share a taskset
         # id); a record without one falls back to the id
         "env": (rec.get("env") or {}).get("name") or (rec.get("env") or {}).get("id"),
@@ -182,6 +199,17 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     }
 
 
+def _unreused(rec: dict, key: str, reused: Collection[str]) -> int | None:
+    """The episode's token total ``key``, less that of its ``reused`` traces."""
+    total = rec.get(key)
+    if not reused or not isinstance(total, (int, float)):
+        return total
+    for trace in rec.get("traces") or []:
+        if trace.get("id") in reused and isinstance(count := trace.get(key), (int, float)):
+            total -= count
+    return total
+
+
 def _episode_duration(info: dict, timing: dict[str, float]) -> float | None:
     """Wall-clock seconds from dispatch to arrival, or the summed phases for a record
     that predates those stamps."""
@@ -193,10 +221,11 @@ def _episode_duration(info: dict, timing: dict[str, float]) -> float | None:
     return sum(phases) if phases else None
 
 
-def index_row(line: int, rec: dict, chunk: int, offset: int) -> dict:
-    """The row the file monitor writes. The nested reward/metric/timing maps are left
-    out: only the per-episode series view needs them, and they dominate the size."""
-    row = summarize_episode(line, rec, offset)
+def index_row(line: int, rec: dict, chunk: int, offset: int, landed: Collection[str] = ()) -> dict:
+    """The row the file monitor writes (``landed`` as for ``summarize_episode``). The
+    nested reward/metric/timing maps are left out: only the per-episode series view
+    needs them, and they dominate the size."""
+    row = summarize_episode(line, rec, offset, landed)
     row["chunk"] = chunk
     for key in ("rewards", "metrics", "timing"):
         row.pop(key, None)

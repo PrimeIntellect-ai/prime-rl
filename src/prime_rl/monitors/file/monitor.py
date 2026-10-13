@@ -22,7 +22,7 @@ from prime_rl.monitors.file.traces import (
 )
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
-from prime_rl.monitors.file.traces.labels import label_row, trace_labels, trace_moments
+from prime_rl.monitors.file.traces.labels import label_row, landed_traces, trace_labels, trace_moments
 from prime_rl.monitors.file.traces.live import end_line, get_live_dir, get_partial_dir, get_pending_dir, read_live
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
@@ -83,6 +83,9 @@ class FileMonitor(Monitor):
         index = get_index_path(get_trace_stream(output_dir))
         # a relaunch appends to the stream it finds, so the numbering carries on
         self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
+        # the labelled traces landed so far: a durable call can land one again, and its
+        # usage counts with the episode that landed it first (``index_row``'s ``landed``)
+        self._landed = landed_traces(get_labels_index_path(output_dir))
         self.path = get_file_monitor_dir(output_dir) / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._live_cleared = False
@@ -298,10 +301,12 @@ class FileMonitor(Monitor):
                 record = episode.to_record(float_decimals=self.config.float_decimals)
                 chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
                 self._logged += 1
-                index.write(orjson.dumps(index_row(self._logged, record, chunk, offset), default=str, option=OPTS))
+                row = index_row(self._logged, record, chunk, offset, self._landed)
+                index.write(orjson.dumps(row, default=str, option=OPTS))
                 # every labelled trace by its own labels, so a durable call finds it
                 for trace in record.get("traces") or []:
                     if (labels := trace_labels(trace)) and trace.get("id"):
+                        self._landed.add(trace["id"])
                         start, checkpoint = trace_moments(trace)
                         rows.append(
                             label_row(

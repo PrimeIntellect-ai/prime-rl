@@ -3,8 +3,15 @@
 calls, tokens, cost and errors), so a reader attributes and prices an episode without
 opening the stream."""
 
+import asyncio
+
+import orjson
 import verifiers.v1 as vf
 
+from prime_rl.configs.monitors import FileMonitorConfig
+from prime_rl.dashboard import server
+from prime_rl.monitors.file import FileMonitor
+from prime_rl.monitors.file.traces import get_index_path, get_trace_stream
 from prime_rl.monitors.file.traces.index import index_row, summarize_episode
 
 
@@ -98,3 +105,76 @@ def test_judge_calls_count_under_the_judges_model() -> None:
         "cost": 0.25,
     }
     assert row["cost"] == 0.75
+
+
+# -- a trace that lands twice (a durable call reused it) ------------------------------
+
+
+def _labelled(key: str, *calls: vf.ModelCall) -> vf.Trace:
+    return vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi")),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        calls=list(calls),
+        info={"labels": {"flow": {"job": "j1"}, "call": {"key": key, "fingerprint": "f"}}},
+    )
+
+
+def _land(monitor: FileMonitor, *traces: vf.Trace, ok: bool = True) -> None:
+    episode = vf.Episode(task=traces[0].task, traces=list(traces), ok=ok)
+    asyncio.run(monitor.log_episodes([episode], step=0, kind="eval", subset="all"))
+
+
+def _index(tmp_path) -> list[dict]:
+    index = get_index_path(get_trace_stream(tmp_path))
+    return [orjson.loads(line) for line in index.read_bytes().splitlines()]
+
+
+def _spend(rows: list[dict]) -> dict[str, int | float]:
+    """What a rollup over the rows adds up."""
+    models = [usage for row in rows for usage in row["models"].values()]
+    return {
+        "calls": sum(usage["calls"] for usage in models),
+        "completion_tokens": sum(usage["completion_tokens"] for usage in models),
+        "cost": sum(row["cost"] or 0.0 for row in rows),
+    }
+
+
+def test_a_retried_episode_counts_a_kept_trace_once(tmp_path) -> None:
+    draft = _labelled("solver/0", _call("big", 100, 10, cost=0.5))
+    review = _labelled("solver/1", _call("big", 50, 5, cost=0.25))
+    monitor = FileMonitor(FileMonitorConfig(compress=False))
+    asyncio.run(monitor.init(tmp_path))
+    # the first attempt failed after the draft and landed with it; the retry reused the
+    # draft (the same trace) and ran the review
+    _land(monitor, draft, ok=False)
+    _land(monitor, draft, review)
+    failed, retried = _index(tmp_path)
+    assert failed["reused"] == [] and failed["cost"] == 0.5
+    assert retried["reused"] == [draft.id]
+    assert retried["models"]["big"]["calls"] == 1 and retried["cost"] == 0.25
+    assert retried["output_tokens"] == review.num_output_tokens
+    assert _spend([failed, retried]) == {"calls": 2, "completion_tokens": 15, "cost": 0.75}
+    # a relaunch appending to the same stream still knows the draft landed
+    asyncio.run(monitor.finalize())
+    relaunched = FileMonitor(FileMonitorConfig(compress=False))
+    asyncio.run(relaunched.init(tmp_path))
+    _land(relaunched, draft, review)
+    assert _index(tmp_path)[-1]["reused"] == [draft.id, review.id]
+    assert _index(tmp_path)[-1]["models"] == {} and _index(tmp_path)[-1]["cost"] is None
+
+
+def test_a_reader_summarising_the_stream_counts_a_kept_trace_once(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(server, "SIDECAR_DIR", tmp_path / "sidecars")
+    draft = _labelled("solver/0", _call("big", 100, 10, cost=0.5))
+    review = _labelled("solver/1", _call("big", 50, 5, cost=0.25))
+    monitor = FileMonitor(FileMonitorConfig(compress=False))
+    asyncio.run(monitor.init(tmp_path))
+    _land(monitor, draft, ok=False)
+    _land(monitor, draft, review)
+    asyncio.run(monitor.finalize())
+    summaries = server.chunked_summaries(get_trace_stream(tmp_path))
+    assert [summary["reused"] for summary in summaries] == [[], [draft.id]]
+    assert _spend(summaries) == {"calls": 2, "completion_tokens": 15, "cost": 0.75}
+    # summarised on its own, the retried episode counts every trace it holds
+    alone = summarize_episode(2, vf.Episode(task=draft.task, traces=[draft, review], ok=True).to_record())
+    assert alone["reused"] == [] and alone["models"]["big"]["calls"] == 2

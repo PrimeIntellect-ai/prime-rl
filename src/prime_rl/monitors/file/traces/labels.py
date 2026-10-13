@@ -4,7 +4,10 @@ live, partial or finished, written by the file monitor and read by ``lookup``.""
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Literal
+
+import orjson
 
 State = Literal["live", "partial", "finished"]
 
@@ -42,6 +45,24 @@ def label_row(
         "checkpoint": checkpoint,
         **{key: value for key, value in where.items() if value is not None},
     }
+
+
+def landed_traces(path: Path) -> set[str]:
+    """The ids of the traces the labels index at ``path`` holds as landed (a
+    ``finished`` row); empty when there is no index yet."""
+    landed: set[str] = set()
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return landed
+    for line in data.splitlines():
+        try:
+            row = orjson.loads(line)
+        except orjson.JSONDecodeError:
+            continue  # a row torn by a crash mid-append
+        if isinstance(row, dict) and row.get("state") == "finished" and isinstance(row.get("trace"), str):
+            landed.add(row["trace"])
+    return landed
 
 
 def recency(row: Mapping[str, Any]) -> float:

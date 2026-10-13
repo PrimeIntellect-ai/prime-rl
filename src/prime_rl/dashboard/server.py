@@ -694,18 +694,32 @@ def episode_summaries(path: Path) -> list[dict]:
             _lru_put(_summaries_cache, path, (cached_count, summaries))
         return summaries[:cached_count] if len(summaries) != cached_count else summaries
     summaries = list(summaries[:cached_count])
+    landed = _landed(summaries)
     with path.open("rb") as f:
         f.seek(offsets[cached_count])
         for line_no in range(cached_count, len(offsets)):
             raw = f.readline()
             try:
-                summaries.append(summarize_episode(line_no + 1, orjson.loads(raw)))
+                summaries.append(_summarize(line_no + 1, orjson.loads(raw), landed))
             except orjson.JSONDecodeError:
                 summaries.append({"line": line_no + 1, "id": None, "error": "unparseable"})
     with _lock:
         _lru_put(_summaries_cache, path, (len(offsets), summaries))
     write_sidecar(path, summaries)
     return summaries
+
+
+def _landed(summaries: list[dict]) -> set[str]:
+    """The ids of the traces the stream's episodes so far landed."""
+    return {trace_id for summary in summaries for trace_id in summary.get("trace_ids") or []}
+
+
+def _summarize(line: int, rec: dict, landed: set[str]) -> dict:
+    """An episode's summary in stream order: a trace an earlier episode landed (a
+    durable call reused it) counts toward no usage again."""
+    summary = summarize_episode(line, rec, landed=landed)
+    landed.update(summary["trace_ids"])
+    return summary
 
 
 def chunked_summaries(stream: Path) -> list[dict]:
@@ -727,12 +741,13 @@ def chunked_summaries(stream: Path) -> list[dict]:
             _lru_put(_summaries_cache, stream, (cached_count, summaries))
         return summaries
     summaries = list(summaries[:cached_count])
+    landed = _landed(summaries)
     for chunk, chunk_rows in groupby(rows[cached_count:], key=lambda row: row.get("chunk", 0)):
         with open_chunk(stream, chunk) as f:
             for row in chunk_rows:
                 f.seek(row.get("offset", 0))
                 try:
-                    summaries.append(summarize_episode(row["line"], orjson.loads(f.readline())))
+                    summaries.append(_summarize(row["line"], orjson.loads(f.readline()), landed))
                 except orjson.JSONDecodeError:
                     summaries.append({"line": row["line"], "id": None, "error": "unparseable"})
     with _lock:
@@ -746,7 +761,7 @@ def chunked_summaries(stream: Path) -> list[dict]:
 # result is persisted outside the run dir (the dashboard never writes there),
 # so a revisit — or a dashboard restart — skips the parse entirely.
 SIDECAR_DIR = STATE_DIR
-SIDECAR_FORMAT = 4
+SIDECAR_FORMAT = 5
 SIDECAR_WRITE_INTERVAL_S = 20.0
 _sidecar_written: dict[Path, tuple[float, int]] = {}  # path -> (last write time, count)
 
