@@ -1,0 +1,135 @@
+{
+  "summary": {
+    "case": "wide",
+    "backend": "cudnn_flashmla",
+    "op_takes_max_slots": true,
+    "n_calls": 8,
+    "distinct_widths": [
+      128,
+      256,
+      384,
+      640,
+      1024,
+      2048,
+      4096,
+      8320
+    ],
+    "cudnn_cache_sizes": {
+      "preprocess": 1,
+      "main": 1,
+      "postprocess": 1
+    },
+    "cudnn_compile_lines": [
+      "Compiled the cuDNN DSA backward preprocess kernel in 0.37s",
+      "Compiled the cuDNN DSA backward main kernel with max_topk 16384 in 2.70s",
+      "Compiled the cuDNN DSA backward postprocess kernel in 0.29s"
+    ],
+    "calls_that_compiled_cudnn": [
+      "wide-width128"
+    ],
+    "tilelang_cache_files_before": 0,
+    "tilelang_cache_files_after": 5
+  },
+  "calls": [
+    {
+      "id": "wide-width128",
+      "width": 128,
+      "max_slots": 8320,
+      "seconds": 6.891,
+      "cudnn_compile_lines": [
+        "Compiled the cuDNN DSA backward preprocess kernel in 0.37s",
+        "Compiled the cuDNN DSA backward main kernel with max_topk 16384 in 2.70s",
+        "Compiled the cuDNN DSA backward postprocess kernel in 0.29s"
+      ],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    },
+    {
+      "id": "wide-width256",
+      "width": 256,
+      "max_slots": 8320,
+      "seconds": 0.006,
+      "cudnn_compile_lines": [],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    },
+    {
+      "id": "wide-width384",
+      "width": 384,
+      "max_slots": 8320,
+      "seconds": 0.002,
+      "cudnn_compile_lines": [],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    },
+    {
+      "id": "wide-width640",
+      "width": 640,
+      "max_slots": 8320,
+      "seconds": 0.002,
+      "cudnn_compile_lines": [],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    },
+    {
+      "id": "wide-width1024",
+      "width": 1024,
+      "max_slots": 8320,
+      "seconds": 0.002,
+      "cudnn_compile_lines": [],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    },
+    {
+      "id": "wide-width2048",
+      "width": 2048,
+      "max_slots": 8320,
+      "seconds": 0.002,
+      "cudnn_compile_lines": [],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    },
+    {
+      "id": "wide-width4096",
+      "width": 4096,
+      "max_slots": 8320,
+      "seconds": 0.002,
+      "cudnn_compile_lines": [],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    },
+    {
+      "id": "wide-width8320",
+      "width": 8320,
+      "max_slots": 8320,
+      "seconds": 0.003,
+      "cudnn_compile_lines": [],
+      "cudnn_cache_sizes": {
+        "preprocess": 1,
+        "main": 1,
+        "postprocess": 1
+      }
+    }
+  ]
+}
