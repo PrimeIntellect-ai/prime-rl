@@ -1,4 +1,7 @@
 # Momentum-free SGD reduces memory for full-depth FP8 validation.
+[model]
+ep = 16
+
 [optim]
 type = "sgd"
 
