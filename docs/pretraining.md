@@ -33,9 +33,24 @@ Pretraining sets `model.debug.random_init = true`: weights are not downloaded or
 
 | Field | Meaning |
 |---|---|
-| `model.init.scheme` | `normal`: every weight matrix and the embedding from N(0, std). `scaled`: additionally divides the std of the residual output projections (`o_proj`, `down_proj`) by sqrt(2 * num_layers). Norm weights start at 1, biases at 0. |
+| `model.init.scheme` | `normal`: every weight matrix and the embedding from N(0, std). `scaled`: additionally divides the std of the residual output projections (`o_proj`, `down_proj`) by sqrt(2 * num_layers). `completep`: CompleteP, see below. Norm weights start at 1, biases at 0. |
 | `model.init.std` | Base standard deviation (default 0.02). |
+| `model.init.truncate` | Draw from the normal truncated at +-3 std. |
 | `model.init.seed` | Seed. Every rank initializes only its own shard, and the values depend only on the seed and the parameter name, not on the number of GPUs. |
+
+### CompleteP
+
+`model.init.scheme = "completep"` trains with [CompleteP](https://arxiv.org/abs/2505.01618) (muP extended to depth, alpha = 1), so that hyperparameters tuned on a small base shape carry over to wider and deeper models. `optim.lr`, `optim.eps`, `optim.weight_decay` and `model.init.std` are the base-shape values, and the shape is set by `model.init.base_hidden_size` (default 256) and `model.init.base_num_layers` (default 2). With `m_N = hidden_size / base_hidden_size` and `m_L = num_layers / base_num_layers`:
+
+| Parameters | Init std | Learning rate | Adam eps | Weight decay |
+|---|---|---|---|---|
+| Embedding | std | lr | eps / m_N | wd |
+| Hidden matrices | std / sqrt(m_N) | lr / m_N | eps / (m_N m_L) | wd m_N |
+| `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (m_N m_L) | eps / m_N | wd m_N m_L |
+| LM head | std / m_N | lr / m_N | eps | wd m_N |
+| Norm weights | 1 | lr | eps / m_N | 0 |
+
+CompleteP scales each residual branch by 1/m_L and the logits by 1/m_N. These multipliers are folded into `o_proj`, `down_proj` and the LM head (the last three rows), so the model, its checkpoints and the exported weights are plain Llama. CompleteP needs AdamW, `model.offload = "none"`, and `scheduler.min_lr = 0` with the cosine scheduler. Keep `head_dim` and the ratios `intermediate_size / hidden_size` and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
 For `sft` and `rl`, `random_init_mode` resolves to `skip`: the weights keep arbitrary memory contents, which is the fastest option for throughput benchmarks.
 

@@ -236,11 +236,20 @@ class MoERuntimeConfig(BaseConfig):
 class InitConfig(BaseConfig):
     """Random weight initialization, used when ``model.debug.random_init`` resolves to ``init``."""
 
-    scheme: Literal["normal", "scaled"] = "normal"
-    """``normal`` draws every weight matrix and the embedding from N(0, std). ``scaled`` additionally divides the std of the residual output projections (``o_proj``, ``down_proj``) by sqrt(2 * num_layers). Norm weights start at 1, biases at 0."""
+    scheme: Literal["normal", "scaled", "completep"] = "normal"
+    """``normal`` draws every weight matrix and the embedding from N(0, std). ``scaled`` additionally divides the std of the residual output projections (``o_proj``, ``down_proj``) by sqrt(2 * num_layers). ``completep`` follows CompleteP (muP extended to depth, Dey et al. 2025) relative to the base shape: the embedding keeps ``std``, hidden matrices get ``std / sqrt(m_N)``, residual output projections ``std / (sqrt(m_N) * m_L)`` and the LM head ``std / m_N``, where ``m_N = hidden_size / base_hidden_size`` and ``m_L = num_layers / base_num_layers``. Norm weights start at 1, biases at 0."""
 
     std: float = Field(0.02, gt=0)
     """Base standard deviation."""
+
+    truncate: bool = False
+    """Draw from the normal distribution truncated at +-3 std instead of the full normal."""
+
+    base_hidden_size: int = Field(256, ge=1)
+    """Hidden size of the base shape. Only used by ``completep``."""
+
+    base_num_layers: int = Field(2, ge=1)
+    """Number of layers of the base shape. Only used by ``completep``."""
 
     seed: int = 0
     """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
@@ -437,6 +446,9 @@ class AdamWConfig(BaseOptimizerConfig):
 
     betas2: float = Field(0.999, ge=0)
     """Adam second-moment (β2) decay."""
+
+    eps: float = Field(1e-8, gt=0)
+    """Adam epsilon."""
 
 
 class MuonConfig(BaseOptimizerConfig):
