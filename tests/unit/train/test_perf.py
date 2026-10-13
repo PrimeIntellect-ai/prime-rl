@@ -16,4 +16,13 @@ def test_flops_per_token_matches_torchtitan(model_name: str, flops_per_token: in
     config.pad_token_id = config.eos_token_id
     with torch.device("meta"):
         model = AutoModelForCausalLMPrimeRL.from_config(config)
-    assert PerfCounter(model, seq_len=1024).num_flop_per_token == flops_per_token
+    assert PerfCounter(model).get_flops([1024]) == 1024 * flops_per_token
+
+
+def test_packed_documents_attend_within_document():
+    config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B", attn_implementation="flash_attention_2")
+    config.pad_token_id = config.eos_token_id
+    with torch.device("meta"):
+        model = AutoModelForCausalLMPrimeRL.from_config(config)
+    # torchtitan's FLOPs/token at seq_len 512: the 1024 value minus half its attention term, 6 * 28 * 16 * 256 * 512.
+    assert PerfCounter(model).get_flops([512, 512]) == 1024 * (4_280_942_592 - 352_321_536)

@@ -39,15 +39,15 @@ class PerfCounter:
 
     Two modes:
     - Sliding window over full-step wall time: `count_tokens(tokens)` each step,
-      read smoothed values via `get_tokens_per_second()` / `get_mfu()`.
+      read smoothed values via `get_tokens_per_second()`.
       Time is measured between successive `count_tokens` calls (full step).
     - Single point on a caller-provided duration: `get_step_tokens_per_second(tokens, fwd_bwd_time)`
-      / `get_step_mfu(tokens, fwd_bwd_time)`. No smoothing.
+      / `get_step_mfu(flops, fwd_bwd_time)`, with `flops` summed from `get_flops(seq_lens)`. No smoothing.
 
     Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
 
-    def __init__(self, model: nn.Module, seq_len: int, window_size: int = 10):
+    def __init__(self, model: nn.Module, window_size: int = 10):
         self.window_size = window_size
         self.tokens: list[int] = []
         self.times: list[float] = []
@@ -60,7 +60,8 @@ class PerfCounter:
             self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         else:
             self.gpu_peak_flops = 0
-        self.num_flop_per_token = self._get_num_flop_per_token(seq_len)
+        self._matmul_flops_per_token = self._get_matmul_flops_per_token()
+        self._attention_modules = [m for m in model.modules() if hasattr(m, "attention_flops_per_token")]
 
     def count_tokens(self, tokens: int) -> None:
         """Push a step into the sliding window. Time is recorded internally."""
@@ -75,21 +76,20 @@ class PerfCounter:
             return None
         return sum(self.tokens[1:]) / (self.times[-1] - self.times[0])
 
-    def get_mfu(self) -> float | None:
-        tokens_per_second = self.get_tokens_per_second()
-        if tokens_per_second is None:
-            return None
-        return self._mfu_from_tps(tokens_per_second)
-
     def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
         """Single-step throughput from a caller-provided duration."""
         return tokens / fwd_bwd_time
 
-    def get_step_mfu(self, tokens: int, fwd_bwd_time: float) -> float:
-        return self._mfu_from_tps(self.get_step_tokens_per_second(tokens, fwd_bwd_time))
+    def get_flops(self, seq_lens: list[int]) -> int:
+        """Training FLOPs of one packed micro-batch, as torchtitan's `get_nparams_and_flops` per document:
+        each token attends only within its own document, so the attention term uses the document length."""
+        return sum(
+            n * (self._matmul_flops_per_token + sum(m.attention_flops_per_token(n) for m in self._attention_modules))
+            for n in seq_lens
+        )
 
-    def _mfu_from_tps(self, tokens_per_second: float) -> float:
-        return 100 * self.num_flop_per_token * tokens_per_second / self.gpu_peak_flops / self._world.world_size
+    def get_step_mfu(self, flops: float, fwd_bwd_time: float) -> float:
+        return 100 * flops / fwd_bwd_time / self.gpu_peak_flops / self._world.world_size
 
     def _get_peak_flops(self, device_name: str) -> float:
         """
@@ -131,24 +131,17 @@ class PerfCounter:
             self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
 
-    def _get_num_flop_per_token(self, seq_len: int) -> int:
-        """Training FLOPs per token, as torchtitan's `get_nparams_and_flops`: 6 FLOPs per active matmul
-        parameter plus each layer's own attention term (`attention_flops_per_token` hooks)."""
-        attention_flops = sum(
-            module.attention_flops_per_token(seq_len)
-            for module in self.model.modules()
-            if hasattr(module, "attention_flops_per_token")
-        )
+    def _get_matmul_flops_per_token(self) -> int:
+        """6 FLOPs per active matmul parameter, as torchtitan's `get_nparams_and_flops`."""
         active_params = get_active_params(self.model)
         if not has_lora_layers(self.model):
-            return 6 * active_params + attention_flops
+            return 6 * active_params
         # LoRA: frozen base matmuls still cost forward (2x) and dX (2x); fully trainable non-LoRA
         # params (modules_to_save) add their weight gradient (2x); adapters cost 6x.
         return (
             4 * active_params
             + 2 * self._count_fully_trainable_params_excluding_lora()
             + 6 * self._count_lora_adapter_params()
-            + attention_flops
         )
 
     def _count_lora_adapter_params(self) -> int:
@@ -176,9 +169,9 @@ class PerfCounter:
 _PERF_COUNTER: PerfCounter | None = None
 
 
-def get_perf_counter(model: nn.Module, seq_len: int, window_size: int = 10) -> PerfCounter:
+def get_perf_counter(model: nn.Module, window_size: int = 10) -> PerfCounter:
     global _PERF_COUNTER
     if _PERF_COUNTER is None:
-        _PERF_COUNTER = PerfCounter(model, seq_len, window_size)
+        _PERF_COUNTER = PerfCounter(model, window_size)
 
     return _PERF_COUNTER
