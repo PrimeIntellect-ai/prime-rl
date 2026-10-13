@@ -144,8 +144,12 @@ def setup_cp_params(
     position_ids: torch.Tensor,
     cp_rank: int,
     cp_world_size: int,
+    *,
+    seq_lens: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Shard input_ids and position_ids along the sequence."""
+    if int(seq_lens.sum()) != input_ids.shape[-1]:
+        raise ValueError(f"seq_lens sum must equal sequence length: {seq_lens.tolist()} vs {input_ids.shape[-1]}")
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     return input_ids, position_ids

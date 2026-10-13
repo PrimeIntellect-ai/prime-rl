@@ -394,7 +394,9 @@ def train(config: TrainerConfig):
                     mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
                 )
                 if not defer_vlm_cp_to_model:
-                    input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
+                    input_ids, position_ids = setup_cp_params(
+                        input_ids, position_ids, cp_rank, cp_size, seq_lens=micro_batch["seq_lens"]
+                    )
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None and not defer_vlm_cp_to_model:
