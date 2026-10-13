@@ -6,7 +6,7 @@ readiness check the sink sweeps ``pending_batch`` for traces past
 ``max_off_policy_steps`` — this sweep, not the dispatcher's in-flight cancel,
 is what guarantees nothing stale ships. Completed groups become numeric
 observations; only queued traces retain verifier objects. The consumer drains
-``take_rollout_window(force=True)`` before shipping a batch or at shutdown."""
+``take_rollout_window(force=True)`` before shipping a batch."""
 
 from __future__ import annotations
 
@@ -306,7 +306,7 @@ class TrainSink:
         )
 
     def take_rollout_window(self, *, force: bool = False) -> RolloutWindow | None:
-        """Transfer accumulated step statistics before shipment or at shutdown."""
+        """Transfer accumulated step statistics before shipment."""
         if not force:
             return None
         if not self.rollout_window.groups and not self.rollout_window.metrics.counts:
