@@ -160,6 +160,17 @@ def _kernel_blocker(num_heads: int, head_dim: int, backend: str) -> str | None:
     return sparse_attn_shape_error(num_heads, 1, head_dim, backend)
 
 
+def max_sparse_attn_slots(config: DeepseekV4Config) -> int:
+    """The widest slot axis any layer of `config` can hand the kernel, at the longest document it allows.
+
+    A layer reads its `sliding_window` and then `index_topk` CSA picks or one HCA pick per completed entry of
+    the query's document, and `PackedContext.build` bounds a document by `max_position_embeddings`.
+    """
+    hca_rate = config.compress_rates.get("heavily_compressed_attention")
+    hca_picks = config.max_position_embeddings // hca_rate if hca_rate is not None else 0
+    return config.sliding_window + max(config.index_topk, hca_picks)
+
+
 class DeepseekV4GroupedLinear(nn.Linear):
     """Block-diagonal grouped linear, the first half of the output projection.
 
@@ -707,6 +718,7 @@ class DeepseekV4Attention(nn.Module):
                 f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
                 f"expected one of {sorted(FORWARD_BACKENDS)}"
             )
+        self.max_slots = max_sparse_attn_slots(config)
         blocker = _kernel_blocker(self.num_heads, self.head_dim, self.dsa_backend)
         if blocker is not None:
             raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
@@ -781,6 +793,7 @@ class DeepseekV4Attention(nn.Module):
             self.sinks,
             self.scaling,
             backend=self.dsa_backend,
+            max_slots=self.max_slots,
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output

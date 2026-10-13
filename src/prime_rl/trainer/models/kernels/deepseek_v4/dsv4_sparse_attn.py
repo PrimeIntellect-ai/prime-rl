@@ -151,6 +151,7 @@ def _tilelang_forward(
 
 
 # FlashMLA's SM90 sparse prefill reads slots two 64-wide tiles at a time, so it needs a multiple of 128.
+# The cuDNN backward compiles one kernel for every width (`cudnn_dsa_compile`), so nothing pads further.
 CUDNN_FLASHMLA_SLOT_TILE = 128
 
 
@@ -223,6 +224,7 @@ def dsv4_sparse_attn(
     num_stages: int = 2,
     threads: int = 256,
     backend: str = "tilelang",
+    max_slots: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert backend in FORWARD_BACKENDS, (
         f"unknown sparse attention backend {backend!r}, expected one of {sorted(FORWARD_BACKENDS)}"
@@ -242,6 +244,9 @@ def dsv4_sparse_attn(
     assert shape_error is None, shape_error
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert sinks.shape == (heads,)
+    assert backend != "cudnn_flashmla" or max_slots is not None, (
+        "the cudnn_flashmla backward builds one kernel for every slot width up to max_slots, so it needs max_slots"
+    )
     return FORWARD_BACKENDS[backend](q, kv, indices, sinks, sm_scale, block_I, num_stages, threads)
 
 
@@ -258,6 +263,7 @@ def _dsv4_sparse_attn_fake(
     num_stages: int = 2,
     threads: int = 256,
     backend: str = "tilelang",
+    max_slots: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
@@ -270,6 +276,7 @@ def _tilelang_backward(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None,
+    _max_slots: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     batch, seq_len, heads, dim = q.shape
     _, _, kv_group, _ = kv.shape
@@ -297,8 +304,9 @@ def _cudnn_flashmla_backward(
     indices: torch.Tensor,
     lse: torch.Tensor,
     sm_scale: float | None,
+    max_slots: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+    from prime_rl.trainer.models.kernels.cudnn_dsa_compile import flash_attn_bwd_sm90
 
     batch, seq_len, heads, dim = q.shape
     n_positions = kv.shape[1]
@@ -314,6 +322,7 @@ def _cudnn_flashmla_backward(
         softmax_scale=sm_scale,
         topk_idxs=flat_indices,
         topk_length=topk_length,
+        max_slots=cudnn_flashmla_slot_width(max_slots),
     )
     delta = preprocess(heads, dim)(out, grad_out)
     return dq.view_as(q), dkv.view_as(kv), delta
@@ -332,6 +341,7 @@ def dsv4_sparse_attn_backward(
     lse: torch.Tensor,
     sm_scale: float | None = None,
     backend: str = "tilelang",
+    max_slots: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     assert backend in BACKWARD_BACKENDS, (
         f"unknown sparse attention backend {backend!r}, expected one of {sorted(BACKWARD_BACKENDS)}"
@@ -350,7 +360,7 @@ def dsv4_sparse_attn_backward(
     assert shape_error is None, shape_error
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert lse.shape == (batch, seq_len, heads)
-    return BACKWARD_BACKENDS[backend](q, kv, out, grad_out, indices, lse, sm_scale)
+    return BACKWARD_BACKENDS[backend](q, kv, out, grad_out, indices, lse, sm_scale, max_slots)
 
 
 @dsv4_sparse_attn_backward.register_fake
@@ -363,16 +373,18 @@ def _dsv4_sparse_attn_backward_fake(
     lse: torch.Tensor,
     sm_scale: float | None = None,
     backend: str = "tilelang",
+    max_slots: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return torch.empty_like(q), torch.empty_like(kv), torch.empty_like(lse)
 
 
 def _dsv4_sparse_attn_setup_context(ctx, inputs, output) -> None:
-    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads, backend = inputs
+    q, kv, indices, sinks, sm_scale, _block_I, _num_stages, _threads, backend, max_slots = inputs
     out, lse = output
     ctx.save_for_backward(q, kv, out, indices, lse, sinks)
     ctx.sm_scale = sm_scale
     ctx.backend = backend
+    ctx.max_slots = max_slots
     ctx.mark_non_differentiable(lse)
 
 
@@ -387,12 +399,13 @@ def _dsv4_sparse_attn_autograd_backward(ctx, grad_out: torch.Tensor, _grad_lse: 
         lse.detach(),
         ctx.sm_scale,
         backend=ctx.backend,
+        max_slots=ctx.max_slots,
     )
     # dp_k/dsink = -p_k * p_sink, so do[d]/dsink = -p_sink * o[d] and the head's sink gradient
     # contracts to -p_sink * Delta. The sink logit is unscaled, hence no sm_scale factor.
     p_sink = torch.exp2(sinks.float().view(1, 1, -1) * LOG2E - lse)
     dsink = -(p_sink * delta).sum(dim=(0, 1)).to(sinks.dtype)
-    return dq, dkv, None, dsink, None, None, None, None, None
+    return dq, dkv, None, dsink, None, None, None, None, None, None
 
 
 dsv4_sparse_attn.register_autograd(_dsv4_sparse_attn_autograd_backward, setup_context=_dsv4_sparse_attn_setup_context)

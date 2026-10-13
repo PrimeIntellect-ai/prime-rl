@@ -11,7 +11,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, max_sparse_attn_slots
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
@@ -202,6 +202,7 @@ HEADS = V4FLASH_MODEL["num_attention_heads"]
 DIM = V4FLASH_MODEL["head_dim"]
 KV_GROUP = V4FLASH_MODEL["num_key_value_heads"]
 TOPK = V4FLASH_MODEL["sliding_window"] + V4FLASH_MODEL["index_topk"]
+MAX_SLOTS = max_sparse_attn_slots(V4FLASH_CONFIG)
 SM_SCALE = DIM**-0.5
 
 # The first is aligned to both of the backward's tile sizes (32 in `preprocess`, 64 in
@@ -352,7 +353,7 @@ def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv, 
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
 
     with torch.no_grad():
-        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
+        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
         # Float32 inputs to the oracle, which is what runs it in float32: it follows the dtype it
         # is handed. Widened here rather than inside it, so the exact answer is what the bound is
         # measured against instead of one rounded back to bfloat16.
@@ -384,7 +385,7 @@ def test_kernel_pads_a_slot_count_its_tile_does_not_divide(backend):
     indices = _build_indices(batch, seq_len, seq_len_kv, MASKED_FRACTION, topk=unaligned)
 
     with torch.no_grad():
-        out, _ = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
+        out, _ = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
         reference = _dense_reference(q.float(), kv.float(), indices, sinks, SM_SCALE)
 
     assert out.shape == q.shape
@@ -411,7 +412,7 @@ def test_fully_masked_query_reads_as_zero_keys(backend):
     indices[:, 0] = IGNORE_SLOT  # the first query gathers nothing
 
     with torch.no_grad():
-        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
+        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
 
     assert torch.equal(out[:, 0], torch.zeros_like(out[:, 0])), "a fully masked query must emit exactly zero"
     expected_lse = sinks.float() * math.log2(math.e)
@@ -485,7 +486,9 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
     reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
 
-    out, _lse = dsv4_sparse_attn(kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend=backend)
+    out, _lse = dsv4_sparse_attn(
+        kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS
+    )
     # One weight tensor for both losses, so the two backwards are the same function of the same
     # numbers and any difference belongs to the kernel.
     weight = torch.randn_like(out)
@@ -500,6 +503,39 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     _assert_relative(kernel_q.grad, reference_q.grad, DQ_RTOL, "dq")
     _assert_relative(kernel_kv.grad, reference_kv.grad, DKV_RTOL, "dkv")
     _assert_relative(kernel_sinks.grad, reference_sinks.grad, DSINK_RTOL, "dsink")
+
+
+@requires_cudnn_flashmla
+@requires_sparse_attn_kernel
+@requires_datacenter_gpu
+def test_cudnn_flashmla_backward_compiles_one_main_kernel_for_every_width():
+    """Slot widths from 128 to 8320 share one cuDNN main kernel, and each matches the reference.
+
+    The cuDNN frontend keys its main-kernel compile on the slot width. `cudnn_dsa_compile` keys it on a
+    clamp instead, through private frontend internals that an upgrade could move without an error. 8320 is
+    DeepSeek-V4-Flash's widest HCA layer, `128 + 1048576 // 128`.
+    """
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+
+    batch, seq_len, max_slots = 1, 64, 8320
+    flash_attn_bwd_sm90.compile_cache.clear()
+    for width in (128, 640, max_slots):
+        q, kv, _, sinks = _inputs(batch, seq_len, max_slots)
+        indices = _build_indices(batch, seq_len, max_slots, MASKED_FRACTION, topk=width)
+        kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
+        reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
+
+        out, _lse = dsv4_sparse_attn(
+            kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend="cudnn_flashmla", max_slots=max_slots
+        )
+        weight = torch.randn_like(out)
+        (out * weight).sum().backward()
+        reference_out = _dense_reference(reference_q, reference_kv, indices, reference_sinks, SM_SCALE)
+        (reference_out * weight).sum().backward()
+
+        _assert_relative(kernel_q.grad, reference_q.grad, DQ_RTOL, f"dq at width {width}")
+        _assert_relative(kernel_kv.grad, reference_kv.grad, DKV_RTOL, f"dkv at width {width}")
+    assert len(flash_attn_bwd_sm90.compile_cache) == 1
 
 
 @pytest.mark.parametrize("backend", DSV4_BACKENDS)
@@ -519,7 +555,7 @@ def test_kernel_traces_under_torch_compile(backend):
     compiled_leaves = _leaves(q, kv, sinks)
 
     def attend(q: torch.Tensor, kv: torch.Tensor, sinks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend)
+        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
 
     out, lse = attend(*eager_leaves)
     # One weight tensor for both losses, so the two backwards are the same function of the same
