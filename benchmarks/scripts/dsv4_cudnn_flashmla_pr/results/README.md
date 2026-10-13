@@ -106,3 +106,28 @@ Rank 0 torch.profiler traces of the last of 5 steps (`top_kernels_traceB.md`, `t
 
 Sparse attention takes 4.6% of a step at this size, so its 0.56x GPU time saves about 59 ms per step. Exposed NCCL
 (about 700-800 ms) and the grouped expert GEMMs dominate the step.
+
+## Longer context: 16k tokens per GPU (128k sequence)
+
+Same setup with `sft_128k.toml` (seq_len 131072, 20 steps), SLURM job 4008 (prime-nebius-puku-h200-gpu-004),
+product code `4a269ac42`, harness `b66ea26f1`. Arms ran in the order C, B, C2, B2. Full output:
+`e2e_compare_128k.md`. Peak memory is the max over all 8 ranks of the per-step `max_memory_reserved`, steps 2-20.
+
+| arm | step 1 s | steady step s (lower is better) | tokens/s/GPU (higher is better) | peak GiB (lower is better) |
+|---|---|---|---|---|
+| B, tilelang | 118.7 | 4.590 (4.054-5.053) | 10440 | 114.7 |
+| B2, tilelang | 118.7 | 4.584 (4.158-5.024) | 10390 | 114.7 |
+| C, cudnn_flashmla | 113.0 | 4.328 (4.068-6.826) | 11000 | 114.1 |
+| C2, cudnn_flashmla | 107.1 | 4.394 (3.919-4.817) | 10820 | 114.1 |
+
+The cudnn_flashmla steady step is 4-6% faster here, against about 2% at 8k tokens per GPU. Cumulative time to step
+20 is 208.5 and 209.0 s for tilelang, 205.3 and 193.3 s for cudnn_flashmla. C had two slow steps (3 and 6, 8.1 and
+6.8 s) with no compile in them, and C2 did not repeat them, so they were noise. Compiles per rank match the 64k
+runs: cuDNN 3 and TileLang 1 for cudnn_flashmla, TileLang 4 for tilelang, all in step 1, plus one dynamo recompile
+in every arm. Parity: max per-step loss difference B vs C 7.3e-4, against 1.4e-3 for B vs B2.
+
+## 128k tokens per GPU (1M sequence) does not fit
+
+`sft_1m.toml` ran out of memory in step 1 for reasons unrelated to the backend: the CSA FP8 indexer
+(`fp8_indexer.py:203`) allocates its full float32 score matrix, 99.65 GiB for 131072 queries against the
+compressed keys. Both backends share that indexer.
