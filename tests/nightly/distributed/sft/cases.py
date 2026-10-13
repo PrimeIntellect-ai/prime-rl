@@ -1,0 +1,153 @@
+"""The SFT functionality matrix: archs x 8-GPU layouts x feature rows, rendered as `uv run sft` arguments."""
+
+import json
+import math
+import tomllib
+from dataclasses import dataclass, field
+from itertools import permutations
+from pathlib import Path
+from typing import Literal
+
+import pytest
+
+CONFIG_DIR = Path("configs/ci/nightly/distributed/sft")
+Overrides = dict[str, object]
+
+
+@dataclass(frozen=True, eq=False)
+class Layout:
+    name: str
+    dp_replicate: int
+    cp: int
+    ep: int
+    cp_style: Literal["ring", "ulysses"] = "ring"
+
+    def overrides(self) -> Overrides:
+        return {
+            "model.dp_replicate": self.dp_replicate,
+            "model.cp": self.cp,
+            "model.cp_style": self.cp_style,
+            "model.ep": self.ep,
+        }
+
+
+FSDP8_EP8 = Layout("fsdp8_ep8", dp_replicate=1, cp=1, ep=8)
+HSDP2X4_EP4 = Layout("hsdp2x4_ep4", dp_replicate=2, cp=1, ep=4)
+CP2_RING_EP4 = Layout("cp2_ring_ep4", dp_replicate=1, cp=2, ep=4)
+CP4_ULYSSES_EP8 = Layout("cp4_ulysses_ep8", dp_replicate=1, cp=4, ep=8, cp_style="ulysses")
+LAYOUTS = (FSDP8_EP8, HSDP2X4_EP4, CP2_RING_EP4, CP4_ULYSSES_EP8)
+
+
+@dataclass(frozen=True, eq=False)
+class Feature:
+    name: str
+    overrides: Overrides
+    layout: Layout = FSDP8_EP8
+
+
+FEATURES = (
+    Feature("ac_off", {"model.ac": None}),
+    Feature("ac_selective", {"model.ac.mode": "selective"}),
+    Feature("act_offload_off", {"model.ac_offloading": None}),
+    Feature("optim_offload_off", {"model.offload": "none"}),
+    Feature("full_offload", {"model.offload": "full"}),
+    Feature("eager", {"model.compile": None}),
+    Feature("unfused", {"model.fusions.enabled": []}),
+    Feature("bf16_router", {"model.moe_router_dtype": "bfloat16"}, layout=CP2_RING_EP4),
+)
+
+
+@dataclass(frozen=True, eq=False)
+class Arch:
+    name: str
+    layouts: tuple[Layout, ...] = LAYOUTS
+    features: tuple[Feature, ...] = ()
+    skip: dict[Layout | Feature, str] = field(default_factory=dict)
+
+    @property
+    def overlay(self) -> Path:
+        return CONFIG_DIR / f"{self.name}.toml"
+
+    @property
+    def tokenizer(self) -> str:
+        return tomllib.loads(self.overlay.read_text())["tokenizer"]["name"]
+
+
+@dataclass(frozen=True, eq=False)
+class Case:
+    arch: Arch
+    layout: Layout
+    feature: Feature | None = None
+
+    @property
+    def id(self) -> str:
+        return f"{self.arch.name}-{self.layout.name}-{self.feature.name if self.feature else 'base'}"
+
+    @property
+    def resume(self) -> bool:
+        return self.feature is None
+
+    def overrides(self) -> Overrides:
+        return self.layout.overrides() | (self.feature.overrides if self.feature else {})
+
+    def param(self):
+        reason = self.arch.skip.get(self.layout) or self.arch.skip.get(self.feature)
+        return pytest.param(self, id=self.id, marks=[pytest.mark.skip(reason=reason)] if reason else [])
+
+
+def cases_for(arch: Arch) -> list[Case]:
+    for feature in arch.features:
+        if feature.layout not in arch.layouts:
+            raise ValueError(f"{arch.name}: feature {feature.name} runs on {feature.layout.name}, which it doesn't run")
+    return [Case(arch, layout) for layout in arch.layouts] + [
+        Case(arch, feature.layout, feature) for feature in arch.features
+    ]
+
+
+def check_k_selectable(names: list[str]) -> None:
+    for name, other in permutations(names, 2):
+        if name in other:
+            raise ValueError(f"-k {name} would also select {other}")
+
+
+QWEN3_MOE = Arch("qwen3_moe", features=FEATURES)
+GLM_MOE_DSA = Arch("glm_moe_dsa", layouts=(FSDP8_EP8, HSDP2X4_EP4, CP2_RING_EP4))
+DEEPSEEK_V4 = Arch("deepseek_v4", skip={CP4_ULYSSES_EP8: "DSv4 cp_support is ring-only"})
+ARCHS = (QWEN3_MOE, GLM_MOE_DSA, DEEPSEEK_V4)
+CASES = [case for arch in ARCHS for case in cases_for(arch)]
+check_k_selectable(["base", *(a.name for a in ARCHS), *(l.name for l in LAYOUTS), *(f.name for f in FEATURES)])
+
+
+def sft_args(case: Case, model_name: str) -> list[str]:
+    return [
+        "@",
+        (CONFIG_DIR / "base.toml").as_posix(),
+        "@",
+        case.arch.overlay.as_posix(),
+        "--model.name",
+        model_name,
+        "--deployment.num-train-gpus",
+        "8",
+        *to_cli(case.overrides()),
+    ]
+
+
+def to_cli(overrides: Overrides) -> list[str]:
+    args = []
+    for key, value in overrides.items():
+        rendered = "None" if value is None else json.dumps(value) if isinstance(value, list | dict) else str(value)
+        args += ["--" + key.replace("_", "-"), rendered]
+    return args
+
+
+def load_metrics(run_dir: Path) -> list[dict]:
+    with open(run_dir / "monitors" / "file" / "metrics.jsonl") as f:
+        return [json.loads(line) for line in f]
+
+
+def assert_training_rows(rows: list[dict], expected_steps: range) -> None:
+    train_rows = [row for row in rows if "loss/nan_count" in row]
+    assert [row["step"] for row in train_rows] == list(expected_steps)
+    for row in train_rows:
+        assert row["loss/nan_count"] == 0, row
+        assert math.isfinite(row.get("loss/mean", math.nan)), row
