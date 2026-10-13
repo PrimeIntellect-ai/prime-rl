@@ -92,7 +92,6 @@ class _PackedOutputs:
     def __init__(self, generator: AsyncIterator[RequestOutput], request: GenerateRequest):
         self._generator = generator
         self._request = request
-        self._routed_experts_start = request.sampling_params.routed_experts_prompt_start
         payload_dir = (request.sampling_params.extra_args or {}).get("payload_dir")
         self._payload_dir = Path(payload_dir) if payload_dir is not None else None
         self.fields: dict[int, dict[str, Any]] = {}
@@ -107,17 +106,13 @@ class _PackedOutputs:
                 fields = self.fields.setdefault(output.index, {})
                 arrays = self.arrays[output.index] = []
                 if output.routed_experts is not None:
-                    # vLLM's capturer picks uint8 or uint16 from the model's expert count.
+                    # vLLM's capturer picks uint8 or uint16 from the model's expert count. Rows end at the
+                    # last forwarded token; a P/D decode instance's rows begin at its first forward.
+                    start = prompt_len + len(output.token_ids) - 1 - len(output.routed_experts)
                     if self._payload_dir is None:
-                        fields["routed_experts"] = {
-                            **encode_array(output.routed_experts),
-                            "start": self._routed_experts_start,
-                        }
+                        fields["routed_experts"] = {**encode_array(output.routed_experts), "start": start}
                     else:
-                        rows = np.ascontiguousarray(output.routed_experts)
-                        # Anchored at the last forwarded token: under P/D a decode instance
-                        # emits rows from its first forward (prompt_len - 1), not from start.
-                        arrays.append(("routed_experts", prompt_len + len(output.token_ids) - 1 - len(rows), rows))
+                        arrays.append(("routed_experts", start, np.ascontiguousarray(output.routed_experts)))
                     output.routed_experts = None
                 if isinstance(output.logprobs, FlatLogprobs):
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
