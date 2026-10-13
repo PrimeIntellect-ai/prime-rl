@@ -39,7 +39,7 @@ def topk_clamp(max_slots: int) -> int:
     return 2**exponent
 
 
-def _main_kernel_key(key: tuple) -> tuple:
+def main_kernel_key(key: tuple) -> tuple:
     *static_key, have_topk_length, max_topk = key
     if not isinstance(have_topk_length, bool) or not isinstance(max_topk, int):
         raise RuntimeError(f"the cuDNN DSA main-kernel key no longer ends in (have_topk_length, max_topk): {key}")
@@ -58,7 +58,7 @@ def _init_with_clamped_max_topk(self, *args, have_topk_length: bool, max_topk: i
     )
 
 
-class _ExecutorCache(dict):
+class ExecutorCache(dict):
     """An executor cache that stores entries under `normalize_key(key)` and logs each compile.
 
     The frontend checks `key in cache`, compiles on a miss, then assigns the executor, so the time between
@@ -94,20 +94,20 @@ class _ExecutorCache(dict):
         get_logger().info(f"Compiled the cuDNN DSA backward {self.kernel} kernel{max_topk} in {seconds:.2f}s")
 
 
-def _patch_sm90_compile_cache() -> None:
+def patch_sm90_compile_cache() -> None:
     if kernel_sm90.FlashAttentionDSABackwardSm90.__init__ is _init_with_clamped_max_topk:
         return
     kernel_sm90.FlashAttentionDSABackwardSm90.__init__ = _init_with_clamped_max_topk
     bwd = interface_sm90.flash_attn_bwd_sm90
-    bwd.compile_cache_pre = _ExecutorCache("preprocess")
-    bwd.compile_cache = _ExecutorCache("main", _main_kernel_key, max_topk_position=-1)
-    bwd.compile_cache_post = _ExecutorCache("postprocess")
+    bwd.compile_cache_pre = ExecutorCache("preprocess")
+    bwd.compile_cache = ExecutorCache("main", main_kernel_key, max_topk_position=-1)
+    bwd.compile_cache_post = ExecutorCache("postprocess")
 
 
 def flash_attn_bwd_sm90(*args, max_slots: int | None = None, **kwargs) -> tuple[torch.Tensor, ...]:
     """The frontend's `flash_attn_bwd_sm90`; a call with `topk_length` serves widths up to `max_slots`."""
     global _topk_clamp
-    _patch_sm90_compile_cache()
+    patch_sm90_compile_cache()
     if kwargs.get("topk_length") is not None:
         if max_slots is None:
             raise ValueError("a cuDNN DSA backward call with topk_length needs max_slots, its widest slot width")
@@ -115,7 +115,7 @@ def flash_attn_bwd_sm90(*args, max_slots: int | None = None, **kwargs) -> tuple[
     return interface_sm90.flash_attn_bwd_sm90(*args, **kwargs)
 
 
-def _sm100_main_kernel_key(key: tuple) -> tuple:
+def sm100_main_kernel_key(key: tuple) -> tuple:
     backend, *static_key, max_topk, has_topk_length = key
     if not isinstance(has_topk_length, bool) or not isinstance(max_topk, int):
         raise RuntimeError(f"the cuDNN SM100 DSA key no longer ends in (max_topk, has_topk_length): {key}")
@@ -138,19 +138,19 @@ def _sm100_init_with_clamped_max_topk(self, element_dtype, head_dim, head_dim_v,
     _sm100_stock_init(self, element_dtype, head_dim, head_dim_v, block_tile, max_topk)
 
 
-def _patch_sm100_compile_cache() -> None:
+def patch_sm100_compile_cache() -> None:
     if kernel_sm100.FlashAttentionDSABackwardSm100.__init__ is _sm100_init_with_clamped_max_topk:
         return
     kernel_sm100.FlashAttentionDSABackwardSm100.__init__ = _sm100_init_with_clamped_max_topk
-    interface_sm100.flash_attn_bwd_sm100.compile_cache = _ExecutorCache(
-        "main", _sm100_main_kernel_key, max_topk_position=-2
+    interface_sm100.flash_attn_bwd_sm100.compile_cache = ExecutorCache(
+        "main", sm100_main_kernel_key, max_topk_position=-2
     )
 
 
 def flash_attn_bwd_sm100(*args, max_slots: int | None = None, **kwargs) -> tuple[torch.Tensor, ...]:
     """The frontend's `flash_attn_bwd_sm100`; a call with `topk_length` serves widths up to `max_slots`."""
     global _sm100_topk_clamp
-    _patch_sm100_compile_cache()
+    patch_sm100_compile_cache()
     if kwargs.get("topk_length") is None:
         return interface_sm100.flash_attn_bwd_sm100(*args, **kwargs)
     if max_slots is None:

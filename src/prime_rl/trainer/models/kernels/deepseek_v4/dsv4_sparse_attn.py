@@ -64,7 +64,7 @@ def num_tiles_covering_valid_slots(indices: torch.Tensor, tile_size: int) -> tor
     return last_valid_slot_idx // tile_size + 1
 
 
-def _tilelang_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
+def tilelang_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     # The backward's `preprocess` tiles the channel axis at `block_ND = 32` and reads whole
     # tiles, so a `dim` below that (or not a multiple of it) over-reads into the next head and
     # silently corrupts `Delta`, hence every gradient. This subsumes `atomic_addx4`'s own
@@ -93,7 +93,7 @@ def _tilelang_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     return None
 
 
-def _cudnn_flashmla_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
+def cudnn_flashmla_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     if kv_group != 1:
         return f"FlashMLA and the cuDNN backward serve a single KV head, but this shape has {kv_group}"
     if heads not in (64, 128):
@@ -108,14 +108,14 @@ def _cudnn_flashmla_shape_error(heads: int, kv_group: int, dim: int) -> str | No
     return None
 
 
-SHAPE_ERRORS = {"tilelang": _tilelang_shape_error, "cudnn_flashmla": _cudnn_flashmla_shape_error}
+SHAPE_ERRORS = {"tilelang": tilelang_shape_error, "cudnn_flashmla": cudnn_flashmla_shape_error}
 
 
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int, backend: str = "tilelang") -> str | None:
     return SHAPE_ERRORS[backend](heads, kv_group, dim)
 
 
-def _tilelang_forward(
+def tilelang_forward(
     q: torch.Tensor,
     kv: torch.Tensor,
     indices: torch.Tensor,
@@ -159,7 +159,7 @@ def cudnn_flashmla_slot_width(n_slots: int) -> int:
     return -(-n_slots // CUDNN_FLASHMLA_SLOT_TILE) * CUDNN_FLASHMLA_SLOT_TILE
 
 
-def _flat_cudnn_flashmla_indices(indices: torch.Tensor, n_positions: int) -> tuple[torch.Tensor, torch.Tensor]:
+def flat_cudnn_flashmla_indices(indices: torch.Tensor, n_positions: int) -> tuple[torch.Tensor, torch.Tensor]:
     """Tile-padded global indices into the batch-flattened KV, and each query's valid prefix length.
 
     `indices` is `(batch, seq_len, 1, n_slots)` with batch-local positions. The results are
@@ -176,7 +176,7 @@ def _flat_cudnn_flashmla_indices(indices: torch.Tensor, n_positions: int) -> tup
     return flat_indices.contiguous(), topk_length
 
 
-def _cudnn_flashmla_forward(
+def cudnn_flashmla_forward(
     q: torch.Tensor,
     kv: torch.Tensor,
     indices: torch.Tensor,
@@ -192,7 +192,7 @@ def _cudnn_flashmla_forward(
     n_positions = kv.shape[1]
     if sm_scale is None:
         sm_scale = dim**-0.5
-    flat_indices, topk_length = _flat_cudnn_flashmla_indices(indices, n_positions)
+    flat_indices, topk_length = flat_cudnn_flashmla_indices(indices, n_positions)
     sink_logits = sinks.float().contiguous()
     out, _max_logits, sinkless_lse = flash_mla_sparse_fwd(
         q.view(batch * seq_len, heads, dim),
@@ -209,7 +209,7 @@ def _cudnn_flashmla_forward(
     return out.view(batch, seq_len, heads, dim), lse.view(batch, seq_len, heads)
 
 
-FORWARD_BACKENDS = {"tilelang": _tilelang_forward, "cudnn_flashmla": _cudnn_flashmla_forward}
+FORWARD_BACKENDS = {"tilelang": tilelang_forward, "cudnn_flashmla": cudnn_flashmla_forward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn", mutates_args=())
@@ -267,7 +267,7 @@ def _dsv4_sparse_attn_fake(
     return torch.empty_like(q), q.new_empty(q.shape[:-1], dtype=torch.float32)
 
 
-def _tilelang_backward(
+def tilelang_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
     out: torch.Tensor,
@@ -295,7 +295,7 @@ def _tilelang_backward(
     return dq, dkv, delta
 
 
-def _cudnn_flashmla_backward(
+def cudnn_flashmla_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
     out: torch.Tensor,
@@ -313,7 +313,7 @@ def _cudnn_flashmla_backward(
 
     batch, seq_len, heads, dim = q.shape
     n_positions = kv.shape[1]
-    flat_indices, topk_length = _flat_cudnn_flashmla_indices(indices, n_positions)
+    flat_indices, topk_length = flat_cudnn_flashmla_indices(indices, n_positions)
     flat_tensors = (
         q.view(batch * seq_len, heads, dim),
         kv.view(batch * n_positions, dim),
@@ -348,7 +348,7 @@ def _cudnn_flashmla_backward(
     return dq.view_as(q), dkv.view_as(kv), delta
 
 
-BACKWARD_BACKENDS = {"tilelang": _tilelang_backward, "cudnn_flashmla": _cudnn_flashmla_backward}
+BACKWARD_BACKENDS = {"tilelang": tilelang_backward, "cudnn_flashmla": cudnn_flashmla_backward}
 
 
 @torch.library.custom_op("prime_rl::dsv4_sparse_attn_backward", mutates_args=())
