@@ -21,6 +21,10 @@
   with. Online evals may explicitly cancel them when a newer checkpoint is ready. Train
   episodes sampled from a frozen model never go stale — their generation
   source doesn't change with policy updates.
+- ``cancel_eval_task`` stops the rollouts of one eval task a streaming taskset no
+  longer wants (``Taskset.cancel``): its group is dropped under a ``requested``
+  ``GroupCancellation`` carrying the task. Cancelling an in-flight episode cancels its
+  env-server request, which aborts the rollout server-side and tears down its runtime.
 """
 
 from __future__ import annotations
@@ -167,6 +171,10 @@ class Dispatcher:
         """With ``record_eval_tasks``: the dispatched task of each eval episode put on
         ``out_q``, by episode id, until the consumer pops it (``EvalRunner`` hands it to
         the taskset's ``observe``)."""
+        self.requested_cancels: set[tuple[str, str]] = set()
+        """Eval tasks ``(env, key)`` cancelled before they came off the source (the
+        consumer adds them): the group is dropped, unrun, when the task does. The
+        consumer discards a key once it reports a result of it."""
 
         # Starting value of the dynamic cap (the concurrency controller moves
         # it); ``max_inflight_ceiling`` is the configured hard maximum, used to
@@ -519,6 +527,23 @@ class Dispatcher:
         if fresh is None:
             return False
         gid = fresh.group_id or uuid.uuid4()
+        if kind == "eval" and (fresh.env_name, fresh.task.key) in self.requested_cancels:
+            # asked to be cancelled before it came off the source: none of it runs
+            self.requested_cancels.discard((fresh.env_name, fresh.task.key))
+            count = fresh.episodes_to_schedule
+            self.metrics.record_cancellation(kind="eval", env_name=fresh.env_name, n=count)
+            await self.out_q.put(
+                GroupCancellation(
+                    kind="eval",
+                    env_name=fresh.env_name,
+                    group_id=str(gid),
+                    step=fresh.step,
+                    count=count,
+                    reason="requested",
+                    task=fresh.task,
+                )
+            )
+            return True
         self.groups[gid] = fresh
         return await self.schedule_group_episode(gid, fresh)
 
@@ -789,11 +814,37 @@ class Dispatcher:
                     step=group.step if group is not None else claimed[-1][1].step,
                     count=cancelled,
                     reason=reason,
+                    task=group.task if group is not None else claimed[-1][1].task,
                 )
             )
 
         if claimed:
             await safe_cancel_all([task for task, _ in claimed])
+        return cancelled
+
+    def has_eval_group(self, env_name: str, key: str) -> bool:
+        """Whether eval task ``key`` of ``env_name`` has an open group: rollouts in
+        flight or still to schedule."""
+        return any(
+            group.kind == "eval" and group.env_name == env_name and group.task.key == key
+            for group in self.groups.values()
+        )
+
+    async def cancel_eval_task(self, env_name: str, key: str) -> int:
+        """Stop the rollouts of eval task ``key`` in ``env_name`` that have not landed:
+        in-flight ones are cancelled (their env-server runs aborted), unscheduled ones
+        dropped, under one ``requested`` ``GroupCancellation`` per group. Rollouts that
+        landed meanwhile are left to their consumer. A task not yet taken off the source
+        goes in ``requested_cancels`` instead. Returns the rollouts cancelled."""
+        async with self.scheduling_lock:
+            group_ids = [
+                gid
+                for gid, group in self.groups.items()
+                if group.kind == "eval" and group.env_name == env_name and group.task.key == key
+            ]
+        cancelled = 0
+        for group_id in group_ids:
+            cancelled += await self.drop_group(group_id, reason="requested")
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:

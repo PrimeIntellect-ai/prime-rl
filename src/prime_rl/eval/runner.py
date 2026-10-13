@@ -15,10 +15,14 @@ Every rollout the dispatcher runs reports back to its env's taskset exactly once
 ``run_epoch`` on the event loop as the dispatcher's result arrives: ``observe(task,
 episode)`` with the final episode (after the env's own retries and ``finalize``), or
 ``on_failed(task, error)`` when the request produced no episode (the env server died,
-the request raised). An exception from either stops the run. Rollouts that never
-finish get neither: those cancelled on shutdown or superseded by a newer checkpoint
-(an online eval). A relaunched streaming taskset re-yields its unfinished work.
-Episodes restored on ``--resume`` were reported by the attempt that ran them."""
+the request raised). A streaming taskset may also ``cancel(key)`` a task it handed out:
+the runner polls ``cancelled()`` while the epoch runs, the dispatcher stops the task's
+rollouts (aborting their env-server runs), and each rollout that had not landed is
+reported through ``on_cancelled(task)`` instead; one that landed first is observed as
+usual. An exception from any hook stops the run. Rollouts that never finish get none:
+those cancelled on shutdown or superseded by a newer checkpoint (an online eval). A
+relaunched streaming taskset re-yields its unfinished work. Episodes restored on
+``--resume`` were reported by the attempt that ran them."""
 
 from __future__ import annotations
 
@@ -67,6 +71,13 @@ class EvalRunner:
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
+        self.cancel_tasks: set[asyncio.Task] = set()
+        """Taskset-requested cancels in progress (``request_cancels``). Run off the
+        epoch loop: a dropped group's marker goes onto ``out_q``, which only that loop
+        drains."""
+        self.reported: set[tuple[str, str]] = set()
+        """Eval tasks ``(env, key)`` reported to their taskset since the last cancel
+        poll: a cancel asked before the report and polled after it is moot."""
 
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
@@ -212,6 +223,7 @@ class EvalRunner:
         newer_step: int | None = None
 
         while pending:
+            self.request_cancels()
             for env_name in [name for name in pending if self.stream_done(name)]:
                 await self.finalize_eval_batch(self.eval_sink.process_batch((env_name, step)))
                 pending.discard(env_name)
@@ -238,6 +250,8 @@ class EvalRunner:
                 continue
 
             if isinstance(item, GroupCancellation):
+                if item.reason == "requested":
+                    self.report_cancelled(item)
                 eval_batch = self.eval_sink.cancel(item)
             elif isinstance(item, DispatchFailure):
                 self.report_failed(item)
@@ -253,11 +267,37 @@ class EvalRunner:
                 await self.finalize_eval_batch(eval_batch)
                 pending.discard(eval_batch.env_name)
 
+        # every requested cancel's marker has landed; let its aborted runs unwind
+        await asyncio.gather(*self.cancel_tasks)
+        self.cancel_tasks.clear()
         if cancellation_task is not None:
             cancelled = await cancellation_task
             get_logger().warning(
                 f"Cancelled {cancelled} unfinished eval episodes for step {step}; advancing to checkpoint {newer_step}"
             )
+
+    def request_cancels(self) -> None:
+        """Start the cancels the streaming tasksets asked for since the last poll, and
+        raise the error of one that failed. A taskset cancels only tasks not yet
+        reported to it, so a key reported since the last poll needs nothing."""
+        for task in [task for task in self.cancel_tasks if task.done()]:
+            self.cancel_tasks.discard(task)
+            task.result()
+        for env in self.eval_envs:
+            if env.feed is None:
+                continue
+            for key in env.taskset.cancelled():
+                if (env.name, key) in self.reported:
+                    continue
+                get_logger().info(f"{type(env.taskset).__name__} cancelled task {key} in {env.name}")
+                if not self.dispatcher.has_eval_group(env.name, key):
+                    # not off the source yet (or every rollout landed, then reported soon)
+                    self.dispatcher.requested_cancels.add((env.name, key))
+                    continue
+                self.cancel_tasks.add(
+                    asyncio.create_task(self.dispatcher.cancel_eval_task(env.name, key), name=f"cancel-{key}")
+                )
+        self.reported.clear()
 
     def raise_if_dispatcher_stopped(self) -> None:
         """A dead dispatcher delivers no more results: fail the epoch rather than wait."""
@@ -274,6 +314,7 @@ class EvalRunner:
         so every kept episode was observed by the attempt that ran it."""
         task = self.dispatcher.eval_tasks.pop(episode.id)
         env_name = episode_env_name(episode)
+        self.mark_reported(env_name, task.key)
         taskset = self.eval_envs.get(env_name).taskset
         try:
             taskset.observe(task, episode)
@@ -284,6 +325,7 @@ class EvalRunner:
     def report_failed(self, failure: DispatchFailure) -> None:
         """Tell the taskset a dispatched rollout produced no episode."""
         assert failure.task is not None and failure.exception is not None  # the dispatcher attaches them
+        self.mark_reported(failure.env_name, failure.task_key)
         taskset = self.eval_envs.get(failure.env_name).taskset
         try:
             taskset.on_failed(failure.task, failure.exception)
@@ -293,12 +335,33 @@ class EvalRunner:
             )
             raise
 
+    def mark_reported(self, env_name: str, key: str) -> None:
+        self.reported.add((env_name, key))
+        self.dispatcher.requested_cancels.discard((env_name, key))
+
+    def report_cancelled(self, cancellation: GroupCancellation) -> None:
+        """Tell the taskset each rollout of a task it cancelled stopped unlanded."""
+        assert cancellation.task is not None  # a requested cancel carries its task
+        self.mark_reported(cancellation.env_name, cancellation.task.key)
+        taskset = self.eval_envs.get(cancellation.env_name).taskset
+        for _ in range(cancellation.count):
+            try:
+                taskset.on_cancelled(cancellation.task)
+            except Exception:
+                get_logger().error(
+                    f"{type(taskset).__name__}.on_cancelled failed for task {cancellation.task.key} "
+                    f"in {cancellation.env_name}"
+                )
+                raise
+
     def stream_done(self, env_name: str) -> bool:
-        """Whether a streaming env's taskset ended and every rollout it dispatched landed."""
+        """Whether a streaming env's taskset ended and every rollout it dispatched landed.
+        A cancel in progress may still owe its marker."""
         return (
             self.eval_envs.get(env_name).feed is not None
             and not self.eval_source.streaming(env_name)
             and self.dispatcher.eval_env_settled(env_name)
+            and all(task.done() for task in self.cancel_tasks)
         )
 
     async def land(self, episode: vf.Episode, pending: set[str]) -> None:
