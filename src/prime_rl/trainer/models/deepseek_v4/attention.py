@@ -151,13 +151,13 @@ except ImportError:
     sparse_attn_shape_error = None  # type: ignore
 
 
-def _kernel_blocker(num_heads: int, head_dim: int) -> str | None:
-    """Why the fused kernel cannot run at this shape, or ``None`` if it can."""
+def _kernel_blocker(num_heads: int, head_dim: int, backend: str) -> str | None:
+    """Why `backend`'s fused kernel cannot run at this shape, or ``None`` if it can."""
     if dsv4_sparse_attn is None:
         return "the tilelang sparse-attention kernel failed to import; install the `gpu` extra"
     # CSA gives every query head the same single KV head, so the kernel's `kv_group` is 1. The
     # shape constraints themselves are stated once, next to the kernels they come from.
-    return sparse_attn_shape_error(num_heads, 1, head_dim)
+    return sparse_attn_shape_error(num_heads, 1, head_dim, backend)
 
 
 class DeepseekV4GroupedLinear(nn.Linear):
@@ -701,15 +701,15 @@ class DeepseekV4Attention(nn.Module):
         self.rotary_emb = rotary_emb
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
-        blocker = _kernel_blocker(self.num_heads, self.head_dim)
-        if blocker is not None:
-            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
         self.dsa_backend = getattr(config, "dsa_backend", "tilelang")
-        if self.dsa_backend not in FORWARD_BACKENDS:
+        if dsv4_sparse_attn is not None and self.dsa_backend not in FORWARD_BACKENDS:
             raise ValueError(
                 f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
                 f"expected one of {sorted(FORWARD_BACKENDS)}"
             )
+        blocker = _kernel_blocker(self.num_heads, self.head_dim, self.dsa_backend)
+        if blocker is not None:
+            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
