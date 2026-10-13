@@ -1,7 +1,7 @@
 #!/bin/bash
 # Node B extras on the #3925 layout: E3 (no AC offloading) on the branch, then an E0 rerun that py-spy dumps
-# the trainer ranks if their logs go idle (the first E0 hung in a collective). This script must be an
-# ancestor of the trainer processes for py-spy to attach under ptrace_scope=1.
+# the trainer ranks if their logs go idle (the first E0 hung in a collective). py-spy cannot attach here
+# (ptrace_scope=1 needs the tracer itself to be an ancestor), so e0_hang_stacks.sh is the working variant.
 # usage: node_b_extra.sh <e3925-worktree>
 set -u
 E3925=$1
