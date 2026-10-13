@@ -397,11 +397,11 @@ class Orchestrator:
             asyncio.create_task(self.watcher.start(), name="watcher"),
         ]
         # A dead engine is evicted and the run continues on the others (one engine has nothing
-        # to fall back to). NIXL pins its receiving engines on the trainer side, so it fails fast.
-        evictable = self.config.weight_broadcast.type in ("filesystem", "nccl") and type(self.admin_plane) is AdminPlane
+        # to fall back to). Filesystem broadcast does not evict: an engine failure fails the run.
+        evictable = self.config.weight_broadcast.type in ("nccl", "nixl") and type(self.admin_plane) is AdminPlane
         elastic = self.config.model.client.elastic
-        if elastic and not evictable:
-            raise ValueError("Elastic inference needs filesystem or NCCL weight broadcast and no Dynamo")
+        if elastic and (self.config.weight_broadcast.type != "nccl" or not evictable):
+            raise ValueError("Elastic inference needs NCCL weight broadcast and no Dynamo")
         if evictable and (elastic or len(self.admin_plane.clients) > 1):
             if elastic:
                 self.admin_plane.registry = get_broadcast_dir(self.config.output_dir) / "members"

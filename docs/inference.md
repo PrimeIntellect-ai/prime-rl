@@ -201,7 +201,7 @@ The policies you might want to configure are:
 
 ### Dead engines
 
-With more than one engine behind the router and NCCL or filesystem weight broadcast, the orchestrator keeps training when an engine dies or hangs.
+With more than one engine behind the router and NCCL (the default) or NIXL weight broadcast, the orchestrator keeps training when an engine dies or hangs. Filesystem broadcast (LoRA, external inference) does not evict: an engine failure there fails the run.
 - **Eviction.** An engine is evicted when any of these happens:
   - three `/liveness` probes in a row fail (10 s apart). The probe is a worker RPC, so a stuck engine core fails it even when the API server answers;
   - it has running requests but generates no token for 300 s;
@@ -210,19 +210,22 @@ With more than one engine behind the router and NCCL or filesystem weight broadc
 - **After eviction:**
   - the group's engines leave the router and the weight updates;
   - their in-flight requests fail. Requests stuck on a hung engine are cancelled once their group falls `max_off_policy_steps` behind.
-- **NCCL.** The broadcast group is rebuilt over the remaining engines at the next weight update, on a new port.
-- **Death mid-transfer (NCCL).** If an engine dies during the transfer:
-  - the orchestrator writes an abort marker into the step's broadcast directory;
-  - the trainer and the other engines abort the collective (`ncclCommAbort`);
-  - the group is rebuilt and the trainer sends the version again.
+- **Next weight update.** The orchestrator publishes the remaining engines in the broadcast directory before it acknowledges the version:
+  - NCCL: the broadcast group is rebuilt over them on a new port (`nccl_group.json`);
+  - NIXL: the trainer reads `nixl_group.json` and stops waiting for the evicted engines' inference ranks.
+- **Death mid-transfer.** If an engine dies during the transfer, or its `/update_weights` call times out:
+  - NCCL: the orchestrator writes an abort marker into the step's broadcast directory, the trainer and the other engines abort the collective (`ncclCommAbort`), the group is rebuilt and the trainer sends the version again;
+  - NIXL: the orchestrator writes a drop marker per inference rank of the group. The trainer stops waiting for those ranks, the group's workers stop pulling, and the other engines finish their pulls. Nothing is resent.
   - The inference nodes must see the run's output directory for this.
 - **Rejoin.** An evicted group whose engines all answer again (for example after you relaunch them on the same ports) gets the next weight update. It returns to the router only after that update succeeds on every engine of the group. While engines are evicted, `/pause`, `/resume` and `/update_weights` get one attempt, so a retry never reaches a relaunched engine that has neither the weights nor the broadcast group. An engine evicted for a stall rejoins only once its requests finish or progress again, or after a restart.
+  - NCCL: the group is rebuilt with the engines.
+  - NIXL: the orchestrator calls `/init_broadcaster` on the group's engines first. Each publishes a fresh NIXL agent to ModelExpress under its old inference ranks, the trainer connects to it, and the engine pulls the full weights.
 - **Router.** A `vllm-router` that crashes is restarted in place by the launcher, with the same port and worker list.
 - **SLURM.** Each engine group runs as its own SLURM step, so an engine exit does not end the job. An engine group is the set of engines that fail together: one engine, or one multi-rank DP/EP group (a P/D role replica, or a replica with expert parallelism). When one engine in a group exits, its whole group is torn down and restarted 10 s later. The trainer, orchestrator and router still end the job when they fail.
 - **P/D.** `vllm-router` cannot re-add a prefill or decode worker through its API. So a restarted P/D group receives the weight updates again, but it takes traffic only after the router restarts.
 - **Still fatal:**
   - the last engine dying;
-  - NIXL broadcast, which pins its receivers. On SLURM, an engine exit then ends the job, and the same holds for a deployment with a single engine.
+  - on SLURM, an engine exit with filesystem broadcast or with a single engine: it ends the job.
 
 ### Elastic inference
 

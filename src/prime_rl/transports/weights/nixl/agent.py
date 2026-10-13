@@ -7,7 +7,7 @@ import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from torch import Tensor
 
@@ -29,6 +29,12 @@ def group_notification(group_index: int, generation: int) -> str:
 
 def policy_notification(step: int, event: str) -> str:
     return f"policy:{step:016x}:{event}"
+
+
+def drop_marker(step_dir: Path, rank: int) -> Path:
+    """Written by the orchestrator when inference rank ``rank`` dies or hangs during this version's
+    transfer: the trainer stops waiting for it and its worker stops pulling."""
+    return step_dir / f".drop_{rank}"
 
 
 class NixlAgent:
@@ -85,6 +91,9 @@ class NixlAgent:
         if state in ("ERR", "ERROR", "FAIL"):
             raise RuntimeError(f"NIXL READ post failed with state {state}")
 
+    def remove_remote_agent(self, peer: NixlPeer) -> None:
+        self._agent.remove_remote_agent(peer.remote_agent_name)
+
     def send_notification(self, peer: NixlPeer, notification: str) -> None:
         self._agent.send_notif(peer.remote_agent_name, notification)
 
@@ -95,13 +104,20 @@ class NixlAgent:
         *,
         timeout: float,
         cancelled: Callable[[], bool] | None = None,
+        skip: Callable[[], Iterable[str]] | None = None,
     ) -> None:
+        """Wait until every peer sent ``notification``. ``skip`` returns the names of peers to stop
+        waiting for; it is polled once a second."""
         pending = {peer.remote_agent_name for peer in peers}
         encoded_notification = notification.encode()
         deadline = time.monotonic() + timeout
+        next_skip = 0.0
         while pending:
             if cancelled is not None and cancelled():
                 raise RuntimeError("NIXL notification wait cancelled")
+            if skip is not None and time.monotonic() >= next_skip:
+                pending.difference_update(skip())
+                next_skip = time.monotonic() + 1.0
             for sender, messages in self._agent.get_new_notifs(backends=["UCX"]).items():
                 self._notifications.setdefault(sender, []).extend(messages)
             for sender in list(pending):

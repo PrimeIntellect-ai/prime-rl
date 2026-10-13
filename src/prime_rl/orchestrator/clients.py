@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import time
 from collections.abc import Awaitable, Callable
@@ -217,17 +216,18 @@ class AdminPlane:
         step: int = 0,
         on_paused: Callable[[], None] | None = None,
         on_membership_change: Callable[[list[AsyncClient], int], Awaitable[None]] | None = None,
-        abort_marker: Callable[[], Path] | None = None,
+        abort: Callable[[AsyncClient], None] | None = None,
         resend: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         """Update every inference engine through its configured weight transport.
 
         While ``monitor_health`` runs, failing engines are evicted instead of failing the update.
         ``on_membership_change(members, generation)`` runs with the engines paused, before the
-        version is acknowledged, whenever the set of updating engines changed. With
-        ``abort_marker``, an engine that dies during the transfer makes the update write that
-        file, so the trainer and the other engines abort the collective. ``resend()`` then tells
-        whether the trainer aborted and will send the version again to the regrouped survivors."""
+        version is acknowledged, whenever the set of updating engines changed; it may evict
+        engines it fails to set up. ``abort(engine)`` runs as soon as an engine dies or hangs
+        during the transfer, so the trainer and the other engines stop waiting for it.
+        ``resend()`` then tells whether the trainer aborted and will send the version again to the
+        regrouped survivors (NCCL); without it the survivors finish the transfer (NIXL)."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
         rejoining = self._rejoining()
         self.updating = True
@@ -245,10 +245,12 @@ class AdminPlane:
                         self.generation += 1
                         if on_membership_change is not None:
                             await on_membership_change(members, self.generation)
+                            members = self._standing(members)
+                            self.members = list(members)
                     if on_paused is not None:
                         on_paused()
                         on_paused = None
-                    members, retry = await self._transfer(members, weight_dir_posix, abort_marker, resend)
+                    members, retry = await self._transfer(members, weight_dir_posix, abort, resend)
                     if not retry:
                         break
             finally:
@@ -257,21 +259,6 @@ class AdminPlane:
             self.updating = False
         self.version = step
         await self._readmit(rejoining, resumed, step)
-
-    async def load_lora_adapter(self, lora_name: str, lora_path: Path, *, step: int = 0) -> None:
-        """Load the adapter on every engine, plus any recovered engine, which rejoins once it has
-        the adapter. Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not
-        reset here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``)
-        so KV computed under old weights is never reused."""
-        rejoining = self._rejoining()
-        loaded = await self._each(
-            self.clients + rejoining,
-            "/load_lora_adapter",
-            post=_post_lora_adapter,
-            json={"lora_name": lora_name, "lora_path": lora_path.as_posix()},
-        )
-        self.version = step
-        await self._readmit(rejoining, loaded, step)
 
     def _rejoining(self) -> list[AsyncClient]:
         """Evicted engines whose whole group answers again."""
@@ -294,46 +281,61 @@ class AdminPlane:
         self,
         members: list[AsyncClient],
         weight_dir: str | None,
-        abort_marker: Callable[[], Path] | None,
+        abort: Callable[[AsyncClient], None] | None,
         resend: Callable[[], Awaitable[bool]] | None,
     ) -> tuple[list[AsyncClient], bool]:
         """Run ``/update_weights`` on ``members``. Returns the members still standing and whether
         the transfer was aborted and must run again."""
-        if not self.evicting or abort_marker is None or resend is None:
+        if not self.evicting or abort is None:
             json = {"weight_dir": weight_dir}
             return await self._each(members, "/update_weights", json=json, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S), False
 
         async def update(client: AsyncClient) -> None:
-            # One attempt: retrying a collective receive cannot succeed on its own.
+            # One attempt: retrying a collective receive cannot succeed on its own. No read timeout:
+            # the deadline below tells a hung engine from the ones waiting behind it.
             response = await client.post(
                 "/update_weights",
                 json={"weight_dir": weight_dir},
-                timeout=httpx.Timeout(connect=10.0, read=UPDATE_WEIGHTS_TIMEOUT_S, write=60.0, pool=10.0),
+                timeout=httpx.Timeout(connect=10.0, read=None, write=60.0, pool=10.0),
             )
             response.raise_for_status()
 
         tasks = {asyncio.create_task(update(client)): client for client in members}
         dead: list[AsyncClient] = []
         failed: list[AsyncClient] = []
-        marker: Path | None = None
+
+        def drop(client: AsyncClient, error: object) -> None:
+            dead.append(client)
+            abort(client)
+            get_logger().warning(f"Aborting the weight transfer to {client.base_url} ({error!r})")
+
         pending = set(tasks)
         while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(
+                pending, timeout=UPDATE_WEIGHTS_TIMEOUT_S, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                # The engines still in the transfer wait for each other, so they all hit the deadline.
+                # The ones whose server does not answer are hung and the others get another round.
+                # If every server answers, all of them are dropped.
+                answers = await asyncio.gather(*(_answers(tasks[task]) for task in pending))
+                hung = {task for task, ok in zip(pending, answers) if not ok} or set(pending)
+                for task in hung:
+                    task.cancel()
+                    drop(tasks[task], f"no answer after {UPDATE_WEIGHTS_TIMEOUT_S:.0f}s")
+                pending -= hung
+                continue
             for task in done:
-                client = tasks[task]
                 error = task.exception()
-                if isinstance(error, httpx.TransportError):
-                    # Gone or hung: the collective cannot finish, so abort it everywhere
-                    dead.append(client)
-                    if marker is None:
-                        marker = abort_marker()
-                        marker.touch()
-                        get_logger().warning(f"Aborting the weight transfer: {client.base_url} failed ({error!r})")
+                # Gone: the transfer cannot finish while the others wait for it. Without a resend
+                # the survivors are not aborted, so any failure means it stopped pulling.
+                if isinstance(error, httpx.TransportError) or (error is not None and resend is None):
+                    drop(tasks[task], error)
                 elif error is not None:
-                    failed.append(client)
+                    failed.append(tasks[task])
         for client in dead:
             await self._evict(client, "weight update failed")
-        if marker is not None and await resend():
+        if dead and resend is not None and await resend():
             return self._standing(members), True
         for client in failed:
             await self._evict(client, "weight update failed")
@@ -551,20 +553,18 @@ class AdminPlane:
                     f"Could not {'add' if routed else 'remove'} {url} on router {router.base_url}: {error!r}"
                 )
 
-    async def _each(
-        self, clients: list[AsyncClient], op: str, *, post: Callable[..., Awaitable[None]] | None = None, **kwargs
-    ) -> list[AsyncClient]:
+    async def _each(self, clients: list[AsyncClient], op: str, **kwargs) -> list[AsyncClient]:
         """Run one admin op on every client; evict the ones that fail and return the rest. Without
         eviction (``monitor_health`` not running), a failure raises."""
         if not self.evicting:
-            post = post or _admin_post
-            await asyncio.gather(*(post(client, op, **kwargs) for client in clients))
+            await asyncio.gather(*(_admin_post(client, op, **kwargs) for client in clients))
             return list(clients)
         # One attempt: an engine that fails is evicted and rejoins once it answers again. Retrying
         # could reach a relaunched engine on the same port that has neither the weights nor the
         # weight broadcast group.
-        post = post or functools.partial(_admin_post, attempts=1)
-        results = await asyncio.gather(*(post(client, op, **kwargs) for client in clients), return_exceptions=True)
+        results = await asyncio.gather(
+            *(_admin_post(client, op, attempts=1, **kwargs) for client in clients), return_exceptions=True
+        )
         succeeded = []
         for client, result in zip(clients, results):
             if isinstance(result, Exception):
@@ -749,6 +749,14 @@ def _urls(clients) -> str:
     return ", ".join(str(client.base_url) for client in clients)
 
 
+async def _answers(client: AsyncClient) -> bool:
+    try:
+        response = await client.get("/health", timeout=10.0)
+    except httpx.HTTPError:
+        return False
+    return response.status_code == 200
+
+
 async def _is_live(client: AsyncClient) -> bool:
     try:
         response = await client.get("/liveness", timeout=60.0)
@@ -778,8 +786,8 @@ def _is_retryable_admin_error(exception: BaseException) -> bool:
 # (mode="keep") and so can legitimately take a while.
 ADMIN_TIMEOUT_S = 300.0
 # `/update_weights` runs a collective NCCL receive across all DP workers, which
-# can take longer than the other admin ops. Keep it below the trainer's collective timeout:
-# it is what detects an engine that hangs during the transfer.
+# can take longer than the other admin ops. Keep it below the trainer's collective timeout
+# and the NIXL weight_broadcast.timeout: it is what detects an engine that hangs during the transfer.
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
@@ -829,20 +837,35 @@ LORA_LOAD_READ_TIMEOUT_S = 30.0
 LORA_LOAD_TOTAL_TIMEOUT_S = 120.0
 
 
-@retry(
-    retry=retry_if_exception(_is_retryable_lora_error),
-    stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    reraise=True,
-)
-async def _post_lora_adapter(client: AsyncClient, path: str, *, json: dict[str, str]) -> None:
-    """POST ``/load_lora_adapter``, retrying with exponential backoff if the adapter files are
-    not found yet, which can happen due to NFS propagation delays."""
-    get_logger().debug(f"Sending request to load LoRA adapter {json['lora_name']} from {json['lora_path']}")
-    response = await client.post(
-        path, json=json, timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0)
+async def load_lora_adapter(admin_plane: AdminPlane, lora_name: str, lora_path: Path) -> None:
+    """Make a HTTP post request to the vLLM server to load a LoRA adapter.
+
+    Uses our wrapper around vLLM's /v1/load_lora_adapter. The prefix cache is not reset
+    here; the orchestrator salts it per weight version (see ``orchestrator/envs.py``) so
+    KV computed under old weights is never reused.
+
+    Retries with exponential backoff if the adapter files are not found,
+    which can happen due to NFS propagation delays.
+    """
+    logger = get_logger()
+    lora_path_posix = lora_path.as_posix()
+
+    @retry(
+        retry=retry_if_exception(_is_retryable_lora_error),
+        stop=stop_after_delay(LORA_LOAD_TOTAL_TIMEOUT_S) | stop_after_attempt(10),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
     )
-    response.raise_for_status()
+    async def _load_lora_adapter(admin_client: AsyncClient) -> None:
+        logger.debug(f"Sending request to load LoRA adapter {lora_name} from {lora_path}")
+        response = await admin_client.post(
+            "/load_lora_adapter",
+            json={"lora_name": lora_name, "lora_path": lora_path_posix},
+            timeout=httpx.Timeout(connect=10.0, read=LORA_LOAD_READ_TIMEOUT_S, write=60.0, pool=10.0),
+        )
+        response.raise_for_status()
+
+    await asyncio.gather(*[_load_lora_adapter(client) for client in admin_plane.clients])
 
 
 async def init_nixl_broadcast(

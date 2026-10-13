@@ -336,7 +336,7 @@ class DynamoAdminPlane(AdminPlane):
         on_paused: Callable[[], None] | None = None,
         # Dynamo pins one worker and never evicts it, so the eviction hooks are unused
         on_membership_change: Callable[[list[httpx.AsyncClient], int], Awaitable[None]] | None = None,
-        abort_marker: Callable[[], Path] | None = None,
+        abort: Callable[[httpx.AsyncClient], None] | None = None,
         resend: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         if transport != "nccl":
