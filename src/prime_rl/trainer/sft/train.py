@@ -25,6 +25,7 @@ from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
+    set_fp8_qat_step,
     forward,
     get_full_offload_dtype_policy,
     get_expert_load_stats,
@@ -400,6 +401,7 @@ def train(config: SFTConfig):
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
     while True:
+        set_fp8_qat_step(model, progress.step)
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:

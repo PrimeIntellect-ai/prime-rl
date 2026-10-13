@@ -40,6 +40,7 @@ from prime_rl.trainer.rl.loss import (
 from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
+    set_fp8_qat_step,
     forward,
     get_full_offload_dtype_policy,
     get_expert_load_stats,
@@ -252,6 +253,7 @@ def train(config: TrainerConfig):
     start_step = progress.step
     max_peak_memory = 0.0
     while True:
+        set_fp8_qat_step(model, progress.step)
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
