@@ -31,6 +31,8 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    monkey_patch_deepseek_v4_c128_boundary()
+    monkey_patch_deepseek_v4_attn_sink_loading()
     if os.environ.get("PRIME_RETURN_SAMPLING_MASK_LOGPROBS") == "1":
         monkey_patch_sampling_mask_logprobs()
 
@@ -133,6 +135,87 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
 
     allow_deepseek_v4_layer_types()
+
+
+def monkey_patch_deepseek_v4_c128_boundary():
+    """Fix DeepSeek V4 long-context KV corruption under piecewise CUDA graphs.
+
+    On vLLM 0.30+, including the pinned 0.31.0, the piecewise CUDA graphs are captured on a step
+    that skips writing C128 compressed KV, so every replay skips it too. Mixed batches of up to
+    512 tokens never store their C128 entries, later queries attend over stale compressed KV, and
+    long-context rollouts drift from the trainer, inflating mismatch KL.
+
+    The skip is an optimization: ``DeepseekCompressor.forward`` returns early when
+    ``_get_c128_boundary`` reports that no request completes a 128-token block this step.
+    vllm-project/vllm#55353 made that helper return a bool under Model Runner V2, so capture on
+    dummy batches records the early return. Returning None instead disables the skip, which is
+    the path vLLM already takes under async speculative decoding and the one 0.29 always took.
+
+    The upstream fix, vllm-project/vllm#59709, keeps the skip on eager steps and only stops it
+    from being captured. That change sits inline in ``forward``, so matching it here would mean
+    copying the whole method. Patching the helper costs one extra compress kernel launch on eager
+    steps that complete no block, and the kernel already skips those tokens on the GPU.
+
+    Remove this patch once vllm-project/vllm#59709 lands in the pinned vLLM version.
+    """
+    from vllm.logger import init_logger
+    from vllm.models.deepseek_v4 import compressor
+
+    if getattr(compressor._get_c128_boundary, "_prime_rl_always_compresses", False):
+        return
+
+    def _get_c128_boundary(metadata):
+        return None
+
+    _get_c128_boundary._prime_rl_always_compresses = True
+    compressor._get_c128_boundary = _get_c128_boundary
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 C128 compressor store runs on every step.")
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """Fix DeepSeek V4 weight updates silently keeping the boot-time attention sinks.
+
+    ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
+    ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
+    that go through a loader, so the copy is silently dropped. This pads this rank's heads back
+    to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
+
+    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
+    ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 attn_sink loads through param.weight_loader.")
 
 
 def monkey_patch_online_fp8_parameter_cast():
