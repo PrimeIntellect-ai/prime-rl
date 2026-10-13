@@ -21,6 +21,7 @@ def apply_shared_vllm_patches():
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
+    monkey_patch_glm5_next_allowed_layer_types()
     monkey_patch_tokenize_params_validation()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
@@ -45,6 +46,13 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
 
     allow_deepseek_v4_layer_types()
+
+
+def monkey_patch_glm5_next_allowed_layer_types():
+    """Let vLLM's `Glm5NextConfig` construct under the pinned transformers (see `allow_glm5_next_layer_types`)."""
+    from prime_rl.utils.transformers_compat import allow_glm5_next_layer_types
+
+    allow_glm5_next_layer_types()
 
 
 def monkey_patch_online_fp8_parameter_cast():
