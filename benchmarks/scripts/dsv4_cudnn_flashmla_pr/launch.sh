@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run DSv4 dsa_backend A/B arms serially on one exclusive node held by SLURM job JOBID, each from a frozen
-# detached worktree at its SHA with fresh per-run compile caches.
+# detached worktree at its SHA with fresh per-run compile caches on the node's local /tmp, since ranks sharing a
+# Triton cache on NFS race on its files.
 #
 # usage (login node; every heavy step runs on the job's node through srun):
 #   launch.sh JOBID ARM [ARM ...] [-- EXTRA_SFT_ARGS ...]
@@ -26,7 +27,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 SEED_WORKTREE=$(git -C "$HERE" rev-parse --show-toplevel)
 REPO_PARENT=$HOME/github/PrimeIntellect-ai
 OUTPUT_ROOT=/home/garrett/prl_output_dir/dsv4-cfm-pr
-CACHE_ROOT=$HOME/tmp/profiling/caches/dsv4-cfm-pr
+CACHE_ROOT=/tmp/dsv4-cfm-pr-$USER
+CONFIG_ROOT=$HOME/tmp/dsv4-cfm-pr/configs
 CONFIG_SOURCE=$HERE/sft.toml
 
 on_node() {
@@ -64,17 +66,17 @@ for arm in "${ARMS[@]}"; do
   name="dsv4-flash-6L-sft-65k-cp8-ep8-$backend-$label-$sha"
   tags="[\"dsa-backend-ab\",\"compile-once\",\"$backend\",\"arm-$label\",\"6-layers\",\"seq65536\",\"cp8\",\"ep8\",\"intellect-4-sft-swe\",\"$sha\"]"
   cache_dir=$CACHE_ROOT/$name
-  rm -rf "$cache_dir"
-  mkdir -p "$cache_dir"/{tilelang,triton,inductor,cuda}
-  cp "$CONFIG_SOURCE" "$cache_dir/sft.toml"
+  config=$CONFIG_ROOT/$name.toml
+  mkdir -p "$CONFIG_ROOT"
+  cp "$CONFIG_SOURCE" "$config"
   env_vars="{\"TILELANG_CACHE_DIR\":\"$cache_dir/tilelang\",\"TRITON_CACHE_DIR\":\"$cache_dir/triton\","
   env_vars+="\"TORCHINDUCTOR_CACHE_DIR\":\"$cache_dir/inductor\",\"CUDA_CACHE_PATH\":\"$cache_dir/cuda\","
   env_vars+="\"TORCH_LOGS\":\"recompiles\"}"
   echo "[$(date -u +%FT%TZ)] $name from $frozen" >&2
-  on_node "cd $frozen && env -u HF_HOME \
+  on_node "rm -rf $cache_dir && mkdir -p $cache_dir/{tilelang,triton,inductor,cuda} && cd $frozen && env -u HF_HOME \
     HF_HUB_CACHE=/home/huggingface/hub \
     PRL_OUTPUT_DIR=$OUTPUT_ROOT \
-    uv run --no-sync sft @ $cache_dir/sft.toml \
+    uv run --no-sync sft @ $config \
       --run.name $name \
       --model.dsa-backend $backend \
       --env-vars '$env_vars' \

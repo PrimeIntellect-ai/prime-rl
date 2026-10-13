@@ -49,7 +49,7 @@ def load_metrics(run_dir: Path) -> dict[int, dict[str, float]]:
 
 
 def rank_dirs(run_dir: Path) -> dict[int, Path]:
-    attempts = sorted((run_dir / "logs/trainer/torchrun").glob("*/attempt_0"))
+    attempts = sorted((run_dir / "logs/latest/trainer/torchrun").glob("*/attempt_0"))
     assert attempts, f"no torchrun logs under {run_dir}"
     return {int(path.name): path for path in attempts[-1].iterdir() if path.name.isdigit()}
 
