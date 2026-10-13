@@ -41,6 +41,7 @@ from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
+    PreTrainedModelPrimeRL,
     PrimeLmOutput,
     cast_float_and_contiguous,
     get_custom_causal_lm_cls,
@@ -149,10 +150,20 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
+def get_fp32_modules(model: nn.Module) -> list[nn.Module]:
+    """Modules the model keeps in fp32 for compute (see `PreTrainedModelPrimeRL.fp32_modules`)."""
+    return model.fp32_modules() if isinstance(model, PreTrainedModelPrimeRL) else []
+
+
 def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    return {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    for module in get_fp32_modules(model):
+        for param in module.parameters():
+            if param.is_floating_point():
+                policy[id(param)] = (torch.float32, torch.float32)
+    return policy
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -490,6 +501,25 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model)
     transformer_layers = language_model.layers
 
+    fp32_modules = get_fp32_modules(model)
+    if fp32_modules and config.compile is not None and config.compile.fullgraph:
+        raise ValueError(
+            "model.compile.fullgraph=true is not supported for this model: its fp32 modules are FSDP units "
+            "inside the compiled blocks, and dynamo cannot trace FSDP hooks."
+        )
+    for module in fp32_modules:
+        # The module converts its inputs itself. Its parameters are small and stay unsharded until its
+        # backward, so the backward and activation-checkpoint recompute need no second all-gather.
+        fully_shard(
+            module,
+            mesh=hsdp_mesh,
+            mp_policy=MixedPrecisionPolicy(
+                param_dtype=torch.float32, reduce_dtype=torch.float32, cast_forward_inputs=False
+            ),
+            offload_policy=offload_policy,
+            reshard_after_forward=False,
+            shard_placement_fn=shard_placement_fn,
+        )
     for transformer_block in transformer_layers:
         block_mlp = getattr(transformer_block, "mlp", None)
         block_fsdp_config = fsdp_config
@@ -549,7 +579,21 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     )
     model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
+    fp32_module_ids = {id(module) for module in fp32_modules}
+
+    def fp32_units_in(block: nn.Module) -> list[nn.Module]:
+        return [module for module in block.modules() if id(module) in fp32_module_ids]
+
     if not parallel_dims.ep_enabled:
+        if fp32_modules:
+            # The fp32 units come between blocks in FSDP's post-forward order, so its implicit backward
+            # prefetch would pick a block's own (still unsharded) fp32 units instead of the previous block,
+            # or of the embedding for the first block. The EP setup below sets these lists itself.
+            embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+            if shard_norm_and_lm_head and embed_module is not None and len(transformer_layers) > 0:
+                transformer_layers[0].set_modules_to_backward_prefetch([embed_module])
+            for transformer_block, prev_transformer_block in zip(transformer_layers[1:], transformer_layers[:-1]):
+                transformer_block.set_modules_to_backward_prefetch([prev_transformer_block])
         return
 
     # if EP is enabled, d2h syncs in the dispatch/combine can interfere with FSDP prefetch, that's why we set it below manually
@@ -561,12 +605,13 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
     if embed_module is not None and len(language_model.layers) > 0:
         if shard_norm_and_lm_head:
-            embed_module.set_modules_to_forward_prefetch([transformer_blocks[0]])
+            embed_module.set_modules_to_forward_prefetch([transformer_blocks[0], *fp32_units_in(transformer_blocks[0])])
 
     for transformer_block, next_transformer_block in zip(transformer_blocks, next_transformer_blocks):
         if next_transformer_block is not None:
             next_mlp = getattr(next_transformer_block, "mlp", None)
-            prefetch_modules = [next_transformer_block]
+            # Also the next block's small fp32 units, which its forward unshards right after the block itself.
+            prefetch_modules = [next_transformer_block, *fp32_units_in(next_transformer_block)]
             if isinstance(next_mlp, MoE) and isinstance(next_mlp.router, FSDPModule):
                 prefetch_modules.append(next_mlp.router)
             transformer_block.set_modules_to_forward_prefetch(prefetch_modules)
@@ -944,6 +989,9 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    for module in get_fp32_modules(model):
+        module.to(torch.float32)
 
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.

@@ -3,6 +3,7 @@ import torch
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4ForCausalLM
 from prime_rl.trainer.models.glm4_moe import Glm4MoeForCausalLM
+from prime_rl.trainer.models.glm5_next import Glm5NextForCausalLM
 from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaForCausalLM
 from prime_rl.trainer.models.nemotron_h import NemotronHForCausalLM
 from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM
@@ -34,6 +35,16 @@ def test_resolve_wire_dtype():
         (Glm4MoeForCausalLM, "model.layers.0.mlp.router.selection_bias", "model.layers.0.self_attn.q_proj.weight"),
         (GlmMoeDsaForCausalLM, "model.layers.0.mlp.router.selection_bias", "model.layers.0.self_attn.q_proj.weight"),
         (DeepseekV4ForCausalLM, "model.layers.0.attn_hc.fn", "model.layers.0.self_attn.q_b_proj.weight"),
+        (
+            Glm5NextForCausalLM,
+            "model.language_model.layers.0.self_attn.decay.A_log",
+            "model.language_model.layers.0.self_attn.q_proj.weight",
+        ),
+        (
+            Glm5NextForCausalLM,
+            "model.language_model.layers.0.attn_hc.fn",
+            "model.language_model.layers.1.mlp.router.gate.weight",
+        ),
     ],
 )
 def test_declared_keys_travel_in_fp32(model_cls, fp32_key, ordinary_key):

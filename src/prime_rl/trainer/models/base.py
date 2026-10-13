@@ -69,11 +69,23 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        """Whether a tensor is stored in FP32 in the source checkpoint.
+        """Whether a tensor goes to inference in FP32 instead of the transfer dtype.
 
-        Runtime upcasts for training or inference do not change the wire dtype.
+        True for tensors stored in FP32 in the source checkpoint, and for parameters that train in FP32
+        (see `fp32_modules`) and that inference also holds in FP32. Other runtime upcasts do not change
+        the wire dtype.
         """
         return False
+
+    def fp32_modules(self) -> list[nn.Module]:
+        """Small modules whose parameters train and compute in fp32 instead of the bf16 compute dtype.
+
+        Each becomes its own FSDP unit with an fp32 policy (also fp32 at rest under full offload), so it
+        must own only fp32 parameters. FSDP does not cast its inputs. Its forward must not return its
+        parameters themselves: FSDP hooks every forward output that requires grad, and a parameter would
+        collect one hook per forward call.
+        """
+        return []
 
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):

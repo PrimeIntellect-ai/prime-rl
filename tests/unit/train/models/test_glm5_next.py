@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from prime_rl.trainer.model import get_full_offload_dtype_policy
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig, sparse_attention
 from prime_rl.trainer.vlm import get_language_model
@@ -51,6 +52,7 @@ def test_config_and_checkpoint_roundtrip(config):
     apply_prime_to_hf(converted, operations)
     assert model.is_hf_state_dict(converted) and not model.is_prime_state_dict(converted)
     assert any(name.endswith("layers.0.hc_attn_fn") for name in converted)
+    assert any(name.endswith("layers.0.self_attn.A_log") for name in converted)
     assert any(name.endswith("layers.1.mlp.experts.3.down_proj.weight") for name in converted)
     apply_hf_to_prime(converted, operations)
     assert converted.keys() == original.keys()
@@ -83,3 +85,16 @@ def test_kpool_indexer_ignores_selection_order(monkeypatch, reverse):
         selected = list(range(max(document_start, complete_end - 16), token + 1))
         expected.append(selected + [40] * (indexer.output_width - len(selected)))
     assert indices.sort(dim=1).values.tolist() == expected
+
+
+def test_fp32_modules_stay_fp32_at_rest_and_on_the_wire(config):
+    with torch.device("meta"):
+        model = Glm5NextForCausalLM(config)
+    fp32_params = {id(param) for module in model.fp32_modules() for param in module.parameters()}
+    assert fp32_params
+    policy = get_full_offload_dtype_policy(model)
+    for name, param in model.named_parameters():
+        dtype = torch.float32 if id(param) in fp32_params else torch.bfloat16
+        assert policy[id(param)] == (dtype, dtype), name
+        if id(param) in fp32_params:
+            assert model.keep_in_fp32_for_weight_transfer(name), name
