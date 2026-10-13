@@ -215,8 +215,8 @@ requires_cudnn_flashmla = pytest.mark.skipif(
     importlib.util.find_spec("flash_mla") is None
     or importlib.util.find_spec("cudnn") is None
     or not torch.cuda.is_available()
-    or torch.cuda.get_device_capability()[0] != 9,
-    reason="the cudnn_flashmla backend needs the `flash-mla` extra, the cuDNN frontend and an SM90 GPU",
+    or (torch.cuda.get_device_capability()[0] != 9 and torch.cuda.get_device_capability() not in ((10, 0), (10, 3))),
+    reason="the cudnn_flashmla backend needs the `flash-mla` extra, the cuDNN frontend and an SM90, SM100 or SM103 GPU",
 )
 
 DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
@@ -516,9 +516,11 @@ def test_cudnn_flashmla_backward_compiles_one_main_kernel_for_every_width():
     DeepSeek-V4-Flash's widest HCA layer, `128 + 1048576 // 128`.
     """
     from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
 
     batch, seq_len, max_slots = 1, 64, 8320
-    flash_attn_bwd_sm90.compile_cache.clear()
+    bwd = flash_attn_bwd_sm90 if torch.cuda.get_device_capability()[0] == 9 else flash_attn_bwd_sm100
+    bwd.compile_cache.clear()
     for width in (128, 640, max_slots):
         q, kv, _, sinks = _inputs(batch, seq_len, max_slots)
         indices = _build_indices(batch, seq_len, max_slots, MASKED_FRACTION, topk=width)
@@ -535,7 +537,7 @@ def test_cudnn_flashmla_backward_compiles_one_main_kernel_for_every_width():
 
         _assert_relative(kernel_q.grad, reference_q.grad, DQ_RTOL, f"dq at width {width}")
         _assert_relative(kernel_kv.grad, reference_kv.grad, DKV_RTOL, f"dkv at width {width}")
-    assert len(flash_attn_bwd_sm90.compile_cache) == 1
+    assert len(bwd.compile_cache) == 1
 
 
 @pytest.mark.parametrize("backend", DSV4_BACKENDS)

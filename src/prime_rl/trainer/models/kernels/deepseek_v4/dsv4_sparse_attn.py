@@ -100,8 +100,11 @@ def _cudnn_flashmla_shape_error(heads: int, kv_group: int, dim: int) -> str | No
         return f"FlashMLA's sparse prefill serves 64 or 128 query heads, but this shape has {heads}"
     if dim != 512:
         return f"FlashMLA's sparse prefill and the cuDNN backward need head_dim 512 here, but it is {dim}"
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9:
-        return "the cudnn_flashmla backend runs on SM90 only; its SM100 paths are untested for DeepSeek V4"
+    if not torch.cuda.is_available():
+        return "the cudnn_flashmla backend needs a CUDA GPU"
+    capability = torch.cuda.get_device_capability()
+    if capability[0] != 9 and capability not in ((10, 0), (10, 3)):
+        return f"the cudnn_flashmla backend runs on SM90, SM100 and SM103, but this GPU is {capability}"
     return None
 
 
@@ -150,8 +153,9 @@ def _tilelang_forward(
     return out, lse
 
 
-# FlashMLA's SM90 sparse prefill reads slots two 64-wide tiles at a time, so it needs a multiple of 128.
-# The cuDNN backward compiles one kernel for every width (`cudnn_dsa_compile`), so nothing pads further.
+# FlashMLA's SM90 sparse prefill reads slots two 64-wide tiles at a time, so it needs a multiple of 128, which
+# SM100 accepts too and which meets the clamped SM100 cuDNN backward's multiple of 64. The cuDNN backward
+# compiles one kernel for every width (`cudnn_dsa_compile`), so nothing pads further.
 CUDNN_FLASHMLA_SLOT_TILE = 128
 
 
@@ -306,24 +310,45 @@ def _cudnn_flashmla_backward(
     sm_scale: float | None,
     max_slots: int | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    from prime_rl.trainer.models.kernels.cudnn_dsa_compile import flash_attn_bwd_sm90
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+        flash_attn_bwd_sm100_workspace_size,
+    )
+
+    from prime_rl.trainer.models.kernels.cudnn_dsa_compile import flash_attn_bwd_sm90, flash_attn_bwd_sm100
 
     batch, seq_len, heads, dim = q.shape
     n_positions = kv.shape[1]
     flat_indices, topk_length = _flat_cudnn_flashmla_indices(indices, n_positions)
-    # A sink-inclusive natural-log LSE with no `attn_sink` makes cuDNN's `exp(s - lse)` exactly the
-    # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
-    dq, dkv = flash_attn_bwd_sm90(
+    flat_tensors = (
         q.view(batch * seq_len, heads, dim),
         kv.view(batch * n_positions, dim),
         out.view(batch * seq_len, heads, dim),
         grad_out.view(batch * seq_len, heads, dim),
+        # A sink-inclusive natural-log LSE with no sink makes cuDNN's `exp(s - lse)` exactly the
+        # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
         (lse * math.log(2.0)).view(batch * seq_len, heads),
-        softmax_scale=sm_scale,
-        topk_idxs=flat_indices,
-        topk_length=topk_length,
-        max_slots=cudnn_flashmla_slot_width(max_slots),
     )
+    if torch.cuda.get_device_capability(q.device)[0] == 9:
+        dq, dkv = flash_attn_bwd_sm90(
+            *flat_tensors,
+            softmax_scale=sm_scale,
+            topk_idxs=flat_indices,
+            topk_length=topk_length,
+            max_slots=cudnn_flashmla_slot_width(max_slots),
+        )
+    else:
+        # The SM100 kernel folds `attn_sink` into the LSE itself, and a -inf sink folds in nothing.
+        no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
+        workspace_bytes = flash_attn_bwd_sm100_workspace_size(batch * seq_len, batch * n_positions, dim, heads)
+        dq, dkv, _ = flash_attn_bwd_sm100(
+            *flat_tensors,
+            no_sink,
+            flat_indices,
+            softmax_scale=sm_scale,
+            topk_length=topk_length,
+            workspace=torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device),
+            max_slots=cudnn_flashmla_slot_width(max_slots),
+        )
     delta = preprocess(heads, dim)(out, grad_out)
     return dq.view_as(q), dkv.view_as(kv), delta
 

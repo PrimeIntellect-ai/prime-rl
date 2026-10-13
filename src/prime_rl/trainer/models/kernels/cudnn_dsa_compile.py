@@ -1,25 +1,43 @@
-"""The cuDNN frontend's SM90 DSA backward, with a main kernel that compiles once for every slot width.
+"""The cuDNN frontend's SM90 and SM100 DSA backwards, with a main kernel that compiles once for every slot width.
 
-The main kernel reads `max_topk` only to clamp each query's `topk_length`: it sizes no shared memory and
+The SM90 main kernel reads `max_topk` only to clamp each query's `topk_length`: it sizes no shared memory and
 unrolls nothing. The frontend still keys the compile on `max_topk = topk_idxs.shape[-1]`, so every new slot
 width would compile a new kernel. When the caller passes `topk_length`, this builds the kernel with `max_topk`
 at a fixed clamp and keys it on the clamp. Without `topk_length`, `max_topk` stands in for the length, so that
-path (GLM's) keeps the frontend's behavior. Every compile of the three backward kernels (preprocess, main,
+path (GLM's) keeps the frontend's behavior. Every compile of the three SM90 backward kernels (preprocess, main,
 postprocess) is logged at INFO. It leans on private frontend internals (the `compile_cache*` attributes, the
 main key ending in `(have_topk_length, max_topk)`, the `max_topk` kwarg) and raises if they move.
+
+The SM100 `generic_m64` kernel also reads `max_topk` only as a bound on slot loads, plus two launch-geometry
+choices at 1024 and 2048, so it gets the same clamp. A bound above the real width lets the last 64-slot tile
+read past the end of a `topk_idxs` row, so a clamped call refuses a width that is not a multiple of 64. The
+SM100 frontend picks the kernel from the real width before building the key; the clamp applies to
+`generic_m64` only, and the tuned H128 two-CTA kernels keep one compile per width they serve. SM100 has one
+cache, whose single compile is logged, keyed `(backend, ..., max_topk, has_topk_length)`; this raises if that
+layout moves. The `__init__` patch cannot see `topk_length`, so the clamp is set only for the duration of a
+call that passes it.
 """
 
 import time
 from collections.abc import Callable
 
 import cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 as interface_sm90
+import cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 as interface_sm100
 import cudnn.deepseek_sparse_attention.sparse_attention_backward.dsa_bwd_sm90 as kernel_sm90
+import cudnn.deepseek_sparse_attention.sparse_attention_backward.dsa_bwd_sm100 as kernel_sm100
+import cudnn.deepseek_sparse_attention.sparse_attention_backward.dsa_bwd_sm100_deterministic as kernel_sm100_deterministic
 import torch
 
 from prime_rl.utils.logger import get_logger
 
 _topk_clamp: int | None = None
 _stock_init = kernel_sm90.FlashAttentionDSABackwardSm90.__init__
+_sm100_topk_clamp: int | None = None
+_sm100_stock_init = kernel_sm100.FlashAttentionDSABackwardSm100.__init__
+_SM100_GENERIC_KERNELS = (
+    kernel_sm100.FlashAttentionDSABackwardSm100,
+    kernel_sm100_deterministic.FlashAttentionDSABackwardSm100Deterministic,
+)
 
 
 def topk_clamp(max_slots: int) -> int:
@@ -57,10 +75,16 @@ class _ExecutorCache(dict):
     the missed lookup and the assignment is the compile.
     """
 
-    def __init__(self, kernel: str, normalize_key: Callable[[tuple], tuple] = lambda key: key) -> None:
+    def __init__(
+        self,
+        kernel: str,
+        normalize_key: Callable[[tuple], tuple] = lambda key: key,
+        max_topk_position: int | None = None,
+    ) -> None:
         super().__init__()
         self.kernel = kernel
         self.normalize_key = normalize_key
+        self.max_topk_position = max_topk_position
         self.miss_time = 0.0
 
     def __contains__(self, key) -> bool:
@@ -76,7 +100,7 @@ class _ExecutorCache(dict):
         normalized_key = self.normalize_key(key)
         dict.__setitem__(self, normalized_key, compiled)
         seconds = time.perf_counter() - self.miss_time
-        max_topk = f" with max_topk {normalized_key[-1]}" if self.kernel == "main" else ""
+        max_topk = "" if self.max_topk_position is None else f" with max_topk {normalized_key[self.max_topk_position]}"
         get_logger().info(f"Compiled the cuDNN DSA backward {self.kernel} kernel{max_topk} in {seconds:.2f}s")
 
 
@@ -86,7 +110,7 @@ def _install() -> None:
     kernel_sm90.FlashAttentionDSABackwardSm90.__init__ = _init_with_clamped_max_topk
     bwd = interface_sm90.flash_attn_bwd_sm90
     bwd.compile_cache_pre = _ExecutorCache("preprocess")
-    bwd.compile_cache = _ExecutorCache("main", _main_kernel_key)
+    bwd.compile_cache = _ExecutorCache("main", _main_kernel_key, max_topk_position=-1)
     bwd.compile_cache_post = _ExecutorCache("postprocess")
 
 
@@ -99,3 +123,50 @@ def flash_attn_bwd_sm90(*args, max_slots: int | None = None, **kwargs) -> tuple[
             raise ValueError("a cuDNN DSA backward call with topk_length needs max_slots, its widest slot width")
         _topk_clamp = topk_clamp(max_slots)
     return interface_sm90.flash_attn_bwd_sm90(*args, **kwargs)
+
+
+def _sm100_main_kernel_key(key: tuple) -> tuple:
+    backend, *static_key, max_topk, has_topk_length = key
+    if not isinstance(has_topk_length, bool) or not isinstance(max_topk, int):
+        raise RuntimeError(f"the cuDNN SM100 DSA key no longer ends in (max_topk, has_topk_length): {key}")
+    if backend != "generic_m64" or not has_topk_length:
+        return key
+    if _sm100_topk_clamp is None:
+        raise RuntimeError("a cuDNN SM100 DSA backward call with topk_length must go through cudnn_dsa_compile")
+    if max_topk > _sm100_topk_clamp:
+        raise ValueError(f"slot width {max_topk} exceeds the cuDNN DSA backward's compiled clamp {_sm100_topk_clamp}")
+    if max_topk % 64 != 0:
+        raise ValueError(
+            f"the clamped cuDNN SM100 DSA backward needs a slot width that is a multiple of 64, got {max_topk}"
+        )
+    return (backend, *static_key, _sm100_topk_clamp, has_topk_length)
+
+
+def _sm100_init_with_clamped_max_topk(self, element_dtype, head_dim, head_dim_v, block_tile, max_topk=0) -> None:
+    if _sm100_topk_clamp is not None and type(self) in _SM100_GENERIC_KERNELS:
+        max_topk = _sm100_topk_clamp
+    _sm100_stock_init(self, element_dtype, head_dim, head_dim_v, block_tile, max_topk)
+
+
+def _install_sm100() -> None:
+    if kernel_sm100.FlashAttentionDSABackwardSm100.__init__ is _sm100_init_with_clamped_max_topk:
+        return
+    kernel_sm100.FlashAttentionDSABackwardSm100.__init__ = _sm100_init_with_clamped_max_topk
+    interface_sm100.flash_attn_bwd_sm100.compile_cache = _ExecutorCache(
+        "main", _sm100_main_kernel_key, max_topk_position=-2
+    )
+
+
+def flash_attn_bwd_sm100(*args, max_slots: int | None = None, **kwargs) -> tuple[torch.Tensor, ...]:
+    """The frontend's `flash_attn_bwd_sm100`; a call with `topk_length` serves widths up to `max_slots`."""
+    global _sm100_topk_clamp
+    _install_sm100()
+    if kwargs.get("topk_length") is None:
+        return interface_sm100.flash_attn_bwd_sm100(*args, **kwargs)
+    if max_slots is None:
+        raise ValueError("a cuDNN DSA backward call with topk_length needs max_slots, its widest slot width")
+    _sm100_topk_clamp = topk_clamp(max_slots)
+    try:
+        return interface_sm100.flash_attn_bwd_sm100(*args, **kwargs)
+    finally:
+        _sm100_topk_clamp = None
