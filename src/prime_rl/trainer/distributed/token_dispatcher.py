@@ -144,7 +144,8 @@ def _local_reorder(
     ).to(torch.int64)
     route_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
     top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
-    # A route slot is token_index * top_k + expert_slot.
+    # A route slot is token_index * top_k + expert_slot (position among selected experts).
+    # // top_k recovers its token; keep the full slot index to restore outputs in combine.
     routed_input = x[route_indices_experts_sorted // top_k]
     return routed_input, route_indices_experts_sorted, top_scores_experts_sorted, num_tokens_per_expert
 
@@ -168,6 +169,7 @@ def _combine_routed_output(
     # Undo expert-ID sorting so each token's routes can be summed without atomic additions.
     # Each row is written once, so the buffer needs no initialization.
     output = torch.empty_like(routed_output)
+    # Copy source row i to its original slot, route_indices_experts_sorted[i].
     output[route_indices_experts_sorted] = routed_output
     accumulation_dtype = torch.float32 if output.dtype in (torch.bfloat16, torch.float16) else output.dtype
     return output.view(num_tokens, top_k, dim).sum(dim=1, dtype=accumulation_dtype).to(output.dtype)
