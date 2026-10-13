@@ -1,0 +1,17 @@
+max_steps = 5
+
+[model]
+name = "meta-llama/Llama-3.2-1B"
+compile = "None"
+
+[model.arch]
+hidden_size = 256
+num_hidden_layers = 2
+num_attention_heads = 4
+num_key_value_heads = 2
+intermediate_size = 1024
+
+[data]
+type = "fake"
+batch_size = 4
+seq_len = 512
