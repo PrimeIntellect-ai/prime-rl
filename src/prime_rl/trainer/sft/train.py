@@ -257,7 +257,9 @@ def train(config: SFTConfig):
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
             defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
             if not defer_vlm_cp_to_model:
-                input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
+                input_ids, position_ids = setup_cp_params(
+                    input_ids, position_ids, cp_rank, cp_size, seq_lens=micro_batch["seq_lens"]
+                )
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)

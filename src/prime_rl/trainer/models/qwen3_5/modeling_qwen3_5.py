@@ -166,7 +166,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(inputs_embeds.device),
-            total_tokens=inputs_embeds.shape[1] * (self.cp_context.cp_world_size if seq_lens_are_pre_shard else 1),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
@@ -273,6 +273,10 @@ class Qwen3_5VLMModel(nn.Module):
         )
         if image_grid_thw is not None and self.cp_context.cp_enabled:
             rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
+            if int(seq_lens.sum()) != inputs_embeds.shape[1]:
+                raise ValueError(
+                    f"seq_lens sum must equal sequence length: {seq_lens.tolist()} vs {inputs_embeds.shape[1]}"
+                )
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=rank, cp_world_size=world_size)
             if routed_experts is not None:

@@ -317,7 +317,7 @@ class LagunaModel(LagunaPreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
-            total_tokens=inputs_embeds.shape[1] * (self.cp_context.cp_world_size if seq_lens_are_pre_shard else 1),
+            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
