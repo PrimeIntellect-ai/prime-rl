@@ -16,13 +16,30 @@ if TYPE_CHECKING:
     from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
-MegaMoePrecision = Literal["bf16", "mxfp8"]
+MegaMoePrecision = Literal["bf16", "mxfp8", "fp8", "fp8_bwd"]
 _MEGA_MOE_KERNELS: dict[str, tuple[str, ...]] = {
     "bf16": ("bf16_mega_moe", "bf16_mega_moe_backward"),
     "mxfp8": ("fp8_fp4_mega_moe", "fp8_mega_moe_backward"),
+    "fp8": (
+        "fp8_mega_moe",
+        "fp8_mega_moe_backward",
+        "quantize_weight_blockwise_fp8",
+        "quantize_l1_weight_for_fp8_mega_moe",
+    ),
+    "fp8_bwd": ("bf16_mega_moe", "fp8_mega_moe_backward", "quantize_weight_blockwise_fp8"),
 }
-_MEGA_MOE_MMA_TYPE: dict[str, str] = {"bf16": "bf16xbf16", "mxfp8": "fp8xfp8"}
-_MEGA_MOE_MIN_CAPABILITY: dict[str, tuple[int, int]] = {"bf16": (9, 0), "mxfp8": (10, 0)}
+_MEGA_MOE_MMA_TYPE: dict[str, str] = {
+    "bf16": "bf16xbf16",
+    "mxfp8": "fp8xfp8",
+    "fp8": "bf16xbf16",
+    "fp8_bwd": "bf16xbf16",
+}
+_MEGA_MOE_MIN_CAPABILITY: dict[str, tuple[int, int]] = {
+    "bf16": (9, 0),
+    "mxfp8": (10, 0),
+    "fp8": (9, 0),
+    "fp8_bwd": (9, 0),
+}
 _MX_BLOCK = 32
 
 
@@ -78,12 +95,42 @@ def reserve_sms_for_comm(num_reserved_sms: int) -> None:
 
 _BUFFER_CACHE: dict[tuple, object] = {}
 _BUFFER_REGISTRY: dict[int, object] = {}
+_BUFFER_PRECISION: dict[int, str] = {}
 
 
-def register_mega_moe_buffer(buffer) -> int:
+def register_mega_moe_buffer(buffer, precision: MegaMoePrecision = "bf16") -> int:
     key = id(buffer)
     _BUFFER_REGISTRY[key] = buffer
+    _BUFFER_PRECISION[key] = precision
     return key
+
+
+class MegaMoeFP8State:
+    def __init__(
+        self,
+        bwd_buffer,
+        group: ProcessGroup,
+        num_experts: int,
+        num_max_tokens_per_rank: int,
+        top_k: int,
+        hidden: int,
+        intermediate_hidden: int,
+    ):
+        import deep_gemm
+
+        self.bwd_buffer = bwd_buffer
+        self.fwd_buffer = deep_gemm.SymmBuffer(
+            group,
+            num_experts,
+            num_max_tokens_per_rank,
+            top_k,
+            hidden,
+            intermediate_hidden,
+            mma_type="fp8xfp8",
+            base=bwd_buffer,
+        )
+        self.num_topk = top_k
+        self.mma_type = "fp8_blockwise"
 
 
 def build_mega_moe_buffer(
@@ -98,6 +145,18 @@ def build_mega_moe_buffer(
     import deep_gemm
 
     check_mega_moe_dims(hidden, intermediate_hidden)
+    if precision == "fp8":
+        key = (id(group), num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden, "fp8_blockwise")
+        state = _BUFFER_CACHE.get(key)
+        if state is None:
+            bwd_buffer = build_mega_moe_buffer(
+                group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden, "bf16"
+            )
+            state = MegaMoeFP8State(
+                bwd_buffer, group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden
+            )
+            _BUFFER_CACHE[key] = state
+        return state
     mma_type = _MEGA_MOE_MMA_TYPE[precision]
     key = (id(group), num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden, mma_type)
     buffer = _BUFFER_CACHE.get(key)
@@ -120,18 +179,8 @@ def _stage_inputs(buffer, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights:
     _stage_routing(buffer, num_tokens, topk_idx, topk_weights)
 
 
-# --- MXFP8 quantization -------------------------------------------------------------------------
-# MX scale blocks run along the contraction axis, so every operand of the backward needs a copy
-# quantized along the axis that GEMM contracts over: the forward operands (scaled along K of the
-# forward GEMMs) serve the Z recompute, while `dX` and `dz = dy @ W2` need the weights scaled
-# along 2I and H respectively. The kernels take packed UE8M0 scales in DeepGEMM's MN-major TMA
-# layout with the UTCCP 128-row transpose applied; L1 rows are gate/up interleaved at 8 rows.
-
-
 def _mx_cast(x: torch.Tensor, along_rows: bool) -> tuple[torch.Tensor, torch.Tensor]:
-    """E4M3 cast of a 2D tensor with a 1x32 power-of-two scale per block, keeping ``x``'s storage
-    layout. ``along_rows=False`` scales 32-wide blocks along the last dim (scales ``[rows, cols/32]``),
-    ``along_rows=True`` along the first dim (scales ``[cols, rows/32]``)."""
+
     from prime_rl.trainer.models.kernels.fp8_utils import _per_token_fp8_kernel, ceil_div
 
     assert x.dim() == 2
@@ -167,13 +216,11 @@ def _mx_cast(x: torch.Tensor, along_rows: bool) -> tuple[torch.Tensor, torch.Ten
 
 
 def _pack_ue8m0_k_major(sf: torch.Tensor) -> torch.Tensor:
-    """fp32 power-of-two scales ``[m, k/32]`` -> packed UE8M0 ``int32`` ``[m, k/128]`` (K-major)."""
     assert sf.dtype == torch.float32 and sf.size(-1) % 4 == 0
     return (sf.contiguous().view(torch.int32) >> 23).to(torch.uint8).view(torch.int32)
 
 
 def _mx_weight_sf(sf: torch.Tensor, mn: int, k: int) -> torch.Tensor:
-    """fp32 scales ``[E, mn, k/32]`` -> packed, MN-major, TMA-aligned, UTCCP-transposed ``int32``."""
     import deep_gemm
     from deep_gemm.mega import _transpose_sf_for_utccp
 
@@ -201,8 +248,6 @@ def _mx_cast_rows_kernel(
     BLOCK_R: tl.constexpr,
     BLOCK_C: tl.constexpr,
 ):
-    """Per-expert cast of ``x[e]`` (``[R, C]``) with one power-of-two scale per 32 rows of each
-    column; reads and writes are coalesced along C. ``sf[e, c, r / 32]``."""
     e = tl.program_id(axis=0)
     pid_c = tl.program_id(axis=1)
     pid_r = tl.program_id(axis=2)
@@ -223,7 +268,6 @@ def _mx_cast_rows_kernel(
 
 
 def _cast_weight_along_rows(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Per-expert ``[E, R, C]`` cast scaled along R; returns FP8 in the same layout and fp32 scales ``[E, C, R/32]``."""
     from prime_rl.trainer.models.kernels.fp8_utils import FP8_MAX, ceil_div
 
     num_experts, rows, cols = w.shape
@@ -291,6 +335,66 @@ class MegaMoeFP8ExpertWeights:
         l2_t_fp8, l2_t_sf = _cast_weight_along_rows(down_proj.contiguous())
         l2_t = (l2_t_fp8, _mx_weight_sf(l2_t_sf, inter, hidden))
         return cls(l1=l1, l2=None, l1_t=l1_t, l2_t=l2_t)
+
+
+@dataclass
+class MegaMoeFP8BlockwiseWeights:
+    l1: tuple[torch.Tensor, torch.Tensor]
+    """``[E, 2I, H]`` natural gate/up rows with ``[E, 2I/128, H/128]`` scales."""
+    l2_t: tuple[torch.Tensor, torch.Tensor]
+    """W2 transposed ``[E, I, H]`` with ``[E, I/128, H/128]`` scales (dh = dy @ W2)."""
+    l1_t: tuple[torch.Tensor, torch.Tensor]
+    """W1 transposed ``[E, H, 2I]`` with ``[E, H/128, 2I/128]`` scales (dX)."""
+
+    @classmethod
+    def build(cls, gate_up_proj: torch.Tensor, down_proj: torch.Tensor) -> MegaMoeFP8BlockwiseWeights:
+        import deep_gemm
+
+        l1 = gate_up_proj.to(torch.bfloat16).contiguous()
+        return cls(
+            l1=deep_gemm.quantize_weight_blockwise_fp8(l1),
+            l2_t=deep_gemm.quantize_weight_blockwise_fp8(down_proj.to(torch.bfloat16).contiguous(), transpose=True),
+            l1_t=deep_gemm.quantize_weight_blockwise_fp8(l1, transpose=True),
+        )
+
+
+def mega_moe_backward_fp8_blockwise(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    topk_idx: torch.Tensor,
+    topk_weights: torch.Tensor,
+    weights: MegaMoeFP8BlockwiseWeights,
+    buffer,
+    dw_dtype: torch.dtype,
+    activation_clamp: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    import deep_gemm
+
+    num_tokens, hidden = x.shape
+    _stage_inputs(buffer, x, topk_idx, topk_weights)
+    l1_fp8, l1_sf = weights.l1
+    l2t_fp8, l2t_sf = weights.l2_t
+    l1t_fp8, l1t_sf = weights.l1_t
+    dx = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
+    dw1 = torch.empty(l1_fp8.shape, dtype=dw_dtype, device=x.device)
+    dw2 = torch.empty((l2t_fp8.shape[0], l2t_fp8.shape[2], l2t_fp8.shape[1]), dtype=dw_dtype, device=x.device)
+    dtopk = torch.empty((num_tokens, buffer.num_topk), dtype=torch.float32, device=x.device)
+    deep_gemm.fp8_mega_moe_backward(
+        dx,
+        dw1,
+        dw2,
+        dtopk,
+        dy,
+        l1_fp8,
+        l1_sf,
+        l2t_fp8,
+        l2t_sf,
+        l1t_fp8,
+        l1t_sf,
+        buffer,
+        activation_clamp=activation_clamp,
+    )
+    return dx, dw1, dw2, dtopk
 
 
 def mega_moe_forward_fp8(
@@ -366,6 +470,33 @@ def mega_moe_forward(
     return y
 
 
+def _quant_rows_1x128(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    t, h = x.shape
+    blocks = x.view(t, h // 128, 128)
+    scale = blocks.abs().amax(dim=2, keepdim=True).float().clamp(min=1e-12) / 448.0
+    q = (blocks.float() / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(t, h)
+    return q, scale.view(t, h // 128)
+
+
+def mega_moe_forward_fp8_blockwise(
+    x, topk_idx, topk_weights, gate_up_proj, down_proj, state: MegaMoeFP8State, activation_clamp
+):
+    import deep_gemm
+
+    num_tokens, hidden = x.shape
+    buffer = state.fwd_buffer
+    x_q, x_sf = _quant_rows_1x128(x)
+    buffer.x[:num_tokens].copy_(x_q)
+    buffer.x_sf.view(torch.float32)[:num_tokens].copy_(x_sf)
+    buffer.topk_idx[:num_tokens].copy_(topk_idx.view(num_tokens, state.num_topk))
+    buffer.topk_weights[:num_tokens].copy_(topk_weights.view(num_tokens, state.num_topk))
+    l1 = deep_gemm.quantize_l1_weight_for_fp8_mega_moe(gate_up_proj.to(torch.bfloat16).contiguous())
+    l2 = deep_gemm.quantize_weight_blockwise_fp8(down_proj.to(torch.bfloat16).contiguous())
+    y = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device=x.device)
+    deep_gemm.fp8_mega_moe(y, l1, l2, buffer, activation_clamp=activation_clamp)
+    return y
+
+
 def _dw_dtype(weight: torch.Tensor) -> torch.dtype:
     return weight.dtype if weight.dtype in (torch.bfloat16, torch.float32) else torch.float32
 
@@ -382,7 +513,11 @@ def mega_moe_forward_op(
 ) -> torch.Tensor:
     buffer = _BUFFER_REGISTRY[buffer_key]
     x_bf16 = x.to(torch.bfloat16).contiguous()
-    if buffer.mma_type == "fp8xfp8":
+    if _BUFFER_PRECISION.get(buffer_key) == "fp8":
+        y = mega_moe_forward_fp8_blockwise(
+            x_bf16, topk_idx, topk_weights, gate_up_proj, down_proj, buffer, activation_clamp
+        )
+    elif buffer.mma_type == "fp8xfp8":
         y = mega_moe_forward_fp8(
             x_bf16,
             topk_idx,
@@ -423,7 +558,20 @@ def mega_moe_backward_op(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     buffer = _BUFFER_REGISTRY[buffer_key]
     dy_bf16, x_bf16 = dy.to(torch.bfloat16).contiguous(), x.to(torch.bfloat16).contiguous()
-    if buffer.mma_type == "fp8xfp8":
+    if _BUFFER_PRECISION.get(buffer_key) == "fp8":
+        buffer = buffer.bwd_buffer
+    if _BUFFER_PRECISION.get(buffer_key) in ("fp8", "fp8_bwd"):
+        dx, dw1, dw2, dtopk = mega_moe_backward_fp8_blockwise(
+            dy_bf16,
+            x_bf16,
+            topk_idx,
+            topk_weights,
+            MegaMoeFP8BlockwiseWeights.build(gate_up_proj, down_proj),
+            buffer,
+            _dw_dtype(gate_up_proj),
+            activation_clamp=activation_clamp,
+        )
+    elif buffer.mma_type == "fp8xfp8":
         dx, dw1, dw2, dtopk = mega_moe_backward_fp8(
             dy_bf16,
             x_bf16,
@@ -557,7 +705,7 @@ class MegaMoEExpertCompute:
             group, num_experts, max_tokens_per_rank, top_k, hidden, intermediate_hidden, precision
         )
         # Registered once here: a registry write inside the compiled, checkpointed block is a side effect dynamo rejects.
-        self.buffer_key = register_mega_moe_buffer(self.buffer)
+        self.buffer_key = register_mega_moe_buffer(self.buffer, precision)
 
     def validate(self, experts: "GroupedExperts") -> None:
         if experts.gate_proj is None and experts.gate_up_proj is None:
