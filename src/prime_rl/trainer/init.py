@@ -35,7 +35,18 @@ def param_role(name: str, param: torch.Tensor) -> ParamRole:
     return "hidden"
 
 
-def role_std(role: ParamRole, config: InitConfig, num_layers: int) -> float:
+def completep_multipliers(config: InitConfig, hidden_size: int, num_layers: int) -> tuple[float, float]:
+    """Width and depth multipliers ``(m_N, m_L)`` of the model relative to the CompleteP base shape."""
+    return hidden_size / config.base_hidden_size, num_layers / config.base_num_layers
+
+
+def role_std(role: ParamRole, config: InitConfig, hidden_size: int, num_layers: int) -> float:
+    if config.scheme == "completep":
+        # CompleteP's 1/m_L residual-branch and 1/m_N logit multipliers are folded into the
+        # residual output projections and the LM head, so the forward pass stays unchanged.
+        m_n, m_l = completep_multipliers(config, hidden_size, num_layers)
+        scale = {"embedding": 1.0, "hidden": m_n**-0.5, "residual_out": m_n**-0.5 / m_l, "output": 1 / m_n}
+        return config.std * scale[role]
     if config.scheme == "scaled" and role == "residual_out":
         return config.std / math.sqrt(2 * num_layers)
     return config.std
@@ -53,10 +64,12 @@ def normal_shard(
     global_offset: tuple[int, ...],
     seed: int,
     device: torch.device,
+    truncate: bool = False,
 ) -> torch.Tensor:
     """The ``local_shape`` slice at ``global_offset`` of a standard-normal tensor of
     ``global_shape`` whose values depend only on ``(seed, name)``. The tensor is drawn in
-    blocks of rows along dim 0; only the blocks overlapping the slice are generated."""
+    blocks of rows along dim 0; only the blocks overlapping the slice are generated. With
+    ``truncate``, the distribution is truncated at +-3."""
     row_numel = math.prod(global_shape[1:])
     rows_per_block = max(1, BLOCK_NUMEL // max(row_numel, 1))
     start, stop = global_offset[0], global_offset[0] + local_shape[0]
@@ -65,7 +78,13 @@ def normal_shard(
         block_start = block * rows_per_block
         block_rows = min(rows_per_block, global_shape[0] - block_start)
         generator = torch.Generator(device=device).manual_seed(block_seed(seed, name, block))
-        values = torch.randn((block_rows, *global_shape[1:]), generator=generator, device=device)
+        if truncate:
+            # Inverse-CDF sampling: uniform on (erf(-3/sqrt(2)), erf(3/sqrt(2))) mapped through erfinv.
+            bound = math.erf(3 / math.sqrt(2))
+            uniform = torch.rand((block_rows, *global_shape[1:]), generator=generator, device=device)
+            values = torch.erfinv(uniform.mul_(2 * bound).sub_(bound)).mul_(math.sqrt(2))
+        else:
+            values = torch.randn((block_rows, *global_shape[1:]), generator=generator, device=device)
         lo, hi = max(start, block_start) - block_start, min(stop, block_start + block_rows) - block_start
         pieces.append(values[lo:hi])
     out = torch.cat(pieces) if pieces else torch.empty((0, *global_shape[1:]), device=device)
@@ -78,7 +97,7 @@ def normal_shard(
 def init_weights(model: nn.Module, config: InitConfig) -> None:
     """Initialize every parameter in place. Each rank fills only its local shard, without
     communication, and the values do not depend on the world size or the sharding."""
-    num_layers = model.config.num_hidden_layers
+    hidden_size, num_layers = model.config.hidden_size, model.config.num_hidden_layers
     for name, param in model.named_parameters():
         # Canonical names, so wrappers such as activation checkpointing don't change the values.
         name = resolve_fqn(model, name)
@@ -97,6 +116,12 @@ def init_weights(model: nn.Module, config: InitConfig) -> None:
         else:
             local_shape, global_offset = tuple(param.shape), (0,) * param.ndim
         values = normal_shard(
-            name, tuple(param.shape), tuple(local_shape), tuple(global_offset), config.seed, local.device
+            name,
+            tuple(param.shape),
+            tuple(local_shape),
+            tuple(global_offset),
+            config.seed,
+            local.device,
+            config.truncate,
         )
-        local.copy_(values.mul_(role_std(role, config, num_layers)))
+        local.copy_(values.mul_(role_std(role, config, hidden_size, num_layers)))
