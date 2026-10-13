@@ -15,7 +15,8 @@ worktree with a fresh Inductor cache. Scripts are in this directory, raw runs ar
 - The branch removes the per-micro-batch recompiles on every layout where blocks compile. On the #3925
   layout without activation offloading, main recompiles 143 times, hits the recompile limit twice and takes
   61.9 s per step. The branch recompiles 17 times, none on CP fields, and takes 10.6 s per step.
-- Numerics match main within the same-code noise floor for ring, ulysses and cp1, compile off and on.
+- Numerics differ from main by the same order as same-code repeats (about 2x at most, no growth over 20 steps)
+  for ring, ulysses and cp1, compile off and on.
 - With `fullgraph=False` on main's current layout, reverse-text-moe runs its MoE blocks eagerly, so branch and
   main perform the same there. With `fullgraph=True` and a bf16 router the blocks compile, and ring CP
   crashes on main at the recompile limit while the branch runs (4.38 s forward plus backward).
@@ -121,7 +122,8 @@ these arms train on masked NLL (`ce_loss_fn`). Relative differences, max over al
 | Branch cp2 vs branch cp1 | 1.9e-5 to 2.6e-5 | 1.0e-3 to 1.4e-3 |
 
 Step 1 is not bitwise reproducible even with identical code (about 1e-5 on loss), so an exact match gate is
-not achievable on this stack. Parity is judged against the noise floor. The same arms with the default IPO
+not achievable on this stack. Parity is judged against the repeats: branch vs main reaches about twice the
+repeat spread, measured from only two repeat pairs, and does not grow over steps. The same arms with the default IPO
 loss (loss near zero) agree on entropy and mismatch KL to 1e-5 to 4e-5. Script: `compare_numerics.py`.
 
 ## Coverage
