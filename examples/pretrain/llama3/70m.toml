@@ -50,6 +50,8 @@ dataset = "Salesforce/wikitext"
 subset = "wikitext-103-raw-v1"
 split = "test"
 
+[evals]
+interval = 280
 
 [ckpt]
 interval = 280

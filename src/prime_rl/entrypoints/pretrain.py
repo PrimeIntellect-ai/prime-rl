@@ -48,12 +48,16 @@ def write_model_dir(config: PretrainConfig) -> None:
 def download_data(config: PretrainConfig) -> None:
     """Download and prepare every dataset once, so the trainer ranks load them from the cache."""
     from prime_rl.trainer.pretrain.data import load_eval_documents, load_text_dataset
+    from prime_rl.trainer.pretrain.evals.tasks import load_task
 
     if config.data.type == "text":
         load_text_dataset(config.data)
     if config.val is not None:
         for source in config.val.source:
             load_eval_documents(source.dataset, source.subset, source.split, source.revision, source.text_column)
+    if config.evals is not None:
+        for name in config.evals.tasks:
+            load_task(name, config.evals.limit)
 
 
 def pretrain(config: PretrainConfig):

@@ -118,6 +118,36 @@ class ValConfig(BaseConfig):
     """Held-out sets. With ``data.holdout_docs > 0`` the training holdout is added as ``holdout``."""
 
 
+TaskName: TypeAlias = Literal[
+    "hellaswag", "arc_easy", "arc_challenge", "piqa", "winogrande", "openbookqa", "sciq", "lambada"
+]
+
+
+class EvalsConfig(BaseConfig):
+    """Log-likelihood evals: zero-shot multiple-choice tasks in cloze form, scored inside the trainer."""
+
+    interval: int = Field(1000, ge=1)
+    """Evaluate every N steps, after that step's optimizer update."""
+
+    eval_on_start: bool = True
+    """Evaluate the initial weights before the first step (logged as step 0)."""
+
+    tasks: list[TaskName] = [
+        "hellaswag",
+        "arc_easy",
+        "arc_challenge",
+        "piqa",
+        "winogrande",
+        "openbookqa",
+        "sciq",
+        "lambada",
+    ]
+    """Tasks to run."""
+
+    limit: int | None = Field(None, ge=1)
+    """Maximum items per task (the first N in dataset order). None runs every item."""
+
+
 class PretrainDeploymentConfig(BaseConfig):
     num_train_gpus: int = Field(1, ge=1)
     """GPUs for the trainer, on this node."""
@@ -135,6 +165,9 @@ class PretrainConfig(BaseConfig):
 
     val: ValConfig | None = None
     """Perplexity evals. If None, none run."""
+
+    evals: EvalsConfig | None = None
+    """Log-likelihood task evals. If None, none run."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -245,8 +278,8 @@ class PretrainConfig(BaseConfig):
                 raise ValueError("data.seq_len must be divisible by model.cp")
             if self.data.micro_batch_size != 1:
                 raise ValueError("data.micro_batch_size must be 1 with context parallelism")
-            if self.val is not None:
-                raise ValueError("[val] does not support context parallelism yet")
+            if self.val is not None or self.evals is not None:
+                raise ValueError("[val] and [evals] do not support context parallelism yet")
         return self
 
     @model_validator(mode="after")

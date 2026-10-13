@@ -54,7 +54,7 @@ For `sft` and `rl`, `random_init_mode` resolves to `skip`: the weights keep arbi
 
 ## Evals
 
-Evals run after the optimizer update, so the metrics at step N describe the weights after N updates, the same weights as the step-N checkpoint. With `eval_on_start` (default), they also run before the first step (logged as step 0), and they always run at the last step. They require `model.cp = 1`.
+Evals run after the optimizer update, so the metrics at step N describe the weights after N updates, the same weights as the step-N checkpoint. With `eval_on_start` (default), they also run before the first step (logged as step 0). Both kinds also run at the last step. They require `model.cp = 1`.
 
 **Perplexity (`[val]`).** Each `[[val.source]]` is a held-out text set. It is tokenized and packed once at startup (with document masking, up to `max_tokens`), so every eval sees the same tokens. Each source logs `val/{name}/loss` (nats per token), `val/{name}/ppl` and `val/{name}/bpb` (bits per UTF-8 byte, comparable across tokenizers).
 
@@ -69,3 +69,10 @@ subset = "wikitext-103-raw-v1"
 split = "test"
 ```
 
+**Log-likelihood tasks (`[evals]`).** Zero-shot multiple-choice tasks in cloze form, formatted as in lm-evaluation-harness: `hellaswag`, `arc_easy`, `arc_challenge`, `piqa`, `winogrande`, `openbookqa`, `sciq`, `lambada`. Every choice is scored by the summed log-probability of its continuation, in forward passes inside the trainer. Each task logs `evals/{task}/acc`, `evals/{task}/acc_norm` (length-normalized, where choices differ in their continuation) and `evals/{task}/bpb` (bits per byte of the gold continuation, a smooth signal while accuracy is still at chance). `lambada` logs only `bpb`. `evals.limit` caps the items per task.
+
+```toml
+[evals]
+interval = 1000
+tasks = ["hellaswag", "arc_easy", "piqa"]
+```

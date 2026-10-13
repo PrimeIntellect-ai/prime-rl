@@ -34,6 +34,7 @@ from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.pretrain.data import load_text_dataset, setup_text_dataloader, split_holdout
 from prime_rl.trainer.pretrain.evals.common import token_byte_lengths
+from prime_rl.trainer.pretrain.evals.loglik import evaluate_loglik, load_loglik_task
 from prime_rl.trainer.pretrain.evals.perplexity import build_perplexity_set, evaluate_perplexity, load_perplexity_set
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state, setup_dataloader, setup_dataset
@@ -180,6 +181,13 @@ def train(config: PretrainConfig):
         perplexity_sets += [load_perplexity_set(source, tokenizer, eval_seq_len) for source in config.val.source]
         for eval_set in perplexity_sets:
             logger.info(f"Perplexity eval {eval_set.name!r}: {len(eval_set.rows) * eval_seq_len:,} tokens")
+    loglik_tasks = []
+    if config.evals is not None:
+        loglik_tasks = [
+            load_loglik_task(name, tokenizer, eval_seq_len, config.evals.limit) for name in config.evals.tasks
+        ]
+        for task in loglik_tasks:
+            logger.info(f"Log-likelihood eval {task.name!r}: {len(task.items):,} items in {len(task.rows):,} rows")
     byte_lengths = token_byte_lengths(tokenizer) if perplexity_sets else None
 
     progress = Progress()
@@ -231,9 +239,15 @@ def train(config: PretrainConfig):
             )
         return out["loss"], loss_mask.sum(dtype=torch.int64)
 
-    def run_evals(step: int) -> None:
-        """Perplexity evals on the weights after ``step`` optimizer updates."""
-        metrics = evaluate_perplexity(model, perplexity_sets, byte_lengths)
+    def run_evals(step: int, run_perplexity: bool, run_loglik: bool) -> None:
+        """Perplexity and log-likelihood evals on the weights after ``step`` optimizer updates."""
+        metrics = {}
+        if run_perplexity:
+            metrics |= evaluate_perplexity(model, perplexity_sets, byte_lengths)
+        if run_loglik:
+            metrics |= evaluate_loglik(model, loglik_tasks)
+        if not metrics:
+            return
         # The no-grad eval forwards leave the [lm_head, norm] FSDP group unsharded, and their
         # routing must not count toward the next step's MoE statistics.
         reshard_module(model)
@@ -242,8 +256,12 @@ def train(config: PretrainConfig):
         logger.success(f"Evals | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
-    if checkpoint_step is None and config.val is not None and config.val.eval_on_start:
-        run_evals(step=0)
+    if checkpoint_step is None:
+        run_evals(
+            step=0,
+            run_perplexity=config.val is not None and config.val.eval_on_start,
+            run_loglik=config.evals is not None and config.evals.eval_on_start,
+        )
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3
@@ -334,8 +352,11 @@ def train(config: PretrainConfig):
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
         eval_start_time = time.perf_counter()
-        if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
-            run_evals(progress.step)
+        run_evals(
+            progress.step,
+            run_perplexity=config.val is not None and (is_last_step or progress.step % config.val.interval == 0),
+            run_loglik=config.evals is not None and (is_last_step or progress.step % config.evals.interval == 0),
+        )
         eval_time = time.perf_counter() - eval_start_time
 
         global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
