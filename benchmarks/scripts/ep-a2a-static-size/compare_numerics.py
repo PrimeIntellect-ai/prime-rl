@@ -1,4 +1,4 @@
-"""Compare per-step loss, grad norm and entropy between pairs of fake-data trainer arms.
+"""Compare per-step loss, grad norm and entropy between pairs of fake-data RL trainer arms.
 
 usage: uv run python compare_numerics.py <runs-dir>
 """
@@ -45,17 +45,15 @@ def compare(runs: Path, a: str, b: str) -> None:
 
 def main() -> None:
     runs = Path(sys.argv[1])
-    for loss in ("num", "ce"):
-        print(f"--- {loss}: branch vs main (same config)")
-        for cfg in ("ring-off", "uly-off", "cp1-off", "ring-on", "uly-on", "cp1-on"):
-            compare(runs, f"{loss}-br-{cfg}", f"{loss}-main-{cfg}")
-        print(f"--- {loss}: same-code repeats (noise floor)")
-        compare(runs, f"{loss}-main-ring-off", f"{loss}-main-ring-off-r2")
-        compare(runs, f"{loss}-br-ring-off", f"{loss}-br-ring-off-r2")
-        print(f"--- {loss}: cp2 vs cp1 on the branch")
-        for cfg in ("ring", "uly"):
-            for mode in ("off", "on"):
-                compare(runs, f"{loss}-br-{cfg}-{mode}", f"{loss}-br-cp1-{mode}")
+    print("--- branch vs main (same config)")
+    for cfg in ("off", "fg"):
+        compare(runs, f"trainer-br-{cfg}", f"trainer-main-{cfg}")
+    print("--- same-code repeats (noise floor)")
+    compare(runs, "trainer-main-off", "trainer-main-off-r2")
+    compare(runs, "trainer-br-off", "trainer-br-off-r2")
+    print("--- fullgraph off vs on, same code")
+    compare(runs, "trainer-main-off", "trainer-main-fg")
+    compare(runs, "trainer-br-off", "trainer-br-fg")
 
 
 if __name__ == "__main__":
