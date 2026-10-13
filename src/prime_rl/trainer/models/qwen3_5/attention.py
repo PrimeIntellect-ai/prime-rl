@@ -5,6 +5,7 @@ from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNorm
+from prime_rl.utils.cp import RingParams
 
 
 class Qwen3_5Attention(FlashAttention):
@@ -43,6 +44,7 @@ class Qwen3_5Attention(FlashAttention):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
         max_seqlen: int,
+        ring_params: RingParams | None = None,
     ) -> tuple[torch.Tensor, None]:
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -77,6 +79,7 @@ class Qwen3_5Attention(FlashAttention):
             value_states[0],
             cu_seqlens,
             max_seqlen,
+            ring_params=ring_params,
         ).reshape(batch_size, sequence_length, -1)
         if output_gate is not None:
             attention_output = attention_output * output_gate.sigmoid()

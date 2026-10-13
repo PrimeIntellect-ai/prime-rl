@@ -35,6 +35,7 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
 from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
+from prime_rl.utils.cp import RingParams
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
@@ -94,6 +95,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        ring_params: RingParams | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
@@ -104,6 +106,7 @@ class Qwen3MoeDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            ring_params=ring_params,
         )
         hidden_states = residual + hidden_states
 
@@ -202,9 +205,10 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=inputs_embeds.shape[1] * (self.cp_context.cp_world_size if seq_lens_are_pre_shard else 1),
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        ring_params = RingParams.build(cu_seqlens, self.cp_context)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -218,6 +222,7 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                ring_params=ring_params,
                 routed_experts=routed_experts_layer,
             )
 

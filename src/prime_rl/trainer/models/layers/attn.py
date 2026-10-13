@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
+from prime_rl.utils.cp import RingParams
 
 from .norms import RMSNorm, RMSNormConfig
 from .rotary_emb import apply_rotary_pos_emb
@@ -474,7 +475,15 @@ class FlashAttention(nn.Module):
             return self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
         return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
 
-    def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
+    def _compute_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens,
+        max_seqlen,
+        ring_params: RingParams | None = None,
+    ):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
         kwargs: dict = {"causal": True}
         sliding_window = getattr(self, "sliding_window", None)
@@ -496,6 +505,7 @@ class FlashAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        ring_params: RingParams | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -527,7 +537,9 @@ class FlashAttention(nn.Module):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        out = self._compute_attention(
+            query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen, ring_params=ring_params
+        )
         attn_output = out.contiguous().view(1, out.shape[0], -1)
         attn_output = self.o_proj(attn_output)
         return attn_output, None
@@ -548,9 +560,7 @@ def substitute_ring_attn(
     """Patch _compute_attention on FlashAttention variants to use ring attention."""
     from .ring_attn import ring_varlen_attention
 
-    def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
-        from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
-
+    def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen, ring_params=None):
         window_size = (-1, -1)
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
@@ -560,11 +570,12 @@ def substitute_ring_attn(
             q,
             k,
             v,
-            cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
-            cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
-            max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
-            max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
-            local_k_slice=DATA_PARAMS["local_k_slice"],
+            cu_seqlens_q=ring_params.cu_seqlens_q,
+            cu_seqlens_k=ring_params.cu_seqlens_k,
+            max_seqlen_q=ring_params.max_seqlen_q,
+            max_seqlen_k=ring_params.max_seqlen_k,
+            local_k_start=ring_params.local_k_start,
+            local_k_stop=ring_params.local_k_stop,
             causal=True,
             window_size=window_size,
             group=process_group,

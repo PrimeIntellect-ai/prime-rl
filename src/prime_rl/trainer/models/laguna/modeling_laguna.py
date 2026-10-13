@@ -22,6 +22,7 @@ from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.utils.cp import RingParams
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -126,6 +127,7 @@ class LagunaFlashAttention(FlashAttention):
         attention_mask: torch.Tensor | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        ring_params: RingParams | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -156,7 +158,9 @@ class LagunaFlashAttention(FlashAttention):
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        attn_output = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        attn_output = self._compute_attention(
+            query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen, ring_params=ring_params
+        )
         attn_output = attn_output.contiguous().view(*input_shape, self.num_heads, self.head_dim)
         if self.gating:
             gate = F.softplus(self.g_proj(hidden_states).float()).to(attn_output.dtype)
@@ -232,6 +236,7 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        ring_params: RingParams | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -242,6 +247,7 @@ class LagunaDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            ring_params=ring_params,
         )
         hidden_states = residual + hidden_states
 
@@ -317,9 +323,10 @@ class LagunaModel(LagunaPreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=inputs_embeds.shape[1] * (self.cp_context.cp_world_size if seq_lens_are_pre_shard else 1),
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        ring_params = RingParams.build(cu_seqlens, self.cp_context)
         causal_mask_mapping = dict.fromkeys(set(self.config.layer_types), None)
 
         hidden_states = inputs_embeds
@@ -338,6 +345,7 @@ class LagunaModel(LagunaPreTrainedModel):
                 position_embeddings=position_embeddings[self.config.layer_types[layer_idx]],
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                ring_params=ring_params,
                 routed_experts=routed_experts_layer,
             )
 

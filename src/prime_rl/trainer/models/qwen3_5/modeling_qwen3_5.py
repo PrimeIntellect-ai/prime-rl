@@ -23,7 +23,7 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     build_qwen3_5_mrope_position_ids,
 )
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
-from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
+from prime_rl.utils.cp import CPContext, RingParams, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -94,6 +94,7 @@ class Qwen3_5DecoderLayer(nn.Module):
         cu_seqlens: torch.LongTensor,
         max_seqlen: int,
         routed_experts: torch.LongTensor | None = None,
+        ring_params: RingParams | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -108,6 +109,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 position_embeddings,
                 cu_seqlens,
                 max_seqlen,
+                ring_params=ring_params,
             )
         hidden_states = residual + hidden_states
 
@@ -180,9 +182,10 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(inputs_embeds.device),
-            total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
+            total_tokens=inputs_embeds.shape[1] * (self.cp_context.cp_world_size if seq_lens_are_pre_shard else 1),
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        ring_params = RingParams.build(cu_seqlens, self.cp_context)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds
@@ -194,6 +197,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
                 cu_seqlens,
                 max_seqlen,
                 routed_experts=layer_routed_experts,
+                ring_params=ring_params,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
@@ -287,12 +291,6 @@ class Qwen3_5VLMModel(nn.Module):
         )
         if image_grid_thw is not None and self.cp_context.cp_enabled:
             rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
-            setup_cp_attention_params(
-                position_ids,
-                cp_group=self.cp_context.cp_group,
-                cp_style=self.cp_context.cp_style,
-                seq_lens=seq_lens,
-            )
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=rank, cp_world_size=world_size)
             if routed_experts is not None:

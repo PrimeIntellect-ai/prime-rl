@@ -819,13 +819,25 @@ DYNAMIC_INT_ARGS = (
     "max_seqlen",
 )
 
+# Int fields of per-micro-batch dataclass args, which change between calls for the same reason.
+DYNAMIC_INT_ATTRS = (
+    # RingParams: this rank's longest query and key document, and the range of gathered keys it attends to.
+    "max_seqlen_q",
+    "max_seqlen_k",
+    "local_k_start",
+    "local_k_stop",
+)
+
 
 def mark_dynamic_int_args() -> None:
-    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+    """Add DYNAMIC_INT_ARGS and DYNAMIC_INT_ATTRS to torch.compiler.config.dynamic_sources, keeping entries already set."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
-    for arg in DYNAMIC_INT_ARGS:
-        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
-        pattern = rf".*\['{arg}'\]"
+    # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
+    patterns = [rf".*\['{arg}'\]" for arg in DYNAMIC_INT_ARGS]
+    # Matches the field however its dataclass is passed (L['ring_params'].max_seqlen_k). Anchored with $ because
+    # dynamic_sources uses re.match, which would otherwise also match longer attribute names on module sources.
+    patterns += [rf".*\.{attr}$" for attr in DYNAMIC_INT_ATTRS]
+    for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
     torch.compiler.config.dynamic_sources = ",".join(sources)

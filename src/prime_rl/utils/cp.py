@@ -9,11 +9,10 @@ from typing import TYPE_CHECKING
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from ring_flash_attn import update_ring_flash_attn_params
+from ring_flash_attn import llama3_flash_attn_prepare_cu_seqlens
 
 from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 if TYPE_CHECKING:
     # `prime_rl.trainer.models` imports this module, so importing the model base eagerly would
@@ -35,6 +34,37 @@ class CPContext:
     @property
     def cp_enabled(self) -> bool:
         return self.cp_world_size > 1
+
+
+@dataclass(frozen=True)
+class RingParams:
+    """Per-micro-batch ring attention metadata for this rank's query shard."""
+
+    cu_seqlens_q: torch.Tensor
+    cu_seqlens_k: torch.Tensor
+    max_seqlen_q: int
+    max_seqlen_k: int
+    local_k_start: int
+    local_k_stop: int
+
+    @classmethod
+    def build(cls, cu_seqlens: torch.Tensor, cp_context: CPContext) -> RingParams | None:
+        """Derive this rank's ring metadata from full-sequence cu_seqlens, or None outside ring CP."""
+        if cp_context.cp_style != "ring" or not cp_context.cp_enabled:
+            return None
+        cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, local_k_slice = llama3_flash_attn_prepare_cu_seqlens(
+            cu_seqlens, True, cp_context.cp_rank, cp_context.cp_world_size
+        )
+        torch._dynamo.mark_dynamic(cu_seqlens_q, 0)
+        torch._dynamo.mark_dynamic(cu_seqlens_k, 0)
+        return cls(
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_k=cu_seqlens_k,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_k=max_seqlen_k,
+            local_k_start=local_k_slice.start,
+            local_k_stop=local_k_slice.stop,
+        )
 
 
 def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
@@ -114,49 +144,8 @@ def setup_cp_params(
     position_ids: torch.Tensor,
     cp_rank: int,
     cp_world_size: int,
-    cp_group: dist.ProcessGroup,
-    *,
-    seq_lens: torch.Tensor,
-    cp_style: CPStyle = "ring",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Prepare the input for context parallelism and set required attention params.
-
-    Both ring and ulysses styles need cu_seqlens computed from the full,
-    unsharded sequence lengths, then publish them to the patched attention layer:
-      - ring: via ring_flash_attn's DATA_PARAMS (with local_k_slice).
-      - ulysses: via ULYSSES_PARAMS (just the full cu_seqlens / max_seqlen).
-
-    Returns the sequence-sharded input_ids and position_ids — the rest of the
-    model still runs sequence-sharded; only attention sees the full sequence.
-    """
-    setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
-
+    """Shard input_ids and position_ids along the sequence; the model forward builds full-sequence attention metadata."""
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     return input_ids, position_ids
-
-
-def setup_cp_attention_params(
-    position_ids: torch.Tensor,
-    cp_group: dist.ProcessGroup,
-    *,
-    seq_lens: torch.Tensor,
-    cp_style: CPStyle = "ring",
-) -> None:
-    total_tokens = position_ids.shape[-1]
-    cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
-        seq_lens.to(device=position_ids.device),
-        total_tokens=total_tokens,
-    )
-
-    if cp_style == "ring":
-        update_ring_flash_attn_params(cu_seqlens, cp_group)
-    elif cp_style == "ulysses":
-        # Delayed import: ulysses_attn lives under trainer.models, which imports
-        # back into prime_rl.utils — top-level import would deadlock at startup.
-        from prime_rl.trainer.models.layers.ulysses_attn import update_ulysses_params
-
-        update_ulysses_params(cu_seqlens, max_seqlen)
-    else:
-        raise ValueError(f"Unknown cp_style: {cp_style}")
