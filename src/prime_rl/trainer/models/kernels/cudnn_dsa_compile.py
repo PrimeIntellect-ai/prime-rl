@@ -1,7 +1,8 @@
-"""Compile the cuDNN frontend's DSA backward main kernel once for every slot width.
+"""Stop the cuDNN frontend's DSA backward from recompiling whenever sequence length or packing changes.
 
-The frontend keys each compile on the slot width, but the main kernel reads `max_topk` only as an upper bound on
-`topk_length`. Calls that pass `topk_length` therefore build and key the kernel at one fixed `max_topk`; calls
+The frontend keys each main-kernel compile on the slot width, `topk_idxs.shape[-1]`, which varies with sequence
+length and document packing, so training would keep compiling new kernels. The kernel reads the width only as an
+upper bound on `topk_length`, so calls that pass `topk_length` build and key it at one fixed bound instead; calls
 without it keep the frontend's behavior. On SM100 this covers the `generic_m64` kernel only and needs slot widths
 that are a multiple of 64. It patches private frontend internals and raises if they move.
 """
