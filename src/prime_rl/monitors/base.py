@@ -59,7 +59,8 @@ class Monitor(ABC):
 
     async def log_live(self, events: list[dict[str, Any]]) -> None:
         """Log the env servers' stream of in-flight traces: ``{"delta", "dispatch"}`` for
-        each delta as it arrived, ``{"done": trace_id}`` when a trace's episode finished.
+        each delta as it arrived, ``{"done": trace_id, "end": ending}`` when a trace's
+        episode left the in-flight set (``landed``, ``failed`` or ``cancelled``).
         Monitors that only carry finished work ignore it."""
 
     async def log_eval_plan(self, env_name: str, step: int, expected: int) -> None:

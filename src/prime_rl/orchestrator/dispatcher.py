@@ -34,7 +34,7 @@ import time
 import traceback
 import uuid
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Literal
@@ -64,8 +64,13 @@ from prime_rl.utils.async_utils import safe_cancel, safe_cancel_all
 from prime_rl.utils.logger import get_logger
 
 LIVE_INTERVAL_S = 0.5
+LIVE_URGENT_GAP_S = 0.05
+"""The least time between flushes: urgent deltas (``queue_live``) flush at most this often."""
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
+
+Ending = Literal["landed", "failed", "cancelled"]
+"""How an episode left the in-flight set (``Dispatcher.retire``)."""
 
 
 class DispatcherMode(Enum):
@@ -199,6 +204,8 @@ class Dispatcher:
         self.live_events: list[dict[str, Any]] = []
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
+        self.live_urgent = asyncio.Event()
+        """Set by a delta that should not wait for the next tick."""
         self.groups: dict[uuid.UUID, GroupState] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
@@ -383,18 +390,31 @@ class Dispatcher:
             await safe_cancel(self.task)
             self.task = None
 
-    def retire(self, meta: InflightEpisode) -> None:
-        """An episode left the in-flight set (finished, cancelled, dropped): its live
-        traces are over, and so is its pending placeholder if no trace ever streamed."""
+    def retire(self, meta: InflightEpisode, ending: Ending, landed: Collection[str] = ()) -> None:
+        """An episode left the in-flight set: its live traces are over, and so is its
+        pending placeholder if no trace ever streamed. ``ending`` says how: ``landed``
+        (its episode came back, carrying the traces in ``landed``), ``failed`` (the
+        request raised) or ``cancelled``. A trace that did not land is kept as a partial
+        (see ``FileMonitor.log_live``): its episode's landed traces end ``landed``, the
+        rest ``failed``."""
         if not meta.live:
             self.live_events.append(live.dispatched_event(meta))
-        self.live_events.extend({"done": trace_id} for trace_id in meta.live)
+        for trace_id in meta.live:
+            end = ending if ending != "landed" else "landed" if trace_id in landed else "failed"
+            self.live_events.append({"done": trace_id, "end": end})
+            if end != "landed":
+                self.live_urgent.set()  # a retry may look for it
 
     def queue_live(self, event: dict[str, Any]) -> None:
         """Buffer a delta for the next flush. The buffer is bounded: past the cap the
         oldest deltas go (the live view of those traces misses a turn), never the
-        bookkeeping events that create or remove files."""
+        bookkeeping events that create or remove files. A delta a durable call's lookup
+        may be waiting on (a checkpoint, a trace finishing or its verdict, a discard) flushes now."""
         self.live_events.append(event)
+        delta = event.get("delta") or {}
+        changed = delta.get("set") or {}
+        if delta.get("checkpoints") or delta.get("discard") or "is_completed" in changed or "ok" in changed:
+            self.live_urgent.set()
         if len(self.live_events) > LIVE_EVENT_CAP:
             kept = [e for e in self.live_events if "delta" not in e]
             deltas = [e for e in self.live_events if "delta" in e]
@@ -416,10 +436,17 @@ class Dispatcher:
             raise
 
     async def publish_live(self) -> None:
-        """Hand the streamed deltas to the monitors in batches, at most twice a second."""
+        """Hand the streamed deltas to the monitors in batches, at most twice a second,
+        or as soon as an urgent one arrives (``queue_live``), at most every
+        ``LIVE_URGENT_GAP_S``."""
         while True:
-            await asyncio.sleep(LIVE_INTERVAL_S)
+            try:
+                await asyncio.wait_for(self.live_urgent.wait(), timeout=LIVE_INTERVAL_S - LIVE_URGENT_GAP_S)
+            except asyncio.TimeoutError:
+                pass
+            self.live_urgent.clear()
             await self.flush_live()
+            await asyncio.sleep(LIVE_URGENT_GAP_S)
 
     async def on_version_pending(self, step: int) -> None:
         """Drop train groups past ``max_off_policy_steps``: a group dispatched at
@@ -674,15 +701,16 @@ class Dispatcher:
         meta = self.inflight.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
-        self.retire(meta)
         self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
         try:
             episode: vf.WireEpisode = task.result()
         except asyncio.CancelledError:
+            self.retire(meta, "cancelled")
             return
         except Exception as exc:
+            self.retire(meta, "failed")
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
             policy_version = self.complete_group_member(meta, group)
@@ -707,6 +735,7 @@ class Dispatcher:
             )
             return
 
+        self.retire(meta, "landed", {trace.id for trace in episode.traces})
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
                 # Training keeps a timed-out rollout out of the batch: an error,
@@ -788,7 +817,7 @@ class Dispatcher:
                 continue
             del self.inflight[task]
             self.release()
-            self.retire(meta)
+            self.retire(meta, "cancelled")
             claimed.append((task, meta))
 
         inflight_cancelled = len(claimed)
@@ -853,7 +882,7 @@ class Dispatcher:
         for meta in self.inflight.values():
             self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
             self.release()
-            self.retire(meta)
+            self.retire(meta, "cancelled")
         tasks = list(self.inflight.keys())
         self.inflight.clear()
         self.groups.clear()
@@ -872,7 +901,7 @@ class Dispatcher:
                 continue
             self.inflight.pop(task, None)
             self.release()
-            self.retire(meta)
+            self.retire(meta, "cancelled")
             self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
             cancelled += 1
             train_tasks.append(task)
