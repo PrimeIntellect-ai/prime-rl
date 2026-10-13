@@ -27,6 +27,16 @@ prime login   # or: prime config set-api-key <your-key>
   - `HF_TOKEN` — the GLM-5 family checkpoints are gated models.
   - `WANDB_API_KEY` — both RL variants log to W&B (`[monitors.wandb]`).
 
+### Install NIXL/UCX and ModelExpress
+
+P/D KV transfer needs NIXL built against UCX 1.19, and the NIXL weight broadcast needs the ModelExpress server. Build both once on the shared filesystem (re-run the first two lines after every `uv sync`):
+
+```bash
+salloc -N 1 --gres=gpu:1 bash -c 'bash scripts/install_nixl_from_source.sh'
+uv pip install --reinstall --no-deps deps/nixl_cu13-*.whl
+bash scripts/install_modelexpress.sh
+```
+
 ### Install llm-d (llm-d append only)
 
 The llm-d router ships as vendored binaries (`epp`, `envoy`, `pd-sidecar`). Build them once into `third_party/llmd/bin`:

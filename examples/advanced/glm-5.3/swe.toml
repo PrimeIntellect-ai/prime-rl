@@ -20,10 +20,11 @@ level = "debug"
 project = "glm5"
 name = "base"
 
+# NIXL pull with two arenas: inference replays one weight group while it receives the next.
 [weight_broadcast]
-type = "nccl"
-port = 29502
+type = "nixl"
 timeout = 12000
+overlap_transfer_and_replay = true
 
 [deployment]
 type = "multi_node"
