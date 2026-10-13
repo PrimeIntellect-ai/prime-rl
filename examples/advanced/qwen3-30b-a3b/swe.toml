@@ -25,6 +25,7 @@ project = "qwen30b-swe"
 attn = "flash_attention_3"
 ep = 8
 cp = 2
+cp_style = "ulysses"
 
 [trainer.model.compile]
 
