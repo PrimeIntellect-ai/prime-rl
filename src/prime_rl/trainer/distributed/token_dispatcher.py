@@ -11,6 +11,7 @@ from prime_rl.trainer.distributed.collectives import (
     mxfp8_all_to_all_combine,
     mxfp8_all_to_all_dispatch,
 )
+from prime_rl.trainer.distributed.deterministic_scatter import deterministic_scatter_add
 
 
 class ExpertFunction(Protocol):
@@ -83,7 +84,7 @@ class PermutationState:
 @dataclass(frozen=True)
 class LocalDispatchState:
     num_tokens: int
-    route_indices_experts_sorted: torch.Tensor
+    token_indices_experts_sorted: torch.Tensor
     scores_after_experts: torch.Tensor | None
     permutation: PermutationState
 
@@ -142,37 +143,27 @@ def _local_reorder(
         min=0,
         max=num_experts,
     ).to(torch.int64)
-    route_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
-    top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
-    # A route slot is token_index * top_k + expert_slot (position among selected experts).
-    # // top_k recovers its token; keep the full slot index to restore outputs in combine.
-    routed_input = x[route_indices_experts_sorted // top_k]
-    return routed_input, route_indices_experts_sorted, top_scores_experts_sorted, num_tokens_per_expert
+    token_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
+    top_scores_experts_sorted = top_scores.reshape(-1)[token_indices_experts_sorted]
+    token_indices_experts_sorted = token_indices_experts_sorted // top_k
+    routed_input = x[token_indices_experts_sorted]
+    return routed_input, token_indices_experts_sorted, top_scores_experts_sorted, num_tokens_per_expert
 
 
-def _combine_routed_output(
+def _scatter_routed_output(
     routed_output: torch.Tensor,
     *,
     num_tokens: int,
-    route_indices_experts_sorted: torch.Tensor,
+    token_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
 ) -> torch.Tensor:
     if scores_after_experts is not None:
         routed_output = (routed_output.float() * scores_after_experts.reshape(-1, 1)).to(routed_output.dtype)
 
-    if num_tokens == 0:
-        return routed_output
-
     dim = routed_output.shape[-1]
-    # There is one output row per selected expert per token.
-    top_k = routed_output.shape[0] // num_tokens
-    # Undo expert-ID sorting so each token's routes can be summed without atomic additions.
-    # Each row is written once, so the buffer needs no initialization.
-    output = torch.empty_like(routed_output)
-    # Copy source row i to its original slot, route_indices_experts_sorted[i].
-    output[route_indices_experts_sorted] = routed_output
-    accumulation_dtype = torch.float32 if output.dtype in (torch.bfloat16, torch.float16) else output.dtype
-    return output.view(num_tokens, top_k, dim).sum(dim=1, dtype=accumulation_dtype).to(output.dtype)
+    output = routed_output.new_zeros((num_tokens, dim))
+    routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
+    return deterministic_scatter_add(output, routed_indices, routed_output)
 
 
 class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
@@ -188,7 +179,7 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, LocalDispatchState]:
-        routed_input, route_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
+        routed_input, token_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
             x,
             top_scores,
             selected_experts_indices,
@@ -210,7 +201,7 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
         )
         state = LocalDispatchState(
             num_tokens=x.shape[0],
-            route_indices_experts_sorted=route_indices,
+            token_indices_experts_sorted=token_indices,
             scores_after_experts=scores_after_experts,
             permutation=permutation,
         )
@@ -218,10 +209,10 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
 
     def combine(self, routed_output: torch.Tensor, state: LocalDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
-        return _combine_routed_output(
+        return _scatter_routed_output(
             routed_output,
             num_tokens=state.num_tokens,
-            route_indices_experts_sorted=state.route_indices_experts_sorted,
+            token_indices_experts_sorted=state.token_indices_experts_sorted,
             scores_after_experts=state.scores_after_experts,
         )
 
@@ -262,7 +253,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, TorchDispatchState]:
-        routed_input, route_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
+        routed_input, token_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
             x,
             top_scores,
             selected_experts_indices,
@@ -296,7 +287,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         )
         state = TorchDispatchState(
             num_tokens=x.shape[0],
-            route_indices_experts_sorted=route_indices,
+            token_indices_experts_sorted=token_indices,
             scores_after_experts=scores_after_experts,
             permutation=permutation,
             input_splits=input_splits,
@@ -307,10 +298,10 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
     def combine(self, routed_output: torch.Tensor, state: TorchDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
         routed_output = self._combine_tokens(routed_output, state.input_splits, state.output_splits)
-        return _combine_routed_output(
+        return _scatter_routed_output(
             routed_output,
             num_tokens=state.num_tokens,
-            route_indices_experts_sorted=state.route_indices_experts_sorted,
+            token_indices_experts_sorted=state.token_indices_experts_sorted,
             scores_after_experts=state.scores_after_experts,
         )
 
