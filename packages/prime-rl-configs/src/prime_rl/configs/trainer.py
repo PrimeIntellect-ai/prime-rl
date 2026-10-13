@@ -128,8 +128,18 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
+    qat: bool = False
+    """Use FP8 forward and BF16 backward matmuls, reusing the forward-rounded weights for input gradients."""
+    stochastic_rounding: bool = False
+    """Stochastically round QAT weights with masks shared across ranks and forward/backward; activations round to nearest."""
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
+
+    @model_validator(mode="after")
+    def stochastic_rounding_requires_qat(self):
+        if self.stochastic_rounding and not self.qat:
+            raise ValueError("FP8 stochastic_rounding requires qat=true.")
+        return self
 
 
 class MXFP8Config(BaseConfig):
@@ -183,6 +193,16 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
+    qat: bool = False
+    """Use FP8 expert forward and BF16 backward matmuls, reusing the forward-rounded weights for input gradients."""
+    stochastic_rounding: bool = False
+    """Stochastically round QAT expert weights with masks keyed by logical weight, step, and global expert index."""
+
+    @model_validator(mode="after")
+    def stochastic_rounding_requires_qat(self):
+        if self.stochastic_rounding and not self.qat:
+            raise ValueError("FP8 stochastic_rounding requires qat=true.")
+        return self
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
@@ -284,6 +304,12 @@ class ModelConfig(BaseModelConfig):
     """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
 
     quantization: QuantizationConfig | None = None
+
+    dsv4_kv_precision: Literal["bf16", "fp8"] = "bf16"
+    """DeepSeek V4 KV precision; fp8 simulates vLLM's fp8_ds_mla cache with an identity straight-through gradient."""
+
+    fp8_rounding_seed: int = 0
+    """Base seed for QAT Philox masks keyed by logical weight, optimizer step, and global element index."""
 
     dsa_backend: DSABackend = "tilelang"
     """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
