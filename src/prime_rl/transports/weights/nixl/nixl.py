@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from collections import defaultdict
@@ -15,12 +16,13 @@ from typing import cast
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from httpx import AsyncClient
 from modelexpress.client import MxClient
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.shared import NIXLWeightBroadcastConfig
-from prime_rl.orchestrator.clients import init_nixl_broadcast
+from prime_rl.orchestrator.clients import ADMIN_TIMEOUT_S, init_nixl_broadcast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.world import wait_for_master
@@ -28,6 +30,7 @@ from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.transports.weights.nixl.agent import (
     NixlAgent,
     NixlPeer,
+    drop_marker,
     group_notification,
     make_agent_name,
     policy_notification,
@@ -42,6 +45,7 @@ from prime_rl.transports.weights.nixl.trainer_tensor_table import (
     TrainerTensor,
     TrainerTensorTable,
 )
+from prime_rl.utils.pathing import get_broadcast_dir
 
 LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?=\.|$)")
 
@@ -89,9 +93,12 @@ class NIXLWeightSender(WeightSender):
         self.staged_shards_by_group: dict[int, list[StagedTensorShard]] = {}
         self.staging_arenas: dict[torch.dtype, torch.Tensor] = {}
         self.staging_buffer_count: int
-        self.inference_peers: list[NixlPeer]
+        # Inference rank -> its peer and the metadata it was added from
+        self.inference_peers: dict[int, NixlPeer] = {}
+        self.inference_metadata: dict[int, bytes] = {}
         self.orchestrator_peer: NixlPeer
-        self.group_generations: list[int]
+        # Last inference group the orchestrator published after evicting or re-adding engines
+        self.generation = 0
         self.broadcast_count = 0
 
     @property
@@ -359,16 +366,57 @@ class NIXLWeightSender(WeightSender):
             )
         self.initialized = True
 
-    def finish_transfer_group(self, group_index: int) -> None:
+    def finish_transfer_group(self, group_index: int, step: int, step_dir: Path) -> None:
         if not self.is_serving_rank:
             return
-        notification = group_notification(group_index, self.group_generations[group_index])
         self.nixl_agent.wait_for_notification(
-            self.inference_peers,
-            notification,
+            list(self.inference_peers.values()),
+            group_notification(group_index, step),
             timeout=self.config.timeout,
+            skip=lambda: self.dropped_peers(step_dir),
         )
-        self.group_generations[group_index] += 1
+
+    def dropped_peers(self, step_dir: Path) -> set[str]:
+        """Inference peers the orchestrator dropped from this transfer because their engine died or hung."""
+        ranks = {int(marker.name.removeprefix(".drop_")) for marker in step_dir.glob(".drop_*")}
+        return {peer.remote_agent_name for rank, peer in self.inference_peers.items() if rank in ranks}
+
+    def discover_inference(self, startup: bool) -> dict[int, bytes] | None:
+        """NIXL metadata of the inference ranks taking part: at startup, and whenever the
+        orchestrator published a new group after evicting or re-adding engines. It publishes the
+        group before acknowledging the version, and a rejoining engine republishes its metadata
+        before that. None when nothing changed."""
+        group_file = nixl_group_file(get_broadcast_dir(self.output_dir))
+        group = json.loads(group_file.read_text()) if group_file.exists() else None
+        if group is not None and group["generation"] > self.generation:
+            self.generation = group["generation"]
+            self.logger.info(
+                f"Updating the NIXL inference peers (generation {self.generation}): {len(group['ranks'])} ranks"
+            )
+            refs = {ref.worker_rank: ref for ref in self.model_express.list_sources("inference")}
+            return {rank: self.model_express.fetch(refs[rank]).nixl_metadata for rank in group["ranks"]}
+        if not startup:
+            return None
+        refs = self.model_express.wait_for(
+            "inference", count=self.config.inference_world_size, timeout=self.config.timeout
+        )
+        return {rank: self.model_express.fetch(ref).nixl_metadata for rank, ref in enumerate(refs)}
+
+    def connect_inference_peers(self, metadata: dict[int, bytes]) -> None:
+        """Drop the peers of evicted ranks and (re)connect ranks whose metadata is new, e.g. a
+        relaunched engine's."""
+        for rank in self.inference_peers.keys() - metadata.keys():
+            self.nixl_agent.remove_remote_agent(self.inference_peers.pop(rank))
+            del self.inference_metadata[rank]
+        for rank, rank_metadata in metadata.items():
+            if self.inference_metadata.get(rank) == rank_metadata:
+                continue
+            if rank in self.inference_peers:
+                self.nixl_agent.remove_remote_agent(self.inference_peers[rank])
+            peer = self.nixl_agent.add_remote_agent(rank_metadata)
+            self.nixl_agent.make_connection(peer)
+            self.inference_peers[rank] = peer
+            self.inference_metadata[rank] = rank_metadata
 
     @torch.no_grad()
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
@@ -382,53 +430,39 @@ class NIXLWeightSender(WeightSender):
                 count=1,
                 timeout=self.config.timeout,
             )[0]
-            inference_refs = self.model_express.wait_for(
-                "inference",
-                count=self.config.inference_world_size,
-                timeout=self.config.timeout,
-            )
-            inference_metadata: list[bytes] | None = [
-                self.model_express.fetch(ref).nixl_metadata for ref in inference_refs
-            ]
             orchestrator_metadata = self.model_express.fetch(orchestrator_ref).nixl_metadata
-        else:
-            inference_metadata = None
+            self.orchestrator_peer = self.nixl_agent.add_remote_agent(orchestrator_metadata)
+            self.nixl_agent.make_connection(self.orchestrator_peer)
+        inference_metadata = self.discover_inference(startup) if self.world.is_master else None
 
         if startup:
             # The master's ModelExpress discovery can outlast the NCCL timeout; hold the others on the store.
             wait_for_master(f"weight_broadcast/nixl_discovery/{step}", self.config.timeout)
-            objects = [inference_metadata]
-            dist.broadcast_object_list(objects, src=0)
-            if self.is_serving_rank:
-                self.inference_peers = []
-                for metadata in cast(list[bytes], objects[0]):
-                    peer = self.nixl_agent.add_remote_agent(metadata)
-                    self.nixl_agent.make_connection(peer)
-                    self.inference_peers.append(peer)
-                self.group_generations = [0] * len(self.transfer_group_names)
-            if self.world.is_master:
-                self.orchestrator_peer = self.nixl_agent.add_remote_agent(orchestrator_metadata)
-                self.nixl_agent.make_connection(self.orchestrator_peer)
+        objects = [inference_metadata]
+        dist.broadcast_object_list(objects, src=0)
+        if self.is_serving_rank and objects[0] is not None:
+            self.connect_inference_peers(cast(dict[int, bytes], objects[0]))
 
-        if self.world.is_master:
-            self.nixl_agent.send_notification(
-                self.orchestrator_peer,
-                policy_notification(step, "ready"),
-            )
-
+        unreachable: set[int] = set()
         for group, group_name in enumerate(self.transfer_group_names):
             group_start = time.perf_counter()
             buffer_index = group % self.staging_buffer_count
             if group >= self.staging_buffer_count:
-                self.finish_transfer_group(group - self.staging_buffer_count)
+                self.finish_transfer_group(group - self.staging_buffer_count, step, step_dir)
 
             if self.is_serving_rank:
                 for shard in self.staged_shards_by_group.get(group, ()):
                     shard.copy_to_staging()
                 torch.cuda.synchronize()
-                notification = group_notification(group, self.group_generations[group])
-                for peer in self.inference_peers:
-                    self.nixl_agent.send_notification(peer, notification)
+                notification = group_notification(group, step)
+                for rank, peer in self.inference_peers.items():
+                    try:
+                        self.nixl_agent.send_notification(peer, notification)
+                    except Exception as error:
+                        # A dead engine: the orchestrator drops it from the transfer
+                        if rank not in unreachable:
+                            unreachable.add(rank)
+                            self.logger.warning(f"Could not notify inference rank {rank}: {error!r}")
             if self.world.is_master:
                 self.logger.debug(
                     f"NIXL+ModelExpress policy v{step} group {group_name} staged in buffer {buffer_index} in "
@@ -437,7 +471,7 @@ class NIXLWeightSender(WeightSender):
 
         first_pending_group = max(0, len(self.transfer_group_names) - self.staging_buffer_count)
         for group in range(first_pending_group, len(self.transfer_group_names)):
-            self.finish_transfer_group(group)
+            self.finish_transfer_group(group, step, step_dir)
 
         if self.world.is_master:
             self.nixl_agent.wait_for_notification(
@@ -449,6 +483,11 @@ class NIXLWeightSender(WeightSender):
         dist.barrier()
         self.broadcast_count += 1
         self.logger.info(f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s")
+
+
+def nixl_group_file(broadcast_dir: Path) -> Path:
+    """Where the orchestrator publishes the inference ranks taking part after evicting or re-adding an engine."""
+    return broadcast_dir / "nixl_group.json"
 
 
 class NIXLWeightReceiver(WeightReceiver):
@@ -468,6 +507,8 @@ class NIXLWeightReceiver(WeightReceiver):
         )
 
     async def initialize(self) -> None:
+        # A group left by a previous run must not steer the new trainer
+        nixl_group_file(self.broadcast_dir).unlink(missing_ok=True)
         await init_nixl_broadcast(
             self.admin_plane,
             self.config.host,
@@ -476,10 +517,23 @@ class NIXLWeightReceiver(WeightReceiver):
             self.config.inference_world_size,
             self.config.session_id,
         )
+        # An engine keeps its inference ranks (its ModelExpress identities) when it is evicted and rejoins
+        workers = self.config.inference_world_size // len(self.admin_plane.clients)
+        self.ranks = {
+            client: range(index * workers, (index + 1) * workers)
+            for index, client in enumerate(self.admin_plane.clients)
+        }
         self.model_express.publish(nixl_metadata=self.nixl_agent.get_metadata())
 
     async def receive(self, step: int) -> None:
-        self._ack(step)
+        await self.admin_plane.update_weights(
+            self.step_dir(step),
+            transport="nixl",
+            step=step,
+            on_paused=lambda: self._ack(step),
+            on_membership_change=self.on_membership_change,
+            abort=lambda client: self.drop(client, step),
+        )
         if self.trainer_peer is None:
             trainer_refs = await asyncio.to_thread(
                 self.model_express.wait_for,
@@ -491,16 +545,43 @@ class NIXLWeightReceiver(WeightReceiver):
             trainer_table = TrainerTensorTable.decode(trainer_worker.nixl_metadata)
             self.trainer_peer = self.nixl_agent.add_remote_agent(trainer_table.agents[0].metadata)
             self.nixl_agent.make_connection(self.trainer_peer)
-
-        trainer_peer = self.trainer_peer
-        await asyncio.to_thread(
-            self.nixl_agent.wait_for_notification,
-            [trainer_peer],
-            policy_notification(step, "ready"),
-            timeout=self.config.timeout,
-        )
-        await self.admin_plane.update_weights(None, transport="nixl", step=step)
         self.nixl_agent.send_notification(
-            trainer_peer,
+            self.trainer_peer,
             policy_notification(step, "complete"),
         )
+
+    def drop(self, client: AsyncClient, step: int) -> None:
+        """Take a dead or hung engine out of v{step}'s transfer: the trainer stops waiting for its
+        ranks and the other engines finish their pulls."""
+        for rank in self.ranks[client]:
+            drop_marker(self.step_dir(step), rank).touch()
+
+    async def on_membership_change(self, members: list[AsyncClient], generation: int) -> None:
+        """Set up the rejoining engines, then publish the inference ranks taking part for the
+        trainer, which reads them after this version's acknowledgement. A rejoining engine may
+        have been relaunched: ``/init_broadcaster`` gives it a fresh NIXL agent, published to
+        ModelExpress under its old ranks. One that fails it is evicted again."""
+
+        async def init_broadcaster(client: AsyncClient) -> None:
+            await self.admin_plane._each(
+                [client],
+                "/init_broadcaster",
+                timeout_s=max(ADMIN_TIMEOUT_S, self.config.timeout),
+                json={
+                    "host": self.config.host,
+                    "port": self.config.port,
+                    "rank_offset": self.ranks[client].start,
+                    "inference_world_size": self.config.inference_world_size,
+                    "timeout": self.config.timeout,
+                    "session_id": self.config.session_id,
+                },
+            )
+
+        await asyncio.gather(*(init_broadcaster(client) for client in members if client in self.admin_plane.evicted))
+        members = self.admin_plane._standing(members)
+        ranks = [rank for client in members for rank in self.ranks[client]]
+        self.logger.info(f"Updating the NIXL inference group (generation {generation}): {len(members)} engines")
+        group_file = nixl_group_file(self.broadcast_dir)
+        tmp = group_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"generation": generation, "ranks": ranks}))
+        tmp.replace(group_file)
