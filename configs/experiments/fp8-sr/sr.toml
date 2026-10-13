@@ -1,0 +1,8 @@
+# uv run sft @ configs/experiments/fp8-sr/sft-base.toml @ configs/experiments/fp8-sr/sr.toml
+[model.quantization]
+type = "fp8"
+stochastic_rounding = true
+
+[model.moe.compute]
+type = "deepgemm_fp8"
+stochastic_rounding = true
