@@ -16,9 +16,9 @@ serve it), so any process on the host finds it. Requests:
 There is no cancel: a task is stopped by the taskset that handed it out
 (``Taskset.cancel``), which owns what a cancel means (flow: ``flow cancel``).
 
-A seat is the env agent's name
-(``Trace.agent.name``) as streamed in the trace's deltas; a seat steer goes to that
-seat's latest open trace in each picked episode, like ``vf.steer`` by seat.
+A seat is the env agent's name (``Trace.agent.name``) as streamed in the trace's
+deltas; a seat steer goes to that seat's latest open trace in each picked episode, as
+an agent's ``message_agent`` tool resolves a seat.
 
 ``Client`` is the Python client; ``uv run eval control --run <dir> ...`` its CLI.
 """

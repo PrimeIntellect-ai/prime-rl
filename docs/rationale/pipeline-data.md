@@ -24,7 +24,7 @@ dispatched episode (e71df869, c3ef3b1f); training does not.
   `TrainSource` hands each env's tasks to a `Curriculum`, which samples them with
   replacement (`curriculum/base.py`, `sampler.observe(group)`): one task runs many times
   across steps. `observe`'s contract is "exactly once per dispatched task", and flow's
-  `PipelineTaskset.observe` commits a job attempt (attempt fence) on it. Calling it from
+  `FlowTaskset.observe` commits a job attempt (attempt fence) on it. Calling it from
   training would commit the same attempt many times; that is a different contract, not
   a small wiring change.
 - No pipeline runs a flow taskset in training. Hillclimb runs every stage as an eval
@@ -68,7 +68,7 @@ curriculum, not the eval contract reused.
 **Problem.** prime-rl's file monitor writes one index row per episode
 (`monitors/file/traces/index.py`): ids, tokens, cost, duration, timing. It has no model
 and no trace labels. Flow's rollups (`prime_flow/pipeline/rollups.py`) need the stage
-(`info.flow = {job, stage, attempt}`, set by `PipelineEnv.trace_labels`) and per-model
+(`info.flow = {job, stage, attempt}`, set by `FlowEnv.trace_labels`) and per-model
 calls/tokens/cost, so they seek into the stream and parse whole records (pyzstd for
 sealed chunks) for every episode in the window. Flow's own rationale
 (`docs/rationale/observability.md`, "prime-rl: add the episode's trace labels ... and a
