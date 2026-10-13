@@ -685,9 +685,9 @@ MAIN_PID=$!
 # multi-rank DP/EP group) runs as its own step, so its exit ends only that step
 # (--kill-on-bad-exit=1 tears down the rest of the group) and not the job. The
 # orchestrator evicts the group's engines and readmits them at the next weight update
-# once the restarted group answers again. NIXL broadcast pins its receivers and a
-# single engine has no peer to fall back to, so there an engine exit ends the job.
-ENGINE_EXIT_FATAL={{ "1" if use_nixl_broadcast else "0" }}
+# once the restarted group answers again. Only NCCL and NIXL broadcast evict engines, and a
+# single engine has no peer to fall back to, so otherwise an engine exit ends the job.
+ENGINE_EXIT_FATAL={{ "0" if use_nccl_broadcast or use_nixl_broadcast else "1" }}
 [ "$(wc -w <<< "$ADMIN_URLS")" -gt 1 ] || ENGINE_EXIT_FATAL=1
 # run_engine_group <first_infer_node> <num_nodes> [<local_dp_rank>; all when omitted]
 run_engine_group() {
