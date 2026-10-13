@@ -17,8 +17,10 @@ median `time/forward_backward` over steps 5 to 20 with min and max, in seconds. 
 ## Summary
 
 - With `fullgraph=false`, main breaks the graph twice per MoE block on the all-to-all, so every MoE block runs
-  eagerly. The branch has 0 breaks and runs the forward plus backward in half the time, matching main with
-  `fullgraph=true`.
+  eagerly. The branch has 0 breaks and its step time matches main with `fullgraph=true`.
+- The size of the speedup here says little about real models. mini-glm-moe is host bound (the GPU is busy 17%
+  of the traced step on main), so removing eager kernel launches shrinks its step far more than it would on a
+  GPU-bound model. Speedup magnitudes come from the end-to-end runs on Qwen3-30B-A3B and GLM-4.5-Air.
 - Recompiles are unchanged without CP (2 or 3 per frame in every arm, the switch to dynamic shapes).
 - With `cp=2`, compiling the MoE blocks exposes the CP attention-params recompiles (`max_seqlen_k` guards):
   64 recompiles and the recompile limit, on the branch with fullgraph off and on main with fullgraph on.
@@ -100,4 +102,4 @@ cannot separate from transfer time.
 
 - MXFP8 dispatch (`_mxfp8_all_to_all`) needs Blackwell and was not run.
 - The fp32 router keeps MoE blocks eager for an unrelated reason and was not measured.
-- All results are on the 24-layer mini-glm-moe proxy, not a full-size model.
+- All results above are on the 24-layer mini-glm-moe proxy, not a full-size model.
