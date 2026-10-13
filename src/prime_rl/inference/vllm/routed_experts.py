@@ -34,18 +34,15 @@ def serialize_routed_experts(routed_experts: Any, start: int = 0) -> dict[str, A
 
 
 class RoutedExpertsCapture:
-    def __init__(self, generator: AsyncIterator[RequestOutput]):
+    def __init__(self, generator: AsyncIterator[RequestOutput], start: int = 0):
         self._generator = generator
+        self._start = start
         self.routed_experts: dict[int, dict[str, Any]] = {}
 
     async def __aiter__(self):
         async for request_output in self._generator:
             for output in request_output.outputs:
-                routed_experts = getattr(output, "routed_experts", None)
-                if routed_experts is None:
-                    continue
-                # Rows end at the last forwarded token. A P/D decode instance's rows begin at its first
-                # forward (the last prompt token); the router cuts them by this start (router >= v0.2.3).
-                start = len(request_output.prompt_token_ids) + len(output.token_ids) - 1 - len(routed_experts)
-                self.routed_experts[output.index] = serialize_routed_experts(routed_experts, start=start)
+                encoded = serialize_routed_experts(getattr(output, "routed_experts", None), start=self._start)
+                if encoded is not None:
+                    self.routed_experts[output.index] = encoded
             yield request_output
