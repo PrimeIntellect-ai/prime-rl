@@ -1,5 +1,6 @@
 #!/bin/bash
-# Run one RL arm of the CP attention-params matrix on reverse-text-moe (2 trainer GPUs, 1 inference GPU).
+# Run one RL arm of the CP attention-params matrix (2 trainer GPUs, 1 inference GPU).
+# CP_RING_RL_CONFIG overrides the config, which defaults to reverse-text-moe.
 # usage: run_rl_arm.sh <worktree> <name> <gpus> <steps> [extra rl args...]
 set -u
 WT=$1; NAME=$2; GPUS=$3; STEPS=$4; shift 4
@@ -14,7 +15,7 @@ export TORCH_LOGS="recompiles,graph_breaks"
 export TORCH_LOGS_FORMAT="[%(threadName)s] %(name)s: %(message)s"
 export PRL_OUTPUT_DIR=$OUT
 start=$(date +%s)
-uv run --no-sync rl @ configs/ci/integration/reverse-text-moe/start.toml \
+uv run --no-sync rl @ "${CP_RING_RL_CONFIG:-configs/ci/integration/reverse-text-moe/start.toml}" \
   --output-dir "$OUT/run" --max-steps "$STEPS" --ckpt None \
   --deployment.num-train-gpus 2 --deployment.num-infer-gpus 1 "$@" > "$OUT/rl.log" 2>&1
 echo "exit=$? wall_s=$(( $(date +%s) - start ))" >> "$OUT/rl.log"
