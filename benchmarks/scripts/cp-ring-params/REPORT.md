@@ -74,6 +74,21 @@ breaks at `all_to_all_single`, fullgraph on gives 0.
 Ring CP with fullgraph therefore does not run on main today, and runs on the branch. For comparison, the
 same RL ring cp2 arm with fullgraph off (MoE blocks eager) takes 7.71 s forward plus backward.
 
+### Every FlashAttention backend
+
+`probe_fa.py`: Llama, 2 layers, AC plus `fullgraph=True`, 8 micro batches with different document layouts, 2
+ranks (job 4023). Recompiles summed over both ranks.
+
+| Tree | FA2 ring | FA3 ring | FA4 ring | FA2 ulysses | FA3 ulysses | FA4 ulysses |
+|---|---|---|---|---|---|---|
+| branch | 0 | 0 | 0 | 0 | 0 | 0 |
+| main | | | 11 | | 2 | |
+
+Main's FA4 ring recompiles on `DATA_PARAMS['max_seqlen_k']` and the `cu_seqlens_k` size (8 micro batches
+stay under the limit, so it does not crash here). Main's FA3 ulysses recompiles once per rank on the
+`ULYSSES_PARAMS['cu_seqlens']` size, then that size is symbolic. A static analysis of the three backends found
+no backend-specific traced code: the backend reaches the ring op only as a constant string.
+
 ## Performance on main's layout
 
 reverse-text-moe, 2 trainer GPUs and 1 inference GPU, 20 steps, no offloading of any kind, no checkpoints.
