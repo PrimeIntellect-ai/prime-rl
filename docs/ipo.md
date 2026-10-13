@@ -1,6 +1,6 @@
 # IPO
 
-IPO (Importance Policy Optimization) is the default RL loss in prime-rl. This page explains why it masks tokens by probability instead of ratio, and shows the ablation behind the default `eps = 0.3`. The loss definition and its knobs are in [Algorithms § IPO Loss](algorithms.md#ipo-loss).
+IPO (INTELLECT Policy Optimization) is the default RL loss in prime-rl. This page explains why it masks tokens by probability instead of ratio, and shows the ablation behind the default `eps = 0.3`. The loss definition and its knobs are in [Algorithms § IPO Loss](algorithms.md#ipo-loss).
 
 ## Table of Contents
 

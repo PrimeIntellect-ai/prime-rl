@@ -192,7 +192,7 @@ The orchestrator stamps each sample's component membership as per-token weight s
 
 ### IPO Loss
 
-The default RL loss is Importance Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
+The default RL loss is INTELLECT Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
 
 $$
 \mathcal{L}(\theta) = -\frac{1}{N}\sum_t
