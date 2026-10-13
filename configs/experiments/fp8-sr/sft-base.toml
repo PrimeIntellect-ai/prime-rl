@@ -35,6 +35,9 @@ seed = 42
 [renderer]
 name = "deepseek-v4"
 
+[tokenizer]
+name = "/home/huggingface/hub/models--PrimeIntellect--DeepSeek-V4-Flash-Base-bf16/snapshots/f6844322b0844389ca71de948dadb74dd9bfa4a6"
+
 [optim]
 lr = 1e-5
 
