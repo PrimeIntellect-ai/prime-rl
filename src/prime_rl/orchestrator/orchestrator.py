@@ -491,8 +491,6 @@ class Orchestrator:
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
-                if metrics := self.take_rollout_metrics():
-                    await monitors.log(metrics, step=self.progress.step)
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
