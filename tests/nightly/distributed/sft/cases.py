@@ -60,7 +60,6 @@ FEATURES = (
 @dataclass(frozen=True, eq=False)
 class Arch:
     name: str
-    layouts: tuple[Layout, ...] = LAYOUTS
     features: tuple[Feature, ...] = ()
     skip: dict[Layout | Feature, str] = field(default_factory=dict)
 
@@ -96,10 +95,7 @@ class Case:
 
 
 def cases_for(arch: Arch) -> list[Case]:
-    for feature in arch.features:
-        if feature.layout not in arch.layouts:
-            raise ValueError(f"{arch.name}: feature {feature.name} runs on {feature.layout.name}, which it doesn't run")
-    return [Case(arch, layout) for layout in arch.layouts] + [
+    return [Case(arch, layout) for layout in LAYOUTS] + [
         Case(arch, feature.layout, feature) for feature in arch.features
     ]
 
@@ -111,7 +107,9 @@ def check_k_selectable(names: list[str]) -> None:
 
 
 QWEN3_MOE = Arch("qwen3_moe", features=FEATURES)
-GLM_MOE_DSA = Arch("glm_moe_dsa", layouts=(FSDP8_EP8, HSDP2X4_EP4, CP2_RING_EP4))
+GLM_MOE_DSA = Arch(
+    "glm_moe_dsa", skip={CP4_ULYSSES_EP8: "sparse MLA does its own CP and ignores cp_style, same as cp2_ring_ep4"}
+)
 DEEPSEEK_V4 = Arch("deepseek_v4", skip={CP4_ULYSSES_EP8: "DSv4 cp_support is ring-only"})
 ARCHS = (QWEN3_MOE, GLM_MOE_DSA, DEEPSEEK_V4)
 CASES = [case for arch in ARCHS for case in cases_for(arch)]
