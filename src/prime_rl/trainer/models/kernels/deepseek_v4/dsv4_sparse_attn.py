@@ -360,6 +360,9 @@ def dsv4_sparse_attn_backward(
     assert shape_error is None, shape_error
     assert indices.shape[:3] == (batch, seq_len, kv_group)
     assert lse.shape == (batch, seq_len, heads)
+    assert backend != "cudnn_flashmla" or max_slots is not None, (
+        "the cudnn_flashmla backward builds one kernel for every slot width up to max_slots, so it needs max_slots"
+    )
     return BACKWARD_BACKENDS[backend](q, kv, out, grad_out, indices, lse, sm_scale, max_slots)
 
 
