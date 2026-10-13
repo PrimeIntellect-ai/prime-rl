@@ -44,6 +44,61 @@ def trace_truncated(trace: dict) -> bool:
     return bool(last and last.get("finish_reason") == "length")
 
 
+JUDGE_MODEL = "judges"
+"""The `models` key of judge calls (`Trace.extra_usage`), which record no model."""
+UNKNOWN_MODEL = "?"
+"""The ``models`` key of calls that recorded no model."""
+
+
+def model_usage(rec: dict) -> dict[str, dict]:
+    """Per requested model, its calls summed over every trace: ``calls``, ``errors``
+    (calls that ended in one), and verifiers' ``Usage`` counts - ``prompt_tokens``
+    (cache reads excluded), ``cached_input_tokens``, ``completion_tokens`` - and
+    ``cost``, null unless some call reported one. This is what a provider bills: every
+    call's whole request, where the row's ``input_tokens`` counts fed-in tokens once.
+    Judge calls (``Trace.extra_usage``) count under ``JUDGE_MODEL``."""
+    models: dict[str, dict] = {}
+
+    def add(model: str, usage: object, error: bool) -> None:
+        row = models.setdefault(
+            model,
+            {
+                "calls": 0,
+                "errors": 0,
+                "prompt_tokens": 0,
+                "cached_input_tokens": 0,
+                "completion_tokens": 0,
+                "cost": None,
+            },
+        )
+        row["calls"] += 1
+        row["errors"] += error
+        usage = usage if isinstance(usage, dict) else {}
+        for key in ("prompt_tokens", "cached_input_tokens", "completion_tokens"):
+            row[key] += usage.get(key) or 0
+        if isinstance(cost := usage.get("cost"), (int, float)):
+            row["cost"] = (row["cost"] or 0.0) + cost
+
+    for trace in rec.get("traces") or []:
+        for call in trace.get("calls") or []:
+            add(call.get("model") or UNKNOWN_MODEL, call.get("usage"), call.get("error") is not None)
+        # Judge calls the env made outside the agent record usage without a model.
+        for usage in trace.get("extra_usage") or []:
+            add(JUDGE_MODEL, usage, False)
+    return models
+
+
+def episode_labels(rec: dict) -> dict:
+    """What the env labelled the episode with (``Env.trace_labels``): verifiers puts the
+    same labels into every trace's ``info["labels"]``, so the first trace that has them
+    speaks for the episode."""
+    for trace in rec.get("traces") or []:
+        labels = (trace.get("info") or {}).get("labels")
+        if isinstance(labels, dict):
+            return labels
+    return {}
+
+
 def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     """One index row: what the table, the filters, the chart and the sort need.
 
@@ -59,13 +114,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
     reward_parts: dict[str, list[float]] = {}
     metric_parts: dict[str, list[float]] = {}
     timing: dict[str, float] = {}
-    costs: list[float] = []
     for trace in rec.get("traces") or []:
-        costs.extend(
-            usage["cost"]
-            for call in trace.get("calls") or []
-            if isinstance(usage := call.get("usage") or {}, dict) and isinstance(usage.get("cost"), (int, float))
-        )
         nodes = trace.get("nodes") or []
         parents = {node.get("parent") for node in nodes if "parent" in node}
         branches += max(0, len(nodes) - len(parents))
@@ -95,6 +144,8 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         truncated = truncated or trace_truncated(trace)
         timeout = timeout or bool(trace.get("is_timeout"))
     first_info = ((rec.get("traces") or [{}])[0].get("info")) or {}
+    models = model_usage(rec)
+    costs = [usage["cost"] for usage in models.values() if usage["cost"] is not None]
     return {
         "rewards": {name: sum(v) / len(v) for name, v in reward_parts.items()},
         "metrics": {name: sum(v) / len(v) for name, v in metric_parts.items()},
@@ -125,6 +176,9 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         "dispatch": (first_info.get("dispatch") or {}).get("time"),
         "arrival": (first_info.get("arrival") or {}).get("time"),
         "duration": _episode_duration(first_info, timing),
+        # what the env labelled the episode with and where its calls went
+        "labels": episode_labels(rec),
+        "models": models,
     }
 
 
