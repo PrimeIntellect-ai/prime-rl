@@ -190,7 +190,9 @@ class Orchestrator:
             eval_client_type="openai_chat_completions",
             renderer_config=config.renderer,
         )
-        self.admin_plane = setup_admin_plane(config.model.client, config.model.name)
+        self.admin_plane = setup_admin_plane(
+            config.model.client, config.model.name, roles=config.inference_metrics_roles
+        )
 
         await monitors.setup(
             producer="orch",

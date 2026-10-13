@@ -492,7 +492,7 @@ class OrchestratorConfig(BaseConfig):
     """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each policy admin client when collecting P/D inference metrics."""
+    """P/D role of each policy admin client: labels inference metrics, and prefill engines pause before decode engines on weight updates."""
 
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
