@@ -11,3 +11,7 @@ type = "sgd"
 
 [deployment]
 num_train_nodes = 2
+
+[env_vars]
+NCCL_BUFFSIZE = "1048576"
+NCCL_MAX_CTAS = "4"
