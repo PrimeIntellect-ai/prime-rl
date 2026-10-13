@@ -1,6 +1,7 @@
-"""Compare per-step loss, grad norm and entropy between pairs of fake-data RL trainer arms.
+"""Compare per-step loss, grad norm and entropy between pairs of arms.
 
-usage: uv run python compare_numerics.py <runs-dir>
+Without pairs it compares the fake-data RL trainer arms of `matrix.sh`; with pairs, the named runs.
+usage: uv run python compare_numerics.py <runs-dir> [<run-a>:<run-b> ...]
 """
 
 import json
@@ -11,9 +12,10 @@ KEYS = ("loss/mean", "optim/grad_norm", "entropy/all/mean", "mismatch_kl/all/mea
 
 
 def load(run: Path) -> dict[int, dict]:
-    path = run / "run/monitors/file/metrics.jsonl"
-    if not path.exists():
+    paths = sorted(run.glob("run/**/monitors/file/metrics.jsonl"))
+    if not paths:
         return {}
+    path = paths[0]
     by_step: dict[int, dict] = {}
     for line in path.read_text().splitlines():
         row = json.loads(line)
@@ -45,6 +47,10 @@ def compare(runs: Path, a: str, b: str) -> None:
 
 def main() -> None:
     runs = Path(sys.argv[1])
+    if len(sys.argv) > 2:
+        for pair in sys.argv[2:]:
+            compare(runs, *pair.split(":"))
+        return
     print("--- branch vs main (same config)")
     for cfg in ("off", "fg"):
         compare(runs, f"trainer-br-{cfg}", f"trainer-main-{cfg}")
