@@ -179,16 +179,16 @@ def test_a_lookup_reads_only_the_rows_written_since_the_last(tmp_path, monkeypat
         _land(monitor, _trace(f"agent/{n}", start=float(n)))
     lookup = RunTraceLookup(tmp_path)
     assert lookup.latest({"call": {"key": "agent/3"}}).timing.boot.start == 3.0
-    assert lookup.rows_read == 20
+    assert lookup.poll() == 0  # all 20 rows read already
 
     _land(monitor, _trace("agent/20", start=20.0))
+    assert lookup.poll() == 1  # one new row read, not the 21
     loads = []
     real = RunTraceLookup._load_finished
     monkeypatch.setattr(
         RunTraceLookup, "_load_finished", lambda self, *args: loads.append(args[1]) or real(self, *args)
     )
     assert lookup.latest(JOB).timing.boot.start == 20.0
-    assert lookup.rows_read == 21  # one new row read, not the 21
     assert len(loads) == 1  # and one trace loaded: the one returned
     assert lookup.poll() == 0
 

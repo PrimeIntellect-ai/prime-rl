@@ -75,8 +75,6 @@ class RunTraceLookup:
 
     def __init__(self, run_dir: Path | str) -> None:
         self.run_dir = Path(run_dir)
-        self.rows_read = 0
-        """Index rows read so far, over every attempt (a reread after a resume counts again)."""
         self._lock = threading.Lock()
         self._reset()
 
@@ -103,7 +101,6 @@ class RunTraceLookup:
         read = 0
         for attempt in self._attempts:
             read += self._tail(attempt)
-        self.rows_read += read
         return read
 
     def _tail(self, attempt: _Attempt) -> int:
