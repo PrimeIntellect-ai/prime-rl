@@ -269,12 +269,11 @@ def get_load_balance_stats(
 
     # Per layer: replayed tokens, checked tokens, checked tokens with no shared expert, summed shared fraction.
     # Hash-routed layers have nothing to check, so they are left out.
-    replay = torch.stack(
-        [replay for block_mlp, (_, _, replay) in zip(block_mlps, layer_stats) if block_mlp.router.learned_selection]
-    )
+    learned_replay = [
+        replay for block_mlp, (_, _, replay) in zip(block_mlps, layer_stats) if block_mlp.router.learned_selection
+    ]
     for block_mlp in block_mlps:
         block_mlp.replay_agreement.zero_()
-    checked = replay[:, 1].clamp(min=1)
 
     for block_mlp, (tokens_per_expert, routing_confidence_sum, _) in zip(block_mlps, layer_stats):
         num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
@@ -290,7 +289,9 @@ def get_load_balance_stats(
         block_mlp.routing_confidence_sum.zero_()
     # Every rank replays or none does (the trainer requires routes on every micro batch when
     # replay is on), so all ranks agree on whether these stats exist.
-    replaying = bool(replay[:, 0].sum() > 0)
+    replay = torch.stack(learned_replay) if learned_replay else None
+    replaying = replay is not None and bool(replay[:, 0].sum() > 0)
+    checked = replay[:, 1].clamp(min=1) if replaying else None
     return {
         "max_vio": torch.stack(per_layer_max_vio),
         "routing_confidence": torch.stack(per_layer_routing_confidence),
