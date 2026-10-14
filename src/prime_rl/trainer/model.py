@@ -47,6 +47,7 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.fp8_rounding import setup_fp8_rounding
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -786,7 +787,12 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
             raise ValueError(
                 f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
+        if quant.qat:
+            from prime_rl.trainer.models.layers.mxfp8_qat import replace_linear_with_mxfp8_qat
+
+            replace_linear_with_mxfp8_qat(model, ignore_modules, quant.stochastic_rounding)
+        else:
+            replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
@@ -901,6 +907,7 @@ def setup_model(
 
     configure_moe_runtime(model, config, parallel_dims)
     configure_ngram_runtime(model, parallel_dims)
+    setup_fp8_rounding(model, config.fp8_rounding_seed)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.

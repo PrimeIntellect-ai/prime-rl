@@ -449,6 +449,15 @@ class InferenceConfig(BaseConfig):
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
+    mxfp8_stochastic_weight_rounding: bool = False
+    """Use prime-kernels' per-32 stochastic cast for online MXFP8 BF16 weights on load/reload. Activations round to nearest; serving samples fresh weight-rounding streams on each load. Sets ``PRIME_MXFP8_STOCHASTIC_WEIGHT_ROUNDING=1`` for the vLLM workers."""
+
+    @model_validator(mode="after")
+    def validate_mxfp8_rounding(self):
+        if self.mxfp8_stochastic_weight_rounding and self.vllm.quantization != "mxfp8":
+            raise ValueError("MXFP8 stochastic weight rounding requires vllm.quantization='mxfp8'")
+        return self
+
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
