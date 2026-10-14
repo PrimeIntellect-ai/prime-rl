@@ -13,6 +13,7 @@ from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
+    sequence_balance,
 )
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -261,7 +262,16 @@ def test_update_selection_biases_moves_towards_underloaded_experts():
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([layer])
 
-    update_selection_biases(model, torch.tensor([[8.0, 4.0, 4.0, 0.0]]))
-    update_selection_biases(model, torch.tensor([[8.0, 4.0, 4.0, 0.0]]))
+    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]))
+    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]))
 
-    torch.testing.assert_close(moe.router.selection_bias, torch.tensor([-0.2, 0.0, 0.0, 0.2]))
+    # sign(mean - load) = [-1, 1, 1, 1], centred to [-1.5, 0.5, 0.5, 0.5] per step
+    torch.testing.assert_close(moe.router.selection_bias, torch.tensor([-0.3, 0.1, 0.1, 0.1]))
+
+
+def test_sequence_balance():
+    scores = torch.tensor([[0.9, 0.1], [0.9, 0.1], [0.9, 0.1], [0.1, 0.9]])
+    selected = torch.tensor([[0], [0], [0], [1]])
+
+    # row 0 sends both tokens to expert 0: f = [2, 0], P = [0.9, 0.1]; row 1 is balanced: f = [1, 1], P = [0.5, 0.5]
+    torch.testing.assert_close(sequence_balance(scores, selected, num_rows=2), torch.tensor([1.8, 1.0]))

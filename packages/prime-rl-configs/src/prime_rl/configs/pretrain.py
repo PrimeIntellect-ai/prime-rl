@@ -166,6 +166,10 @@ class PretrainConfig(BaseConfig):
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
+    moe_bias_freeze: float = Field(0.1, ge=0, lt=1)
+    """Fraction of ``max_steps`` at the end of training during which the MoE selection biases stop updating, as
+    DeepSeek-V3, GLM-4.5 and Moonlight do in their final stage. Without ``max_steps`` the biases never freeze."""
+
     gc: GCConfig | None = GCConfig()
     """Deterministic garbage collection every N steps. Set to null for Python's default GC."""
 
