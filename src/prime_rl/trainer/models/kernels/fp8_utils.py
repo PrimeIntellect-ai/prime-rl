@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Tuple
 
 import torch
@@ -21,6 +22,11 @@ def ue8m0_for_device(device: torch.device | None = None) -> bool:
     scales, and UE8M0 there is a pure precision loss (it measurably raises the
     trainer/inference mismatch KL)."""
     return torch.cuda.get_device_capability(device)[0] >= 10
+
+
+def weight_ue8m0_for_device(device: torch.device | None = None) -> bool:
+    """Like ``ue8m0_for_device``, but ``PRIME_RL_FP8_WEIGHT_UE8M0=1`` forces UE8M0 for weight casts only."""
+    return ue8m0_for_device(device) or os.environ.get("PRIME_RL_FP8_WEIGHT_UE8M0") == "1"
 
 
 # ---------------------------------------------------------------------------

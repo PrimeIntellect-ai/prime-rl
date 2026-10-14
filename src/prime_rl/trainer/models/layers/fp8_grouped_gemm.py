@@ -11,6 +11,7 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     grouped_per_token_cast_to_fp8_triton,
     ue8m0_for_device,
     unpack_rows_triton,
+    weight_ue8m0_for_device,
 )
 
 
@@ -118,7 +119,7 @@ def _grouped_fp8_gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor)
     )
     weight_fp8 = grouped_per_block_cast_to_fp8_triton(
         weight.transpose(1, 2),
-        use_ue8m0,
+        weight_ue8m0_for_device(weight.device),
         GROUP_ALIGNMENT,
     )
 
@@ -196,7 +197,9 @@ def _grouped_fp8_gemm_backward(
             use_ue8m0,
             GROUP_ALIGNMENT,
         )
-        weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(weight, use_ue8m0, GROUP_ALIGNMENT)
+        weight_dx_fp8 = grouped_per_block_cast_to_fp8_triton(
+            weight, weight_ue8m0_for_device(weight.device), GROUP_ALIGNMENT
+        )
         grad_x_padded = torch.empty(
             (padded_total_m, weight.size(1)),
             device=grad_output.device,

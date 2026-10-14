@@ -11,6 +11,7 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     per_token_cast_to_fp8_tp_triton,
     per_token_cast_to_fp8_triton,
     ue8m0_for_device,
+    weight_ue8m0_for_device,
 )
 from prime_rl.utils.logger import get_logger
 
@@ -22,7 +23,7 @@ def _fp8_blockwise_mm(x: torch.Tensor, weight: torch.Tensor, block_size: int) ->
     x_2d = x.reshape(-1, x.shape[-1]).contiguous()
     use_ue8m0 = ue8m0_for_device(x.device)
     x_fp8 = per_token_cast_to_fp8_triton(x_2d, use_ue8m0, block_size)
-    weight_fp8 = per_block_cast_to_fp8_triton(weight, use_ue8m0, block_size)
+    weight_fp8 = per_block_cast_to_fp8_triton(weight, weight_ue8m0_for_device(x.device), block_size)
 
     out = torch.empty((x_2d.size(0), weight.size(0)), device=x.device, dtype=torch.bfloat16)
     deep_gemm.fp8_gemm_nt(x_fp8, weight_fp8, out)
@@ -53,7 +54,7 @@ def _fp8_blockwise_mm_backward(
 
     if needs_grad_x:
         grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
-        weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, use_ue8m0, block_size)
+        weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(weight, weight_ue8m0_for_device(weight.device), block_size)
         grad_x_2d = torch.empty_like(x_2d)
         deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)
         grad_x = grad_x_2d.reshape(x.shape)
