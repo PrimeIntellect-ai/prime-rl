@@ -1,16 +1,12 @@
 import os
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import AfterValidator, AliasChoices, Field, model_validator
 from verifiers.v1.configs.client import BaseClientConfig
 
-from prime_rl.utils.config import BaseConfig, find_package_resource
-
-if TYPE_CHECKING:
-    from prime_rl.configs.pretrain import PretrainConfig
-    from prime_rl.configs.sft import SFTConfig
+from prime_rl.utils.config import BaseConfig
 
 # Launcher-managed env vars that a component's `env_vars` must not set: GPU partitioning
 # and the single shared W&B run. The launcher always sets these last, so allowing them in
@@ -337,27 +333,3 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 SFTDeploymentConfig: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
-
-
-def setup_trainer_deployment(config: "SFTConfig | PretrainConfig") -> None:
-    """Shared by ``sft`` and ``pretrain``: a multi-node deployment needs SLURM and sets
-    ``model.dp_replicate`` from ``nodes_per_fsdp_group``; the SLURM job name defaults to the
-    run name and the template to the bundled single- or multi-node trainer template."""
-    deployment = config.deployment
-    if deployment.type == "multi_node":
-        if config.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
-        if deployment.nodes_per_fsdp_group is not None:
-            if deployment.num_train_nodes % deployment.nodes_per_fsdp_group != 0:
-                raise ValueError(
-                    f"deployment.num_train_nodes ({deployment.num_train_nodes}) must be divisible by "
-                    f"deployment.nodes_per_fsdp_group ({deployment.nodes_per_fsdp_group})"
-                )
-            config.model.dp_replicate = deployment.num_train_nodes // deployment.nodes_per_fsdp_group
-    if config.slurm is not None:
-        if config.slurm.job_name is None:
-            config.slurm.job_name = config.run.name
-        if config.slurm.template_path is None:
-            templates_dir = find_package_resource("templates")
-            if templates_dir is not None:
-                config.slurm.template_path = templates_dir / f"{deployment.type}_sft.sbatch.j2"
