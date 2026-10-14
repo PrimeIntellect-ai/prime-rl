@@ -330,6 +330,32 @@ def test_cost_penalty_prefix_cache_and_parallel_time():
     )
 
 
+@pytest.mark.parametrize("rate", [0.0, 0.5, 2.0])
+@pytest.mark.parametrize("rewards", [[1.0, 1.0], [1.0, 0.0], [0.0, 0.0]])
+@pytest.mark.parametrize("with_latency", [False, True])
+def test_cost_penalty_rate_preserves_gate_and_zero_charge(rate, rewards, with_latency):
+    config = CostPenaltyConfig(
+        reward_per_usd=rate,
+        input_usd_per_mtok=0,
+        cached_input_usd_per_mtok=0,
+        output_usd_per_mtok=10_000,
+        latency=CostLatencyConfig(usd_per_hour=360, prefill_tokens_per_s=10, decode_tokens_per_s=10)
+        if with_latency
+        else None,
+    )
+    group = _make_group(rewards, completion_lengths=[10, 20])
+    costs = [rollout_cost(episode.traces[0], config) for episode in group]
+    usd = [cost["token_usd"] + 0.1 * cost.get("latency_s", 0) for cost in costs]
+    gate = sum(rewards) / len(rewards)
+    shaped = [reward - gate * rate * cost for reward, cost in zip(rewards, usd, strict=True)]
+    expected = [reward - sum(shaped) / len(shaped) for reward in shaped]
+    assert _grpo(group, length_penalty=config) == pytest.approx(expected, abs=1e-6)
+    for episode, cost in zip(group, costs, strict=True):
+        assert episode.traces[0].metrics["cost_penalty/token_usd"] == cost["token_usd"]
+    if rate == 0:
+        assert [_scalar(episode) for episode in group] == _grpo(_make_group(rewards, completion_lengths=[10, 20]))
+
+
 # --------------------------------------------------------------------------
 # assign_advantages: scalar broadcast over the rollout's trainable tokens.
 # --------------------------------------------------------------------------

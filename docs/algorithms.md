@@ -343,7 +343,7 @@ The `cost` penalty charges each rollout for what it would cost once the model is
 
 $$s_i' = s_i - \bar{s} \cdot \lambda \cdot (\text{token\_usd}_i + \text{latency\_usd}_i)$$
 
-It uses the same pass-rate gate $\bar{s}$ as `linear`, so an all-fail group gets no advantage from cost alone. Unlike `linear`, it is in absolute units and not normalized by the group. $1/\lambda$ is the cost at which a rollout of an always-solved group loses a full reward.
+It uses the same pass-rate gate $\bar{s}$ as `linear`, so an all-fail group gets no advantage from cost alone. Unlike `linear`, it is in absolute units and not normalized by the group. For $\lambda > 0$, $1/\lambda$ is the cost at which a rollout of an always-solved group loses a full reward.
 
 With $U$ uncached input, $K$ cached input, and $O$ output tokens, summed over the trace's policy calls:
 
@@ -383,6 +383,68 @@ decode_tokens_per_s = 80
 > The latency term can dominate. At `usd_per_hour = 20` the example's latency_usd is \$2.76, 44× its token cost, and the penalty mostly rewards fewer tool calls and shorter outputs. With cheap models, keep `usd_per_hour` low or omit `[latency]` to penalize tokens only.
 
 Per-trace values are logged under `metrics/cost_penalty/*`: `token_usd` and `cache_hit_rate`, plus `latency_s` and `tool_s` when `[latency]` is set.
+
+##### Depth sampling with difficulty pools
+
+Use one training source per requested numeric depth (reasoning juice). Each source pairs
+its sampling arguments with a scalar `reward_per_usd` and its own difficulty-pool
+curriculum. Groups stay within their source, so their sampling condition and penalty
+price are fixed. No task-data depth field or rollout-derived depth label is needed.
+
+```toml
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.algo.length_penalty]
+type = "cost"
+reward_per_usd = 2.0
+input_usd_per_mtok = 0.20
+cached_input_usd_per_mtok = 0.03
+output_usd_per_mtok = 1.10
+
+[[orchestrator.train.source]]
+name = "depth-16"
+env.taskset.id = "reverse-text"
+sampling.extra_body.depth = 16
+curriculum.sampler.type = "difficulty_pool"
+
+[[orchestrator.train.source]]
+name = "depth-32"
+env.taskset.id = "reverse-text"
+sampling.extra_body.depth = 32
+algo.length_penalty.reward_per_usd = 1.0
+curriculum.sampler.type = "difficulty_pool"
+
+[[orchestrator.train.source]]
+name = "depth-64"
+env.taskset.id = "reverse-text"
+sampling.extra_body.depth = 64
+algo.length_penalty.reward_per_usd = 0.0
+curriculum.sampler.type = "difficulty_pool"
+```
+
+This illustrates configuration composition, not calibrated prices or a runnable model
+recipe. `extra_body.depth` is a provider-specific sampling argument: the chosen endpoint
+must accept and render it. Use the renderer/endpoint's actual supported sampling key
+(for example a chat-template kwarg) when different. The penalty neither inserts a prompt
+nor implements depth conditioning. Replace the example taskset with the training taskset.
+
+The sources inherit shared token prices and any shared `[orchestrator.train.algo.length_penalty.latency]`
+settings. Only the overall price changes with depth:
+`reward - mean_reward * lambda(depth) * (token_usd + latency_usd)`. A zero
+`reward_per_usd` disables both reward charges for that source while still recording cost
+metrics; negative and non-finite rates are rejected. There is no automatic interpolation
+or rate fitting, and dynamically varying depth within a source requires a different setup.
+
+Calibrate the combined token/time price against measured quality–cost tradeoffs. Adding
+a time charge on top of an unchanged token charge strengthens the sequential penalty;
+account for both when choosing the rate. The same accounting applies with and without
+subagents. Mean-reward gating makes the effective price depend on group outcomes, so
+slope calibration is approximate and does not guarantee preserved effort levels.
+
+The latency estimator uses observed overlap, not a dependency-path reconstruction.
+Check serial, parallel, delayed-child and unused-child executions before relying on it
+as a speed incentive. Calls without tokenized policy nodes remain outside the token bill.
 
 ### Hierarchical GRPO
 
