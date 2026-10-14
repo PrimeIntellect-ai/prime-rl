@@ -19,6 +19,10 @@ from prime_rl.utils.resume import check_resume_config
 @pytest.mark.parametrize("skip_checks", [False, True])
 def test_training_resume_checks_saved_configs(tmp_path, config_cls, kwargs, skip_checks):
     kwargs = kwargs | {"run": {"name": "resume-test"}, "output_dir": tmp_path}
+    dry_run = config_cls(**deepcopy(kwargs), dry_run=True, log={"level": "debug"})
+    dry_run_dir, _ = create_attempt_dirs(dry_run.run_dir)
+    write_launch_artifacts(dry_run_dir, "training", dry_run)
+    dry_run_snapshot = dry_run_dir / "launcher.json"
     saved = config_cls(**deepcopy(kwargs))
     config_dir, _ = create_attempt_dirs(saved.run_dir)
     write_launch_artifacts(config_dir, "training", saved)
@@ -26,17 +30,17 @@ def test_training_resume_checks_saved_configs(tmp_path, config_cls, kwargs, skip
     current = config_cls(**deepcopy(kwargs), resume={"step": 10, "skip_checks": skip_checks})
 
     # RL's top-level resume is copied into trainer and orchestrator.
-    check_resume_config(current, [snapshot])
+    check_resume_config(current, [dry_run_snapshot, snapshot])
     saved_dict = orjson.loads(snapshot.read_bytes())
     saved_dict["log"]["level"] = "debug"
     snapshot.write_bytes(orjson.dumps(saved_dict))
     newest = tmp_path / "newest.json"
     newest.write_bytes(orjson.dumps(current.model_dump(mode="json")))
     if skip_checks:
-        check_resume_config(current, [snapshot, newest, tmp_path / "missing.json"])
+        check_resume_config(current, [dry_run_snapshot, snapshot, newest, tmp_path / "missing.json"])
     else:
         with pytest.raises(ValueError, match=r"in \[log\].*--resume.skip-checks"):
-            check_resume_config(current, [snapshot, newest])
+            check_resume_config(current, [dry_run_snapshot, snapshot, newest])
 
 
 def test_launch_snapshot_preserves_full_submission_config(tmp_path):
