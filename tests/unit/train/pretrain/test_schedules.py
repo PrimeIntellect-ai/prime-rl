@@ -39,6 +39,8 @@ def test_schedule_phases_must_fit_max_steps():
     )
     with pytest.raises(ValidationError, match="exceed max_steps"):
         PretrainConfig(**{**config.model_dump(), "schedule": {"warmup": 50, "decay": 51}})
+    # Fractions summing to 1 fit for any max_steps (rounding both up used to exceed it).
+    PretrainConfig(**{**config.model_dump(), "max_steps": 21095})
 
 
 def test_apply_keeps_group_ratios():
