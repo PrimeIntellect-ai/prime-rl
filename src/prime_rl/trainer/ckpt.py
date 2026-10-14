@@ -152,14 +152,6 @@ class AppState(Stateful):
             for key, value in state_dict["progress"].items():
                 setattr(self.progress, key, value)
 
-        # state_dict is the same dict object that dcp_load held internally; clearing
-        # it drops the last references to the loaded tensor wrappers so the cuda
-        # allocator can release whatever blocks it cached during the read.
-        if has_cpu_offload:
-            state_dict.clear()
-            gc.collect()
-            torch.cuda.empty_cache()
-
 
 class CheckpointManager:
     """Utility class to save and load trainer checkpoints to resume SFT and RL training."""
@@ -230,6 +222,11 @@ class CheckpointManager:
         app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
         state_dict = {"app": app_state}
         dcp_load(state_dict=state_dict, checkpoint_id=path, process_group=get_dcp_group())
+        # DCP materializes the optimizer state with a zero-grad step, which allocates a full set of
+        # gradients. Left in the allocator cache, those blocks fragment the pool and the first step
+        # reserves on top of them instead of reusing them.
+        gc.collect()
+        torch.cuda.empty_cache()
         if self.skip_optimizer:
             for optimizer in optimizers:
                 if isinstance(optimizer, OffloadOptimizer):

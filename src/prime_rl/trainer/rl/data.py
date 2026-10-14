@@ -213,7 +213,14 @@ class DataLoader:
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
 
-        self.receiver: BatchReceiver = setup_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.receiver: BatchReceiver = setup_batch_receiver(
+            output_dir,
+            data_rank=dp_rank,
+            rank=self.world.rank,
+            world_size=self.world.world_size,
+            current_step=start_step,
+            transport=config,
+        )
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
