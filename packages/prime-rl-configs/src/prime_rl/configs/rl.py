@@ -21,6 +21,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    MXFP8Config,
     TokenizerConfig,
     TrainerConfig,
 )
@@ -591,6 +592,9 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_deployment(self):
         self.orchestrator.pad_to_multiple_of = self.trainer.model.cp
+        if isinstance(self.trainer.model.quantization, MXFP8Config):
+            # MXFP8 linears quantize grad_output in 32-token blocks, per CP rank.
+            self.orchestrator.pad_to_multiple_of *= 32
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
