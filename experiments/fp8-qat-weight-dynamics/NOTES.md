@@ -28,13 +28,7 @@ Each smoke ran on its own fresh H200 node. Step time is the mean over steps 11 t
 
 - Every run's start-weight check matched its intended snapshot.
 - FP8 replaced 240 linear modules (q, k, v, fused qkv and o per layer) and skipped the 48 routers and `lm_head`.
-- `probe_weight_ue8m0.py`: with `PRIME_RL_FP8_WEIGHT_UE8M0=1`, the four weight casts use power-of-two scales.
-  Activation, gradient and wgrad casts keep `amax/448` scales.
+- `probe_weight_ue8m0.py`: with `PRIME_RL_FP8_WEIGHT_UE8M0=1`, the four weight casts use power-of-two scales. Activation, gradient and wgrad casts keep `amax/448` scales.
 - Weight-update tracker overhead is within run-to-run noise (5.35 vs 5.33 s/step).
-- FP8 step time alternates between about 5.7 s and 10 to 20 s through step 20, with the same pattern in 0b and 0c.
-  The slow time is in forward/backward. The DeepGEMM JIT cache (`DG_JIT_CACHE_DIR`) is node-local under `/tmp`,
-  so new grouped-GEMM shapes compile on each fresh node. This is the likely cause and is not yet verified.
-- 0b falls behind 0a in loss by 0.007 at step 5, 0.018 at step 10 and 0.027 at step 20. 0c stays within 0.002 of 0a.
-  Master-weight drift (`delta_rms`) at step 20 agrees across 0a, 0b and 0c within about 5%, so the masters move
-  alike and the gap comes from the forward weights. On-grid weights must move half a bin before their quantized
-  value changes, so the qat-ue8m0 forward from the on-grid start barely changes in 20 steps.
+- FP8 step time alternates between about 5.7 s and 10 to 20 s through step 20, with the same pattern in 0b and 0c. The slow time is in forward/backward. The DeepGEMM JIT cache (`DG_JIT_CACHE_DIR`) is node-local under `/tmp`, so new grouped-GEMM shapes compile on each fresh node. This is the likely cause and is not yet verified.
+- 0b falls behind 0a in loss by 0.007 at step 5, 0.018 at step 10 and 0.027 at step 20. 0c stays within 0.002 of 0a. Master-weight drift (`delta_rms`) at step 20 agrees across 0a, 0b and 0c within about 5%, so the masters move alike and the gap comes from the forward weights. On-grid weights must move half a bin before their quantized value changes, so the qat-ue8m0 forward from the on-grid start barely changes in 20 steps.
