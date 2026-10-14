@@ -1,3 +1,4 @@
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +37,7 @@ def test_token_dataset_resumes_and_follows_phases(tmp_path):
     def dataset():
         return TokenDataset(sources, phases, seq_len=4, batch_size=2, max_steps=4)
 
-    full = [window["tokens"].tolist() for window in dataset()][:8]
+    full = [window["tokens"].tolist() for window in islice(dataset(), 8)]
     assert full[:4] == [
         [100, 101, 102, 103, 104],
         [104, 105, 106, 107, 108],
@@ -51,7 +52,7 @@ def test_token_dataset_resumes_and_follows_phases(tmp_path):
         next(iterator)
     resumed = dataset()
     resumed.load_state_dict(first.state_dict())
-    assert [window["tokens"].tolist() for window in resumed][:5] == full[3:8]
+    assert [window["tokens"].tolist() for window in islice(resumed, 5)] == full[3:8]
 
 
 def test_collate_rows_restarts_positions_at_documents():
