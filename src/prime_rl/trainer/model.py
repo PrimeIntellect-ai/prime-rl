@@ -272,6 +272,7 @@ def get_load_balance_stats(
     learned_replay = [
         replay for block_mlp, (_, _, replay) in zip(block_mlps, layer_stats) if block_mlp.router.learned_selection
     ]
+    replay = torch.stack(learned_replay) if learned_replay else None
     for block_mlp in block_mlps:
         block_mlp.replay_agreement.zero_()
 
@@ -289,7 +290,6 @@ def get_load_balance_stats(
         block_mlp.routing_confidence_sum.zero_()
     # Every rank replays or none does (the trainer requires routes on every micro batch when
     # replay is on), so all ranks agree on whether these stats exist.
-    replay = torch.stack(learned_replay) if learned_replay else None
     replaying = replay is not None and bool(replay[:, 0].sum() > 0)
     checked = replay[:, 1].clamp(min=1) if replaying else None
     return {
