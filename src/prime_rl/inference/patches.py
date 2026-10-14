@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -14,22 +16,134 @@ def apply_shared_vllm_patches():
 
     patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
+    monkey_patch_shm_buffer_ownership()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
-    monkey_patch_return_routed_experts_with_nixl_connector()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
-    monkey_patch_deepseek_v4_request_tools_placement()
     monkey_patch_tokenize_params_validation()
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_packed_sampling_masks()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    monkey_patch_deepseek_v4_c128_boundary()
+    monkey_patch_deepseek_v4_attn_sink_loading()
+
+
+def monkey_patch_shm_buffer_ownership():
+    """Own out-of-band buffers before releasing a reusable vLLM SHM slot."""
+    import pickle
+
+    import zmq
+    from vllm.distributed.device_communicators import shm_broadcast
+
+    # Backport https://github.com/vllm-project/vllm/pull/61000; remove when our
+    # minimum vLLM version includes it. Retained routed-expert arrays otherwise
+    # alias ring slots that subsequent messages can overwrite.
+    MessageQueue = shm_broadcast.MessageQueue
+    if getattr(MessageQueue.dequeue, "_prime_rl_owns_shm_buffers", False):
+        return
+
+    def dequeue(self, timeout: float | None = None, indefinite: bool = False):
+        if self._is_local_reader:
+            with self.acquire_read(timeout, indefinite) as buf:
+                overflow = buf[0] == 1
+                if not overflow:
+                    offset = 3
+                    buf_count = shm_broadcast.from_bytes_big(buf[1:offset])
+                    all_buffers = []
+                    for i in range(buf_count):
+                        buf_offset = offset + 4
+                        buf_len = shm_broadcast.from_bytes_big(buf[offset:buf_offset])
+                        offset = buf_offset + buf_len
+                        buffer = buf[buf_offset:offset]
+                        all_buffers.append(buffer if i == 0 else bytearray(buffer))
+                    obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])
+            if overflow:
+                obj = MessageQueue.recv(self.local_socket, timeout)
+        elif self._is_remote_reader:
+            obj = MessageQueue.recv(self.remote_socket, timeout)
+        else:
+            raise RuntimeError("Only readers can dequeue")
+        return obj
+
+    def _rebuild_tensor(buf, shape: tuple[int, ...], dtype_str: str) -> torch.Tensor:
+        dtype = getattr(torch, dtype_str)
+        assert isinstance(dtype, torch.dtype)
+        if isinstance(buf, zmq.Frame):
+            try:
+                return torch.frombuffer(buf, dtype=torch.uint8).view(dtype).view(shape)
+            except ValueError:
+                pass
+        raw = buf if isinstance(buf, bytearray) else bytearray(buf)
+        if not raw:
+            assert 0 in shape
+            return torch.empty(shape, dtype=dtype)
+        return torch.frombuffer(raw, dtype=torch.uint8).view(dtype).view(shape)
+
+    # Pickle resolves this reducer by its module and name in receiving processes.
+    _rebuild_tensor.__module__ = shm_broadcast.__name__
+    _rebuild_tensor.__qualname__ = "_rebuild_tensor"
+    dequeue._prime_rl_owns_shm_buffers = True
+    shm_broadcast._rebuild_tensor = _rebuild_tensor
+    MessageQueue.dequeue = dequeue
+
+
+@dataclass
+class PackedSamplingMask:
+    """A finished request's sampling masks in CSR form: ``ids[sum(counts[:i]):][:counts[i]]``
+    are the kept token ids of completion token ``i``."""
+
+    ids: np.ndarray
+    counts: np.ndarray
+
+
+def monkey_patch_packed_sampling_masks():
+    """Keep sampling masks as numpy arrays in the API server's output processor.
+
+    vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
+    runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
+    objects per token that every gen-2 pass walks. Store only the (untracked) id
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    """
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
+
+    original_init = RequestState.__init__
+    original_new_completion_output = RequestState._new_completion_output
+
+    class _MaskIds(list):
+        def append(self, chunk):
+            super().append(chunk.token_ids)
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
+
+    def _new_completion_output(self, token_ids, finish_reason, stop_reason):
+        chunks = self.sampling_mask_chunks
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
+            return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        self.sampling_mask_chunks = _MaskIds()
+        output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        output.sampling_mask = PackedSamplingMask(
+            ids=np.concatenate(chunks),
+            counts=np.fromiter(map(len, chunks), dtype=np.int32, count=len(chunks)),
+        )
+        return output
+
+    RequestState.__init__ = _init
+    RequestState._new_completion_output = _new_completion_output
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -49,62 +163,85 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     allow_deepseek_v4_layer_types()
 
 
-def monkey_patch_deepseek_v4_request_tools_placement():
-    """Attach request-level tools to the first existing DSV4 system message.
+def monkey_patch_deepseek_v4_c128_boundary():
+    """Fix DeepSeek V4 long-context KV corruption under piecewise CUDA graphs.
 
-    vLLM 0.29.0's Python DeepSeek-V4 tokenizer always prepends a synthetic
-    system message for request-level tools. That puts the tool schema before
-    an existing system prompt, unlike DeepSeek's reference encoder, vLLM's
-    Rust renderer, and prime-rl's training renderer. Upstream fixed this in
-    https://github.com/vllm-project/vllm/pull/51856 (commit 2909ad8f).
-    The fix is expected to ship in vLLM 0.31.
+    On vLLM 0.30+, including the pinned 0.31.0, the piecewise CUDA graphs are captured on a step
+    that skips writing C128 compressed KV, so every replay skips it too. Mixed batches of up to
+    512 tokens never store their C128 entries, later queries attend over stale compressed KV, and
+    long-context rollouts drift from the trainer, inflating mismatch KL.
 
-    Wrap the tokenizer factory so existing-system requests take the corrected
-    path through the stock implementation: shallow-copy the conversation,
-    attach tools to its first system message, and suppress the stock synthetic
-    insertion. Requests without a system message retain the stock behavior.
-    Remove this patch once the vLLM pin includes the upstream fix (likely 0.31).
+    The skip is an optimization: ``DeepseekCompressor.forward`` returns early when
+    ``_get_c128_boundary`` reports that no request completes a 128-token block this step.
+    vllm-project/vllm#55353 made that helper return a bool under Model Runner V2, so capture on
+    dummy batches records the early return. Returning None instead disables the skip, which is
+    the path vLLM already takes under async speculative decoding and the one 0.29 always took.
+
+    The upstream fix, vllm-project/vllm#59709, keeps the skip on eager steps and only stops it
+    from being captured. That change sits inline in ``forward``, so matching it here would mean
+    copying the whole method. Patching the helper costs one extra compress kernel launch on eager
+    steps that complete no block, and the kernel already skips those tokens on the GPU.
+
+    Remove this patch once vllm-project/vllm#59709 lands in the pinned vLLM version.
     """
-    import copy
+    from vllm.logger import init_logger
+    from vllm.models.deepseek_v4 import compressor
 
-    from vllm.tokenizers import deepseek_v4 as dsv4_tokenizer
-
-    original_get_tokenizer = dsv4_tokenizer.get_deepseek_v4_tokenizer
-    if getattr(original_get_tokenizer, "_prime_rl_places_request_tools", False):
+    if getattr(compressor._get_c128_boundary, "_prime_rl_always_compresses", False):
         return
 
-    def _get_deepseek_v4_tokenizer(tokenizer):
-        wrapped = original_get_tokenizer(tokenizer)
-        tokenizer_cls = wrapped.__class__
-        original_apply_chat_template = tokenizer_cls.apply_chat_template
+    def _get_c128_boundary(metadata):
+        return None
 
-        # Each factory call creates a fresh dynamic tokenizer subclass, but be
-        # defensive if vLLM starts caching that class in a future release.
-        if getattr(original_apply_chat_template, "_prime_rl_places_request_tools", False):
-            return wrapped
+    _get_c128_boundary._prime_rl_always_compresses = True
+    compressor._get_c128_boundary = _get_c128_boundary
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 C128 compressor store runs on every step.")
 
-        def _apply_chat_template(self, messages, tools=None, **kwargs):
-            if tools:
-                conversation = kwargs.get("conversation", messages)
-                system_idx = next(
-                    (i for i, message in enumerate(conversation) if message.get("role") == "system"),
-                    None,
-                )
-                if system_idx is not None:
-                    conversation = conversation.copy()
-                    conversation[system_idx] = copy.copy(conversation[system_idx])
-                    conversation[system_idx]["tools"] = tools
-                    kwargs["conversation"] = conversation
-                    tools = None
 
-            return original_apply_chat_template(self, messages, tools=tools, **kwargs)
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """Fix DeepSeek V4 weight updates silently keeping the boot-time attention sinks.
 
-        _apply_chat_template._prime_rl_places_request_tools = True
-        tokenizer_cls.apply_chat_template = _apply_chat_template
-        return wrapped
+    ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
+    ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
+    that go through a loader, so the copy is silently dropped. This pads this rank's heads back
+    to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
 
-    _get_deepseek_v4_tokenizer._prime_rl_places_request_tools = True
-    dsv4_tokenizer.get_deepseek_v4_tokenizer = _get_deepseek_v4_tokenizer
+    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
+    ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 attn_sink loads through param.weight_loader.")
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -241,51 +378,6 @@ def monkey_patch_minimax_m2_think_end_passthrough():
         )
 
     minimax_m2.minimax_m2_config = _patched_config
-
-
-def monkey_patch_return_routed_experts_with_nixl_connector():
-    from vllm.config.vllm import VllmConfig
-    from vllm.logger import init_logger
-
-    logger = init_logger(__name__)
-    original_post_init = VllmConfig.__post_init__
-
-    if getattr(original_post_init, "_prime_rl_allows_nixl_routed_experts", False):
-        return
-
-    def _is_nixl_routed_experts_pd_config(config: VllmConfig) -> bool:
-        kv_transfer_config = config.kv_transfer_config
-        return (
-            config.model_config is not None
-            and config.model_config.enable_return_routed_experts
-            and kv_transfer_config is not None
-            and kv_transfer_config.kv_connector == "NixlConnector"
-            and kv_transfer_config.is_kv_transfer_instance
-        )
-
-    def _post_init(config: VllmConfig):
-        if not _is_nixl_routed_experts_pd_config(config):
-            return original_post_init(config)
-
-        if config.parallel_config.pipeline_parallel_size > 1:
-            raise ValueError("--enable-return-routed-experts is incompatible with pipeline parallelism (PP > 1).")
-        if config.use_v2_model_runner:
-            raise ValueError(
-                "Routed-expert capture with NIXL requires the V1 model runner. Set VLLM_USE_V2_MODEL_RUNNER=0."
-            )
-
-        # vLLM rejects every KV connector, but our P/D path uses NIXL and
-        # stitches prefill/decode routed experts in the router. CPU KV offload
-        # remains rejected by prime-rl config validation.
-        config.model_config.enable_return_routed_experts = False
-        try:
-            return original_post_init(config)
-        finally:
-            config.model_config.enable_return_routed_experts = True
-
-    _post_init._prime_rl_allows_nixl_routed_experts = True
-    VllmConfig.__post_init__ = _post_init
-    logger.warning("Enabled vLLM routed-experts capture with NIXL connector patch.")
 
 
 def monkey_patch_strip_routed_experts_from_chat():
@@ -431,6 +523,7 @@ def _patch_lora_key_prefix():
                 if skip_prefixes and cls._should_skip_module(lora_module, skip_prefixes):
                     continue
                 module_name, _ = parse_fine_tuned_lora_name(lora_module, weights_mapper)
+                base_name = module_name.rsplit(".", 1)[-1]
                 # Case for expert lora weights.
                 ## START PATCHED CODE (upstream only accepts the qualified form)
                 if ".experts" in module_name:
@@ -440,7 +533,7 @@ def _patch_lora_key_prefix():
                         unexpected_modules.append(module_name)
                 ## END PATCHED CODE
 
-                elif module_name.rsplit(".", 1)[-1] not in expected_lora_modules:
+                elif base_name not in expected_lora_modules and base_name not in (peft_helper.modules_to_save or ()):
                     unexpected_modules.append(module_name)
 
             if unexpected_modules:

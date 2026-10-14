@@ -140,19 +140,31 @@ from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
-    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import dsv4_sparse_attn, sparse_attn_shape_error
+    from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import (
+        FORWARD_BACKENDS,
+        dsv4_sparse_attn,
+        sparse_attn_shape_error,
+    )
 except ImportError:
+    FORWARD_BACKENDS = {}
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
 
 
-def _kernel_blocker(num_heads: int, head_dim: int) -> str | None:
-    """Why the fused kernel cannot run at this shape, or ``None`` if it can."""
+def _kernel_blocker(num_heads: int, head_dim: int, backend: str) -> str | None:
+    """Why `backend`'s fused kernel cannot run at this shape, or ``None`` if it can."""
     if dsv4_sparse_attn is None:
         return "the tilelang sparse-attention kernel failed to import; install the `gpu` extra"
     # CSA gives every query head the same single KV head, so the kernel's `kv_group` is 1. The
     # shape constraints themselves are stated once, next to the kernels they come from.
-    return sparse_attn_shape_error(num_heads, 1, head_dim)
+    return sparse_attn_shape_error(num_heads, 1, head_dim, backend)
+
+
+def max_sparse_attn_slots(config: DeepseekV4Config) -> int:
+    """The widest slot axis any layer of `config` can hand the kernel, at the longest document it allows."""
+    hca_rate = config.compress_rates.get("heavily_compressed_attention")
+    hca_picks = config.max_position_embeddings // hca_rate if hca_rate is not None else 0
+    return config.sliding_window + max(config.index_topk, hca_picks)
 
 
 class DeepseekV4GroupedLinear(nn.Linear):
@@ -696,7 +708,14 @@ class DeepseekV4Attention(nn.Module):
         self.rotary_emb = rotary_emb
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
-        blocker = _kernel_blocker(self.num_heads, self.head_dim)
+        self.dsa_backend = getattr(config, "dsa_backend", "tilelang")
+        if dsv4_sparse_attn is not None and self.dsa_backend not in FORWARD_BACKENDS:
+            raise ValueError(
+                f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
+                f"expected one of {sorted(FORWARD_BACKENDS)}"
+            )
+        self.max_slots = max_sparse_attn_slots(config)
+        blocker = _kernel_blocker(self.num_heads, self.head_dim, self.dsa_backend)
         if blocker is not None:
             raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
@@ -769,6 +788,8 @@ class DeepseekV4Attention(nn.Module):
             inputs.indices,
             self.sinks,
             self.scaling,
+            backend=self.dsa_backend,
+            max_slots=self.max_slots,
         )  # (b, t, h, d)
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output

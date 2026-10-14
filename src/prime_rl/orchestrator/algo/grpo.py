@@ -21,6 +21,7 @@ class GRPOAlgorithm(Algorithm):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
         self.length_weighted_baseline = config.length_weighted_baseline
+        self.loss_aggregation = config.loss_aggregation
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
         import torch  # only the trainer-side extras ship torch; an eval process never scores a group
@@ -51,3 +52,10 @@ class GRPOAlgorithm(Algorithm):
         advantages = shaped_rewards - baseline
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
             assign_advantages(trace, advantage)
+        nodes = [node for trace in traces for node in trainable_nodes(trace)]
+        if self.loss_aggregation == "prompt" and nodes:
+            # rl weight 1/T_q per token: each group's weights sum to 1, and the trainer divides the
+            # rl loss by the sum of rl weights, i.e. the number of groups.
+            weight = 1.0 / sum(sum(node.mask) for node in nodes)
+            for node in nodes:
+                node.loss_weights = {**(node.loss_weights or {}), "rl": [weight if m else 0.0 for m in node.mask]}

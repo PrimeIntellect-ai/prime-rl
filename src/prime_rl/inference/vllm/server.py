@@ -1,4 +1,5 @@
 import asyncio
+import gc
 from argparse import Namespace
 
 import uvloop
@@ -29,6 +30,8 @@ def engine_client(request: Request) -> EngineClient:
 def models(request: Request) -> OpenAIServingModels:
     return request.app.state.openai_serving_models
 
+
+API_SERVER_GC_THRESHOLDS = (50_000, 20, 100)
 
 WORKER_EXTENSION_CLS = {
     "nccl": "prime_rl.inference.vllm.worker.nccl.NCCLWeightUpdateWorker",
@@ -62,14 +65,12 @@ async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: R
     """Wrapper around vLLM's /v1/load_lora_adapter.
 
     prime-rl reloads a fixed-name adapter with fresh weights every step (the path
-    changes per policy version; the name is constant — the base model name, which
-    the adapter shadows: ``_maybe_get_adapters`` resolves ``lora_requests`` before
-    the base-model match, so requests keep addressing one stable name. If a future
-    vLLM rejects registering an adapter under a served model name, fall back to a
-    distinct constant adapter name set once at startup.) vLLM's native loader
-    rejects a same-name reload unless ``load_inplace=True``, so we force it here —
-    that makes the worker re-read the new weights during ``add_lora``, reusing the
-    existing ``lora_int_id``.
+    changes per policy version; the name is constant — the model name every client
+    sends. vLLM rejects an adapter named like a served base model, so with LoRA on
+    the base model is served as ``<model>-base``; see ``InferenceConfig.to_namespace``.)
+    vLLM's native loader rejects a same-name reload unless ``load_inplace=True``, so
+    we force it here — that makes the worker re-read the new weights during
+    ``add_lora``, reusing the existing ``lora_int_id``.
 
     We then reset the stored request's flag back to ``False``. ``load_inplace`` is
     a sticky field on the ``LoRARequest`` that ``_maybe_get_adapters`` hands to
@@ -148,6 +149,13 @@ async def custom_init_app_state(
         prime_serving = object.__new__(PrimeRlServingTokens)
         prime_serving.__dict__.update(upstream.__dict__)
         state.serving_tokens = prime_serving
+
+    # Under RL load the API server holds millions of live objects, and CPython's
+    # default thresholds rerun full collections over them every few seconds.
+    # Move everything alive after startup out of GC and collect less often.
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(*API_SERVER_GC_THRESHOLDS)
 
 
 import vllm.entrypoints.launchers.api_server.entry

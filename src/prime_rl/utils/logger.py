@@ -143,11 +143,12 @@ def setup_logger(
     if json_logging and tag:
         logger = logger.bind(tag=tag)
 
+    # diagnose=False: repr()-ing frame locals that hold multi-GB tensors makes a crash look like a hang.
     # Install console handler (enqueue=True only for JSON mode to avoid blocking in async contexts)
     if json_logging:
-        logger.add(json_sink, level=(console_level or log_level).upper(), enqueue=True)
+        logger.add(json_sink, level=(console_level or log_level).upper(), enqueue=True, diagnose=False)
     else:
-        logger.add(sys.stdout, format=format, level=(console_level or log_level).upper(), colorize=True)
+        logger.add(sys.stdout, format=format, level=(console_level or log_level).upper(), colorize=True, diagnose=False)
     if log_file is not None:
         # The console format carries raw ANSI codes; the file gets a plain layout.
         logger.add(
@@ -155,6 +156,7 @@ def setup_logger(
             format="{time:HH:mm:ss} {level: >7} " + f"{tag_prefix}{{message}}",
             level=log_level.upper(),
             colorize=False,
+            diagnose=False,
         )
 
     # Disable critical logging

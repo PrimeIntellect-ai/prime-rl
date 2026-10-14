@@ -110,6 +110,7 @@ def _build_episode(
         task=trace.task,
         group=vf.GroupInfo(id="group"),
         traces=[trace],
+        ok=True,
     )
     return episode
 
@@ -211,6 +212,17 @@ def test_max_rl_mean_normalized():
     assert _max_rl(_make_group(rewards=[0.0, 0.0])) == pytest.approx([0.0, 0.0])
     # ... and all-success groups center to zero like GRPO
     assert _max_rl(_make_group(rewards=[1.0, 1.0])) == pytest.approx([0.0, 0.0])
+
+
+def test_grpo_prompt_loss_aggregation_weights_sum_to_one_per_group():
+    """Each group's rl weights total 1, spread as 1/T_q over its trainable tokens, whatever its length."""
+    algo = GRPOAlgorithm(GRPOAlgoConfig(loss_aggregation="prompt"), clients=None)
+    for lengths in ([10, 30], [100, 300]):
+        group = _make_group(rewards=[1.0, 0.0], completion_lengths=lengths)
+        asyncio.run(algo.score_group(group))
+        weights = [w for episode in group for sample in trace_to_samples(episode.traces[0]) for w in sample.rl_weights]
+        assert set(weights) == {0.0, 1.0 / sum(lengths)}
+        assert sum(weights) == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------

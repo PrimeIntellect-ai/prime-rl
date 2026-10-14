@@ -384,15 +384,16 @@ def compute_loss(
     ce_weights: list[Float[Tensor, " seq_i"]] | None,
     ref_kl_weights: list[Float[Tensor, " seq_i"]] | None,
     rl_loss_fn: Loss,
-    rl_scale: int,
-    ce_scale: int,
-    ref_kl_scale: int,
+    rl_scale: float,
+    ce_scale: float,
+    ref_kl_scale: float,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
 
     The loss is a sum of three components, each running over its own per-token
-    weight stream and normalized by its own global token count:
+    weight stream and normalized by its own global denominator (rl: sum of its
+    weights; ce / ref_kl: token count):
 
     - rl → ``rl_loss_fn`` (built by ``setup_rl_loss_fn``) on
       ``loss_mask & (rl_weights != 0)``; an absent stream means weight 1.0 on
@@ -415,7 +416,7 @@ def compute_loss(
         ce_weights: Per-token ce weights for each sequence, or None (no ce component)
         ref_kl_weights: Per-token ref_kl weights for each sequence, or None (no ref_kl component)
         rl_loss_fn: RL loss object built by setup_rl_loss_fn()
-        rl_scale: Global rl-token count normalizing the rl component
+        rl_scale: Global sum of rl weights normalizing the rl component
         ce_scale: Global ce-token count normalizing the ce component
         ref_kl_scale: Global ref_kl-token count normalizing the ref_kl component
 
