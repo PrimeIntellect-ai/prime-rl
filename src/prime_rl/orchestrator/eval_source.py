@@ -56,6 +56,9 @@ class EvalSource:
         self.queue: deque[TaskRequest] = deque()
         self.streams: dict[str, int] = {}
         """Fired streaming envs and their step."""
+        self.next_stream = 0
+        """Where ``next_task`` starts its walk over ``streams``: just past the last one
+        that gave a task, so one stream always ready cannot starve the others."""
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
@@ -108,11 +111,15 @@ class EvalSource:
 
     def next_task(self) -> TaskRequest | None:
         """Pop the next eval task, or ``None`` when the queue is empty and no stream has a
-        task ready."""
+        task ready. Streams take turns."""
         if self.queue:
             return self.queue.popleft()
-        for env_name, step in self.streams.items():
+        streams = list(self.streams.items())
+        for offset in range(len(streams)):
+            index = (self.next_stream + offset) % len(streams)
+            env_name, step = streams[index]
             if (task := self.feeds[env_name].poll()) is not None:
+                self.next_stream = index + 1
                 return TaskRequest(env_name=env_name, task=task, step=step, rollouts=self.group_sizes[env_name])
         return None
 
