@@ -160,13 +160,13 @@ class FileSystemWeightUpdateWorker(Worker):
         logger.info(f"Wrote the engine layout: {len(layout['fp8'])} checkpoint tensors held in fp8")
 
     def _replay_from_anchor(self, step_dir: Path) -> None:
-        chain = [step_dir]
-        manifest = read_manifest(step_dir)
-        while manifest["base_step"] != manifest["anchor_step"]:
-            chain.append(step_dir.parent / f"step_{manifest['base_step']}")
-            manifest = read_manifest(chain[-1])
-        logger.info(f"Replaying {len(chain)} sparse weight deltas on top of the v{manifest['anchor_step']} anchor")
-        self._load_checkpoint(step_dir.parent / f"step_{manifest['anchor_step']}")
+        """Load the latest complete anchor at or before ``step_dir`` and replay the deltas since."""
+        chain = []
+        while not anchor_complete(step_dir):
+            chain.append(step_dir)
+            step_dir = step_dir.parent / f"step_{read_manifest(step_dir)['base_step']}"
+        logger.info(f"Replaying {len(chain)} sparse weight deltas on top of the {step_dir.name} anchor")
+        self._load_checkpoint(step_dir)
         for delta_dir in reversed(chain):
             self._apply_delta(delta_dir)
 
