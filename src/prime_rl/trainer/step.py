@@ -76,8 +76,7 @@ def run_micro_batches(
     local_num_tokens = 0
     for micro_step, micro_batch in enumerate(micro_batches):
         local_num_tokens += micro_batch["input_ids"].shape[1]
-        with record_function("forward"):
-            micro_loss_sum, micro_token_count = compute_loss(micro_batch)
+        micro_loss_sum, micro_token_count = compute_loss(micro_batch)
         if gradient_manager is None:
             local_token_count += micro_token_count
         if torch.isnan(micro_loss_sum.detach()):

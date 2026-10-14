@@ -299,7 +299,8 @@ def train(config: SFTConfig):
             print_sample(
                 micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
             )
-        return compute_loss(micro_batch)
+        with maybe_record_function("forward"):
+            return compute_loss(micro_batch)
 
     maybe_record_function = nullcontext
 
