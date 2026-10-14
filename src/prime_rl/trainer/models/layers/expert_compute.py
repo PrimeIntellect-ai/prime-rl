@@ -53,6 +53,11 @@ class GroupedGemmExpertCompute:
     def validate(self, experts: "GroupedExperts") -> None:
         """The shared forward handles the experts' activation, biases, and weight layout."""
 
+    def _gemm(
+        self, experts: "GroupedExperts", name: str, x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor
+    ) -> torch.Tensor:
+        return self.gemm(x, weight, offsets)
+
     def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
         assert x.dim() == 2
 
@@ -64,15 +69,15 @@ class GroupedGemmExpertCompute:
 
         if experts.gate_up_proj is None:
             up_proj = to_local(experts.up_proj).transpose(-2, -1)
-            up = self.gemm(x_bf16, up_proj.bfloat16(), offsets)
+            up = self._gemm(experts, "up_proj", x_bf16, up_proj.bfloat16(), offsets)
 
             gate = None
             if experts.gate_proj is not None:
                 gate_proj = to_local(experts.gate_proj).transpose(-2, -1)
-                gate = self.gemm(x_bf16, gate_proj.bfloat16(), offsets)
+                gate = self._gemm(experts, "gate_proj", x_bf16, gate_proj.bfloat16(), offsets)
         else:
             gate_up_proj = to_local(experts.gate_up_proj).transpose(-2, -1)
-            gate_up = self.gemm(x_bf16, gate_up_proj.bfloat16(), offsets)
+            gate_up = self._gemm(experts, "gate_up_proj", x_bf16, gate_up_proj.bfloat16(), offsets)
             gate, up = gate_up.chunk(2, dim=-1)
 
         if experts.up_proj_bias is not None:
@@ -85,7 +90,7 @@ class GroupedGemmExpertCompute:
 
         hidden = experts.activation.apply(gate, up)
         down_proj = to_local(experts.down_proj).transpose(-2, -1)
-        output = self.gemm(hidden, down_proj.bfloat16(), offsets)
+        output = self._gemm(experts, "down_proj", hidden, down_proj.bfloat16(), offsets)
         if experts.down_proj_bias is not None:
             down_proj_bias = to_local(experts.down_proj_bias)
             output = output + broadcast_expert_bias(down_proj_bias, num_tokens_per_expert, output.shape[0]).bfloat16()

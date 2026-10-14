@@ -134,11 +134,21 @@ class FP8Config(BaseConfig):
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
+    qat: bool = False
+    """Use MXFP8 forward and BF16 backward, reusing forward-rounded weights for input gradients."""
+    stochastic_rounding: bool = False
+    """Round QAT weights stochastically; activations round to nearest. Requires qat=true."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 recipe for dense linear modules."""
 
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
-    """Dense linear module names excluded from torchao MXFP8 replacement."""
+    """Dense linear module names excluded from MXFP8 replacement."""
+
+    @model_validator(mode="after")
+    def validate_stochastic_rounding(self):
+        if self.stochastic_rounding and not self.qat:
+            raise ValueError("MXFP8 stochastic rounding requires qat=true")
+        return self
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
@@ -189,8 +199,18 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
 
     type: Literal["mxfp8"] = "mxfp8"
+    qat: bool = False
+    """Use MXFP8 expert forward and BF16 backward, reusing forward-rounded weights for input gradients."""
+    stochastic_rounding: bool = False
+    """Round QAT expert weights with streams shared across ranks and forward/backward. Requires qat=true."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
+
+    @model_validator(mode="after")
+    def validate_stochastic_rounding(self):
+        if self.stochastic_rounding and not self.qat:
+            raise ValueError("MXFP8 stochastic rounding requires qat=true")
+        return self
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -293,6 +313,9 @@ class ModelConfig(BaseModelConfig):
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
+
+    fp8_rounding_seed: int = 0
+    """Base seed for MXFP8 QAT stochastic weight rounding, keyed by logical weight, optimizer step, and global element index."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""

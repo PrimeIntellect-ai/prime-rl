@@ -12,9 +12,11 @@ def apply_shared_vllm_patches():
     entry-point target silently skips ALL of these patches.
     """
     from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
+    from prime_rl.inference.vllm.mxfp8_weight_rounding import patch_mxfp8_weight_rounding
     from prime_rl.inference.vllm.qwen38_weight_loading import patch_qwen38_weight_loading
 
     patch_gpt_oss_weight_loading()
+    patch_mxfp8_weight_rounding()
     patch_qwen38_weight_loading()
     monkey_patch_shm_buffer_ownership()
     _patch_lora_key_prefix()

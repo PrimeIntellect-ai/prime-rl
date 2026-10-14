@@ -12,6 +12,7 @@ from datetime import timedelta
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
+from prime_rl.trainer.models.fp8_rounding import set_fp8_rounding_step
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
@@ -417,6 +418,7 @@ def train(config: SFTConfig):
     control_server.start()
     paused = False
     while True:
+        set_fp8_rounding_step(model, progress.step)
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:

@@ -49,6 +49,10 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             )
         return DeepGemmFP8ExpertCompute()
     if isinstance(compute, MXFP8MoEComputeConfig):
+        if compute.qat:
+            from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATExpertCompute
+
+            return MXFP8QATExpertCompute(compute.stochastic_rounding)
         import prime_kernels
 
         kernel = prime_kernels.load("mxfp8_moe")
@@ -92,6 +96,11 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
         moe.experts.set_compute(compute)
+        if getattr(compute, "stochastic_rounding", False):
+            # Global index of this rank's first expert, so expert shards draw the same rounding stream.
+            moe.experts.fp8_expert_offset = (
+                ep_mesh.get_local_rank() * (moe.experts.num_experts // parallel_dims.ep) if ep_mesh is not None else 0
+            )
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
