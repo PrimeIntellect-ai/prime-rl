@@ -157,17 +157,16 @@ class ValConfig(BaseConfig):
 StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Field(gt=0, lt=1)]
 
 
-def resolve_steps(value: int | float, total_steps: int | None) -> int:
+def resolve_steps(value: int | float, total_steps: int) -> int:
     """Steps as given, or a fraction of ``total_steps``."""
     return round(value * total_steps) if isinstance(value, float) else value
 
 
-class WSDScheduleConfig(BaseConfig):
-    """Warmup, stable at 1, decay. ``f(0) = start_ratio``, the warmup reaches 1 at its last update
-    (``warmup - 1``; a warmup of 0 or 1 starts at 1), and the decay reaches ``end_ratio`` at the last
-    update of the run."""
-
-    type: Literal["wsd"] = "wsd"
+class ScheduleConfig(BaseConfig):
+    """Learning-rate multiplier ``f(step)`` (warmup, stable at 1, decay), where ``step`` counts the updates
+    completed before the current one. Every param group uses its own learning rate times ``f(step)``, so
+    ratios between groups hold. ``f(0) = 0``, the warmup reaches 1 at its last update (``warmup - 1``; a
+    warmup of 0 or 1 starts at 1), and the decay reaches ``end_ratio`` at the last update of the run."""
 
     warmup: StepsOrFraction = 0.1
     """Warmup updates, or a fraction of ``max_steps``."""
@@ -176,62 +175,11 @@ class WSDScheduleConfig(BaseConfig):
     """Decay updates at the end of the run, or a fraction of ``max_steps``. The default decays over all
     updates after the default warmup."""
 
-    start_ratio: float = Field(0.0, ge=0)
-    """Multiplier of the first update."""
-
     end_ratio: float = Field(0.0, ge=0)
     """Multiplier of the last update."""
 
     decay_shape: Literal["linear", "cosine", "1-sqrt"] = "linear"
     """Shape of the decay from 1 to ``end_ratio``."""
-
-
-class CosineScheduleConfig(BaseConfig):
-    """Linear warmup, then cosine decay from 1 to ``end_ratio`` over the remaining updates."""
-
-    type: Literal["cosine"] = "cosine"
-
-    warmup: StepsOrFraction = 0.1
-    """Warmup updates, or a fraction of ``max_steps``."""
-
-    start_ratio: float = Field(0.0, ge=0)
-    """Multiplier of the first update."""
-
-    end_ratio: float = Field(0.0, ge=0)
-    """Multiplier of the last update."""
-
-
-class ConstantScheduleConfig(BaseConfig):
-    """Multiplier 1 at every step."""
-
-    type: Literal["constant"] = "constant"
-
-
-class CustomScheduleConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-
-    import_path: str
-    """Import path to the schedule function, called as ``fn(step, total_steps=max_steps, **kwargs)`` and returning the multiplier."""
-
-    kwargs: dict[str, Any] = Field(default_factory=dict)
-    """Kwargs forwarded to the schedule function."""
-
-
-ScheduleConfig: TypeAlias = Annotated[
-    WSDScheduleConfig | CosineScheduleConfig | ConstantScheduleConfig | CustomScheduleConfig,
-    Field(discriminator="type"),
-]
-
-
-class SchedulesConfig(BaseConfig):
-    """Each schedule is a multiplier ``f(step)``: update ``step`` (counted from 0) uses ``base * f(step)``,
-    where ``base`` is the configured value of each param group."""
-
-    optim: dict[str, ScheduleConfig] = Field(default_factory=lambda: {"lr": WSDScheduleConfig()})
-    """Schedules for optimizer hyperparameters, keyed by their ``optim`` field name (``lr``, ``weight_decay``, ``betas1``, ``betas2``, and ``mu`` for Muon). Unscheduled ones stay constant."""
-
-    clip_norm: ScheduleConfig | None = None
-    """Schedule for the gradient clipping norm ``optim.max_norm``. If None, it stays constant."""
 
 
 class PretrainDeploymentConfig(BaseConfig):
@@ -256,8 +204,8 @@ class PretrainConfig(BaseConfig):
     optim: OptimizerConfig = MuonConfig()
     """Optimizer. ``optim.lr`` is required."""
 
-    schedules: SchedulesConfig = SchedulesConfig()
-    """Hyperparameter schedules. Defaults to a WSD learning rate schedule."""
+    schedule: ScheduleConfig = ScheduleConfig()
+    """Learning-rate schedule. Defaults to a warmup over 10% of the steps and a linear decay to 0 over the rest."""
 
     ckpt: CheckpointConfig | None = CheckpointConfig()
     """Checkpointing. Defaults to a checkpoint at the end of training."""
@@ -361,29 +309,10 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_schedules(self):
-        unsupported = set(self.schedules.optim) - set(self.optim.schedulable)
-        if unsupported:
-            raise ValueError(
-                f"schedules.optim: {sorted(unsupported)} cannot be scheduled with optim.type = {self.optim.type!r} "
-                f"(schedulable: {sorted(self.optim.schedulable)})"
-            )
-        if self.schedules.clip_norm is not None and self.optim.max_norm is None:
-            raise ValueError("schedules.clip_norm needs optim.max_norm")
-        named = {f"schedules.optim.{name}": schedule for name, schedule in self.schedules.optim.items()}
-        named["schedules.clip_norm"] = self.schedules.clip_norm
-        for name, schedule in named.items():
-            if isinstance(schedule, WSDScheduleConfig):
-                phases = [schedule.warmup, schedule.decay]
-                needs_max_steps = schedule.decay != 0 or isinstance(schedule.warmup, float)
-            elif isinstance(schedule, CosineScheduleConfig):
-                phases = [schedule.warmup]
-                needs_max_steps = True
-            else:
-                continue
-            if self.max_steps is None:
-                if needs_max_steps:
-                    raise ValueError(f"{name} needs max_steps (it decays or has fractional phases)")
-            elif sum(resolve_steps(phase, self.max_steps) for phase in phases) > self.max_steps:
-                raise ValueError(f"{name}: its phases exceed max_steps ({self.max_steps})")
+    def validate_schedule(self):
+        phases = resolve_steps(self.schedule.warmup, self.max_steps) + resolve_steps(
+            self.schedule.decay, self.max_steps
+        )
+        if phases > self.max_steps:
+            raise ValueError(f"schedule.warmup + schedule.decay ({phases}) exceed max_steps ({self.max_steps})")
         return self
