@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import torch
 from safetensors import safe_open
 from torch.nn import Module
-from vllm.distributed.parallel_state import get_ep_group, get_world_group
+from vllm.distributed.parallel_state import get_ep_group, get_tp_group, get_world_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
@@ -75,11 +75,13 @@ class FileSystemWeightUpdateWorker(Worker):
         """Start decoding the sparse delta in ``weight_path`` into pinned host memory."""
         self.prefetched = (weight_path, _prefetch_pool.submit(self._read_delta, Path(weight_path)))
 
-    def _read_delta(self, step_dir: Path) -> list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]]:
+    def _read_delta(
+        self, step_dir: Path
+    ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
         """Read this worker's part of a delta into a pinned host buffer that is reused across steps
         (allocating pinned memory every step is slow on a loaded host)."""
         start = time.perf_counter()
-        delta = read_delta(step_dir, self._spans())
+        delta, checksums = read_delta(step_dir, self._spans())
         read_time = time.perf_counter() - start
         num_bytes = sum(-(-gaps.nbytes // 4) * 4 + -(-values.nbytes // 4) * 4 for _, gaps, values in delta)
         if self.host_buffer is None or self.host_buffer.numel() < num_bytes:
@@ -97,7 +99,7 @@ class FileSystemWeightUpdateWorker(Worker):
             f"Read sparse weight delta {step_dir.name}: {num_bytes / 2**30:.2f} GiB, "
             f"read+decompress {read_time:.2f}s, pin {time.perf_counter() - start - read_time:.2f}s"
         )
-        return pinned
+        return pinned, checksums
 
     def _spans(self) -> dict[str, tuple[int, int]] | None:
         """The checkpoint index ranges this worker's params hold, once the index map exists."""
@@ -178,6 +180,7 @@ class FileSystemWeightUpdateWorker(Worker):
         delta = prefetched[1].result() if prefetched is not None else None
         if prefetched is None or prefetched[0] != step_dir.as_posix():
             delta = self._read_delta(step_dir)
+        delta, checksums = delta
         read_time = time.perf_counter() - start
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()
@@ -202,10 +205,30 @@ class FileSystemWeightUpdateWorker(Worker):
                 num_bytes += num_changes * itemsize
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
+        apply_time = time.perf_counter() - start - read_time
+        self._verify(step_dir, checksums)
         logger.info(
             f"Applied sparse weight delta {step_dir.name}: {sum(len(gaps) for _, gaps, _ in delta)} changes, "
-            f"read {read_time:.2f}s (0 if prefetched), apply {time.perf_counter() - start - read_time:.2f}s"
+            f"read {read_time:.2f}s (0 if prefetched), apply {apply_time:.2f}s, "
+            f"verify {time.perf_counter() - start - read_time - apply_time:.2f}s"
         )
+
+    def _verify(self, step_dir: Path, checksums: dict[str, int]) -> None:
+        """Check every tensor this worker holds against the trainer's checksum of the new weights.
+        Tensors split across TP workers are summed over the TP group first."""
+        assert self.index_map is not None
+        sums, partial = self.index_map.held_checksums(checksums)
+        tp_group = get_tp_group()
+        partial_names = sorted(partial) if tp_group.world_size > 1 else []
+        if partial_names:
+            reduced = torch.stack([sums[name] for name in partial_names])
+            torch.distributed.all_reduce(reduced, group=tp_group.device_group)
+            sums.update(zip(partial_names, reduced))
+        names = [name for name in sums if name not in partial or partial_names]
+        values = torch.stack([sums[name] for name in names]).tolist() if names else []
+        mismatched = [name for name, value in zip(names, values) if value != checksums[name]]
+        if mismatched:
+            raise RuntimeError(f"Sparse weight delta {step_dir.name} diverged from the trainer: {mismatched[:8]}")
 
     def _load_checkpoint(self, step_dir: Path) -> None:
         """Reload every weight from the HF-compatible checkpoint in ``step_dir``."""

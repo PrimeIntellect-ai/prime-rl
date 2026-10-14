@@ -10,6 +10,7 @@ must be applied on top of exactly its ``base_step``.
 """
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from math import prod
 from pathlib import Path
@@ -17,7 +18,6 @@ from pathlib import Path
 import numpy as np
 import pyzstd
 import torch
-from safetensors import safe_open
 from safetensors.numpy import save_file
 from safetensors.torch import save_file as save_torch_file
 
@@ -62,23 +62,49 @@ def encode_gaps(indices: torch.Tensor, entry_starts: torch.Tensor) -> torch.Tens
 
 
 def write_rank_file(
-    path: Path, entries: list[tuple[str, int]], gaps: np.ndarray, values: np.ndarray, tensors: dict
+    path: Path,
+    entries: list[tuple[str, int]],
+    gaps: np.ndarray,
+    values: np.ndarray,
+    tensors: dict,
+    checksums: dict[str, int],
+    frame_size: int = 1 << 20,
 ) -> int:
-    """Write every entry's gaps and values as separate zstd frames, so readers can skip entries."""
+    """Write a rank's delta as zstd frames of about ``frame_size`` changes each (whole entries), so
+    readers can skip frames without entries they hold. ``checksums`` (HF name -> ``bits_checksum`` of
+    the new weights this rank holds) let engines verify every step."""
     options = {pyzstd.CParameter.compressionLevel: 1, pyzstd.CParameter.checksumFlag: 1}
-    counts = [count for _, count in entries]
-    value_counts = [count * bits_dtype(tensors[name][1]).itemsize for name, count in entries]
-    gap_parts = np.split(gaps, np.cumsum(counts)[:-1])
-    value_parts = np.split(values, np.cumsum(value_counts)[:-1])
+    frames, size = [[]], 0
+    for index, (_, count) in enumerate(entries):
+        if size >= frame_size:
+            frames.append([])
+            size = 0
+        frames[-1].append(index)
+        size += count
+    gap_ends = np.cumsum([count for _, count in entries], dtype=np.int64)
+    value_ends = np.cumsum([count * bits_dtype(tensors[name][1]).itemsize for name, count in entries], dtype=np.int64)
+
+    def compress(frame: list[int]) -> tuple[bytes, bytes]:
+        first, last = frame[0], frame[-1]
+        gap_start = gap_ends[first - 1] if first else 0
+        value_start = value_ends[first - 1] if first else 0
+        return (
+            pyzstd.compress(gaps[gap_start : gap_ends[last]].tobytes(), options),
+            pyzstd.compress(values[value_start : value_ends[last]].tobytes(), options),
+        )
+
     with ThreadPoolExecutor(8) as pool:
-        gap_frames = list(pool.map(lambda part: pyzstd.compress(part.tobytes(), options), gap_parts))
-        value_frames = list(pool.map(lambda part: pyzstd.compress(part.tobytes(), options), value_parts))
+        compressed = list(pool.map(compress, frames if entries else []))
     arrays = {
-        "gaps": np.frombuffer(b"".join(gap_frames), np.uint8),
-        "values": np.frombuffer(b"".join(value_frames), np.uint8),
+        "gaps": np.frombuffer(b"".join(g for g, _ in compressed), np.uint8),
+        "values": np.frombuffer(b"".join(v for _, v in compressed), np.uint8),
     }
-    frames = [[name, count, len(g), len(v)] for (name, count), g, v in zip(entries, gap_frames, value_frames)]
-    save_file(arrays, str(path), metadata={"entries": json.dumps(frames)})
+    metadata = {
+        "entries": json.dumps(entries),
+        "frames": json.dumps([[len(frame), len(g), len(v)] for frame, (g, v) in zip(frames, compressed)]),
+        "checksums": json.dumps(checksums),
+    }
+    save_file(arrays, str(path), metadata=metadata)
     return sum(array.nbytes for array in arrays.values())
 
 
@@ -92,37 +118,54 @@ def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
 
 def _read_rank_file(
     path: Path, tensors: dict, spans: dict[str, tuple[int, int]] | None
-) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]:
-    with safe_open(str(path), framework="np") as f:
-        frames = json.loads(f.metadata()["entries"])
-        gaps_bytes, values_bytes = f.get_slice("gaps"), f.get_slice("values")
-        entries, gaps, values = [], [], []
-        gaps_offset = values_offset = 0
-        for name, count, num_gap_bytes, num_value_bytes in frames:
-            gaps_end, values_end = gaps_offset + num_gap_bytes, values_offset + num_value_bytes
-            if spans is None or name in spans:
-                entry_gaps = np.frombuffer(pyzstd.decompress(gaps_bytes[gaps_offset:gaps_end].tobytes()), np.int32)
-                entry_values = np.frombuffer(
-                    pyzstd.decompress(values_bytes[values_offset:values_end].tobytes()), np.uint8
-                )
+) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor, dict[str, int]]:
+    with open(path, "rb") as file:
+        header_size = int.from_bytes(file.read(8), "little")
+        header = json.loads(file.read(header_size))
+        metadata = header["__metadata__"]
+        gaps_start = 8 + header_size + header["gaps"]["data_offsets"][0]
+        values_start = 8 + header_size + header["values"]["data_offsets"][0]
+        entries = [tuple(entry) for entry in json.loads(metadata["entries"])]
+        frames, start, gaps_offset, values_offset = [], 0, gaps_start, values_start
+        for num_entries, num_gap_bytes, num_value_bytes in json.loads(metadata["frames"]):
+            frame_entries = entries[start : start + num_entries]
+            if spans is None or any(name in spans for name, _ in frame_entries):
+                frames.append((frame_entries, (gaps_offset, num_gap_bytes), (values_offset, num_value_bytes)))
+            start += num_entries
+            gaps_offset += num_gap_bytes
+            values_offset += num_value_bytes
+
+        def read_frame(frame) -> list[tuple[str, np.ndarray, np.ndarray]]:
+            frame_entries, (gap_at, gap_size), (value_at, value_size) = frame
+            frame_gaps = np.frombuffer(pyzstd.decompress(os.pread(file.fileno(), gap_size, gap_at)), np.int32)
+            frame_values = np.frombuffer(pyzstd.decompress(os.pread(file.fileno(), value_size, value_at)), np.uint8)
+            out, gap_offset, value_offset = [], 0, 0
+            for name, count in frame_entries:
+                itemsize = bits_dtype(tensors[name][1]).itemsize
+                entry_gaps = frame_gaps[gap_offset : gap_offset + count]
+                entry_values = frame_values[value_offset : value_offset + count * itemsize]
+                gap_offset += count
+                value_offset += count * itemsize
+                if spans is not None and name not in spans:
+                    continue
                 # Trim to this reader's index range unless it holds the whole tensor
                 span_start, span_end = spans[name] if spans is not None else (0, 2**62)
                 if span_start > 0 or span_end < prod(tensors[name][0]):
-                    indices = np.cumsum(entry_gaps, dtype=np.int64) + np.arange(1, count + 1) - 1
+                    indices = np.cumsum(entry_gaps, dtype=np.int64) + np.arange(count)
                     begin, end = np.searchsorted(indices, (span_start, span_end))
-                    itemsize = bits_dtype(tensors[name][1]).itemsize
                     entry_values = entry_values[begin * itemsize : end * itemsize]
                     entry_gaps = entry_gaps[begin:end].copy()
                     if end > begin:
                         entry_gaps[0] = indices[begin]
                 if len(entry_gaps):
-                    entries.append((name, len(entry_gaps)))
-                    gaps.append(entry_gaps)
-                    values.append(entry_values)
-            gaps_offset, values_offset = gaps_end, values_end
-    gaps = torch.from_numpy(np.concatenate(gaps) if gaps else np.empty(0, np.int32))
-    values = torch.from_numpy(np.concatenate(values) if values else np.empty(0, np.uint8))
-    return entries, gaps, values
+                    out.append((name, entry_gaps, entry_values))
+            return out
+
+        with ThreadPoolExecutor(4) as pool:
+            kept = [entry for frame in pool.map(read_frame, frames) for entry in frame]
+    gaps = torch.from_numpy(np.concatenate([g for _, g, _ in kept]) if kept else np.empty(0, np.int32))
+    values = torch.from_numpy(np.concatenate([v for _, _, v in kept]) if kept else np.empty(0, np.uint8))
+    return [(name, len(g)) for name, g, _ in kept], gaps, values, json.loads(metadata["checksums"])
 
 
 def write_anchor_shards(state_dict: dict[str, torch.Tensor], step_dir: Path, rank: int, world_size: int) -> None:
@@ -169,12 +212,28 @@ def read_manifest(step_dir: Path) -> dict:
 
 def read_delta(
     step_dir: Path, spans: dict[str, tuple[int, int]] | None = None
-) -> list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]]:
+) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
     """Read and decompress every rank file of a delta step dir into ``(entries,
     gaps, xor value bytes)`` in host memory; ``decode_gaps`` turns the
     gaps into flat indices on the device that applies them. With ``spans``, keep
-    only the listed tensors and, within each, the flat indices in ``[start, end)``."""
+    only the listed tensors and, within each, the flat indices in ``[start, end)``.
+    Also returns the new weights' ``bits_checksum`` per HF tensor, summed over ranks."""
     manifest = read_manifest(step_dir)
     paths = [step_dir / DELTA_DIR / name for name in manifest["files"]]
     with ThreadPoolExecutor(len(paths)) as pool:
-        return list(pool.map(lambda path: _read_rank_file(path, manifest["tensors"], spans), paths))
+        files = list(pool.map(lambda path: _read_rank_file(path, manifest["tensors"], spans), paths))
+    checksums: dict[str, int] = {}
+    for *_, partial in files:
+        for name, value in partial.items():
+            checksums[name] = add_checksums(checksums.get(name, 0), value)
+    return [delta for *delta, _ in files], checksums
+
+
+def bits_checksum(bits: torch.Tensor) -> int:
+    """Wrapping int64 sum of raw bits: additive over any split of a tensor, so trainer
+    ranks and engine workers can each sum the part they hold."""
+    return int(bits.sum(dtype=torch.int64))
+
+
+def add_checksums(a: int, b: int) -> int:
+    return (a + b + 2**63) % 2**64 - 2**63

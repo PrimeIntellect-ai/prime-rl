@@ -6,6 +6,7 @@ from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     MANIFEST,
     as_bits,
+    bits_checksum,
     decode_gaps,
     encode_gaps,
     read_delta,
@@ -25,8 +26,9 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
     delta_dir = tmp_path / DELTA_DIR
     delta_dir.mkdir()
     for rank, names in enumerate([[("a", slice(0, 32))], [("a", slice(32, 64)), ("b", slice(None))]]):
-        entries, gaps, values = [], [], []
+        entries, gaps, values, checksums = [], [], [], {}
         for name, rows in names:
+            checksums[name] = bits_checksum(as_bits(current[name][rows]))
             offset = 0 if rows.start is None else rows.start * 32
             xor = as_bits(current[name][rows]).reshape(-1) ^ as_bits(previous[name][rows]).reshape(-1)
             changed = xor.nonzero().squeeze(1)
@@ -35,15 +37,17 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
             entries.append((name, len(changed)))
             gaps.append(encode_gaps(changed + offset, starts))
             values.append(xor[changed].view(torch.uint8))
-        write_rank_file(
-            delta_dir / f"rank_{rank}.safetensors", entries, torch.cat(gaps).numpy(), torch.cat(values).numpy(), tensors
-        )
+        gaps, values = torch.cat(gaps).numpy(), torch.cat(values).numpy()
+        # Small frames, so a frame boundary falls inside rank 1's entries
+        write_rank_file(delta_dir / f"rank_{rank}.safetensors", entries, gaps, values, tensors, checksums, frame_size=8)
     files = ["rank_0.safetensors", "rank_1.safetensors"]
     (delta_dir / MANIFEST).write_text(json.dumps({"files": files, "tensors": tensors}))
 
     def apply(spans):
         patched = {name: as_bits(tensor.clone()).view(-1) for name, tensor in previous.items()}
-        for entries, gaps, values in read_delta(tmp_path, spans):
+        delta, checksums = read_delta(tmp_path, spans)
+        assert checksums == {name: bits_checksum(as_bits(tensor)) for name, tensor in current.items()}
+        for entries, gaps, values in delta:
             indices = decode_gaps(gaps, torch.tensor([count for _, count in entries]))
             i = b = 0
             for name, count in entries:
