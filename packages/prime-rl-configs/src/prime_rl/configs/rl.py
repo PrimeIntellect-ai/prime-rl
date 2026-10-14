@@ -361,6 +361,13 @@ class RLConfig(BaseConfig):
         # must match the trainer whose weights the external server receives.
         if inference is not None:
             require_equal(
+                "deployment.gpus_per_node",
+                {
+                    "deployment.gpus_per_node": self.deployment.gpus_per_node,
+                    "inference.deployment.gpus_per_node": inference.deployment.gpus_per_node,
+                },
+            )
+            require_equal(
                 "model.name",
                 {"inference.vllm.model": inference.vllm.model, "orchestrator.model.name": orchestrator.model.name},
             )
@@ -433,17 +440,8 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        if "inference_world_size" in self.weight_broadcast.model_fields_set:
-            raise ValueError("weight_broadcast.inference_world_size is set automatically by rl; remove it.")
-        update = {}
-        if self.weight_broadcast.type != "filesystem":
-            update["inference_world_size"] = (
-                self.inference.vllm.data_parallel_size * self.inference.vllm.tensor_parallel_size
-                if self.inference
-                else 1
-            )
-        self.trainer.weight_broadcast = self.weight_broadcast.model_copy(update=update)
-        self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy(update=update)
+        self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
+        self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
         return self
@@ -479,37 +477,6 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_lora(self):
         if self.trainer.model.lora is not None:
-            if self.orchestrator.model.lora is None:
-                from prime_rl.configs.orchestrator import LoRAConfig
-
-                self.orchestrator.model.lora = LoRAConfig()
-
-            if (
-                self.orchestrator.model.lora.rank is not None
-                and self.orchestrator.model.lora.rank != self.trainer.model.lora.rank
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.rank ({self.orchestrator.model.lora.rank}) conflicts with "
-                    f"trainer.model.lora.rank ({self.trainer.model.lora.rank}). "
-                    f"Remove orchestrator.model.lora.rank to inherit from trainer, or update trainer.model.lora.rank to match."
-                )
-
-            if (
-                self.orchestrator.model.lora.alpha is not None
-                and self.orchestrator.model.lora.alpha != self.trainer.model.lora.alpha
-            ):
-                raise ValueError(
-                    f"orchestrator.model.lora.alpha ({self.orchestrator.model.lora.alpha}) conflicts with "
-                    f"trainer.model.lora.alpha ({self.trainer.model.lora.alpha}). "
-                    f"Remove orchestrator.model.lora.alpha to inherit from trainer, or update trainer.model.lora.alpha to match."
-                )
-
-            if self.orchestrator.model.lora.rank is None:
-                self.orchestrator.model.lora.rank = self.trainer.model.lora.rank
-
-            if self.orchestrator.model.lora.alpha is None:
-                self.orchestrator.model.lora.alpha = self.trainer.model.lora.alpha
-
             if self.inference is not None:
                 self.inference.vllm.enable_lora = True
                 self.inference.vllm.max_lora_rank = self.trainer.model.lora.rank
@@ -644,6 +611,11 @@ class RLConfig(BaseConfig):
                 dp = self.inference.vllm.data_parallel_size
                 if self.inference.vllm.api_server_count < dp and not self.inference.vllm.enable_lora:
                     self.inference.vllm.api_server_count = dp
+                if self.weight_broadcast.type != "filesystem":
+                    # Every inference GPU joins the in-memory transfer group, so size it after the DP fill.
+                    world_size = dp * self.inference.vllm.tensor_parallel_size
+                    self.trainer.weight_broadcast.inference_world_size = world_size
+                    self.orchestrator.weight_broadcast.inference_world_size = world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
             self.orchestrator.num_train_workers = (
@@ -794,6 +766,8 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = self.run.name
         if self.slurm is not None and self.slurm.template_path is None:
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:
