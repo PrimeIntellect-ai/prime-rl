@@ -1,13 +1,17 @@
 import math
 import uuid
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.sft import TrainRunConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
+from prime_rl.configs.sft import SFTDeploymentConfig, SingleNodeDeploymentConfig, setup_trainer_deployment
+from prime_rl.configs.shared import EnvVars, HeartbeatConfig, ResumeConfig, RunConfig, SlurmConfig, TrainerLogConfig
 from prime_rl.configs.trainer import (
     CheckpointConfig,
+    GCConfig,
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
@@ -15,7 +19,7 @@ from prime_rl.configs.trainer import (
     OptimizerConfig,
     TokenizerConfig,
 )
-from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.config import BaseConfig, default_output_dir
 
 TOKENIZER_FIELDS = ("vocab_size", "bos_token_id", "eos_token_id", "pad_token_id")
 
@@ -66,7 +70,7 @@ class PretrainMoEConfig(MoERuntimeConfig):
 
 class PretrainModelConfig(ModelConfig):
     arch: dict[str, Any]
-    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/model``, which ``name`` points at."""
+    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/configs/model``, which ``name`` points at."""
 
     init: InitConfig = InitConfig()
     """Random weight initialization. Used unless the run resumes from a checkpoint."""
@@ -218,8 +222,11 @@ class ScheduleConfig(BaseConfig):
     """Shape of the decay from 1 to ``end_ratio``."""
 
 
-class PretrainConfig(TrainRunConfig):
+class PretrainConfig(BaseConfig):
     model: PretrainModelConfig
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the trainer processes."""
 
     tokenizer: TokenizerConfig
     """The tokenizer (``tokenizer.name`` is required). It sets the vocabulary and special tokens of the model."""
@@ -238,6 +245,26 @@ class PretrainConfig(TrainRunConfig):
     ckpt: CheckpointConfig | None = CheckpointConfig()
     """Checkpointing. Defaults to a checkpoint at the end of training."""
 
+    resume: ResumeConfig | None = None
+    """Resume the run from a checkpoint. If None, does not resume."""
+
+    log: TrainerLogConfig = TrainerLogConfig()
+
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
+
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory that groups related runs. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    clean: bool = False
+    """Delete the run directory before starting. Required to overwrite a previous run's artifacts when not resuming."""
+
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    """Precision for float32 matrix multiplications (``torch.set_float32_matmul_precision``)."""
+
     max_steps: int = Field(ge=1)
     """Training steps."""
 
@@ -245,9 +272,28 @@ class PretrainConfig(TrainRunConfig):
     """CompleteP relative to a base shape. If None, the standard parametrization: the same per-role parameter
     groups with every multiplier at 1 (norms and biases without weight decay)."""
 
-    def default_run_name(self) -> str:
-        """``<model_type>--<short-id>``."""
-        return f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"
+    gc: GCConfig | None = GCConfig()
+    """Deterministic garbage collection every N steps. Set to null for Python's default GC."""
+
+    dist_timeout_seconds: int = 900
+    """Timeout in seconds for torch distributed ops."""
+
+    heartbeat: HeartbeatConfig | None = None
+    """BetterStack heartbeat configuration."""
+
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+    """``single_node`` (``num_train_gpus`` on this node) or ``multi_node`` (``num_train_nodes`` x ``gpus_per_node``, needs ``[slurm]``). The online-eval fields (``num_infer_*``) are not used."""
+
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
+
+    dry_run: bool = False
+    """Only validate and dump resolved configs, then exit."""
+
+    @property
+    def run_dir(self) -> Path:
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
 
     @model_validator(mode="after")
     def resolve_autos(self):
@@ -267,15 +313,43 @@ class PretrainConfig(TrainRunConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_model_dir(self):
-        """The model is trained from ``<run_dir>/model``, written by the launcher from ``model.arch``."""
-        self.model.name = (self.run_dir / "model").as_posix()
+    def auto_setup_run_identity(self):
+        if self.run.name is None:
+            self.run.name = f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
+            self.monitors.wandb.name = self.run.name
         return self
 
     @model_validator(mode="after")
-    def validate_tokenizer(self):
+    def auto_setup_model_dir(self):
+        """The model is trained from ``<run_dir>/configs/model``, written by the launcher from ``model.arch``."""
+        self.model.name = (self.run_dir / "configs" / "model").as_posix()
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
             raise ValueError("tokenizer.name is required")
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_deployment(self):
+        setup_trainer_deployment(self)
+        return self
+
+    @model_validator(mode="after")
+    def deepep_disables_grad_clipping(self):
+        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
+            warnings.warn(
+                "Gradient clipping is not compatible with DeepEP. "
+                "Automatically setting optim.max_norm to None (disabled).",
+                stacklevel=1,
+            )
+            self.optim.max_norm = None
         return self
 
     @model_validator(mode="after")
