@@ -14,8 +14,11 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
-from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
-from prime_rl.trainer.models.kernels.sparse_mla_fwd import resolve_dsa_backend
+from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import (
+    GlmMoeDsaAttention,
+    SparseMlaAttentionArgs,
+    resolve_dsa_backend,
+)
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs

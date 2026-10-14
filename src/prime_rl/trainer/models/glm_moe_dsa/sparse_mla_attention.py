@@ -1,4 +1,6 @@
+import importlib.util
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 import torch.distributed as dist
@@ -14,6 +16,20 @@ try:
     from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
 except ImportError:
     sparse_mla = None  # type: ignore
+
+
+def resolve_dsa_backend(backend: DSABackend | Literal["auto"], num_heads: int) -> DSABackend:
+    """Resolve ``auto``: ``cudnn_flashmla`` on SM90 with FlashMLA installed and a head count FlashMLA supports, else ``tilelang``."""
+    if backend != "auto":
+        return backend
+    if (
+        torch.cuda.is_available()
+        and torch.cuda.get_device_capability()[0] == 9
+        and num_heads % 64 == 0
+        and importlib.util.find_spec("flash_mla") is not None
+    ):
+        return "cudnn_flashmla"
+    return "tilelang"
 
 
 @dataclass(frozen=True)
