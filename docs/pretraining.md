@@ -1,6 +1,6 @@
 # Pretraining
 
-`uv run pretrain` trains a model from scratch on pre-tokenized token shards. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, checkpointing and monitors as the SFT trainer. It runs on a single node.
+`uv run pretrain` trains a model from scratch on pre-tokenized token shards. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, checkpointing and monitors as the SFT trainer. It runs locally on one node or, with `[slurm]`, as a SLURM job on one or more nodes (see [Multi-node](#multi-node)).
 
 ```bash
 uv run pretrain @ examples/pretrain/glm4_moe.toml
@@ -87,3 +87,23 @@ interval = 500
 [val.sources]
 web = { path = "data/web-val" }
 ```
+
+## Multi-node
+
+`uv run pretrain` takes the same `[deployment]` and `[slurm]` blocks as `uv run sft` (see [Scaling § SLURM](scaling.md#slurm)) and submits the same bundled templates. The launcher writes the model dir on the submitting node, then submits one job in which every node runs `torchrun` on the pretrain trainer:
+
+```toml
+output_dir = "/shared/outputs/pretrain"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+gpus_per_node = 8
+nodes_per_fsdp_group = 1  # optional: HSDP, shard within a node and replicate across nodes
+
+[slurm]
+partition = "all"
+time = "04:00:00"
+```
+
+Row `w` of the token stream goes to data stream `w % num_streams`, with `num_streams = data_parallel_ranks * data.num_workers`, and step `s` trains on rows `s * rows_per_step` to `(s + 1) * rows_per_step - 1`. So runs with different numbers of GPUs train on the same rows at every step, only split differently into micro-batches. The loss and gradient are normalized by the token count of the whole global batch, as on one GPU with gradient accumulation.

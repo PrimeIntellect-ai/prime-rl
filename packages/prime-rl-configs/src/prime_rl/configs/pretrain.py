@@ -6,7 +6,8 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 
 from prime_rl.configs.monitors import TrainMonitorsConfig
-from prime_rl.configs.shared import EnvVars, HeartbeatConfig, ResumeConfig, RunConfig, TrainerLogConfig
+from prime_rl.configs.sft import SFTDeploymentConfig, SingleNodeDeploymentConfig, setup_trainer_deployment
+from prime_rl.configs.shared import EnvVars, HeartbeatConfig, ResumeConfig, RunConfig, SlurmConfig, TrainerLogConfig
 from prime_rl.configs.trainer import (
     CheckpointConfig,
     GCConfig,
@@ -182,11 +183,6 @@ class ScheduleConfig(BaseConfig):
     """Shape of the decay from 1 to ``end_ratio``."""
 
 
-class PretrainDeploymentConfig(BaseConfig):
-    num_train_gpus: int = Field(1, ge=1)
-    """GPUs for the trainer, on this node."""
-
-
 class PretrainConfig(BaseConfig):
     model: PretrainModelConfig
 
@@ -242,7 +238,11 @@ class PretrainConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration."""
 
-    deployment: PretrainDeploymentConfig = PretrainDeploymentConfig()
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+    """``single_node`` (``num_train_gpus`` on this node) or ``multi_node`` (``num_train_nodes`` x ``gpus_per_node``, needs ``[slurm]``). The online-eval fields (``num_infer_*``) are not used."""
+
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit."""
@@ -291,6 +291,11 @@ class PretrainConfig(BaseConfig):
             raise ValueError("tokenizer.name is required")
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_deployment(self):
+        setup_trainer_deployment(self)
         return self
 
     @model_validator(mode="after")

@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
@@ -35,6 +35,9 @@ from prime_rl.configs.trainer import (
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
+
+if TYPE_CHECKING:
+    from prime_rl.configs.pretrain import PretrainConfig
 
 
 class BaseDataConfig(BaseConfig):
@@ -214,6 +217,30 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
 SFTDeploymentConfig: TypeAlias = Annotated[
     SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
 ]
+
+
+def setup_trainer_deployment(config: "SFTConfig | PretrainConfig") -> None:
+    """Shared by ``sft`` and ``pretrain``: a multi-node deployment needs SLURM and sets
+    ``model.dp_replicate`` from ``nodes_per_fsdp_group``; the SLURM job name defaults to the
+    run name and the template to the bundled single- or multi-node trainer template."""
+    deployment = config.deployment
+    if deployment.type == "multi_node":
+        if config.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        if deployment.nodes_per_fsdp_group is not None:
+            if deployment.num_train_nodes % deployment.nodes_per_fsdp_group != 0:
+                raise ValueError(
+                    f"deployment.num_train_nodes ({deployment.num_train_nodes}) must be divisible by "
+                    f"deployment.nodes_per_fsdp_group ({deployment.nodes_per_fsdp_group})"
+                )
+            config.model.dp_replicate = deployment.num_train_nodes // deployment.nodes_per_fsdp_group
+    if config.slurm is not None:
+        if config.slurm.job_name is None:
+            config.slurm.job_name = config.run.name
+        if config.slurm.template_path is None:
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                config.slurm.template_path = templates_dir / f"{deployment.type}_sft.sbatch.j2"
 
 
 class SFTConfig(BaseConfig):
@@ -401,12 +428,6 @@ class SFTConfig(BaseConfig):
                 stacklevel=1,
             )
             self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
-    def validate_deployment(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
         return self
 
     @model_validator(mode="after")
@@ -631,25 +652,5 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        if self.deployment.type == "multi_node":
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_slurm_template(self):
-        if self.slurm is not None and self.slurm.job_name is None:
-            self.slurm.job_name = self.run.name
-        if self.slurm is not None and self.slurm.template_path is None:
-            templates_dir = find_package_resource("templates")
-            if templates_dir is not None:
-                if self.deployment.type == "single_node":
-                    self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
-                else:
-                    self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
+        setup_trainer_deployment(self)
         return self

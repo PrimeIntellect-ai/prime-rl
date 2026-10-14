@@ -319,7 +319,7 @@ def has_checkpoints(output_dir: Path) -> bool:
 
 # Launcher artifacts may exist before training starts. Everything else is treated as
 # artifacts of a previous run.
-LAUNCHER_ARTIFACTS = ("configs", "launcher")
+LAUNCHER_ARTIFACTS = ("configs", "launcher", "model")
 
 
 def has_run_artifacts(run_dir: Path) -> bool:
