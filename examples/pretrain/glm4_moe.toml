@@ -56,11 +56,6 @@ type = "muon"
 lr = 0.00390625
 max_norm = 1.0
 
-[scheduler]
-type = "linear"
-warmup_steps = 410
-decay_steps = 3686
-
 [val]
 interval = 512
 

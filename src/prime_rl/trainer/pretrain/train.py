@@ -40,7 +40,7 @@ from prime_rl.trainer.pretrain.data import (
     setup_train_dataset,
     setup_val_dataset,
 )
-from prime_rl.trainer.scheduler import setup_scheduler
+from prime_rl.trainer.pretrain.schedules import Schedules
 from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
 from prime_rl.trainer.utils import (
     GarbageCollection,
@@ -145,12 +145,16 @@ def train(config: PretrainConfig):
         ),
     )
 
-    scheduler_steps = (
-        config.max_steps - checkpoint_step
-        if config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None
-        else config.max_steps
+    # With ckpt.skip_scheduler, the schedules restart at the resumed step and span the remaining steps.
+    restart_schedules = config.ckpt is not None and config.ckpt.skip_scheduler and checkpoint_step is not None
+    schedule_offset = checkpoint_step if restart_schedules else 0
+    schedules = Schedules(
+        config.schedules,
+        config.optim,
+        optimizer,
+        total_steps=config.max_steps - schedule_offset if config.max_steps is not None else None,
+        step_offset=schedule_offset,
     )
-    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     dataloader = setup_dataloader(
         setup_train_dataset(
@@ -181,14 +185,12 @@ def train(config: PretrainConfig):
             checkpoint_step,
             model,
             [optimizer],
-            scheduler if not skip.skip_scheduler else None,
+            None,
             progress,
             dataloader=dataloader if not skip.skip_dataloader else None,
             path=config.resume.dir / "trainer" if config.resume.dir is not None else None,
         )
         progress.step += 1
-        if skip.skip_scheduler:
-            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         logger.info(f"Resuming from step {checkpoint_step} (dataset_state={get_dataset_state(dataloader)})")
 
     # Create the iterator only after a potential resume: iter() forks the workers with the
@@ -261,6 +263,7 @@ def train(config: PretrainConfig):
             gc_handler.run(progress.step)
         is_last_step = progress.step >= config.max_steps
         step_start_time = time.perf_counter()
+        max_norm, schedule_metrics = schedules.apply(progress.step - 1)
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
         nan_loss_count = torch.tensor(0, device="cuda")
@@ -326,17 +329,16 @@ def train(config: PretrainConfig):
         batch_loss = (step_loss_sum / global_token_count_val).item()
         nan_loss_count = nan_loss_count.item()
 
-        grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
+        grad_norm = clip_grad_norm_(gradient_manager, model, max_norm) if max_norm else None
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step()
 
         # The last step's checkpoint is written once after the loop.
         save_ckpt_time = 0.0
         if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0 and not is_last_step:
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
 
@@ -387,6 +389,7 @@ def train(config: PretrainConfig):
             **get_ckpt_disk_metrics(config.run_dir),
             **{name: value.item() for name, value in moe_stats.items()},
             **expert_load_stats,
+            **schedule_metrics,
             "step": progress.step,
         }
         if grad_norm is not None:
@@ -401,7 +404,7 @@ def train(config: PretrainConfig):
 
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
     if gradient_manager is not None:
         gradient_manager.close()

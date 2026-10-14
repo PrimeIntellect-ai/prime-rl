@@ -1,7 +1,7 @@
 import re
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, ClassVar, Literal, NamedTuple, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
@@ -399,7 +399,26 @@ def validate_scheduler(scheduler: SchedulerConfig, max_steps: int | None) -> Non
             raise ValueError(f"warmup_steps ({scheduler.warmup_steps}) must be less than max_steps ({max_steps})")
 
 
+class ParamGroupKey(NamedTuple):
+    """Where an optimizer config field lives in the optimizer's param groups."""
+
+    key: str
+    """Param group key."""
+
+    index: int | None = None
+    """Index into the param group value when it is a tuple (e.g. torch AdamW ``betas``)."""
+
+    algorithm: str | None = None
+    """Only param groups with this ``algorithm`` (Dion Muon). None applies to every group."""
+
+
 class BaseOptimizerConfig(BaseConfig):
+    schedulable: ClassVar[dict[str, ParamGroupKey]] = {
+        "lr": ParamGroupKey("lr"),
+        "weight_decay": ParamGroupKey("weight_decay"),
+    }
+    """Hyperparameters a schedule can scale, by config field name."""
+
     lr: float = Field(1e-6, ge=0)
     """Peak learning rate."""
 
@@ -411,6 +430,12 @@ class BaseOptimizerConfig(BaseConfig):
 
 
 class AdamWConfig(BaseOptimizerConfig):
+    schedulable: ClassVar[dict[str, ParamGroupKey]] = {
+        **BaseOptimizerConfig.schedulable,
+        "betas1": ParamGroupKey("betas", index=0),
+        "betas2": ParamGroupKey("betas", index=1),
+    }
+
     type: Literal["adamw"] = "adamw"
 
     betas1: float = Field(0.9, ge=0)
@@ -421,6 +446,13 @@ class AdamWConfig(BaseOptimizerConfig):
 
 
 class MuonConfig(BaseOptimizerConfig):
+    schedulable: ClassVar[dict[str, ParamGroupKey]] = {
+        **BaseOptimizerConfig.schedulable,
+        "mu": ParamGroupKey("mu", algorithm="muon"),
+        "betas1": ParamGroupKey("beta1", algorithm="adamw"),
+        "betas2": ParamGroupKey("beta2", algorithm="adamw"),
+    }
+
     type: Literal["muon"] = "muon"
 
     mu: float = Field(0.95, ge=0)
