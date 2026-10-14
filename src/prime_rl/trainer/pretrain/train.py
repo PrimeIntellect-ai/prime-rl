@@ -32,7 +32,7 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.init import init_weights
+from prime_rl.trainer.init import init_weights, param_role
 from prime_rl.trainer.pretrain.parametrization import multipliers, param_groups
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.data import (
@@ -60,16 +60,28 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
+from prime_rl.utils.weights import resolve_fqn
 
 
 def count_parameters(model: nn.Module) -> dict[str, int]:
-    """Total, embedding (input embedding and LM head) and non-embedding parameter counts."""
+    """Total, embedding (input embedding and LM head), non-embedding and active non-embedding parameter counts.
+    Active counts the routed experts of each MoE layer at ``top_k / num_experts``, the share each token uses."""
     total = embedding = 0
     for name, param in model.named_parameters():
         total += param.numel()
-        if "embed_tokens" in name or "lm_head" in name:
+        if param_role(resolve_fqn(model, name), param) in ("embedding", "output"):
             embedding += param.numel()
-    return {"total": total, "embedding": embedding, "non_embedding": total - embedding}
+    inactive = 0
+    for moe in iter_moe_blocks(model):
+        experts = sum(param.numel() for param in moe.experts.parameters())
+        inactive += experts - experts * moe.router.top_k // moe.router.num_experts
+    non_embedding = total - embedding
+    return {
+        "total": total,
+        "embedding": embedding,
+        "non_embedding": non_embedding,
+        "active_non_embedding": non_embedding - inactive,
+    }
 
 
 @clean_exit
@@ -128,9 +140,12 @@ def train(config: PretrainConfig):
         setup_context_parallel(model, config.model, parallel_dims)
     num_params = count_parameters(model)
     logger.info(
-        f"Parameters: {num_params['non_embedding'] / 1e6:,.1f}M non-embedding, "
-        f"{num_params['embedding'] / 1e6:,.1f}M embedding, {num_params['total'] / 1e6:,.1f}M total"
+        f"Parameters: {num_params['active_non_embedding'] / 1e6:,.1f}M active non-embedding, "
+        f"{num_params['non_embedding'] / 1e6:,.1f}M non-embedding, {num_params['embedding'] / 1e6:,.1f}M embedding, "
+        f"{num_params['total'] / 1e6:,.1f}M total"
     )
+    if checkpoint_step is None:
+        asyncio.run(monitors.log({f"params/{name}": count for name, count in num_params.items()} | {"step": 0}, step=0))
 
     tokenizer = setup_tokenizer(config.tokenizer)
 
