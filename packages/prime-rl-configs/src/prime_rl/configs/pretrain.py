@@ -22,14 +22,11 @@ TOKENIZER_FIELDS = ("vocab_size", "bos_token_id", "eos_token_id", "pad_token_id"
 class InitConfig(BaseConfig):
     """Random weight initialization."""
 
-    scheme: Literal["normal", "scaled", "completep"] = "normal"
-    """``normal`` draws every weight matrix and the embedding from N(0, std). ``scaled`` additionally divides the std of the residual output projections (``o_proj``, ``down_proj``) by sqrt(2 * num_layers). ``completep`` follows CompleteP (muP extended to depth, Dey et al. 2025) relative to the base shape: the embedding keeps ``std``, hidden matrices get ``std / sqrt(m_N)``, residual output projections ``std / (sqrt(m_N) * m_L)`` and the LM head ``std / m_N``, where ``m_N = hidden_size / base_hidden_size`` and ``m_L = num_layers / base_num_layers``. Norm weights start at 1, biases at 0."""
+    scheme: Literal["normal", "completep"] = "normal"
+    """``normal`` draws every weight matrix and the embedding from N(0, std). ``completep`` follows CompleteP (muP extended to depth, Dey et al. 2025) relative to the base shape: the embedding keeps ``std``, hidden matrices get ``std / sqrt(m_N)``, residual output projections ``std / (sqrt(m_N) * m_L)`` and the LM head ``std / m_N``, where ``m_N = hidden_size / base_hidden_size`` and ``m_L = num_layers / base_num_layers``. Norm weights start at 1, biases at 0."""
 
     std: float = Field(0.02, gt=0)
     """Base standard deviation."""
-
-    truncate: bool = False
-    """Draw from the normal distribution truncated at +-3 std instead of the full normal."""
 
     base_hidden_size: int = Field(256, ge=1)
     """Hidden size of the base shape. Only used by ``completep``."""

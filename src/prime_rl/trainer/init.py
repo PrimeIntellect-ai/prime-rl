@@ -47,8 +47,6 @@ def role_std(role: ParamRole, config: InitConfig, hidden_size: int, num_layers: 
         m_n, m_l = completep_multipliers(config, hidden_size, num_layers)
         scale = {"embedding": 1.0, "hidden": m_n**-0.5, "residual_out": m_n**-0.5 / m_l, "output": 1 / m_n}
         return config.std * scale[role]
-    if config.scheme == "scaled" and role == "residual_out":
-        return config.std / math.sqrt(2 * num_layers)
     return config.std
 
 
@@ -64,12 +62,10 @@ def normal_shard(
     global_offset: tuple[int, ...],
     seed: int,
     device: torch.device,
-    truncate: bool = False,
 ) -> torch.Tensor:
     """The ``local_shape`` slice at ``global_offset`` of a standard-normal tensor of
     ``global_shape`` whose values depend only on ``(seed, name)``. The tensor is drawn in
-    blocks of rows along dim 0; only the blocks overlapping the slice are generated. With
-    ``truncate``, the distribution is truncated at +-3."""
+    blocks of rows along dim 0; only the blocks overlapping the slice are generated."""
     row_numel = math.prod(global_shape[1:])
     rows_per_block = max(1, BLOCK_NUMEL // max(row_numel, 1))
     start, stop = global_offset[0], global_offset[0] + local_shape[0]
@@ -78,13 +74,7 @@ def normal_shard(
         block_start = block * rows_per_block
         block_rows = min(rows_per_block, global_shape[0] - block_start)
         generator = torch.Generator(device=device).manual_seed(block_seed(seed, name, block))
-        if truncate:
-            # Inverse-CDF sampling: uniform on (erf(-3/sqrt(2)), erf(3/sqrt(2))) mapped through erfinv.
-            bound = math.erf(3 / math.sqrt(2))
-            uniform = torch.rand((block_rows, *global_shape[1:]), generator=generator, device=device)
-            values = torch.erfinv(uniform.mul_(2 * bound).sub_(bound)).mul_(math.sqrt(2))
-        else:
-            values = torch.randn((block_rows, *global_shape[1:]), generator=generator, device=device)
+        values = torch.randn((block_rows, *global_shape[1:]), generator=generator, device=device)
         lo, hi = max(start, block_start) - block_start, min(stop, block_start + block_rows) - block_start
         pieces.append(values[lo:hi])
     out = torch.cat(pieces) if pieces else torch.empty((0, *global_shape[1:]), device=device)
@@ -122,6 +112,5 @@ def init_weights(model: nn.Module, config: InitConfig) -> None:
             tuple(global_offset),
             config.seed,
             local.device,
-            config.truncate,
         )
         local.copy_(values.mul_(role_std(role, config, hidden_size, num_layers)))

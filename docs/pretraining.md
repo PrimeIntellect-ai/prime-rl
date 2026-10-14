@@ -30,9 +30,8 @@ Weights start from a random init, unless the run resumes from a checkpoint.
 
 | Field | Meaning |
 |---|---|
-| `model.init.scheme` | `normal`: every weight matrix and the embedding from N(0, std). `scaled`: additionally divides the std of the residual output projections (`o_proj`, `down_proj`) by sqrt(2 * num_layers). `completep`: CompleteP, see below. Norm weights start at 1, biases at 0. |
+| `model.init.scheme` | `normal`: every weight matrix and the embedding from N(0, std). `completep`: CompleteP, see below. Norm weights start at 1, biases at 0. |
 | `model.init.std` | Base standard deviation (default 0.02). |
-| `model.init.truncate` | Draw from the normal truncated at +-3 std. |
 | `model.init.seed` | Seed. Every rank initializes only its own shard, and the values depend only on the seed and the parameter name, not on the number of GPUs. |
 
 ### CompleteP

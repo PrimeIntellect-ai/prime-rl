@@ -28,13 +28,6 @@ def test_normal_shard_is_independent_of_sharding():
     assert not torch.equal(normal_shard("w", shape, shape, (0, 0, 0), seed=1, device=torch.device("cpu")), full)
 
 
-def test_truncated_normal_shard_stays_within_three_std():
-    values = normal_shard("w", (4096, 64), (4096, 64), (0, 0), seed=0, device=torch.device("cpu"), truncate=True)
-    assert values.abs().max() <= 3
-    # Variance of the standard normal truncated at +-3.
-    assert abs(values.std().item() - 0.9866) < 0.01
-
-
 def test_completep_folded_multipliers_match_explicit_multipliers():
     """CompleteP folds its 1/m_L residual and 1/m_N logit multipliers into the weights. Training
     the folded model must match the multiplier form of CompleteP (Dey et al. 2025, Table 1)."""
