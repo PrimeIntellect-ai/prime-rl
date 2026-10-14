@@ -70,7 +70,10 @@ def _load(traces: Path, held: dict[str, Any]) -> vf.Trace | None:
             return None
         for trace in record.get("traces") or []:
             if trace.get("id") == trace_id:
-                return vf.WireTrace.model_validate(trace)
+                try:
+                    return vf.WireTrace.model_validate(trace)
+                except ValueError:
+                    return None  # a record this verifiers cannot read: run the call fresh
         return None
     live = traces / get_live_dir(Path()).name / f"{trace_id}.jsonl"
     partial = traces / get_partial_dir(Path()).name / f"{trace_id}.jsonl"
