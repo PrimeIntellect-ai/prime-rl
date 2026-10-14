@@ -291,6 +291,55 @@ fraction of accepted sampled tokens above the cap. With SC enabled,
 trainer probability mass removed from the captured head by truncation and masking.
 These are full-support masses only when the head covers the complete replay support.
 
+#### Position gates for IPO+TIS+SC
+
+`score_centering_gate` selects how the IPO mask interacts with centering:
+
+| Value | Acceptance and correction |
+|---|---|
+| `"weighted"` (default) | Mask each candidate's importance coefficient; subtract its expected score on every sampled position. |
+| `"sample"` | Accept the chosen word using IPO's bound; subtract the score conditional on acceptance. Both terms vanish on rejected positions. |
+| `"head"` | Accept a position only if every captured head word passes IPO's bound; apply TIS+SC to the whole accepted position. |
+
+For the head gate, let $H$ be the captured sampler head,
+$M=\mathbf{1}\{\max_{v\in H}|p_v-q_v|\le\epsilon\}$, and
+$t_v=\min(p_v/q_v,C)$. The ascent update is
+
+$$
+g(y)=A_y M\left(t_y s_y-\sum_vq_vt_vs_v\right),\qquad
+s_v=\nabla_\theta\log p_v.
+$$
+
+The head is selected independently of the sampled word, so $M$ is fixed at a
+given prefix. The baseline includes the full modeled distribution, including
+the tail; the acceptance gate checks only the captured head. There is no
+additional chosen-word or tail IPO mask. For constant advantage and exact
+sampler probabilities, $\mathbb{E}_{y\sim q}[g(y)]=0$. With captured probabilities,
+this cancellation is exact for the proportional-tail model and approximate for
+the real sampler. If no importance coefficient is capped, the exact baseline
+vanishes because $\sum_vp_vs_v=0$.
+
+Enable this mode explicitly:
+
+```toml
+[trainer.loss]
+type = "ipo_tis"
+eps = 0.2
+ratio_cap = 2.0
+score_centering = true
+score_centering_topk = 1024
+score_centering_gate = "head"
+```
+
+`score_centering_topk` controls probability capture, not the sampling support.
+With untruncated sampling, both sides normalize over the full vocabulary.
+The head gate does not divide by an acceptance probability. The `"sample"`
+gate instead uses the conditional baseline $B/Z$ described above, with
+$B=\sum_vq_vm_vt_vs_v$ and $Z=\sum_vq_vm_v$; it skips the whole position when
+$Z$ is below `score_centering_min_acceptance` (default `1e-4`). This avoids
+division by zero without changing the denominator for admitted positions.
+Plain `ipo` supports `"weighted"` and `"sample"`; `"head"` requires `ipo_tis`.
+
 ### IcePop Loss
 
 IcePop is an opt-in RL loss that drops tokens whose trainer-to-inference
