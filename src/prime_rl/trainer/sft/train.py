@@ -37,9 +37,8 @@ from prime_rl.trainer.model import (
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state
 from prime_rl.trainer.sft.data import (
-    get_dataset_progress,
-    get_dataset_state,
     load_sft_dataset,
     setup_dataloader,
     setup_dataset,
@@ -294,12 +293,13 @@ def train(config: SFTConfig):
         del out
         return loss_sum, token_count
 
-    def compute_train_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, float]:
+    def compute_train_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, None]:
         if config.log.log_data:
             print_sample(
                 micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
             )
-        return *compute_loss(micro_batch), 0.0
+        with maybe_record_function("forward"):
+            return *compute_loss(micro_batch), None
 
     maybe_record_function = nullcontext
 

@@ -339,9 +339,8 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             )
             rotary_emb.inv_freq.copy_(inv_freq)
 
-        for module in self.modules():
-            if isinstance(module, MoE) and module.router.selection_bias is not None:
-                module.router.selection_bias.zero_()
+        # TODO: Init TT MoE buffers
+        # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
 
 
 __all__ = ["Glm4MoeConfig", "Glm4MoePreTrainedModel", "Glm4MoeModel", "Glm4MoeForCausalLM"]

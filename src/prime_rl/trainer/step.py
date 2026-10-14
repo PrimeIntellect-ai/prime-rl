@@ -34,7 +34,7 @@ class StepResult:
 def run_micro_batches(
     model: nn.Module,
     dataiter: Iterator[dict],
-    compute_loss: Callable[[dict], tuple[Tensor, Tensor, Tensor | float]],
+    compute_loss: Callable[[dict], tuple[Tensor, Tensor, Tensor | None]],
     grad_accum_steps: int,
     parallel_dims: ParallelDims,
     gradient_manager=None,
@@ -45,7 +45,7 @@ def run_micro_batches(
     """Forward and backward passes over the ``grad_accum_steps`` micro-batches of one step, leaving the
     gradients of the summed token loss divided by the global token count (the mean loss per token, as on one
     GPU without accumulation). ``compute_loss`` returns the summed loss and the number of unmasked tokens of a
-    micro-batch, and an auxiliary loss on the same scale as the summed loss that is trained but not logged."""
+    micro-batch, and an optional auxiliary loss on the same scale as the summed loss that is trained but not logged."""
     logger = get_logger()
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
@@ -76,8 +76,7 @@ def run_micro_batches(
     local_num_tokens = 0
     for micro_step, micro_batch in enumerate(micro_batches):
         local_num_tokens += micro_batch["input_ids"].shape[1]
-        with record_function("forward"):
-            micro_loss_sum, micro_token_count, aux_loss_sum = compute_loss(micro_batch)
+        micro_loss_sum, micro_token_count, aux_loss_sum = compute_loss(micro_batch)
         if gradient_manager is None:
             local_token_count += micro_token_count
         if torch.isnan(micro_loss_sum.detach()):
@@ -86,7 +85,7 @@ def run_micro_batches(
             scaled_loss = torch.nan_to_num(micro_loss_sum, nan=0.0) / grad_accum_steps
         else:
             loss_sum += micro_loss_sum.detach()
-            scaled_loss = (micro_loss_sum + aux_loss_sum) / grad_accum_steps
+            scaled_loss = (micro_loss_sum if aux_loss_sum is None else micro_loss_sum + aux_loss_sum) / grad_accum_steps
         with record_function("backward"):
             begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
             scaled_loss.backward()

@@ -1,22 +1,34 @@
 import math
 import uuid
+import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.sft import TrainRunConfig
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
+from prime_rl.configs.shared import (
+    EnvVars,
+    HeartbeatConfig,
+    LogConfig,
+    ResumeConfig,
+    RunConfig,
+    SFTDeploymentConfig,
+    SingleNodeDeploymentConfig,
+    SlurmConfig,
+    TrainerLogConfig,
+)
 from prime_rl.configs.trainer import (
+    AdamWConfig,
     CheckpointConfig,
+    GCConfig,
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
     OffloadMode,
-    OptimizerConfig,
     TokenizerConfig,
 )
-from prime_rl.utils.config import BaseConfig
+from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 TOKENIZER_FIELDS = ("vocab_size", "bos_token_id", "eos_token_id", "pad_token_id")
 
@@ -67,7 +79,7 @@ class PretrainMoEConfig(MoERuntimeConfig):
 
 class PretrainModelConfig(ModelConfig):
     arch: dict[str, Any]
-    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/model``, which ``name`` points at."""
+    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/configs/model``, which ``name`` points at."""
 
     init: InitConfig = InitConfig()
     """Random weight initialization. Used unless the run resumes from a checkpoint."""
@@ -278,8 +290,24 @@ class PretrainEvalWorkerConfig(EvalSuiteConfig):
     """Multi-node runs: nodes for the worker, next to the trainer's ``deployment.num_train_nodes``."""
 
 
-class PretrainConfig(TrainRunConfig):
+class PretrainAdamWConfig(AdamWConfig):
+    eps: float = Field(1e-8, gt=0)
+    """Adam epsilon of the base shape (scaled per role under CompleteP)."""
+
+
+class PretrainMuonConfig(MuonConfig):
+    eps: float = Field(1e-8, gt=0)
+    """Adam epsilon of the base shape for the AdamW groups (scaled per role under CompleteP)."""
+
+
+PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
+
+
+class PretrainConfig(BaseConfig):
     model: PretrainModelConfig
+
+    env_vars: EnvVars = {}
+    """Extra environment variables for the trainer processes."""
 
     tokenizer: TokenizerConfig
     """The tokenizer (``tokenizer.name`` is required). It sets the vocabulary and special tokens of the model."""
@@ -296,7 +324,7 @@ class PretrainConfig(TrainRunConfig):
     """The asynchronous eval worker, started by the launcher on GPUs of its own. Needs ``[eval_snapshots]``. If None,
     none is started (a worker can still be started by hand)."""
 
-    optim: OptimizerConfig = MuonConfig()
+    optim: PretrainOptimizerConfig = PretrainMuonConfig()
     """Optimizer. ``optim.lr`` is required."""
 
     schedule: ScheduleConfig = ScheduleConfig()
@@ -305,6 +333,26 @@ class PretrainConfig(TrainRunConfig):
     ckpt: CheckpointConfig | None = CheckpointConfig()
     """Checkpointing. Defaults to a checkpoint at the end of training."""
 
+    resume: ResumeConfig | None = None
+    """Resume the run from a checkpoint. If None, does not resume."""
+
+    log: TrainerLogConfig = TrainerLogConfig()
+
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
+
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory that groups related runs. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    clean: bool = False
+    """Delete the run directory before starting. Required to overwrite a previous run's artifacts when not resuming."""
+
+    matmul_precision: Literal["highest", "high", "medium"] = "high"
+    """Precision for float32 matrix multiplications (``torch.set_float32_matmul_precision``)."""
+
     max_steps: int = Field(ge=1)
     """Training steps."""
 
@@ -312,9 +360,28 @@ class PretrainConfig(TrainRunConfig):
     """CompleteP relative to a base shape. If None, the standard parametrization: the same per-role parameter
     groups with every multiplier at 1 (norms and biases without weight decay)."""
 
-    def default_run_name(self) -> str:
-        """``<model_type>--<short-id>``."""
-        return f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"
+    gc: GCConfig | None = GCConfig()
+    """Deterministic garbage collection every N steps. Set to null for Python's default GC."""
+
+    dist_timeout_seconds: int = 900
+    """Timeout in seconds for torch distributed ops."""
+
+    heartbeat: HeartbeatConfig | None = None
+    """BetterStack heartbeat configuration."""
+
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+    """``single_node`` (``num_train_gpus`` on this node) or ``multi_node`` (``num_train_nodes`` x ``gpus_per_node``, needs ``[slurm]``). The online-eval fields (``num_infer_*``) are not used."""
+
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
+
+    dry_run: bool = False
+    """Only validate and dump resolved configs, then exit."""
+
+    @property
+    def run_dir(self) -> Path:
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
 
     @model_validator(mode="after")
     def resolve_autos(self):
@@ -334,21 +401,68 @@ class PretrainConfig(TrainRunConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_model_dir(self):
-        """The model is trained from ``<run_dir>/model``, written by the launcher from ``model.arch``."""
-        self.model.name = (self.run_dir / "model").as_posix()
+    def auto_setup_run_identity(self):
+        if self.run.name is None:
+            self.run.name = f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
+            self.monitors.wandb.name = self.run.name
         return self
 
     @model_validator(mode="after")
-    def validate_tokenizer(self):
+    def auto_setup_model_dir(self):
+        """The model is trained from ``<run_dir>/configs/model``, written by the launcher from ``model.arch``."""
+        self.model.name = (self.run_dir / "configs" / "model").as_posix()
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
             raise ValueError("tokenizer.name is required")
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self
 
     @model_validator(mode="after")
-    def validate_param_groups(self):
-        if self.optim.type not in ("adamw", "muon") or self.model.offload != "none":
-            raise ValueError("Pretraining's per-role parameter groups need AdamW or Muon and model.offload = 'none'.")
+    def auto_setup_deployment(self):
+        """A multi-node deployment needs SLURM and sets ``model.dp_replicate`` from ``nodes_per_fsdp_group``; the
+        SLURM job name defaults to the run name and the template to the bundled single- or multi-node template."""
+        deployment = self.deployment
+        if deployment.type == "multi_node":
+            if self.slurm is None:
+                raise ValueError("Must use SLURM for multi-node deployment.")
+            if deployment.nodes_per_fsdp_group is not None:
+                if deployment.num_train_nodes % deployment.nodes_per_fsdp_group != 0:
+                    raise ValueError(
+                        f"deployment.num_train_nodes ({deployment.num_train_nodes}) must be divisible by "
+                        f"deployment.nodes_per_fsdp_group ({deployment.nodes_per_fsdp_group})"
+                    )
+                self.model.dp_replicate = deployment.num_train_nodes // deployment.nodes_per_fsdp_group
+        if self.slurm is not None:
+            if self.slurm.job_name is None:
+                self.slurm.job_name = self.run.name
+            if self.slurm.template_path is None:
+                templates_dir = find_package_resource("templates")
+                if templates_dir is not None:
+                    self.slurm.template_path = templates_dir / f"{deployment.type}_sft.sbatch.j2"
+        return self
+
+    @model_validator(mode="after")
+    def deepep_disables_grad_clipping(self):
+        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
+            warnings.warn(
+                "Gradient clipping is not compatible with DeepEP. "
+                "Automatically setting optim.max_norm to None (disabled).",
+                stacklevel=1,
+            )
+            self.optim.max_norm = None
+        return self
+
+    @model_validator(mode="after")
+    def validate_offload(self):
+        if self.model.offload != "none":
+            raise ValueError("Pretraining's per-role parameter groups need model.offload = 'none'.")
         return self
 
     @model_validator(mode="after")
