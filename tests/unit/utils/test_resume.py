@@ -43,8 +43,15 @@ def test_training_resume_checks_saved_configs(tmp_path, config_cls, kwargs, skip
             check_resume_config(current, [dry_run_snapshot, snapshot, newest])
 
 
-def test_launch_snapshot_preserves_full_submission_config(tmp_path):
-    submission = SFTConfig(run={"name": "resume-test"}, slurm={}, dry_run=True)
+@pytest.mark.parametrize(
+    "config_cls,kwargs",
+    [
+        (RLConfig, {"trainer": {}, "orchestrator": {"train": {"source": [{"env": {"id": "single_agent"}}]}}}),
+        (SFTConfig, {}),
+    ],
+)
+def test_launch_snapshot_preserves_full_submission_config(tmp_path, config_cls, kwargs):
+    submission = config_cls(**deepcopy(kwargs), run={"name": "resume-test"}, slurm={}, dry_run=True)
     config_dir, _ = create_attempt_dirs(tmp_path)
     write_launch_artifacts(config_dir, "sft", submission)
     snapshot = config_dir / "launcher.json"
@@ -53,3 +60,12 @@ def test_launch_snapshot_preserves_full_submission_config(tmp_path):
     write_launch_artifacts(config_dir, "sft", child)
     assert snapshot.read_bytes() == saved
     assert orjson.loads(saved) == submission.model_dump(mode="json")
+
+    current = submission.model_copy(update={"dry_run": False})
+    changed = current.model_copy(update={"max_steps": 100})
+    check_resume_config(changed, [snapshot])
+    # Executing the generated SLURM script makes this attempt's settings binding.
+    snapshot.with_suffix(".started").touch()
+    check_resume_config(current, [snapshot])
+    with pytest.raises(ValueError, match=r"in \[max_steps\].*--resume.skip-checks"):
+        check_resume_config(changed, [snapshot])

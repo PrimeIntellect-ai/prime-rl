@@ -29,9 +29,11 @@ def check_resume_config(config: EvalConfig | RLConfig | SFTConfig, saved_paths: 
             )
         # Re-validating snapshots would fill missing fields with current defaults.
         previous = orjson.loads(saved_path.read_bytes())
-        # Dry runs produce no state to resume, so their settings need not match.
+        # Generated SLURM scripts run with dry_run=False and mark their attempt when started.
         if previous.get("dry_run"):
-            continue
+            if not saved_path.with_suffix(".started").is_file():
+                continue
+            previous["dry_run"] = False
         for snapshot in (expected, previous):
             # RL propagates resume into both components; enabling it must not cause a mismatch.
             snapshot.pop("resume", None)
