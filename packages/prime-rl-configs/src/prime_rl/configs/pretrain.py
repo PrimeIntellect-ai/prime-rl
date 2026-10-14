@@ -16,7 +16,6 @@ from prime_rl.configs.shared import (
     SingleNodeDeploymentConfig,
     SlurmConfig,
     TrainerLogConfig,
-    setup_trainer_deployment,
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
@@ -28,7 +27,7 @@ from prime_rl.configs.trainer import (
     OffloadMode,
     TokenizerConfig,
 )
-from prime_rl.utils.config import BaseConfig, default_output_dir
+from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 TOKENIZER_FIELDS = ("vocab_size", "bos_token_id", "eos_token_id", "pad_token_id")
 
@@ -360,7 +359,26 @@ class PretrainConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        setup_trainer_deployment(self)
+        """A multi-node deployment needs SLURM and sets ``model.dp_replicate`` from ``nodes_per_fsdp_group``; the
+        SLURM job name defaults to the run name and the template to the bundled single- or multi-node template."""
+        deployment = self.deployment
+        if deployment.type == "multi_node":
+            if self.slurm is None:
+                raise ValueError("Must use SLURM for multi-node deployment.")
+            if deployment.nodes_per_fsdp_group is not None:
+                if deployment.num_train_nodes % deployment.nodes_per_fsdp_group != 0:
+                    raise ValueError(
+                        f"deployment.num_train_nodes ({deployment.num_train_nodes}) must be divisible by "
+                        f"deployment.nodes_per_fsdp_group ({deployment.nodes_per_fsdp_group})"
+                    )
+                self.model.dp_replicate = deployment.num_train_nodes // deployment.nodes_per_fsdp_group
+        if self.slurm is not None:
+            if self.slurm.job_name is None:
+                self.slurm.job_name = self.run.name
+            if self.slurm.template_path is None:
+                templates_dir = find_package_resource("templates")
+                if templates_dir is not None:
+                    self.slurm.template_path = templates_dir / f"{deployment.type}_sft.sbatch.j2"
         return self
 
     @model_validator(mode="after")

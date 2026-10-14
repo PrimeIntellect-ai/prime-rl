@@ -24,7 +24,6 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     TrainerLogConfig,
     WeightBroadcastConfig,
-    setup_trainer_deployment,
 )
 from prime_rl.configs.trainer import (
     AdamWConfig,
@@ -37,7 +36,7 @@ from prime_rl.configs.trainer import (
     TokenizerConfig,
     validate_scheduler,
 )
-from prime_rl.utils.config import BaseConfig, default_output_dir
+from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
 class BaseDataConfig(BaseConfig):
@@ -367,6 +366,12 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_deployment(self):
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_online_eval(self):
         """Wire online evals and the trainer-to-inference weight transport."""
         if self.eval is None:
@@ -588,5 +593,25 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        setup_trainer_deployment(self)
+        if self.deployment.type == "multi_node":
+            if self.deployment.nodes_per_fsdp_group is not None:
+                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
+                    raise ValueError(
+                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
+                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
+                    )
+                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = self.run.name
+        if self.slurm is not None and self.slurm.template_path is None:
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                if self.deployment.type == "single_node":
+                    self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
+                else:
+                    self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
         return self
