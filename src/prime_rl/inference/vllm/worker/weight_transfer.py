@@ -1,4 +1,5 @@
 from collections import defaultdict
+from math import prod
 from typing import Iterable
 
 import torch
@@ -114,6 +115,7 @@ class CheckpointIndexMap:
             for name, writes in records.items()
         }
         self.num_cols = {name: (shape[-1] if shape else 1) for name, (shape, _) in tensors.items()}
+        self.numel = {name: prod(shape) for name, (shape, _) in tensors.items()}
         self.unpatchable = unpatchable
         # [first, last + 1) flat checkpoint index each tensor's writes cover; unpatchable tensors are
         # read whole so that a change to them is caught in apply_xor
@@ -124,6 +126,29 @@ class CheckpointIndexMap:
             )
             for name, writes in self.records.items()
         } | {name: (0, 2**62) for name in unpatchable}
+
+    def held_checksums(self, names) -> tuple[dict[str, torch.Tensor], set[str]]:
+        """``bits_checksum`` of the live param elements each checkpoint tensor was written to, for the
+        ``names`` this worker writes, and the subset it holds only part of (TP slices)."""
+        sums, partial = {}, set()
+        for name in names:
+            writes = self.records.get(name)
+            if writes is None or name in self.unpatchable:
+                continue
+            held = sum(rows * cols for _, rows, _, cols, *_ in writes)
+            if held > self.numel[name]:
+                continue
+            parts = [
+                as_bits(self.params[index].data)
+                .view(-1)
+                .as_strided((rows, cols), strides, offset)
+                .sum(dtype=torch.int64)
+                for _, rows, _, cols, index, offset, *strides in writes
+            ]
+            sums[name] = torch.stack(parts).sum()
+            if held < self.numel[name]:
+                partial.add(name)
+        return sums, partial
 
     def fp8_layout(self, read_tensor) -> dict[str, str]:
         """The vLLM per-block quantization (``"fp32"`` or ``"ue8m0"`` scales) that reproduces each

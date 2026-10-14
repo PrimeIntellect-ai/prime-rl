@@ -68,6 +68,7 @@ class SparseDeltaEncoder:
 
         segments = defaultdict(list)
         self.hf_tensors: dict[str, tuple[list[int], str]] = {}
+        self.hf_numel: dict[str, int] = {}
         for name, tensor in convert_state_dict_to_hf(model, dict(meta)).items():
             base = tensor if tensor._base is None else tensor._base
             if id(base) not in owner or not tensor.is_contiguous():
@@ -77,6 +78,7 @@ class SparseDeltaEncoder:
             segments[owner[id(base)]].append((tensor.storage_offset(), name))
             dtype = "float8_e4m3fn" if name in fp8 else str(tensor.dtype).removeprefix("torch.")
             self.hf_tensors[name] = (list(tensor.shape), dtype)
+            self.hf_numel[name] = tensor.numel()
         self.segments = {fqn: sorted(segs) for fqn, segs in segments.items()}
 
         # fqn -> (ue8m0 scales, columns) for trainer tensors held in fp8; quantized as one [rows, columns] matrix
@@ -179,16 +181,17 @@ class SparseDeltaEncoder:
     @torch.no_grad()
     def encode(
         self, model: nn.Module, is_master: bool
-    ) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor] | None:
+    ) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor, dict[str, int]] | None:
         """Diff the current shards against the snapshot and advance it. Returns
-        ``(entries, gaps, xor value bytes)`` on the host, or None on the first
-        call and when an fp8 block scale changed."""
+        ``(entries, gaps, xor value bytes, new-weight checksum per HF tensor part)``
+        on the host, or None on the first call and when an fp8 block scale changed."""
         first = not self.initialized
         self.initialized = True
         if self.gather is None:
             self.gather = self._find_gathered(model, is_master)
         self.scales_changed = False
         names, counts, gaps, values = [], [], [], []
+        checksum_names, checksums = [], []
         for key, value in model.state_dict().items():
             fqn = resolve_fqn(model, key)
             if fqn not in self.segments:
@@ -201,6 +204,12 @@ class SparseDeltaEncoder:
             if shard is None or shard[0].numel() == 0:
                 continue
             bits, offset = shard
+            if not first:
+                for start, name in self.segments[fqn]:
+                    begin, end = max(start, offset), min(start + self.hf_numel[name], offset + bits.numel())
+                    if begin < end:
+                        checksum_names.append(name)
+                        checksums.append(bits[begin - offset : end - offset].sum(dtype=torch.int64))
             if first:
                 # The previous broadcast's bits live in pinned host memory, so the trainer's GPU memory is unchanged.
                 self.snapshot[key] = torch.empty(bits.shape, dtype=bits.dtype, pin_memory=True)
@@ -225,10 +234,11 @@ class SparseDeltaEncoder:
         if first or self.scales_changed:
             return None
         counts = torch.cat(counts).tolist() if counts else []  # also waits for the copies to the host
+        checksums = dict(zip(checksum_names, torch.stack(checksums).tolist())) if checksums else {}
         torch.cuda.empty_cache()
         entries = [(name, count) for name, count in zip(names, counts) if count]
         empty = torch.empty(0, dtype=torch.uint8)
-        return entries, torch.cat(gaps) if gaps else empty, torch.cat(values) if values else empty
+        return entries, torch.cat(gaps) if gaps else empty, torch.cat(values) if values else empty, checksums
 
 
 class FileSystemWeightSender(WeightSender):
@@ -348,13 +358,13 @@ class FileSystemWeightSender(WeightSender):
             self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
         if delta is None:
             return False
-        entries, gaps, values = delta
+        entries, gaps, values, checksums = delta
         encode_time = time.perf_counter() - start
         file_name = f"rank_{self.world.rank}.safetensors"
         delta_dir = step_dir / DELTA_DIR
         dist.barrier()
         num_bytes = write_rank_file(
-            delta_dir / file_name, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors
+            delta_dir / file_name, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors, checksums
         )
         stats = (file_name, num_bytes, len(gaps), encode_time, time.perf_counter() - start)
         all_stats: list = [None] * self.world.world_size
