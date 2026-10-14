@@ -60,7 +60,10 @@ class SnapshotWriter:
 
     def __init__(self, run_dir: Path):
         self.run_dir = run_dir
-        self.executor = ThreadPoolExecutor(max_workers=1)
+        # A new thread starts on CUDA device 0; DCP's GPU-to-CPU copies must run on this rank's device.
+        self.executor = ThreadPoolExecutor(
+            max_workers=1, initializer=torch.cuda.set_device, initargs=(torch.cuda.current_device(),)
+        )
         self.pending: Future | None = None
         # Created here, on every rank at the same point; the writer thread only uses it.
         self.group = get_dcp_group()
