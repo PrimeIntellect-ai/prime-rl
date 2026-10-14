@@ -588,7 +588,6 @@ class RolloutWindow:
     """Completed group accounting independent of whether a training batch fills."""
 
     metrics: MetricWindow = field(default_factory=MetricWindow)
-    units: int = 0
     tokens: int = 0
     traces: int = 0
     groups: int = 0
@@ -609,7 +608,6 @@ class RolloutWindow:
     ) -> None:
         cancelled = cancellation.count if cancellation is not None else 0
         attempts = len(episodes) + len(failures) + cancelled
-        self.units += max(attempts, episodes.num_traces)
         self.tokens += episodes.num_total_tokens
         self.traces += episodes.num_traces
         self.groups += 1
