@@ -22,11 +22,14 @@ from prime_rl.trainer.model import (
     get_full_offload_dtype_policy,
     get_load_balance_stats,
     is_tt_moe_model,
+    iter_moe_blocks,
     reshard_module,
     setup_model,
     setup_tokenizer,
+    update_selection_biases,
 )
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.models.layers.moe import sequence_balance
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -199,9 +202,15 @@ def train(config: PretrainConfig):
     cp_size = parallel_dims.cp
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     is_moe_model = is_tt_moe_model(model)
+    moes_with_seq_balance = [moe for moe in iter_moe_blocks(model) if moe.seq_aux_loss_coeff is not None]
+    bias_freeze_step = config.max_steps - round(config.moe_bias_freeze * config.max_steps)
+    # Per-row balance of every MoE layer and micro-batch of the current step, for the metrics.
+    step_seq_balances: list[torch.Tensor] = []
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens and, in training, the MoE
+        sequence-wise balance loss summed over tokens (each token carries its row's loss, so after the division
+        by the token count it is the mean over rows)."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -218,7 +227,15 @@ def train(config: PretrainConfig):
             out = forward(
                 model, input_ids, position_ids, seq_lens=seq_lens, labels=labels, seq_lens_are_pre_shard=cp_enabled
             )
-        return out["loss"], loss_mask.sum(dtype=torch.int64)
+        aux_loss_sum = torch.zeros((), device="cuda")
+        if torch.is_grad_enabled():
+            # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
+            num_rows = config.data.micro_batch_size
+            for moe in moes_with_seq_balance:
+                balance = sequence_balance(*moe.routing, num_rows)
+                aux_loss_sum += moe.seq_aux_loss_coeff * balance.sum() * (input_ids.shape[1] // num_rows)
+                step_seq_balances.append(balance.detach().mean())
+        return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     @torch.no_grad()
     def run_evals(step: int) -> None:
@@ -228,7 +245,7 @@ def train(config: PretrainConfig):
             val_dataset = setup_val_dataset(source, config.data.seq_len, val_windows[name], config.model.cp)
             totals = torch.zeros(3, dtype=torch.float64, device="cuda")  # loss sum, tokens, bytes
             for micro_batch in setup_dataloader(val_dataset, config.data.micro_batch_size, num_workers=1):
-                loss_sum, token_count = compute_loss(micro_batch)
+                loss_sum, token_count, _ = compute_loss(micro_batch)
                 # The bytes are counted on the unsharded targets, so every CP rank counts them once.
                 num_bytes = byte_lengths[micro_batch["target_ids"].to("cuda")].sum() / cp_size
                 totals += torch.stack([loss_sum.double(), token_count.double(), num_bytes.double()])
@@ -262,7 +279,17 @@ def train(config: PretrainConfig):
 
         result = run_micro_batches(model, dataiter, compute_loss, grad_accum_steps, parallel_dims, gradient_manager)
         forward_backward_time = time.perf_counter() - step_start_time
-        expert_load_stats = get_expert_load_stats(result.tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        expert_load_stats = {}
+        if is_moe_model:
+            expert_load_stats = get_expert_load_stats(result.tokens_per_expert, dp_cp_group)
+            if step_seq_balances:
+                expert_load_stats["expert_load/seq_balance"] = torch.stack(step_seq_balances).mean().item()
+                step_seq_balances.clear()
+            if progress.step <= bias_freeze_step:
+                update_selection_biases(model, result.tokens_per_expert)
+            biases = [moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.load_balance_coeff is not None]
+            if biases:
+                expert_load_stats["expert_load/selection_bias_absmax"] = torch.stack(biases).abs().max().item()
 
         grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
         optimizer.step()

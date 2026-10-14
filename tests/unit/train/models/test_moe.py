@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
-from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
+from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model, update_selection_biases
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
@@ -13,6 +13,7 @@ from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
+    sequence_balance,
 )
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -251,3 +252,28 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_update_selection_biases_moves_towards_underloaded_experts():
+    moe = MoE.from_args(MoEArgs(num_experts=4, load_balance_coeff=0.1), dim=4, hidden_dim=8, shared_expert=None)
+    layer = torch.nn.Module()
+    layer.mlp = moe
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([layer])
+
+    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]))
+    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]))
+
+    # sign(mean - load) = [-1, 1, 1, 1], centred to [-1.5, 0.5, 0.5, 0.5] per step
+    torch.testing.assert_close(moe.router.selection_bias, torch.tensor([-0.3, 0.1, 0.1, 0.1]))
+
+
+def test_sequence_balance():
+    scores = torch.tensor([[0.9, 0.1], [0.9, 0.1], [0.9, 0.1], [0.1, 0.9]])
+    selected = torch.tensor([[0], [0], [0], [1]])
+
+    # row 0 sends both tokens to expert 0: f = [2, 0], P = [0.9, 0.1]; row 1 is balanced: f = [1, 1], P = [0.5, 0.5]
+    torch.testing.assert_close(sequence_balance(scores, selected, num_rows=2), torch.tensor([1.8, 1.0]))
+    # the same tokens as one sequence (a packed sample of both rows) hide row 0's imbalance: f = [1.5, 0.5], P = [0.7, 0.3]
+    torch.testing.assert_close(sequence_balance(scores, selected, num_rows=1), torch.tensor([1.2]))

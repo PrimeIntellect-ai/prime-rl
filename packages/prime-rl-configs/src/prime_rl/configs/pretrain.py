@@ -212,6 +212,10 @@ class PretrainConfig(TrainRunConfig):
     max_steps: int = Field(ge=1)
     """Training steps."""
 
+    moe_bias_freeze: float = Field(0.1, ge=0, lt=1)
+    """Fraction of ``max_steps`` at the end of training during which the MoE selection biases stop updating, as
+    DeepSeek-V3, GLM-4.5 and Moonlight do in their final stage."""
+
     def default_run_name(self) -> str:
         """``<model_type>--<short-id>``."""
         return f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"

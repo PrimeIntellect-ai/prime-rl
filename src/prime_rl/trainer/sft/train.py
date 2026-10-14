@@ -294,12 +294,12 @@ def train(config: SFTConfig):
         del out
         return loss_sum, token_count
 
-    def compute_train_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    def compute_train_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, float]:
         if config.log.log_data:
             print_sample(
                 micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
             )
-        return compute_loss(micro_batch)
+        return *compute_loss(micro_batch), 0.0
 
     maybe_record_function = nullcontext
 

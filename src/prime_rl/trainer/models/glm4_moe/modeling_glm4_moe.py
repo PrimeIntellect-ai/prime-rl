@@ -61,7 +61,8 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             route_scale=config.routed_scaling_factor,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            load_balance_coeff=1e-3,
+            load_balance_coeff=config.load_balance_coeff,
+            seq_aux_loss_coeff=config.seq_aux_loss_coeff,
         )
         if layer_idx >= config.first_k_dense_replace:
             shared_expert = None
@@ -339,8 +340,9 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
             )
             rotary_emb.inv_freq.copy_(inv_freq)
 
-        # TODO: Init TT MoE buffers
-        # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
+        for module in self.modules():
+            if isinstance(module, MoE) and module.router.selection_bias is not None:
+                module.router.selection_bias.zero_()
 
 
 __all__ = ["Glm4MoeConfig", "Glm4MoePreTrainedModel", "Glm4MoeModel", "Glm4MoeForCausalLM"]
