@@ -61,7 +61,6 @@ def main_loop(config: EvalWorkerConfig) -> None:
     run = run_config(config)
     setup_torch_distributed(timeout=timedelta(seconds=run.dist_timeout_seconds))
     torch.set_float32_matmul_precision(run.matmul_precision)
-    torch.backends.cuda.matmul.allow_tf32 = False
 
     asyncio.run(
         monitors.setup(
