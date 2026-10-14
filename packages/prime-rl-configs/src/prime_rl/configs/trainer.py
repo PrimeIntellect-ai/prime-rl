@@ -262,7 +262,7 @@ class ModelConfig(BaseModelConfig):
     """Data parallel dim where model weights are replicated."""
 
     ep: int | Literal["auto"] = "auto"
-    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves for MoE models to the largest degree up to 8 that divides both ``fsdp_island_size = world_size // dp_replicate`` and the expert count and is a multiple of ``cp``, and to 1 for non-MoE models. Set an explicit integer to override."""
 
     moe: MoERuntimeConfig = MoERuntimeConfig()
     """Routed-expert compute and token-dispatch runtime."""
