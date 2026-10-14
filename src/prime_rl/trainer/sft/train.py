@@ -1,7 +1,9 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 import math
+import os
 import time
+from pathlib import Path
 import asyncio
 from contextlib import nullcontext
 from datetime import timedelta
@@ -59,6 +61,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.trainer.sft.weight_dynamics import WeightUpdateTracker, check_start_weights
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -146,6 +149,9 @@ def train(config: SFTConfig):
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
+
+    if os.environ.get("PRIME_RL_CHECK_START_WEIGHTS") == "1" and not loading_from_ckpt_later:
+        check_start_weights(model, Path(config.model.name), model.config.num_hidden_layers)
 
     if config.model.lora is not None:
         get_lora_state().reset_adapter_parameters()
@@ -399,6 +405,11 @@ def train(config: SFTConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
+    weight_update_tracker = (
+        WeightUpdateTracker(model, model.config.num_hidden_layers)
+        if os.environ.get("PRIME_RL_WEIGHT_DYNAMICS") == "1" and world.is_master
+        else None
+    )
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -521,6 +532,7 @@ def train(config: SFTConfig):
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
+        weight_dynamics_metrics = weight_update_tracker.step() if weight_update_tracker is not None else {}
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
@@ -621,6 +633,7 @@ def train(config: SFTConfig):
         }
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
+        optim_metrics.update(weight_dynamics_metrics)
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         loss_log_metrics = {
