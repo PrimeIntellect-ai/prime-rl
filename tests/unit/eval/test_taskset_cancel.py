@@ -1,6 +1,6 @@
 """A streaming taskset cancels a task it handed out (``Taskset.cancel``): the runner
-stops the task's rollouts wherever they are (in flight: the env request is cancelled;
-not yet dispatched: never run) and reports each through ``on_cancelled``. A rollout
+stops the task's rollout wherever it is (in flight: the env request is cancelled; not
+yet dispatched: never run) and reports it through ``on_cancelled``. A rollout
 that landed first is observed as usual. Runs the real ``Dispatcher``/``EvalSource``/
 ``EvalSink`` against fake envs."""
 
@@ -8,6 +8,7 @@ import asyncio
 import threading
 from types import SimpleNamespace
 
+import pytest
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -15,7 +16,7 @@ from verifiers.v1.types import AssistantMessage, UserMessage
 from prime_rl.eval import runner as runner_module
 from prime_rl.eval.runner import EvalRunner
 from prime_rl.orchestrator.dispatcher import Dispatcher
-from prime_rl.orchestrator.envs import EvalEnvs
+from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.task_feed import TaskFeed
@@ -216,18 +217,55 @@ def test_a_cancel_asked_before_the_episode_landed_is_moot(tmp_path, monkeypatch)
     assert runner.dispatcher.requested_cancels == set()
 
 
-def test_every_unlanded_rollout_of_a_group_is_reported(tmp_path, monkeypatch) -> None:
+class RerunEnv(HangingEnv):
+    """A key's first run waits until its second has started, then lands; the second
+    runs until cancelled."""
+
+    def __init__(self, taskset: vf.Taskset) -> None:
+        super().__init__(taskset)
+        self.rerun = asyncio.Event()
+
+    async def run(self, *, client, model_name, cache_salt, task_data, on_delta) -> vf.WireEpisode:
+        task_id = task_data["id"]
+        self.started.append(task_id)
+        if self.started.count(task_id) == 1:
+            await self.rerun.wait()
+            return _episode(KeyedTask(vf.TaskData.model_validate(task_data)))
+        self.rerun.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.aborted.append(task_id)
+            raise
+
+
+def test_a_cancel_reaches_a_rerun_of_a_task_reported_since_the_last_poll(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(runner_module, "POLL_INTERVAL_S", 0.05)
-    taskset = Stream(["slow-0"])
-    env = HangingEnv(taskset.skip(0), group_size=3)
-    runner = _runner(tmp_path, env, max_inflight=2)
 
-    async def cancel_once_running() -> None:
-        while len(env.started) < 2:
-            await asyncio.sleep(0.01)
-        taskset.cancel("slow-0")
+    class CancelsTheRerun(Stream):
+        def observe(self, task, episode) -> None:
+            # the first run is enough: stop the rerun already in flight
+            self.cancel(task.key)
+            super().observe(task, episode)
 
-    asyncio.run(_run_epoch(runner, cancel_once_running))
+    taskset = CancelsTheRerun(["t", "t"])
+    env = RerunEnv(taskset.skip(0))
+    runner = _runner(tmp_path, env)
 
-    assert taskset.calls == [("on_cancelled", "slow-0")] * 3
-    assert len(env.aborted) == 2  # two ran under two permits; the third never started
+    asyncio.run(_run_epoch(runner))
+
+    assert taskset.calls == [("observe", "t"), ("on_cancelled", "t")]
+    assert env.aborted == ["t"]
+    assert runner.dispatcher.requested_cancels == set()
+
+
+def test_a_streaming_source_runs_each_task_once() -> None:
+    env = EvalEnv.__new__(EvalEnv)
+    env.config = SimpleNamespace(resolved_name="pipeline", group_size=2)
+    env.num_tasks = None
+    env.tasks = iter([])
+    env.feed = None
+
+    with pytest.raises(ValueError, match="group_size must be 1"):
+        env.open_feed()
+    assert env.feed is None

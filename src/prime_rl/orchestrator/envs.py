@@ -198,11 +198,22 @@ class EvalEnv(Env):
 
     async def start(self) -> None:
         await super().start()
-        if self.num_tasks is None:
-            self.feed = TaskFeed(self.tasks, name=self.name)
-        else:
-            # A fixed eval set, pulled off the tasks once and reused every epoch.
+        self.open_feed()
+
+    def open_feed(self) -> None:
+        """Pull a bounded taskset's tasks once, reused every epoch, or start streaming an
+        infinite one. A streamed task runs once (``group_size`` 1): its taskset hears one
+        ``observe``, ``on_failed`` or ``on_cancelled`` per task (``vf.Taskset.observe``),
+        and to run a task several times it yields it several times."""
+        if self.num_tasks is not None:
             self.examples = list(self.tasks)
+            return
+        if self.config.group_size != 1:
+            raise ValueError(
+                f"Eval env {self.name} streams an infinite taskset, which runs each task once - "
+                f"group_size must be 1, not {self.config.group_size}"
+            )
+        self.feed = TaskFeed(self.tasks, name=self.name)
 
 
 EnvT = TypeVar("EnvT", bound=Env)

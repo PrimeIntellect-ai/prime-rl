@@ -11,15 +11,17 @@ Env servers belong to the launcher (``eval``, ``sft``), like the orchestrator's 
 ``rl``: a source without an explicit ``serve.address`` is found through the address file
 its server publishes; one with an address is reached directly.
 
-Every rollout the dispatcher runs reports back to its env's taskset exactly once, from
+Every task the dispatcher runs reports back to its env's taskset exactly once, from
 ``run_epoch`` on the event loop as the dispatcher's result arrives: ``observe(task,
 episode)`` with the final episode (after the env's own retries and ``finalize``), or
 ``on_failed(task, error)`` when the request produced no episode (the env server died,
-the request raised). A streaming taskset may also ``cancel(key)`` a task it handed out:
-the runner polls ``cancelled()`` while the epoch runs, the dispatcher stops the task's
-rollouts (aborting their env-server runs), and each rollout that had not landed is
-reported through ``on_cancelled(task)`` instead; one that landed first is observed as
-usual. An exception from any hook stops the run. Rollouts that never finish get none:
+the request raised). A streaming taskset runs one rollout per task (``group_size`` 1,
+``EvalEnv.open_feed``), so its feedback is per task, as the ``Taskset`` hooks promise;
+a bounded taskset hears once per rollout. A streaming taskset may also ``cancel(key)``
+a task it handed out: the runner polls ``cancelled()`` while the epoch runs, the
+dispatcher stops the task's rollout (aborting its env-server run), and reports it
+through ``on_cancelled(task)`` instead; one that landed first is observed as usual. An
+exception from any hook stops the run. Rollouts that never finish get none:
 those cancelled on shutdown or superseded by a newer checkpoint (an online eval). A
 relaunched streaming taskset re-yields its unfinished work. Episodes restored on
 ``--resume`` were reported by the attempt that ran them."""
@@ -291,24 +293,27 @@ class EvalRunner:
             if env.feed is None:
                 continue
             for key in env.taskset.cancelled():
-                if (env.name, key) in self.reported:
-                    continue
-                get_logger().info(f"{type(env.taskset).__name__} cancelled task {key} in {env.name}")
                 self.cancel_task(env.name, key)
         self.reported.clear()
 
     def cancel_task(self, env_name: str, key: str) -> None:
         """Stop eval task ``key`` of ``env_name``: its open group is dropped (in-flight
-        rollouts aborted) off the epoch loop, or, with no group yet, the task is dropped
-        unrun when it comes off the source. Either way each unlanded rollout reaches the
-        taskset's ``on_cancelled``."""
-        if not self.dispatcher.has_eval_group(env_name, key):
-            # not off the source yet (or every rollout landed, then reported soon)
-            self.dispatcher.requested_cancels.add((env_name, key))
+        rollout aborted) off the epoch loop, or, with no group yet, the task is dropped
+        unrun when it comes off the source. Either way the unlanded rollout reaches the
+        taskset's ``on_cancelled``. An open group wins over a report since the last
+        poll: that report was of an earlier run of the same key."""
+        taskset = type(self.eval_envs.get(env_name).taskset).__name__
+        if self.dispatcher.has_eval_group(env_name, key):
+            get_logger().info(f"{taskset} cancelled task {key} in {env_name}")
+            self.cancel_tasks.add(
+                asyncio.create_task(self.dispatcher.cancel_eval_task(env_name, key), name=f"cancel-{key}")
+            )
             return
-        self.cancel_tasks.add(
-            asyncio.create_task(self.dispatcher.cancel_eval_task(env_name, key), name=f"cancel-{key}")
-        )
+        if (env_name, key) in self.reported:
+            return  # it landed (or failed) before the cancel was polled: nothing left to stop
+        get_logger().info(f"{taskset} cancelled task {key} in {env_name}")
+        # not off the source yet: dropped unrun when it comes off
+        self.dispatcher.requested_cancels.add((env_name, key))
 
     def raise_if_dispatcher_stopped(self) -> None:
         """A dead dispatcher delivers no more results: fail the epoch rather than wait."""
