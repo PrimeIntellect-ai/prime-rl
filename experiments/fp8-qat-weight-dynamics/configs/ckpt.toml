@@ -1,2 +1,2 @@
 [ckpt]
-keep_last = 1
+interval = 250
