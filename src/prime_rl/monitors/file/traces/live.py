@@ -5,10 +5,11 @@ trace's header when it is minted, then each committed turn and each phase change
 file monitor appends those deltas to ``traces/live/<trace_id>.jsonl`` — the first line
 also carries the ``dispatch`` identity (kind, env, group, task, step) — and deletes the
 file when the episode lands in the finished stream, so the directory only ever holds
-in-flight work. A trace that ends without landing (its request failed, it was
-cancelled or discarded, or the process died under it) keeps its file: it moves to
-``traces/partial/`` with a last line saying how it ended (``{"end": ...}``), so a
-durable call run again finds it (``lookup``). Reading one live trace is folding one
+in-flight work. A durable trace (one carrying a durable call's ref) that ends without
+landing (its request failed, it was cancelled or discarded, or the process died under
+it) keeps its file: it moves to ``traces/partial/`` with a last line saying how it
+ended (``{"end": ...}``), so a durable call run again finds it (``lookup``). Any other
+trace that ends loses its file. Reading one live trace is folding one
 small file; ``ls`` lists what is in flight; finished traces are untouched (the stream
 and its index).
 

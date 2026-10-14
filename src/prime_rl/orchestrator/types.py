@@ -104,6 +104,9 @@ class LiveTrace:
     turns: int = 0
     seat: str | None = None
     """The env agent running the trace (``Trace.agent.name``), once streamed."""
+    durable: bool = False
+    """Whether the trace carries a durable ref (``vf.durable.refs_of``): a durable call
+    run again may look it up, so its endings flush to the monitors at once."""
 
 
 @dataclass

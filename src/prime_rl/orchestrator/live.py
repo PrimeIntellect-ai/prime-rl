@@ -10,7 +10,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from verifiers.v1.durable import refs_of
+
 from prime_rl.monitors.file.traces.live import STAGES, stage
+from prime_rl.monitors.file.traces.refs import trace_labels
 from prime_rl.orchestrator.types import InflightEpisode, LiveTrace
 
 
@@ -41,21 +44,25 @@ def dispatched_event(meta: InflightEpisode) -> dict[str, Any]:
     return {"dispatched": meta.dispatch_id}
 
 
-def apply(meta: InflightEpisode, delta: dict[str, Any]) -> None:
-    """Fold one delta into the episode's phase/turn bookkeeping."""
+def apply(meta: InflightEpisode, delta: dict[str, Any]) -> bool:
+    """Fold one delta into the episode's phase/turn bookkeeping. Returns whether its
+    trace is durable (``LiveTrace.durable``)."""
     trace_id = delta["trace"]
     if delta.get("discard"):
-        meta.live.pop(trace_id, None)
-        return
+        discarded = meta.live.pop(trace_id, None)
+        return discarded is not None and discarded.durable
     trace = meta.live.setdefault(trace_id, LiveTrace())
     trace.turns += len(delta.get("calls") or [])
     changed = delta.get("set") or {}
+    if isinstance(changed.get("info"), dict):
+        trace.durable = bool(refs_of(trace_labels({"info": changed["info"]})))
     if isinstance(changed.get("agent"), dict):
         trace.seat = changed["agent"].get("name")
     if delta.get("errors"):
         trace.stage = "error"
     elif "timing" in changed:
         trace.stage = stage({"timing": changed["timing"]})
+    return trace.durable
 
 
 def stage_counts(inflight: list[InflightEpisode]) -> str:

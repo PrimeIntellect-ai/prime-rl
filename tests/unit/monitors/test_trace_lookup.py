@@ -219,3 +219,47 @@ def test_resume_keeps_every_attempts_traces_findable(tmp_path) -> None:
     resumed = resume.archives(tmp_path)[0]
     pointer = read_ref(resumed / "traces" / "refs", ref("agent/1"))
     assert pointer["trace"] == cut.id
+
+
+def _plain_trace(start: float) -> vf.Trace:
+    """A trace no durable call made: an RL rollout, an ordinary eval rollout."""
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi")),
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        info={"labels": JOB},
+    )
+    trace.timing.boot.start = start
+    return trace
+
+
+def test_only_a_durable_trace_is_kept_when_it_ends_without_landing(tmp_path) -> None:
+    monitor = _monitor(tmp_path)
+    stream = Stream()
+    durable, cut, stale, discarded = (
+        _trace("agent/0", start=1.0),
+        _plain_trace(1.0),
+        _plain_trace(1.0),
+        _plain_trace(1.0),
+    )
+    stream.traces.extend([durable, cut, stale, discarded])
+    asyncio.run(monitor.log_live(stream.flush()))
+    # RL's routine endings: a rollout cut on overload, one dropped stale, one discarded
+    discard = {"delta": {"trace": discarded.id, "discard": True}, "dispatch": stream.dispatch}
+    ends = [{"done": trace.id, "end": "cancelled"} for trace in (durable, cut, stale)]
+    asyncio.run(monitor.log_live([*ends, discard]))
+
+    assert list_live(tmp_path) == []
+    assert [path.stem for path in get_partial_dir(tmp_path).glob("*.jsonl")] == [durable.id]
+    assert not any(get_live_dir(tmp_path).glob("*.jsonl"))
+
+
+def test_a_crashed_plain_trace_is_dropped_on_restart(tmp_path) -> None:
+    monitor = _monitor(tmp_path)
+    stream = Stream()
+    stream.traces.append(_plain_trace(1.0))
+    asyncio.run(monitor.log_live(stream.flush()))
+    relaunched = _monitor(tmp_path)
+    asyncio.run(relaunched.log_live([]))
+
+    assert not any(get_live_dir(tmp_path).glob("*.jsonl"))
+    assert not get_partial_dir(tmp_path).is_dir() or not any(get_partial_dir(tmp_path).iterdir())

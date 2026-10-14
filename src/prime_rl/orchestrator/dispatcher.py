@@ -394,26 +394,29 @@ class Dispatcher:
         """An episode left the in-flight set: its live traces are over, and so is its
         pending placeholder if no trace ever streamed. ``ending`` says how: ``landed``
         (its episode came back, carrying the traces in ``landed``), ``failed`` (the
-        request raised) or ``cancelled``. A trace that did not land is kept as a partial
-        (see ``FileMonitor.log_live``): its episode's landed traces end ``landed``, the
-        rest ``failed``."""
+        request raised) or ``cancelled``. A durable trace that did not land is kept as a
+        partial (see ``FileMonitor.log_live``): its episode's landed traces end ``landed``,
+        the rest ``failed``."""
         if not meta.live:
             self.live_events.append(live.dispatched_event(meta))
-        for trace_id in meta.live:
+        for trace_id, trace in meta.live.items():
             end = ending if ending != "landed" else "landed" if trace_id in landed else "failed"
             self.live_events.append({"done": trace_id, "end": end})
-            if end != "landed":
+            if end != "landed" and trace.durable:
                 self.live_urgent.set()  # a retry may look for it
 
-    def queue_live(self, event: dict[str, Any]) -> None:
+    def queue_live(self, event: dict[str, Any], *, durable: bool = False) -> None:
         """Buffer a delta for the next flush. The buffer is bounded: past the cap the
         oldest deltas go (the live view of those traces misses a turn), never the
-        bookkeeping events that create or remove files. A delta a durable call's lookup
-        may be waiting on (a checkpoint, a trace finishing or its verdict, a discard) flushes now."""
+        bookkeeping events that create or remove files. A delta of a ``durable`` trace
+        that a durable call's lookup may be waiting on (a checkpoint, the trace finishing
+        or its verdict, a discard) flushes now; every other delta waits for the tick."""
         self.live_events.append(event)
         delta = event.get("delta") or {}
         changed = delta.get("set") or {}
-        if delta.get("checkpoints") or delta.get("discard") or "is_completed" in changed or "ok" in changed:
+        if durable and (
+            delta.get("checkpoints") or delta.get("discard") or "is_completed" in changed or "ok" in changed
+        ):
             self.live_urgent.set()
         if len(self.live_events) > LIVE_EVENT_CAP:
             kept = [e for e in self.live_events if "delta" not in e]
@@ -650,8 +653,8 @@ class Dispatcher:
         def on_delta(delta: dict) -> None:
             session_ids.add(delta["trace"])
             first = not meta.live
-            live.apply(meta, delta)
-            self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)})
+            durable = live.apply(meta, delta)
+            self.queue_live({"delta": delta, "dispatch": live.dispatch_info(meta)}, durable=durable)
             # after the delta, and only once a trace streams: a reader never sees the
             # episode in neither place (a discard as the first delta streams nothing)
             if first and meta.live:

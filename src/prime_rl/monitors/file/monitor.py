@@ -201,13 +201,18 @@ class FileMonitor(Monitor):
         await asyncio.to_thread(write)
 
     def _keep_partial(self, path: Path, lines: list[bytes], end: str) -> None:
-        """Move a live trace's file to ``partial/``, its unwritten deltas and its ending
-        appended first, and its ref pointers with it."""
+        """Move a durable live trace's file to ``partial/``, its unwritten deltas and its
+        ending appended first, and its ref pointers with it. A trace with no durable ref
+        (an RL rollout cut or dropped stale, most eval failures) is only ever looked up
+        live, so its file goes, as a landed one's does."""
         trace_id = path.stem
         held = self._live_refs.pop(trace_id, None)
         self._ended[trace_id] = None
         while len(self._ended) > ENDED_CAP:
             self._ended.popitem(last=False)
+        if held is None or not held.refs:
+            path.unlink(missing_ok=True)
+            return
         if not lines and not path.exists():
             return  # nothing of it ever streamed
         with path.open("ab") as f:
@@ -215,12 +220,11 @@ class FileMonitor(Monitor):
         partial_dir = get_partial_dir(self.output_dir)
         partial_dir.mkdir(parents=True, exist_ok=True)
         os.replace(path, partial_dir / path.name)
-        if held is not None:
-            self._point(trace_id, held, "partial", end=end)
+        self._point(trace_id, held, "partial", end=end)
 
     def _recover_live(self, live_dir: Path, pending_dir: Path) -> None:
-        """Keep the live traces a dead process left as ``crashed`` partials; its pending
-        placeholders are gone with it."""
+        """Keep the durable live traces a dead process left as ``crashed`` partials, and
+        drop the rest; its pending placeholders are gone with it."""
         shutil.rmtree(pending_dir, ignore_errors=True)
         for path in sorted(live_dir.glob("*.jsonl")) if live_dir.is_dir() else []:
             folded = read_live(path)
