@@ -346,6 +346,9 @@ def train(config: PretrainConfig):
         disk_metrics = {}
         if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0 and not is_last_step:
             save_ckpt_start_time = time.perf_counter()
+            if snapshots is not None:
+                # Both write through the same DCP process group; their collectives must not interleave.
+                snapshots.wait()
             ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
