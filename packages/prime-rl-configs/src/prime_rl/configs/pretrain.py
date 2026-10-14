@@ -6,7 +6,7 @@ from pydantic import Field, model_validator
 
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.sft import BaseDataConfig, FakeDataConfig
-from prime_rl.configs.shared import EnvVars, HeartbeatConfig, ResumeConfig, RunConfig, TrainerLogConfig
+from prime_rl.configs.shared import EnvVars, HeartbeatConfig, LogConfig, ResumeConfig, RunConfig, TrainerLogConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
@@ -118,6 +118,42 @@ class ValConfig(BaseConfig):
     """Held-out sets. With ``data.holdout_docs > 0`` the training holdout is added as ``holdout``."""
 
 
+class EvalSnapshotsConfig(BaseConfig):
+    """Model-only snapshots for the asynchronous eval worker (`prime_rl.trainer.pretrain.eval_worker`), written in
+    the background to ``<run_dir>/snapshots/step_N``. The worker deletes each one after scoring it."""
+
+    interval: int = Field(ge=1)
+    """Write a snapshot every N steps, and at the final step."""
+
+
+class EvalWorkerConfig(BaseConfig):
+    """The asynchronous eval worker: scores the newest snapshot of a training run on the eval suite, logs the
+    results into the run's W&B run and ``metrics.jsonl`` at the snapshot's step, and deletes scored snapshots."""
+
+    run_dir: Path
+    """The training run's directory (with ``configs/latest/resolved/pretrain.json`` and ``snapshots/``)."""
+
+    data_dir: Path
+    """Eval sets, one directory per set with ``test.parquet`` and ``meta.json``."""
+
+    sets: list[str]
+    """Names of the sets to score."""
+
+    seq_len: int = Field(2048, ge=1)
+    """Window length for ``ppl`` sets and the context limit for ``ctxcont`` sets."""
+
+    token_budget: int = Field(32768, ge=1)
+    """Tokens per packed row (one forward)."""
+
+    poll_seconds: int = Field(30, ge=1)
+    """Seconds to wait before looking for a new snapshot again."""
+
+    save_arrays: bool = True
+    """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
+
+    log: LogConfig = LogConfig()
+
+
 class PretrainDeploymentConfig(BaseConfig):
     num_train_gpus: int = Field(1, ge=1)
     """GPUs for the trainer, on this node."""
@@ -135,6 +171,9 @@ class PretrainConfig(BaseConfig):
 
     val: ValConfig | None = None
     """Perplexity evals. If None, none run."""
+
+    eval_snapshots: EvalSnapshotsConfig | None = None
+    """Model-only snapshots for the asynchronous eval worker. If None, none are written."""
 
     optim: OptimizerConfig = AdamWConfig()
 

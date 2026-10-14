@@ -33,6 +33,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.pretrain.completep import completep_param_groups
+from prime_rl.trainer.pretrain.snapshots import SnapshotWriter
 from prime_rl.trainer.pretrain.metrics import (
     DeadExperts,
     SpikeDetector,
@@ -274,6 +275,7 @@ def train(config: PretrainConfig):
     dead_experts = DeadExperts()
     loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
     last_bias_moves = None
+    snapshots = SnapshotWriter(config.run_dir) if config.eval_snapshots is not None else None
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     while True:
         if gc_handler is not None:
@@ -391,6 +393,9 @@ def train(config: PretrainConfig):
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
 
+        if snapshots is not None and (is_last_step or progress.step % config.eval_snapshots.interval == 0):
+            snapshots.save(model, progress.step)
+
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
             run_evals(progress.step)
@@ -453,6 +458,8 @@ def train(config: PretrainConfig):
             break
         progress.step += 1
 
+    if snapshots is not None:
+        snapshots.wait()
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)

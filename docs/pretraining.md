@@ -93,3 +93,16 @@ subset = "wikitext-103-raw-v1"
 split = "test"
 ```
 
+**Asynchronous evals on dedicated GPUs.** With `[eval_snapshots]`, the trainer writes a model-only snapshot every `interval` steps and at the last step to `<run_dir>/snapshots/step_N`, in the background (it never waits for the eval side). The eval worker runs on its own GPUs (e.g. one node next to the training nodes), takes the newest finished snapshot, scores it on the eval suite (`ppl`, `ctxcont` and `pairs` sets in `<data_dir>/<set>/{test.parquet,meta.json}`), logs `eval/{set}/{metric}` at the snapshot's step, deletes that snapshot and every older one, and repeats until it has scored the last step. The eval frequency therefore follows from the cost of a round and the number of eval GPUs.
+
+```toml
+[eval_snapshots]
+interval = 50
+```
+
+```bash
+torchrun --nproc-per-node 8 -m prime_rl.trainer.pretrain.eval_worker \
+  --run-dir <output_dir>/<run> --data-dir ~/evals-data --sets fwedu-holdout lambada math
+```
+
+To log into the same W&B run as the trainer, start both in W&B shared mode with the same run id: `WANDB_SHARED_MODE=1 WANDB_RUN_ID=<id> WANDB_SHARED_PRIMARY=trainer WANDB_SHARED_FINISHER=eval` for both, plus `WANDB_SHARED_LABEL=trainer` for the trainer and `WANDB_SHARED_LABEL=eval` for the worker.
