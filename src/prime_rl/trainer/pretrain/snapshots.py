@@ -1,8 +1,11 @@
 import shutil
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
-import torch.distributed.checkpoint as dcp
+import torch
 from torch import nn
+from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
+from torch.utils._pytree import tree_map_only
 
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.utils import get_dcp_group
@@ -28,34 +31,30 @@ def delete_snapshots_up_to(run_dir: Path, step: int) -> None:
 
 
 class SnapshotWriter:
-    """Model-only DCP snapshots for the eval worker (`prime_rl.trainer.pretrain.eval_worker`), written in the
-    background: the trainer only waits for the copy of its shards to CPU memory. A snapshot is complete once its
-    `.finished` marker exists; the eval worker deletes it after scoring it."""
+    """Model-only DCP snapshots for the eval worker (`prime_rl.trainer.pretrain.eval_worker`), in the layout of a
+    model-only checkpoint (`{"app": AppState}`). The trainer only waits for a copy of its weight shards on the GPU;
+    a background thread writes them. A snapshot is complete once its `.finished` marker exists; the eval worker
+    deletes it after scoring it."""
 
     def __init__(self, run_dir: Path):
         self.run_dir = run_dir
-        self.pending = None
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.pending: Future | None = None
+        # Created here, on every rank at the same point; the writer thread only uses it.
+        self.group = get_dcp_group()
 
     def save(self, model: nn.Module, step: int) -> None:
         self.wait()
-        path = snapshot_dir(self.run_dir) / f"step_{step}"
-        future = dcp.async_save(
-            {"app": AppState(model, [], None, None)}, checkpoint_id=path, process_group=get_dcp_group()
-        )
+        state = tree_map_only(torch.Tensor, torch.Tensor.clone, AppState(model, [], None, None).state_dict())
+        self.pending = self.executor.submit(self.write, state, snapshot_dir(self.run_dir) / f"step_{step}")
+
+    def write(self, state: dict, path: Path) -> None:
+        dcp_save({"app": state}, checkpoint_id=path, process_group=self.group)
         if get_world().is_master:
-            # The coordinator's save finishes after every rank's shards and the metadata are written.
-            future.add_done_callback(lambda done: mark_finished(path) if done.exception() is None else None)
-        self.pending = (future, path)
+            (path / FINISHED_MARKER).touch()
 
     def wait(self) -> None:
-        """Block until the last snapshot is on disk (at the end of training)."""
+        """Block until the previous snapshot is on disk."""
         if self.pending is not None:
-            future, path = self.pending
-            future.result()
-            if get_world().is_master:
-                mark_finished(path)
+            self.pending.result()
             self.pending = None
-
-
-def mark_finished(path: Path) -> None:
-    (path / FINISHED_MARKER).touch()
