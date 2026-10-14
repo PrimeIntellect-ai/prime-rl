@@ -186,6 +186,9 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        # Train groups that emitted their last result but may still sit in ``out_q``; the
+        # orchestrator forgets each once the sink has consumed it.
+        self.emitted_train_groups: dict[str, tuple[str, vf.Task]] = {}
 
         # Bounded so the dispatcher backpressures on a slow sink (unbounded
         # when no hard ceiling is configured — the dynamic cap still bounds
@@ -322,8 +325,11 @@ class Dispatcher:
         ]
 
     def open_train_groups(self) -> dict[str, tuple[str, vf.Task]]:
-        """Env and task of each train group that has not emitted all its episodes."""
-        return {str(gid): (group.env_name, group.task) for gid, group in self.groups.items() if group.kind == "train"}
+        """Env and task of each train group the sink may not have in full yet."""
+        open_groups = {
+            str(gid): (group.env_name, group.task) for gid, group in self.groups.items() if group.kind == "train"
+        }
+        return open_groups | self.emitted_train_groups
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -703,6 +709,8 @@ class Dispatcher:
             group.emitted += 1
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
+                if group.kind == "train":
+                    self.emitted_train_groups[str(meta.group_id)] = (group.env_name, group.task)
         return policy_version
 
     async def emit_episode(
