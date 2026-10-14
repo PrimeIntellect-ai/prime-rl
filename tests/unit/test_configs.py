@@ -462,6 +462,55 @@ def test_env_algo_inherits_the_group_algo():
     assert [env.algo.type for env in reloaded.train.source] == ["grpo", "echo", "echo"]
 
 
+def test_depth_sources_pair_sampling_with_cost_price_and_difficulty_pools():
+    config = OrchestratorConfig.model_validate(
+        {
+            "train": {
+                "group_size": 4,
+                "algo": {
+                    "length_penalty": {
+                        "type": "cost",
+                        "reward_per_usd": 2.0,
+                        "input_usd_per_mtok": 0.2,
+                        "cached_input_usd_per_mtok": 0.03,
+                        "output_usd_per_mtok": 1.1,
+                        "latency": {"usd_per_hour": 2, "prefill_tokens_per_s": 5000, "decode_tokens_per_s": 80},
+                    }
+                },
+                "source": [
+                    {
+                        "name": f"depth-{depth}",
+                        "env": {"taskset": {"id": "reverse-text"}},
+                        "sampling": {"extra_body": {"depth": depth}},
+                        "algo": {"length_penalty": {"reward_per_usd": rate}},
+                        "curriculum": {"sampler": {"type": "difficulty_pool"}},
+                    }
+                    for depth, rate in [(16, 2.0), (32, 1.0), (64, 0.0)]
+                ],
+            }
+        }
+    )
+    for source, depth, rate in zip(config.train.source, [16, 32, 64], [2, 1, 0], strict=True):
+        assert source.sampling.to_sampling_args()["extra_body"]["depth"] == depth
+        assert source.algo.length_penalty.reward_per_usd == rate
+        assert source.algo.length_penalty.input_usd_per_mtok == 0.2
+        assert source.algo.length_penalty.latency.usd_per_hour == 2
+        assert source.curriculum.sampler.type == "difficulty_pool"
+        assert source.group_size == 4
+    reloaded = OrchestratorConfig.model_validate_json(config.model_dump_json())
+    assert [source.model_dump() for source in reloaded.train.source] == [
+        source.model_dump() for source in config.train.source
+    ]
+
+
+@pytest.mark.parametrize("rate", [-1.0, float("inf"), float("nan")])
+def test_cost_penalty_rejects_invalid_rates(rate):
+    from prime_rl.configs.algorithm import CostPenaltyConfig
+
+    with pytest.raises(ValidationError):
+        CostPenaltyConfig(reward_per_usd=rate, input_usd_per_mtok=0, cached_input_usd_per_mtok=0, output_usd_per_mtok=1)
+
+
 def test_sources_inherit_the_group_fields_they_leave_unset():
     config = EvalConfig.model_validate(
         {
