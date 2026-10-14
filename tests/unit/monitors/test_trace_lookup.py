@@ -15,7 +15,7 @@ from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.eval import resume
 from prime_rl.monitors.file import FileMonitor
 from prime_rl.monitors.file.traces import get_refs_dir
-from prime_rl.monitors.file.traces.live import get_live_dir, get_partial_dir, list_live, read_live
+from prime_rl.monitors.file.traces.live import get_live_dir, get_partial_dir, list_live, read_live, trim_torn_line
 from prime_rl.monitors.file.traces.lookup import RunTraceLookup
 from prime_rl.monitors.file.traces.refs import read_ref
 
@@ -263,3 +263,38 @@ def test_a_crashed_plain_trace_is_dropped_on_restart(tmp_path) -> None:
 
     assert not any(get_live_dir(tmp_path).glob("*.jsonl"))
     assert not get_partial_dir(tmp_path).is_dir() or not any(get_partial_dir(tmp_path).iterdir())
+
+
+def test_a_partial_torn_by_a_crash_mid_append_still_folds(tmp_path) -> None:
+    monitor = _monitor(tmp_path)
+    stream = Stream()
+    trace = _trace("agent/0", start=1.0, checkpoints=(2.0,))
+    stream.traces.append(trace)
+    asyncio.run(monitor.log_live(stream.flush()))
+    live = get_live_dir(tmp_path) / f"{trace.id}.jsonl"
+    with live.open("ab") as f:
+        f.write(b'{"trace": "' + trace.id.encode() + b'", "set": {"x"')  # killed mid-append
+    assert read_live(live) is not None  # a reader skips the torn line
+
+    relaunched = _monitor(tmp_path)
+    asyncio.run(relaunched.log_live([]))
+
+    partial = get_partial_dir(tmp_path) / f"{trace.id}.jsonl"
+    assert orjson.loads(partial.read_bytes().splitlines()[-1])["end"] == "crashed"
+    assert read_live(partial)[1]["id"] == trace.id
+    found = RunTraceLookup(tmp_path).get(ref("agent/0"))
+    assert found is not None and [c.id for c in found.checkpoints] == ["ckpt-2.0"]
+
+
+def test_trim_torn_line_cuts_back_to_the_last_whole_line(tmp_path) -> None:
+    path = tmp_path / "t.jsonl"
+    for data, kept in (
+        (b"", b""),
+        (b"a\n", b"a\n"),
+        (b"a\nb", b"a\n"),
+        (b"torn", b""),
+        (b"a\n" + b"x" * 10, b"a\n"),
+    ):
+        path.write_bytes(data)
+        trim_torn_line(path, chunk=3)
+        assert path.read_bytes() == kept, data

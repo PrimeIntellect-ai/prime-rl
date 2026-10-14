@@ -67,6 +67,29 @@ def end_line(end: str) -> bytes:
     return orjson.dumps({"end": end, "time": time.time()}) + b"\n"
 
 
+def trim_torn_line(path: Path, chunk: int = 1 << 16) -> None:
+    """Cut a live file back to its last whole line: a process killed mid-append leaves a
+    torn last line, which a line appended after it would turn into one that does not
+    parse."""
+    with path.open("r+b") as f:
+        end = f.seek(0, 2)
+        if end == 0:
+            return
+        f.seek(end - 1)
+        if f.read(1) == b"\n":
+            return
+        cut = end
+        while cut > 0:
+            start = max(0, cut - chunk)
+            f.seek(start)
+            newline = f.read(cut - start).rfind(b"\n")
+            if newline >= 0:
+                f.truncate(start + newline + 1)
+                return
+            cut = start
+        f.truncate(0)
+
+
 def get_pending_dir(output_dir: Path) -> Path:
     """Dispatched episodes whose first trace has not streamed yet, one JSON of dispatch
     identity each; the file goes away once a trace streams or the episode ends."""

@@ -18,7 +18,14 @@ from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.monitors.file.traces import get_annotations_dir, get_index_path, get_refs_dir, get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.monitors.file.traces.index import index_row
-from prime_rl.monitors.file.traces.live import end_line, get_live_dir, get_partial_dir, get_pending_dir, read_live
+from prime_rl.monitors.file.traces.live import (
+    end_line,
+    get_live_dir,
+    get_partial_dir,
+    get_pending_dir,
+    read_live,
+    trim_torn_line,
+)
 from prime_rl.monitors.file.traces.refs import State, point, read_ref, trace_labels, trace_recency
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
@@ -213,7 +220,9 @@ class FileMonitor(Monitor):
         if held is None or not held.refs:
             path.unlink(missing_ok=True)
             return
-        if not lines and not path.exists():
+        if path.exists():
+            trim_torn_line(path)  # a process killed mid-append left a torn last line
+        elif not lines:
             return  # nothing of it ever streamed
         with path.open("ab") as f:
             f.write(b"".join(line + b"\n" for line in lines) + end_line(end))
