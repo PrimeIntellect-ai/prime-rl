@@ -40,11 +40,11 @@ import verifiers.v1 as vf
 from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.shared import VLLMClientConfig
 from prime_rl.utils.config import BaseConfig
 
 
-class FrozenModelConfig(ClientConfig):
+class FrozenModelConfig(VLLMClientConfig):
     """An externally hosted model behind an OpenAI-compatible endpoint: the
     client config plus the served model's ``name``.
 
@@ -57,14 +57,7 @@ class FrozenModelConfig(ClientConfig):
     name: str
     """Served model name, sent as the ``model`` field of every request."""
 
-    @model_validator(mode="after")
-    def require_explicit_endpoint(self):
-        if "base_url" not in self.model_fields_set:
-            raise ValueError(
-                "a frozen model reference needs base_url — frozen models are externally "
-                "hosted; prime-rl only ever hosts the trainable policy."
-            )
-        return self
+    base_url: str
 
 
 ModelReference: TypeAlias = Literal["policy"] | FrozenModelConfig

@@ -6,9 +6,9 @@ from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 
 from prime_rl.trainer.models.layers.attn import (
-    flash_attn_3_varlen_func,
-    flash_attn_4_varlen_func,
-    flash_attn_varlen_func,
+    flash_attn_2_varlen_op,
+    flash_attn_3_varlen_op,
+    flash_attn_4_varlen_op,
 )
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
@@ -69,9 +69,9 @@ class Qwen3_5VisionMLP(nn.Module):
 
 class Qwen3_5VisionAttention(nn.Module):
     FLASH_ATTENTION_FUNCTIONS = {
-        "flash_attention_2": flash_attn_varlen_func,
-        "flash_attention_3": flash_attn_3_varlen_func,
-        "flash_attention_4": flash_attn_4_varlen_func,
+        "flash_attention_2": flash_attn_2_varlen_op,
+        "flash_attention_3": flash_attn_3_varlen_op,
+        "flash_attention_4": flash_attn_4_varlen_op,
     }
 
     def __init__(self, config: Qwen3_5VisionConfig) -> None:

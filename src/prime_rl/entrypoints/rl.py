@@ -12,7 +12,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
 from prime_rl.entrypoints.inference import vllm_overrides_fragment
-from prime_rl.utils.config import cli, dump_resolved_config
+from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     clean_future_steps,
@@ -82,24 +82,12 @@ def rl_config_components(config: RLConfig, config_dir: Path) -> list[tuple[str, 
 
 
 def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
-    """Write resolved subconfigs to disk as TOML files."""
+    """Write resolved subconfigs to disk as JSON files."""
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(output_dir / TRAINER_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(config.trainer), f, indent=2)
-
-    with open(output_dir / ORCHESTRATOR_CONFIG, "w") as f:
-        json.dump(dump_resolved_config(config.orchestrator), f, indent=2)
-
-    if config.inference is not None:
-        # Exclude launcher-only fields that are not needed by the vLLM server
-        exclude_inference = {"deployment", "slurm", "output_dir", "dry_run"}
-        inference_dict = dump_resolved_config(config.inference, exclude=exclude_inference)
-        if config.deployment.type == "multi_node":
-            # Per-rank processes run bare engines; the sbatch starts the single global router.
-            inference_dict["router"] = None
-        with open(output_dir / INFERENCE_CONFIG, "w") as f:
-            json.dump(inference_dict, f, indent=2)
+    filenames = {"trainer": TRAINER_CONFIG, "orchestrator": ORCHESTRATOR_CONFIG, "inference": INFERENCE_CONFIG}
+    for name, component in dump_rl_components(config).items():
+        with open(output_dir / filenames[name], "w") as f:
+            json.dump(component, f, indent=2)
 
     # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
@@ -320,6 +308,8 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
         "modelexpress_redis_port": 6380 if nixl_broadcast is not None and nixl_broadcast.port == 6379 else 6379,
     }
 
+    ckpt_dir = get_ckpt_dir(config.trainer.ckpt.output_dir or config.run_dir) if config.trainer.ckpt else None
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
@@ -342,6 +332,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
@@ -387,6 +378,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
+            ckpt_dir=ckpt_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             num_train_nodes=config.deployment.num_train_nodes,
