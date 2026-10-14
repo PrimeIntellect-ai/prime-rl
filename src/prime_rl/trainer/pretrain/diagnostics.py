@@ -1,3 +1,5 @@
+from functools import cache
+
 import torch
 from torch import Tensor, nn
 
@@ -5,6 +7,7 @@ from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.attn import FlashAttention
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.pretrain.metrics import group_norms, param_group, reduce_stats
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
 
 MIN_VISIBLE_KEYS = 64
@@ -47,13 +50,22 @@ def attention_stats(q: Tensor, k: Tensor, cu_seqlens: Tensor, scale: float) -> t
     return torch.stack(max_logits), torch.stack(entropy_sums), valid.sum()
 
 
+@cache
+def warn_no_attention_stats() -> None:
+    get_logger().warning(
+        "The diagnostic probe records attention statistics only for FlashAttention layers; none found, skipping them"
+    )
+
+
 @torch.no_grad()
 def run_probe(model: nn.Module, batch: dict[str, Tensor], group) -> dict[str, float]:
-    """Forward the probe batch with hooks: attention max logit and entropy per layer and head, residual-stream RMS
-    and max per layer, and the probe loss. Every rank probes its own batch; the statistics are reduced over
-    ``group``."""
+    """Forward the probe batch with hooks: attention max logit and entropy per layer and head (FlashAttention
+    layers), residual-stream RMS and max per layer, and the probe loss. Compiled layers run eagerly for the probe,
+    so the hooks see every call. Every rank probes its own batch; the statistics are reduced over ``group``."""
     layers = get_language_model(model).layers
     attentions = [module for module in layers.modules() if isinstance(module, FlashAttention)]
+    if not attentions:
+        warn_no_attention_stats()
     attention, activations = [], []
 
     def capture(module: FlashAttention):
@@ -75,43 +87,49 @@ def run_probe(model: nn.Module, batch: dict[str, Tensor], group) -> dict[str, fl
         module._compute_attention = capture(module)
     hooks = [layer.register_forward_hook(record_activations) for layer in layers]
     labels = batch["target_ids"]
-    out = forward(model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], labels=labels)
+    with torch.compiler.set_stance("force_eager"):
+        out = forward(model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], labels=labels)
     for module in attentions:
         del module._compute_attention
     for hook in hooks:
         hook.remove()
 
-    max_logit, entropy_sum, queries = (torch.stack(values) for values in zip(*attention))
     square_sum, count, absmax = (torch.stack(values) for values in zip(*activations))
     sums = {
-        "entropy_sum": entropy_sum,
-        "queries": queries.double(),
         "square_sum": square_sum,
         "count": count.double(),
         "loss": out["loss"].double(),
         "tokens": (labels != IGNORE_INDEX).sum().double(),
     }
-    maxes = {"max_logit": max_logit, "absmax": absmax}
+    maxes = {"absmax": absmax}
+    if attention:
+        max_logit, entropy_sum, queries = (torch.stack(values) for values in zip(*attention))
+        sums |= {"entropy_sum": entropy_sum, "queries": queries.double()}
+        maxes["max_logit"] = max_logit
     stats = reduce_stats(sums, maxes, group)
 
-    head_entropy = stats["entropy_sum"] / stats["queries"][:, None]  # [layers, heads]
-    layer_max_logit = stats["max_logit"].amax(dim=1)
-    layer_entropy = head_entropy.mean(dim=1)
     rms = (stats["square_sum"] / stats["count"]).sqrt()
     metrics = {
-        "attn/max_logit/max": layer_max_logit.max().item(),
-        "attn/entropy/min": layer_entropy.min().item(),
-        "attn/entropy_min_head": head_entropy.min().item(),
-        "attn/collapsed_heads": int((head_entropy < COLLAPSED_ENTROPY).sum()),
         "act/rms/max": rms.max().item(),
         "act/absmax/max": stats["absmax"].max().item(),
         "probe/loss": (stats["loss"] / stats["tokens"]).item(),
     }
-    for layer in range(len(layer_max_logit)):
-        metrics[f"attn/max_logit/layer_{layer}"] = layer_max_logit[layer].item()
-        metrics[f"attn/entropy/layer_{layer}"] = layer_entropy[layer].item()
+    for layer in range(len(rms)):
         metrics[f"act/rms/layer_{layer}"] = rms[layer].item()
         metrics[f"act/absmax/layer_{layer}"] = stats["absmax"][layer].item()
+    if attention:
+        head_entropy = stats["entropy_sum"] / stats["queries"][:, None]  # [layers, heads]
+        layer_max_logit = stats["max_logit"].amax(dim=1)
+        layer_entropy = head_entropy.mean(dim=1)
+        metrics |= {
+            "attn/max_logit/max": layer_max_logit.max().item(),
+            "attn/entropy/min": layer_entropy.min().item(),
+            "attn/entropy_min_head": head_entropy.min().item(),
+            "attn/collapsed_heads": int((head_entropy < COLLAPSED_ENTROPY).sum()),
+        }
+        for layer in range(len(layer_max_logit)):
+            metrics[f"attn/max_logit/layer_{layer}"] = layer_max_logit[layer].item()
+            metrics[f"attn/entropy/layer_{layer}"] = layer_entropy[layer].item()
     return metrics
 
 

@@ -313,7 +313,8 @@ def train(config: PretrainConfig):
         over the ranks, the per-token results gathered on rank 0, which summarizes and logs them."""
         start_time = time.perf_counter()
         metrics = {}
-        with scoring_head_active(model):
+        # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
+        with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
             for eval_set in eval_sets:
                 scored = score_requests(model, eval_set.requests, config.evals.token_budget, get_dcp_group())
                 if scored is None:
