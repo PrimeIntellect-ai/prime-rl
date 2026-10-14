@@ -228,7 +228,7 @@ class Orchestrator:
             renderer_config=config.renderer,
         )
         if config.eval is not None:
-            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir)
+            self.eval_envs = EvalEnvs(config.eval.source, config.env_addresses, config_dir, streams=False)
 
         if config.resume is not None:
             if config.resume.dir is not None:

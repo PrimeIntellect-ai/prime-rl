@@ -259,13 +259,35 @@ def test_a_cancel_reaches_a_rerun_of_a_task_reported_since_the_last_poll(tmp_pat
     assert runner.dispatcher.requested_cancels == set()
 
 
-def test_a_streaming_source_runs_each_task_once() -> None:
+def _infinite_env(*, group_size: int = 1, streams: bool = True) -> tuple[EvalEnv, list[str]]:
+    """An eval env over an infinite taskset, and the tasks it pulled."""
+    pulled: list[str] = []
+
+    def tasks():
+        while True:
+            pulled.append("t")
+            yield _task("t")
+
     env = EvalEnv.__new__(EvalEnv)
-    env.config = SimpleNamespace(resolved_name="pipeline", group_size=2)
+    env.config = SimpleNamespace(resolved_name="pipeline", group_size=group_size)
+    env.streams = streams
     env.num_tasks = None
-    env.tasks = iter([])
+    env.tasks = tasks()
     env.feed = None
+    return env, pulled
+
+
+def test_a_streaming_source_runs_each_task_once() -> None:
+    env, pulled = _infinite_env(group_size=2)
 
     with pytest.raises(ValueError, match="group_size must be 1"):
         env.open_feed()
-    assert env.feed is None
+    assert env.feed is None and pulled == []
+
+
+def test_an_online_eval_rejects_an_infinite_taskset_before_pulling_it() -> None:
+    env, pulled = _infinite_env(streams=False)
+
+    with pytest.raises(ValueError, match="infinite taskset"):
+        env.open_feed()
+    assert env.feed is None and pulled == []

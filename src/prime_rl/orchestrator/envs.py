@@ -185,8 +185,11 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
+    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path, *, streams: bool):
         super().__init__(config, address, address_file)
+        self.streams = streams
+        """Whether an infinite taskset may stream (a standalone eval's one epoch). Evals
+        that repeat per checkpoint (online evals) need a fixed set."""
         self.sampling_args = config.sampling.to_sampling_args()
         self.examples: list[vf.Task] = []
         self.feed: TaskFeed | None = None
@@ -208,6 +211,9 @@ class EvalEnv(Env):
         if self.num_tasks is not None:
             self.examples = list(self.tasks)
             return
+        # before the feed starts pulling the taskset
+        if not self.streams:
+            raise ValueError(f"Eval env {self.name} has an infinite taskset - set select.limit to bound it")
         if self.config.group_size != 1:
             raise ValueError(
                 f"Eval env {self.name} streams an infinite taskset, which runs each task once - "
@@ -285,10 +291,18 @@ class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
     def __init__(
-        self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str | None], config_dir: Path
+        self,
+        configs: Sequence[EvalSourceConfig],
+        addresses: dict[tuple[str, str], str | None],
+        config_dir: Path,
+        *,
+        streams: bool,
     ):
+        """``streams``: whether an infinite taskset may stream (``EvalEnv.streams``)."""
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
             name = config.resolved_name
-            env = EvalEnv(config, addresses[("eval", name)], env_address_file(config_dir, "eval", name))
+            env = EvalEnv(
+                config, addresses[("eval", name)], env_address_file(config_dir, "eval", name), streams=streams
+            )
             self._envs[env.name] = env

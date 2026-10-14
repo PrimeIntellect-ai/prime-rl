@@ -113,7 +113,13 @@ class EvalRunner:
         self.admin_plane = AdminPlane(config.client)
 
         get_logger().info("Loading eval environment(s)")
-        self.eval_envs = EvalEnvs(config.source, config.env_addresses, get_config_dir(self.run_dir))
+        # online evals repeat per checkpoint: only a standalone eval streams
+        self.eval_envs = EvalEnvs(
+            config.source,
+            config.env_addresses,
+            get_config_dir(self.run_dir),
+            streams=not isinstance(config, SFTOnlineEvalConfig),
+        )
         await self.eval_envs.start()
         get_logger().info(f"Eval environment(s) ready ({', '.join(self.eval_envs.names)})")
 
