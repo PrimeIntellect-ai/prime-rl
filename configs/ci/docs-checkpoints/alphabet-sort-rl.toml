@@ -1,0 +1,39 @@
+# configs/alphabet-sort.toml
+name = "alphabet-sort-rl"
+max_steps = 50
+seq_len = 2048
+
+[ckpt]                                 # save a checkpoint at the end of training
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"   # cached models in `prime train models` start warm
+
+[deployment]
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[trainer.optim]
+lr = 1e-6
+
+[orchestrator]
+batch_size = 128
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.source]]
+name = "alphabet-sort"
+
+[orchestrator.train.source.env.taskset]
+id = "primeintellect/alphabet-sort"
+
+[orchestrator.train.source.env.agent.harness]
+id = "bash"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
+
+[inference]

@@ -1,0 +1,350 @@
+{
+  "docs_revision": "90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d",
+  "acceptance": "startup smoke only; runtime prerequisites remain explicit",
+  "entries": [
+    {
+      "checkpoint": "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/hosted-training/full-finetuning.mdx#L44",
+      "mode": "RL FFT + SFT",
+      "classification": "training",
+      "status": "candidate_blocked_prerequisites",
+      "reason": "Primary RL/SFT copies pass current hosted schema. RL checkpoint cached; SFT needs datasets/reverse-text staged from documented public source. Volume/resume/online-eval overlays are not validated by startup smoke."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-4B-Instruct-2507",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/hosted-training/end-to-end-run.mdx#L76",
+      "mode": "RL FFT; self-managed LoRA RL; DOM RL",
+      "classification": "training",
+      "status": "candidate_blocked_prerequisites",
+      "reason": "Primary alphabet RL copy passes current hosted schema after default\u2192bash harness rename; cached checkpoint. Browser guide workload requires unpublished complete config/credentials. Small/medium/large overlays remain distinct recipe coverage."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-30B-A3B-Thinking-2507",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/hosted-training/full-finetuning.mdx#L87",
+      "mode": "RL FFT",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Hosted schema-valid primary32GPU RL shape; exact Thinking-2507 checkpoint absent from inspected cache. Needs finite smoke cap approval, i3_math pod dependency and capacity. Non-Thinking Qwen3-30B-A3B is not an alias."
+    },
+    {
+      "checkpoint": "zai-org/GLM-5.3-BF16",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/hosted-training/hosted-sft.mdx#L256",
+      "mode": "SFT + RL FFT",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Hosted SFT smoke copy passes current hosted schema after explicit impl/offload migrations; exact documented64H200 topology retained. Dataset datasets/intellect-3-sft-10k/math source and staging remain missing. Linked self-managed RL/SFT topologies are separate coverage."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/guides/rl-training.mdx#L235",
+      "mode": "Calendar RL + tool RL + SFT",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Guide remains coverage plan, blocked exact cache. Derive calendar config from batch128/group8 + task; guide topology unspecified. Linked tool1+1nodes and SFT2train-node variants do not substitute calendar workload."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-VL-4B-Instruct",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/guides/browser-environments.mdx#L307",
+      "mode": "CUA RL",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Guide remains coverage plan, blocked exact cache + unpublished complete deployment. Preserve browser mode/args; install env/credentials. VLM runtime support must be validated, not assume Qwen3.5 substitute."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/guides/recipes.mdx#L45",
+      "mode": "Suggested math RL + SFT",
+      "classification": "training",
+      "status": "self_managed_as_published",
+      "reason": "Blocked exact cache and guide full-config/topology. Linked SFT self-managed-only as published: explicit 4\u00d78 B300 perf recipe/Slurm/fullgraph, not current H200 catalog; still retained as exact coverage obligation."
+    },
+    {
+      "checkpoint": "PrimeIntellect/Qwen3-0.6B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/training.mdx#L211",
+      "mode": "SFT + online eval",
+      "classification": "training",
+      "status": "candidate_blocked_prerequisites",
+      "reason": "Blocked exact cache. Linked complete1+1 recipe uses HF data and100steps; not hosted volume recipe or same ID as Reverse-Text-SFT. Hosted candidate after exact admission and native config/data setup."
+    },
+    {
+      "checkpoint": "PrimeIntellect/Qwen3-1.7B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/configuration.mdx#L253",
+      "mode": "SFT",
+      "classification": "training",
+      "status": "candidate_blocked_prerequisites",
+      "reason": "Blocked exact cache; directory-linked Wordle SFT actual model. Hosted candidate after complete native SFT deployment/data validation; no Wordle-SFT substitution."
+    },
+    {
+      "checkpoint": "PrimeIntellect/Qwen3-1.7B-Wordle-SFT",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/configuration.mdx#L253",
+      "mode": "RL FFT",
+      "classification": "training",
+      "status": "candidate_blocked_prerequisites",
+      "reason": "Hosted candidate; exact cached. Existing modified RL job. Startup progress still not proved by dispatch-only."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-1.7B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/configuration.mdx#L256",
+      "mode": "RL FFT (also eval)",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked exact cache despite existing CI file. Current catalog absence is not automatic architecture failure; require exact admission/cache decision."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-30B-A3B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L58",
+      "mode": "RL MoE fragment",
+      "classification": "training",
+      "status": "candidate_blocked_prerequisites",
+      "reason": "Exact cached; blocked missing complete docs fragment composition/workload/topology. Derive exact-model startup config retaining BF16/SonicMoE/EP2 settings. Not Thinking/Instruct variants."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3.5-4B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L159",
+      "mode": "VLM FFT (LoRA support separate)",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked exact cache and complete fragment composition; current self-managed VLM test is not hosted startup success."
+    },
+    {
+      "checkpoint": "zai-org/GLM-4.5-Air",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/ipo.mdx#L41",
+      "mode": "RL FFT IPO/SWE/search",
+      "classification": "training",
+      "status": "self_managed_as_published",
+      "reason": "Exact cached; self-managed-only AS PUBLISHED: Slurm partitions/output placeholders + external SWE sandbox packages; ablation2train+4infer nodes and budget1+1 nodes. Hosted translation candidate only with approved exact config/env/topology, no silent omission."
+    },
+    {
+      "checkpoint": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/scaling.mdx#L257",
+      "mode": "RL FFT",
+      "classification": "training",
+      "status": "self_managed_as_published",
+      "reason": "Exact cached; self-managed-only AS PUBLISHED: Slurm/external SWE deployment,4train+four1node infer replicas/CP8 EP8/131k. Hosted translation requires native schema/env/topology approval."
+    },
+    {
+      "checkpoint": "samsja/mini-glm-moe",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/development.mdx#L107",
+      "mode": "SFT-warmed RL FFT",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked exact cache. Self-managed developer/integration flow uses local generated checkpoint or this Hub ID and filesystem transport; retain exact ID, no large-GLM substitute."
+    },
+    {
+      "checkpoint": "PrimeIntellect/MiniMax-M2.5-bf16",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/configuration.mdx#L263",
+      "mode": "RL FFT",
+      "classification": "training",
+      "status": "self_managed_as_published",
+      "reason": "Blocked exact cache; self-managed-only as published: Slurm4train+12infer nodes and agentic SWE dependencies. No alias MiniMax/MiniMax-M2."
+    },
+    {
+      "checkpoint": "PrimeIntellect/INTELLECT-3-Base",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/configuration.mdx#L264",
+      "mode": "RL FFT",
+      "classification": "training",
+      "status": "self_managed_as_published",
+      "reason": "Blocked exact cache; self-managed-only as published: reproduction Slurm4train+12infer nodes and training sources. Not PrimeIntellect/INTELLECT-3 alias."
+    },
+    {
+      "checkpoint": "zai-org/GLM-5",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L26",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "zai-org/GLM-5-FP8",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L26",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent. FP8 reference requires dequantization/validation for BF16 training; inference presence alone not training proof."
+    },
+    {
+      "checkpoint": "zai-org/GLM-5.2",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L26",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache present."
+    },
+    {
+      "checkpoint": "zai-org/GLM-5.2-FP8",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L26",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache present. FP8 reference requires dequantization/validation for BF16 training; inference presence alone not training proof."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3.5-35B-A3B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L28",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "poolside/Laguna-XS.2",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L30",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "MiniMax/MiniMax-M2",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L31",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "nvidia/Nemotron-3-Nano-30B-A3B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L32",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "arcee-ai/Trinity-Mini",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L33",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "THUDM/GLM-4-9B-0414",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L34",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "zai-org/GLM-4.5",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L34",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "PrimeIntellect/INTELLECT-3",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L34",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "unsloth/gpt-oss-20b-BF16",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L35",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/advanced.mdx#L36",
+      "mode": "Training-supported model reference; FFT/LoRA settings separate",
+      "classification": "training",
+      "status": "blocked",
+      "reason": "Blocked missing complete training workload/deployment/data config; support table names actual model, not a runnable job. Exact cache absent."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-4B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/eval.mdx#L36",
+      "mode": "inference/eval/teacher/prompt-optimization only",
+      "classification": "inference_only",
+      "status": "inference_only",
+      "reason": "Standalone inference/eval recipe. Configuration nested-key syntax demo is not an actual additional training job."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-0.6B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/configuration.mdx#L252",
+      "mode": "inference/eval/teacher/prompt-optimization only",
+      "classification": "inference_only",
+      "status": "inference_only",
+      "reason": "Linked examples/basic/reverse-text/eval.toml names this exact ID; SFT training uses PrimeIntellect/Qwen3-0.6B instead."
+    },
+    {
+      "checkpoint": "Qwen/Qwen3-32B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/algorithms.mdx#L52",
+      "mode": "inference/eval/teacher/prompt-optimization only",
+      "classification": "inference_only",
+      "status": "inference_only",
+      "reason": "Frozen OPD teacher, not the training student."
+    },
+    {
+      "checkpoint": "openai/gpt-4.1-mini",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/tutorials-environments/evaluating.mdx#L263",
+      "mode": "inference/eval/teacher/prompt-optimization only",
+      "classification": "inference_only",
+      "status": "inference_only",
+      "reason": "Standalone local/hosted eval."
+    },
+    {
+      "checkpoint": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/verifiers/v1/evaluation.mdx#L14",
+      "mode": "inference/eval/teacher/prompt-optimization only",
+      "classification": "inference_only",
+      "status": "inference_only",
+      "reason": "Standalone harness evaluation."
+    },
+    {
+      "checkpoint": "deepseek/deepseek-v4-flash",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/verifiers/v1/gepa.mdx#L16",
+      "mode": "inference/eval/teacher/prompt-optimization only",
+      "classification": "inference_only",
+      "status": "inference_only",
+      "reason": "GEPA prompt optimization, no weight training."
+    },
+    {
+      "checkpoint": "Qwen3-VL-8B-Instruct",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/guides/browser-environments.mdx#L182",
+      "mode": "historical CUA RL",
+      "classification": "training_identity_unresolved",
+      "status": "blocked_unresolved_identity",
+      "reason": "No exact Hub namespace supplied; keep coverage obligation, resolve original run identity without inventing Qwen/ alias."
+    },
+    {
+      "checkpoint": "Qwen3-4B-Instruct",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/guides/search-agents.mdx#L504",
+      "mode": "patent RL",
+      "classification": "training_identity_unresolved",
+      "status": "blocked_unresolved_identity",
+      "reason": "No exact Hub namespace/revision supplied; cannot equate to Qwen/Qwen3-4B-Instruct-2507. Complete config/topology absent."
+    },
+    {
+      "checkpoint": "Llama-3.2-3B-Instruct",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/guides/search-agents.mdx#L504",
+      "mode": "patent RL",
+      "classification": "training_identity_unresolved",
+      "status": "blocked_unresolved_identity",
+      "reason": "No exact Hub namespace supplied; cannot invent meta-llama alias. Complete config/topology absent."
+    },
+    {
+      "checkpoint": "/volume/models/glm-5.3-hf",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/hosted-training/volume-models.mdx#L31",
+      "mode": "SFT + resume",
+      "classification": "training_identity_unresolved",
+      "status": "blocked_unresolved_identity",
+      "reason": "Local HF artifact identity unpinned; actual model/data missing. No complete deployment/renderer/finite cap. Not automatically zai-org/GLM-5.3-BF16."
+    },
+    {
+      "checkpoint": "./mini-glm-moe",
+      "source": "https://github.com/PrimeIntellect-ai/public-docs/blob/90ad2fbfb1d487fcb8129a385e9eff3fbd362e2d/prime-rl/development.mdx#L111",
+      "mode": "generated local model SFT warmup",
+      "classification": "training_identity_unresolved",
+      "status": "blocked_unresolved_identity",
+      "reason": "Developer-generated random checkpoint, not an exact immutable Hub ID; generation/tokenizer/data setup required."
+    }
+  ]
+}

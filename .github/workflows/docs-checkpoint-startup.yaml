@@ -1,0 +1,140 @@
+name: Documented checkpoint startup smoke (manual)
+
+on:
+    workflow_dispatch:
+        inputs:
+            case:
+                description: "Documented workload (all requests101GPUs total if every case is admitted)"
+                required: true
+                type: choice
+                options: [all, reverse-text-rl, alphabet-sort-rl, qwen30b-math-rl, reverse-text-sft, glm53-sft]
+            steps:
+                description: "Explicit positive finite training cap (2recommended for startup smoke; no default)"
+                required: true
+                type: number
+            observation_seconds:
+                description: "Explicit startup observation budget in seconds (positive; at most existing1800second job cap)"
+                required: true
+                type: number
+            image_tag:
+                description: "Prime-rl image tag to test (operator verifies published manifest beforehand)"
+                required: true
+                type: string
+            volume:
+                description: "Existing SFT dataset volume; required for SFT/all (never created by CI)"
+                required: false
+                type: string
+
+permissions:
+    contents: read
+
+jobs:
+    discover:
+        runs-on: ubuntu-latest
+        outputs:
+            matrix: ${{ steps.matrix.outputs.value }}
+        steps:
+            - id: matrix
+              env:
+                  CASE: ${{ inputs.case }}
+                  VOLUME: ${{ inputs.volume }}
+              run: |
+                  if [ "$CASE" = "all" ] && [ -z "$VOLUME" ]; then
+                      echo "All cases require an existing SFT dataset volume" >&2; exit 1
+                  fi
+                  if [ "$CASE" = "all" ]; then
+                      cases='["reverse-text-rl","alphabet-sort-rl","qwen30b-math-rl","reverse-text-sft","glm53-sft"]'
+                  else
+                      cases=$(jq -cn --arg value "$CASE" '[$value]')
+                  fi
+                  echo "value={\"case\":$cases}" >> "$GITHUB_OUTPUT"
+
+    startup:
+        needs: discover
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            max-parallel: 1
+            matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+        steps:
+            - uses: actions/checkout@v7
+            - uses: astral-sh/setup-uv@v10.0.1
+            - run: uv tool install 'prime>=0.13.0'
+            - name: Submit finite recipe and verify first hosted progress
+              env:
+                  CASE: ${{ matrix.case }}
+                  STEPS: ${{ inputs.steps }}
+                  OBSERVATION_SECONDS: ${{ inputs.observation_seconds }}
+                  IMAGE_TAG: ${{ inputs.image_tag }}
+                  VOLUME: ${{ inputs.volume }}
+                  PRIME_API_KEY: ${{ secrets.PRIME_FFT_API_KEY }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_FFT_TEAM_ID }}
+                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+                  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+              run: |
+                  case "$CASE" in
+                      reverse-text-rl|alphabet-sort-rl|qwen30b-math-rl|reverse-text-sft|glm53-sft) ;;
+                      *) echo "Invalid case" >&2; exit 1 ;;
+                  esac
+                  if ! printf '%s' "$IMAGE_TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'; then
+                      echo "Invalid image tag" >&2; exit 1
+                  fi
+                  if ! [[ "$OBSERVATION_SECONDS" =~ ^[0-9]+$ ]] || [ "$OBSERVATION_SECONDS" -lt 1 ] || [ "$OBSERVATION_SECONDS" -gt 1800 ]; then
+                      echo "Observation budget must be1–1800seconds within existing job cap" >&2; exit 1
+                  fi
+                  volume_args=()
+                  case "$CASE" in
+                      *-sft)
+                          if [ -z "$VOLUME" ]; then
+                              echo "SFT needs an existing volume with the documented dataset" >&2; exit 1
+                          fi
+                          volumes=$(mktemp)
+                          prime volumes list --output json > "$volumes"
+                          if ! jq -e --arg name "$VOLUME" 'any(.[]; .name == $name)' "$volumes" > /dev/null; then
+                              rm -f "$volumes"
+                              echo "SFT volume must already exist; refusing CLI auto-create path" >&2; exit 1
+                          fi
+                          rm -f "$volumes"
+                          volume_args=(--volume "$VOLUME") ;;
+                  esac
+                  mkdir -p docs-startup-results
+                  prepared=$(mktemp --suffix=.toml)
+                  response=$(mktemp)
+                  trap 'rm -f "$prepared" "$response"' EXIT
+                  uv run --no-project --python 3.12 python tools/prepare_docs_smoke.py "configs/ci/docs-checkpoints/$CASE.toml" "$prepared" --steps "$STEPS"
+                  name="docs-startup-$CASE-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+                  config=$(mktemp --suffix=.toml)
+                  printf 'name = "%s"\n\n' "$name" > "$config"
+                  cat "$prepared" >> "$config"
+                  result="docs-startup-results/$CASE.json"
+                  jq -n --arg name "$name" --arg image "$IMAGE_TAG" --arg case "$CASE" --arg steps "$STEPS" \
+                      '{name:$name,image:$image,case:$case,steps:$steps,outcome:"submitting"}' > "$result"
+                  echo "Submitting $name (finite cap $STEPS; first hosted progress, not full training)"
+                  code=0
+                  prime train "$config" --image-tag "$IMAGE_TAG" "${volume_args[@]}" -e WANDB_API_KEY -e HF_TOKEN --yes --output json > "$response" 2>&1 || code=$?
+                  rm -f "$config"
+                  if [ "$code" -ne 0 ]; then
+                      jq --argjson code "$code" '.+{outcome:"submission_failed",cli_exit_code:$code}' "$result" > "$result.tmp"
+                      mv "$result.tmp" "$result"
+                      echo "Submission failed; reconcile exact name $name before retrying. A hosted run may exist." >&2
+                      grep -oE 'HTTP [0-9]{3}|Request timed out|Connection error' "$response" | sort -u || true
+                      exit "$code"
+                  fi
+                  if ! id=$(jq -ers 'select(length==1)|.[0].run.runId|select(type=="string" and test("^[A-Za-z0-9_-]+$"))' "$response" 2>/dev/null); then
+                      jq '.+{outcome:"invalid_response"}' "$result" > "$result.tmp"
+                      mv "$result.tmp" "$result"
+                      echo "No valid runId; reconcile $name before retrying" >&2; exit 1
+                  fi
+                  jq --arg id "$id" '.+{run_id:$id,outcome:"accepted"}' "$result" > "$result.tmp"
+                  mv "$result.tmp" "$result"
+                  # Reuse the existing30minute observation budget; queue expiry is unverified, not a trainer failure.
+                  uv run --no-project --python 3.12 python tools/nightly_fft_startup.py "$result" --timeout-seconds "$OBSERVATION_SECONDS" --poll-seconds 30
+            - name: Save sanitized startup evidence
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: docs-startup-${{ matrix.case }}
+                  path: docs-startup-results/*.json
+                  if-no-files-found: ignore

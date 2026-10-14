@@ -1,0 +1,43 @@
+name = "qwen30b-math"
+seq_len = 32768
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+
+[deployment]
+type = "multi_node"                # required — `single_node` is the default variant
+num_train_nodes = 2
+num_infer_nodes = 2                # per inference replica; see `num_infer_replicas`
+
+[trainer.model]
+attn = "flash_attention_3"
+ep = 8                             # expert parallel (MoE)
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+
+[orchestrator]
+batch_size = 512
+max_off_policy_steps = 8
+
+[orchestrator.concurrency]
+max_inflight = 1024                # ceiling on in-flight episodes
+
+[orchestrator.train.sampling]
+max_completion_tokens = 32768
+
+[[orchestrator.train.source]]
+name = "math"
+
+[orchestrator.train.source.env.taskset]
+id = "i3_math"
+
+[orchestrator.train.source.env.agent.harness]
+id = "null"
+
+[orchestrator.train.source.env.agent.runtime]
+type = "subprocess"
+
+[inference.vllm]
+tensor_parallel_size = 8           # tensor parallel inside each inference replica

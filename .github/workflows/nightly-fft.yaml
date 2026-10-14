@@ -161,8 +161,11 @@ jobs:
             - name: Install uv
               uses: astral-sh/setup-uv@v10.0.1
 
-            - name: Install prime CLI (latest)
-              run: uv tool install prime
+            - name: Install prime CLI (latest, at least 0.13.0)
+              run: |
+                  # 0.13.0 includes the run-creation timeout fix (prime#1057).
+                  uv tool install 'prime>=0.13.0'
+                  prime --version
 
             - name: Dispatch run
               env:
@@ -184,14 +187,60 @@ jobs:
                   dispatch_cfg=$(mktemp --suffix=.toml)
                   printf 'name = "%s"\n\n' "$run_name" > "$dispatch_cfg"
                   cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
-                  echo "Dispatched run name: $run_name"
+                  echo "Submitting run name: $run_name"
+                  mkdir -p nightly-results
+                  result="nightly-results/${config_base}.json"
+                  jq -n --arg name "$run_name" \
+                      --arg config "${{ matrix.config_file }}" \
+                      --arg image "${{ steps.image.outputs.tag }}" \
+                      --arg cli "$(prime --version)" \
+                      '{name: $name, config: $config, image: $image, cli: $cli, outcome: "submitting"}' > "$result"
+                  # Keep raw CLI output private; save only whitelisted submission metadata.
+                  response=$(mktemp)
+                  trap 'rm -f "$response" "$dispatch_cfg"' EXIT
                   # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
                   # the full-FT dispatch path (`prime train`) only picks up
                   # secrets that were explicitly collected via `-e` / `--env-file`,
                   # not ambient env, so the workflow env: block alone is not
                   # enough to reach the hosted trainer/orchestrator pods.
+                  exit_code=0
                   prime train "$dispatch_cfg" \
                       --image-tag "${{ steps.image.outputs.tag }}" \
                       -e WANDB_API_KEY \
                       -e HF_TOKEN \
-                      --yes --output json
+                      --yes --output json > "$response" 2>&1 || exit_code=$?
+                  if [ "$exit_code" -ne 0 ]; then
+                      # A timeout can leave an accepted run behind. Never retry this POST.
+                      jq --argjson code "$exit_code" \
+                          '. + {outcome: "submission_failed", cli_exit_code: $code}' "$result" > "$result.tmp"
+                      mv "$result.tmp" "$result"
+                      echo "::error::Submission failed (CLI exit $exit_code). Reconcile run name $run_name before retrying; a run may already exist."
+                      # Only allow known transport/status diagnostics out of the private response.
+                      grep -oE 'HTTP [0-9]{3}|Request timed out|Connection error' "$response" | sort -u || true
+                      exit "$exit_code"
+                  fi
+                  if ! run_id=$(jq -ers 'select(length == 1) | .[0].run.runId | select(type == "string" and test("^[A-Za-z0-9_-]+$"))' "$response" 2>/dev/null); then
+                      jq '. + {outcome: "invalid_response"}' "$result" > "$result.tmp"
+                      mv "$result.tmp" "$result"
+                      echo "::error::CLI returned success without a valid runId. Reconcile run name $run_name before retrying."
+                      exit 1
+                  fi
+                  jq --arg id "$run_id" '. + {outcome: "accepted", run_id: $id}' "$result" > "$result.tmp"
+                  mv "$result.tmp" "$result"
+                  echo "Accepted run ID: $run_id (submission only; training completion is not checked)"
+                  echo "Check status: prime train get $run_id --output json"
+                  {
+                      echo "### Hosted FFT submission"
+                      echo "- Name: $run_name"
+                      echo "- Run ID: $run_id"
+                      echo "- Image: ${{ steps.image.outputs.tag }}"
+                      echo "- Submission accepted; training completion is not checked."
+                  } >> "$GITHUB_STEP_SUMMARY"
+
+            - name: Save submission result (no secrets)
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: fft-submission-${{ strategy.job-index }}
+                  path: nightly-results/*.json
+                  if-no-files-found: ignore
