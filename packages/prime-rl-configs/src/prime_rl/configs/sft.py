@@ -1,7 +1,7 @@
 import uuid
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, model_validator
@@ -35,9 +35,6 @@ from prime_rl.configs.trainer import (
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-
-if TYPE_CHECKING:
-    from prime_rl.configs.pretrain import PretrainConfig
 
 
 class BaseDataConfig(BaseConfig):
@@ -219,61 +216,17 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 ]
 
 
-def setup_trainer_deployment(config: "SFTConfig | PretrainConfig") -> None:
-    """Shared by ``sft`` and ``pretrain``: a multi-node deployment needs SLURM and sets
-    ``model.dp_replicate`` from ``nodes_per_fsdp_group``; the SLURM job name defaults to the
-    run name and the template to the bundled single- or multi-node trainer template."""
-    deployment = config.deployment
-    if deployment.type == "multi_node":
-        if config.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
-        if deployment.nodes_per_fsdp_group is not None:
-            if deployment.num_train_nodes % deployment.nodes_per_fsdp_group != 0:
-                raise ValueError(
-                    f"deployment.num_train_nodes ({deployment.num_train_nodes}) must be divisible by "
-                    f"deployment.nodes_per_fsdp_group ({deployment.nodes_per_fsdp_group})"
-                )
-            config.model.dp_replicate = deployment.num_train_nodes // deployment.nodes_per_fsdp_group
-    if config.slurm is not None:
-        if config.slurm.job_name is None:
-            config.slurm.job_name = config.run.name
-        if config.slurm.template_path is None:
-            templates_dir = find_package_resource("templates")
-            if templates_dir is not None:
-                config.slurm.template_path = templates_dir / f"{deployment.type}_sft.sbatch.j2"
+class TrainRunConfig(BaseConfig):
+    """Fields and validators shared by the single-process trainers (``sft`` and ``pretrain``)."""
 
-
-class SFTConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
     env_vars: EnvVars = {}
-    """Extra environment variables for the SFT trainer process(es). Merged on top of the launcher defaults."""
+    """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig = AutoRendererConfig()
-    """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
-
-    data: DataConfig = SFTDataConfig()
-
-    val: SFTValConfig | None = None
-    """Validation configuration. If None, no validation runs."""
-
-    eval: SFTOnlineEvalConfig | None = None
-    """Online evaluation configuration: rollout-based evals against a live inference
-    server that receives the trainer's weight broadcasts. If None, no online evals run."""
-
-    inference: InferenceConfig | None = None
-    """Inference server for online evals. If None (with ``eval`` set), the launcher
-    does not start a server and evals connect to ``eval.client.base_url``."""
-
-    weight_broadcast: WeightBroadcastConfig | None = None
-    """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
-    LoRA and external inference use filesystem broadcast."""
-
     optim: OptimizerConfig = AdamWConfig()
-
-    scheduler: SchedulerConfig = ConstantSchedulerConfig()
 
     ckpt: CheckpointConfig | None = None
 
@@ -294,64 +247,14 @@ class SFTConfig(BaseConfig):
     clean: bool = False
     """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
 
-    @property
-    def run_dir(self) -> Path:
-        assert self.run.dir is not None  # resolved at construction
-        return self.output_dir / self.run.dir
-
-    @model_validator(mode="after")
-    def resolve_moe_router_dtype_auto(self):
-        """Resolve ``model.moe_router_dtype='auto'``: SFT defaults to bf16 routing, skipping the fp32 gate GEMM and its fp32 FSDP unit."""
-        if self.model.moe_router_dtype == "auto":
-            self.model.moe_router_dtype = "bfloat16"
-        return self
-
-    @model_validator(mode="after")
-    def resolve_weight_decay_auto(self):
-        """Resolve ``optim.weight_decay='auto'``: SFT keeps the historical 0.01 default — standard L2 regularization for supervised training."""
-        if self.optim.weight_decay == "auto":
-            self.optim.weight_decay = 0.01
-        return self
-
-    @model_validator(mode="after")
-    def resolve_freeze_moe_router_auto(self):
-        """Resolve ``model.freeze_moe_router='auto'``: SFT trains the router."""
-        if self.model.freeze_moe_router == "auto":
-            self.model.freeze_moe_router = False
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_run_identity(self):
-        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory, W&B run name and platform run name to it when not
-        set explicitly."""
-        if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
-            model = self.model.name.split("/")[-1]
-            parts = [part for part in (dataset, model) if part]
-            self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
-        if self.run.dir is None:
-            self.run.dir = self.run.name
-        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
-            self.monitors.wandb.name = self.run.name
-        if self.monitors.prime is not None and self.monitors.prime.name is None:
-            self.monitors.prime.name = self.run.name
-        return self
-
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
 
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
-    memory_profiler_path: Path | None = None
-    """Path to write the memory profile to."""
-
     gc: GCConfig | None = GCConfig()
     """Garbage collection config. Disables automatic GC and runs deterministic collections every N steps to avoid stragglers. Set to null to use Python's default GC behavior."""
-
-    trace_path: Path | None = None
-    """Path to write the PyTorch profiler trace to."""
 
     dist_timeout_seconds: int = 900
     """Timeout in seconds for torch distributed ops: a hung collective (e.g. a dead rank) fails the run after this long."""
@@ -364,14 +267,13 @@ class SFTConfig(BaseConfig):
     slurm: SlurmConfig | None = None
     """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
 
-    dashboard: bool = True
-    """Make sure a local dashboard daemon serves this run's output dir (started on
-    demand in interactive sessions; an already-running daemon's URL is logged)."""
-
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
 
-    ### Pre-validation normalization
+    @property
+    def run_dir(self) -> Path:
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
 
     @model_validator(mode="before")
     @classmethod
@@ -384,23 +286,22 @@ class SFTConfig(BaseConfig):
                 deployment.pop(key, None)
         return data
 
-    @model_validator(mode="before")
-    @classmethod
-    def propagate_model_to_inference(cls, data):
-        """Fill ``inference.vllm.model`` from ``model.name`` before InferenceConfig
-        construction, so its parser auto-resolution sees the right model name."""
-        if not isinstance(data, dict):
-            return data
-        inference = data.get("inference")
-        model = data.get("model")
-        name = model.get("name") if isinstance(model, dict) else None
-        if isinstance(inference, dict) and name:
-            vllm = inference.setdefault("vllm", {})
-            if isinstance(vllm, dict):
-                vllm.setdefault("model", name)
-        return data
+    def default_run_name(self) -> str:
+        raise NotImplementedError
 
-    ### Validate configs (e.g. raise for unsupported (combinations of) configs)
+    @model_validator(mode="after")
+    def auto_setup_run_identity(self):
+        """Default the run name (see ``default_run_name``) and default the run directory, W&B run name and
+        platform run name to it when not set explicitly."""
+        if self.run.name is None:
+            self.run.name = self.default_run_name()
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
+            self.monitors.wandb.name = self.run.name
+        if self.monitors.prime is not None and self.monitors.prime.name is None:
+            self.monitors.prime.name = self.run.name
+        return self
 
     @model_validator(mode="after")
     def deepep_disables_grad_clipping(self):
@@ -429,6 +330,108 @@ class SFTConfig(BaseConfig):
             )
             self.optim.max_norm = None
         return self
+
+    @model_validator(mode="after")
+    def auto_setup_deployment(self):
+        """A multi-node deployment needs SLURM and sets ``model.dp_replicate`` from ``nodes_per_fsdp_group``; the
+        SLURM job name defaults to the run name and the template to the bundled single- or multi-node template."""
+        deployment = self.deployment
+        if deployment.type == "multi_node":
+            if self.slurm is None:
+                raise ValueError("Must use SLURM for multi-node deployment.")
+            if deployment.nodes_per_fsdp_group is not None:
+                if deployment.num_train_nodes % deployment.nodes_per_fsdp_group != 0:
+                    raise ValueError(
+                        f"deployment.num_train_nodes ({deployment.num_train_nodes}) must be divisible by "
+                        f"deployment.nodes_per_fsdp_group ({deployment.nodes_per_fsdp_group})"
+                    )
+                self.model.dp_replicate = deployment.num_train_nodes // deployment.nodes_per_fsdp_group
+        if self.slurm is not None:
+            if self.slurm.job_name is None:
+                self.slurm.job_name = self.run.name
+            if self.slurm.template_path is None:
+                templates_dir = find_package_resource("templates")
+                if templates_dir is not None:
+                    self.slurm.template_path = templates_dir / f"{deployment.type}_sft.sbatch.j2"
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_tokenizer_trust_remote_code(self):
+        if self.tokenizer.trust_remote_code is None:
+            self.tokenizer.trust_remote_code = self.model.trust_remote_code
+        return self
+
+
+class SFTConfig(TrainRunConfig):
+    def default_run_name(self) -> str:
+        """``<dataset>--<model>--<short-id>``."""
+        dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+        model = self.model.name.split("/")[-1]
+        parts = [part for part in (dataset, model) if part]
+        return "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
+
+    renderer: RendererConfig = AutoRendererConfig()
+    """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
+
+    data: DataConfig = SFTDataConfig()
+
+    val: SFTValConfig | None = None
+    """Validation configuration. If None, no validation runs."""
+
+    eval: SFTOnlineEvalConfig | None = None
+    """Online evaluation configuration: rollout-based evals against a live inference
+    server that receives the trainer's weight broadcasts. If None, no online evals run."""
+
+    inference: InferenceConfig | None = None
+    """Inference server for online evals. If None (with ``eval`` set), the launcher
+    does not start a server and evals connect to ``eval.client.base_url``."""
+
+    weight_broadcast: WeightBroadcastConfig | None = None
+    """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
+    LoRA and external inference use filesystem broadcast."""
+
+    scheduler: SchedulerConfig = ConstantSchedulerConfig()
+
+    @model_validator(mode="after")
+    def resolve_moe_router_dtype_auto(self):
+        """Resolve ``model.moe_router_dtype='auto'``: SFT defaults to bf16 routing, skipping the fp32 gate GEMM and its fp32 FSDP unit."""
+        if self.model.moe_router_dtype == "auto":
+            self.model.moe_router_dtype = "bfloat16"
+        return self
+
+    @model_validator(mode="after")
+    def resolve_weight_decay_auto(self):
+        """Resolve ``optim.weight_decay='auto'``: SFT keeps the historical 0.01 default — standard L2 regularization for supervised training."""
+        if self.optim.weight_decay == "auto":
+            self.optim.weight_decay = 0.01
+        return self
+
+    @model_validator(mode="after")
+    def resolve_freeze_moe_router_auto(self):
+        """Resolve ``model.freeze_moe_router='auto'``: SFT trains the router."""
+        if self.model.freeze_moe_router == "auto":
+            self.model.freeze_moe_router = False
+        return self
+
+    ### Pre-validation normalization
+
+    @model_validator(mode="before")
+    @classmethod
+    def propagate_model_to_inference(cls, data):
+        """Fill ``inference.vllm.model`` from ``model.name`` before InferenceConfig
+        construction, so its parser auto-resolution sees the right model name."""
+        if not isinstance(data, dict):
+            return data
+        inference = data.get("inference")
+        model = data.get("model")
+        name = model.get("name") if isinstance(model, dict) else None
+        if isinstance(inference, dict) and name:
+            vllm = inference.setdefault("vllm", {})
+            if isinstance(vllm, dict):
+                vllm.setdefault("model", name)
+        return data
+
+    ### Validate configs (e.g. raise for unsupported (combinations of) configs)
 
     @model_validator(mode="after")
     def auto_setup_online_eval(self):
@@ -642,15 +645,18 @@ class SFTConfig(BaseConfig):
 
     ### Auto-setup and validate shared configs
 
+    memory_profiler_path: Path | None = None
+    """Path to write the memory profile to."""
+
+    trace_path: Path | None = None
+    """Path to write the PyTorch profiler trace to."""
+
+    dashboard: bool = True
+    """Make sure a local dashboard daemon serves this run's output dir (started on
+    demand in interactive sessions; an already-running daemon's URL is logged)."""
+
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
             self.tokenizer.name = self.model.name
-        if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_deployment(self):
-        setup_trainer_deployment(self)
         return self
