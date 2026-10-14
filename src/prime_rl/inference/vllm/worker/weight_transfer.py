@@ -34,7 +34,8 @@ class CheckpointIndexMap:
     loader's name mapping, packing (qkv, gate_up, experts) and TP/EP slicing.
     Supported: every write is one ``copy_`` of a row/column block of a 1-D or
     2-D checkpoint tensor into a param of the same dtype, with no post-load
-    transform of the weights.
+    transform of the weights. Tensors the loader casts (e.g. an fp32 router
+    from a bf16 checkpoint) are only allowed to stay unchanged.
     """
 
     def __init__(self, model: Module, tensors: dict[str, tuple[list[int], str]]):
@@ -48,6 +49,7 @@ class CheckpointIndexMap:
         source_names: dict[int, str] = {}
         # name -> [(row0, rows, col0, cols, param index, offset, row stride, col stride)]
         records: dict[str, list[tuple[int, ...]]] = defaultdict(list)
+        unpatchable: set[str] = set()
 
         def record_copy_(destination: torch.Tensor, source: torch.Tensor, non_blocking: bool = False) -> torch.Tensor:
             name = source_names.get(source.untyped_storage().data_ptr())
@@ -56,11 +58,14 @@ class CheckpointIndexMap:
             num_cols = shape[-1] if shape else 1
             source_2d = source.view(1, -1) if source.dim() == 1 else source
             destination_2d = destination.view(1, -1) if destination.dim() == 1 else destination
+            if name is not None and source.dtype != destination.dtype:
+                # e.g. an fp32 router loaded from a bf16 checkpoint: fine as long as it never changes
+                unpatchable.add(name)
+                return destination
             if (
                 name is None
                 or index is None
                 or len(shape) > 2
-                or source.dtype != destination.dtype
                 or source.shape != destination.shape
                 or source.dim() > 2
                 or source_2d.stride(-1) != 1
@@ -89,20 +94,25 @@ class CheckpointIndexMap:
 
         self.num_cols = {name: (shape[-1] if shape else 1) for name, (shape, _) in tensors.items()}
         self.records = dict(records)
-        # [first, last + 1) flat checkpoint index each tensor's writes cover
+        self.unpatchable = unpatchable
+        # [first, last + 1) flat checkpoint index each tensor's writes cover; unpatchable tensors are
+        # read whole so that a change to them is caught in apply_xor
         self.spans = {
             name: (
                 min(row0 * self.num_cols[name] + col0 for row0, _, col0, *_ in writes),
                 max((row0 + rows - 1) * self.num_cols[name] + col0 + cols for row0, rows, col0, cols, *_ in writes),
             )
             for name, writes in self.records.items()
-        }
+        } | {name: (0, 2**62) for name in unpatchable}
 
     @torch.no_grad()
     def apply_xor(
         self, entries: list[tuple[str, int]], indices: torch.Tensor, xor: torch.Tensor, chunk: int = 1 << 25
     ) -> None:
         """XOR ``xor`` (bits) into the params at the checkpoint ``indices`` of ``entries``."""
+        changed = [name for name, _ in entries if name in self.unpatchable]
+        if changed:
+            raise NotImplementedError(f"Sparse weight deltas cannot patch {changed[:8]}: the engine casts them on load")
         device = indices.device
         max_records = max((len(self.records.get(name, ())) for name, _ in entries), default=0)
         # Per entry and write k: [num_cols, row0, rows, col0, cols, param, offset, row stride, col stride].
