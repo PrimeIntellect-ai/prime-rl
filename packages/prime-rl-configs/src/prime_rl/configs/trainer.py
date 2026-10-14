@@ -127,6 +127,8 @@ _DEFAULT_FP8_IGNORE_PATTERNS: list[str] = [
 
 class FP8Config(BaseConfig):
     type: Literal["fp8"] = "fp8"
+    stochastic_rounding: bool = False
+    """Stochastically round weights, reusing the same realization in forward and backward."""
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
@@ -182,6 +184,8 @@ class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
+    stochastic_rounding: bool = False
+    """Stochastically round expert weights consistently across replicas and backward."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
@@ -266,6 +270,9 @@ class ModelConfig(BaseModelConfig):
 
     moe: MoERuntimeConfig = MoERuntimeConfig()
     """Routed-expert compute and token-dispatch runtime."""
+
+    fp8_rounding_seed: int = 0
+    """Rank-independent seed for FP8 stochastic weight rounding, refreshed each optimizer step."""
 
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
@@ -440,7 +447,15 @@ class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"
 
 
-OptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig | SignSGDConfig, Field(discriminator="type")]
+class SGDConfig(BaseOptimizerConfig):
+    """SGD without momentum or optimizer state."""
+
+    type: Literal["sgd"] = "sgd"
+
+
+OptimizerConfig: TypeAlias = Annotated[
+    AdamWConfig | MuonConfig | SignSGDConfig | SGDConfig, Field(discriminator="type")
+]
 
 
 class CheckpointConfig(BaseConfig):
