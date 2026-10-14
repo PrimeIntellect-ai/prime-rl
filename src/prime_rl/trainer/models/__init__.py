@@ -2,7 +2,7 @@
 
 from collections import OrderedDict
 
-from transformers import AutoConfig, GenerationConfig
+from transformers import AutoConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.models.auto.auto_factory import _BaseAutoModelClass, _LazyAutoMapping, auto_class_update
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
@@ -95,35 +95,6 @@ AutoModelForCausalLMPrimeRL = auto_class_update(AutoModelForCausalLMPrimeRL, hea
 def get_custom_causal_lm_cls(model_config: PretrainedConfig) -> type[PreTrainedModelPrimeRL]:
     """Resolve the PrimeRL model class from a possibly non-PrimeRL config instance."""
     return _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE[model_config.model_type]
-
-
-def set_pad_token_id(model_config: PretrainedConfig) -> None:
-    """Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
-
-    In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
-    """
-    if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
-        gen_config = GenerationConfig.from_model_config(model_config)
-        # Use `is not None` instead of truthiness: token ID 0 is valid.
-        pad_token_id = next(
-            (
-                v
-                for v in [gen_config.pad_token_id, gen_config.eos_token_id, getattr(model_config, "eos_token_id", None)]
-                if v is not None
-            ),
-            None,
-        )
-        # Some HF configs (e.g. Llama 3.2) set pad_token_id to a list, which
-        # crashes both huggingface_hub's strict setter and transformers'
-        # GenerationConfig.validate(). Unwrap before assigning.
-        if isinstance(pad_token_id, list):
-            pad_token_id = pad_token_id[0]
-        model_config.pad_token_id = pad_token_id
-
-    # Handle list pad_token_id that was already set on the config (not from our
-    # fallback above, but directly in the model's config.json).
-    if isinstance(getattr(model_config, "pad_token_id", None), list):
-        model_config.pad_token_id = model_config.pad_token_id[0]
 
 
 def supports_custom_impl(model_config: PretrainedConfig) -> bool:

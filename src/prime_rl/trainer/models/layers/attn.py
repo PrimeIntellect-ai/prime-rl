@@ -407,7 +407,7 @@ def flash_attn_3_varlen_op(
 def quadratic_attention_flops(
     *, num_heads: int, qk_head_dim: int, v_head_dim: int, seq_len: int, attended_tokens: int | None = None
 ) -> int:
-    """Training FLOPs of softmax attention over one document, as torchtitan's `quadratic_attention_flops_per_token`.
+    """Training FLOPs of softmax attention over one document.
 
     Each of the `seq_len` queries attends `attended_tokens` keys (default all `seq_len`): two matmuls per
     head (q @ K^T over `qk_head_dim`, scores @ V over `v_head_dim`), 2 FLOPs per multiply-add, 3x for
@@ -419,7 +419,7 @@ def quadratic_attention_flops(
 
 
 def delta_rule_flops(*, num_heads: int, key_head_dim: int, v_head_dim: int, seq_len: int) -> int:
-    """Training FLOPs of a gated delta-rule recurrence over one document, as torchtitan's `delta_rule_flops_per_token`.
+    """Training FLOPs of a gated delta-rule recurrence over one document.
 
     Per token and head, reading, updating and querying the `[key_head_dim, v_head_dim]` state are three
     `key_head_dim * v_head_dim` products.

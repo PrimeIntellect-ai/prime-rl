@@ -1,14 +1,12 @@
 import torch
 import torch.nn.functional as F
+from fla.modules import FusedRMSNormGated
+from fla.modules.conv import causal_conv1d
+from fla.ops.cp import build_cp_context
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
 from prime_rl.trainer.models.layers.attn import delta_rule_flops
-from prime_rl.trainer.models.layers.optional_kernels import (
-    FusedRMSNormGated,
-    build_cp_context,
-    causal_conv1d,
-    chunk_gated_delta_rule,
-)
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.utils.cp import CPContext
 

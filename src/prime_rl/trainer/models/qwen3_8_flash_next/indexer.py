@@ -18,13 +18,10 @@ class SparseAttentionIndexer(nn.Module):
         compression_ratio: int,
         norm_eps: float,
     ) -> None:
-        super().__init__()
-        # Resolved before torch.compile traces the layer. A host without a GPU (the orchestrator builds
-        # the model on meta to count FLOPs) never runs the layer and skips it.
-        if torch.cuda.is_available():
-            import prime_kernels
+        import prime_kernels
 
-            self.select_indexed_blocks = prime_kernels.load("indexed_attention").select_indexed_blocks
+        super().__init__()
+        self.select_indexed_blocks = prime_kernels.load("indexed_attention").select_indexed_blocks
         self.num_query_heads = num_query_heads
         self.head_dim = head_dim
         self.token_budget = token_budget

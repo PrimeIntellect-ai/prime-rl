@@ -10,7 +10,7 @@ from prime_rl.utils.logger import get_logger
 
 
 class FlopCounter:
-    """Training FLOPs of packed documents, as torchtitan's `get_nparams_and_flops` per document.
+    """Training FLOPs of packed documents.
 
     6 FLOPs per active parameter per token, plus each sequence-mixing layer's FLOPs per document (a
     token attends only within its own document). The model is walked once, at construction.

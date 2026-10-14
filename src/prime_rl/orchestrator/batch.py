@@ -5,10 +5,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import torch
-from transformers import AutoConfig
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, set_pad_token_id
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import get_model
 from prime_rl.trainer.perf import FlopCounter
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
 
@@ -740,16 +740,11 @@ class BatchPacker:
         self.seq_len = config.seq_len
         self.num_train_workers = config.num_train_workers
         self.pad_to_multiple_of = config.pad_to_multiple_of
-        # The flash-attention version selects kernels, not modules, so it does not change the FLOPs.
-        model_config = AutoConfig.from_pretrained(
-            config.model.name,
-            attn_implementation="flash_attention_3",
-            trust_remote_code=config.tokenizer.trust_remote_code,
+        # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
+        model_config = ModelConfig(
+            name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
         )
-        set_pad_token_id(model_config)
-        with torch.device("meta"):
-            model = AutoModelForCausalLMPrimeRL.from_config(model_config)
-        self.bin_cost = FlopCounter(model)
+        self.bin_cost = FlopCounter(get_model(model_config, device=torch.device("meta")))
 
     def pack(self, samples: list[TrainingSample]) -> list[list[MicroBatch]]:
         return prepare_batch(

@@ -23,7 +23,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, Shard
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
-from transformers import AutoConfig, AutoTokenizer, PretrainedConfig
+from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -45,7 +45,6 @@ from prime_rl.trainer.models import (
     cast_float_and_contiguous,
     get_custom_causal_lm_cls,
     get_custom_vlm_cls,
-    set_pad_token_id,
     supports_custom_impl,
 )
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
@@ -357,8 +356,40 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
+    # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
+    indexer_types = getattr(model_config, "indexer_types", None)
+    if indexer_types and any(t == "shared" for t in indexer_types):
+        model_config.use_index_cache = True
+        logger.info(
+            f"Auto-enabled IndexShare from indexer_types schedule "
+            f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
+        )
 
-    set_pad_token_id(model_config)
+    # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
+    # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
+    if not hasattr(model_config, "pad_token_id") or model_config.pad_token_id is None:
+        gen_config = GenerationConfig.from_model_config(model_config)
+        # Use `is not None` instead of truthiness: token ID 0 is valid.
+        pad_token_id = next(
+            (
+                v
+                for v in [gen_config.pad_token_id, gen_config.eos_token_id, getattr(model_config, "eos_token_id", None)]
+                if v is not None
+            ),
+            None,
+        )
+        # Some HF configs (e.g. Llama 3.2) set pad_token_id to a list, which
+        # crashes both huggingface_hub's strict setter and transformers'
+        # GenerationConfig.validate(). Unwrap before assigning.
+        if isinstance(pad_token_id, list):
+            pad_token_id = pad_token_id[0]
+        model_config.pad_token_id = pad_token_id
+
+    # Handle list pad_token_id that was already set on the config (not from our
+    # fallback above, but directly in the model's config.json).
+    if isinstance(getattr(model_config, "pad_token_id", None), list):
+        model_config.pad_token_id = model_config.pad_token_id[0]
 
     # NOTE: For VLM models, we do NOT propagate dtype to sub_configs.
     # The model should load in its default dtype (bf16) to match vLLM inference.

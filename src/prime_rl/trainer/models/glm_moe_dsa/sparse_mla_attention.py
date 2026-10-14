@@ -151,8 +151,8 @@ class GlmMoeDsaAttention(nn.Module):
         self.cp_context = CPContext()
 
     def attention_flops(self, seq_len: int) -> int:
-        # As torchtitan's DeepSeek V3/V4: MLA counted un-absorbed (qk = nope + rope), sparse attention
-        # attends `index_topk` tokens, and the indexer scores every token with its own heads.
+        # MLA counted un-absorbed (qk = nope + rope); sparse attention attends `index_topk` tokens, and
+        # the indexer scores every token with its own heads.
         flops = quadratic_attention_flops(
             num_heads=self.num_heads,
             qk_head_dim=self.qk_head_dim,

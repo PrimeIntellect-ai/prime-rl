@@ -21,12 +21,14 @@ class AttentionFlops(Protocol):
         ...
 
 
-def count_active_params(model: nn.Module, params: Iterable[nn.Parameter]) -> int:
-    """Elements of `params` that a token multiplies through, as torchtitan's `get_nparams_and_active_nparams`.
+def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None = None) -> int:
+    """Elements of `params` (default: all of the model's) that a token multiplies through.
 
-    Routed experts count by `top_k / num_experts`; embedding tables count only when tied to the lm_head.
+    Every parameter counts (attention and MLP projections, norms, routers, the lm_head) except the
+    routed experts a token skips (`1 - top_k / num_experts` of them) and embedding tables, which
+    count only when tied to the lm_head.
     """
-    params = {id(param): param for param in params}
+    params = {id(param): param for param in (model.parameters() if params is None else params)}
     lm_head_params = {id(param) for param in model.lm_head.parameters()}
     inactive = 0
     for module in model.modules():
@@ -113,7 +115,7 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
 
     def num_active_params(self) -> int:
         """Parameters a text token multiplies through, LoRA adapters included."""
-        return count_active_params(self, self.parameters())
+        return count_active_params(self)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

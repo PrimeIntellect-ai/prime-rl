@@ -139,13 +139,21 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
-# Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it. The layer still
-# builds without it (the orchestrator builds the model on meta to count FLOPs) and raises in forward.
+# Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
     from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn import dsv4_sparse_attn, sparse_attn_shape_error
 except ImportError:
     dsv4_sparse_attn = None  # type: ignore
     sparse_attn_shape_error = None  # type: ignore
+
+
+def _kernel_blocker(num_heads: int, head_dim: int) -> str | None:
+    """Why the fused kernel cannot run at this shape, or ``None`` if it can."""
+    if dsv4_sparse_attn is None:
+        return "the tilelang sparse-attention kernel failed to import; install the `gpu` extra"
+    # CSA gives every query head the same single KV head, so the kernel's `kv_group` is 1. The
+    # shape constraints themselves are stated once, next to the kernels they come from.
+    return sparse_attn_shape_error(num_heads, 1, head_dim)
 
 
 class DeepseekV4GroupedLinear(nn.Linear):
@@ -687,11 +695,11 @@ class DeepseekV4Attention(nn.Module):
         self.o_b_proj = nn.Linear(config.o_groups * config.o_lora_rank, config.hidden_size, bias=False)
         self.sinks = nn.Parameter(torch.zeros(self.num_heads))
         self.rotary_emb = rotary_emb
-        # Raised here rather than from the first forward, where it would surface as a tilelang compile
-        # failure a long way from the config that caused it. CSA gives every query head the same single
-        # KV head, so the kernel's `kv_group` is 1; the shape constraints are stated next to the kernels.
-        if dsv4_sparse_attn is not None and (shape_error := sparse_attn_shape_error(self.num_heads, 1, self.head_dim)):
-            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {shape_error}")
+        # Raised here rather than from the first forward, where it would surface as an ImportError
+        # or a tilelang compile failure a long way from the config that caused it.
+        blocker = _kernel_blocker(self.num_heads, self.head_dim)
+        if blocker is not None:
+            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
@@ -699,8 +707,8 @@ class DeepseekV4Attention(nn.Module):
         self.cp_context = CPContext()
 
     def attention_flops(self, seq_len: int) -> int:
-        # As torchtitan's DeepSeek V4: each query attends the local window plus the compressed entries
-        # (CSA: the indexer scores all of them, attention reads `index_topk`).
+        # Each query attends the local window plus the compressed entries (CSA: the indexer scores
+        # all of them, attention reads `index_topk`).
         attended_tokens = min(seq_len, self.config.sliding_window)
         indexer_flops = 0
         if self.compressor is not None:
@@ -776,11 +784,6 @@ class DeepseekV4Attention(nn.Module):
             top_k_indices=top_k_indices,
             window_indices=packed.window_indices,
         )
-        if dsv4_sparse_attn is None:
-            raise ValueError(
-                "DeepSeek V4 cannot run the fused sparse-attention kernel: "
-                "the tilelang sparse-attention kernel failed to import; install the `gpu` extra"
-            )
         attn_output, _ = dsv4_sparse_attn(
             q,
             inputs.kv_buf,
