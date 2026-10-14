@@ -14,8 +14,8 @@ TIMEOUT = 10 * 60
 # layout trains the same global batch from the same weights.
 LAYOUTS = {
     "base": (1, []),
-    "dp2": (2, []),
-    "cp2": (2, ["--model.cp", "2"]),
+    "dp2": (2, ["--model.ep", "1"]),
+    "cp2": (2, ["--model.cp", "2", "--model.ep", "1"]),
     "ep2": (2, ["--model.ep", "2"]),
     "cp2_ep2": (4, ["--model.cp", "2", "--model.ep", "2"]),
 }
