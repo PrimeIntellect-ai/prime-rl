@@ -1,13 +1,16 @@
 import json
 import os
 import uuid
+from pathlib import Path
 
 from prime_rl.configs.pretrain import PretrainConfig
+from prime_rl.entrypoints.sft import submit_slurm_script, write_trainer_slurm_script
 from prime_rl.utils.config import cli, dump_resolved_config
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     format_config_message,
     format_log_message,
+    get_launcher_dir,
     prepare_attempt_dirs,
     validate_run_dir,
     write_launch_artifacts,
@@ -21,6 +24,7 @@ from prime_rl.utils.process import (
 )
 
 PRETRAIN_CONFIG = "pretrain.json"
+PRETRAIN_SBATCH = "pretrain.sbatch"
 
 
 def write_model_dir(config: PretrainConfig) -> None:
@@ -56,6 +60,19 @@ def download_data(config: PretrainConfig) -> None:
             load_eval_documents(source.dataset, source.subset, source.split, source.revision, source.text_column)
 
 
+def pretrain_slurm(config: PretrainConfig, config_path: Path, log_dir: Path) -> None:
+    logger = get_logger()
+    script_path = get_launcher_dir(config.run_dir) / PRETRAIN_SBATCH
+    write_trainer_slurm_script(config, "pretrain", config_path, log_dir, script_path)
+    logger.info(f"Wrote SLURM script to {script_path}")
+    num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
+    log_message = format_log_message(log_dir=log_dir, trainer=True, num_train_nodes=num_nodes)
+    if config.dry_run:
+        logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
+        return
+    submit_slurm_script(script_path, log_message, logger)
+
+
 def pretrain(config: PretrainConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
@@ -86,8 +103,16 @@ def pretrain(config: PretrainConfig):
         download_data(config)
 
     config_path = config_dir / PRETRAIN_CONFIG
-    config_path.write_text(json.dumps(dump_resolved_config(config, exclude={"dry_run", "clean"}), indent=2))
+    exclude = {"dry_run", "clean"}
+    if config.slurm is not None:
+        # A single-node job runs this launcher again on the node; the trainers of a
+        # multi-node job read the config directly.
+        exclude |= {"slurm", "deployment"} if config.deployment.type == "multi_node" else {"slurm"}
+    config_path.write_text(json.dumps(dump_resolved_config(config, exclude=exclude), indent=2))
     logger.info(f"Configs:\n{format_config_message(config_dir, 'pretrain', [('Pretrain', config_path)])}")
+    if config.slurm is not None:
+        pretrain_slurm(config, config_path, log_dir)
+        return
     if config.dry_run:
         logger.success("Dry run complete. To start the run, remove --dry-run from your command.")
         return
