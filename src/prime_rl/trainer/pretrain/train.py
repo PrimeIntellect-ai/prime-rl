@@ -45,8 +45,8 @@ from prime_rl.trainer.pretrain.data import (
 from prime_rl.trainer.pretrain.schedules import LRSchedule
 from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
 from prime_rl.trainer.pretrain.snapshots import SnapshotWriter, shared_wandb_env
-from prime_rl.trainer.step import run_micro_batches
-from prime_rl.trainer.metrics import DeadExperts, SpikeDetector, grad_norms_by_group
+from prime_rl.trainer.pretrain.step import run_micro_batches
+from prime_rl.trainer.pretrain.metrics import DeadExperts, SpikeDetector, grad_norms_by_group
 from prime_rl.trainer.utils import (
     GarbageCollection,
     clip_grad_norm_,

@@ -27,6 +27,7 @@ from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
+    get_expert_load_stats,
     get_load_balance_stats,
     is_tt_moe_model,
     reshard_module,
@@ -430,6 +431,7 @@ def train(config: SFTConfig):
             record_function=maybe_record_function,
         )
         forward_backward_time = time.perf_counter() - forward_backward_start_time
+        expert_load_stats = get_expert_load_stats(result.tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -496,8 +498,10 @@ def train(config: SFTConfig):
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_moe_model:
-            for name, label in (("expert_load/max_mean/mean", "Max/Mean Load"), ("router/confidence", "Routing Conf.")):
-                step_message += f" | {label} {result.metrics[name]:.4f}"
+            for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
+                value = result.moe_stats[name]
+                if value > 0:
+                    step_message += f" | {label} {value:.4f}"
         logger.success(step_message)
 
         # Log progress metrics
@@ -568,7 +572,9 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        asyncio.run(monitors.log({**result.metrics, "step": progress.step}, step=progress.step))
+        moe_log_metrics = result.moe_stats | expert_load_stats
+        if moe_log_metrics:
+            asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
 
         is_first_step = False
 

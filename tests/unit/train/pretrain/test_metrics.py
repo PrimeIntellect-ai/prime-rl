@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from prime_rl.trainer.metrics import expert_load_metrics, grad_norms_by_group, param_group
+from prime_rl.trainer.pretrain.metrics import expert_load_metrics, grad_norms_by_group, param_group
 
 
 def test_expert_load_metrics_per_layer_summaries():
