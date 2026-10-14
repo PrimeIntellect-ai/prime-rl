@@ -25,7 +25,7 @@ PRETRAIN_CONFIG = "pretrain.json"
 
 
 def write_model_dir(config: PretrainConfig) -> None:
-    """Write the config built from ``[model.arch]`` and the tokenizer to ``<run_dir>/model``. The vocabulary size
+    """Write the config built from ``[model.arch]`` and the tokenizer to ``<run_dir>/configs/model``. The vocabulary size
     (rounded up to a multiple of 128) and the special token ids come from the tokenizer."""
     from transformers import AutoTokenizer
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
