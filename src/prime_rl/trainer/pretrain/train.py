@@ -1,6 +1,9 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 import asyncio
+import hashlib
+import json
+import os
 import math
 import time
 from datetime import timedelta
@@ -261,6 +264,9 @@ def train(config: PretrainConfig):
         run_evals(step=0)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
+    data_hash_steps = int(os.environ.get("PRL_DATA_HASH_STEPS", "0"))
+    if data_hash_steps:
+        (config.run_dir / "data_hashes").mkdir(exist_ok=True)
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     while True:
@@ -298,6 +304,12 @@ def train(config: PretrainConfig):
         seq_balance = 0.0
         step_local_num_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batches):
+            if progress.step <= data_hash_steps:
+                # Validation only: hash every row this rank trains on.
+                rows = micro_batch["input_ids"].view(-1, config.data.seq_len).numpy()
+                with open(config.run_dir / "data_hashes" / f"rank{world.rank}.jsonl", "a") as f:
+                    hashes = [hashlib.sha1(row.tobytes()).hexdigest()[:16] for row in rows]
+                    f.write(json.dumps({"step": progress.step, "micro_step": micro_step, "rows": hashes}) + "\n")
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
             local_loss_sum, batch_token_count, aux_loss_sum = compute_loss(micro_batch)
             if gradient_manager is None:
