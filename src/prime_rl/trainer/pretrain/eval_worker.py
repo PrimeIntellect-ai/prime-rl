@@ -22,6 +22,7 @@ from transformers import AutoTokenizer
 
 from prime_rl import monitors
 from prime_rl.configs.pretrain import EvalWorkerConfig, PretrainConfig
+from prime_rl.monitors.prime import read_platform_record
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model
 from prime_rl.trainer.parallel_dims import get_parallel_dims
@@ -69,14 +70,20 @@ def main_loop(config: EvalWorkerConfig) -> None:
     torch.set_float32_matmul_precision(run.matmul_precision)
 
     os.environ.update(shared_wandb_env(config.run_dir, "eval"))
+    if run.monitors.prime is not None:
+        # Attach to the trainer's platform run, whose id the trainer's monitor leaves in the run dir.
+        while (record := read_platform_record(config.run_dir)) is None or "id" not in record:
+            time.sleep(config.poll_seconds)
+        os.environ["RUN_ID"] = record["id"]
     asyncio.run(
         monitors.setup(
             producer="eval",
             wandb=run.monitors.wandb,
+            prime=run.monitors.prime,
             file=run.monitors.file,
             output_dir=config.run_dir,
             run_config=run,
-            overview_flavor="sft",
+            overview_flavor="pretrain",
         )
     )
 

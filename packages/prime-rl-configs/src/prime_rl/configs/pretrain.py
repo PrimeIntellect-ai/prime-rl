@@ -325,12 +325,6 @@ class PretrainConfig(TrainRunConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_monitors(self):
-        if self.monitors.prime is not None:
-            raise ValueError("monitors.prime is not supported for pretraining yet.")
-        return self
-
-    @model_validator(mode="after")
     def validate_cp(self):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:

@@ -55,7 +55,7 @@ async def setup(
     run_config: BaseConfig | None = None,
     train_env_names: list[str] | None = None,
     eval_env_names: list[str] | None = None,
-    overview_flavor: Literal["rl", "sft", "eval"] = "rl",
+    overview_flavor: Literal["rl", "sft", "eval", "pretrain"] = "rl",
 ) -> None:
     """Construct, initialize, and register one monitor per non-None config.
 

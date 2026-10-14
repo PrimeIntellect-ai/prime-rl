@@ -446,6 +446,11 @@ const SFT_TRAIN_METRICS = ["loss/mean", "loss/perplexity", "val/loss", "val/perp
 // max_vio only exists on MoE models: a regex panel stays away on dense ones
 const SFT_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "max_vio/(mean|max)" }];
 const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory", "time/forward_backward"];
+// Pretrain flavor (overview.py PRETRAIN_*): held-out bpb from the trainer (val/) and the eval worker (eval/)
+const PRETRAIN_TRAIN_PANELS = [{ metric: "loss/mean" }, { metric: "loss/spike" }, { regex: "val/.*/bpb" }, { regex: "eval/.*/bpb" }];
+const PRETRAIN_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/grad_norm_spike" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "optim/grad_norm/.*" }];
+const PRETRAIN_MOE_METRICS = ["expert_load/max_mean/mean", "expert_load/max_mean/max", "expert_load/micro_max_mean/mean", "expert_load/micro_max_mean/max", "expert_load/entropy/min", "expert_load/dead", "router/confidence", "router/bias/absmax", "loss/seq_balance"];
+const PRETRAIN_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory/max", "time/step", "time/data/max", "time/eval_round"];
 
 // Multi-series inference panels (overview.py INFERENCE_PANELS): fleet aggregate
 // paired with the cross-engine tail that flags a single sick engine.
@@ -1455,6 +1460,13 @@ function buildSections(meta) {
   });
   const sections = [];
   const evalEnvs = meta.eval_envs || [];
+  if (meta.type === "pretrain") {
+    sections.push({ name: "train", panels: PRETRAIN_TRAIN_PANELS });
+    sections.push({ name: "stability", panels: PRETRAIN_STABILITY_PANELS });
+    sections.push({ name: "moe", panels: PRETRAIN_MOE_METRICS.map((m) => ({ metric: m })) });
+    sections.push({ name: "performance", panels: PRETRAIN_PERFORMANCE_METRICS.map((m) => ({ metric: m })) });
+    return sections;
+  }
   if (meta.type === "sft") {
     // the val panes show once a validation value is logged, not on the config alone
     sections.push({ name: "train", panels: SFT_TRAIN_METRICS.map((m) => (m.startsWith("val/") ? { regex: escRe(m) } : { metric: m })) });

@@ -98,11 +98,11 @@ def train(config: PretrainConfig):
         monitors.setup(
             producer="trainer",
             wandb=config.monitors.wandb,
-            prime=None,
+            prime=config.monitors.prime,
             file=config.monitors.file,
             output_dir=config.run_dir,
             run_config=config,
-            overview_flavor="sft",
+            overview_flavor="pretrain",
         )
     )
 

@@ -91,6 +91,31 @@ SFT_PERFORMANCE_METRICS = [
     "time/save_ckpt",
 ]
 
+# Pretrain flavor: loss and held-out evals, training stability, MoE balance, performance.
+PRETRAIN_TRAIN_METRICS = ["loss/mean", "loss/spike"]
+PRETRAIN_TRAIN_REGEXES = ["val/.*/bpb", "eval/.*/bpb"]
+PRETRAIN_STABILITY_METRICS = ["optim/grad_norm", "optim/grad_norm_spike", "optim/lr", "loss/nan_count"]
+PRETRAIN_STABILITY_REGEXES = ["optim/grad_norm/.*"]
+PRETRAIN_MOE_METRICS = [
+    "expert_load/max_mean/mean",
+    "expert_load/max_mean/max",
+    "expert_load/micro_max_mean/mean",
+    "expert_load/micro_max_mean/max",
+    "expert_load/entropy/min",
+    "expert_load/dead",
+    "router/confidence",
+    "router/bias/absmax",
+    "loss/seq_balance",
+]
+PRETRAIN_PERFORMANCE_METRICS = [
+    "perf/mfu",
+    "perf/throughput",
+    "perf/peak_memory/max",
+    "time/step",
+    "time/data/max",
+    "time/eval_round",
+]
+
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.
 COLUMNS = 4
 ROWS = 6
@@ -150,8 +175,17 @@ def eval_section(name: str, env_pattern: str) -> ws.Section:
 
 
 def build_sections(
-    train_envs: Sequence[str] = (), eval_envs: Sequence[str] = (), flavor: Literal["rl", "sft", "eval"] = "rl"
+    train_envs: Sequence[str] = (),
+    eval_envs: Sequence[str] = (),
+    flavor: Literal["rl", "sft", "eval", "pretrain"] = "rl",
 ) -> list[ws.Section]:
+    if flavor == "pretrain":
+        return [
+            section("train", metrics=PRETRAIN_TRAIN_METRICS, regexes=PRETRAIN_TRAIN_REGEXES),
+            section("stability", metrics=PRETRAIN_STABILITY_METRICS, regexes=PRETRAIN_STABILITY_REGEXES),
+            section("moe", metrics=PRETRAIN_MOE_METRICS),
+            section("performance", metrics=PRETRAIN_PERFORMANCE_METRICS),
+        ]
     # A standalone eval run has no training signal: one section per eval env.
     if flavor == "eval":
         if eval_envs:
@@ -231,7 +265,7 @@ def ensure_overview_view(
     name: str = OVERVIEW_NAME,
     train_envs: Sequence[str] = (),
     eval_envs: Sequence[str] = (),
-    flavor: Literal["rl", "sft", "eval"] = "rl",
+    flavor: Literal["rl", "sft", "eval", "pretrain"] = "rl",
 ) -> str | None:
     """Ensure an overview saved view exists for this run's env set. Reuses an existing overview built
     for the same envs; when the env set is new, creates a fresh versioned view (``overview`` →
