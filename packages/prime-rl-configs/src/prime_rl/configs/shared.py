@@ -286,10 +286,7 @@ class ZMQTransportConfig(BaseTransportConfig):
     """Host address for ZMQ transport."""
 
     port: int = 5555
-    """Base port for ZMQ transport."""
-
-    hwm: int = 10
-    """High-water mark (max in-flight messages per ZMQ socket)."""
+    """Port for ZMQ transport."""
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]

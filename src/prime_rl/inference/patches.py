@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -14,6 +16,7 @@ def apply_shared_vllm_patches():
 
     patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
+    monkey_patch_shm_buffer_ownership()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
@@ -25,11 +28,122 @@ def apply_shared_vllm_patches():
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_packed_sampling_masks()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+
+
+def monkey_patch_shm_buffer_ownership():
+    """Own out-of-band buffers before releasing a reusable vLLM SHM slot."""
+    import pickle
+
+    import zmq
+    from vllm.distributed.device_communicators import shm_broadcast
+
+    # Backport https://github.com/vllm-project/vllm/pull/61000; remove when our
+    # minimum vLLM version includes it. Retained routed-expert arrays otherwise
+    # alias ring slots that subsequent messages can overwrite.
+    MessageQueue = shm_broadcast.MessageQueue
+    if getattr(MessageQueue.dequeue, "_prime_rl_owns_shm_buffers", False):
+        return
+
+    def dequeue(self, timeout: float | None = None, indefinite: bool = False):
+        if self._is_local_reader:
+            with self.acquire_read(timeout, indefinite) as buf:
+                overflow = buf[0] == 1
+                if not overflow:
+                    offset = 3
+                    buf_count = shm_broadcast.from_bytes_big(buf[1:offset])
+                    all_buffers = []
+                    for i in range(buf_count):
+                        buf_offset = offset + 4
+                        buf_len = shm_broadcast.from_bytes_big(buf[offset:buf_offset])
+                        offset = buf_offset + buf_len
+                        buffer = buf[buf_offset:offset]
+                        all_buffers.append(buffer if i == 0 else bytearray(buffer))
+                    obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])
+            if overflow:
+                obj = MessageQueue.recv(self.local_socket, timeout)
+        elif self._is_remote_reader:
+            obj = MessageQueue.recv(self.remote_socket, timeout)
+        else:
+            raise RuntimeError("Only readers can dequeue")
+        return obj
+
+    def _rebuild_tensor(buf, shape: tuple[int, ...], dtype_str: str) -> torch.Tensor:
+        dtype = getattr(torch, dtype_str)
+        assert isinstance(dtype, torch.dtype)
+        if isinstance(buf, zmq.Frame):
+            try:
+                return torch.frombuffer(buf, dtype=torch.uint8).view(dtype).view(shape)
+            except ValueError:
+                pass
+        raw = buf if isinstance(buf, bytearray) else bytearray(buf)
+        if not raw:
+            assert 0 in shape
+            return torch.empty(shape, dtype=dtype)
+        return torch.frombuffer(raw, dtype=torch.uint8).view(dtype).view(shape)
+
+    # Pickle resolves this reducer by its module and name in receiving processes.
+    _rebuild_tensor.__module__ = shm_broadcast.__name__
+    _rebuild_tensor.__qualname__ = "_rebuild_tensor"
+    dequeue._prime_rl_owns_shm_buffers = True
+    shm_broadcast._rebuild_tensor = _rebuild_tensor
+    MessageQueue.dequeue = dequeue
+
+
+@dataclass
+class PackedSamplingMask:
+    """A finished request's sampling masks in CSR form: ``ids[sum(counts[:i]):][:counts[i]]``
+    are the kept token ids of completion token ``i``."""
+
+    ids: np.ndarray
+    counts: np.ndarray
+
+
+def monkey_patch_packed_sampling_masks():
+    """Keep sampling masks as numpy arrays in the API server's output processor.
+
+    vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
+    runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
+    objects per token that every gen-2 pass walks. Store only the (untracked) id
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    """
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
+
+    original_init = RequestState.__init__
+    original_new_completion_output = RequestState._new_completion_output
+
+    class _MaskIds(list):
+        def append(self, chunk):
+            super().append(chunk.token_ids)
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
+
+    def _new_completion_output(self, token_ids, finish_reason, stop_reason):
+        chunks = self.sampling_mask_chunks
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
+            return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        self.sampling_mask_chunks = _MaskIds()
+        output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        output.sampling_mask = PackedSamplingMask(
+            ids=np.concatenate(chunks),
+            counts=np.fromiter(map(len, chunks), dtype=np.int32, count=len(chunks)),
+        )
+        return output
+
+    RequestState.__init__ = _init
+    RequestState._new_completion_output = _new_completion_output
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
