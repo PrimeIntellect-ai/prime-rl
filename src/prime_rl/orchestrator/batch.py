@@ -696,11 +696,10 @@ def _distribute_group(
 
 def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBatch:
     """
-    Pad a micro batch with the given padding size sample
-    Return the padded micro batch.
+    Pad a micro batch with loss-masked tokens up to the next multiple of `pad_to_multiple_of`.
     Args:
         micro_batch: The micro batch to pad.
-        padding_size: The number of padding tokens to add.
+        pad_to_multiple_of: The multiple to pad the sequence length up to.
     Returns:
         The padded micro batch.
     """

@@ -443,6 +443,7 @@ def test_cat_dataset_packs_multimodal_samples():
             ),
         ],
         seq_len=5,
+        pad_to_multiple_of=1,
     )
 
     packed = next(iter(dataset))
@@ -467,23 +468,24 @@ def test_cat_dataset_packs_text_and_multimodal_samples_together():
                 mm_token_type_ids=[0, 1],
             ),
             _sft_sample([4]),
-            _sft_sample([5, 6]),
+            _sft_sample([5, 6, 7, 8, 9, 10]),
         ],
-        seq_len=5,
+        seq_len=9,
+        pad_to_multiple_of=3,
     )
 
     dataiter = iter(dataset)
     packed = next(dataiter)
     text_pack = next(dataiter)
 
-    assert packed["input_ids"] == [1, 2, 3, 4, 0]
-    assert packed["loss_mask"] == [True, True, True, True, False]
-    assert packed["seq_lens"] == [1, 2, 2]
+    assert packed["input_ids"] == [1, 2, 3, 4, 0, 0]
+    assert packed["loss_mask"] == [True, True, True, True, False, False]
+    assert packed["seq_lens"] == [1, 2, 3]
     assert packed["mm_kwargs"] is not None
-    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0]
-    assert text_pack["input_ids"] == [5, 6, 0, 0, 0]
-    assert text_pack["loss_mask"] == [True, True, False, False, False]
-    assert text_pack["seq_lens"] == [5]
+    assert packed["mm_token_type_ids"] == [0, 0, 1, 0, 0, 0]
+    assert text_pack["input_ids"] == [5, 6, 7, 8, 9, 10]
+    assert text_pack["loss_mask"] == [True] * 6
+    assert text_pack["seq_lens"] == [6]
     assert text_pack["mm_kwargs"] is None
     assert text_pack["mm_token_type_ids"] is None
 
@@ -508,6 +510,10 @@ class EffortRenderer:
     def __init__(self, tokenizer, config):
         self.config = config
 
+    @property
+    def is_prefix_stable(self):
+        return self.config.reasoning_effort == "low"
+
     def render(self, messages, **kwargs):
         return RenderedTokens(token_ids=[0, 1], message_indices=[-1, 0], sampled_mask=[False, True])
 
@@ -528,8 +534,21 @@ def custom_renderer_config(tmp_path):
 def test_renderer_resolver_applies_renderer_columns_to_custom_renderer(custom_renderer_config):
     resolver = sft_data.RendererResolver(tokenizer=None, config=custom_renderer_config)
 
-    default = resolver({"messages": [], "reasoning_effort": None})
-    high = resolver({"messages": [], "reasoning_effort": "high"})
+    warnings = []
+    logger = sft_data.get_logger()
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING", format="{message}")
+    try:
+        default = resolver({"messages": [], "reasoning_effort": None})
+        assert warnings == []
+        high = resolver({"messages": [], "reasoning_effort": "high"})
+        assert resolver({"reasoning_effort": "high"}) is high
+        assert len(warnings) == 1
+        assert "does not guarantee prefix stability" in warnings[0]
+        assert "one training sample" in warnings[0]
+        assert "does not expand N assistant turns into N samples" in warnings[0]
+        assert "reasoning from earlier turns may be omitted" in warnings[0]
+    finally:
+        logger.remove(sink)
 
     assert default.config.reasoning_effort == "low"
     assert high.config.reasoning_effort == "high"
@@ -569,6 +588,8 @@ def test_sft_dataset_reads_mapped_message_columns(dummy_renderer):
 
     with pytest.raises(ValueError, match="'messages' column"):
         next(iter(SFTDataset(dataset, lambda _: dummy_renderer)))
+    with pytest.raises(ValueError, match="data.columns.message_loss_mask"):
+        SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(message_loss_mask="selection"))
     with pytest.raises(ValueError, match="data.columns.prompt"):
         SFTDataset(dataset, lambda _: dummy_renderer, columns=SFTColumnsConfig(prompt="question"))
 
@@ -594,3 +615,56 @@ def test_sft_dataset_passes_tools_through_from_the_mapped_column(dummy_renderer)
     next(iter(SFTDataset(dataset, lambda _: RecordingRenderer(), columns=SFTColumnsConfig(tools="schemas"))))
 
     assert seen == [[], tools]
+
+
+@pytest.mark.parametrize("model", ["zai-org/GLM-5", "Qwen/Qwen3-0.6B"])
+@pytest.mark.parametrize("layout", ["messages", "prompt_completion"])
+@pytest.mark.parametrize("column", ["message_loss_mask", "selection"])
+@pytest.mark.parametrize("mask", [None, [True, True, True, True], [0, 0, 0, 1], [0, 1, 0, 0], [0, 0, 0, 0]])
+def test_sft_message_selection(model, layout, column, mask):
+    from prime_rl.configs.sft import SFTColumnsConfig
+
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    renderer = create_renderer(tokenizer)
+    messages = [
+        {"role": "user", "content": "Question"},
+        {"role": "assistant", "content": "Prefilled"},
+        {"role": "user", "content": "Follow up"},
+        {"role": "assistant", "content": "Answer"},
+    ]
+    row = {"messages": messages} if layout == "messages" else {"prompt": messages[:2], "completion": messages[2:]}
+    baseline = SFTDataset(Dataset.from_list([row]), lambda _: renderer)._process(row)
+    row[column] = mask
+    dataset = SFTDataset(
+        Dataset.from_list([row]), lambda _: renderer, columns=SFTColumnsConfig(message_loss_mask=column)
+    )
+    sample = dataset._process(row)
+    if mask == [0, 0, 0, 0]:
+        assert sample is None
+        return
+    assert sample["input_ids"] == baseline["input_ids"]
+    assert sample["target_ids"] == baseline["target_ids"]
+    if mask is None or all(mask):
+        assert sample["loss_mask"] == baseline["loss_mask"]
+        return
+    trained = tokenizer.decode([token for token, keep in zip(sample["target_ids"], sample["loss_mask"]) if keep])
+    if mask[1]:
+        assert "Prefilled" in trained
+        assert "Answer" not in trained
+        if model == "zai-org/GLM-5":
+            assert trained == "Prefilled<|user|>"
+    else:
+        assert "Prefilled" not in trained
+        assert "Answer" in trained
+        if model == "zai-org/GLM-5":
+            assert trained == "Answer<|endoftext|>"
+    assert "Question" not in trained
+    assert "Follow up" not in trained
+
+
+@pytest.mark.parametrize("mask", [[], [1, 0], ["0"], [2], [None]])
+def test_sft_rejects_invalid_message_selection(dummy_renderer, mask):
+    row = {"messages": [{"role": "assistant", "content": "Answer"}], "message_loss_mask": mask}
+    dataset = SFTDataset(Dataset.from_list([row]), lambda _: dummy_renderer)
+    with pytest.raises(ValueError, match="message_loss_mask"):
+        dataset._process(row)
