@@ -7,8 +7,17 @@ from typing import Annotated, Any, Literal, TypeAlias
 from pydantic import Field, model_validator
 
 from prime_rl.configs.monitors import TrainMonitorsConfig
-from prime_rl.configs.sft import SFTDeploymentConfig, SingleNodeDeploymentConfig, setup_trainer_deployment
-from prime_rl.configs.shared import EnvVars, HeartbeatConfig, ResumeConfig, RunConfig, SlurmConfig, TrainerLogConfig
+from prime_rl.configs.shared import (
+    EnvVars,
+    HeartbeatConfig,
+    ResumeConfig,
+    RunConfig,
+    SFTDeploymentConfig,
+    SingleNodeDeploymentConfig,
+    SlurmConfig,
+    TrainerLogConfig,
+    setup_trainer_deployment,
+)
 from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
