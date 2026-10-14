@@ -404,26 +404,27 @@ def flash_attn_3_varlen_op(
     return out
 
 
-def quadratic_attention_flops_per_token(
-    *, num_heads: int, qk_head_dim: int, v_head_dim: int, seq_len: int, sliding_window: int | None = None
+def quadratic_attention_flops(
+    *, num_heads: int, qk_head_dim: int, v_head_dim: int, seq_len: int, attended_tokens: int | None = None
 ) -> int:
-    """Training FLOPs per token of softmax attention, as torchtitan's `quadratic_attention_flops_per_token`.
+    """Training FLOPs of softmax attention over one document, as torchtitan's `quadratic_attention_flops_per_token`.
 
-    Two matmuls per head and attended token (q @ K^T over `qk_head_dim`, scores @ V over `v_head_dim`),
-    2 FLOPs per multiply-add, 3x for forward plus backward. Causal sparsity and the flash-attention
-    recompute are not counted.
+    Each of the `seq_len` queries attends `attended_tokens` keys (default all `seq_len`): two matmuls per
+    head (q @ K^T over `qk_head_dim`, scores @ V over `v_head_dim`), 2 FLOPs per multiply-add, 3x for
+    forward plus backward. Causal sparsity and the flash-attention recompute are not counted.
     """
-    attended_tokens = seq_len if sliding_window is None else min(seq_len, sliding_window)
-    return 6 * num_heads * (qk_head_dim + v_head_dim) * attended_tokens
+    if attended_tokens is None:
+        attended_tokens = seq_len
+    return 6 * num_heads * (qk_head_dim + v_head_dim) * seq_len * attended_tokens
 
 
-def delta_rule_flops_per_token(*, num_heads: int, key_head_dim: int, v_head_dim: int) -> int:
-    """Training FLOPs per token of a gated delta-rule recurrence, as torchtitan's `delta_rule_flops_per_token`.
+def delta_rule_flops(*, num_heads: int, key_head_dim: int, v_head_dim: int, seq_len: int) -> int:
+    """Training FLOPs of a gated delta-rule recurrence over one document, as torchtitan's `delta_rule_flops_per_token`.
 
-    Reading, updating and querying the `[key_head_dim, v_head_dim]` state are three
-    `key_head_dim * v_head_dim` products per head.
+    Per token and head, reading, updating and querying the `[key_head_dim, v_head_dim]` state are three
+    `key_head_dim * v_head_dim` products.
     """
-    return 6 * 3 * num_heads * key_head_dim * v_head_dim
+    return 6 * 3 * num_heads * key_head_dim * v_head_dim * seq_len
 
 
 @dataclass
@@ -491,13 +492,13 @@ class FlashAttention(nn.Module):
         self._flash_attn_version = flash_attn_version
         self.func = self._funcs[flash_attn_version]
 
-    def attention_flops_per_token(self, seq_len: int) -> int:
-        return quadratic_attention_flops_per_token(
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
             num_heads=self.num_heads,
             qk_head_dim=self.head_dim,
             v_head_dim=self.head_dim,
             seq_len=seq_len,
-            sliding_window=getattr(self, "sliding_window", None),
+            attended_tokens=min(seq_len, getattr(self, "sliding_window", None) or seq_len),
         )
 
     def project_qkv(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

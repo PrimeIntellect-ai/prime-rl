@@ -1,13 +1,18 @@
 import torch
 import torch.nn.functional as F
-from fla.modules import FusedRMSNormGated
-from fla.modules.conv import causal_conv1d
-from fla.ops.cp import build_cp_context
-from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
-from prime_rl.trainer.models.layers.attn import delta_rule_flops_per_token
+from prime_rl.trainer.models.layers.attn import delta_rule_flops
 from prime_rl.utils.cp import CPContext
+
+# Guarded because flash-linear-attention ships in the linux-gated `gpu` extra; the layer needs it to build.
+try:
+    from fla.modules import FusedRMSNormGated
+    from fla.modules.conv import causal_conv1d
+    from fla.ops.cp import build_cp_context
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+except ImportError:
+    FusedRMSNormGated = causal_conv1d = build_cp_context = chunk_gated_delta_rule = None  # type: ignore
 
 # FLA's context carries a process group that Dynamo cannot trace through the convolution.
 causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
@@ -57,9 +62,12 @@ class GatedDeltaNet(nn.Module):
 
         self.cp_context = CPContext()
 
-    def attention_flops_per_token(self, seq_len: int) -> int:
-        return delta_rule_flops_per_token(
-            num_heads=self.num_value_heads, key_head_dim=self.key_head_dim, v_head_dim=self.value_head_dim
+    def attention_flops(self, seq_len: int) -> int:
+        return delta_rule_flops(
+            num_heads=self.num_value_heads,
+            key_head_dim=self.key_head_dim,
+            v_head_dim=self.value_head_dim,
+            seq_len=seq_len,
         )
 
     def forward(

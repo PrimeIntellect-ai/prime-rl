@@ -1,13 +1,47 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
-from torch import Tensor
+from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.utils.cp import CPContext
 
 CPStyle = Literal["ring", "ulysses"]
 ALL_CP_STYLES: frozenset[CPStyle] = frozenset({"ring", "ulysses"})
+
+
+@runtime_checkable
+class AttentionFlops(Protocol):
+    """A sequence-mixing layer (softmax, sliding-window, sparse or linear attention, Mamba)."""
+
+    def attention_flops(self, seq_len: int) -> int:
+        """Training FLOPs of this layer's sequence mixing for one document of `seq_len` tokens."""
+        ...
+
+
+def count_active_params(model: nn.Module, params: Iterable[nn.Parameter]) -> int:
+    """Elements of `params` that a token multiplies through, as torchtitan's `get_nparams_and_active_nparams`.
+
+    Routed experts count by `top_k / num_experts`; embedding tables count only when tied to the lm_head.
+    """
+    params = {id(param): param for param in params}
+    lm_head_params = {id(param) for param in model.lm_head.parameters()}
+    inactive = 0
+    for module in model.modules():
+        if isinstance(module, nn.Embedding):
+            inactive += sum(
+                param.numel()
+                for param in module.parameters(recurse=False)
+                if id(param) in params and id(param) not in lm_head_params
+            )
+        elif isinstance(module, MoE):
+            # Expert weights lead with `num_experts`, so the division is exact.
+            num_experts, top_k = module.experts.num_experts, module.router.top_k
+            expert_params = sum(param.numel() for param in module.experts.parameters() if id(param) in params)
+            inactive += expert_params * (num_experts - top_k) // num_experts
+    return sum(param.numel() for param in params.values()) - inactive
 
 
 @dataclass(frozen=True)
@@ -76,6 +110,10 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     def get_correct_experts_implementation(self, requested_experts: str | None) -> str:
         """PrimeRL models always use eager experts implementation."""
         return "eager"
+
+    def num_active_params(self) -> int:
+        """Parameters a text token multiplies through, LoRA adapters included."""
+        return count_active_params(self, self.parameters())
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

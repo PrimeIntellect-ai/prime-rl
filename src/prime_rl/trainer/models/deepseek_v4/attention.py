@@ -134,7 +134,7 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
-from prime_rl.trainer.models.layers.attn import quadratic_attention_flops_per_token
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -706,26 +706,25 @@ class DeepseekV4Attention(nn.Module):
 
         self.cp_context = CPContext()
 
-    def attention_flops_per_token(self, seq_len: int) -> int:
-        # As torchtitan's DeepSeek V4: the local window, plus the compressed entries (CSA: the
-        # indexer scores all of them, attention reads `index_topk`).
-        flops = quadratic_attention_flops_per_token(
-            num_heads=self.num_heads,
-            qk_head_dim=self.head_dim,
-            v_head_dim=self.head_dim,
-            seq_len=seq_len,
-            sliding_window=self.config.sliding_window,
-        )
+    def attention_flops(self, seq_len: int) -> int:
+        # As torchtitan's DeepSeek V4: each query attends the local window plus the compressed entries
+        # (CSA: the indexer scores all of them, attention reads `index_topk`).
+        attended_tokens = min(seq_len, self.config.sliding_window)
+        indexer_flops = 0
         if self.compressor is not None:
             compressed_len = seq_len // self.compressor.compress_rate
             indexer = getattr(self.compressor, "indexer", None)
             if indexer is not None:
-                flops += 6 * indexer.num_heads * indexer.head_dim * compressed_len
+                indexer_flops = 6 * indexer.num_heads * indexer.head_dim * seq_len * compressed_len
                 compressed_len = min(compressed_len, indexer.index_topk)
-            flops += quadratic_attention_flops_per_token(
-                num_heads=self.num_heads, qk_head_dim=self.head_dim, v_head_dim=self.head_dim, seq_len=compressed_len
-            )
-        return flops
+            attended_tokens += compressed_len
+        return indexer_flops + quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=attended_tokens,
+        )
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""

@@ -1,36 +1,44 @@
 import time
+from collections.abc import Sequence
 
 import torch
 from torch import nn
 
-from prime_rl.trainer.lora import has_lora_layers
-from prime_rl.trainer.models.layers.lora import MultiLoRAModule
-from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.base import AttentionFlops, PreTrainedModelPrimeRL, count_active_params
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 
-def get_active_params(model: nn.Module) -> int:
-    """Matmul parameters used per token, as torchtitan's `get_nparams_and_active_nparams`.
+class FlopCounter:
+    """Training FLOPs of packed documents, as torchtitan's `get_nparams_and_flops` per document.
 
-    Routed experts count by `top_k / num_experts`; embeddings count only when tied to the lm_head;
-    the vision encoder and LoRA adapters do not count.
+    6 FLOPs per active parameter per token, plus each sequence-mixing layer's FLOPs per document (a
+    token attends only within its own document). The model is walked once, at construction.
     """
-    excluded = {id(param) for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name}
-    visual = getattr(model.model, "visual", None)
-    if visual is not None:
-        excluded |= {id(param) for param in visual.parameters()}
-    lm_head_params = {id(param) for param in model.lm_head.parameters()}
-    inactive_expert_params = 0
-    for module in model.modules():
-        if isinstance(module, nn.Embedding):
-            excluded |= {id(param) for param in module.parameters(recurse=False)} - lm_head_params
-        elif isinstance(module, MoE):
-            # Expert weights lead with `num_experts`, so the division is exact.
-            num_experts, top_k = module.experts.num_experts, module.router.top_k
-            expert_params = sum(p.numel() for p in module.experts.parameters() if id(p) not in excluded)
-            inactive_expert_params += expert_params * (num_experts - top_k) // num_experts
-    return sum(param.numel() for param in model.parameters() if id(param) not in excluded) - inactive_expert_params
+
+    def __init__(self, model: PreTrainedModelPrimeRL):
+        active_params = model.num_active_params()
+        lora_params = [param for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name]
+        if lora_params:
+            # Frozen base matmuls cost forward (2x) and dX (2x); fully trainable non-LoRA params
+            # (modules_to_save) add their weight gradient (2x); adapters cost 6x.
+            lora_active_params = count_active_params(model, lora_params)
+            lora_param_ids = {id(param) for param in lora_params}
+            trainable_params = sum(
+                param.numel() for param in model.parameters() if param.requires_grad and id(param) not in lora_param_ids
+            )
+            self.matmul_flops_per_token = (
+                4 * (active_params - lora_active_params) + 2 * trainable_params + 6 * lora_active_params
+            )
+        else:
+            self.matmul_flops_per_token = 6 * active_params
+        self.attention_modules = [module for module in model.modules() if isinstance(module, AttentionFlops)]
+
+    def __call__(self, seq_lens: Sequence[int]) -> int:
+        return sum(
+            n * self.matmul_flops_per_token + sum(module.attention_flops(n) for module in self.attention_modules)
+            for n in seq_lens
+        )
 
 
 class PerfCounter:
@@ -42,7 +50,7 @@ class PerfCounter:
       read smoothed values via `get_tokens_per_second()`.
       Time is measured between successive `count_tokens` calls (full step).
     - Single point on a caller-provided duration: `get_step_tokens_per_second(tokens, fwd_bwd_time)`
-      / `get_step_mfu(flops, fwd_bwd_time)`, with `flops` summed from `get_flops(seq_lens)`. No smoothing.
+      / `get_step_mfu(flops, fwd_bwd_time)`, with `flops` summed from `flop_counter(seq_lens)`. No smoothing.
 
     Sliding window inspired by https://github.com/pytorch/torchtitan/blob/4b3f2e41a084bf79a8540068ed525539d1244edd/torchtitan/utils.py#L119
     """
@@ -51,7 +59,6 @@ class PerfCounter:
         self.window_size = window_size
         self.tokens: list[int] = []
         self.times: list[float] = []
-        self.model = model
 
         self._world = get_world()
         self._logger = get_logger()
@@ -60,8 +67,7 @@ class PerfCounter:
             self.gpu_peak_flops = self._get_peak_flops(torch.cuda.get_device_name(torch.device("cuda")))
         else:
             self.gpu_peak_flops = 0
-        self._matmul_flops_per_token = self._get_matmul_flops_per_token()
-        self._attention_modules = [m for m in model.modules() if hasattr(m, "attention_flops_per_token")]
+        self.flop_counter = FlopCounter(model)
 
     def count_tokens(self, tokens: int) -> None:
         """Push a step into the sliding window. Time is recorded internally."""
@@ -79,14 +85,6 @@ class PerfCounter:
     def get_step_tokens_per_second(self, tokens: int, fwd_bwd_time: float) -> float:
         """Single-step throughput from a caller-provided duration."""
         return tokens / fwd_bwd_time
-
-    def get_flops(self, seq_lens: list[int]) -> int:
-        """Training FLOPs of one packed micro-batch, as torchtitan's `get_nparams_and_flops` per document:
-        each token attends only within its own document, so the attention term uses the document length."""
-        return sum(
-            n * (self._matmul_flops_per_token + sum(m.attention_flops_per_token(n) for m in self._attention_modules))
-            for n in seq_lens
-        )
 
     def get_step_mfu(self, flops: float, fwd_bwd_time: float) -> float:
         return 100 * flops / fwd_bwd_time / self.gpu_peak_flops / self._world.world_size
@@ -130,40 +128,6 @@ class PerfCounter:
         else:
             self._logger.warning(f"Peak FLOPS undefined for `{device_name}`. Falling back to A100 (312 TFLOPS)")
             return 312e12
-
-    def _get_matmul_flops_per_token(self) -> int:
-        """6 FLOPs per active matmul parameter, as torchtitan's `get_nparams_and_flops`."""
-        active_params = get_active_params(self.model)
-        if not has_lora_layers(self.model):
-            return 6 * active_params
-        # LoRA: frozen base matmuls still cost forward (2x) and dX (2x); fully trainable non-LoRA
-        # params (modules_to_save) add their weight gradient (2x); adapters cost 6x.
-        return (
-            4 * active_params
-            + 2 * self._count_fully_trainable_params_excluding_lora()
-            + 6 * self._count_lora_adapter_params()
-        )
-
-    def _count_lora_adapter_params(self) -> int:
-        """Count LoRA adapter parameters (sum of lora_A and lora_B across all MultiLoRAModules)."""
-        params = 0
-        for module in self.model.modules():
-            if isinstance(module, MultiLoRAModule):
-                adapter_params, _ = module.get_lora_param_counts()
-                params += adapter_params
-        return params
-
-    def _count_fully_trainable_params_excluding_lora(self) -> int:
-        """Count trainable parameters excluding LoRA adapter tensors.
-
-        Approximates trainable matmul params in modules_to_save by subtracting LoRA adapter params
-        from all trainable params.
-        """
-        total_trainable = 0
-        for name, param in self.model.named_parameters():
-            if param.requires_grad and ("lora_A" not in name and "lora_B" not in name):
-                total_trainable += param.numel()
-        return total_trainable
 
 
 _PERF_COUNTER: PerfCounter | None = None

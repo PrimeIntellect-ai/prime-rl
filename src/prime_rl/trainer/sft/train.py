@@ -455,7 +455,7 @@ def train(config: SFTConfig):
         step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            step_local_flops += perf_counter.get_flops(micro_batch["seq_lens"].tolist())
+            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer

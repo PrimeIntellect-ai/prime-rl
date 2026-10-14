@@ -207,7 +207,9 @@ class GlmMoeDsaConfig(PretrainedConfig):
         self.index_head_dim = index_head_dim
         self.indexer_rope_interleave = indexer_rope_interleave
         self.index_topk = index_topk
-        self.use_index_cache = use_index_cache
+        # An `indexer_types` schedule with shared layers (e.g. GLM-5.2) turns on IndexShare: shared layers
+        # reuse the previous full layer's indices and carry no indexer weights.
+        self.use_index_cache = use_index_cache or "shared" in (indexer_types or ())
         self.index_topk_freq = index_topk_freq
         self.index_topk_pattern = index_topk_pattern
         self.indexer_types = indexer_types

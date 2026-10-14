@@ -342,7 +342,7 @@ def train(config: TrainerConfig):
         step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            step_local_flops += perf_counter.get_flops(micro_batch["seq_lens"].tolist())
+            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")

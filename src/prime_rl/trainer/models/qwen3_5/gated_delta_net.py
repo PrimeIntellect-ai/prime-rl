@@ -1,14 +1,19 @@
 import torch
 import torch.nn.functional as F
-from fla.modules import FusedRMSNormGated
-from fla.modules.conv import causal_conv1d
-from fla.ops.cp import build_cp_context
-from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
-from prime_rl.trainer.models.layers.attn import delta_rule_flops_per_token
+from prime_rl.trainer.models.layers.attn import delta_rule_flops
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.utils.cp import CPContext
+
+# Guarded because flash-linear-attention ships in the linux-gated `gpu` extra; the layer needs it to build.
+try:
+    from fla.modules import FusedRMSNormGated
+    from fla.modules.conv import causal_conv1d
+    from fla.ops.cp import build_cp_context
+    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
+except ImportError:
+    FusedRMSNormGated = causal_conv1d = build_cp_context = chunk_gated_delta_rule = None  # type: ignore
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
 # FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
@@ -53,9 +58,12 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.in_proj_a = nn.Linear(config.hidden_size, self.num_value_heads, bias=False)
         self.cp_context = CPContext()
 
-    def attention_flops_per_token(self, seq_len: int) -> int:
-        return delta_rule_flops_per_token(
-            num_heads=self.num_value_heads, key_head_dim=self.key_head_dim, v_head_dim=self.value_head_dim
+    def attention_flops(self, seq_len: int) -> int:
+        return delta_rule_flops(
+            num_heads=self.num_value_heads,
+            key_head_dim=self.key_head_dim,
+            v_head_dim=self.value_head_dim,
+            seq_len=seq_len,
         )
 
     def forward(

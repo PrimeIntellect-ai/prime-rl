@@ -2,49 +2,20 @@ import copy
 import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
+import torch
 from transformers import AutoConfig
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL, set_pad_token_id
+from prime_rl.trainer.perf import FlopCounter
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
-from prime_rl.utils.logger import get_logger
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
 # means no component (weight 0.0).
 STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
-
-
-def build_bin_cost(model_config: Any | None) -> Callable[[Sequence[int]], int]:
-    """Build a closure scoring a packed bin by its relative forward compute.
-
-    Per token, ~24 * layers * hidden_size^2 FLOPs (2 FLOPs per matmul parameter, ~12 * hidden_size^2
-    parameters per layer). Per causal query-key pair, heads * (qk_head_dim + v_head_dim) FLOPs per
-    full-attention layer, i.e. that times n^2 for a document of n tokens. Only the ratio of the two
-    matters for balancing. With ``model_config=None`` the cost is the token count.
-    """
-    if model_config is None:
-        token_cost, pair_cost = 1, 0
-    else:
-        config = getattr(model_config, "text_config", model_config)
-        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
-        qk_head_dim = getattr(config, "qk_nope_head_dim", 0) + getattr(config, "qk_rope_head_dim", 0) or head_dim
-        v_head_dim = getattr(config, "v_head_dim", None) or head_dim
-        layer_types = getattr(config, "layer_types", None)
-        num_attention_layers = (
-            sum(layer_type in ("full_attention", "attention") for layer_type in layer_types)
-            if layer_types
-            else config.num_hidden_layers
-        )
-        token_cost = 24 * config.num_hidden_layers * config.hidden_size**2
-        pair_cost = num_attention_layers * config.num_attention_heads * (qk_head_dim + v_head_dim)
-
-    def bin_cost(seqlens: Sequence[int]) -> int:
-        return token_cost * sum(seqlens) + pair_cost * sum(n * n for n in seqlens)
-
-    return bin_cost
 
 
 @dataclass
@@ -769,17 +740,16 @@ class BatchPacker:
         self.seq_len = config.seq_len
         self.num_train_workers = config.num_train_workers
         self.pad_to_multiple_of = config.pad_to_multiple_of
-        try:
-            model_config = AutoConfig.from_pretrained(
-                config.model.name, trust_remote_code=config.tokenizer.trust_remote_code
-            )
-        except Exception as e:
-            get_logger().warning(
-                f"Could not load model config for {config.model.name} ({e}) - "
-                "packing balances by token count instead of estimated FLOPs"
-            )
-            model_config = None
-        self.bin_cost = build_bin_cost(model_config)
+        # The flash-attention version selects kernels, not modules, so it does not change the FLOPs.
+        model_config = AutoConfig.from_pretrained(
+            config.model.name,
+            attn_implementation="flash_attention_3",
+            trust_remote_code=config.tokenizer.trust_remote_code,
+        )
+        set_pad_token_id(model_config)
+        with torch.device("meta"):
+            model = AutoModelForCausalLMPrimeRL.from_config(model_config)
+        self.bin_cost = FlopCounter(model)
 
     def pack(self, samples: list[TrainingSample]) -> list[list[MicroBatch]]:
         return prepare_batch(
