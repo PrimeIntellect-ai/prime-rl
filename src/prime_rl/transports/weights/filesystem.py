@@ -2,6 +2,7 @@ import json
 import threading
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from math import prod
 from pathlib import Path
 
@@ -263,8 +264,10 @@ class FileSystemWeightSender(WeightSender):
         self.anchor_step: int | None = None
         self.num_deltas = 0
         self.pending_anchor: int | None = None
-        # Reused across anchors: a new one starts only after the previous one was written
-        self.anchor_buffer: torch.Tensor | None = None
+        # Pinned host buffer for the next anchor, allocated on a thread ahead of it
+        self.anchor_buffer: Future | None = None
+        self.anchor_bytes: int | None = None
+        self.allocator = ThreadPoolExecutor(1)
         self.logger.debug("Initialized filesystem weight broadcast")
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
@@ -311,6 +314,10 @@ class FileSystemWeightSender(WeightSender):
             self.anchor_step = step
             return
         # Periodic anchors only serve engines that fall off the chain: write them off the critical path.
+        # Pinning their host buffer is slow, so it starts on a thread two steps ahead.
+        if 0 < -step % self.config.anchor_interval <= 2 and self.anchor_buffer is None:
+            self.anchor_bytes = self.anchor_bytes or owned_weight_bytes(model)
+            self.anchor_buffer = self.allocator.submit(self._allocate_anchor_buffer, model)
         if (
             self.world.is_master
             and self.pending_anchor is not None
@@ -330,24 +337,34 @@ class FileSystemWeightSender(WeightSender):
         save_state_dict_parallel(state_dict, step_dir)
 
     def _save_anchor(self, model: nn.Module, step_dir: Path) -> threading.Thread:
-        """Gather this rank's share of the full checkpoint to CPU, then write it on a thread
-        (no collectives); engines treat the step as an anchor once every rank's marker exists."""
+        """Gather this rank's share of the full checkpoint into a pinned host buffer, then write it
+        on a thread (no collectives) and release the buffer; engines treat the step as an anchor
+        once every rank's marker exists."""
         start = time.perf_counter()
-        if self.anchor_buffer is None:
-            self.anchor_buffer = torch.empty(owned_weight_bytes(model), dtype=torch.uint8, pin_memory=True)
-        state_dict = convert_state_dict_to_hf(model, gather_weights_parallel(model, host_buffer=self.anchor_buffer))
+        buffer = self.anchor_buffer.result() if self.anchor_buffer is not None else self._allocate_anchor_buffer(model)
+        self.anchor_buffer = None
+        state_dict = convert_state_dict_to_hf(model, gather_weights_parallel(model, host_buffer=buffer))
         torch.cuda.empty_cache()
         gather_time = time.perf_counter() - start
 
         def write() -> None:
+            nonlocal buffer
             write_anchor_shards(state_dict, step_dir, self.world.rank, self.world.world_size)
             self.logger.debug(
                 f"Wrote the {step_dir.name} anchor: gather {gather_time:.1f}s, write {time.perf_counter() - start - gather_time:.1f}s"
             )
+            state_dict.clear()
+            buffer = None
+            torch._C._host_emptyCache()  # return the pinned buffer to the OS
 
         thread = threading.Thread(target=write)
         thread.start()
         return thread
+
+    def _allocate_anchor_buffer(self, model: nn.Module) -> torch.Tensor:
+        if self.anchor_bytes is None:
+            self.anchor_bytes = owned_weight_bytes(model)
+        return torch.empty(self.anchor_bytes, dtype=torch.uint8, pin_memory=True)
 
     def _save_delta(self, model: nn.Module, step: int, step_dir: Path) -> bool:
         """Write this step's delta (all ranks). False when the step must be a full checkpoint instead."""
