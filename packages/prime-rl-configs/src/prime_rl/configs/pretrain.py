@@ -158,8 +158,8 @@ StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Fiel
 
 
 def resolve_steps(value: int | float, total_steps: int) -> int:
-    """Steps as given, or a fraction of ``total_steps``."""
-    return round(value * total_steps) if isinstance(value, float) else value
+    """Steps as given, or a fraction of ``total_steps`` rounded down, so fractions that sum to at most 1 fit."""
+    return math.floor(value * total_steps) if isinstance(value, float) else value
 
 
 class ScheduleConfig(BaseConfig):
