@@ -176,16 +176,13 @@ def get_config_dir(output_dir: Path) -> Path:
     return legacy if legacy.is_dir() and not latest.exists() else latest
 
 
-def write_standalone_config(output_dir: Path, config: BaseModel, name: str) -> None:
-    """Save dashboard artifacts when a component runs without an RL launcher.
+def write_resolved_config(output_dir: Path, config: BaseModel, name: str) -> None:
+    """Save a component's resolved config and dashboard launch artifacts.
 
     Independently launched components share the unnumbered config directory;
     allocating an attempt in each process would split one run across attempts.
-    ``PRL_ATTEMPT_CONFIG_DIR`` is set by launchers that pin children to their
-    attempt (``launcher_attempt_env``), whose configs are already saved, so skip.
+    Launcher-managed components write into their pinned attempt directory.
     """
-    if os.environ.get("PRL_ATTEMPT_CONFIG_DIR"):
-        return
     config_dir = get_config_dir(output_dir)
     if not config_dir.exists():
         config_dir = output_dir / "configs" / "resolved"
