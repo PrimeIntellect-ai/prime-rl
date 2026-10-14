@@ -43,8 +43,13 @@ class CircuitBreaker:
         if self.state == "open":
             self.probing = True
 
-    def record(self, ok: bool, reason: str | None, now: float, group_id: uuid.UUID) -> BreakerState | None:
-        """Count one finished episode; return the new state on a transition."""
+    def record(
+        self, ok: bool, reason: str | None, now: float, group_id: uuid.UUID, started_at: float
+    ) -> BreakerState | None:
+        """Count one finished episode; return the new state on a transition. While open, only
+        the probe counts: episodes started before the breaker opened neither close nor reopen it."""
+        if self.state == "open" and started_at < self.opened_at:
+            return None
         if ok:
             self.failed_groups.clear()
             if self.state == "closed":

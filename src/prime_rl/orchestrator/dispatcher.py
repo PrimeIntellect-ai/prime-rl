@@ -745,7 +745,7 @@ class Dispatcher:
         breaker = self.breakers.get(meta.env_name) if meta.kind == "train" else None
         if breaker is None:
             return
-        state = breaker.record(ok, reason[:300] if reason else None, time.monotonic(), meta.group_id)
+        state = breaker.record(ok, reason[:300] if reason else None, time.monotonic(), meta.group_id, meta.started_at)
         if state == "open":
             get_logger().warning(
                 f"Pausing train env {meta.env_name} after {len(breaker.failed_groups)} consecutive failed groups "
