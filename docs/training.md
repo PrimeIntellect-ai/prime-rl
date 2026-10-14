@@ -73,7 +73,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `log.level` | Process log level for trainer + orchestrator (`info` default; falls back to `$PRIME_LOG_LEVEL`). Set per-process via `trainer.log.level` / `orchestrator.log.level`, or globally on the `rl` entrypoint to propagate to both. |
 | `orchestrator.log.vf_level` | Env-worker / [`verifiers`](https://github.com/PrimeIntellect-ai/verifiers) log level (`info` default; `debug` is noisy but useful for env debugging). |
 | `--monitors.wandb` (+ `--monitors.wandb.project`, `--monitors.wandb.name`) | Enable Weights & Biases logging. See [Weights & Biases](#weights--biases). |
-| `--monitors.prime` | Stream metrics and episodes to the Prime Intellect platform (Prime Lab). See [Platform monitoring](#platform-monitoring). |
+| `--no-monitors.prime` | Stop streaming metrics and episodes to the Prime Intellect platform (Prime Lab), on by default. See [Platform monitoring](#platform-monitoring). |
 
 **Run management:**
 
@@ -210,7 +210,7 @@ uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb
 
 Multi-GPU and multi-node use torchrun under the hood (the `sft` entrypoint manages this for you — see [Scaling § SFT and Torchrun](scaling.md#sft-and-torchrun) for non-default layouts; multi-node SFT goes through [SLURM](scaling.md#slurm)).
 
-`--monitors.prime` streams the run to the Prime Intellect platform — see [Platform Monitoring](#platform-monitoring).
+The run streams to the Prime Intellect platform by default — see [Platform Monitoring](#platform-monitoring).
 
 ### Online Evals
 
@@ -410,25 +410,25 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 
 ### Platform Monitoring
 
-Register a run on the Prime Intellect platform (Prime Lab) and stream training metrics and episodes to the platform dashboard. Bare flag uses defaults:
+Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. Turn it off with `--no-monitors.prime`:
 
 ```bash
-uv run rl @ rl.toml --monitors.prime
-uv run sft @ sft.toml --monitors.prime   # same flag on the SFT trainer
+uv run rl @ rl.toml --no-monitors.prime
+uv run sft @ sft.toml --no-monitors.prime   # same flag on the SFT trainer
 ```
 
-Or set it in TOML:
+Name the platform run in TOML:
 
 ```toml
 [monitors.prime]
 name = "my-experiment"
 ```
 
-The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every 10th step's episodes (full conversations with rewards and advantages) to the run's sample viewer, and closes the run out. Finalization is best-effort SDK delivery: a process that exits without finishing is reported crashed when the SDK's atexit hook runs, but an abrupt kill (SIGKILL, OOM, node loss) skips the report and a lost finalize is not retried — the platform owns the terminal state of attached (`RUN_ID`) and managed runs. Uploaded episodes are keyed to the platform run by the SDK; the orchestrator's own run id (the launcher's `PRL_RUN_ID`) stays on W&B and in the local records.
+The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every train episode as it arrives (errored and filtered ones included) to Prime Traces, and closes the run out. Finalization is best-effort SDK delivery: a process that exits without finishing is reported crashed when the SDK's atexit hook runs, but an abrupt kill (SIGKILL, OOM, node loss) skips the report and a lost finalize is not retried — the platform owns the terminal state of attached (`RUN_ID`) and managed runs. Uploaded episodes are keyed to the platform run by the SDK; the orchestrator's own run id (the launcher's `PRL_RUN_ID`) stays on W&B and in the local records.
 
 On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
 
-Requires `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. A configured monitor must work: a missing key or a team outside the allowlist fails the launch. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
+The platform run needs `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. Without a key, or when registration fails (no team, a team outside the allowlist), the run logs a warning and trains untracked. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 
 ## Rules of Thumb
 

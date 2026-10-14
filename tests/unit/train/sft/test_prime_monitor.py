@@ -127,7 +127,7 @@ def test_online_eval_monitors_switch_prime_flavor():
     assert monitors.wandb.project == "sft-tests"
 
     # Without a platform run the evals process gets no platform monitor either
-    bare = build_online_eval_monitors(TrainMonitorsConfig())
+    bare = build_online_eval_monitors(TrainMonitorsConfig(prime=None))
     assert bare.prime is None
 
 

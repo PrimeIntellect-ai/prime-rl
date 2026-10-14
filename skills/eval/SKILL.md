@@ -18,7 +18,7 @@ uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost
 uv run eval @ eval.toml --run.name my-eval                          # multi-source TOML
 uv run eval @ eval.toml --run.name my-eval --resume                 # continue an interrupted run
 uv run eval @ eval.toml --dry-run                                   # resolve and write the config, exit
-uv run eval @ eval.toml --monitors.prime                            # stream each source's epoch to the platform
+uv run eval @ eval.toml --no-monitors.prime                         # keep the run off the platform (on by default)
 ```
 
 - Config: `EvalConfig` (`packages/prime-rl-configs/src/prime_rl/configs/eval.py`); `uv run eval -h` lists the fields.
