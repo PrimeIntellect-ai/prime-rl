@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from prime_rl.trainer.model import get_full_offload_dtype_policy
-from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.trainer.models.conversion_ops import Drop, apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.glm5_next import Glm5NextConfig, Glm5NextForCausalLM, Glm5NextTextConfig, sparse_attention
 from prime_rl.trainer.vlm import get_language_model
 
@@ -98,3 +98,17 @@ def test_fp32_modules_stay_fp32_at_rest_and_on_the_wire(config):
         assert policy[id(param)] == (dtype, dtype), name
         if id(param) in fp32_params:
             assert model.keep_in_fp32_for_weight_transfer(name), name
+
+
+def test_debug_cut_drops_the_checkpoint_mtp_layer(config):
+    text = getattr(config, "text_config", config)
+    layers_prefix = "model.language_model.layers" if hasattr(config, "text_config") else "model.layers"
+    mtp_layer = f"{layers_prefix}.{text.num_hidden_layers}."
+
+    def dropped_layers() -> list[str]:
+        drops = [op for op in Glm5NextForCausalLM.conversion_chain(config) if isinstance(op, Drop) and op.is_prefix]
+        return [op.name for op in drops if op.name.startswith(layers_prefix)]
+
+    assert dropped_layers() == [mtp_layer]
+    text.num_hidden_layers = 1  # what get_model does for `model.debug.num_layers = 1`
+    assert dropped_layers() == [mtp_layer]

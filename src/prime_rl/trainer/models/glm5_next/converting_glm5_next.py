@@ -28,8 +28,11 @@ def conversion_chain(config) -> list[ConvOp]:
                 ops.append(Rename(f"{layer_prefix}.self_attn.{tensor}", f"{layer_prefix}.self_attn.decay.{tensor}"))
         if text_config.mlp_layer_types[layer_idx] == "sparse":
             ops.extend(glm_moe_layer_ops(layer_idx, layers_prefix))
+    # The MTP layers follow the checkpoint's last decoder layer. `model.debug.num_layers` lowers
+    # num_hidden_layers but not the per-layer lists, whose length is the checkpoint's depth.
+    num_checkpoint_layers = len(text_config.layer_types)
     for mtp_idx in range(text_config.num_nextn_predict_layers):
-        ops.append(Drop(f"{layers_prefix}.{text_config.num_hidden_layers + mtp_idx}.", is_prefix=True))
+        ops.append(Drop(f"{layers_prefix}.{num_checkpoint_layers + mtp_idx}.", is_prefix=True))
     return ops
 
 
