@@ -144,7 +144,7 @@ def train(config: PretrainConfig):
             get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
         param_groups=(
-            completep_param_groups(model, config.model.init, config.optim)
+            completep_param_groups(model, config.model.init, config.optim, parallel_dims.ep_enabled)
             if config.model.init.scheme == "completep"
             else None
         ),

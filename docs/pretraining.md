@@ -55,8 +55,11 @@ With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are tra
 |---|---|---|---|
 | Hidden matrices | std / sqrt(m_N) | lr / sqrt(m_N) | wd sqrt(m_N) |
 | `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (sqrt(m_N) m_L) | wd sqrt(m_N) m_L |
+| MoE router | std / sqrt(m_N) | lr / m_N | wd m_N |
 
-CompleteP works with dense models and needs `model.offload = "none"`. Keep `head_dim` and the ratios `intermediate_size / hidden_size` and `num_attention_heads / num_key_value_heads` fixed across shapes.
+In MoE models, the expert matrices follow the hidden and `down_proj` rules per expert. The router maps the width to a fixed number of experts, so under Muon its learning rate falls as 1/m_N (with AdamW it follows the hidden rule).
+
+CompleteP needs `model.offload = "none"`. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
 ## Learning-rate schedule
 
