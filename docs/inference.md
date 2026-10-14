@@ -245,8 +245,23 @@ num_bytes = 128_000_000_000
 path = "/scratch/kv"
 ```
 
-For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); the store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
+For `native`, `cpu.num_bytes` is the aggregate CPU KV pool for the instance (vLLM shards it across workers). For `mooncake`, `cpu.num_bytes` is the DRAM each node contributes to the shared pool (so the total pool ≈ `num_bytes × #inference-nodes`); `0` connects the node to the pool without contributing storage. The store uses RDMA, so it requires an RDMA-capable fabric. Enabling offload automatically enables prefix caching.
 
+Under disaggregated P/D, `inference.deployment.prefill_kv_cache_offload` and `inference.deployment.decode_kv_cache_offload` set offload per role. By default both inherit `inference.kv_cache_offload`; `"None"` disables offload for that role. With Mooncake, decode instances also store the KV they generate (`save_decode_cache`), so the next turn's prefill can load the previous completion. A typical setup keeps all storage on prefill and connects decode without capacity:
+
+```toml
+[inference.deployment.prefill_kv_cache_offload]
+type = "mooncake"
+[inference.deployment.prefill_kv_cache_offload.cpu]
+num_bytes = 1_000_000_000_000
+
+[inference.deployment.decode_kv_cache_offload]
+type = "mooncake"
+[inference.deployment.decode_kv_cache_offload.cpu]
+num_bytes = 0
+```
+
+Mooncake keys a block by model, parallel rank and content hash only. Roles that share the store must therefore use the same KV layout (tensor parallel size, `kv_cache_dtype`, block size): do not change these in only one role's `*_vllm_overrides`.
 
 ### Optimized P/D disaggregation deployment
 
