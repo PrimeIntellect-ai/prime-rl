@@ -48,6 +48,15 @@ class BaseWeightBroadcastConfig(BaseConfig):
 class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
+    sparse: bool = False
+    """Between anchors, publish only the XOR delta of the wire-dtype weights against the previous
+    broadcast. Each trainer rank diffs its own shards; engines decode the delta while serving and
+    patch their weights in place during the pause. Not supported with LoRA."""
+
+    anchor_interval: int = Field(25, ge=1)
+    """With ``sparse``, publish a full checkpoint every this many steps (and at the first broadcast).
+    Engines that fall off the delta chain reload the last anchor and replay the deltas since."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"

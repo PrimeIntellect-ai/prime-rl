@@ -60,6 +60,18 @@ async def update_weights(request: Request):
     return {"status": "ok"}
 
 
+@router.post("/prefetch_weights")
+async def prefetch_weights(request: Request):
+    """Start decoding a sparse weight delta in the workers and wait for it without
+    blocking generation: the workers decode on a background thread."""
+    data = await request.json()
+    client = engine_client(request)
+    await client.collective_rpc("prefetch_weights_from_path", args=(data.get("weight_dir"),))
+    while not all(await client.collective_rpc("prefetch_weights_done")):
+        await asyncio.sleep(0.05)
+    return {"status": "ok"}
+
+
 @router.post("/load_lora_adapter")
 async def load_lora_adapter(lora_request: LoadLoRAAdapterRequest, raw_request: Request):
     """Wrapper around vLLM's /v1/load_lora_adapter.
