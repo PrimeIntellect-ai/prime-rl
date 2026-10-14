@@ -192,7 +192,7 @@ The orchestrator stamps each sample's component membership as per-token weight s
 
 ### IPO Loss
 
-The default RL loss is Importance Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
+The default RL loss is INTELLECT Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
 
 $$
 \mathcal{L}(\theta) = -\frac{1}{N}\sum_t
@@ -210,6 +210,8 @@ The knobs under `[trainer.loss]` are:
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
+
+See [IPO](ipo.md) for why IPO masks by probability instead of ratio, and the GLM-4.5-Air ablation against IcePop behind `eps = 0.3`.
 
 ### IcePop Loss
 
