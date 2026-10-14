@@ -24,6 +24,7 @@ import verifiers.v1 as vf
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
+from prime_rl.eval.control import EvalControl, ResizeMode
 from prime_rl.orchestrator import live
 from prime_rl.orchestrator.annotations import stamp_arrival, stamp_batch
 from prime_rl.orchestrator.clients import AdminPlane, InferenceClient
@@ -57,6 +58,8 @@ class EvalRunner:
 
         self.eval_triggered_at: dict[tuple[str, int], float] = {}
         self.dispatcher_task: asyncio.Task | None = None
+        self.concurrency_lock = asyncio.Lock()
+        self.control = EvalControl(run_dir, self.set_concurrency)
 
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
@@ -124,8 +127,8 @@ class EvalRunner:
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
         )
-        # No ``on_overload``: eval episodes are measurements and are never
-        # cancelled — a cut only blocks admission until the pool drains.
+        # Load-based cuts only block admission until the pool drains.
+        # Explicit manual hard resizes interrupt and retry excess episodes.
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
             get_inflight=lambda: self.dispatcher.current_inflight,
@@ -160,8 +163,35 @@ class EvalRunner:
         )
 
     async def start(self) -> None:
+        self.control.start()
+        self.publish_control_status()
         self.dispatcher_task = asyncio.create_task(self.dispatcher.start(), name="dispatcher")
         await self.periodic_logger.start()
+
+    async def set_concurrency(self, target: int | None, mode: ResizeMode = "drain") -> None:
+        """Change live episode concurrency; ``None`` restores the launch-time band.
+
+        Hard reductions interrupt and retry excess eval episodes. Draining
+        only closes admission until enough running episodes finish.
+        """
+        if mode not in ("drain", "hard"):
+            raise ValueError(f"Unknown concurrency resize mode: {mode}")
+        async with self.concurrency_lock:
+            self.concurrency.set_override(target)
+            if mode == "hard":
+                await self.dispatcher.retry_eval_excess(self.concurrency.max_inflight)
+            self.publish_control_status()
+            get_logger().info(
+                f"Applied eval concurrency {self.concurrency.max_inflight} ({mode}); "
+                f"{self.dispatcher.current_inflight} episodes inflight"
+            )
+
+    def publish_control_status(self) -> None:
+        self.control.publish(
+            target=self.concurrency.override,
+            cap=self.dispatcher.max_inflight,
+            inflight=self.dispatcher.current_inflight,
+        )
 
     async def run_epoch(
         self,
@@ -319,15 +349,18 @@ class EvalRunner:
             + (f" - {stages}" if stages else "")
         )
         payload = {**disp_gauges, **disp_drain, **self.concurrency.gauges()}
+        self.publish_control_status()
         return body, payload
 
     async def drain(self) -> None:
         """Stop the background loggers so nothing logs after the monitors finalize."""
+        await self.control.stop()
         await self.periodic_logger.stop()
         await self.inference_metrics.stop()
 
     async def stop(self) -> None:
         """Best-effort teardown; tolerates a partially completed ``setup()``."""
+        await self.control.stop()
         if self.periodic_logger is not None:
             await self.periodic_logger.stop()
         if self.inference_metrics is not None:

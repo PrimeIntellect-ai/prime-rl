@@ -6,10 +6,12 @@
   burst-capped so a raised (or drained) cap never lands all its prefills at
   once.
 - Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
-- Every dispatched attempt reaches ``out_q`` exactly once: as the native
+- Every terminal attempt reaches ``out_q`` exactly once: as the native
   episode returned by the environment, as a ``DispatchFailure`` when no
   episode was produced, or under the group's ``GroupCancellation`` when the
   orchestrator abandons it.
+- Hard eval resizes interrupt excess attempts for retry in their original
+  groups; those interruptions do not count as terminal results.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight episodes of the opposite kind drain
@@ -207,6 +209,7 @@ class Dispatcher:
         self.dispatch_allowed = asyncio.Event()
         self.dispatch_allowed.set()
         self.policy_update_pending = False
+        self.eval_resize_pending = False
         self.scheduling_lock = asyncio.Lock()
 
         self.stopped = asyncio.Event()
@@ -245,6 +248,38 @@ class Dispatcher:
         the working set shrinks immediately instead of waiting for the
         over-admitted episodes to finish at thrashed throughput."""
         asyncio.create_task(self._cancel_inflight(n))
+
+    async def retry_eval_excess(self, target: int) -> int:
+        """Interrupt the youngest active eval episodes above ``target``.
+
+        Each interrupted episode returns to its existing group's scheduling
+        debt. No terminal cancellation reaches the sink: the epoch still owes
+        every selected rollout, and already finished results stay intact.
+        """
+        candidates = sorted(
+            ((task, meta) for task, meta in self.inflight.items() if meta.kind == "eval" and not task.done()),
+            key=lambda item: item[1].started_at,
+            reverse=True,
+        )[: max(0, self.current_inflight - target)]
+        self.eval_resize_pending = True
+        try:
+            # Claim without yielding, just like drop_group: a completion can
+            # no longer emit this attempt or release its permit a second time.
+            for task, meta in candidates:
+                del self.inflight[task]
+                self.release()
+                self.retire(meta)
+                self.groups[meta.group_id].episodes_to_schedule += 1
+                self.metrics.record_cancellation(kind="eval", env_name=meta.env_name)
+            await safe_cancel_all([task for task, _ in candidates])
+        finally:
+            self.eval_resize_pending = False
+        if candidates:
+            self.switch_mode(DispatcherMode.PREFER_EVAL, reason="interrupted eval episodes need retrying")
+            get_logger().warning(
+                f"Interrupted {len(candidates)} youngest eval episodes for retry at concurrency {target}"
+            )
+        return len(candidates)
 
     async def _cancel_inflight(self, n: int) -> None:
         # A group's age is its OLDEST member's start: max() would make a
@@ -449,13 +484,13 @@ class Dispatcher:
         respects it. When ``PREFER_EVAL``'s source exhausts we flip back to
         ``PREFER_TRAIN`` so the eval tail drains alongside fresh train."""
         while True:
-            if self.policy_update_pending:
+            if self.policy_update_pending or self.eval_resize_pending:
                 return
             if self.available_permits <= 0 or self.admission_budget() <= 0:
                 return
 
             async with self.scheduling_lock:
-                if self.policy_update_pending:
+                if self.policy_update_pending or self.eval_resize_pending or self.available_permits <= 0:
                     return
                 if self.mode == DispatcherMode.PREFER_EVAL:
                     # PREFER_EVAL is only entered when the orchestrator triggers
@@ -564,8 +599,9 @@ class Dispatcher:
         else:
             cache_salt = None
 
+        if not await self.acquire():
+            return False
         group.episodes_to_schedule -= 1
-        await self.acquire()
         self.admissions_in_window += 1
         meta = InflightEpisode(
             kind=group.kind,
@@ -614,12 +650,16 @@ class Dispatcher:
         self.live_events.append(live.pending_event(meta))
         return True
 
-    async def acquire(self) -> None:
+    async def acquire(self) -> bool:
         """Reserve one permit + rate-limit it. Caller must precheck
         ``available_permits >= 1``; this is not a blocking acquire."""
         if self.rate_limiter is not None:
             await self.rate_limiter.acquire()
+        # A live resize or policy update can arrive during the rate-limit wait.
+        if self.available_permits <= 0 or self.policy_update_pending or self.eval_resize_pending:
+            return False
         self.current_inflight += 1
+        return True
 
     def release(self, *, refund_admission: bool = False) -> None:
         """Free one permit. ``refund_admission`` only on natural completions:

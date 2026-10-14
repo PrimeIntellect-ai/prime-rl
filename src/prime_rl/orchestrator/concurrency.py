@@ -20,6 +20,7 @@ pressure off the engines and reacts at the pipeline's own pace (AIMD):
 The cap starts at ``initial_inflight`` (else the pessimistic bound
 ``KV capacity / max_model_len``) and is clamped to
 ``[min_inflight, max_inflight]`` throughout.
+A manual override pins the cap independently of that band until cleared.
 
 The controller is a pure state machine — it owns no tasks or clients. The
 metrics collector pushes ``observe(samples)`` every poll; the dispatcher
@@ -123,6 +124,7 @@ class ConcurrencyController:
         self.cap = float(config.initial_inflight or self.floor)
         self.max_inflight = self.clamp(self.cap)
         self.bootstrapped = config.initial_inflight is not None
+        self.override: int | None = None
         self.engine_max_len: int | None = None
         self.capacity_by_engine: dict[str, int] = {}
 
@@ -163,6 +165,30 @@ class ConcurrencyController:
 
     # ── inbound hooks ────────────────────────────────────────────────────────
 
+    def set_override(self, target: int | None) -> None:
+        """Pin the live cap, or restore the configured band with ``None``.
+
+        A manual target may exceed the launch-time band, including a pinned
+        band. Engine observations remain visible but cannot change this cap.
+        """
+        if target is not None and (type(target) is not int or target < 1):
+            raise ValueError("Concurrency target must be a positive integer or None")
+        self.override = target
+        self.can_grow = False
+        self.can_grow_until = 0.0
+        self.draining = False
+        self.escalated = False
+        self.escalation_grace = 0
+        self.trim_cooldown = 0
+        self.queue_overload_polls = 0
+        self.prev_waiting.clear()
+        if target is None:
+            self.bootstrapped = self.config.initial_inflight is not None
+            self.cap = self.clamp(self.config.initial_inflight or self.floor)
+        else:
+            self.cap = float(target)
+        self.apply_limit(int(self.cap), reason="manual override" if target is not None else "configured band")
+
     def record_episode(self, tokens: int) -> None:
         """One completed unit (from the dispatcher). Advances the turnover
         clock and, while the last poll was green, grows the cap — so growth
@@ -177,6 +203,8 @@ class ConcurrencyController:
             # Error markers consumed no engine capacity: a slow-failing error
             # storm keeps the pool binding while idle engines read CLEAR, and
             # growing on it floods the engines once the environment recovers
+            return
+        if self.override is not None:
             return
         if (
             self.can_grow
@@ -228,6 +256,8 @@ class ConcurrencyController:
         elif max_usage > KV_USAGE_SOFT_CAP:
             worst = max(worst, "soft", key=SEVERITY.__getitem__)
         self.signal = worst
+        if self.override is not None:
+            return
 
         inflight = self.get_inflight() if self.get_inflight is not None else 0
         # Release the drain only once the engines have settled too: cuts
@@ -331,6 +361,7 @@ class ConcurrencyController:
     def gauges(self) -> dict[str, float]:
         return {
             "concurrency/max_inflight": float(self.max_inflight),
+            "concurrency/manual": float(self.override is not None),
             "concurrency/turnover": self.turnover,
             "concurrency/capacity": float(self.capacity or 0),
             "concurrency/signal": float(SEVERITY[self.signal]),
