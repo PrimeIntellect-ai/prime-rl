@@ -6,8 +6,15 @@ from torch.nn import Module
 from vllm.config import set_current_vllm_config
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.reload import finalize_layerwise_reload, initialize_layerwise_reload
+from vllm.model_executor.model_loader.reload.layerwise import (
+    LAYERWISE_INFO,
+    _get_original_loader,
+    _get_weight_loader,
+)
+from vllm.model_executor.model_loader.reload.meta import restore_layer_on_meta
+from vllm.model_executor.model_loader.reload.utils import get_layer_params_buffers, get_layer_tensors
 
-from prime_rl.utils.sparse_weights import as_bits
+from prime_rl.utils.sparse_weights import as_bits, quantize_fp8_blocks
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
@@ -32,28 +39,24 @@ class CheckpointIndexMap:
     Built once by running the model's own loader on placeholder checkpoint
     tensors with ``Tensor.copy_`` replaced by a recorder, so it covers the
     loader's name mapping, packing (qkv, gate_up, experts) and TP/EP slicing.
-    Supported: every write is one ``copy_`` of a row/column block of a 1-D or
-    2-D checkpoint tensor into a param of the same dtype, with no post-load
-    transform of the weights. Tensors the loader casts (e.g. an fp32 router
-    from a bf16 checkpoint) are only allowed to stay unchanged.
+    Layers quantized online (e.g. ``fp8_per_block``) are recorded in their
+    checkpoint format; their live params must keep that layout (one byte per
+    checkpoint element). Supported: every write is one ``copy_`` of a row/column
+    block of a 1-D or 2-D checkpoint tensor. Tensors the loader casts (e.g. an
+    fp32 router from a bf16 checkpoint) are only allowed to stay unchanged.
     """
 
     def __init__(self, model: Module, tensors: dict[str, tuple[list[int], str]]):
         device = next(model.parameters()).device
-        params: dict[int, torch.Tensor] = {}
-        for param in model.parameters():
-            if param.storage_offset() == 0 and param.is_contiguous():
-                params.setdefault(param.untyped_storage().data_ptr(), param)
-        self.params: list[torch.Tensor] = list(params.values())
-        param_index = {ptr: index for index, ptr in enumerate(params)}
         source_names: dict[int, str] = {}
-        # name -> [(row0, rows, col0, cols, param index, offset, row stride, col stride)]
-        records: dict[str, list[tuple[int, ...]]] = defaultdict(list)
+        # name -> [(row0, rows, col0, cols, param name, offset, row stride, col stride)]
+        records: dict[str, list[tuple]] = defaultdict(list)
+        shapes: dict[str, torch.Size] = {}
         unpatchable: set[str] = set()
 
         def record_copy_(destination: torch.Tensor, source: torch.Tensor, non_blocking: bool = False) -> torch.Tensor:
-            name = source_names.get(source.untyped_storage().data_ptr())
-            index = param_index.get(destination.untyped_storage().data_ptr())
+            name = source_names.get(source.untyped_storage()._cdata)
+            param_name = param_names.get(destination.untyped_storage()._cdata)
             shape = tensors[name][0] if name is not None else None
             num_cols = shape[-1] if shape else 1
             source_2d = source.view(1, -1) if source.dim() == 1 else source
@@ -64,7 +67,7 @@ class CheckpointIndexMap:
                 return destination
             if (
                 name is None
-                or index is None
+                or param_name is None
                 or len(shape) > 2
                 or source.shape != destination.shape
                 or source.dim() > 2
@@ -74,7 +77,7 @@ class CheckpointIndexMap:
                 raise NotImplementedError("Sparse weight deltas need plain block copies from checkpoint tensors")
             row0, col0 = divmod(source.storage_offset(), num_cols)
             records[name].append(
-                (row0, source_2d.shape[0], col0, source_2d.shape[1], index, destination.storage_offset())
+                (row0, source_2d.shape[0], col0, source_2d.shape[1], param_name, destination.storage_offset())
                 + tuple(destination_2d.stride())
             )
             return destination
@@ -82,18 +85,35 @@ class CheckpointIndexMap:
         def placeholders():
             for name, (shape, dtype) in tensors.items():
                 tensor = torch.empty(shape, dtype=getattr(torch, dtype), device=device)
-                source_names[tensor.untyped_storage().data_ptr()] = name
+                source_names[tensor.untyped_storage()._cdata] = name
                 yield name, tensor
 
+        swapped = _restore_checkpoint_format(model)
         original_copy = torch.Tensor.copy_
-        torch.Tensor.copy_ = record_copy_
         try:
+            param_names = {}
+            for name, param in model.named_parameters():
+                if param.storage_offset() == 0 and param.is_contiguous():
+                    param_names.setdefault(param.untyped_storage()._cdata, name)
+                    shapes[name] = param.shape
+            torch.Tensor.copy_ = record_copy_
             model.load_weights(placeholders())  # type: ignore
         finally:
             torch.Tensor.copy_ = original_copy
+            _restore_kernel_format(swapped)
 
+        live = dict(model.named_parameters())
+        used = list(dict.fromkeys(write[4] for writes in records.values() for write in writes))
+        for name in used:
+            if live[name].shape != shapes[name] or not live[name].is_contiguous() or live[name].storage_offset():
+                raise NotImplementedError(f"Sparse weight deltas cannot patch {name}: its layout changes after loading")
+        self.params: list[torch.Tensor] = [live[name] for name in used]
+        param_index = {name: index for index, name in enumerate(used)}
+        self.records = {
+            name: [(*write[:4], param_index[write[4]], *write[5:]) for write in writes]
+            for name, writes in records.items()
+        }
         self.num_cols = {name: (shape[-1] if shape else 1) for name, (shape, _) in tensors.items()}
-        self.records = dict(records)
         self.unpatchable = unpatchable
         # [first, last + 1) flat checkpoint index each tensor's writes cover; unpatchable tensors are
         # read whole so that a change to them is caught in apply_xor
@@ -104,6 +124,33 @@ class CheckpointIndexMap:
             )
             for name, writes in self.records.items()
         } | {name: (0, 2**62) for name in unpatchable}
+
+    def fp8_layout(self, read_tensor) -> dict[str, str]:
+        """The vLLM per-block quantization (``"fp32"`` or ``"ue8m0"`` scales) that reproduces each
+        fp8 param from the checkpoint, per checkpoint tensor stored in one. Checks one checkpoint
+        tensor per param; ``read_tensor(name)`` returns it."""
+        modes: dict[int, str] = {}
+        layout = {}
+        for name, writes in self.records.items():
+            for row0, rows, col0, cols, index, offset, *strides in writes:
+                if self.params[index].dtype != torch.float8_e4m3fn:
+                    continue
+                if index not in modes:
+                    live = as_bits(self.params[index].data).view(-1).as_strided((rows, cols), strides, offset)
+                    weight = read_tensor(name).to(self.params[index].device)
+                    for mode in ("ue8m0", "fp32"):
+                        quantized, _ = quantize_fp8_blocks(weight, mode == "ue8m0")
+                        if torch.equal(quantized[row0 : row0 + rows, col0 : col0 + cols], live):
+                            modes[index] = mode
+                            break
+                    else:
+                        raise NotImplementedError(
+                            f"Sparse weight deltas cannot patch {name}: the engine's fp8 weights are not vLLM's "
+                            "per-block quantization of the checkpoint (e.g. a weight-shuffling kernel)"
+                        )
+                if layout.setdefault(name, modes[index]) != modes[index]:
+                    raise NotImplementedError(f"Sparse weight deltas cannot patch {name}: mixed fp8 layouts")
+        return layout
 
     @torch.no_grad()
     def apply_xor(
@@ -155,8 +202,50 @@ class CheckpointIndexMap:
             if not count:
                 continue
             flat = as_bits(self.params[index].data).view(-1)
+            if flat.dtype != source.dtype:
+                raise RuntimeError(
+                    f"Sparse weight delta dtype {source.dtype} does not match the engine param ({flat.dtype})"
+                )
             positions = target[begin:end]
             flat.index_put_((positions,), flat[positions] ^ source[begin:end])
+
+
+def _restore_checkpoint_format(model: Module) -> list[tuple]:
+    """Put the checkpoint-format params (on meta, with their unwrapped loaders) back into
+    every layer whose live params were transformed after loading (online quantization)."""
+    swapped = []
+    for layer in model.modules():
+        info = LAYERWISE_INFO.get(layer)
+        if info is None:
+            continue
+        restore_params, _ = info.restore_metadata
+        live = layer._parameters
+        if all(
+            live.get(name) is not None and (live[name].dtype, live[name].shape) == (param.dtype, param.shape)
+            for name, param in restore_params.items()
+        ):
+            continue
+        kernel_tensors = get_layer_params_buffers(layer)
+        non_persistent = set(layer._non_persistent_buffers_set)
+        restore_layer_on_meta(layer, info)
+        loaders = {}
+        for name, param in get_layer_params_buffers(layer)[0].items():
+            loaders[name] = _get_weight_loader(param)
+            param.weight_loader = _get_original_loader(param)
+        swapped.append((layer, kernel_tensors, non_persistent, loaders))
+    return swapped
+
+
+def _restore_kernel_format(swapped: list[tuple]) -> None:
+    for layer, (params, buffers), non_persistent, loaders in swapped:
+        for name, loader in loaders.items():
+            getattr(layer, name).weight_loader = loader
+        for name in get_layer_tensors(layer):
+            delattr(layer, name)
+        for name, param in params.items():
+            layer.register_parameter(name, param)
+        for name, buffer in buffers.items():
+            layer.register_buffer(name, buffer, persistent=name not in non_persistent)
 
 
 @torch.no_grad()

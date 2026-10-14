@@ -1,11 +1,15 @@
 import itertools
+import json
+import os
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
+from safetensors import safe_open
 from torch.nn import Module
+from vllm.distributed.parallel_state import get_ep_group, get_world_group
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader import DefaultModelLoader, get_model_loader
 
@@ -15,7 +19,15 @@ from prime_rl.inference.vllm.worker.weight_transfer import (
     update_mla_absorbed_weights,
     weight_checksums,
 )
-from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST, bits_dtype, decode_gaps, read_delta, read_manifest
+from prime_rl.utils.sparse_weights import (
+    DELTA_DIR,
+    ENGINE_LAYOUT,
+    MANIFEST,
+    bits_dtype,
+    decode_gaps,
+    read_delta,
+    read_manifest,
+)
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -29,6 +41,8 @@ logger = init_logger("vllm.inference.vllm.worker_filesystem")
 
 _prefetch_pool = ThreadPoolExecutor(1)
 
+_SAFETENSORS_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
+
 
 class FileSystemWeightUpdateWorker(Worker):
     """vLLM worker extension for updating weights in-place using shared filesystem.
@@ -41,6 +55,7 @@ class FileSystemWeightUpdateWorker(Worker):
     weight_step: int | None = None
     prefetched: tuple[str, Future] | None = None
     index_map: CheckpointIndexMap | None = None
+    wrote_layout = False
 
     def liveness_probe(self) -> None:
         """No-op RPC used by the API server liveness endpoint."""
@@ -84,6 +99,40 @@ class FileSystemWeightUpdateWorker(Worker):
         else:
             self._replay_from_anchor(step_dir)
         self.weight_step = step
+        if (step_dir / DELTA_DIR).is_dir() and not self.wrote_layout and any(step_dir.glob("*.safetensors")):
+            self._write_engine_layout(step_dir)
+            self.wrote_layout = True
+
+    def _write_engine_layout(self, step_dir: Path) -> None:
+        """Tell the trainer which checkpoint tensors this engine holds in fp8 (and with which
+        scales), so it can send their deltas in the fp8 domain. Needs a full checkpoint."""
+        files = {}
+        tensors = {}
+        for path in step_dir.glob("*.safetensors"):
+            with safe_open(path, framework="pt") as f:
+                for name in f.keys():
+                    tensor_slice = f.get_slice(name)
+                    files[name] = path
+                    tensors[name] = (tensor_slice.get_shape(), _SAFETENSORS_DTYPES[tensor_slice.get_dtype()])
+        if self.index_map is None:
+            self.index_map = CheckpointIndexMap(self._model(), tensors)
+
+        def read_tensor(name: str) -> torch.Tensor:
+            with safe_open(files[name], framework="pt") as f:
+                return f.get_tensor(name)
+
+        # Each worker reports the tensors it holds; the trainer waits for all of them.
+        if self.vllm_config.parallel_config.enable_expert_parallel:
+            group = get_ep_group()
+        else:
+            group = get_world_group()
+        layout = {"world_size": group.world_size, "fp8": self.index_map.fp8_layout(read_tensor)}
+        path = step_dir.parent / ENGINE_LAYOUT / f"rank_{group.rank_in_group}.json"
+        path.parent.mkdir(exist_ok=True)
+        tmp = path.with_suffix(f".tmp{os.getpid()}")
+        tmp.write_text(json.dumps(layout))
+        os.replace(tmp, path)
+        logger.info(f"Wrote the engine layout: {len(layout['fp8'])} checkpoint tensors held in fp8")
 
     def _replay_from_anchor(self, step_dir: Path) -> None:
         chain = [step_dir]

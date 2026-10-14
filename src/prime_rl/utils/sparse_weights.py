@@ -21,6 +21,9 @@ from safetensors.numpy import save_file
 
 DELTA_DIR = "delta"
 MANIFEST = "manifest.json"
+# Dir next to the step dirs where every engine worker writes which checkpoint tensors it holds in fp8.
+ENGINE_LAYOUT = "engine_layout"
+FP8_BLOCK = [128, 128]
 
 _BITS_DTYPE = {1: torch.uint8, 2: torch.int16, 4: torch.int32, 8: torch.int64}
 
@@ -32,6 +35,19 @@ def as_bits(tensor: torch.Tensor) -> torch.Tensor:
 def bits_dtype(dtype: str) -> torch.dtype:
     """The integer dtype holding the raw bits of the dtype named ``dtype``."""
     return _BITS_DTYPE[getattr(torch, dtype).itemsize]
+
+
+def quantize_fp8_blocks(weight: torch.Tensor, ue8m0: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    """vLLM's online ``fp8_per_block`` quantization of a 2-D weight: fp8 bits (uint8) and fp32 block
+    scales. With ``ue8m0``, also DeepGEMM's requantization to power-of-two scales. Uses vLLM's own
+    compiled kernels: a reimplementation rounds differently on a few elements."""
+    from vllm.model_executor.layers.quantization.utils.fp8_utils import requant_weight_ue8m0_inplace
+    from vllm.utils.deep_gemm import per_block_cast_to_fp8
+
+    quantized, scales = per_block_cast_to_fp8(weight, FP8_BLOCK, use_ue8m0=False)
+    if ue8m0:
+        requant_weight_ue8m0_inplace(quantized, scales, FP8_BLOCK)
+    return quantized.view(torch.uint8), scales
 
 
 def encode_gaps(indices: torch.Tensor, entry_starts: torch.Tensor) -> torch.Tensor:
@@ -105,6 +121,20 @@ def _read_rank_file(
     if torch.cuda.is_available():
         gaps, values = gaps.pin_memory(), values.pin_memory()
     return entries, gaps, values
+
+
+def read_engine_layout(broadcast_dir: Path) -> dict[str, str] | None:
+    """Checkpoint tensor -> fp8 scale format (``"fp32"``/``"ue8m0"``) the engines hold it in,
+    or None until every engine worker has reported."""
+    layouts = [json.loads(path.read_text()) for path in (broadcast_dir / ENGINE_LAYOUT).glob("*.json")]
+    if not layouts or len(layouts) < layouts[0]["world_size"]:
+        return None
+    fp8 = {}
+    for layout in layouts:
+        for name, mode in layout["fp8"].items():
+            if fp8.setdefault(name, mode) != mode:
+                raise NotImplementedError(f"Engine workers hold {name} in different fp8 formats")
+    return fp8
 
 
 def read_manifest(step_dir: Path) -> dict:
