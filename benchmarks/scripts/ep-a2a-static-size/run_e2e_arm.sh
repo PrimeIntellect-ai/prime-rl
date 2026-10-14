@@ -1,5 +1,6 @@
 #!/bin/bash
-# Run one end-to-end SFT arm on a full 8-GPU node: ep=8, bf16 router, no offloading, compile on.
+# Run one end-to-end SFT arm on a full 8-GPU node: ep=8 (EP_A2A_EP overrides), bf16 router, no offloading,
+# compile on.
 # Workloads: qwen3-30b (fake data, balanced routing) or glm-air-8l (8 real GLM-4.5-Air layers, real SFT data).
 # usage: run_e2e_arm.sh <worktree> <name> <workload> <max-steps> [extra sft args...]
 set -uf
@@ -27,6 +28,6 @@ export PRL_OUTPUT_DIR=$OUT
 start=$(date +%s)
 uv run --no-sync sft $MODEL --output-dir "$OUT/run" --run.name bench --deployment.num-train-gpus 8 \
   --model.seq-len 16384 --data.seq-len 16384 --data.batch-size 16 --data.micro-batch-size 1 \
-  --model.attn flash_attention_3 --model.compile --model.moe-router-dtype bfloat16 --model.ep 8 \
+  --model.attn flash_attention_3 --model.compile --model.moe-router-dtype bfloat16 --model.ep "${EP_A2A_EP:-8}" \
   --model.offload none --model.ac-offloading None --max-steps "$STEPS" "$@" > "$OUT/sft.log" 2>&1
 echo "exit=$? wall_s=$(( $(date +%s) - start ))" >> "$OUT/sft.log"
