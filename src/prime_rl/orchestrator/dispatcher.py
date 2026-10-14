@@ -854,13 +854,14 @@ class Dispatcher:
             await safe_cancel_all([task for task, _ in claimed])
         return cancelled
 
-    def has_eval_group(self, env_name: str, key: str) -> bool:
-        """Whether eval task ``key`` of ``env_name`` has an open group: rollouts in
-        flight or still to schedule."""
-        return any(
-            group.kind == "eval" and group.env_name == env_name and group.task.key == key
-            for group in self.groups.values()
-        )
+    def eval_groups(self, env_name: str, key: str) -> list[uuid.UUID]:
+        """The open groups of eval task ``key`` of ``env_name``: rollouts in flight or
+        still to schedule."""
+        return [
+            gid
+            for gid, group in self.groups.items()
+            if group.kind == "eval" and group.env_name == env_name and group.task.key == key
+        ]
 
     async def cancel_eval_task(self, env_name: str, key: str) -> int:
         """Stop the rollouts of eval task ``key`` in ``env_name`` that have not landed:
@@ -869,11 +870,7 @@ class Dispatcher:
         landed meanwhile are left to their consumer. A task not yet taken off the source
         goes in ``requested_cancels`` instead. Returns the rollouts cancelled."""
         async with self.scheduling_lock:
-            group_ids = [
-                gid
-                for gid, group in self.groups.items()
-                if group.kind == "eval" and group.env_name == env_name and group.task.key == key
-            ]
+            group_ids = self.eval_groups(env_name, key)
         cancelled = 0
         for group_id in group_ids:
             cancelled += await self.drop_group(group_id, reason="requested")

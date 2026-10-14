@@ -6,6 +6,7 @@ that landed first is observed as usual. Runs the real ``Dispatcher``/``EvalSourc
 
 import asyncio
 import threading
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +21,7 @@ from prime_rl.orchestrator.envs import EvalEnv, EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
 from prime_rl.orchestrator.task_feed import TaskFeed
-from prime_rl.orchestrator.types import Policy
+from prime_rl.orchestrator.types import GroupState, Policy
 
 TIMEOUT_S = 30
 
@@ -291,3 +292,25 @@ def test_an_online_eval_rejects_an_infinite_taskset_before_pulling_it() -> None:
     with pytest.raises(ValueError, match="infinite taskset"):
         env.open_feed()
     assert env.feed is None and pulled == []
+
+
+def test_a_cancel_finds_exactly_the_tasks_eval_groups(tmp_path) -> None:
+    runner = _runner(tmp_path, HangingEnv(Stream([]).skip(0)))
+    dispatcher = runner.dispatcher
+
+    def group(kind: str, env_name: str, task_id: str) -> uuid.UUID:
+        gid = uuid.uuid4()
+        dispatcher.groups[gid] = GroupState(
+            kind=kind, env_name=env_name, task=_task(task_id), step=0, episodes_to_schedule=1, target_episodes=1
+        )
+        return gid
+
+    wanted = group("eval", "pipeline", "t")
+    group("train", "pipeline", "t")
+    group("eval", "other", "t")
+    group("eval", "pipeline", "u")
+
+    assert dispatcher.eval_groups("pipeline", "t") == [wanted]
+    assert asyncio.run(dispatcher.cancel_eval_task("pipeline", "t")) == 1
+    assert dispatcher.eval_groups("pipeline", "t") == []
+    assert len(dispatcher.groups) == 3

@@ -312,7 +312,7 @@ class EvalRunner:
         taskset's ``on_cancelled``. An open group wins over a report since the last
         poll: that report was of an earlier run of the same key."""
         taskset = type(self.eval_envs.get(env_name).taskset).__name__
-        if self.dispatcher.has_eval_group(env_name, key):
+        if self.dispatcher.eval_groups(env_name, key):
             get_logger().info(f"{taskset} cancelled task {key} in {env_name}")
             self.cancel_tasks.add(
                 asyncio.create_task(self.dispatcher.cancel_eval_task(env_name, key), name=f"cancel-{key}")
