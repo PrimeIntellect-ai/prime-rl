@@ -98,9 +98,10 @@ def die_with_parent(parent_pid: int) -> None:
     if _prctl is None:
         return
     _prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
-    # The kernel sends nothing for a parent that exited before the call
+    # The kernel sends nothing for a parent that exited before the call. Exit directly: in a
+    # preexec_fn a self-SIGTERM would run the launcher's inherited handlers in the child.
     if os.getppid() != parent_pid:
-        os.kill(os.getpid(), signal.SIGTERM)
+        os._exit(128 + signal.SIGTERM)
 
 
 def set_proc_title(name: str) -> None:
