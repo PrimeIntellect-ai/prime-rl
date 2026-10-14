@@ -15,7 +15,17 @@ that land with it for the first time; the ones already landed are listed under
 
 from collections.abc import Collection
 
+from verifiers.v1.durable import BOX_LABEL, CALL_LABEL
+
 from prime_rl.monitors.file.traces.refs import trace_labels
+
+TRACE_ONLY_LABELS = frozenset({CALL_LABEL, BOX_LABEL})
+"""Labels that describe one trace, not its episode: a durable call's and a durable box's."""
+
+
+def episode_labels(trace: dict) -> dict:
+    """A trace's labels that speak for its episode (``TRACE_ONLY_LABELS`` left out)."""
+    return {name: value for name, value in trace_labels(trace).items() if name not in TRACE_ONLY_LABELS}
 
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:
@@ -185,8 +195,9 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None, landed: C
         "arrival": (first_info.get("arrival") or {}).get("time"),
         "duration": _episode_duration(first_info, timing),
         # what the env labelled the episode with (``Env.trace_labels``, on every trace, so
-        # the first labelled trace speaks for it) and where its calls went
-        "labels": next((labels for trace in rec.get("traces") or [] if (labels := trace_labels(trace))), {}),
+        # the first labelled trace speaks for it; a durable call's own labels stay on its
+        # trace) and where its calls went
+        "labels": next((labels for trace in rec.get("traces") or [] if (labels := episode_labels(trace))), {}),
         "models": models,
     }
 

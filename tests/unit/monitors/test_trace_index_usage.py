@@ -182,3 +182,14 @@ def test_a_reader_summarising_the_stream_counts_a_kept_trace_once(tmp_path, monk
     # summarised on its own, the retried episode counts every trace it holds
     alone = summarize_episode(2, vf.Episode(task=draft.task, traces=[draft, review], ok=True).to_record())
     assert alone["reused"] == [] and alone["models"]["big"]["calls"] == 2
+
+
+def test_row_labels_leave_out_a_durable_calls_own_labels() -> None:
+    job = {"flow": {"job": "j1", "stage": "solve"}}
+    call = {"key": "agent/0", "fingerprint": "f", "ref": call_ref(job, "agent/0")}
+    record = _record({**job, "call": call, "box": {"ref": "b"}})
+    assert summarize_episode(1, record)["labels"] == job
+
+    # a trace labelled only by its durable call does not speak for the episode
+    record["traces"][0]["info"]["labels"] = {"call": call}
+    assert summarize_episode(1, record)["labels"] == job
