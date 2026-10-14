@@ -5,7 +5,8 @@ import torch
 from torch.optim import AdamW
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from prime_rl.configs.trainer import AdamWConfig, InitConfig
+from prime_rl.configs.pretrain import InitConfig
+from prime_rl.configs.trainer import AdamWConfig
 from prime_rl.trainer.init import init_weights, normal_shard
 from prime_rl.trainer.pretrain.completep import completep_param_groups
 

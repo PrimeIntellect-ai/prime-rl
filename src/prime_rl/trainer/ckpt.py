@@ -186,7 +186,7 @@ class CheckpointManager:
         path: Path,
         model: nn.Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler,
+        scheduler: LRScheduler | None,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ):
@@ -273,7 +273,7 @@ class CheckpointManager:
         step: int,
         model: nn.Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler,
+        scheduler: LRScheduler | None,
         progress: Progress,
         dataloader: StatefulDataLoader | None = None,
     ) -> None:

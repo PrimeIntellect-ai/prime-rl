@@ -1,35 +1,32 @@
 # Pretraining
 
-`uv run pretrain` trains a model from scratch on raw text. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, scheduler, checkpointing and monitors as the SFT trainer. It runs on a single node.
+`uv run pretrain` trains a model from scratch on pre-tokenized token shards. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, checkpointing and monitors as the SFT trainer. It runs locally on one node or, with `[slurm]`, as a SLURM job on one or more nodes (see [Multi-node](#multi-node)).
 
 ```bash
-uv run pretrain @ examples/pretrain/llama3/17m.toml
+uv run pretrain @ examples/pretrain/glm4_moe.toml
 ```
 
 ## Model
 
-`model.name` names a baseline HF model. The baseline provides the architecture class, the tokenizer and the vocabulary. `[model.arch]` overrides fields of its HF config to set the size:
+`[model.arch]` is the whole architecture: a `model_type` from `prime_rl.trainer.models` and the fields of its config class. Unknown fields are rejected. The vocabulary size (`len(tokenizer)` rounded up to a multiple of 128) and the BOS, EOS and pad ids come from the tokenizer, so they cannot disagree with it.
 
 ```toml
-[model]
-name = "meta-llama/Llama-3.2-1B"
-
 [model.arch]
-hidden_size = 384
+model_type = "glm4_moe"
+hidden_size = 512
 num_hidden_layers = 8
-num_attention_heads = 6
-num_key_value_heads = 2
-head_dim = 64
-intermediate_size = 1536
+n_routed_experts = 64
+num_experts_per_tok = 6
+
+[tokenizer]
+name = "tokenizers/deepseek-v4-flash-base"
 ```
 
-The launcher writes the resulting config and the tokenizer to `<run_dir>/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the non-embedding, embedding (input embedding and LM head) and total parameter counts at startup.
-
-The [Llama 3 ladder](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/pretrain/llama3) covers 17M, 70M, 150M, 500M and 1B non-embedding parameters.
+The launcher writes the config and the tokenizer to `<run_dir>/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the non-embedding, embedding (input embedding and LM head) and total parameter counts at startup.
 
 ## Initialization
 
-Pretraining sets `model.debug.random_init = true`: weights are not downloaded or loaded, and `random_init_mode` resolves to `init`. Set `model.debug.random_init = false` to continue pretraining from the baseline's weights.
+Weights start from a random init, unless the run resumes from a checkpoint.
 
 | Field | Meaning |
 |---|---|
@@ -59,37 +56,78 @@ With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are tra
 | Hidden matrices | std / sqrt(m_N) | lr / sqrt(m_N) | wd sqrt(m_N) |
 | `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (sqrt(m_N) m_L) | wd sqrt(m_N) m_L |
 
-CompleteP works with dense models, needs `model.offload = "none"`, and `scheduler.min_lr = 0` with the cosine scheduler. Keep `head_dim` and the ratios `intermediate_size / hidden_size` and `num_attention_heads / num_key_value_heads` fixed across shapes.
+CompleteP works with dense models and needs `model.offload = "none"`. Keep `head_dim` and the ratios `intermediate_size / hidden_size` and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
-For `sft` and `rl`, `random_init_mode` resolves to `skip`: the weights keep arbitrary memory contents, which is the fastest option for throughput benchmarks.
+## Learning-rate schedule
+
+`[schedule]` sets a multiplier `f(step)` on the learning rate, where `step` counts the optimizer updates completed so far (0 for the first update). Every param group uses its own learning rate times `f(step)`, so ratios between groups hold at every step. The default warms up over 10% of the steps and decays linearly to 0 over the remaining 90%.
+
+```toml
+[schedule]
+warmup = 0.05       # fraction of max_steps, or a number of steps
+decay = 0.2
+end_ratio = 0.1
+decay_shape = "1-sqrt"  # or "linear" (default), "cosine"
+```
+
+`f(0) = 0`, the warmup reaches 1 at its last update (`warmup - 1`; a warmup of 0 or 1 starts at 1), and the decay reaches `end_ratio` at the last update (`max_steps - 1`). AdamW and Muon apply weight decay as `lr * weight_decay`, so the schedule also scales the decay. The multiplier is recomputed from the step, so checkpoints hold no schedule state. Resuming with `ckpt.skip_scheduler = true` restarts the schedule at the resumed step, spanning the remaining steps. The multiplier is logged as `schedule/lr`.
 
 ## Data
 
-`data.type = "text"` (the default) reads raw documents from a HF dataset column (`data.text_column`, default `text`). Only the selected subsets are downloaded. Each document is tokenized with the tokenizer's BOS and a closing EOS. Documents are packed back to back into rows of `data.seq_len` tokens and continue into the next row, so no token is truncated or padded. A step trains on exactly `data.batch_size * data.seq_len` tokens.
+`data.type = "tokens"` reads [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: per source, a folder of `*.ds` token files with their `.ds.index` (document ends) and `.ds.metadata`. The files of a source are read in name order as one stream; documents continue across rows, and attention restarts at every document and every row. Every document must end with the tokenizer's EOS; the trainer checks the first document of every source, which catches shards made with another tokenizer.
 
-| Field | Meaning |
-|---|---|
-| `data.document_masking` | Attention stays within each document and positions restart at every document start (default). If false, a row is one sequence. Attention never crosses a row. |
-| `data.micro_batch_size` | Rows per forward pass. |
-| `data.holdout_docs` | Hold the last N documents (in dataset order) out of training. With `[val]` set, they are evaluated as the `holdout` source. |
-| `data.subsets`, `data.splits`, `data.probabilities` | Load and interleave several subsets/splits. |
+Each row comes from one source, drawn with the weights of the current mixture phase. Phases start at fractions of `max_steps`. At startup the trainer computes how many passes over each source the run makes and fails above `data.max_epochs`.
 
-`data.type = "fake"` trains on generated tokens, for throughput tests.
+```toml
+[data]
+type = "tokens"
+seq_len = 4096
+batch_tokens = 262144       # per optimizer step, over all GPUs
+micro_batch_tokens = 65536  # per forward pass on one GPU
+max_epochs = 3
+
+[data.sources]
+web = { path = "data/web" }
+code = { path = "data/code" }
+
+[[data.phases]]
+weights = { web = 0.8, code = 0.2 }
+
+[[data.phases]]
+start = 0.9
+weights = { web = 0.5, code = 0.5 }
+```
+
+Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and the number of steps. The resume state is the global row counter and the tokens read per source, the same on every rank. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
 
 ## Evals
 
-Evals run after the optimizer update, so the metrics at step N describe the weights after N updates, the same weights as the step-N checkpoint. With `eval_on_start` (default), they also run before the first step (logged as step 0), and they always run at the last step. They require `model.cp = 1`.
-
-**Perplexity (`[val]`).** Each `[[val.source]]` is a held-out text set. It is tokenized and packed once at startup (with document masking, up to `max_tokens`), so every eval sees the same tokens. Each source logs `val/{name}/loss` (nats per token), `val/{name}/ppl` and `val/{name}/bpb` (bits per UTF-8 byte, comparable across tokenizers).
+`[val]` computes the held-out loss (nats per token), perplexity and bits per UTF-8 byte (comparable across tokenizers) of every source in `val.sources`, through the same loss code as training, so it also works with context parallelism. Each eval reads the same leading windows of every source: as many as fill whole micro-batches on every data-parallel rank. Evals run after the optimizer update, so the metrics at step N describe the same weights as the step-N checkpoint. With `eval_on_start` (default), they also run before the first step (logged as step 0), and they always run at the last step.
 
 ```toml
 [val]
 interval = 500
 
-[[val.source]]
-name = "wikitext"
-dataset = "Salesforce/wikitext"
-subset = "wikitext-103-raw-v1"
-split = "test"
+[val.sources]
+web = { path = "data/web-val" }
 ```
 
+## Multi-node
+
+`uv run pretrain` takes the same `[deployment]` and `[slurm]` blocks as `uv run sft` (see [Scaling § SLURM](scaling.md#slurm)) and submits the same bundled templates. The launcher writes the model dir on the submitting node, then submits one job in which every node runs `torchrun` on the pretrain trainer:
+
+```toml
+output_dir = "/shared/outputs/pretrain"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+gpus_per_node = 8
+nodes_per_fsdp_group = 1  # optional: HSDP, shard within a node and replicate across nodes
+
+[slurm]
+partition = "all"
+time = "04:00:00"
+```
+
+Row `w` of the token stream goes to data stream `w % num_streams`, with `num_streams = data_parallel_ranks * data.num_workers`, and step `s` trains on rows `s * rows_per_step` to `(s + 1) * rows_per_step - 1`. So runs with different numbers of GPUs train on the same rows at every step, only split differently into micro-batches. The loss and gradient are normalized by the token count of the whole global batch, as on one GPU with gradient accumulation.

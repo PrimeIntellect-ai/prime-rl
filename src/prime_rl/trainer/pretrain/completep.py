@@ -1,6 +1,7 @@
 from torch import nn
 
-from prime_rl.configs.trainer import AdamWConfig, InitConfig, MuonConfig
+from prime_rl.configs.pretrain import InitConfig
+from prime_rl.configs.trainer import AdamWConfig, MuonConfig
 from prime_rl.trainer.init import completep_multipliers, param_role
 from prime_rl.utils.weights import resolve_fqn
 
