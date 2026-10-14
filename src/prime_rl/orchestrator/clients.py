@@ -375,13 +375,15 @@ class AdminPlane:
             for client in clients:
                 ok = live[client]
                 if client in self.evicted:
+                    if not ok:
+                        stalled.pop(client, None)  # it restarted (or died)
                     # A group recovers only once all its engines answer
                     ok = all(live.get(other, False) for other in self.group_of[client])
                     if ok and client in stalled:
                         running, tokens = counters[client]
                         if running and tokens == stalled[client]:
                             continue
-                    stalled.pop(client, None)
+                        stalled.pop(client)
                     if ok and client not in self.recovered:
                         get_logger().info(
                             f"Evicted inference engine {client.base_url} answers again; its group rejoins at the next weight update"
@@ -456,10 +458,7 @@ class AdminPlane:
         succeeded = []
         for client, result in zip(clients, results):
             if isinstance(result, Exception):
-                if client in self.clients:
-                    await self._evict(client, f"{op} failed: {result!r}")
-                else:
-                    self.recovered.discard(client)
+                await self._evict(client, f"{op} failed: {result!r}")
             else:
                 succeeded.append(client)
         # A failure evicts the whole engine group, including engines that succeeded
