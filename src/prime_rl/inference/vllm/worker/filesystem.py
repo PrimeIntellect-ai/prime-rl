@@ -57,6 +57,7 @@ class FileSystemWeightUpdateWorker(Worker):
     prefetched: tuple[str, Future] | None = None
     index_map: CheckpointIndexMap | None = None
     wrote_layout = False
+    host_buffer: torch.Tensor | None = None
 
     def liveness_probe(self) -> None:
         """No-op RPC used by the API server liveness endpoint."""
@@ -72,7 +73,31 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def prefetch_weights_from_path(self, weight_path: str) -> None:
         """Start decoding the sparse delta in ``weight_path`` into pinned host memory."""
-        self.prefetched = (weight_path, _prefetch_pool.submit(read_delta, Path(weight_path), self._spans()))
+        self.prefetched = (weight_path, _prefetch_pool.submit(self._read_delta, Path(weight_path)))
+
+    def _read_delta(self, step_dir: Path) -> list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]]:
+        """Read this worker's part of a delta into a pinned host buffer that is reused across steps
+        (allocating pinned memory every step is slow on a loaded host)."""
+        start = time.perf_counter()
+        delta = read_delta(step_dir, self._spans())
+        read_time = time.perf_counter() - start
+        num_bytes = sum(-(-gaps.nbytes // 4) * 4 + -(-values.nbytes // 4) * 4 for _, gaps, values in delta)
+        if self.host_buffer is None or self.host_buffer.numel() < num_bytes:
+            self.host_buffer = torch.empty(num_bytes * 5 // 4, dtype=torch.uint8, pin_memory=True)
+        pinned, offset = [], 0
+        for entries, gaps, values in delta:
+            parts = []
+            for array in (gaps, values):
+                part = self.host_buffer[offset : offset + array.nbytes].view(array.dtype)
+                part.copy_(array)
+                parts.append(part)
+                offset += -(-array.nbytes // 4) * 4
+            pinned.append((entries, *parts))
+        logger.info(
+            f"Read sparse weight delta {step_dir.name}: {num_bytes / 2**30:.2f} GiB, "
+            f"read+decompress {read_time:.2f}s, pin {time.perf_counter() - start - read_time:.2f}s"
+        )
+        return pinned
 
     def _spans(self) -> dict[str, tuple[int, int]] | None:
         """The checkpoint index ranges this worker's params hold, once the index map exists."""
@@ -149,10 +174,10 @@ class FileSystemWeightUpdateWorker(Worker):
     def _apply_delta(self, step_dir: Path) -> None:
         start = time.perf_counter()
         prefetched, self.prefetched = self.prefetched, None
-        if prefetched is not None and prefetched[0] == step_dir.as_posix():
-            delta = prefetched[1].result()
-        else:
-            delta = read_delta(step_dir, self._spans())
+        # Always wait: a running prefetch writes into the same host buffer.
+        delta = prefetched[1].result() if prefetched is not None else None
+        if prefetched is None or prefetched[0] != step_dir.as_posix():
+            delta = self._read_delta(step_dir)
         read_time = time.perf_counter() - start
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()

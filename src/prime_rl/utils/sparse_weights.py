@@ -11,6 +11,7 @@ must be applied on top of exactly its ``base_step``.
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from math import prod
 from pathlib import Path
 
 import numpy as np
@@ -104,9 +105,11 @@ def _read_rank_file(
                 entry_values = np.frombuffer(
                     pyzstd.decompress(values_bytes[values_offset:values_end].tobytes()), np.uint8
                 )
-                if spans is not None:
+                # Trim to this reader's index range unless it holds the whole tensor
+                span_start, span_end = spans[name] if spans is not None else (0, 2**62)
+                if span_start > 0 or span_end < prod(tensors[name][0]):
                     indices = np.cumsum(entry_gaps, dtype=np.int64) + np.arange(1, count + 1) - 1
-                    begin, end = np.searchsorted(indices, spans[name])
+                    begin, end = np.searchsorted(indices, (span_start, span_end))
                     itemsize = bits_dtype(tensors[name][1]).itemsize
                     entry_values = entry_values[begin * itemsize : end * itemsize]
                     entry_gaps = entry_gaps[begin:end].copy()
@@ -119,8 +122,6 @@ def _read_rank_file(
             gaps_offset, values_offset = gaps_end, values_end
     gaps = torch.from_numpy(np.concatenate(gaps) if gaps else np.empty(0, np.int32))
     values = torch.from_numpy(np.concatenate(values) if values else np.empty(0, np.uint8))
-    if torch.cuda.is_available():
-        gaps, values = gaps.pin_memory(), values.pin_memory()
     return entries, gaps, values
 
 
@@ -170,7 +171,7 @@ def read_delta(
     step_dir: Path, spans: dict[str, tuple[int, int]] | None = None
 ) -> list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]]:
     """Read and decompress every rank file of a delta step dir into ``(entries,
-    gaps, xor value bytes)`` in (pinned) host memory; ``decode_gaps`` turns the
+    gaps, xor value bytes)`` in host memory; ``decode_gaps`` turns the
     gaps into flat indices on the device that applies them. With ``spans``, keep
     only the listed tensors and, within each, the flat indices in ``[start, end)``."""
     manifest = read_manifest(step_dir)

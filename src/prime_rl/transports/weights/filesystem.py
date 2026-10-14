@@ -32,6 +32,7 @@ from prime_rl.utils.sparse_weights import (
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
+    owned_weight_bytes,
     resolve_fqn,
     resolve_wire_dtype,
     save_state_dict,
@@ -161,6 +162,20 @@ class SparseDeltaEncoder:
         self.scales[key] = scales
         return bits, shard[1]
 
+    @staticmethod
+    def _diff(bits: torch.Tensor, previous: torch.Tensor, chunk: int = 1 << 28) -> tuple[torch.Tensor, torch.Tensor]:
+        """Changed flat indices of ``bits`` vs the pinned host ``previous`` and their XOR values,
+        streaming ``previous`` through the GPU in chunks and updating it in place."""
+        changed, changed_values = [], []
+        for start in range(0, bits.numel(), chunk):
+            current = bits[start : start + chunk]
+            xor = current ^ previous[start : start + chunk].to(bits.device, non_blocking=True)
+            previous[start : start + chunk].copy_(current, non_blocking=True)
+            index = xor.nonzero().squeeze(1)
+            changed.append(index + start)
+            changed_values.append(xor[index])
+        return torch.cat(changed), torch.cat(changed_values)
+
     @torch.no_grad()
     def encode(
         self, model: nn.Module, is_master: bool
@@ -187,21 +202,20 @@ class SparseDeltaEncoder:
                 continue
             bits, offset = shard
             if first:
-                self.snapshot[key] = bits.clone()
+                # The previous broadcast's bits live in pinned host memory, so the trainer's GPU memory is unchanged.
+                self.snapshot[key] = torch.empty(bits.shape, dtype=bits.dtype, pin_memory=True)
+                self.snapshot[key].copy_(bits)
                 continue
-            previous = self.snapshot[key]
-            xor = bits ^ previous
-            previous.copy_(bits)
-            changed = xor.nonzero().squeeze(1)
+            changed, changed_values = self._diff(bits, self.snapshot[key])
             if fqn not in self.segment_starts:
-                self.segment_starts[fqn] = torch.tensor([start for start, _ in self.segments[fqn]], device=xor.device)
+                self.segment_starts[fqn] = torch.tensor([start for start, _ in self.segments[fqn]], device=bits.device)
             starts = self.segment_starts[fqn]
             position = changed + offset
             segment = torch.searchsorted(starts, position, right=True) - 1
             entry_starts = torch.ones_like(segment, dtype=torch.bool)
             entry_starts[1:] = segment[1:] != segment[:-1]
-            gaps.append(encode_gaps(position - starts[segment], entry_starts))
-            values.append(xor[changed].view(torch.uint8))
+            gaps.append(encode_gaps(position - starts[segment], entry_starts).to("cpu", non_blocking=True))
+            values.append(changed_values.view(torch.uint8).to("cpu", non_blocking=True))
             counts.append(torch.bincount(segment, minlength=len(starts)))
             names.extend(name for _, name in self.segments[fqn])
         if self.fp8 and dist.is_initialized():
@@ -210,12 +224,11 @@ class SparseDeltaEncoder:
             self.scales_changed = bool(changed_anywhere.item())
         if first or self.scales_changed:
             return None
-        counts = torch.cat(counts).tolist() if counts else []
+        counts = torch.cat(counts).tolist() if counts else []  # also waits for the copies to the host
+        torch.cuda.empty_cache()
         entries = [(name, count) for name, count in zip(names, counts) if count]
         empty = torch.empty(0, dtype=torch.uint8)
-        gaps_host = torch.cat(gaps).cpu() if gaps else empty
-        values_host = torch.cat(values).cpu() if values else empty
-        return entries, gaps_host, values_host
+        return entries, torch.cat(gaps) if gaps else empty, torch.cat(values) if values else empty
 
 
 class FileSystemWeightSender(WeightSender):
@@ -240,6 +253,8 @@ class FileSystemWeightSender(WeightSender):
         self.anchor_step: int | None = None
         self.num_deltas = 0
         self.pending_anchor: int | None = None
+        # Reused across anchors: a new one starts only after the previous one was written
+        self.anchor_buffer: torch.Tensor | None = None
         self.logger.debug("Initialized filesystem weight broadcast")
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
@@ -307,10 +322,20 @@ class FileSystemWeightSender(WeightSender):
     def _save_anchor(self, model: nn.Module, step_dir: Path) -> threading.Thread:
         """Gather this rank's share of the full checkpoint to CPU, then write it on a thread
         (no collectives); engines treat the step as an anchor once every rank's marker exists."""
-        state_dict = convert_state_dict_to_hf(model, gather_weights_parallel(model))
-        thread = threading.Thread(
-            target=write_anchor_shards, args=(state_dict, step_dir, self.world.rank, self.world.world_size)
-        )
+        start = time.perf_counter()
+        if self.anchor_buffer is None:
+            self.anchor_buffer = torch.empty(owned_weight_bytes(model), dtype=torch.uint8, pin_memory=True)
+        state_dict = convert_state_dict_to_hf(model, gather_weights_parallel(model, host_buffer=self.anchor_buffer))
+        torch.cuda.empty_cache()
+        gather_time = time.perf_counter() - start
+
+        def write() -> None:
+            write_anchor_shards(state_dict, step_dir, self.world.rank, self.world.world_size)
+            self.logger.debug(
+                f"Wrote the {step_dir.name} anchor: gather {gather_time:.1f}s, write {time.perf_counter() - start - gather_time:.1f}s"
+            )
+
+        thread = threading.Thread(target=write)
         thread.start()
         return thread
 
