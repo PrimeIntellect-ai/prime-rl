@@ -94,6 +94,8 @@ uv run eval @ eval.toml --run.name my-eval --resume
 
 The previous attempt's `monitors/file` is kept as `monitors/file.attempt_N`; the resumed attempt writes a fresh one. Nothing is deleted, and a resume reads every attempt's stream.
 
+Every Prime sandbox and tunnel the run's env servers open carries the run's label, `prl-<run name>-<digest>`, the digest over the run name and its resolved `output_dir` (`prime_rl.utils.sandboxes.run_label`, handed to every process as `$PRL_RUN_LABEL`). Every attempt of a run shares it and no other run carries it, not even one of the same name in another `output_dir`. A resume deletes what still carries it, the sandboxes and tunnels a dead attempt left running, before it starts, unless the run's `control.json` names an eval of the run that is still alive on this host.
+
 A landed episode counts toward a selected task in the same source when their content hashes (`task.hash`) match. A task whose content changes runs again even if its public `task.key` stays the same. `select` and `group_size` may change between launches: each selected occurrence keeps up to `group_size` matching episodes, and only its missing rollouts run. The resumed config is not checked against the interrupted one: any of it may be overridden, so keep the model, the sampling and each source's env the same when the landed episodes must stay comparable. Each selected occurrence owns a separate group containing its restored and new rollouts, even when the same task is selected more than once, so pass@k and the dashboard see one group per selected occurrence. A streaming source keeps nothing: its relaunched taskset re-yields the work it has not seen reported, and that runs whole. Use `--clean` to start over instead.
 
 ## Monitors

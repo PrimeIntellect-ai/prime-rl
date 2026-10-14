@@ -75,6 +75,7 @@ from prime_rl.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats, s
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import format_time, get_logger, setup_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_config_dir, resolve_latest_ckpt_step
+from prime_rl.utils.sandboxes import RUN_LABEL_VAR
 from prime_rl.utils.utils import clean_exit
 
 # Wall-clock budget for post-training cleanup; force-exit if graceful
@@ -209,11 +210,11 @@ class Orchestrator:
         )
         # The launcher-set $PRL_RUN_ID is the run identity; standalone runs mint a local one.
         self.run_id = os.environ.get("PRL_RUN_ID") or uuid.uuid4().hex
+        self.run_name = os.environ.get("PRL_RUN_NAME")
         # Base labels for sandboxes created in this process; env-server processes read
         # the same launcher-set env var themselves.
-        self.run_name = os.environ.get("PRL_RUN_NAME")
-        if self.run_name:
-            set_base_sandbox_labels([self.run_name])
+        if run_label := os.environ.get(RUN_LABEL_VAR):
+            set_base_sandbox_labels([run_label])
 
         if config.heartbeat is not None:
             self.heart = Heartbeat(config.heartbeat)

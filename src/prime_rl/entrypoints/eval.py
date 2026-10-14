@@ -142,6 +142,9 @@ def main():
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
     assert config.run.name is not None  # resolved at construction
     os.environ["PRL_RUN_NAME"] = config.run.name
+    from prime_rl.utils.sandboxes import RUN_LABEL_VAR, run_label
+
+    os.environ[RUN_LABEL_VAR] = run_label(config.run.name, config.output_dir)
 
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
     validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=config.resume, clean=clean)
@@ -174,7 +177,7 @@ def main():
     if config.resume:
         from prime_rl.utils.sandboxes import sweep_run_leftovers
 
-        sweep_run_leftovers(config.run.name)
+        sweep_run_leftovers(config.run.name, config.output_dir, run_dir=config.run_dir)
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
     from prime_rl.eval.eval import run_eval

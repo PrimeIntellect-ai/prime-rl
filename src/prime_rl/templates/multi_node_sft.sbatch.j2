@@ -62,6 +62,7 @@ rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}
 
 export PRL_RUN_ID={{ prl_run_id }}
 export PRL_RUN_NAME={{ run_name }}
+export PRL_RUN_LABEL={{ run_label }}
 {% if wandb_shared %}
 # Trainer and online-eval log to one shared W&B run. The trainer creates the run,
 # and the online-eval process finalizes it after the final epoch.

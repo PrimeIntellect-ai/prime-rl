@@ -83,6 +83,21 @@ def read_address(run_dir: Path | str) -> str:
     return address
 
 
+def live_pid(run_dir: Path | str) -> int | None:
+    """The pid of the eval that serves ``run_dir``'s run control on this host, if it
+    still runs: an attempt of the run that is alive, whose sandboxes are in use."""
+    try:
+        info = json.loads(control_path(run_dir).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(info, dict):
+        return None
+    pid = info.get("pid")
+    if info.get("host") != socket.gethostname() or not isinstance(pid, int) or pid == os.getpid():
+        return None
+    return pid if pid_alive(pid) else None
+
+
 def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)

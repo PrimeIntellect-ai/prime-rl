@@ -36,6 +36,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.sandboxes import RUN_LABEL_VAR, run_label
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -339,6 +340,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=True,
             run_name=config.run.name,
+            run_label=os.environ[RUN_LABEL_VAR],
             config_dir=config_dir,
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -384,6 +386,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **config.slurm.template_vars,
             is_disaggregated=False,
             run_name=config.run.name,
+            run_label=os.environ[RUN_LABEL_VAR],
             config_dir=config_dir,  # TODO: should prob have each subconfig path separately
             log_dir=log_dir,
             output_dir=config.run_dir,
@@ -496,6 +499,7 @@ def rl(config: RLConfig):
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
     assert config.run.name is not None  # resolved at construction
     os.environ["PRL_RUN_NAME"] = config.run.name
+    os.environ[RUN_LABEL_VAR] = run_label(config.run.name, config.output_dir)
 
     resuming = config.resume is not None
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
@@ -531,7 +535,7 @@ def rl(config: RLConfig):
     if resuming and not config.dry_run:
         from prime_rl.utils.sandboxes import sweep_run_leftovers
 
-        sweep_run_leftovers(config.run.name)
+        sweep_run_leftovers(config.run.name, config.output_dir)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model

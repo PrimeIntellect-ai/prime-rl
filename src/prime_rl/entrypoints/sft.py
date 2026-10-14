@@ -36,6 +36,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.sandboxes import RUN_LABEL_VAR, run_label
 
 SFT_CONFIG = "sft.json"
 SFT_SBATCH = "sft.sbatch"
@@ -224,6 +225,7 @@ def write_slurm_script(
             prl_run_id=prl_run_id,
             wandb_shared=wandb_shared,
             run_name=config.run.name,
+            run_label=os.environ[RUN_LABEL_VAR],
             online_eval=online_eval,
             use_nccl_broadcast=(
                 config.eval is not None
@@ -467,6 +469,7 @@ def sft(config: SFTConfig):
     os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
     assert config.run.name is not None  # resolved at construction
     os.environ["PRL_RUN_NAME"] = config.run.name
+    os.environ[RUN_LABEL_VAR] = run_label(config.run.name, config.output_dir)
 
     resuming = config.resume is not None
     clean = config.clean and not os.environ.get("NEVER_CLEAN")

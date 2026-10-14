@@ -13,6 +13,7 @@ from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.orchestrator.utils import setup_env_server_logging
 from prime_rl.utils.config import cli
 from prime_rl.utils.process import set_proc_title
+from prime_rl.utils.sandboxes import RUN_LABEL_VAR
 from prime_rl.utils.utils import clean_exit
 
 
@@ -33,8 +34,8 @@ def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:
 
 @clean_exit
 def run_server(config: EnvServerConfig):
-    run_name = os.environ.get("PRL_RUN_NAME")
-    sandbox_labels = [run_name] if run_name else []
+    run_label = os.environ.get(RUN_LABEL_VAR)
+    sandbox_labels = [run_label] if run_label else []
     addresses: queue.SimpleQueue | None = None
     if config.address_file is not None:
         addresses = queue.SimpleQueue()
