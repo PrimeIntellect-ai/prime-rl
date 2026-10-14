@@ -274,6 +274,10 @@ ModelExpress exchanges peer metadata during startup. Weight updates reuse prepar
 
 By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
 
+### Sparse filesystem weight broadcast
+
+With `[weight_broadcast] type = "filesystem"` and `sparse = true`, the trainer writes a full checkpoint only every `anchor_interval` steps (default 25) and at its first two broadcasts. In between, it writes the XOR of the bf16 weights against the previous broadcast. Each trainer rank diffs its own shards, so no weights are gathered; with AdamW at RL learning rates about 1% of bf16 elements change per step, and a delta is about 1% of the checkpoint size. Engines read and decode a delta while they keep serving, then patch their weights in place during the pause. An engine that is not at a delta's base step reloads the last anchor and replays the deltas since. On anchor steps, engines apply the delta first and check it against the full checkpoint bit for bit, so a model whose weights cannot be patched in place fails at the second broadcast. The delta goes through vLLM's own weight loader; weights that are transformed after loading (quantized or re-laid-out) are not supported. LoRA is not supported.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:
