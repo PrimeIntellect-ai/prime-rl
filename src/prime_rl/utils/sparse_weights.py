@@ -163,6 +163,7 @@ def _read_rank_file(
 
         with ThreadPoolExecutor(4) as pool:
             kept = [entry for frame in pool.map(read_frame, frames) for entry in frame]
+        drop_page_cache(file.fileno())
     gaps = torch.from_numpy(np.concatenate([g for _, g, _ in kept]) if kept else np.empty(0, np.int32))
     values = torch.from_numpy(np.concatenate([v for _, _, v in kept]) if kept else np.empty(0, np.uint8))
     return [(name, len(g)) for name, g, _ in kept], gaps, values, json.loads(metadata["checksums"])
@@ -227,6 +228,11 @@ def read_delta(
         for name, value in partial.items():
             checksums[name] = add_checksums(checksums.get(name, 0), value)
     return [delta for *delta, _ in files], checksums
+
+
+def drop_page_cache(fd: int) -> None:
+    """Deltas and anchors are read once; don't let them fill the inference host's page cache."""
+    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
 
 
 def bits_checksum(bits: torch.Tensor) -> int:

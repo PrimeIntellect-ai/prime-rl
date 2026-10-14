@@ -26,6 +26,7 @@ from prime_rl.utils.sparse_weights import (
     anchor_complete,
     bits_dtype,
     decode_gaps,
+    drop_page_cache,
     read_delta,
     read_manifest,
 )
@@ -249,3 +250,7 @@ class FileSystemWeightUpdateWorker(Worker):
             self.model_runner.model_config,
             self.vllm_config,
         )
+        if anchor_complete(step_dir):
+            for path in step_dir.glob("*.safetensors"):
+                with open(path, "rb") as file:
+                    drop_page_cache(file.fileno())
