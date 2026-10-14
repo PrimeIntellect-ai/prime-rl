@@ -40,7 +40,7 @@ from prime_rl.trainer.pretrain.data import (
     setup_val_dataset,
 )
 from prime_rl.trainer.pretrain.schedules import LRSchedule
-from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
+from prime_rl.trainer.data import get_dataset_progress, get_dataset_state
 from prime_rl.trainer.step import run_micro_batches
 from prime_rl.trainer.utils import (
     GarbageCollection,

@@ -6,7 +6,7 @@ import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from prime_rl.configs.pretrain import MixturePhaseConfig, PretrainDataConfig, TokenSourceConfig
-from prime_rl.trainer.sft.data import StatefulIterableDataset
+from prime_rl.trainer.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 
 
