@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name={{ job_name }}
-#SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
+#SBATCH --nodes={{ num_train_nodes + num_infer_nodes + (num_eval_nodes or 0) }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
 {%- if partition %}
@@ -59,8 +59,11 @@ export TRAINER_DONE=$LAUNCHER_DIR/.sft_trainer_done_$SLURM_JOB_ID
 {% if online_eval -%}
 export EVAL_DONE=$LAUNCHER_DIR/.sft_eval_done_$SLURM_JOB_ID
 {%- endif %}
+{% if num_eval_nodes -%}
+export EVAL_DONE=$LAUNCHER_DIR/.pretrain_eval_done_$SLURM_JOB_ID
+{% endif -%}
 mkdir -p "$LAUNCHER_DIR"
-rm -f "$TRAINER_DONE"{% if online_eval %} "$EVAL_DONE"{% endif %}
+rm -f "$TRAINER_DONE"{% if online_eval or num_eval_nodes %} "$EVAL_DONE"{% endif %}
 
 export PRL_RUN_ID={{ prl_run_id }}
 export PRL_RUN_NAME={{ run_name }}
@@ -155,6 +158,38 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
     IB_HCA=$(ibv_devinfo 2>/dev/null | sed -n -e "/hca_id/p" -e "/link_layer:/p" | grep -B1 InfiniBand | grep hca_id | sed -e "s/^hca_id://g" | tr -d "[[:blank:]]" | paste -sd,)
     [ -n "$IB_HCA" ] && export NCCL_IB_HCA=$IB_HCA
 
+{% if num_eval_nodes -%}
+if [ "$SLURM_PROCID" -ge "$NUM_TRAIN_NODES" ]; then
+    # Eval worker nodes follow the trainer nodes.
+    EVAL_NODE_RANK=$((SLURM_PROCID - NUM_TRAIN_NODES))
+    HOSTS=( $ALL_HOSTNAMES_STR )
+{%- for key, value in trainer_env_vars.items() %}
+    export {{ key }}="{{ value }}"
+{%- endfor %}
+    mkdir -p $LOG_DIR/eval_worker
+    (
+        uv run torchrun \
+            --role=eval \
+            --nnodes={{ num_eval_nodes }} \
+            --nproc-per-node=$GPUS_PER_NODE \
+            --node-rank=$EVAL_NODE_RANK \
+            --rdzv-endpoint=${HOSTS[$NUM_TRAIN_NODES]}:29600 \
+            --rdzv-id=eval_$SLURM_JOB_ID \
+            --log-dir=$LOG_DIR/eval_worker/torchrun \
+            --tee=3 \
+            --redirects=3 \
+            --local-ranks-filter=0 \
+            -m prime_rl.trainer.pretrain.eval_worker \
+            @ {{ eval_worker_config_path }} \
+            2>&1 | sed -u 's/^\[[a-zA-Z]*[0-9]*\]://' | tee -a $LOG_DIR/eval_worker/node_${EVAL_NODE_RANK}.log
+        COMPONENT_CODE=$?
+        if [ "$COMPONENT_CODE" -eq 0 ] && [ "$EVAL_NODE_RANK" -eq 0 ]; then
+            touch "$EVAL_DONE" || exit $?
+        fi
+        exit "$COMPONENT_CODE"
+    ) &
+else
+{% endif -%}
 {% if online_eval -%}
 if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     INFER_NODE_RANK=$SLURM_PROCID
@@ -254,9 +289,10 @@ else
         exit "$COMPONENT_CODE"
     ) &
 {% if online_eval %}fi{% endif %}
+{%- if num_eval_nodes %}fi{% endif %}
 
 # Every node stays in the shared srun step until all terminal roles finish.
-{% if online_eval -%}
+{% if online_eval or num_eval_nodes -%}
 ( until [ -f "$TRAINER_DONE" ] && [ -f "$EVAL_DONE" ]; do sleep 10; done ) &
 {% else -%}
 ( until [ -f "$TRAINER_DONE" ]; do sleep 10; done ) &

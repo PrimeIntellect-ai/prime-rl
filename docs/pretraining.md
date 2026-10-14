@@ -127,19 +127,21 @@ interval = 500
 web = { path = "data/web-val" }
 ```
 
-**Asynchronous evals on dedicated GPUs.** With `[eval_snapshots]`, the trainer writes a model-only snapshot every `interval` steps and at the last step to `<run_dir>/snapshots/step_N`, in the background (it never waits for the eval side). The eval worker runs on its own GPUs (e.g. one node next to the training nodes), takes the newest finished snapshot, scores it on the eval suite (`ppl`, `ctxcont` and `pairs` sets in `<data_dir>/<set>/{test.parquet,meta.json}`), logs `eval/{set}/{metric}` at the snapshot's step, deletes that snapshot and every older one, and repeats until it has scored the last step. The eval frequency therefore follows from the cost of a round and the number of eval GPUs.
+**Asynchronous evals on dedicated GPUs.** With `[eval_snapshots]`, the trainer writes a model-only snapshot (bf16, router in fp32) every `interval` steps and at the last step to `<run_dir>/snapshots/step_N`, in the background: it never waits for the eval side. With `[eval_worker]`, the launcher starts the eval worker on GPUs of its own (`num_gpus` of the node in a single-node run, `num_nodes` extra nodes in a multi-node run). The worker takes the newest finished snapshot, scores it on the eval suite (`ppl`, `ctxcont` and `pairs` sets in `<data_dir>/<set>/{test.parquet,meta.json}`) at every context length in `seq_lens`, logs `eval/{set}/{metric}@{length}` (e.g. `eval/holdout/bpb@4k`) at the snapshot's step, deletes that snapshot and every older one, and repeats until it has scored the last step. The eval frequency therefore follows from the cost of a round and the number of eval GPUs. Requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once.
 
 ```toml
 [eval_snapshots]
 interval = 50
+
+[eval_worker]
+data_dir = "/shared/evals-data"
+sets = ["fwedu-holdout", "lambada", "math"]
+seq_lens = [2048, 4096, 16384]
+num_gpus = 1   # single-node runs
+num_nodes = 1  # multi-node runs
 ```
 
-```bash
-torchrun --nproc-per-node 8 -m prime_rl.trainer.pretrain.eval_worker \
-  --run-dir <output_dir>/<run> --data-dir ~/evals-data --sets fwedu-holdout lambada math
-```
-
-The trainer and the worker log into one W&B run (W&B shared mode): the launcher writes the run id to `<run_dir>/wandb_run_id`, and both processes read it.
+The trainer and the worker log into one W&B run (W&B shared mode, run id in `<run_dir>/wandb_run_id`) and, with `[monitors.prime]`, into one platform run. The worker can also be started by hand on any GPUs: `torchrun --nproc-per-node 8 -m prime_rl.trainer.pretrain.eval_worker --run-dir <run_dir> --data-dir <sets> --sets <names>`.
 
 ## Multi-node
 

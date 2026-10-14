@@ -3,7 +3,8 @@ import os
 import uuid
 from pathlib import Path
 
-from prime_rl.configs.pretrain import PretrainConfig
+from prime_rl.configs.pretrain import EvalWorkerConfig, PretrainConfig
+from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.sft import submit_slurm_script, write_trainer_slurm_script
 from prime_rl.utils.config import cli, dump_resolved_config
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -20,12 +21,14 @@ from prime_rl.utils.process import (
     DEFAULT_COMMON_ENV_VARS,
     DEFAULT_TRAINER_ENV_VARS,
     ProcessGroup,
+    partition_gpus,
     set_proc_title,
     torchrun_cmd,
 )
 
 PRETRAIN_CONFIG = "pretrain.json"
 PRETRAIN_SBATCH = "pretrain.sbatch"
+EVAL_WORKER_CONFIG = "eval_worker.json"
 
 
 def write_model_dir(config: PretrainConfig) -> None:
@@ -56,10 +59,25 @@ def write_model_dir(config: PretrainConfig) -> None:
     tokenizer.save_pretrained(model_dir)
 
 
+def write_eval_worker_config(config: PretrainConfig, config_dir: Path) -> Path:
+    """The eval worker's config: the ``[eval_worker]`` suite for this run's directory."""
+    assert config.eval_worker is not None
+    suite = config.eval_worker.model_dump(exclude={"num_gpus", "num_nodes"})
+    worker = EvalWorkerConfig(**suite, run_dir=config.run_dir, log=LogConfig(level=config.log.level))
+    path = config_dir / EVAL_WORKER_CONFIG
+    path.write_text(json.dumps(dump_resolved_config(worker), indent=2))
+    return path
+
+
 def pretrain_slurm(config: PretrainConfig, config_path: Path, log_dir: Path) -> None:
     logger = get_logger()
     script_path = get_launcher_dir(config.run_dir) / PRETRAIN_SBATCH
-    write_trainer_slurm_script(config, "pretrain", config_path, log_dir, script_path)
+    eval_worker_vars = {}
+    if config.eval_worker is not None and config.deployment.type == "multi_node":
+        eval_worker_vars = dict(
+            num_eval_nodes=config.eval_worker.num_nodes, eval_worker_config_path=config_path.parent / EVAL_WORKER_CONFIG
+        )
+    write_trainer_slurm_script(config, "pretrain", config_path, log_dir, script_path, **eval_worker_vars)
     logger.info(f"Wrote SLURM script to {script_path}")
     num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
     log_message = format_log_message(log_dir=log_dir, trainer=True, num_train_nodes=num_nodes)
@@ -103,7 +121,10 @@ def pretrain(config: PretrainConfig):
         # multi-node job read the config directly.
         exclude |= {"slurm", "deployment"} if config.deployment.type == "multi_node" else {"slurm"}
     config_path.write_text(json.dumps(dump_resolved_config(config, exclude=exclude), indent=2))
-    logger.info(f"Configs:\n{format_config_message(config_dir, 'pretrain', [('Pretrain', config_path)])}")
+    components = [("Pretrain", config_path)]
+    if config.eval_worker is not None:
+        components.append(("Eval worker", write_eval_worker_config(config, config_dir)))
+    logger.info(f"Configs:\n{format_config_message(config_dir, 'pretrain', components)}")
     if config.slurm is not None:
         pretrain_slurm(config, config_path, log_dir)
         return
@@ -112,7 +133,25 @@ def pretrain(config: PretrainConfig):
         return
 
     logger.info(format_log_message(log_dir=log_dir, trainer=True))
+    trainer_env = {**os.environ, **DEFAULT_COMMON_ENV_VARS, **DEFAULT_TRAINER_ENV_VARS, **config.env_vars}
     with ProcessGroup() as processes:
+        if config.eval_worker is not None:
+            # The worker's GPUs first, then the trainer's.
+            eval_gpu_ids, train_gpu_ids = partition_gpus(config.eval_worker.num_gpus, config.deployment.num_train_gpus)
+            trainer_env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, train_gpu_ids))
+            processes.start(
+                "eval-worker",
+                torchrun_cmd(
+                    "prime_rl.trainer.pretrain.eval_worker",
+                    config_dir / EVAL_WORKER_CONFIG,
+                    config.eval_worker.num_gpus,
+                    log_dir,
+                    config.log.ranks_filter,
+                ),
+                env={**trainer_env, "CUDA_VISIBLE_DEVICES": ",".join(map(str, eval_gpu_ids))},
+                log_path=log_dir / "eval_worker.log",
+            )
+            logger.success(f"Started the eval worker on GPU(s) {' '.join(map(str, eval_gpu_ids))}")
         processes.start(
             "trainer",
             torchrun_cmd(
@@ -122,11 +161,14 @@ def pretrain(config: PretrainConfig):
                 log_dir,
                 config.log.ranks_filter,
             ),
-            env={**os.environ, **DEFAULT_COMMON_ENV_VARS, **DEFAULT_TRAINER_ENV_VARS, **config.env_vars},
+            env=trainer_env,
             log_path=log_dir / "trainer.log",
         )
         logger.success(f"Started trainer with {config.deployment.num_train_gpus} GPU(s)")
         processes.wait("trainer")
+        if config.eval_worker is not None:
+            # The worker scores the final snapshot after the trainer has written it.
+            processes.wait("eval-worker")
         logger.success("Pretraining finished!")
 
 

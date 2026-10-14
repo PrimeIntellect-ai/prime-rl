@@ -32,7 +32,13 @@ from prime_rl.trainer.pretrain.snapshots import (
     shared_wandb_env,
     snapshot_dir,
 )
-from prime_rl.trainer.pretrain.suite import prepare_set, score_requests, summarize, use_scoring_head
+from prime_rl.trainer.pretrain.suite import (
+    length_label,
+    prepare_multi_length_set,
+    score_requests,
+    summarize,
+    use_scoring_head,
+)
 from prime_rl.trainer.utils import get_dcp_group, setup_torch_distributed
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.config import cli
@@ -92,10 +98,12 @@ def main_loop(config: EvalWorkerConfig) -> None:
     use_scoring_head(model)
     tokenizer = AutoTokenizer.from_pretrained(run.tokenizer.name, trust_remote_code=run.tokenizer.trust_remote_code)
     start = time.perf_counter()
-    eval_sets = [prepare_set(name, config.data_dir, tokenizer, config.seq_len) for name in config.sets]
+    eval_sets = [prepare_multi_length_set(name, config.data_dir, tokenizer, config.seq_lens) for name in config.sets]
     num_tokens = sum(len(ids) - begin for eval_set in eval_sets for ids, begin in eval_set.requests)
-    logger.info(f"Prepared {len(eval_sets)} sets ({num_tokens:,} scored tokens) in {time.perf_counter() - start:.0f}s")
-
+    logger.info(
+        f"Prepared {len(eval_sets)} sets at context lengths {config.seq_lens} ({num_tokens:,} distinct scored tokens) "
+        f"in {time.perf_counter() - start:.0f}s"
+    )
     last_step = -1
     while True:
         newest = broadcast(max(finished_snapshot_steps(config.run_dir), default=-1) if world.is_master else 0)
@@ -117,17 +125,23 @@ def main_loop(config: EvalWorkerConfig) -> None:
             scored = score_requests(model, eval_set.requests, config.token_budget, get_dcp_group())
             if not world.is_master:
                 continue
-            summary, arrays = summarize(eval_set, *scored)
-            metrics |= {
-                f"eval/{eval_set.name}/{key}": value for key, value in summary.items() if isinstance(value, float)
-            }
-            if config.save_arrays:
-                out = config.run_dir / "evals" / f"step_{newest}"
-                out.mkdir(parents=True, exist_ok=True)
-                np.savez(out / f"{eval_set.name}.npz", **arrays)
-                (out / f"{eval_set.name}.json").write_text(
-                    json.dumps(summary | {"data_sha256": eval_set.sha256}, default=float)
-                )
+            logprobs, hits = scored
+            for seq_len, version in eval_set.versions.items():
+                index = eval_set.index[seq_len]
+                summary, arrays = summarize(version, [logprobs[i] for i in index], [hits[i] for i in index])
+                label = length_label(seq_len)
+                metrics |= {
+                    f"eval/{eval_set.name}/{key}@{label}": value
+                    for key, value in summary.items()
+                    if isinstance(value, float)
+                }
+                if config.save_arrays:
+                    out = config.run_dir / "evals" / f"step_{newest}"
+                    out.mkdir(parents=True, exist_ok=True)
+                    np.savez(out / f"{eval_set.name}@{label}.npz", **arrays)
+                    (out / f"{eval_set.name}@{label}.json").write_text(
+                        json.dumps(summary | {"data_sha256": version.sha256}, default=float)
+                    )
         if world.is_master:
             round_time = time.perf_counter() - round_start
             metrics |= {"time/eval_round": round_time, "time/eval_load": load_time, "step": newest}

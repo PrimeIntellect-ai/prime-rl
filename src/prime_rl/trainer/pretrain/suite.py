@@ -190,6 +190,36 @@ def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_l
     return EvalSet(name, kind, table, requests, context, meta["parquet_sha256"])
 
 
+@dataclass
+class MultiLengthSet:
+    """One eval set at several context lengths (``ppl`` window / ``ctxcont`` context limit). A request that is the
+    same at two lengths (e.g. a document shorter than both windows) is scored once."""
+
+    name: str
+    versions: dict[int, EvalSet]
+    requests: list[Request]
+    """The distinct requests over all lengths."""
+    index: dict[int, list[int]]
+    """Per length: the position in ``requests`` of each of that version's requests."""
+
+
+def prepare_multi_length_set(
+    name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_lens: list[int]
+) -> MultiLengthSet:
+    versions = {seq_len: prepare_set(name, data_dir, tokenizer, seq_len) for seq_len in seq_lens}
+    distinct: dict[tuple[tuple[int, ...], int], int] = {}
+    index = {
+        seq_len: [distinct.setdefault((tuple(ids), start), len(distinct)) for ids, start in version.requests]
+        for seq_len, version in versions.items()
+    }
+    return MultiLengthSet(name, versions, [(list(ids), start) for ids, start in distinct], index)
+
+
+def length_label(seq_len: int) -> str:
+    """``2048`` -> ``2k``, the suffix of the metric names."""
+    return f"{seq_len // 1024}k" if seq_len % 1024 == 0 else str(seq_len)
+
+
 def summarize(eval_set: EvalSet, logprobs: list[np.ndarray], hits: list[np.ndarray]) -> tuple[dict, dict]:
     """Summary metrics and per-document / per-item arrays of one scored set."""
     if eval_set.kind == "ppl":

@@ -227,12 +227,8 @@ class EvalSnapshotsConfig(BaseConfig):
     """Write a snapshot every N steps, and at the final step."""
 
 
-class EvalWorkerConfig(BaseConfig):
-    """The asynchronous eval worker: scores the newest snapshot of a training run on the eval suite, logs the
-    results into the run's W&B run and ``metrics.jsonl`` at the snapshot's step, and deletes scored snapshots."""
-
-    run_dir: Path
-    """The training run's directory (with ``configs/latest/resolved/pretrain.json`` and ``snapshots/``)."""
+class EvalSuiteConfig(BaseConfig):
+    """What the asynchronous eval worker scores."""
 
     data_dir: Path
     """Eval sets, one directory per set with ``test.parquet`` and ``meta.json``."""
@@ -240,11 +236,13 @@ class EvalWorkerConfig(BaseConfig):
     sets: list[str]
     """Names of the sets to score."""
 
-    seq_len: int = Field(2048, ge=1)
-    """Window length for ``ppl`` sets and the context limit for ``ctxcont`` sets."""
+    seq_lens: list[int] = [2048]
+    """Context lengths to score every set at: the window length for ``ppl`` sets and the context limit for
+    ``ctxcont`` sets. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g. ``bpb@4k``). Requests that are the
+    same at several lengths are scored once."""
 
     token_budget: int = Field(32768, ge=1)
-    """Tokens per packed row (one forward)."""
+    """Tokens per packed row (one forward). At least the longest context length plus one."""
 
     poll_seconds: int = Field(30, ge=1)
     """Seconds to wait before looking for a new snapshot again."""
@@ -252,7 +250,32 @@ class EvalWorkerConfig(BaseConfig):
     save_arrays: bool = True
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
 
+    @model_validator(mode="after")
+    def validate_token_budget(self):
+        if self.token_budget <= max(self.seq_lens):
+            raise ValueError("token_budget must exceed the longest of seq_lens")
+        return self
+
+
+class EvalWorkerConfig(EvalSuiteConfig):
+    """The asynchronous eval worker (``python -m prime_rl.trainer.pretrain.eval_worker``): scores the newest snapshot
+    of a training run on the eval suite, logs the results into the run's monitors at the snapshot's step, and deletes
+    scored snapshots. The pretrain launcher writes this config and starts the worker for ``[eval_worker]``."""
+
+    run_dir: Path
+    """The training run's directory (with ``configs/latest/resolved/pretrain.json`` and ``snapshots/``)."""
+
     log: LogConfig = LogConfig()
+
+
+class PretrainEvalWorkerConfig(EvalSuiteConfig):
+    """The eval worker, started by the launcher next to the trainer on GPUs of its own."""
+
+    num_gpus: int = Field(1, ge=1)
+    """Single-node runs: GPUs of the node for the worker, next to the trainer's ``deployment.num_train_gpus``."""
+
+    num_nodes: int = Field(1, ge=1)
+    """Multi-node runs: nodes for the worker, next to the trainer's ``deployment.num_train_nodes``."""
 
 
 class PretrainConfig(TrainRunConfig):
@@ -268,6 +291,10 @@ class PretrainConfig(TrainRunConfig):
 
     eval_snapshots: EvalSnapshotsConfig | None = None
     """Model-only snapshots for the asynchronous eval worker. If None, none are written."""
+
+    eval_worker: PretrainEvalWorkerConfig | None = None
+    """The asynchronous eval worker, started by the launcher on GPUs of its own. Needs ``[eval_snapshots]``. If None,
+    none is started (a worker can still be started by hand)."""
 
     optim: OptimizerConfig = MuonConfig()
     """Optimizer. ``optim.lr`` is required."""
@@ -322,6 +349,12 @@ class PretrainConfig(TrainRunConfig):
     def validate_param_groups(self):
         if self.optim.type not in ("adamw", "muon") or self.model.offload != "none":
             raise ValueError("Pretraining's per-role parameter groups need AdamW or Muon and model.offload = 'none'.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_eval_worker(self):
+        if self.eval_worker is not None and self.eval_snapshots is None:
+            raise ValueError("[eval_worker] needs [eval_snapshots]")
         return self
 
     @model_validator(mode="after")
