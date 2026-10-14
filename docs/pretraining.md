@@ -1,6 +1,6 @@
 # Pretraining
 
-`uv run pretrain` trains a model from scratch on raw text. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, scheduler, checkpointing and monitors as the SFT trainer. It runs on a single node.
+`uv run pretrain` trains a model from scratch on raw text. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, scheduler, checkpointing and monitors as the SFT trainer. It runs locally on one node or, with `[slurm]`, as a SLURM job on one or more nodes (see [Multi-node](#multi-node)).
 
 ```bash
 uv run pretrain @ examples/pretrain/llama3/17m.toml
@@ -69,3 +69,22 @@ subset = "wikitext-103-raw-v1"
 split = "test"
 ```
 
+## Multi-node
+
+`uv run pretrain` takes the same `[deployment]` and `[slurm]` blocks as `uv run sft` (see [Scaling § SLURM](scaling.md#slurm)) and submits the same bundled templates. The launcher writes the model dir and downloads the data on the submitting node, then submits one job in which every node runs `torchrun` on the pretrain trainer:
+
+```toml
+output_dir = "/shared/outputs/pretrain"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+gpus_per_node = 8
+nodes_per_fsdp_group = 1  # optional: HSDP, shard within a node and replicate across nodes
+
+[slurm]
+partition = "all"
+time = "04:00:00"
+```
+
+Each document goes to exactly one data stream, and there are `data_parallel_ranks * data.num_workers` streams, each packing its own documents into rows. The loss and gradient are normalized by the token count of the whole global batch, as on one GPU with gradient accumulation. The rows of a step depend on the number of streams: runs with different numbers of GPUs see the same data distribution but not the same batches, unless `data_parallel_ranks * data.num_workers` is the same (e.g. 1 GPU with 32 workers and 32 GPUs with 1 worker train on identical batches).
