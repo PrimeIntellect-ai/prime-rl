@@ -273,16 +273,23 @@ def qat_process_group():
 
 
 @pytest.mark.parametrize("split_tokens", [False, True], ids=["fsdp", "cp"])
-def test_distributed_qat_shared_weight(qat_process_group, split_tokens):
+@pytest.mark.parametrize("quantization", ["fp8", "mxfp8"])
+def test_distributed_qat_shared_weight(qat_process_group, split_tokens, quantization):
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
     from prime_rl.trainer.models.layers.fp8_qat import replace_linear_with_fp8_qat
+    from prime_rl.trainer.models.layers.mxfp8_qat import mxfp8_qat_linear, replace_linear_with_mxfp8_qat
+
+    if quantization == "mxfp8" and torch.cuda.get_device_capability()[0] < 10:
+        pytest.skip("MXFP8 QAT requires Blackwell")
+    replace = replace_linear_with_mxfp8_qat if quantization == "mxfp8" else replace_linear_with_fp8_qat
+    linear = mxfp8_qat_linear if quantization == "mxfp8" else fp8_qat_linear
 
     rank = qat_process_group
     torch.manual_seed(42)
     model = torch.nn.Sequential(torch.nn.Linear(256, 128, bias=False)).cuda()
-    replace_linear_with_fp8_qat(model, [], True)
+    replace(model, [], True)
     setup_fp8_rounding(model, 1234)
     original_weight = model[0].weight.detach().bfloat16().clone()
     salt = model[0].rounding_salt
@@ -296,7 +303,7 @@ def test_distributed_qat_shared_weight(qat_process_group, split_tokens):
         torch.rand((rank + 1) * 139, device="cuda")
         x = (whole_input.chunk(2)[rank] if split_tokens else whole_input).detach().requires_grad_()
         actual = model(x)
-        reference = fp8_qat_linear(x, original_weight, 1, model.fp8_rounding.seed, salt)
+        reference = linear(x, original_weight, 1, model.fp8_rounding.seed, salt)
         torch.testing.assert_close(actual, reference, atol=0, rtol=0)
         actual.sum().backward()
         actual_dx = x.grad.clone()
@@ -305,20 +312,26 @@ def test_distributed_qat_shared_weight(qat_process_group, split_tokens):
         model.zero_grad(set_to_none=True)
 
 
-def test_distributed_qat_expert_shard(qat_process_group):
+@pytest.mark.parametrize("quantization", ["fp8", "mxfp8"])
+def test_distributed_qat_expert_shard(qat_process_group, quantization):
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.tensor.parallel import parallelize_module
 
     from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
     from prime_rl.trainer.models.layers.fp8_qat import FP8QATExpertCompute
     from prime_rl.trainer.models.layers.moe import GroupedExperts
+    from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATExpertCompute
+
+    if quantization == "mxfp8" and torch.cuda.get_device_capability()[0] < 10:
+        pytest.skip("MXFP8 QAT requires Blackwell")
+    compute = MXFP8QATExpertCompute if quantization == "mxfp8" else FP8QATExpertCompute
 
     rank = qat_process_group
     torch.manual_seed(45)
-    experts = GroupedExperts(256, 128, 4, compute=FP8QATExpertCompute(True)).cuda().bfloat16()
+    experts = GroupedExperts(256, 128, 4, compute=compute(True)).cuda().bfloat16()
     experts.init_weights(0.02)
     setup_fp8_rounding(experts, 1234)
-    reference = GroupedExperts(256, 128, 4, compute=FP8QATExpertCompute(True)).cuda().bfloat16()
+    reference = GroupedExperts(256, 128, 4, compute=compute(True)).cuda().bfloat16()
     reference.load_state_dict(experts.state_dict())
     setup_fp8_rounding(reference, 1234)
     mesh = init_device_mesh("cuda", (2,))
@@ -327,8 +340,9 @@ def test_distributed_qat_expert_shard(qat_process_group):
     set_fp8_rounding_step(experts, 9)
     set_fp8_rounding_step(reference, 9)
     torch.rand((rank + 1) * 157, device="cuda")
-    x = torch.randn((128, 256), device="cuda", dtype=torch.bfloat16, requires_grad=True)
-    counts = torch.tensor([64, 64], device="cuda", dtype=torch.int64)
+    tokens_per_expert = 128 if quantization == "mxfp8" else 64
+    x = torch.randn((2 * tokens_per_expert, 256), device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    counts = torch.tensor([tokens_per_expert, tokens_per_expert], device="cuda", dtype=torch.int64)
     whole_counts = torch.zeros(4, device="cuda", dtype=torch.int64)
     whole_counts[rank * 2 : rank * 2 + 2] = counts
     actual = experts(x, counts)

@@ -140,11 +140,19 @@ class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
     qat: bool = False
     """Use MXFP8 forward and BF16 backward, reusing forward-rounded weights for input gradients."""
+    stochastic_rounding: bool = False
+    """Round QAT weights stochastically; activations round to nearest. Requires qat=true."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 recipe for dense linear modules."""
 
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
-    """Dense linear module names excluded from torchao MXFP8 replacement."""
+    """Dense linear module names excluded from MXFP8 replacement."""
+
+    @model_validator(mode="after")
+    def validate_stochastic_rounding(self):
+        if self.stochastic_rounding and not self.qat:
+            raise ValueError("MXFP8 stochastic rounding requires qat=true")
+        return self
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
@@ -201,8 +209,16 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     type: Literal["mxfp8"] = "mxfp8"
     qat: bool = False
     """Use MXFP8 expert forward and BF16 backward, reusing forward-rounded weights for input gradients."""
+    stochastic_rounding: bool = False
+    """Round QAT expert weights with streams shared across ranks and forward/backward. Requires qat=true."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
+
+    @model_validator(mode="after")
+    def validate_stochastic_rounding(self):
+        if self.stochastic_rounding and not self.qat:
+            raise ValueError("MXFP8 stochastic rounding requires qat=true")
+        return self
 
 
 MoEComputeConfig: TypeAlias = Annotated[

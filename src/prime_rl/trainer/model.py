@@ -888,7 +888,7 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
         if quant.qat:
             from prime_rl.trainer.models.layers.mxfp8_qat import replace_linear_with_mxfp8_qat
 
-            replace_linear_with_mxfp8_qat(model, quant.ignore_patterns)
+            replace_linear_with_mxfp8_qat(model, quant.ignore_patterns, quant.stochastic_rounding)
         else:
             replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
 

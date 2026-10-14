@@ -25,14 +25,15 @@ def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
     from prime_rl.trainer.models.layers.expert_compute import DeepGemmFP8ExpertCompute
     from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
     from prime_rl.trainer.models.layers.moe import GroupedExperts
+    from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATExpertCompute, MXFP8QATLinear
 
     state = None
     parameter_names = {id(parameter): name for name, parameter in model.named_parameters()}
     for module in model.modules():
-        dense = isinstance(module, Float8BlockwiseLinear) and module.stochastic_rounding
+        dense = isinstance(module, (Float8BlockwiseLinear, MXFP8QATLinear)) and module.stochastic_rounding
         grouped = (
             isinstance(module, GroupedExperts)
-            and isinstance(module.compute, DeepGemmFP8ExpertCompute)
+            and isinstance(module.compute, (DeepGemmFP8ExpertCompute, MXFP8QATExpertCompute))
             and module.compute.stochastic_rounding
         )
         if not (dense or grouped):

@@ -437,6 +437,17 @@ class InferenceConfig(BaseConfig):
     fp8_stochastic_weight_rounding: bool = False
     """Round online block-wise FP8 weights stochastically instead of to nearest. Each element lands on the e4m3 grid point on the far side of its value with probability equal to its fractional distance in bins, so the served weight equals the bf16 weight in expectation. Round-to-nearest pins a weight that starts on the grid until the trainer has moved it half a bin, which at lr 1e-6 takes on the order of 1000 steps, so the served policy stays at step 0 while the trainer drifts; unbiased rounding lets it track sub-bin updates in expectation. Input already on the grid rounds to nearest, so the checkpoint quantizes to identical bytes. Sets ``PRIME_FP8_STOCHASTIC_WEIGHT_ROUNDING=1`` for the vLLM workers."""
 
+    mxfp8_stochastic_weight_rounding: bool = False
+    """Use prime-kernels' per-32 stochastic cast for online MXFP8 BF16 weights on load/reload. Activations round to nearest; serving samples fresh weight-rounding streams on each load."""
+
+    @model_validator(mode="after")
+    def validate_mxfp8_rounding(self):
+        if self.mxfp8_stochastic_weight_rounding and self.vllm.quantization != "mxfp8":
+            raise ValueError("MXFP8 stochastic weight rounding requires vllm.quantization='mxfp8'")
+        if self.vllm.quantization == "mxfp8" and (self.fp8_stochastic_weight_rounding or self.fp8_ue8m0_weight_scales):
+            raise ValueError("Blockwise FP8 rounding/scale options do not apply to MXFP8")
+        return self
+
     renderer: RendererConfig | None = None
     """Serve ``/v1/chat/completions`` through this renderer instead of vLLM's chat template, tool parser and reasoning parser. The renderer reads ``vllm.tokenizer`` (or ``vllm.model``); request ``chat_template_kwargs`` over ``vllm.default_chat_template_kwargs`` set its template fields."""
 
