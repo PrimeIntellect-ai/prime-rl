@@ -9,7 +9,7 @@ from prime_rl.configs.pretrain import InitConfig
 from prime_rl.configs.trainer import AdamWConfig, MuonConfig
 from prime_rl.trainer.init import init_weights, normal_shard
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
-from prime_rl.trainer.pretrain.completep import completep_param_groups
+from prime_rl.trainer.pretrain.parametrization import param_groups
 
 
 def test_normal_shard_is_independent_of_sharding():
@@ -42,12 +42,11 @@ def test_completep_folded_multipliers_match_explicit_multipliers():
         head_dim=32,
         tie_word_embeddings=False,
     )
-    init = InitConfig(scheme="completep", base_hidden_size=32, base_num_layers=2)
     optim = AdamWConfig(lr=1e-2, eps=1e-10, weight_decay=0.1)
     m_n, m_l = 2.0, 2.0
 
     folded = LlamaForCausalLM(config)
-    init_weights(folded, init)
+    init_weights(folded, InitConfig(), m_n, m_l)
     explicit = copy.deepcopy(folded)
     with torch.no_grad():
         for name, param in explicit.named_parameters():
@@ -75,7 +74,7 @@ def test_completep_folded_multipliers_match_explicit_multipliers():
         )
     optimizers = {
         "explicit": AdamW(explicit_groups, betas=(0.9, 0.95)),
-        "folded": AdamW(completep_param_groups(folded, init, optim, ep_enabled=False), betas=(0.9, 0.95)),
+        "folded": AdamW(param_groups(folded, optim, m_n, m_l, ep_enabled=False), betas=(0.9, 0.95)),
     }
     models = {"explicit": explicit, "folded": folded}
 
@@ -108,8 +107,7 @@ def test_completep_moe_groups_cover_experts_and_scale_the_router():
     config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
         model = Glm4MoeForCausalLM._from_config(config)
-    init = InitConfig(scheme="completep", base_hidden_size=256, base_num_layers=2)
-    groups = completep_param_groups(model, init, MuonConfig(lr=1.0, weight_decay=0.1), ep_enabled=False)
+    groups = param_groups(model, MuonConfig(lr=1.0, weight_decay=0.1), m_n=2.0, m_l=1.0, ep_enabled=False)
     lr = {param: group["lr"] for group in groups for param in group["params"]}
     assert sum(len(group["params"]) for group in groups) == len(lr) == len(list(model.parameters()))
     moe = model.model.layers[1].mlp

@@ -12,6 +12,7 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
+    OffloadMode,
     OptimizerConfig,
     TokenizerConfig,
 )
@@ -21,22 +22,26 @@ TOKENIZER_FIELDS = ("vocab_size", "bos_token_id", "eos_token_id", "pad_token_id"
 
 
 class InitConfig(BaseConfig):
-    """Random weight initialization."""
-
-    scheme: Literal["normal", "completep"] = "normal"
-    """``normal`` draws every weight matrix and the embedding from N(0, std). ``completep`` follows CompleteP (muP extended to depth, Dey et al. 2025) relative to the base shape: the embedding keeps ``std``, hidden matrices get ``std / sqrt(m_N)``, residual output projections ``std / (sqrt(m_N) * m_L)`` and the LM head ``std / m_N``, where ``m_N = hidden_size / base_hidden_size`` and ``m_L = num_layers / base_num_layers``. Norm weights start at 1, biases at 0."""
+    """Random weight initialization: every weight matrix and the embedding from N(0, std), scaled per role under
+    CompleteP (see ``[parametrization]``). Norm weights start at 1, biases at 0."""
 
     std: float = Field(0.02, gt=0)
     """Base standard deviation."""
 
-    base_hidden_size: int = Field(256, ge=1)
-    """Hidden size of the base shape. Only used by ``completep``."""
-
-    base_num_layers: int = Field(2, ge=1)
-    """Number of layers of the base shape. Only used by ``completep``."""
-
     seed: int = 0
     """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
+
+
+class ParametrizationConfig(BaseConfig):
+    """CompleteP (muP extended to depth, Dey et al. 2025, alpha = 1) relative to a base shape: init std, learning
+    rate, Adam eps and weight decay scale per parameter role with ``m_N = hidden_size / base_hidden_size`` and
+    ``m_L = num_layers / base_num_layers``, so hyperparameters tuned on the base shape carry over."""
+
+    base_hidden_size: int = Field(ge=1)
+    """Hidden size of the base shape."""
+
+    base_num_layers: int = Field(ge=1)
+    """Number of layers of the base shape."""
 
 
 class MoEBalanceConfig(BaseConfig):
@@ -68,6 +73,9 @@ class PretrainModelConfig(ModelConfig):
     """Random weight initialization. Used unless the run resumes from a checkpoint."""
 
     moe: PretrainMoEConfig = PretrainMoEConfig()
+
+    offload: OffloadMode = "none"
+    """CPU offloading. Pretraining's per-role parameter groups need ``none``."""
 
     @model_validator(mode="after")
     def validate_arch(self):
@@ -187,8 +195,8 @@ StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Fiel
 
 
 def resolve_steps(value: int | float, total_steps: int) -> int:
-    """Steps as given, or a fraction of ``total_steps``."""
-    return round(value * total_steps) if isinstance(value, float) else value
+    """Steps as given, or a fraction of ``total_steps`` rounded down, so fractions that sum to at most 1 fit."""
+    return math.floor(value * total_steps) if isinstance(value, float) else value
 
 
 class ScheduleConfig(BaseConfig):
@@ -273,6 +281,10 @@ class PretrainConfig(TrainRunConfig):
     max_steps: int = Field(ge=1)
     """Training steps."""
 
+    parametrization: ParametrizationConfig | None = None
+    """CompleteP relative to a base shape. If None, the standard parametrization: the same per-role parameter
+    groups with every multiplier at 1 (norms and biases without weight decay)."""
+
     def default_run_name(self) -> str:
         """``<model_type>--<short-id>``."""
         return f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"
@@ -307,11 +319,9 @@ class PretrainConfig(TrainRunConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_completep(self):
-        if self.model.init.scheme != "completep":
-            return self
+    def validate_param_groups(self):
         if self.optim.type not in ("adamw", "muon") or self.model.offload != "none":
-            raise ValueError("model.init.scheme = 'completep' needs AdamW or Muon and model.offload = 'none'.")
+            raise ValueError("Pretraining's per-role parameter groups need AdamW or Muon and model.offload = 'none'.")
         return self
 
     @model_validator(mode="after")

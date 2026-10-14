@@ -29,12 +29,11 @@ from prime_rl.trainer.model import (
     update_selection_biases,
 )
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.models.layers.moe import sequence_balance
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.init import init_weights
-from prime_rl.trainer.pretrain.completep import completep_param_groups
+from prime_rl.trainer.init import init_weights, param_role
+from prime_rl.trainer.pretrain.parametrization import multipliers, param_groups
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
@@ -63,16 +62,28 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
+from prime_rl.utils.weights import resolve_fqn
 
 
 def count_parameters(model: nn.Module) -> dict[str, int]:
-    """Total, embedding (input embedding and LM head) and non-embedding parameter counts."""
+    """Total, embedding (input embedding and LM head), non-embedding and active non-embedding parameter counts.
+    Active counts the routed experts of each MoE layer at ``top_k / num_experts``, the share each token uses."""
     total = embedding = 0
     for name, param in model.named_parameters():
         total += param.numel()
-        if "embed_tokens" in name or "lm_head" in name:
+        if param_role(resolve_fqn(model, name), param) in ("embedding", "output"):
             embedding += param.numel()
-    return {"total": total, "embedding": embedding, "non_embedding": total - embedding}
+    inactive = 0
+    for moe in iter_moe_blocks(model):
+        experts = sum(param.numel() for param in moe.experts.parameters())
+        inactive += experts - experts * moe.router.top_k // moe.router.num_experts
+    non_embedding = total - embedding
+    return {
+        "total": total,
+        "embedding": embedding,
+        "non_embedding": non_embedding,
+        "active_non_embedding": non_embedding - inactive,
+    }
 
 
 @clean_exit
@@ -126,15 +137,19 @@ def train(config: PretrainConfig):
     logger.info(f"Initializing model ({config.model})")
     # Weights come from the checkpoint when resuming and from the random init otherwise.
     model = setup_model(config.model, parallel_dims, loading_from_checkpoint_later=True)
+    m_n, m_l = multipliers(config.parametrization, model)
     if checkpoint_step is None:
-        init_weights(model, config.model.init)
+        init_weights(model, config.model.init, m_n, m_l)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
     num_params = count_parameters(model)
     logger.info(
-        f"Parameters: {num_params['non_embedding'] / 1e6:,.1f}M non-embedding, "
-        f"{num_params['embedding'] / 1e6:,.1f}M embedding, {num_params['total'] / 1e6:,.1f}M total"
+        f"Parameters: {num_params['active_non_embedding'] / 1e6:,.1f}M active non-embedding, "
+        f"{num_params['non_embedding'] / 1e6:,.1f}M non-embedding, {num_params['embedding'] / 1e6:,.1f}M embedding, "
+        f"{num_params['total'] / 1e6:,.1f}M total"
     )
+    if checkpoint_step is None:
+        asyncio.run(monitors.log({f"params/{name}": count for name, count in num_params.items()} | {"step": 0}, step=0))
 
     tokenizer = setup_tokenizer(config.tokenizer)
 
@@ -147,11 +162,7 @@ def train(config: PretrainConfig):
         full_offload_dtype_policy=(
             get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
-        param_groups=(
-            completep_param_groups(model, config.model.init, config.optim, parallel_dims.ep_enabled)
-            if config.model.init.scheme == "completep"
-            else None
-        ),
+        param_groups=param_groups(model, config.optim, m_n, m_l, parallel_dims.ep_enabled),
     )
 
     # With ckpt.skip_scheduler, the schedule restarts at the resumed step and spans the remaining steps.
@@ -209,7 +220,8 @@ def train(config: PretrainConfig):
     balance = config.model.moe.balance
     moes_with_seq_balance = list(iter_moe_blocks(model)) if balance.seq_aux_coeff > 0 else []
     for moe in moes_with_seq_balance:
-        moe.keep_routing = True
+        # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
+        moe.balance_rows = config.data.micro_batch_size
     bias_freeze_step = config.max_steps - round(balance.bias_freeze * config.max_steps)
     # Sum and count of the per-row balance of every MoE layer over the current step's micro-batches, reduced with
     # the step's statistics.
@@ -237,13 +249,13 @@ def train(config: PretrainConfig):
             )
         aux_loss_sum = torch.zeros((), device="cuda")
         if torch.is_grad_enabled():
-            # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
-            num_rows = config.data.micro_batch_size
+            row_len = input_ids.shape[1] // config.data.micro_batch_size
             for moe in moes_with_seq_balance:
-                row_balance = sequence_balance(*moe.routing, num_rows)
-                aux_loss_sum += balance.seq_aux_coeff * row_balance.sum() * (input_ids.shape[1] // num_rows)
-                seq_balance_sums["balance"] = seq_balance_sums.get("balance", 0) + row_balance.detach().sum()
-                seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + row_balance.new_tensor(row_balance.numel())
+                aux_loss_sum += balance.seq_aux_coeff * moe.seq_balance.sum() * row_len
+                seq_balance_sums["balance"] = seq_balance_sums.get("balance", 0) + moe.seq_balance.detach().sum()
+                seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + moe.seq_balance.new_tensor(
+                    moe.seq_balance.numel()
+                )
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     @torch.no_grad()

@@ -2,18 +2,27 @@ from collections import defaultdict
 
 from torch import nn
 
-from prime_rl.configs.pretrain import InitConfig
+from prime_rl.configs.pretrain import ParametrizationConfig
 from prime_rl.configs.trainer import AdamWConfig, MuonConfig
-from prime_rl.trainer.init import completep_multipliers, param_role
+from prime_rl.trainer.init import param_role
 from prime_rl.utils.weights import resolve_fqn
 
 
-def completep_param_groups(
-    model: nn.Module, init: InitConfig, optim: AdamWConfig | MuonConfig, ep_enabled: bool
+def multipliers(config: ParametrizationConfig | None, model: nn.Module) -> tuple[float, float]:
+    """Width and depth multipliers ``(m_N, m_L)`` of the model relative to the CompleteP base shape; 1 and 1 in
+    the standard parametrization."""
+    if config is None:
+        return 1.0, 1.0
+    return model.config.hidden_size / config.base_hidden_size, model.config.num_hidden_layers / config.base_num_layers
+
+
+def param_groups(
+    model: nn.Module, optim: AdamWConfig | MuonConfig, m_n: float, m_l: float, ep_enabled: bool
 ) -> list[dict]:
-    """Optimizer parameter groups for CompleteP with alpha = 1 (Dey et al. 2025). ``optim.lr``,
+    """Optimizer parameter groups per role for CompleteP with alpha = 1 (Dey et al. 2025). ``optim.lr``,
     ``optim.eps`` and ``optim.weight_decay`` are the values for the base shape; each role scales
-    them by the width and depth multipliers. The residual output projections and the LM head
+    them by the width and depth multipliers. With both multipliers at 1 this is the standard
+    parametrization, where only norms and biases differ (no weight decay). The residual output projections and the LM head
     carry CompleteP's 1/m_L and 1/m_N forward multipliers folded into their weights (see
     ``role_std``), which turns their rules into the ones below.
 
@@ -27,7 +36,6 @@ def completep_param_groups(
     sqrt(num_experts / d) shrinks as m_N^-1/2: with Muon its learning rate is scaled by 1/m_N;
     with AdamW it follows the hidden rule.
     """
-    m_n, m_l = completep_multipliers(init, model.config.hidden_size, model.config.num_hidden_layers)
     # (lr, eps, weight decay) scale per role for AdamW. PyTorch AdamW and Dion decay by lr * weight_decay.
     adam_scales = {
         "embedding": (1.0, 1 / m_n, 1.0),
