@@ -116,39 +116,54 @@ class CheckpointIndexMap:
         }
         self.num_cols = {name: (shape[-1] if shape else 1) for name, (shape, _) in tensors.items()}
         self.numel = {name: prod(shape) for name, (shape, _) in tensors.items()}
+        self.checksum_plan = None
         self.unpatchable = unpatchable
-        # [first, last + 1) flat checkpoint index each tensor's writes cover; unpatchable tensors are
-        # read whole so that a change to them is caught in apply_xor
-        self.spans = {
-            name: (
-                min(row0 * self.num_cols[name] + col0 for row0, _, col0, *_ in writes),
-                max((row0 + rows - 1) * self.num_cols[name] + col0 + cols for row0, rows, col0, cols, *_ in writes),
-            )
-            for name, writes in self.records.items()
-        } | {name: (0, 2**62) for name in unpatchable}
+        # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_xor
+        self.names = set(self.records) | unpatchable
 
-    def held_checksums(self, names) -> tuple[dict[str, torch.Tensor], set[str]]:
-        """``bits_checksum`` of the live param elements each checkpoint tensor was written to, for the
-        ``names`` this worker writes, and the subset it holds only part of (TP slices)."""
-        sums, partial = {}, set()
-        for name in names:
-            writes = self.records.get(name)
-            if writes is None or name in self.unpatchable:
-                continue
-            held = sum(rows * cols for _, rows, _, cols, *_ in writes)
-            if held > self.numel[name]:
-                continue
-            parts = [
-                as_bits(self.params[index].data)
-                .view(-1)
-                .as_strided((rows, cols), strides, offset)
-                .sum(dtype=torch.int64)
-                for _, rows, _, cols, index, offset, *strides in writes
-            ]
-            sums[name] = torch.stack(parts).sum()
-            if held < self.numel[name]:
-                partial.add(name)
-        return sums, partial
+    def held_checksums(self) -> tuple[list[str], torch.Tensor, torch.Tensor]:
+        """``bits_checksum`` of the live param elements each checkpoint tensor was written to: the
+        names, their sums, and a mask of the ones this worker holds only part of (TP slices)."""
+        if self.checksum_plan is None:
+            self.checksum_plan = self._plan_checksums()
+        names, partial, row_ranges, other_writes = self.checksum_plan
+        totals = torch.zeros(len(names), dtype=torch.int64, device=partial.device)
+        for index, (starts, ends, ids) in row_ranges.items():
+            param = self.params[index]
+            row_sums = as_bits(param.data).reshape(-1, param.shape[-1]).sum(dim=1, dtype=torch.int64)
+            cumulative = torch.cat([row_sums.new_zeros(1), row_sums.cumsum(0)])
+            totals.index_add_(0, ids, cumulative[ends] - cumulative[starts])
+        for name_id, rows, cols, index, offset, *strides in other_writes:
+            view = as_bits(self.params[index].data).view(-1).as_strided((rows, cols), strides, offset)
+            totals[name_id] += view.sum(dtype=torch.int64)
+        return names, totals, partial
+
+    def _plan_checksums(self):
+        """Writes that cover whole rows of a param become row ranges, summed with one cumsum per param."""
+        names = [
+            name
+            for name, writes in self.records.items()
+            if name not in self.unpatchable and sum(rows * cols for _, rows, _, cols, *_ in writes) <= self.numel[name]
+        ]
+        device = self.params[0].device
+        ranges: dict[int, list[list[int]]] = defaultdict(lambda: [[], [], []])
+        other_writes = []
+        for name_id, name in enumerate(names):
+            for _, rows, _, cols, index, offset, row_stride, col_stride in self.records[name]:
+                width = self.params[index].shape[-1]
+                if col_stride == 1 and row_stride == width and cols == width and offset % width == 0:
+                    starts, ends, ids = ranges[index]
+                    starts.append(offset // width)
+                    ends.append(offset // width + rows)
+                    ids.append(name_id)
+                else:
+                    other_writes.append((name_id, rows, cols, index, offset, row_stride, col_stride))
+        row_ranges = {
+            index: tuple(torch.tensor(values, device=device) for values in lists) for index, lists in ranges.items()
+        }
+        held = [sum(rows * cols for _, rows, _, cols, *_ in self.records[name]) for name in names]
+        partial = torch.tensor([h < self.numel[name] for h, name in zip(held, names)], device=device)
+        return names, partial, row_ranges, other_writes
 
     def fp8_layout(self, read_tensor) -> dict[str, str]:
         """The vLLM per-block quantization (``"fp32"`` or ``"ue8m0"`` scales) that reproduces each

@@ -82,7 +82,7 @@ class FileSystemWeightUpdateWorker(Worker):
         """Read this worker's part of a delta into a pinned host buffer that is reused across steps
         (allocating pinned memory every step is slow on a loaded host)."""
         start = time.perf_counter()
-        delta, checksums = read_delta(step_dir, self._spans())
+        delta, checksums = read_delta(step_dir, None if self.index_map is None else self.index_map.names)
         read_time = time.perf_counter() - start
         num_bytes = sum(-(-gaps.nbytes // 4) * 4 + -(-values.nbytes // 4) * 4 for _, gaps, values in delta)
         if self.host_buffer is None or self.host_buffer.numel() < num_bytes:
@@ -101,10 +101,6 @@ class FileSystemWeightUpdateWorker(Worker):
             f"read+decompress {read_time:.2f}s, pin {time.perf_counter() - start - read_time:.2f}s"
         )
         return pinned, checksums
-
-    def _spans(self) -> dict[str, tuple[int, int]] | None:
-        """The checkpoint index ranges this worker's params hold, once the index map exists."""
-        return None if self.index_map is None else self.index_map.spans
 
     def prefetch_weights_done(self) -> bool:
         return self.prefetched is None or self.prefetched[1].done()
@@ -218,16 +214,20 @@ class FileSystemWeightUpdateWorker(Worker):
         """Check every tensor this worker holds against the trainer's checksum of the new weights.
         Tensors split across TP workers are summed over the TP group first."""
         assert self.index_map is not None
-        sums, partial = self.index_map.held_checksums(checksums)
+        names, totals, partial = self.index_map.held_checksums()
         tp_group = get_tp_group()
-        partial_names = sorted(partial) if tp_group.world_size > 1 else []
-        if partial_names:
-            reduced = torch.stack([sums[name] for name in partial_names])
+        if tp_group.world_size > 1 and partial.any():
+            reduced = totals[partial]
             torch.distributed.all_reduce(reduced, group=tp_group.device_group)
-            sums.update(zip(partial_names, reduced))
-        names = [name for name in sums if name not in partial or partial_names]
-        values = torch.stack([sums[name] for name in names]).tolist() if names else []
-        mismatched = [name for name, value in zip(names, values) if value != checksums[name]]
+            totals[partial] = reduced
+        elif partial.any():
+            totals[partial] = 0
+            names = [name if not is_partial else None for name, is_partial in zip(names, partial.tolist())]
+        mismatched = [
+            name
+            for name, value in zip(names, totals.tolist())
+            if name is not None and name in checksums and value != checksums[name]
+        ]
         if mismatched:
             raise RuntimeError(f"Sparse weight delta {step_dir.name} diverged from the trainer: {mismatched[:8]}")
 

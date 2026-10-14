@@ -43,9 +43,9 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
     files = ["rank_0.safetensors", "rank_1.safetensors"]
     (delta_dir / MANIFEST).write_text(json.dumps({"files": files, "tensors": tensors}))
 
-    def apply(spans):
+    def apply(names):
         patched = {name: as_bits(tensor.clone()).view(-1) for name, tensor in previous.items()}
-        delta, checksums = read_delta(tmp_path, spans)
+        delta, checksums = read_delta(tmp_path, names)
         assert checksums == {name: bits_checksum(as_bits(tensor)) for name, tensor in current.items()}
         for entries, gaps, values in delta:
             indices = decode_gaps(gaps, torch.tensor([count for _, count in entries]))
@@ -63,9 +63,7 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
     for name, tensor in current.items():
         assert torch.equal(patched[name], as_bits(tensor).view(-1))
 
-    # A reader that holds rows 16-47 of "a" (spanning both rank files) and none of "b".
-    patched = apply({"a": (16 * 32, 48 * 32)})
-    expected = as_bits(previous["a"].clone())
-    expected[16:48] = as_bits(current["a"][16:48])
-    assert torch.equal(patched["a"], expected.view(-1))
+    # A reader that holds only "a" (split over both rank files) skips the frame holding "b".
+    patched = apply({"a"})
+    assert torch.equal(patched["a"], as_bits(current["a"]).view(-1))
     assert torch.equal(patched["b"], as_bits(previous["b"]).view(-1))

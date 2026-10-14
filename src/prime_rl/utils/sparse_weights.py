@@ -12,7 +12,6 @@ must be applied on top of exactly its ``base_step``.
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from math import prod
 from pathlib import Path
 
 import numpy as np
@@ -117,7 +116,7 @@ def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
 
 
 def _read_rank_file(
-    path: Path, tensors: dict, spans: dict[str, tuple[int, int]] | None
+    path: Path, tensors: dict, names: set[str] | None
 ) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor, dict[str, int]]:
     with open(path, "rb") as file:
         header_size = int.from_bytes(file.read(8), "little")
@@ -129,7 +128,7 @@ def _read_rank_file(
         frames, start, gaps_offset, values_offset = [], 0, gaps_start, values_start
         for num_entries, num_gap_bytes, num_value_bytes in json.loads(metadata["frames"]):
             frame_entries = entries[start : start + num_entries]
-            if spans is None or any(name in spans for name, _ in frame_entries):
+            if names is None or any(name in names for name, _ in frame_entries):
                 frames.append((frame_entries, (gaps_offset, num_gap_bytes), (values_offset, num_value_bytes)))
             start += num_entries
             gaps_offset += num_gap_bytes
@@ -146,17 +145,8 @@ def _read_rank_file(
                 entry_values = frame_values[value_offset : value_offset + count * itemsize]
                 gap_offset += count
                 value_offset += count * itemsize
-                if spans is not None and name not in spans:
+                if names is not None and name not in names:
                     continue
-                # Trim to this reader's index range unless it holds the whole tensor
-                span_start, span_end = spans[name] if spans is not None else (0, 2**62)
-                if span_start > 0 or span_end < prod(tensors[name][0]):
-                    indices = np.cumsum(entry_gaps, dtype=np.int64) + np.arange(count)
-                    begin, end = np.searchsorted(indices, (span_start, span_end))
-                    entry_values = entry_values[begin * itemsize : end * itemsize]
-                    entry_gaps = entry_gaps[begin:end].copy()
-                    if end > begin:
-                        entry_gaps[0] = indices[begin]
                 if len(entry_gaps):
                     out.append((name, entry_gaps, entry_values))
             return out
@@ -212,17 +202,17 @@ def read_manifest(step_dir: Path) -> dict:
 
 
 def read_delta(
-    step_dir: Path, spans: dict[str, tuple[int, int]] | None = None
+    step_dir: Path, names: set[str] | None = None
 ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
     """Read and decompress every rank file of a delta step dir into ``(entries,
     gaps, xor value bytes)`` in host memory; ``decode_gaps`` turns the
-    gaps into flat indices on the device that applies them. With ``spans``, keep
-    only the listed tensors and, within each, the flat indices in ``[start, end)``.
+    gaps into flat indices on the device that applies them. With ``names``, keep
+    only those tensors (frames without any are not read).
     Also returns the new weights' ``bits_checksum`` per HF tensor, summed over ranks."""
     manifest = read_manifest(step_dir)
     paths = [step_dir / DELTA_DIR / name for name in manifest["files"]]
     with ThreadPoolExecutor(len(paths)) as pool:
-        files = list(pool.map(lambda path: _read_rank_file(path, manifest["tensors"], spans), paths))
+        files = list(pool.map(lambda path: _read_rank_file(path, manifest["tensors"], names), paths))
     checksums: dict[str, int] = {}
     for *_, partial in files:
         for name, value in partial.items():
