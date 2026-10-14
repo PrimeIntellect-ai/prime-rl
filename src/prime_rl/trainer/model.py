@@ -267,8 +267,11 @@ def get_load_balance_stats(
         dist.all_reduce(packed_stats, op=dist.ReduceOp.SUM, group=group)
         layer_stats = [(stats[:-5], stats[-5], stats[-4:]) for stats in packed_stats.split(sizes)]
 
-    # Per layer: replayed tokens, checked tokens, checked tokens with no shared expert, summed shared fraction
-    replay = torch.stack([replay for _, _, replay in layer_stats])
+    # Per layer: replayed tokens, checked tokens, checked tokens with no shared expert, summed shared fraction.
+    # Hash-routed layers have nothing to check, so they are left out.
+    replay = torch.stack(
+        [replay for block_mlp, (_, _, replay) in zip(block_mlps, layer_stats) if block_mlp.router.learned_selection]
+    )
     for block_mlp in block_mlps:
         block_mlp.replay_agreement.zero_()
     checked = replay[:, 1].clamp(min=1)
