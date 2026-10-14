@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -125,6 +126,7 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
+        self._client_config = client_config
         self._init_membership(client_config.admin_engine_groups)
 
     def _init_membership(self, engine_groups: list[int] | None = None) -> None:
@@ -146,6 +148,14 @@ class AdminPlane:
         # changes. Transports that pin their receivers (NCCL) rebuild on a new generation.
         self.members = list(self.clients)
         self.generation = 0
+        # Elastic membership: engine groups that register in ``registry`` mid-run (see
+        # ``_sync_registry``). ``weight_dir`` (filesystem broadcast) maps a policy version to the
+        # directory a joining group loads at once instead of waiting for the next update.
+        self.registry: Path | None = None
+        self.weight_dir: Callable[[int], Path] | None = None
+        self.version: int | None = None
+        self.registered: dict[str, tuple[AsyncClient, ...]] = {}
+        self.draining: dict[str, float] = {}
 
     async def wait_for_ready(self, model_name: str) -> None:
         # The engines are waited on even when a router fronts them: the llm-d
@@ -247,6 +257,7 @@ class AdminPlane:
                 resumed = await self._each(members, "/resume")
         finally:
             self.updating = False
+        self.version = step
         await self._readmit(rejoining, resumed, step)
 
     def _rejoining(self) -> list[AsyncClient]:
@@ -354,6 +365,8 @@ class AdminPlane:
             if self.updating:
                 progress.clear()
                 continue
+            if self.registry is not None:
+                await self._sync_registry()
             await self._sync_router()
             clients = self.clients + self.evicted
             live = dict(zip(clients, await asyncio.gather(*(_is_live(client) for client in clients))))
@@ -417,8 +430,9 @@ class AdminPlane:
             await self._set_routed(other, False)
 
     async def _sync_router(self) -> None:
-        """Drop evicted engines that the router lists again, e.g. after it was restarted with
-        its original worker list."""
+        """Reconcile the router with the routed engines, e.g. after it was restarted with its
+        original worker list: drop evicted engines it lists again and add engines that joined
+        mid-run."""
         for router in self._router_clients:
             try:
                 response = await router.get("/list_workers", timeout=10.0)
@@ -428,6 +442,104 @@ class AdminPlane:
             for client in self.evicted:
                 if str(client.base_url).rstrip("/") in listed:
                     await self._set_routed(client, False)
+            for client in self.clients:
+                if str(client.base_url).rstrip("/") not in listed:
+                    await self._set_routed(client, True)
+
+    async def _sync_registry(self, drain_timeout: float = 600.0) -> None:
+        """Follow the engine groups registered in ``registry``, one ``<group_id>.json`` file
+        each: ``{"admin_urls": [...], "state": "ready" | "draining"}``.
+        - A new ready group joins: it loads the current weights from the filesystem broadcast
+          at once, or takes part in the next weight update (NCCL: a new broadcast group).
+        - A draining group leaves the router and the weight updates at once. Once its running
+          requests finish (or after ``drain_timeout``), it is dropped and its file deleted, which
+          tells the group it can shut down.
+        - A group whose file disappears is dropped (evicted if it was serving)."""
+        records = {}
+        for path in self.registry.glob("*.json"):
+            try:
+                records[path.stem] = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+        for group_id, record in records.items():
+            if group_id not in self.registered and record.get("state") == "ready":
+                await self._register(group_id, record["admin_urls"])
+        for group_id in list(self.registered):
+            record = records.get(group_id)
+            if record is None:
+                await self._forget(group_id, "its registration was removed")
+            elif record.get("state") == "draining" and group_id not in self.draining:
+                await self._drain(group_id)
+        for group_id, since in list(self.draining.items()):
+            counters = await asyncio.gather(*(_generation_counters(client) for client in self.registered[group_id]))
+            if sum(running for running, _ in counters) == 0 or time.monotonic() - since > drain_timeout:
+                await self._forget(group_id, "drained")
+
+    async def _register(self, group_id: str, admin_urls: list[str]) -> None:
+        group = tuple(setup_admin_clients(self._client_config.model_copy(update={"admin_base_url": admin_urls})))
+        self.registered[group_id] = group
+        for client in group:
+            self.group_of[client] = group
+        get_logger().info(f"Engine group {group_id} registered ({_urls(group)})")
+        if self.weight_dir is not None and self.version is not None and not self.updating:
+            version = self.version
+            try:
+                await asyncio.gather(
+                    *(
+                        _admin_post(
+                            client,
+                            "/update_weights",
+                            attempts=1,
+                            timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
+                            json={"weight_dir": self.weight_dir(version).as_posix()},
+                        )
+                        for client in group
+                    )
+                )
+            except Exception as error:
+                get_logger().warning(f"Engine group {group_id} could not load policy v{version}: {error!r}")
+            else:
+                if self.version == version and not self.updating:
+                    self.evicted.extend(group)
+                    await self._readmit(list(group), list(group), version)
+                    if group[0] in self.clients:
+                        return
+        # Joins at the next weight update, like a recovered engine
+        self.evicted.extend(client for client in group if client not in self.evicted)
+        self.recovered.update(group)
+        get_logger().info(f"Engine group {group_id} joins at the next weight update")
+
+    async def _drain(self, group_id: str) -> None:
+        group = self.registered[group_id]
+        if group[0] not in self.clients:
+            await self._forget(group_id, "draining before it served")
+            return
+        if len(self.clients) == len(group):
+            get_logger().warning(f"Not draining engine group {group_id}: it is the last one serving")
+            return
+        self.draining[group_id] = time.monotonic()
+        for client in group:
+            self.clients.remove(client)
+            await self._set_routed(client, False)
+        get_logger().info(
+            f"Draining engine group {group_id}: out of the router and the weight updates, "
+            f"{len(self.clients)} engines left"
+        )
+
+    async def _forget(self, group_id: str, reason: str) -> None:
+        group = self.registered.pop(group_id)
+        if group[0] in self.clients:
+            await self._evict(group[0], reason)
+        self.draining.pop(group_id, None)
+        for client in group:
+            if client in self.evicted:
+                self.evicted.remove(client)
+            self.recovered.discard(client)
+            self.group_of.pop(client)
+            await self._set_routed(client, False)
+            await client.aclose()
+        (self.registry / f"{group_id}.json").unlink(missing_ok=True)
+        get_logger().info(f"Engine group {group_id} left ({reason})")
 
     async def _set_routed(self, client: AsyncClient, routed: bool) -> None:
         """Add or remove an engine from the client-facing vllm-router. Best effort: the router's
