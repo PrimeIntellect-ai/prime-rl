@@ -28,8 +28,8 @@ dependencies = [
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
-    "verifiers[harbor]>=0.3.2.dev158",
-    "renderers[multimodal]>=0.1.12.dev2",
+    "verifiers[harbor]>=0.4.0",
+    "renderers[multimodal]>=0.1.12",
     "pybase64>=1.4.2",
     "msgspec>=0.18",
     "fastapi>=0.115",
@@ -176,8 +176,10 @@ members = [
 ]
 # Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
 # Apex pins a verifiers git revision instead of the editable workspace member.
+# ALE CLI requires numpy>=2.4.4, while vLLM 0.31.0 (via mistral-common) requires numpy<2.4.
 # A workspace shares one lock, so these packages need separate environments.
 exclude = [
+    "deps/prime-envs/environments/office/ale_cli",
     "deps/prime-envs/environments/tool_use/tau2_bench",
     "deps/prime-envs/environments/tool_use/tau2_synth",
     "deps/prime-envs/environments/tool_use/tau3_bench",
