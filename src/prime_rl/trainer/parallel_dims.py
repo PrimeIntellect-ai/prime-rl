@@ -274,7 +274,10 @@ def _num_experts(config: ModelConfig) -> int | None:
 
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     model_config = getattr(model_config, "text_config", model_config)
-    return getattr(model_config, "num_experts", None) or getattr(model_config, "n_routed_experts", None)
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        if num_experts := getattr(model_config, attr, None):
+            return num_experts
+    return None
 
 
 def auto_ep(fsdp_island_size: int, num_experts: int, cp: int) -> int:
@@ -304,10 +307,16 @@ def resolve_ep(config: ModelConfig) -> None:
     resolved_ep = auto_ep(fsdp_island_size, num_experts, config.cp)
 
     config.ep = resolved_ep
-    get_logger().info(
-        f"EP auto: world_size={world_size}, dp_replicate={dp_replicate}, num_experts={num_experts}, cp={config.cp} "
-        f"-> resolved ep={resolved_ep}"
-    )
+    if resolved_ep == 1:
+        get_logger().info(
+            f"EP auto: no ep>1 divides fsdp_island_size={fsdp_island_size} and num_experts={num_experts} "
+            f"and is a multiple of cp={config.cp}, resolving ep=1"
+        )
+    else:
+        get_logger().info(
+            f"EP auto: world_size={world_size}, dp_replicate={dp_replicate}, num_experts={num_experts}, "
+            f"cp={config.cp} -> resolved ep={resolved_ep}"
+        )
 
 
 def get_parallel_dims(config: ModelConfig) -> ParallelDims:
