@@ -1,6 +1,8 @@
 import asyncio
+import time
 from pathlib import Path
 
+import msgspec
 import zmq
 import zmq.asyncio
 
@@ -9,134 +11,115 @@ from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.types import MicroBatch
 
 
+class BatchRequest(msgspec.Struct):
+    """A trainer rank asking for its micro batches of one step."""
+
+    world_size: int
+    data_rank: int
+    step: int
+
+
 class ZMQBatchSender(BatchSender):
     def __init__(self, output_dir: Path, data_world_size: int, current_step: int, transport: ZMQTransportConfig):
-        """ZMQ micro batch sender that publishes per-rank micro batches to the trainers.
-        There is one sender (in the orchestrator process) for the entire data world.
-
-        PUB never blocks: a message past a subscriber's HWM would be dropped
-        silently. The orchestrator's dispatch gate bounds in-flight steps to
-        TARGET_LAG + 1 (one message per rank per step), far below the HWM, so
-        drops cannot happen in steady state; the READY barrier below covers
-        slow joiners at startup.
-        """
+        """ZMQ micro batch sender. One ROUTER socket in the orchestrator answers the DEALER socket of
+        every trainer rank, replying to each rank on the connection it asked on."""
         super().__init__(output_dir, data_world_size)
         # Async context so ``send`` yields instead of blocking the orchestrator event loop
         self.context = zmq.asyncio.Context.instance()
-
-        # Data channel (PUB)
-        self.socket: zmq.asyncio.Socket = self.context.socket(zmq.PUB)
-        self.socket.setsockopt(zmq.SNDHWM, transport.hwm)
+        self.socket: zmq.asyncio.Socket = self.context.socket(zmq.ROUTER)
+        # Replying to a rank that went away raises instead of dropping silently
+        self.socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
         self.socket.bind(f"tcp://{transport.host}:{transport.port}")
+        self.request_decoder = msgspec.msgpack.Decoder(type=BatchRequest)
+        self.current_step = current_step
+        self.logger.debug(f"Initialized ZMQ micro batch sender (endpoint=tcp://{transport.host}:{transport.port})")
 
-        # ready barrier socket, to avoid slow joiners dropping for step 0 (and generally at startup)
-        self.ready_socket: zmq.asyncio.Socket = self.context.socket(zmq.PULL)
-        self.ready_socket.setsockopt(zmq.RCVHWM, transport.hwm)
-        self.ready_socket.bind(f"tcp://{transport.host}:{transport.port + 1}")
-
-        self._ready = False
-
-        self.logger.debug(
-            f"Initialized ZMQ micro batch sender (endpoint=tcp://{transport.host}:{transport.port} "
-            f"ready_endpoint=tcp://{transport.host}:{transport.port + 1} hwm={transport.hwm})"
-        )
-
-        self._topic_prefix = b"data_rank|"
-
-        self._current_step = current_step
-
-    async def _wait_for_ready(self) -> None:
-        if self._ready:
-            return
-
-        self.logger.debug(f"Waiting for {self.data_world_size} READY messages")
-        ready_ranks: set[int] = set()
-
-        # Block until all ranks have announced readiness
-        while len(ready_ranks) < self.data_world_size:
-            msg = await self.ready_socket.recv()
-            try:
-                rank = int(msg.decode("utf-8"))
-            except Exception:
-                continue
-            ready_ranks.add(rank)
-
-        self.logger.debug(f"All {self.data_world_size} ranks READY, starting PUB")
-        self._ready = True
-
-    async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> None:
-        """Send grid of micro batches to the trainers."""
+    async def send(self, micro_batch_grid: list[list[MicroBatch]]) -> float:
+        """Send grid of micro batches to the trainers. Encoding happens before the wait, so only the
+        hand-off sits between the last request and the batch."""
         assert len(micro_batch_grid) == self.data_world_size, "Number of micro batch lists must match data world size"
         for micro_batch_list in micro_batch_grid:
             assert len(micro_batch_list) == len(micro_batch_grid[0]), "All micro batch lists must have the same length"
 
-        # Ensure no slow-joiner drops for step 0 (and generally at startup)
-        await self._wait_for_ready()
+        buffers = [await asyncio.to_thread(self.encode, micro_batch_list) for micro_batch_list in micro_batch_grid]
+        identity_to_request = await self._wait_for_requests()
+        send_start = time.perf_counter()
+        for identity, request in identity_to_request.items():
+            await self.socket.send_multipart([identity, buffers[request.data_rank]], copy=False)
+        send_end = time.perf_counter()
 
-        self.logger.debug(f"Sending micro batch grid for step {self._current_step}")
-        for data_rank in range(self.data_world_size):
-            buffer = await asyncio.to_thread(self.encode, micro_batch_grid[data_rank])
-            topic = self._topic_prefix + str(data_rank).encode("utf-8") + b"|"
-            await self.socket.send_multipart([topic, buffer], copy=False)
-        self._current_step += 1
+        self.logger.debug(f"Sent micro batch grid for step {self.current_step} to {len(identity_to_request)} ranks")
+        self.current_step += 1
+        return send_end - send_start
 
     def close(self) -> None:
         try:
             self.socket.close(linger=0)
-            self.ready_socket.close(linger=0)
         finally:
             self.logger.debug("Closed ZMQ micro batch sender")
 
+    async def _receive_request(self) -> tuple[bytes, BatchRequest]:
+        """A rank requests the next step only after receiving this one, so any other step means the
+        orchestrator and trainer resumed from different steps."""
+        identity, payload = await self.socket.recv_multipart()
+        request = self.request_decoder.decode(payload)
+        if request.step != self.current_step:
+            raise RuntimeError(
+                f"A trainer rank requested step {request.step}, but the orchestrator is on step "
+                f"{self.current_step}. Resume both from the same checkpoint step."
+            )
+        return identity, request
+
+    async def _wait_for_requests(self) -> dict[bytes, BatchRequest]:
+        """Collect one request per trainer rank for the current step. Each request carries the
+        trainer world size, so the first one says how many to wait for."""
+        identity, request = await self._receive_request()
+        identity_to_request = {identity: request}
+        while len(identity_to_request) < request.world_size:
+            identity, request = await self._receive_request()
+            identity_to_request[identity] = request
+        return identity_to_request
+
 
 class ZMQBatchReceiver(BatchReceiver):
-    def __init__(self, output_dir: Path, data_rank: int, current_step: int, transport: ZMQTransportConfig):
-        """ZMQ micro batch receiver that receives micro batches from the orchestrator. There is one receiver per data rank."""
-        super().__init__(output_dir, data_rank)
+    def __init__(
+        self,
+        output_dir: Path,
+        data_rank: int,
+        rank: int,
+        world_size: int,
+        current_step: int,
+        transport: ZMQTransportConfig,
+    ):
+        """ZMQ micro batch receiver. Every trainer rank owns one DEALER socket and requests each step
+        before reading it."""
+        super().__init__(output_dir, data_rank, rank, world_size)
         self.context = zmq.Context.instance()
-
-        self.socket: zmq.Socket = self.context.socket(zmq.SUB)
-        self.socket.setsockopt(zmq.RCVHWM, transport.hwm)
+        self.socket: zmq.Socket = self.context.socket(zmq.DEALER)
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")
-
-        self._topic = b"data_rank|" + str(data_rank).encode("utf-8") + b"|"
-        self.socket.setsockopt(zmq.SUBSCRIBE, self._topic)
-
-        self.poller = zmq.Poller()
-        self.poller.register(self.socket, zmq.POLLIN)
-
-        # ready barrier socket, to avoid slow joiners dropping for step 0 (and generally at startup)
-        self.ready_socket: zmq.Socket = self.context.socket(zmq.PUSH)
-        self.ready_socket.setsockopt(zmq.SNDHWM, transport.hwm)
-        self.ready_socket.connect(f"tcp://{transport.host}:{transport.port + 1}")
-
-        # Announce readiness after connect+subscribe are set
-        self.ready_socket.send(str(data_rank).encode("utf-8"))
-
-        self.logger.debug(
-            f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port} "
-            f"ready_endpoint=tcp://{transport.host}:{transport.port + 1} hwm={transport.hwm})"
-        )
-
-        self._current_step = current_step
+        self.request_encoder = msgspec.msgpack.Encoder()
+        self.current_step = current_step
+        self.logger.debug(f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port})")
 
     def wait(self) -> None:
-        self.poller.poll(timeout=None)
-
-    def can_receive(self) -> bool:
-        events = dict(self.poller.poll(timeout=0))
-        return self.socket in events
+        request = BatchRequest(
+            world_size=self.world_size,
+            data_rank=self.data_rank,
+            step=self.current_step,
+        )
+        self.socket.send(self.request_encoder.encode(request))
+        self.socket.poll(timeout=None)
 
     def receive(self) -> list[MicroBatch]:
         """Receive a micro batch from the orchestrator."""
-        _, payload = self.socket.recv_multipart(copy=False)
+        payload = self.socket.recv(copy=False)
         micro_batches: list[MicroBatch] = self.decoder.decode(payload)
-        self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self._current_step}")
-        self._current_step += 1
+        self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self.current_step}")
+        self.current_step += 1
         return micro_batches
 
     def close(self) -> None:
         try:
             self.socket.close(linger=0)
-            self.ready_socket.close(linger=0)
         finally:
             self.logger.debug("Closed ZMQ micro batch receiver")

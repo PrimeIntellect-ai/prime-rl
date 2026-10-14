@@ -14,6 +14,7 @@ def apply_shared_vllm_patches():
 
     patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
+    monkey_patch_shm_buffer_ownership()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
@@ -28,6 +29,67 @@ def apply_shared_vllm_patches():
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    monkey_patch_deepseek_v4_c128_boundary()
+    monkey_patch_deepseek_v4_attn_sink_loading()
+
+
+def monkey_patch_shm_buffer_ownership():
+    """Own out-of-band buffers before releasing a reusable vLLM SHM slot."""
+    import pickle
+
+    import zmq
+    from vllm.distributed.device_communicators import shm_broadcast
+
+    # Backport https://github.com/vllm-project/vllm/pull/61000; remove when our
+    # minimum vLLM version includes it. Retained routed-expert arrays otherwise
+    # alias ring slots that subsequent messages can overwrite.
+    MessageQueue = shm_broadcast.MessageQueue
+    if getattr(MessageQueue.dequeue, "_prime_rl_owns_shm_buffers", False):
+        return
+
+    def dequeue(self, timeout: float | None = None, indefinite: bool = False):
+        if self._is_local_reader:
+            with self.acquire_read(timeout, indefinite) as buf:
+                overflow = buf[0] == 1
+                if not overflow:
+                    offset = 3
+                    buf_count = shm_broadcast.from_bytes_big(buf[1:offset])
+                    all_buffers = []
+                    for i in range(buf_count):
+                        buf_offset = offset + 4
+                        buf_len = shm_broadcast.from_bytes_big(buf[offset:buf_offset])
+                        offset = buf_offset + buf_len
+                        buffer = buf[buf_offset:offset]
+                        all_buffers.append(buffer if i == 0 else bytearray(buffer))
+                    obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])
+            if overflow:
+                obj = MessageQueue.recv(self.local_socket, timeout)
+        elif self._is_remote_reader:
+            obj = MessageQueue.recv(self.remote_socket, timeout)
+        else:
+            raise RuntimeError("Only readers can dequeue")
+        return obj
+
+    def _rebuild_tensor(buf, shape: tuple[int, ...], dtype_str: str) -> torch.Tensor:
+        dtype = getattr(torch, dtype_str)
+        assert isinstance(dtype, torch.dtype)
+        if isinstance(buf, zmq.Frame):
+            try:
+                return torch.frombuffer(buf, dtype=torch.uint8).view(dtype).view(shape)
+            except ValueError:
+                pass
+        raw = buf if isinstance(buf, bytearray) else bytearray(buf)
+        if not raw:
+            assert 0 in shape
+            return torch.empty(shape, dtype=dtype)
+        return torch.frombuffer(raw, dtype=torch.uint8).view(dtype).view(shape)
+
+    # Pickle resolves this reducer by its module and name in receiving processes.
+    _rebuild_tensor.__module__ = shm_broadcast.__name__
+    _rebuild_tensor.__qualname__ = "_rebuild_tensor"
+    dequeue._prime_rl_owns_shm_buffers = True
+    shm_broadcast._rebuild_tensor = _rebuild_tensor
+    MessageQueue.dequeue = dequeue
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -45,6 +107,87 @@ def monkey_patch_deepseek_v4_allowed_layer_types():
     from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
 
     allow_deepseek_v4_layer_types()
+
+
+def monkey_patch_deepseek_v4_c128_boundary():
+    """Fix DeepSeek V4 long-context KV corruption under piecewise CUDA graphs.
+
+    On vLLM 0.30+, including the pinned 0.31.0, the piecewise CUDA graphs are captured on a step
+    that skips writing C128 compressed KV, so every replay skips it too. Mixed batches of up to
+    512 tokens never store their C128 entries, later queries attend over stale compressed KV, and
+    long-context rollouts drift from the trainer, inflating mismatch KL.
+
+    The skip is an optimization: ``DeepseekCompressor.forward`` returns early when
+    ``_get_c128_boundary`` reports that no request completes a 128-token block this step.
+    vllm-project/vllm#55353 made that helper return a bool under Model Runner V2, so capture on
+    dummy batches records the early return. Returning None instead disables the skip, which is
+    the path vLLM already takes under async speculative decoding and the one 0.29 always took.
+
+    The upstream fix, vllm-project/vllm#59709, keeps the skip on eager steps and only stops it
+    from being captured. That change sits inline in ``forward``, so matching it here would mean
+    copying the whole method. Patching the helper costs one extra compress kernel launch on eager
+    steps that complete no block, and the kernel already skips those tokens on the GPU.
+
+    Remove this patch once vllm-project/vllm#59709 lands in the pinned vLLM version.
+    """
+    from vllm.logger import init_logger
+    from vllm.models.deepseek_v4 import compressor
+
+    if getattr(compressor._get_c128_boundary, "_prime_rl_always_compresses", False):
+        return
+
+    def _get_c128_boundary(metadata):
+        return None
+
+    _get_c128_boundary._prime_rl_always_compresses = True
+    compressor._get_c128_boundary = _get_c128_boundary
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 C128 compressor store runs on every step.")
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """Fix DeepSeek V4 weight updates silently keeping the boot-time attention sinks.
+
+    ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
+    ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
+    that go through a loader, so the copy is silently dropped. This pads this rank's heads back
+    to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
+
+    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
+    ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 attn_sink loads through param.weight_loader.")
 
 
 def monkey_patch_online_fp8_parameter_cast():

@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Callable, Generator
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.tensor import DTensor
@@ -189,13 +188,6 @@ class NCCLWeightSender(WeightSender):
 
     @torch.no_grad()
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
-        # The master enters only after the receiver acknowledged the handshake,
-        # but all ranks must be held back until then: the broadcast preparation
-        # (DTensor resolution, checkpoint conversion) enqueues collectives on non-master
-        # ranks, and if those start before the receiver has paused inference,
-        # the collectives sit unmatched until NCCL's watchdog kills the process.
-        if self.world.world_size > 1:
-            dist.barrier()
         self.nccl_broadcast_sender.send(model)
 
 
