@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.clients.gate import ModelGate
 from verifiers.v1.serve.types import SteerResponse
 
 from prime_rl.configs.orchestrator import ConcurrencyConfig
@@ -126,10 +127,12 @@ async def _no_sessions(_session_ids) -> None:
     return None
 
 
-def _runner(tmp_path, env: SeatedEnv, *, max_inflight: int = 4) -> EvalRunner:
+def _runner(
+    tmp_path, env: SeatedEnv, *, max_inflight: int = 4, request_gate: vf.RequestGateConfig | None = None
+) -> EvalRunner:
     eval_envs = EvalEnvs.__new__(EvalEnvs)
     eval_envs._envs = {env.name: env}
-    runner = EvalRunner(SimpleNamespace(), run_dir=tmp_path)
+    runner = EvalRunner(SimpleNamespace(client=SimpleNamespace(request_gate=request_gate)), run_dir=tmp_path)
     runner.eval_envs = eval_envs
     runner.eval_source = EvalSource(eval_envs)
     runner.eval_sink = EvalSink(eval_envs=eval_envs)
@@ -243,6 +246,62 @@ def test_resize_moves_a_pinned_band_live(tmp_path) -> None:
     assert out["resize"] == 7
     assert out["status"]["max_inflight"] == 7 and out["status"]["min_inflight"] == 7
     assert runner.dispatcher.max_inflight == 7
+
+
+def test_resize_requests_moves_the_request_gate_of_every_process(tmp_path, capsys) -> None:
+    """Two gate users (env server workers) started at a cap of 2 are full; a resize to 4
+    lets each admit one more, and status shows the gate."""
+    config = vf.RequestGateConfig(max_concurrent=2, adaptive=False, dir=str(tmp_path / "gates"))
+    workers = [ModelGate(tmp_path / "gates", "key", "glm") for _ in range(2)]
+    assert [worker.try_admit(config) for worker in workers] == [0, 1]
+    assert workers[0].try_admit(config) is None
+    env = SeatedEnv(Stream(["job/solve/0"]).skip(0))
+    runner = _runner(tmp_path / "run", env, request_gate=config)
+    out = {}
+
+    async def during(client: Client) -> None:
+        await env.running.wait()
+        out["resize"] = await asyncio.to_thread(client.resize_requests, 4)
+        out["admitted"] = [worker.try_admit(config) for worker in workers]
+        out["status"] = await asyncio.to_thread(client.status)
+        out["other"] = await asyncio.to_thread(client.resize_requests, 8, model="other")
+        run = str(runner.run_dir)
+        await asyncio.to_thread(control_module.main, ["--run", run, "resize-requests", "3", "--model", "glm"])
+        await asyncio.to_thread(control_module.main, ["--run", run, "status"])
+        with pytest.raises(SystemExit, match="no request gate to resize"):
+            await asyncio.to_thread(control_module.main, ["--run", run, "resize-requests", "3", "--model", "x"])
+        env.release.set()
+
+    asyncio.run(_with_control(runner, during))
+
+    [gate] = out["resize"]
+    assert (gate["model"], gate["max_concurrent"], gate["limit"]) == ("glm", 4, 4)
+    assert out["admitted"] == [2, 3]
+    [gate] = out["status"]["request_gates"]
+    assert (gate["max_concurrent"], gate["limit"], gate["in_flight"]) == (4, 4, 4)
+    assert out["other"] == []
+    printed = capsys.readouterr().out.splitlines()
+    assert printed[0].startswith("requests 4 / limit 3 / cap 3  glm")
+    assert printed[1] == "inflight 1 / max 4"
+    assert printed[2].startswith("requests 4 / limit 3 / cap 3  glm"), "lowered: nothing shed"
+    assert workers[0].try_admit(config) is None
+
+
+def test_resize_requests_of_a_run_without_a_gate_is_refused(tmp_path) -> None:
+    env = SeatedEnv(Stream(["job/solve/0"]).skip(0))
+    runner = _runner(tmp_path, env)
+    out = {}
+
+    async def during(client: Client) -> None:
+        await env.running.wait()
+        out["status"] = await asyncio.to_thread(client.status)
+        with pytest.raises(ControlError, match="no request gate"):
+            await asyncio.to_thread(client.resize_requests, 4)
+        env.release.set()
+
+    asyncio.run(_with_control(runner, during))
+
+    assert out["status"]["request_gates"] == []
 
 
 def test_resize_of_an_adaptive_band_moves_its_top() -> None:

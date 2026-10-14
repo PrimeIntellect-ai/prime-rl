@@ -5,13 +5,21 @@ TCP port and writes its address to ``<run>/control.json`` (with the host and pid
 serve it), so any process on the host finds it. Requests:
 
 - ``status``: the in-flight episodes (task key, env, and each streamed trace with its
-  seat, phase and turns) and the run's concurrency.
+  seat, phase and turns), the run's concurrency, and its request gates (each gate's
+  model, cap, limit and requests in flight; ``verifiers.v1.clients.gate``).
 - ``steer``: a user message into running agents, picked by ``task_key`` or
   ``trace_id``, optionally narrowed to one ``seat``. The runner
   calls the env server's ``steer`` route for each picked trace (verifiers delivers
   natively or through the interception and records the steer on the trace) and
   returns the receipts.
 - ``resize``: move the run's in-flight concurrency (``ConcurrencyController.resize``).
+- ``resize_requests``: move the cap of the run's request gates
+  (``[client.request_gate]``), optionally of one model's only. The cap lives in the
+  gate's shared state, so it moves for every process on the host that uses the gate (env
+  server workers, interception servers, other runs on the same key and model): a raise
+  admits more at the next request, a lower sheds nothing and holds new requests until
+  fewer than the new cap are in flight. It lasts until the gate's users are gone; the
+  next run starts from its config.
 
 There is no cancel: a task is stopped by the taskset that handed it out
 (``Taskset.cancel``), which owns what a cancel means (flow: ``flow cancel``).
@@ -32,12 +40,14 @@ import json
 import os
 import socket
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import zmq
 import zmq.asyncio
+from verifiers.v1.clients import gate as request_gates
 
 from prime_rl.utils.logger import get_logger
 
@@ -178,6 +188,8 @@ class ControlServer:
             return {"ok": True, "receipts": await self.steer(**request.get("args", {}))}
         if method == "resize":
             return {"ok": True, "max_inflight": self.resize(**request.get("args", {}))}
+        if method == "resize_requests":
+            return {"ok": True, "gates": self.resize_requests(**request.get("args", {}))}
         return {"ok": False, "error": f"unknown request {method!r}"}
 
     def inflight(self) -> list[InflightEpisode]:
@@ -186,6 +198,7 @@ class ControlServer:
     def status(self) -> dict[str, Any]:
         dispatcher = self.runner.dispatcher
         concurrency = getattr(self.runner, "concurrency", None)
+        gate_dir = self.gate_dir()
         return {
             "episodes": [
                 {
@@ -203,6 +216,7 @@ class ControlServer:
             "inflight": dispatcher.current_inflight,
             "max_inflight": int(dispatcher.max_inflight),
             "min_inflight": concurrency.floor if concurrency is not None else None,
+            "request_gates": [] if gate_dir is None else request_gates.gate_states(gate_dir),
         }
 
     async def steer(
@@ -268,11 +282,25 @@ class ControlServer:
         self.runner.concurrency.resize(int(max_inflight))
         return int(self.runner.dispatcher.max_inflight)
 
+    def gate_dir(self) -> Path | None:
+        """Where the run's request gates keep their shared state; None without a gate."""
+        gate = self.runner.config.client.request_gate
+        return None if gate is None else request_gates.gate_dir(gate)
+
+    def resize_requests(self, max_concurrent: int, model: str | None = None) -> list[dict[str, Any]]:
+        directory = self.gate_dir()
+        if directory is None:
+            raise ValueError("this run has no request gate ([client.request_gate])")
+        gates = request_gates.resize(directory, int(max_concurrent), model=model)
+        get_logger().info(f"Request cap {max_concurrent} for {', '.join(str(g['model']) for g in gates) or 'no gate'}")
+        return gates
+
 
 class Client:
     """The run control of a running eval: ``Client(run_dir).status()``,
-    ``.steer(text, task_key=...)``, ``.resize(n)``. A ``control.json`` left behind by an
-    eval that died without its teardown fails here, not after ``timeout``."""
+    ``.steer(text, task_key=...)``, ``.resize(n)``, ``.resize_requests(n)``. A
+    ``control.json`` left behind by an eval that died without its teardown fails here,
+    not after ``timeout``."""
 
     def __init__(self, run_dir: Path | str, *, timeout: float = DEFAULT_TIMEOUT_S):
         self.address = read_address(run_dir)
@@ -318,6 +346,11 @@ class Client:
     def resize(self, max_inflight: int) -> int:
         return self.request("resize", max_inflight=max_inflight)["max_inflight"]
 
+    def resize_requests(self, max_concurrent: int, *, model: str | None = None) -> list[dict[str, Any]]:
+        """The resized request gates, each as ``status`` lists it."""
+        args = {"max_concurrent": max_concurrent} | ({"model": model} if model is not None else {})
+        return self.request("resize_requests", **args)["gates"]
+
 
 def format_receipt(receipt: dict[str, Any]) -> str:
     where = " ".join(
@@ -330,8 +363,16 @@ def format_receipt(receipt: dict[str, Any]) -> str:
     return f"refused  {where}: {receipt.get('reason')}"
 
 
+def format_gate(gate: dict[str, Any]) -> str:
+    age = time.time() - gate["updated"]
+    return (
+        f"requests {gate['in_flight']} / limit {gate['limit']} / cap {gate['max_concurrent']}"
+        f"  {gate['model']}  (updated {age:.0f}s ago)"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
-    """``uv run eval control --run <dir> status|steer|resize``."""
+    """``uv run eval control --run <dir> status|steer|resize|resize-requests``."""
     parser = argparse.ArgumentParser(prog="eval control", description="Control a running eval.")
     parser.add_argument("--run", required=True, type=Path, help="the eval's run directory (holds control.json)")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
@@ -347,6 +388,11 @@ def main(argv: list[str] | None = None) -> None:
     steer.add_argument("text")
     resize = commands.add_parser("resize", help="set the in-flight concurrency")
     resize.add_argument("max_inflight", type=int)
+    resize_requests = commands.add_parser(
+        "resize-requests", help="set the cap of concurrent model requests (the request gate)"
+    )
+    resize_requests.add_argument("max_concurrent", type=int)
+    resize_requests.add_argument("--model", help="only this model's gate (default: every gate)")
     args = parser.parse_args(argv)
 
     try:
@@ -357,6 +403,8 @@ def main(argv: list[str] | None = None) -> None:
                 print(json.dumps(state, indent=2))
                 return
             print(f"inflight {state['inflight']} / max {state['max_inflight']}")
+            for gate in state["request_gates"]:
+                print(format_gate(gate))
             for episode in state["episodes"]:
                 print(f"{episode['task_key']}  env={episode['env']}")
                 for trace in episode["traces"]:
@@ -377,5 +425,11 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(1)
         elif args.command == "resize":
             print(f"max_inflight {client.resize(args.max_inflight)}")
+        elif args.command == "resize-requests":
+            gates = client.resize_requests(args.max_concurrent, model=args.model)
+            if not gates:
+                sys.exit("eval control: no request gate to resize (no model request yet, or no such model)")
+            for gate in gates:
+                print(format_gate(gate))
     except ControlError as error:
         sys.exit(f"eval control: {error}")

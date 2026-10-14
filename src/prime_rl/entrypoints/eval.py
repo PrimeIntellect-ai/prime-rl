@@ -24,7 +24,8 @@ USAGE = """\
 usage: uv run eval [<taskset-id>] [--env.<field> <value> ...] [-n N] [-s] [-r N] [-c N] [-m MODEL] [options]
        uv run eval @ eval.toml [options]                                  multi-source runs ([[source]] blocks)
        uv run eval @ eval.toml --run.name <name> --resume                 resume an interrupted run
-       uv run eval control --run <dir> status|steer|resize               control a running eval
+       uv run eval control --run <dir> status|steer|resize|resize-requests
+                                                                          control a running eval
 
 Shorthands:
   <taskset-id>             the taskset of the run's only source
