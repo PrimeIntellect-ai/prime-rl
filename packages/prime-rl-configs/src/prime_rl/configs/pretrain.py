@@ -11,6 +11,7 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
+    OffloadMode,
     OptimizerConfig,
     TokenizerConfig,
 )
@@ -71,6 +72,9 @@ class PretrainModelConfig(ModelConfig):
     """Random weight initialization. Used unless the run resumes from a checkpoint."""
 
     moe: PretrainMoEConfig = PretrainMoEConfig()
+
+    offload: OffloadMode = "none"
+    """CPU offloading. Pretraining's per-role parameter groups need ``none``."""
 
     @model_validator(mode="after")
     def validate_arch(self):
