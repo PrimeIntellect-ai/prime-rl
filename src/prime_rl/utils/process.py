@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import uuid
+from functools import partial
 from pathlib import Path
 from subprocess import Popen
 from threading import Event, Thread
@@ -90,11 +91,16 @@ _PR_SET_PDEATHSIG = 1
 _prctl = ctypes.CDLL(None, use_errno=True).prctl if sys.platform == "linux" else None
 
 
-def die_with_parent() -> None:
-    """Have the kernel SIGTERM this process when its parent exits. A launcher or torchrun agent
-    that is SIGKILLed (or OOM-killed) then leaves no orphans holding GPUs and ports. Linux only."""
-    if _prctl is not None:
-        _prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+def die_with_parent(parent_pid: int) -> None:
+    """Have the kernel SIGTERM this process when its parent ``parent_pid`` exits. A launcher or
+    torchrun agent that is SIGKILLed (or OOM-killed) then leaves no orphans holding GPUs and
+    ports. Linux only."""
+    if _prctl is None:
+        return
+    _prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+    # The kernel sends nothing for a parent that exited before the call
+    if os.getppid() != parent_pid:
+        os.kill(os.getpid(), signal.SIGTERM)
 
 
 def set_proc_title(name: str) -> None:
@@ -198,7 +204,9 @@ class ProcessGroup:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # If we don't log stdout, the inference server hangs
         with open(log_path, "w") as log_file:
-            process = Popen(cmd, env=env, stdout=log_file, stderr=log_file, preexec_fn=die_with_parent)
+            process = Popen(
+                cmd, env=env, stdout=log_file, stderr=log_file, preexec_fn=partial(die_with_parent, os.getpid())
+            )
         self.processes.append(process)
         stop_event = Event()
         self.stop_events[name] = stop_event

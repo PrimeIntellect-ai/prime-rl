@@ -1,3 +1,8 @@
+import os
+
+# The torchrun agent, read before the slow imports below (see die_with_parent in main)
+PARENT_PID = os.getppid()
+
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 from contextlib import nullcontext
@@ -742,7 +747,7 @@ def main():
     """Main entry-point for RL trainer. Run using `uv run trainer`"""
     set_proc_title("Trainer")
     # torchrun starts its workers in their own sessions; tie them to the agent
-    die_with_parent()
+    die_with_parent(PARENT_PID)
     train(cli(TrainerConfig))
 
 
