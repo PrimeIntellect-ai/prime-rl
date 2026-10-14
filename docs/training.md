@@ -321,6 +321,7 @@ class SampleInputs:
     example: dict                                      # the dataset row
     renderer: Renderer                                 # the model's renderer
     render: Callable[[], RenderedTrainingSample]       # stock rendering of the row (token_ids, loss_mask), unshifted
+    data: SFTDataConfig                                # the row's dataset config ([data] or [val.data]), e.g. its columns
 
 @dataclass
 class ObjectiveInputs:

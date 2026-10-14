@@ -6,10 +6,10 @@ from datasets import Dataset
 from pydantic import ValidationError
 from torch import nn
 
-from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTConfig, SFTObjectiveConfig
+from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTConfig, SFTDataConfig, SFTObjectiveConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.sft.data import CatDataset, SFTDataset, SFTObjectiveDataset, cat_collate
+from prime_rl.trainer.sft.data import CatDataset, SFTDataset, SFTObjectiveDataset, cat_collate, setup_dataset
 from prime_rl.trainer.sft.objective import (
     ObjectiveInputs,
     ObjectiveOutputs,
@@ -165,6 +165,24 @@ def test_malformed_samples_are_rejected_at_the_source(bad, message):
     )
     with pytest.raises(ValueError, match=message):
         next(iter(dataset))
+
+
+def test_samples_see_their_dataset_config():
+    seen = []
+
+    class Recording(PairObjective):
+        def make_sample(self, inputs):
+            seen.append(inputs.data)
+            return super().make_sample(inputs)
+
+    config = SFTDataConfig(name="rows", seq_len=8)
+    rows = Dataset.from_list([{"text": "ab", "label": 0.0}])
+    dataset = setup_dataset(
+        None, config, max_epochs=1, raw_dataset=rows, renderer_config=object(), objective=Recording()
+    )
+    dataset.renderers = lambda example: None  # PairObjective renders nothing
+    next(iter(dataset))
+    assert seen == [config]
 
 
 class RenderingObjective:

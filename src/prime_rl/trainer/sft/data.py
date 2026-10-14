@@ -71,6 +71,9 @@ class SampleInputs:
     """Stock SFT's rendering of this row: the chat from ``data.columns`` as token ids plus a loss mask over the roles
     ``[loss_mask]`` selects, unshifted. Call it to start from what stock SFT would train on; rows without a chat
     (no ``messages``, or ``prompt`` and ``completion``) raise."""
+    data: SFTDataConfig
+    """The config of the dataset the row comes from (``[data]`` or ``[val.data]``), for settings that differ between
+    them, such as ``columns``."""
 
 
 class StatefulIterableDataset(Stateful, IterableDataset):
@@ -516,13 +519,23 @@ class SFTDataset(StatefulIterableDataset):
 class SFTObjectiveDataset(SFTDataset):
     """An SFT dataset whose samples are built by a custom objective (``[objective]``)."""
 
-    def __init__(self, dataset: Dataset, renderers: Callable[[dict], Renderer], objective: "SFTObjective", **kwargs):
+    def __init__(
+        self,
+        dataset: Dataset,
+        renderers: Callable[[dict], Renderer],
+        objective: "SFTObjective",
+        data: SFTDataConfig = SFTDataConfig(),
+        **kwargs,
+    ):
         super().__init__(dataset, renderers, **kwargs)
         self.objective = objective
+        self.data = data
 
     def _process(self, example: dict) -> dict | None:
         renderer = self.renderers(example)
-        inputs = SampleInputs(example=example, renderer=renderer, render=partial(self.render, example, renderer))
+        inputs = SampleInputs(
+            example=example, renderer=renderer, render=partial(self.render, example, renderer), data=self.data
+        )
         sample = self.objective.make_sample(inputs)
         if sample is None:
             return None
@@ -824,7 +837,9 @@ def setup_dataset(
         if raw_dataset is None:
             raw_dataset = load_sft_dataset(config)
         renderers = RendererResolver(tokenizer, renderer_config, processor=processor, columns=config.columns.renderer)
-        dataset_cls = partial(SFTObjectiveDataset, objective=objective) if objective is not None else SFTDataset
+        dataset_cls = (
+            partial(SFTObjectiveDataset, objective=objective, data=config) if objective is not None else SFTDataset
+        )
         return dataset_cls(
             raw_dataset,
             renderers,
