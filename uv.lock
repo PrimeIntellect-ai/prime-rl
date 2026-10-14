@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -5279,7 +5279,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.4.3"
+version = "0.4.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5291,9 +5291,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/1b/01e02c9d2346956f5ed77d269f836905a017ad796a4b4c719debd8942dc4/prime_sandboxes-0.4.3.tar.gz", hash = "sha256:a2169182f74307485c73f897e224c978eba3276133ddb40715be4d346594c487", size = 140588, upload-time = "2026-10-08T00:24:03.668Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/07/1088f762a233534c29dee357ff730f8730d4b79f492c88b30e65ea63deb7/prime_sandboxes-0.4.4.tar.gz", hash = "sha256:9ff1a8d3ae63ac4be007989f30a8e34511932d728b1562140af22c29bc9bd945", size = 141990, upload-time = "2026-10-12T18:59:33.808Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/5f/d0b5cd1dabdb6e5cb1ab5d84c8ba9a96e2a9a0be8913ec9db9177c9645fb/prime_sandboxes-0.4.3-py3-none-any.whl", hash = "sha256:dd26007838c25b5d38a8b7af0514c07027b783406c0ea5b9fcf0eb74a45139bd", size = 75515, upload-time = "2026-10-08T00:24:02.208Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/55/b19633e0787c8df5291e68d0a51817436ee7c157398257e1ca783107746b/prime_sandboxes-0.4.4-py3-none-any.whl", hash = "sha256:e395f8c4317e8205124123c0094c0f7d27ba4a75a2d119bd1980ec80cb893a10", size = 76352, upload-time = "2026-10-12T18:59:32.416Z" },
 ]
 
 [[package]]
@@ -7817,11 +7817,11 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-runs", specifier = ">=0.1.4" },
-    { name = "prime-sandboxes", specifier = ">=0.4.2" },
+    { name = "prime-sandboxes", specifier = ">=0.4.4" },
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.12.dev2" },
+    { name = "renderers", extras = ["multimodal"], specifier = ">=0.1.12" },
     { name = "rich", specifier = ">=11.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'", specifier = "==0.7.4" },
@@ -7836,7 +7836,6 @@ dev = [
     { name = "pre-commit", specifier = ">=2.19.0" },
     { name = "pytest", specifier = ">=7.0.0,<9.1.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.16.0" },
     { name = "ty", specifier = ">=0.0.63" },
