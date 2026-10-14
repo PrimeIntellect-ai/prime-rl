@@ -30,13 +30,14 @@ Weights start from a random init, unless the run resumes from a checkpoint.
 
 | Field | Meaning |
 |---|---|
-| `model.init.scheme` | `normal`: every weight matrix and the embedding from N(0, std). `completep`: CompleteP, see below. Norm weights start at 1, biases at 0. |
-| `model.init.std` | Base standard deviation (default 0.02). |
+| `model.init.std` | Every weight matrix and the embedding start from N(0, std) (default 0.02), scaled per role under CompleteP (below). Norm weights start at 1, biases at 0. |
 | `model.init.seed` | Seed. Every rank initializes only its own shard, and the values depend only on the seed and the parameter name, not on the number of GPUs. |
 
-### CompleteP
+## Parametrization
 
-`model.init.scheme = "completep"` trains with [CompleteP](https://arxiv.org/abs/2505.01618) (muP extended to depth, alpha = 1), so that hyperparameters tuned on a small base shape carry over to wider and deeper models. `optim.lr`, `optim.eps`, `optim.weight_decay` and `model.init.std` are the base-shape values, and the shape is set by `model.init.base_hidden_size` (default 256) and `model.init.base_num_layers` (default 2). With `m_N = hidden_size / base_hidden_size` and `m_L = num_layers / base_num_layers`:
+The optimizer gets one parameter group per role (embedding, hidden matrices, `o_proj`/`down_proj`, LM head, norms, biases; with MoE also experts and the router). By default (standard parametrization) every role uses `optim.lr`, `optim.eps` and `optim.weight_decay`, except norms and biases, which get no weight decay.
+
+`[parametrization]` trains with [CompleteP](https://arxiv.org/abs/2505.01618) (muP extended to depth, alpha = 1), so that hyperparameters tuned on a small base shape carry over to wider and deeper models. `optim.lr`, `optim.eps`, `optim.weight_decay` and `model.init.std` are the base-shape values, and the base shape is set by `parametrization.base_hidden_size` and `parametrization.base_num_layers`. With `m_N = hidden_size / base_hidden_size` and `m_L = num_layers / base_num_layers`:
 
 | Parameters | Init std | Learning rate | Adam eps | Weight decay |
 |---|---|---|---|---|
@@ -58,7 +59,7 @@ With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are tra
 
 In MoE models, the expert matrices follow the hidden and `down_proj` rules per expert. The router maps the width to a fixed number of experts, so under Muon its learning rate falls as 1/m_N (with AdamW it follows the hidden rule).
 
-CompleteP needs `model.offload = "none"`. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
+The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
 ## Learning-rate schedule
 

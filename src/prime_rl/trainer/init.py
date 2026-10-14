@@ -35,19 +35,12 @@ def param_role(name: str, param: torch.Tensor) -> ParamRole:
     return "hidden"
 
 
-def completep_multipliers(config: InitConfig, hidden_size: int, num_layers: int) -> tuple[float, float]:
-    """Width and depth multipliers ``(m_N, m_L)`` of the model relative to the CompleteP base shape."""
-    return hidden_size / config.base_hidden_size, num_layers / config.base_num_layers
-
-
-def role_std(role: ParamRole, config: InitConfig, hidden_size: int, num_layers: int) -> float:
-    if config.scheme == "completep":
-        # CompleteP's 1/m_L residual-branch and 1/m_N logit multipliers are folded into the
-        # residual output projections and the LM head, so the forward pass stays unchanged.
-        m_n, m_l = completep_multipliers(config, hidden_size, num_layers)
-        scale = {"embedding": 1.0, "hidden": m_n**-0.5, "residual_out": m_n**-0.5 / m_l, "output": 1 / m_n}
-        return config.std * scale[role]
-    return config.std
+def role_std(role: ParamRole, std: float, m_n: float, m_l: float) -> float:
+    """Init std of a role under CompleteP with width and depth multipliers ``m_N``, ``m_L`` (both 1 in the
+    standard parametrization). CompleteP's 1/m_L residual-branch and 1/m_N logit multipliers are folded into the
+    residual output projections and the LM head, so the forward pass stays unchanged."""
+    scale = {"embedding": 1.0, "hidden": m_n**-0.5, "residual_out": m_n**-0.5 / m_l, "output": 1 / m_n}
+    return std * scale[role]
 
 
 def block_seed(seed: int, name: str, block: int) -> int:
@@ -84,10 +77,9 @@ def normal_shard(
 
 
 @torch.no_grad()
-def init_weights(model: nn.Module, config: InitConfig) -> None:
-    """Initialize every parameter in place. Each rank fills only its local shard, without
-    communication, and the values do not depend on the world size or the sharding."""
-    hidden_size, num_layers = model.config.hidden_size, model.config.num_hidden_layers
+def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: float = 1.0) -> None:
+    """Initialize every parameter in place, with the CompleteP multipliers ``m_N``, ``m_L``. Each rank fills only
+    its local shard, without communication, and the values do not depend on the world size or the sharding."""
     for name, param in model.named_parameters():
         # Canonical names, so wrappers such as activation checkpointing don't change the values.
         name = resolve_fqn(model, name)
@@ -113,4 +105,4 @@ def init_weights(model: nn.Module, config: InitConfig) -> None:
             config.seed,
             local.device,
         )
-        local.copy_(values.mul_(role_std(role, config, hidden_size, num_layers)))
+        local.copy_(values.mul_(role_std(role, config.std, m_n, m_l)))

@@ -33,7 +33,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.init import init_weights
-from prime_rl.trainer.pretrain.completep import completep_param_groups
+from prime_rl.trainer.pretrain.parametrization import multipliers, param_groups
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
@@ -121,8 +121,9 @@ def train(config: PretrainConfig):
     logger.info(f"Initializing model ({config.model})")
     # Weights come from the checkpoint when resuming and from the random init otherwise.
     model = setup_model(config.model, parallel_dims, loading_from_checkpoint_later=True)
+    m_n, m_l = multipliers(config.parametrization, model)
     if checkpoint_step is None:
-        init_weights(model, config.model.init)
+        init_weights(model, config.model.init, m_n, m_l)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
     num_params = count_parameters(model)
@@ -142,11 +143,7 @@ def train(config: PretrainConfig):
         full_offload_dtype_policy=(
             get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
-        param_groups=(
-            completep_param_groups(model, config.model.init, config.optim, parallel_dims.ep_enabled)
-            if config.model.init.scheme == "completep"
-            else None
-        ),
+        param_groups=param_groups(model, config.optim, m_n, m_l, parallel_dims.ep_enabled),
     )
 
     # With ckpt.skip_scheduler, the schedule restarts at the resumed step and spans the remaining steps.
