@@ -74,7 +74,7 @@ start = 0.9
 weights = { web = 0.5, code = 0.5 }
 ```
 
-Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and the number of steps. The resume state is the global row counter and the tokens read per source, the same on every rank. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
+Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and the number of steps. Resume restores the data position on the same GPU layout and `data.num_workers`; resuming on a different layout is not supported yet. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
 
 ## Evals
 
