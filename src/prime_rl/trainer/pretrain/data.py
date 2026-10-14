@@ -85,8 +85,8 @@ class TokenDataset(StatefulIterableDataset):
 
     Window ``w`` belongs to step ``w // batch_size``; its source is drawn from that step's phase weights
     with an RNG keyed by ``(seed, w)``, and it continues the source's stream where that source's last
-    window ended. Every data rank walks the whole window sequence but reads only its own windows, so the
-    state (the window counter and the tokens read per source) does not depend on the world size. Each
+    window ended. Every data rank walks the whole window sequence but reads only its own windows; the
+    state is the window counter and the tokens read per source. Each
     window reads one token past its end for the last target. With ``num_windows`` the dataset stops
     after that many windows."""
 
