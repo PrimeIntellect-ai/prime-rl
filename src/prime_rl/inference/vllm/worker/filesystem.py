@@ -23,6 +23,7 @@ from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     ENGINE_LAYOUT,
     MANIFEST,
+    anchor_complete,
     bits_dtype,
     decode_gaps,
     read_delta,
@@ -88,7 +89,7 @@ class FileSystemWeightUpdateWorker(Worker):
             self._load_checkpoint(step_dir)
         elif read_manifest(step_dir)["base_step"] == self.weight_step:
             self._apply_delta(step_dir)
-            if any(step_dir.glob("*.safetensors")):
+            if anchor_complete(step_dir):
                 # Anchor step: check that the delta chain reproduced the full checkpoint bit for bit.
                 chained = weight_checksums(self._model())
                 self._load_checkpoint(step_dir)
@@ -99,7 +100,7 @@ class FileSystemWeightUpdateWorker(Worker):
         else:
             self._replay_from_anchor(step_dir)
         self.weight_step = step
-        if (step_dir / DELTA_DIR).is_dir() and not self.wrote_layout and any(step_dir.glob("*.safetensors")):
+        if (step_dir / DELTA_DIR).is_dir() and not self.wrote_layout and anchor_complete(step_dir):
             self._write_engine_layout(step_dir)
             self.wrote_layout = True
 
