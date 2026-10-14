@@ -104,10 +104,6 @@ class Glm4MoeConfig(PretrainedConfig):
             Whether to normalize the topk probabilities.
         use_qk_norm (`bool`, *optional*, defaults to `False`):
             Whether to use query-key normalization in the attention
-        load_balance_coeff (`float`, *optional*, defaults to 1e-3):
-            Update speed of the aux-loss-free load-balancing bias; `None` disables the bias.
-        seq_aux_loss_coeff (`float`, *optional*):
-            Weight of the sequence-wise balance loss (DeepSeek-V3); `None` disables it, 0 only logs it.
     ```python
     >>> from transformers import Glm4MoeModel, Glm4MoeConfig
     >>> # Initializing a Glm4Moe style configuration
@@ -169,8 +165,6 @@ class Glm4MoeConfig(PretrainedConfig):
         first_k_dense_replace=1,
         norm_topk_prob=True,
         use_qk_norm=False,
-        load_balance_coeff=1e-3,
-        seq_aux_loss_coeff=None,
         pad_token_id=None,
         **kwargs,
     ):
@@ -203,8 +197,6 @@ class Glm4MoeConfig(PretrainedConfig):
         self.first_k_dense_replace = first_k_dense_replace
         self.norm_topk_prob = norm_topk_prob
         self.use_qk_norm = use_qk_norm
-        self.load_balance_coeff = load_balance_coeff
-        self.seq_aux_loss_coeff = seq_aux_loss_coeff
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,

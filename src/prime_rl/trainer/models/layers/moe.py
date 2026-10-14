@@ -61,7 +61,6 @@ class MoEArgs:
     # token-choice
     top_k: int = 1
     load_balance_coeff: float | None = 1e-3
-    seq_aux_loss_coeff: float | None = None
 
     def __post_init__(self) -> None:
         ActivationDispatch[self.activation]
@@ -330,7 +329,6 @@ class MoE(nn.Module):
             shared_expert=shared_expert,
             score_before_experts=args.score_before_experts,
             load_balance_coeff=args.load_balance_coeff,
-            seq_aux_loss_coeff=args.seq_aux_loss_coeff,
         )
 
     def __init__(
@@ -341,7 +339,6 @@ class MoE(nn.Module):
         shared_expert: FeedForward | None,
         score_before_experts: bool,
         load_balance_coeff: float | None,
-        seq_aux_loss_coeff: float | None = None,
     ) -> None:
         super().__init__()
         self.router = router
@@ -368,9 +365,9 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
-        # Sequence-wise balance loss (DeepSeek-V3 eq. 17-20): with a coefficient set, every forward with grad
-        # keeps the scores and selections, for the training loop, which knows the packed rows, to compute it.
-        self.seq_aux_loss_coeff = seq_aux_loss_coeff
+        # Sequence-wise balance loss (DeepSeek-V3 eq. 17-20): with keep_routing, every forward with grad keeps
+        # the scores and selections, for the training loop, which knows the packed rows, to compute it.
+        self.keep_routing = False
         self.routing: tuple[torch.Tensor, torch.Tensor] | None = None
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
@@ -414,7 +411,7 @@ class MoE(nn.Module):
             scores,
         ) = self.router(x, routed_experts=routed_experts)
 
-        if self.seq_aux_loss_coeff is not None and torch.is_grad_enabled():
+        if self.keep_routing and torch.is_grad_enabled():
             self.routing = (scores, selected_experts_indices)
 
         # Accumulate expert usage for selection-bias updates and metrics.

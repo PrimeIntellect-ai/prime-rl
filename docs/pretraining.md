@@ -75,6 +75,18 @@ decay_shape = "1-sqrt"  # or "linear" (default), "cosine"
 
 `f(0) = 0`, the warmup reaches 1 at its last update (`warmup - 1`; a warmup of 0 or 1 starts at 1), and the decay reaches `end_ratio` at the last update (`max_steps - 1`). AdamW and Muon apply weight decay as `lr * weight_decay`, so the schedule also scales the decay. The multiplier is recomputed from the step, so checkpoints hold no schedule state. Resuming with `ckpt.skip_scheduler = true` restarts the schedule at the resumed step, spanning the remaining steps. The multiplier is logged as `schedule/lr`.
 
+## MoE load balancing
+
+`[model.moe.balance]` balances the routed experts as in DeepSeek-V3, for every MoE family whose router has a selection bias (e.g. `glm4_moe`):
+
+| Field | Meaning |
+|---|---|
+| `bias_update_rate` | Every step, each layer's selection bias moves by this step size (gamma) towards underloaded experts, using the step's global expert counts. The update is mean-centred. Default 3e-3; 0 turns it off. The bias starts at 0. |
+| `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
+| `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |
+
+The metrics are `expert_load/*` (global balance of the step), `expert_load/seq_balance` (1 is balanced) and `expert_load/selection_bias_absmax`.
+
 ## Data
 
 `data.type = "tokens"` reads [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: per source, a folder of `*.ds` token files with their `.ds.index` (document ends) and `.ds.metadata`. The files of a source are read in name order as one stream; documents continue across rows, and attention restarts at every document and every row. Every document must end with the tokenizer's EOS; the trainer checks the first document of every source, which catches shards made with another tokenizer.

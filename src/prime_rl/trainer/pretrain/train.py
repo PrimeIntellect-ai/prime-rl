@@ -202,8 +202,11 @@ def train(config: PretrainConfig):
     cp_size = parallel_dims.cp
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     is_moe_model = is_tt_moe_model(model)
-    moes_with_seq_balance = [moe for moe in iter_moe_blocks(model) if moe.seq_aux_loss_coeff is not None]
-    bias_freeze_step = config.max_steps - round(config.moe_bias_freeze * config.max_steps)
+    balance = config.model.moe.balance
+    moes_with_seq_balance = list(iter_moe_blocks(model)) if balance.seq_aux_coeff > 0 else []
+    for moe in moes_with_seq_balance:
+        moe.keep_routing = True
+    bias_freeze_step = config.max_steps - round(balance.bias_freeze * config.max_steps)
     # Per-row balance of every MoE layer and micro-batch of the current step, for the metrics.
     step_seq_balances: list[torch.Tensor] = []
 
@@ -232,9 +235,9 @@ def train(config: PretrainConfig):
             # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
             num_rows = config.data.micro_batch_size
             for moe in moes_with_seq_balance:
-                balance = sequence_balance(*moe.routing, num_rows)
-                aux_loss_sum += moe.seq_aux_loss_coeff * balance.sum() * (input_ids.shape[1] // num_rows)
-                step_seq_balances.append(balance.detach().mean())
+                row_balance = sequence_balance(*moe.routing, num_rows)
+                aux_loss_sum += balance.seq_aux_coeff * row_balance.sum() * (input_ids.shape[1] // num_rows)
+                step_seq_balances.append(row_balance.detach().mean())
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     @torch.no_grad()
@@ -285,9 +288,11 @@ def train(config: PretrainConfig):
             if step_seq_balances:
                 expert_load_stats["expert_load/seq_balance"] = torch.stack(step_seq_balances).mean().item()
                 step_seq_balances.clear()
-            if progress.step <= bias_freeze_step:
-                update_selection_biases(model, result.tokens_per_expert)
-            biases = [moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.load_balance_coeff is not None]
+            if balance.bias_update_rate > 0 and progress.step <= bias_freeze_step:
+                update_selection_biases(model, result.tokens_per_expert, balance.bias_update_rate)
+            biases = [
+                moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.router.selection_bias is not None
+            ]
             if biases:
                 expert_load_stats["expert_load/selection_bias_absmax"] = torch.stack(biases).abs().max().item()
 

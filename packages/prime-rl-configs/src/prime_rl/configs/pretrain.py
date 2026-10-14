@@ -9,6 +9,7 @@ from prime_rl.configs.sft import TrainRunConfig
 from prime_rl.configs.trainer import (
     CheckpointConfig,
     ModelConfig,
+    MoERuntimeConfig,
     MuonConfig,
     OptimizerConfig,
     TokenizerConfig,
@@ -40,12 +41,35 @@ class InitConfig(BaseConfig):
     """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
 
 
+class MoEBalanceConfig(BaseConfig):
+    """MoE load balancing as in DeepSeek-V3: an aux-loss-free selection bias plus a small sequence-wise balance
+    loss."""
+
+    bias_update_rate: float = Field(3e-3, ge=0)
+    """Step size of the selection-bias update (gamma): every step, each layer's bias moves by this towards
+    underloaded experts, mean-centred. 0 turns the update off."""
+
+    bias_freeze: float = Field(0.1, ge=0, lt=1)
+    """Fraction of ``max_steps`` at the end of training during which the biases stop updating, as DeepSeek-V3,
+    GLM-4.5 and Moonlight do in their final stage."""
+
+    seq_aux_coeff: float = Field(1e-3, ge=0)
+    """Weight of the sequence-wise balance loss (alpha), computed per packed row. 0 turns it off."""
+
+
+class PretrainMoEConfig(MoERuntimeConfig):
+    balance: MoEBalanceConfig = MoEBalanceConfig()
+    """Load balancing of the routed experts."""
+
+
 class PretrainModelConfig(ModelConfig):
     arch: dict[str, Any]
     """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/model``, which ``name`` points at."""
 
     init: InitConfig = InitConfig()
     """Random weight initialization. Used unless the run resumes from a checkpoint."""
+
+    moe: PretrainMoEConfig = PretrainMoEConfig()
 
     @model_validator(mode="after")
     def validate_arch(self):
@@ -211,10 +235,6 @@ class PretrainConfig(TrainRunConfig):
 
     max_steps: int = Field(ge=1)
     """Training steps."""
-
-    moe_bias_freeze: float = Field(0.1, ge=0, lt=1)
-    """Fraction of ``max_steps`` at the end of training during which the MoE selection biases stop updating, as
-    DeepSeek-V3, GLM-4.5 and Moonlight do in their final stage."""
 
     def default_run_name(self) -> str:
         """``<model_type>--<short-id>``."""
