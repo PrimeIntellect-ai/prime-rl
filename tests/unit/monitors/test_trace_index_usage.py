@@ -184,6 +184,26 @@ def test_a_reader_summarising_the_stream_counts_a_kept_trace_once(tmp_path, monk
     assert alone["reused"] == [] and alone["models"]["big"]["calls"] == 2
 
 
+def test_the_index_and_a_reader_agree_once_a_refs_pointer_moved_on(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(server, "SIDECAR_DIR", tmp_path / "sidecars")
+    draft = _labelled("solver/0", _call("big", 100, 10, cost=0.5))
+    monitor = FileMonitor(FileMonitorConfig(compress=False))
+    asyncio.run(monitor.init(tmp_path))
+    _land(monitor, draft, ok=False)
+    # a later trace of the same call lands, so the ref no longer points at the draft
+    redo = _labelled("solver/0", _call("big", 100, 10, cost=0.5))
+    redo.timing.boot.start = 10.0
+    _land(monitor, redo, ok=False)
+    # an episode that still carries the draft lands it again
+    _land(monitor, draft)
+    asyncio.run(monitor.finalize())
+
+    rows = _index(tmp_path)
+    summaries = server.chunked_summaries(get_trace_stream(tmp_path))
+    assert [row["reused"] for row in rows] == [summary["reused"] for summary in summaries] == [[], [], [draft.id]]
+    assert _spend(rows) == _spend(summaries) == {"calls": 2, "completion_tokens": 20, "cost": 1.0}
+
+
 def test_row_labels_leave_out_a_durable_calls_own_labels() -> None:
     job = {"flow": {"job": "j1", "stage": "solve"}}
     call = {"key": "agent/0", "fingerprint": "f", "ref": call_ref(job, "agent/0")}

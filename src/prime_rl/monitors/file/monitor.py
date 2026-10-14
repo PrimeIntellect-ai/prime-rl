@@ -26,7 +26,7 @@ from prime_rl.monitors.file.traces.live import (
     read_live,
     trim_torn_line,
 )
-from prime_rl.monitors.file.traces.refs import State, point, read_ref, trace_labels, trace_recency
+from prime_rl.monitors.file.traces.refs import State, point, trace_labels, trace_recency
 from prime_rl.monitors.file.traces.update import update_index_row
 from prime_rl.utils.pathing import get_eval_plan_path, get_file_monitor_dir
 from prime_rl.utils.utils import sanitize
@@ -80,9 +80,24 @@ class FileMonitor(Monitor):
     async def init(self, output_dir: Path, producer: str | None = None) -> None:
         self.output_dir = output_dir
         self.producer = producer
+        # a relaunch appends to the stream it finds, so the numbering carries on, and so
+        # does the set of traces it landed
+        self._logged = 0
+        self._landed: set[str] = set()
+        """The ids of the traces the stream's episodes landed that can land again (a
+        durable call's, carrying a ref; the index rows of a relaunch's stream list them
+        all): a reused trace's usage counts with the episode that landed it first, as
+        the dashboard's summaries count it."""
         index = get_index_path(get_trace_stream(output_dir))
-        # a relaunch appends to the stream it finds, so the numbering carries on
-        self._logged = sum(1 for _ in index.open("rb")) if index.is_file() else 0
+        if index.is_file():
+            with index.open("rb") as f:
+                for line in f:
+                    self._logged += 1
+                    try:
+                        row = orjson.loads(line)
+                    except orjson.JSONDecodeError:
+                        continue  # torn by a crash mid-append
+                    self._landed.update(row.get("trace_ids") or [])
         self._refs_dir = get_refs_dir(output_dir)
         self.path = get_file_monitor_dir(output_dir) / self.config.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,16 +261,6 @@ class FileMonitor(Monitor):
             for ref in held.refs:
                 point(self._refs_dir, ref, trace_id, state, held.recency, dispatch=held.dispatch, **where)
 
-    def _landed_before(self, trace: dict[str, Any]) -> bool:
-        """Whether a trace landed with an earlier episode (a durable call reused it): a
-        ref of its points at it as finished."""
-        return any(
-            (held := read_ref(self._refs_dir, ref)) is not None
-            and held["trace"] == trace.get("id")
-            and held.get("state") == "finished"
-            for ref in refs_of(trace_labels(trace))
-        )
-
     def _stream(self, directory: Path) -> tuple[ChunkedJsonl, BinaryIO]:
         """A stream and its index, opened on first use and kept open. Writers flush the
         stream before the index: a row a reader sees points at a record it can read."""
@@ -280,20 +285,19 @@ class FileMonitor(Monitor):
             # that outgrows memory long before the run does.
             # a durable call can land a trace again; its usage counts with the episode
             # that landed it first (``index_row``'s ``landed``)
-            landed: set[str] = set()
             moves: list[tuple[str, LiveRefs, dict[str, Any]]] = []
             for episode in episodes:
                 record = episode.to_record(float_decimals=self.config.float_decimals)
                 chunk, offset = stream.append(orjson.dumps(record, default=str, option=OPTS))
                 self._logged += 1
                 traces = [trace for trace in record.get("traces") or [] if trace.get("id")]
-                reused = {t["id"] for t in traces if t["id"] in landed or self._landed_before(t)}
-                row = index_row(self._logged, record, chunk, offset, reused)
+                row = index_row(self._logged, record, chunk, offset, self._landed)
                 index.write(orjson.dumps(row, default=str, option=OPTS))
                 for trace in traces:
                     held = LiveRefs.of({}, trace)
                     if held.refs:
-                        landed.add(trace["id"])
+                        # only a durable call's trace can land again: an RL run adds nothing
+                        self._landed.add(trace["id"])
                         where = {"episode": record.get("id"), "chunk": chunk, "offset": offset}
                         moves.append((trace["id"], held, where))
             stream.flush()
