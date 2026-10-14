@@ -8,6 +8,7 @@ from pydantic import Field, field_validator, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -620,6 +621,10 @@ class TrainerConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: ControlConfig | None = None
+    """Serve the run control API on the master rank (pause the run after the next
+    step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
