@@ -185,7 +185,9 @@ class NIXLWeightUpdateWorker(Worker):
                         table,
                         device=self.device,
                         recorder=recorder,
-                        hf_config=self.model_runner.model_config.hf_text_config,
+                        # The trainer builds its model, and so its tensor names, from the full config;
+                        # for a VLM checkpoint the text sub-config selects the wrong layer prefix.
+                        hf_config=self.model_runner.model_config.hf_config,
                     )
                 )
 

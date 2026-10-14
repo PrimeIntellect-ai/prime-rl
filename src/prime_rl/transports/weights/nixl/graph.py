@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import torch
+from torch.utils._pytree import tree_leaves
 
 from prime_rl.transports.weights.nixl.trainer_tensor_table import TrainerTensorTable
 
@@ -301,7 +302,8 @@ class LazyWeight(torch.Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
-        for value in (*args, *kwargs.values()):
+        # Flattened, so lazy values inside lists (e.g. torch.cat's tensors) raise instead of re-dispatching forever.
+        for value in tree_leaves((args, kwargs)):
             if isinstance(value, cls):
                 raise UnsupportedOpError(
                     f"unsupported operation {func} on {value._source_name!r}, recorded chain={value._ops!r}"
