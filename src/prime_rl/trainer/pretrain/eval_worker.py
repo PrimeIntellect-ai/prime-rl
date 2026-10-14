@@ -35,8 +35,12 @@ from prime_rl.utils.utils import clean_exit
 
 
 def run_config(config: EvalWorkerConfig) -> PretrainConfig:
-    """The training run's resolved config, with the parallelism of the worker: plain FSDP over its GPUs."""
-    run = PretrainConfig.model_validate_json((config.run_dir / "configs/latest/resolved/pretrain.json").read_text())
+    """The training run's resolved config (waiting for the launcher to write it), with the parallelism of the
+    worker: plain FSDP over its GPUs."""
+    path = config.run_dir / "configs/latest/resolved/pretrain.json"
+    while not path.exists():
+        time.sleep(config.poll_seconds)
+    run = PretrainConfig.model_validate_json(path.read_text())
     run.model.compile = None  # packed rows of varying length would recompile at every forward
     run.model.ep = 1
     run.model.cp = 1
