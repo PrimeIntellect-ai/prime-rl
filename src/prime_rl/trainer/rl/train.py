@@ -14,6 +14,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
+from prime_rl.trainer.models.fp8_rounding import set_fp8_rounding_step
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -252,6 +253,7 @@ def train(config: TrainerConfig):
     start_step = progress.step
     max_peak_memory = 0.0
     while True:
+        set_fp8_rounding_step(model, progress.step)
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:

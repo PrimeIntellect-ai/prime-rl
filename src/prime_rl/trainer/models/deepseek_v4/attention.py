@@ -132,8 +132,14 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
+    dsv4_compressed_kv_fake_quant,
+    dsv4_swa_kv_fake_quant,
+)
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.fp8_qat import FP8QATLinear
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear as DeepseekV4GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -153,30 +159,6 @@ def _kernel_blocker(num_heads: int, head_dim: int) -> str | None:
     # CSA gives every query head the same single KV head, so the kernel's `kv_group` is 1. The
     # shape constraints themselves are stated once, next to the kernels they come from.
     return sparse_attn_shape_error(num_heads, 1, head_dim)
-
-
-class DeepseekV4GroupedLinear(nn.Linear):
-    """Block-diagonal grouped linear, the first half of the output projection.
-
-    The stacked attention output is `num_attention_heads * head_dim` wide, so a direct
-    projection to `hidden_size` would dominate the per-token cost. Instead the heads are split
-    into `n_groups` groups, each projected independently to `out_features / n_groups` channels;
-    a single follow-up linear (`o_b_proj`) mixes the concatenation back to `hidden_size`.
-
-    Input is `(..., n_groups, in_features_per_group)`, output `(..., n_groups, out_features / n_groups)`.
-    """
-
-    def __init__(self, in_features_per_group: int, out_features: int, n_groups: int, bias: bool = False):
-        super().__init__(in_features_per_group, out_features, bias=bias)
-        self.n_groups = n_groups
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_shape = x.shape[:-2]
-        hidden_dim = x.shape[-1]
-        w = self.weight.view(self.n_groups, -1, hidden_dim).transpose(1, 2)
-        x = x.reshape(-1, self.n_groups, hidden_dim).transpose(0, 1)
-        y = torch.bmm(x, w).transpose(0, 1)
-        return y.reshape(*input_shape, self.n_groups, -1)
 
 
 @dataclass(frozen=True)
@@ -515,6 +497,7 @@ class DeepseekV4Indexer(nn.Module):
         self.head_dim = config.index_head_dim
         self.num_heads = config.index_n_heads
         self.index_topk = config.index_topk
+        self.quantization_eps = 1e-4 if config.fp8_qat else 1e-10
         self.compressor = DeepseekV4Compressor(
             config,
             self.head_dim,
@@ -549,7 +532,9 @@ class DeepseekV4Indexer(nn.Module):
         entry_stop = (entry_start + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
         # fp8_indexer has no batch axis
-        top_k_indices = fp8_indexer(q[0], compressed_kv[0], w[0], entry_start, entry_stop, self.index_topk).unsqueeze(0)
+        top_k_indices = fp8_indexer(
+            q[0], compressed_kv[0], w[0], entry_start, entry_stop, self.index_topk, amax_floor=self.quantization_eps
+        ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
         in_range = top_k_indices < n_entries
@@ -728,6 +713,8 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
+        if self.config.kv_precision == "fp8":
+            kv = dsv4_swa_kv_fake_quant(kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
             kv = torch.ops._c10d_functional.all_gather_into_tensor(
@@ -754,6 +741,8 @@ class DeepseekV4Attention(nn.Module):
             else None
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
+        if self.config.kv_precision == "fp8" and compressed_kv is not None:
+            compressed_kv = dsv4_compressed_kv_fake_quant(compressed_kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)
@@ -773,10 +762,11 @@ class DeepseekV4Attention(nn.Module):
 
         # The value stream is the key stream, so it arrived rotated. Rotating the output
         # by the conjugate angle at the query position cancels that out.
-        attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
-
-        # (b, t, g, h * d // g) -> (b, t, g, l) -> (b, t, g * l)
-        grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
+        if isinstance(self.o_a_proj, FP8QATLinear):
+            grouped = self.o_a_proj(attn_output, cos_sin_cache, packed.position_ids).flatten(2)
+        else:
+            attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
+            grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
         return self.o_b_proj(grouped), None  # (b, t, hidden_size)
 
     def init_weights(self, init_std: float) -> None:

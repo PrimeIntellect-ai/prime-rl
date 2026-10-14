@@ -3,7 +3,7 @@ import torch.distributed as dist
 from dion import Muon
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.optim import AdamW, Optimizer
+from torch.optim import SGD, AdamW, Optimizer
 
 from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
@@ -130,6 +130,13 @@ def _create_optimizer(
                 params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
+            )
+        case "sgd":
+            return SGD(
+                params=trainable_params,
+                lr=lr,
+                weight_decay=config.weight_decay,
+                foreach=False,
             )
 
 

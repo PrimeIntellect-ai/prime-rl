@@ -145,6 +145,8 @@ class DeepseekV4Config(PretrainedConfig):
         attention_bias: bool = False,
         mlp_bias: bool = False,
         attention_dropout: float = 0.0,
+        kv_precision: str = "bf16",
+        fp8_qat: bool = False,
         output_router_logits: bool = False,
         router_aux_loss_coef: float = 0.001,
         router_jitter_noise: float = 0.0,
@@ -178,6 +180,8 @@ class DeepseekV4Config(PretrainedConfig):
         self.o_lora_rank = o_lora_rank
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.kv_precision = kv_precision
+        self.fp8_qat = fp8_qat
         self.index_n_heads = index_n_heads
         self.index_head_dim = index_head_dim
         self.index_topk = index_topk

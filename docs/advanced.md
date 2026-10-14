@@ -48,6 +48,12 @@ Dense linear precision and routed-expert precision are configured independently.
 - `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
+DeepGEMM dense and expert FP8 compute each accept `stochastic_rounding = true` in their respective config tables. The default is round-to-nearest. SR rounds weights to neighboring E4M3 values with probabilities proportional to their distance; activation and gradient casts retain round-to-nearest. Backward input gradients reuse the exact forward weight realization, transposed for the GEMM.
+
+`model.fp8_rounding_seed` (default `0`) controls a deterministic stream keyed by parameter identity, global weight coordinates, and optimizer step. FSDP replicas, context-parallel replicas, expert shards, tied weights, and activation-checkpoint recomputation agree on the same logical weight. All accumulation microsteps share one realization; the next optimizer step refreshes it. Resuming the same step and seed reproduces its mask without extra checkpoint state. This option affects trainer compute; it does not configure inference quantization or weight transport.
+
+For SFT, compose `@ configs/experiments/fp8-sr/sr.toml` after an FP8 base config. In RL, set the same options under `[trainer.model.quantization]` and `[trainer.model.moe.compute]` instead of `[model.*]`.
+
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
 
 ```toml
