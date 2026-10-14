@@ -3,7 +3,7 @@ import warnings
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BeforeValidator, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
@@ -42,41 +42,13 @@ class ActivationCheckpointConfig(BaseConfig):
 
 
 class ActivationOffloadingConfig(BaseConfig):
-    pin_memory: bool = True
-    """Pin offloaded activations to CPU memory."""
+    """Offload tensors saved for backward to pinned CPU memory during the forward pass."""
 
     max_inflight_activations: int = Field(5, ge=1)
-    """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+    """Max activations kept on GPU while their offload copies are in flight on the side stream. Higher values give more copy/compute overlap at the cost of GPU memory."""
 
 
-class OptimizerInBackwardOffloadConfig(BaseConfig):
-    """Full CPU optimizer offload: FP32 masters, optimizer state (AdamW moments; SignSGD is
-    stateless), and accumulated gradients live in CPU RAM, each optimizer chunk runs on CPU as
-    soon as its last gradient arrives, and the refreshed BF16 weights stream back while backward
-    is still executing.
-
-    Gradient numerics: gradients are reduced across ranks in FP32 (``reduce_dtype``) but FSDP2
-    materializes them in the sharded parameter's dtype, which is BF16 for the offload compute
-    model — so each gradient is rounded to BF16 once before the FP32 CPU update. Masters,
-    moments, accumulation, and optimizer arithmetic remain FP32. For gradient numerics
-    bit-faithful to that path, disable offloading.
-    """
-
-    numa_bind: bool = True
-    """Pin each rank's CPUs to its GPU's NUMA node. Disable when the launcher already manages CPU affinity or GPU sysfs topology is unavailable."""
-
-
-def _normalize_optimizer_in_backward_offload(value: Any) -> Any:
-    if value is True:
-        return {}
-    if value is False:
-        return None
-    return value
-
-
-OptimizerInBackwardOffload = Annotated[
-    OptimizerInBackwardOffloadConfig | None, BeforeValidator(_normalize_optimizer_in_backward_offload)
-]
+OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 
 class CompileConfig(BaseConfig):
@@ -93,14 +65,6 @@ class FusionsConfig(BaseConfig):
 
     shard_fused_on_dim1: bool = False
     """Experimental. Shard fused 2-D weights along dim 1 under FSDP so that weight loading and checkpointing are zero-copy: the checkpoint reads and writes the fused weights and their optimizer state in place, instead of assembling a full copy of every fused weight on each rank first. Requires the hidden size to be divisible by the FSDP shard mesh size."""
-
-
-class IndexCacheConfig(BaseConfig):
-    topk_freq: int = Field(1, ge=1)
-    """Recompute DSA top-k indices every N layers; intervening layers reuse the cached indices. ``1`` recomputes every layer (effectively no reuse). Mirrors vLLM's ``index_topk_freq`` HF override."""
-
-    topk_pattern: str | None = None
-    """Optional per-layer schedule that overrides ``topk_freq``. ``'F'`` computes fresh indices for that layer; ``'S'`` reuses the previously cached indices. Length should match the number of decoder layers."""
 
 
 class LoRAConfig(BaseConfig):
@@ -288,14 +252,8 @@ class ModelConfig(BaseModelConfig):
     ac_offloading: ActivationOffloadingConfig | None = ActivationOffloadingConfig()
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
-    fsdp_cpu_offload: bool = False
-    """Enable FSDP CPU offloading for parameters, gradients, and optimizer states. Uses pinned memory for efficient CPU↔GPU transfers."""
-
-    optim_cpu_offload: bool = True
-    """Offload only optimizer states (momentum, variance) to CPU, keeping weights on GPU. Avoids the H2D all-gather overhead of FSDP CPU offload while still saving GPU memory."""
-
-    full_offload: OptimizerInBackwardOffload = None
-    """Full CPU optimizer offload: FP32 masters, moments, and gradients live in CPU RAM and the optimizer runs on CPU, overlapped with backward. Enable with ``true`` or a ``[model.full_offload]`` section; disabled by default."""
+    offload: OffloadMode = "optimizer"
+    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -324,13 +282,13 @@ class ModelConfig(BaseModelConfig):
     moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
     """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
 
+    reduce_scatter_max_input_buffers: int = Field(1, ge=1)
+    """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
+
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "tilelang"
-    """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
-
-    index_cache: IndexCacheConfig | None = None
-    """DSA IndexCache sub-configuration. If set, sparse-attention top-k indices are reused across decoder layers per the configured schedule (mirrors vLLM's IndexCache HF overrides). If None, every layer recomputes its own indices."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
@@ -358,20 +316,9 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def ac_offloading_requires_ac(self):
-        """Automatically enable activation checkpointing when activation offloading is enabled."""
-        if self.ac_offloading is not None and self.ac is None:
-            self.ac = ActivationCheckpointConfig()
-        return self
-
-    @model_validator(mode="after")
-    def cpu_offload_mutual_exclusion(self):
-        if self.fsdp_cpu_offload and (self.optim_cpu_offload or self.full_offload):
-            raise ValueError("Cannot combine fsdp_cpu_offload with optimizer CPU offloading.")
-        if self.optim_cpu_offload and self.full_offload:
-            raise ValueError(
-                "Cannot enable both optim_cpu_offload and full_offload. "
-                "Set optim_cpu_offload=false when enabling full optimizer offload."
-            )
+        """Activation offloading requires activation checkpointing, so ``ac = None`` disables both."""
+        if self.ac is None:
+            self.ac_offloading = None
         return self
 
     @model_validator(mode="after")
@@ -612,7 +559,7 @@ class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
-    num_workers: int = Field(0, ge=0)
+    num_workers: int = Field(1, ge=0)
     """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
 
 
@@ -668,8 +615,8 @@ class TrainerConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 3600
-    """Timeout in seconds for torch distributed ops."""
+    dist_timeout_seconds: int = 900
+    """Timeout in seconds for torch distributed ops: a hung collective (e.g. a dead rank) fails the run after this long."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -711,13 +658,13 @@ class TrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def full_optimizer_offload_requires_supported_optimizer(self):
-        if self.model.full_offload and self.optim.type not in ("adamw", "sign_sgd"):
+        if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
             raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
         return self
 
     @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
-        if self.model.full_offload and self.optim.max_norm is not None:
+        if self.model.offload == "full" and self.optim.max_norm is not None:
             warnings.warn(
                 "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
                 "Automatically setting optim.max_norm to None (disabled).",
@@ -749,12 +696,6 @@ class TrainerConfig(BaseConfig):
     @model_validator(mode="after")
     def validate_scheduler_steps(self):
         validate_scheduler(self.scheduler, self.max_steps)
-        return self
-
-    @model_validator(mode="after")
-    def validate_opt_and_fsdp_offload(self):
-        if self.optim.type == "muon" and self.model.fsdp_cpu_offload:
-            raise ValueError("Muon optimizer does not support FSDP CPU offload")
         return self
 
     @model_validator(mode="after")

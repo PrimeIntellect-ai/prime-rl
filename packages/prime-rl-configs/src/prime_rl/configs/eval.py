@@ -14,7 +14,7 @@ from prime_rl.configs.shared import (
     VLLMClientConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.utils.config import default_output_dir
+from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
 class ServedEvalConfig(EvalSourcesConfig):
@@ -28,10 +28,11 @@ class ServedEvalConfig(EvalSourcesConfig):
     """Adaptive in-flight episode concurrency, sized by the same controller as
     ``[orchestrator.concurrency]``. Set ``min_inflight = max_inflight`` to pin it."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on episode dispatch, in tasks per minute. Use it for
-    sandbox-backed environments to pace provisioning during autoscaling. None disables
-    rate limiting."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch: at most this many episodes start per minute. Each
+    episode counts once, so a group of ``group_size`` episodes counts ``group_size``
+    times. Use it for sandbox-backed environments to pace provisioning during
+    autoscaling. None disables it."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat for the run: pinged by landed episodes — the first
@@ -48,6 +49,11 @@ class ServedEvalConfig(EvalSourcesConfig):
         is an externally managed server; None means the launcher spawns the server and the
         eval learns its address from the file it publishes."""
         return {("eval", source.resolved_name): source.serve.address for source in self.source}
+
+
+class EvalResumeConfig(BaseConfig):
+    skip_checks: bool = False
+    """Reuse saved episodes even when resolved configs differ or snapshots are missing."""
 
 
 class EvalConfig(ServedEvalConfig):
@@ -91,7 +97,7 @@ class EvalConfig(ServedEvalConfig):
     dashboard: bool = True
     """Start (or reuse) the local dashboard daemon and print its URL."""
 
-    resume: bool = False
+    resume: EvalResumeConfig | None = None
     """Continue the interrupted run named by ``run.name`` from its trace stream: the
     landed episodes rejoin the epoch and only the rollouts still owed run."""
 
