@@ -138,6 +138,8 @@ class FP8Config(BaseConfig):
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
+    qat: bool = False
+    """Use MXFP8 forward and BF16 backward, reusing forward-rounded weights for input gradients."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 recipe for dense linear modules."""
 
@@ -197,6 +199,8 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
 
     type: Literal["mxfp8"] = "mxfp8"
+    qat: bool = False
+    """Use MXFP8 expert forward and BF16 backward, reusing forward-rounded weights for input gradients."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
     """MXFP8 expert-compute recipe."""
 

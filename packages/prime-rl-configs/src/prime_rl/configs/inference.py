@@ -30,7 +30,7 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-QuantizationType = Literal["fp8_per_block"]
+QuantizationType = Literal["fp8_per_block", "mxfp8"]
 
 
 class VllmConfig(BaseConfig):

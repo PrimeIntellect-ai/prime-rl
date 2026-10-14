@@ -53,6 +53,10 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             return FP8QATExpertCompute(compute.stochastic_rounding)
         return DeepGemmFP8ExpertCompute(stochastic_rounding=compute.stochastic_rounding)
     if isinstance(compute, MXFP8MoEComputeConfig):
+        if compute.qat:
+            from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATExpertCompute
+
+            return MXFP8QATExpertCompute()
         import prime_kernels
 
         kernel = prime_kernels.load("mxfp8_moe")
