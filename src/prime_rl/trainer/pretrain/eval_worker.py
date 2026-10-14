@@ -10,6 +10,7 @@ each round loads only the weights. Rows of every set are scored data-parallel ov
 
 import asyncio
 import json
+import os
 import time
 from datetime import timedelta
 
@@ -24,7 +25,12 @@ from prime_rl.configs.pretrain import EvalWorkerConfig, PretrainConfig
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model
 from prime_rl.trainer.parallel_dims import get_parallel_dims
-from prime_rl.trainer.pretrain.snapshots import delete_snapshots_up_to, finished_snapshot_steps, snapshot_dir
+from prime_rl.trainer.pretrain.snapshots import (
+    delete_snapshots_up_to,
+    finished_snapshot_steps,
+    shared_wandb_env,
+    snapshot_dir,
+)
 from prime_rl.trainer.pretrain.suite import prepare_set, score_requests, summarize, use_scoring_head
 from prime_rl.trainer.utils import get_dcp_group, setup_torch_distributed
 from prime_rl.trainer.world import get_world
@@ -62,6 +68,7 @@ def main_loop(config: EvalWorkerConfig) -> None:
     setup_torch_distributed(timeout=timedelta(seconds=run.dist_timeout_seconds))
     torch.set_float32_matmul_precision(run.matmul_precision)
 
+    os.environ.update(shared_wandb_env(config.run_dir, "eval"))
     asyncio.run(
         monitors.setup(
             producer="eval",

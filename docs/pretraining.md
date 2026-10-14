@@ -138,7 +138,7 @@ torchrun --nproc-per-node 8 -m prime_rl.trainer.pretrain.eval_worker \
   --run-dir <output_dir>/<run> --data-dir ~/evals-data --sets fwedu-holdout lambada math
 ```
 
-To log into the same W&B run as the trainer, start both in W&B shared mode with the same run id: `WANDB_SHARED_MODE=1 WANDB_RUN_ID=<id> WANDB_SHARED_PRIMARY=trainer WANDB_SHARED_FINISHER=eval` for both, plus `WANDB_SHARED_LABEL=trainer` for the trainer and `WANDB_SHARED_LABEL=eval` for the worker.
+The trainer and the worker log into one W&B run (W&B shared mode): the launcher writes the run id to `<run_dir>/wandb_run_id`, and both processes read it.
 
 ## Multi-node
 

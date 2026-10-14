@@ -9,8 +9,21 @@ from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.pathing import get_wandb_run_id_path
 
 FINISHED_MARKER = ".finished"
+
+
+def shared_wandb_env(run_dir: Path, label: str) -> dict[str, str]:
+    """W&B shared-mode settings that put the trainer (``label = "trainer"``, creates the run) and the eval worker
+    (``"eval"``, finishes it) into one W&B run, whose id the launcher writes to ``<run_dir>/wandb_run_id``."""
+    return {
+        "WANDB_SHARED_MODE": "1",
+        "WANDB_RUN_ID": get_wandb_run_id_path(run_dir).read_text().strip(),
+        "WANDB_SHARED_LABEL": label,
+        "WANDB_SHARED_PRIMARY": "trainer",
+        "WANDB_SHARED_FINISHER": "eval",
+    }
 
 
 def snapshot_dir(run_dir: Path) -> Path:

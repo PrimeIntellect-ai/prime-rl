@@ -11,6 +11,7 @@ from prime_rl.utils.pathing import (
     format_config_message,
     format_log_message,
     get_launcher_dir,
+    get_wandb_run_id_path,
     prepare_attempt_dirs,
     validate_run_dir,
     write_launch_artifacts,
@@ -91,6 +92,9 @@ def pretrain(config: PretrainConfig):
 
     if not config.dry_run:
         write_model_dir(config)
+    if config.eval_snapshots is not None and not get_wandb_run_id_path(config.run_dir).exists():
+        # The trainer and the eval worker (a separate job) log into one W&B run; a resumed run keeps its id.
+        get_wandb_run_id_path(config.run_dir).write_text(os.environ["PRL_RUN_ID"])
 
     config_path = config_dir / PRETRAIN_CONFIG
     exclude = {"dry_run", "clean"}

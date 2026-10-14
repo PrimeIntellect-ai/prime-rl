@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 import asyncio
+import os
 import math
 import time
 from datetime import timedelta
@@ -44,7 +45,7 @@ from prime_rl.trainer.pretrain.data import (
 )
 from prime_rl.trainer.pretrain.schedules import LRSchedule
 from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
-from prime_rl.trainer.pretrain.snapshots import SnapshotWriter
+from prime_rl.trainer.pretrain.snapshots import SnapshotWriter, shared_wandb_env
 from prime_rl.trainer.step import run_micro_batches
 from prime_rl.trainer.metrics import DeadExperts, SpikeDetector, grad_norms_by_group
 from prime_rl.trainer.utils import (
@@ -80,6 +81,8 @@ def train(config: PretrainConfig):
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
     logger.info(f"Starting pretrain trainer in {world} (output_dir={config.run_dir})")
 
+    if config.eval_snapshots is not None:
+        os.environ.update(shared_wandb_env(config.run_dir, "trainer"))
     asyncio.run(
         monitors.setup(
             producer="trainer",
