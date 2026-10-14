@@ -205,20 +205,15 @@ class EvalEnv(Env):
 
     def open_feed(self) -> None:
         """Pull a bounded taskset's tasks once, reused every epoch, or start streaming an
-        infinite one. A streamed task runs once (``group_size`` 1): its taskset hears one
-        ``observe``, ``on_failed`` or ``on_cancelled`` per task (``vf.Taskset.observe``),
-        and to run a task several times it yields it several times."""
+        infinite one. A streamed task runs as a group of ``group_size`` rollouts, like a
+        bounded one: its taskset hears one ``observe``, ``on_failed`` or ``on_cancelled``
+        per rollout, and a ``cancel`` stops every rollout of the task not yet landed."""
         if self.num_tasks is not None:
             self.examples = list(self.tasks)
             return
         # before the feed starts pulling the taskset
         if not self.streams:
             raise ValueError(f"Eval env {self.name} has an infinite taskset - set select.limit to bound it")
-        if self.config.group_size != 1:
-            raise ValueError(
-                f"Eval env {self.name} streams an infinite taskset, which runs each task once - "
-                f"group_size must be 1, not {self.config.group_size}"
-            )
         self.feed = TaskFeed(self.tasks, name=self.name)
 
 

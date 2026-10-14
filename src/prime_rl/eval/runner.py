@@ -11,20 +11,20 @@ Env servers belong to the launcher (``eval``, ``sft``), like the orchestrator's 
 ``rl``: a source without an explicit ``serve.address`` is found through the address file
 its server publishes; one with an address is reached directly.
 
-Every task the dispatcher runs reports back to its env's taskset exactly once, from
-``run_epoch`` on the event loop as the dispatcher's result arrives: ``observe(task,
-episode)`` with the final episode (after the env's own retries and ``finalize``), or
-``on_failed(task, error)`` when the request produced no episode (the env server died,
-the request raised). A streaming taskset runs one rollout per task (``group_size`` 1,
-``EvalEnv.open_feed``), so its feedback is per task, as the ``Taskset`` hooks promise;
-a bounded taskset hears once per rollout. A streaming taskset may also ``cancel(key)``
-a task it handed out: the runner polls ``cancelled()`` while the epoch runs, the
-dispatcher stops the task's rollout (aborting its env-server run), and reports it
-through ``on_cancelled(task)`` instead; one that landed first is observed as usual. An
-exception from any hook stops the run. Rollouts that never finish get none:
-those cancelled on shutdown or superseded by a newer checkpoint (an online eval). A
-relaunched streaming taskset re-yields its unfinished work. Episodes restored on
-``--resume`` were reported by the attempt that ran them."""
+Every task runs as a group of ``group_size`` rollouts, and every rollout the dispatcher
+runs reports back to its env's taskset exactly once, from ``run_epoch`` on the event loop
+as the dispatcher's result arrives: ``observe(task, episode)`` with the final episode
+(after the env's own retries and ``finalize``), or ``on_failed(task, error)`` when the
+request produced no episode (the env server died, the request raised). A streaming
+taskset may also ``cancel(key)`` a task it handed out: the runner polls ``cancelled()``
+while the epoch runs, and the dispatcher stops every rollout of the task that has not
+landed (aborting the env-server runs in flight, dropping the ones not yet started), each
+reported through ``on_cancelled(task)`` instead; rollouts that landed first, even ones of
+the same group, are observed as usual. An exception from any hook stops the run.
+Rollouts that never finish get none: those cancelled on shutdown or superseded by a
+newer checkpoint (an online eval). A relaunched streaming taskset re-yields its
+unfinished work. Episodes restored on ``--resume`` were reported by the attempt that ran
+them."""
 
 from __future__ import annotations
 
@@ -79,8 +79,9 @@ class EvalRunner:
         epoch loop: a dropped group's marker goes onto ``out_q``, which only that loop
         drains."""
         self.reported: set[tuple[str, str]] = set()
-        """Eval tasks ``(env, key)`` reported to their taskset since the last cancel
-        poll: a cancel asked before the report and polled after it is moot."""
+        """Eval tasks ``(env, key)`` with a rollout reported to their taskset since the
+        last cancel poll: a cancel asked before the report and polled after it is moot
+        once the task has no open group."""
 
         # Assigned in setup(); None-initialized so stop() can tear down a
         # partially completed setup with plain attribute checks.
@@ -293,8 +294,7 @@ class EvalRunner:
 
     def request_cancels(self) -> None:
         """Start the cancels the streaming tasksets asked for since the last poll, and
-        raise the error of one that failed. A taskset cancels only tasks not yet
-        reported to it, so a key reported since the last poll needs nothing."""
+        raise the error of one that failed (``cancel_task``)."""
         for task in [task for task in self.cancel_tasks if task.done()]:
             self.cancel_tasks.discard(task)
             task.result()
@@ -307,10 +307,12 @@ class EvalRunner:
 
     def cancel_task(self, env_name: str, key: str) -> None:
         """Stop eval task ``key`` of ``env_name``: its open group is dropped (in-flight
-        rollout aborted) off the epoch loop, or, with no group yet, the task is dropped
-        unrun when it comes off the source. Either way the unlanded rollout reaches the
-        taskset's ``on_cancelled``. An open group wins over a report since the last
-        poll: that report was of an earlier run of the same key."""
+        rollouts aborted, unscheduled ones never run) off the epoch loop, or, with no
+        group yet, the task is dropped unrun when it comes off the source. Either way each
+        unlanded rollout reaches the taskset's ``on_cancelled``. An open group wins over a
+        report since the last poll: that report was of a rollout that landed first (of the
+        same group, or of an earlier run of the key). With no group open, such a report
+        means every rollout of the task landed: nothing is left to stop."""
         taskset = type(self.eval_envs.get(env_name).taskset).__name__
         if self.dispatcher.eval_groups(env_name, key):
             get_logger().info(f"{taskset} cancelled task {key} in {env_name}")
@@ -319,7 +321,7 @@ class EvalRunner:
             )
             return
         if (env_name, key) in self.reported:
-            return  # it landed (or failed) before the cancel was polled: nothing left to stop
+            return  # its last rollout landed (or failed) before the cancel was polled
         get_logger().info(f"{taskset} cancelled task {key} in {env_name}")
         # not off the source yet: dropped unrun when it comes off
         self.dispatcher.requested_cancels.add((env_name, key))
