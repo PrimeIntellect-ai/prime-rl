@@ -59,7 +59,7 @@ end_ratio = 1.05
 
 | `type` | Shape |
 |---|---|
-| `wsd` (default) | Linear warmup, stable at 1, then a `linear`, `cosine` or `1-sqrt` decay over the last `decay` updates. Defaults: `warmup = 0.1`, `decay = 0.2`. |
+| `wsd` (default) | Linear warmup, stable at 1, then a `linear`, `cosine` or `1-sqrt` decay over the last `decay` updates. Defaults: `warmup = 0.1`, `decay = 0.9`, i.e. a linear decay to 0 over all updates after the warmup. |
 | `cosine` | Linear warmup, then cosine decay over all remaining updates. |
 | `constant` | 1 at every step. |
 | `custom` | `fn(step, total_steps=max_steps, **kwargs) -> float` imported from `import_path`, with `kwargs` from the config. |

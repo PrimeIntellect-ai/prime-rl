@@ -133,8 +133,9 @@ class WSDScheduleConfig(BaseConfig):
     warmup: StepsOrFraction = 0.1
     """Warmup updates, or a fraction of ``max_steps``."""
 
-    decay: StepsOrFraction = 0.2
-    """Decay updates at the end of the run, or a fraction of ``max_steps``."""
+    decay: StepsOrFraction = 0.9
+    """Decay updates at the end of the run, or a fraction of ``max_steps``. The default decays over all
+    updates after the default warmup."""
 
     start_ratio: float = Field(0.0, ge=0)
     """Multiplier of the first update."""
