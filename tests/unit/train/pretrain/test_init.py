@@ -115,7 +115,7 @@ def test_completep_moe_groups_cover_experts_and_scale_the_router():
     with torch.device("meta"):
         model = Glm4MoeForCausalLM._from_config(config)
     init = InitConfig(scheme="completep", base_hidden_size=256, base_num_layers=2)
-    groups = completep_param_groups(model, init, MuonConfig(lr=1.0), ep_enabled=False)
+    groups = completep_param_groups(model, init, MuonConfig(lr=1.0, weight_decay=0.1), ep_enabled=False)
     lr = {param: group["lr"] for group in groups for param in group["params"]}
     assert sum(len(group["params"]) for group in groups) == len(lr) == len(list(model.parameters()))
     moe = model.model.layers[1].mlp
