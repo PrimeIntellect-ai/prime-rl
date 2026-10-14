@@ -401,6 +401,7 @@ def train(config: SFTConfig):
     # online evals can finish.
     if config.max_steps is not None and progress.step > config.max_steps:
         logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        asyncio.run(monitors.finalize())
         return
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")

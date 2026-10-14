@@ -146,6 +146,7 @@ def train(config: TrainerConfig):
     # which would wait for an inference server the orchestrator never connects.
     if config.max_steps is not None and checkpoint_step is not None and checkpoint_step >= config.max_steps:
         logger.success(f"Resumed checkpoint step {checkpoint_step} already reached max_steps={config.max_steps}")
+        asyncio.run(monitors.finalize())
         return
 
     # Initialize the model

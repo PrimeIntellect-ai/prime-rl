@@ -76,18 +76,19 @@ trap on_term TERM
 # Run a short all-reduce over the GPUs of every node; the nodes that fail or do not
 # answer within the timeout go to BAD_NODES.
 smoke_test() {
-    local passed={{ launcher_dir }}/smoke_test_$SLURM_JOB_ID
-    : > "$passed"
-    SMOKE_TEST_PASSED=$passed timeout 300 srun --ntasks-per-node=1 bash -s <<'SMOKE_TEST_SH' || true
+    local passed
+    # Each passing node prints its name on stdout, so no node writes to a shared file
+    passed=$(timeout 300 srun --ntasks-per-node=1 bash -s <<'SMOKE_TEST_SH' || true
 log=/tmp/prl-smoke-test-$SLURM_JOB_ID.log
 if timeout 120 torchrun --standalone --nproc-per-node="$SLURM_GPUS_ON_NODE" -m prime_rl.utils.smoke_test > "$log" 2>&1; then
-    echo "$SLURMD_NODENAME" >> "$SMOKE_TEST_PASSED"
+    echo "$SLURMD_NODENAME"
 else
-    echo "[smoke test] failed on $SLURMD_NODENAME:"
-    tail -n 20 "$log"
+    echo "[smoke test] failed on $SLURMD_NODENAME:" >&2
+    tail -n 20 "$log" >&2
 fi
 SMOKE_TEST_SH
-    BAD_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | grep -vxFf "$passed" | paste -sd' ' || true)
+)
+    BAD_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | grep -vxFf <(echo "$passed") | paste -sd' ' || true)
     [ -z "$BAD_NODES" ]
 }
 {%- endif %}
@@ -142,6 +143,8 @@ launch() {
     if [ "$code" -ne 0 ]; then
         echo "Job failed with exit code $code"
 {%- if smoke_test %}
+        # Leftovers of the failed run must not fail the smoke test of a healthy node
+        ! declare -F node_cleanup > /dev/null || node_cleanup
         smoke_test || echo "Smoke test failed on: $BAD_NODES"
 {%- endif %}
         requeue failure $BAD_NODES
