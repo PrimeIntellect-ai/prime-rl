@@ -10,7 +10,7 @@ from prime_rl.configs.pretrain import ValSourceConfig
 from prime_rl.trainer.model import forward
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.pretrain.data import StreamPacker, load_eval_documents, tokenize_document
-from prime_rl.trainer.pretrain.evals.common import all_reduce_sum, local_rows, to_device
+from prime_rl.trainer.pretrain.evals.common import all_reduce_sum, local_batches
 from prime_rl.trainer.sft.data import Sample
 
 
@@ -39,15 +39,16 @@ def load_perplexity_set(source: ValSourceConfig, tokenizer: PreTrainedTokenizer,
 
 
 @torch.no_grad()
-def evaluate_perplexity(model: nn.Module, sets: list[PerplexitySet], byte_lengths: torch.Tensor) -> dict[str, float]:
-    """Loss (nats per token), perplexity and bits per byte for every set."""
+def evaluate_perplexity(
+    model: nn.Module, sets: list[PerplexitySet], byte_lengths: torch.Tensor, batch_size: int
+) -> dict[str, float]:
+    """Loss (nats per token), perplexity and bits per byte for every set, ``batch_size`` rows per forward."""
     byte_lengths = byte_lengths.to("cuda")
     metrics = {}
     for eval_set in sets:
         totals = torch.zeros(3, dtype=torch.float64, device="cuda")  # loss, tokens, bytes
-        for row in local_rows(eval_set.rows):
-            batch = to_device(row if row is not None else eval_set.rows[0])
-            loss_mask = batch["loss_mask"] if row is not None else torch.zeros_like(batch["loss_mask"])
+        for batch in local_batches(eval_set.rows, batch_size):
+            loss_mask = batch["loss_mask"]
             labels = batch["target_ids"].masked_fill(~loss_mask, IGNORE_INDEX)
             out = forward(model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], labels=labels)
             totals[0] += out["loss"].double()

@@ -1,13 +1,9 @@
-from typing import TypeVar
-
 import torch
 import torch.distributed as dist
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.sft.data import Sample
 from prime_rl.trainer.world import get_world
-
-T = TypeVar("T")
 
 
 def bytes_to_unicode() -> dict[int, str]:
@@ -41,16 +37,26 @@ def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> torch.Tensor:
     return lengths
 
 
-def local_rows(rows: list[T]) -> list[T | None]:
-    """This rank's share of ``rows``, padded with ``None`` so every rank runs the same number of
-    forward passes (each forward is an FSDP collective)."""
+BATCH_KEYS = ("input_ids", "position_ids", "target_ids", "loss_mask", "seq_lens")
+
+
+def local_batches(rows: list[Sample], batch_size: int) -> list[dict[str, torch.Tensor]]:
+    """This rank's share of ``rows``, ``batch_size`` rows per forward concatenated into one packed sample, like a
+    training micro-batch. Every rank runs the same number of forwards (each is an FSDP collective): a rank that
+    runs out of rows scores ``rows[0]`` with an empty loss mask."""
     world = get_world()
-    per_rank = -(-len(rows) // world.world_size)
-    mine: list[T | None] = list(rows[world.rank :: world.world_size])
-    return mine + [None] * (per_rank - len(mine))
+    mine = rows[world.rank :: world.world_size]
+    batches = []
+    for start in range(0, -(-len(rows) // world.world_size), batch_size):
+        chunk = mine[start : start + batch_size]
+        batch = to_device({key: [value for row in chunk or rows[:1] for value in row[key]] for key in BATCH_KEYS})
+        if not chunk:
+            batch["loss_mask"].zero_()
+        batches.append(batch)
+    return batches
 
 
-def to_device(row: Sample) -> dict[str, torch.Tensor]:
+def to_device(row: dict[str, list[int]]) -> dict[str, torch.Tensor]:
     return {
         "input_ids": torch.tensor(row["input_ids"], device="cuda").unsqueeze(0),
         "position_ids": torch.tensor(row["position_ids"], device="cuda").unsqueeze(0),

@@ -19,10 +19,7 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.model import (
     forward,
-    get_expert_load_stats,
     get_full_offload_dtype_policy,
-    get_global_moe_stats,
-    get_load_balance_stats,
     is_tt_moe_model,
     iter_moe_blocks,
     reshard_module,
@@ -36,6 +33,14 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.pretrain.completep import completep_param_groups
+from prime_rl.trainer.pretrain.metrics import (
+    DeadExperts,
+    SpikeDetector,
+    expert_load_metrics,
+    grad_norms_by_group,
+    reduce_stats,
+    take_routing_counts,
+)
 from prime_rl.trainer.pretrain.data import load_text_dataset, setup_text_dataloader, split_holdout
 from prime_rl.trainer.pretrain.evals.common import token_byte_lengths
 from prime_rl.trainer.pretrain.evals.perplexity import build_perplexity_set, evaluate_perplexity, load_perplexity_set
@@ -217,7 +222,6 @@ def train(config: PretrainConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-    ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     is_moe_model = is_tt_moe_model(model)
     moes_with_seq_balance = [moe for moe in iter_moe_blocks(model) if moe.seq_aux_loss_coeff is not None]
     bias_freeze_step = config.max_steps - round(config.moe_bias_freeze * config.max_steps) if config.max_steps else None
@@ -252,12 +256,12 @@ def train(config: PretrainConfig):
 
     def run_evals(step: int) -> None:
         """Perplexity evals on the weights after ``step`` optimizer updates."""
-        metrics = evaluate_perplexity(model, perplexity_sets, byte_lengths)
+        metrics = evaluate_perplexity(model, perplexity_sets, byte_lengths, config.data.micro_batch_size)
         # The no-grad eval forwards leave the [lm_head, norm] FSDP group unsharded, and their
         # routing must not count toward the next step's MoE statistics.
         reshard_module(model)
         if is_moe_model:
-            get_load_balance_stats(model)
+            take_routing_counts(model)
         logger.success(f"Evals | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
@@ -266,29 +270,18 @@ def train(config: PretrainConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3
+    num_dp_cp_ranks = dist.get_world_size(dp_cp_group)
+    dead_experts = DeadExperts()
+    loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
+    last_bias_moves = None
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     while True:
-        torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
         step_start_time = time.perf_counter()
 
-        step_loss_sum = torch.tensor(0.0, device="cuda")
-        nan_loss_count = torch.tensor(0, device="cuda")
-        moe_stats = (
-            {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
-            }
-            if is_moe_model
-            else {}
-        )
-        if gradient_manager is None:
-            micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
-        else:
+        if gradient_manager is not None:
             micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
             local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
             global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
@@ -297,65 +290,91 @@ def train(config: PretrainConfig):
             grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
             prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=True)
 
-        step_tokens_per_expert = 0
-        micro_max_mean = 0.0
-        seq_balance = 0.0
-        step_local_num_tokens = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
-            step_local_num_tokens += micro_batch["input_ids"].shape[1]
+        # Per-rank statistics, kept on the GPU and reduced once after the micro-batches (`reduce_stats`).
+        zero = torch.zeros((), device="cuda", dtype=torch.float64)
+        sums = {"loss": zero.clone(), "loss_tokens": zero.clone(), "nan_count": zero.clone(), "tokens": zero.clone()}
+        maxes = {}
+        data_time = 0.0
+        for micro_step in range(grad_accum_steps):
+            data_start_time = time.perf_counter()
+            micro_batch = next(dataiter) if gradient_manager is None else micro_batches[micro_step]
+            data_time += time.perf_counter() - data_start_time
+            sums["tokens"] += micro_batch["input_ids"].shape[1]
             local_loss_sum, batch_token_count, aux_loss_sum, seq_balances = compute_loss(micro_batch)
-            if gradient_manager is None:
-                step_local_token_count += batch_token_count
-            if torch.isnan(local_loss_sum.detach()):
-                nan_loss_count += 1
-                logger.warning("Local loss is nan, excluding this micro step from backward")
-                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) / grad_accum_steps
-            else:
-                step_loss_sum += local_loss_sum.detach()
-                scaled_loss = (local_loss_sum + aux_loss_sum) / grad_accum_steps
+            sums["loss_tokens"] += batch_token_count
+            # A NaN micro-batch is left out of the loss and the backward, without a host sync.
+            is_nan = torch.isnan(local_loss_sum.detach())
+            sums["nan_count"] += is_nan
+            sums["loss"] += torch.where(is_nan, 0.0, local_loss_sum.detach())
+            scaled_loss = torch.where(is_nan, torch.nan_to_num(local_loss_sum, nan=0.0), local_loss_sum + aux_loss_sum)
+            scaled_loss = scaled_loss / grad_accum_steps
             begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
             scaled_loss.backward()
             finish_backward(gradient_manager)
 
             if is_moe_model:
-                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in micro_moe_stats.items():
-                    moe_stats[f"{name}/mean"] += value / grad_accum_steps
-                    if name == "max_vio":
-                        moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
-                step_tokens_per_expert += tokens_per_expert
-                micro_max_mean += (
-                    tokens_per_expert.amax(dim=1) / tokens_per_expert.mean(dim=1)
-                ).mean() / grad_accum_steps
+                counts, confidence = take_routing_counts(model)
+                sums["expert_counts"] = sums.get("expert_counts", 0) + counts
+                sums["routing_confidence"] = sums.get("routing_confidence", 0) + confidence
+                # One rank's micro-batch: the imbalance that expert parallelism and the dropless dispatch see.
+                micro_max_mean = counts.amax(dim=1) / counts.mean(dim=1)
+                sums["micro_max_mean"] = sums.get("micro_max_mean", 0) + micro_max_mean.mean()
+                maxes["micro_max_mean_max"] = torch.maximum(
+                    maxes.get("micro_max_mean_max", zero), micro_max_mean.amax()
+                )
                 if seq_balances:
-                    seq_balance += torch.cat(seq_balances).detach().mean()
+                    rows = torch.cat(seq_balances).detach()
+                    sums["seq_balance"] = sums.get("seq_balance", 0) + rows.sum()
+                    sums["seq_balance_rows"] = sums.get("seq_balance_rows", 0) + rows.numel()
 
+        sums["data_time"] = zero + data_time
+        maxes["data_time_max"] = zero + data_time
+        # Peak memory since the previous step's reduction: this step's forward/backward and the previous optimizer step.
+        peak_memory = torch.cuda.max_memory_reserved() / 1024**3
+        torch.cuda.reset_peak_memory_stats()
+        sums["peak_memory"] = zero + peak_memory
+        maxes["peak_memory_max"] = zero + peak_memory
+        stats = reduce_stats(sums, maxes, dp_cp_group)
         forward_backward_time = time.perf_counter() - step_start_time
-        expert_load_stats = {}
-        if is_moe_model:
-            expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
-            # This rank's micro-batches: the imbalance that expert parallelism and the dropless dispatch see.
-            expert_load_stats["expert_load/micro_max_mean"] = micro_max_mean.item()
-            if moes_with_seq_balance:
-                expert_load_stats["expert_load/seq_balance"] = seq_balance.item() / grad_accum_steps
-            if bias_freeze_step is None or progress.step <= bias_freeze_step:
-                update_selection_biases(model, step_tokens_per_expert)
-            biases = [moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.load_balance_coeff is not None]
-            if biases:
-                expert_load_stats["expert_load/selection_bias_absmax"] = torch.stack(biases).abs().max().item()
 
         if gradient_manager is None:
-            global_step_token_count = step_local_token_count.clone()
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item()
+            global_token_count_val = int(stats["loss_tokens"])
             grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
             scale_gradients_(None, model, grad_scale)
+        batch_loss = stats["loss"].item() / global_token_count_val
+        if stats["nan_count"] > 0:
+            logger.warning(f"{int(stats['nan_count'])} micro-batches had a NaN loss and were left out of this step")
 
-        dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-        batch_loss = (step_loss_sum / global_token_count_val).item()
-        nan_loss_count = nan_loss_count.item()
+        moe_metrics = {}
+        if is_moe_model:
+            counts = stats["expert_counts"]
+            routed_tokens = counts.sum(dim=1) / next(iter_moe_blocks(model)).router.top_k
+            moe_metrics = {
+                **expert_load_metrics(counts),
+                "expert_load/dead": dead_experts.update(counts),
+                "expert_load/micro_max_mean/mean": stats["micro_max_mean"].item()
+                / (grad_accum_steps * num_dp_cp_ranks),
+                "expert_load/micro_max_mean/max": stats["micro_max_mean_max"].item(),
+                "router/confidence": (stats["routing_confidence"] / routed_tokens).mean().item(),
+            }
+            if "seq_balance" in stats:
+                moe_metrics["loss/seq_balance"] = (stats["seq_balance"] / stats["seq_balance_rows"]).item()
+            biases = [moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.load_balance_coeff is not None]
+            if bias_freeze_step is None or progress.step <= bias_freeze_step:
+                previous_biases = [bias.clone() for bias in biases]
+                update_selection_biases(model, counts.to("cuda", torch.float32))
+                if biases:
+                    # Share of experts whose bias moved in the opposite direction to the previous step's move.
+                    moves = torch.stack([bias - previous for bias, previous in zip(biases, previous_biases)]).sign()
+                    if last_bias_moves is not None:
+                        moe_metrics["router/bias/flip_frac"] = (moves * last_bias_moves < 0).float().mean().item()
+                    last_bias_moves = moves
+            if biases:
+                stacked = torch.stack(biases)
+                moe_metrics["router/bias/absmax"] = stacked.abs().max().item()
+                moe_metrics["router/bias/std"] = stacked.std(dim=1).mean().item()
 
+        group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
         optimizer.step()
         optimizer.zero_grad()
@@ -364,20 +383,21 @@ def train(config: PretrainConfig):
 
         # The last step's checkpoint is written once after the loop.
         save_ckpt_time = 0.0
+        disk_metrics = {}
         if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0 and not is_last_step:
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
+            disk_metrics = get_ckpt_disk_metrics(config.run_dir)
 
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
             run_evals(progress.step)
         eval_time = time.perf_counter() - eval_start_time
 
-        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens = global_num_tokens.item()
+        # Every CP rank counts its rows in full.
+        num_tokens = int(stats["tokens"]) // cp_size
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
@@ -386,40 +406,45 @@ def train(config: PretrainConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_tokens, step_time)
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3
+        grad_norm = grad_norm.item() if grad_norm is not None else None
 
         step_message = f"Step {progress.step} | {step_time:.2f}s | Loss {batch_loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += (
             f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}%"
-            f" | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB"
+            f" | Peak Mem. {stats['peak_memory_max'].item():.1f}/{max_memory:.1f} GiB"
         )
         logger.success(step_message)
 
         metrics = {
             "loss/mean": batch_loss,
             "loss/perplexity": math.exp(min(batch_loss, 20)),
-            "loss/nan_count": nan_loss_count,
+            "loss/nan_count": int(stats["nan_count"]),
+            "loss/spike": loss_spikes.update(batch_loss),
             "optim/lr": current_lr,
+            **{f"optim/grad_norm/{group}": norm.item() for group, norm in group_grad_norms.items()},
             "progress/epoch": dataset_progress["epoch"],
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,
-            "perf/peak_memory": peak_memory,
+            "perf/peak_memory/max": stats["peak_memory_max"].item(),
+            "perf/peak_memory/mean": stats["peak_memory"].item() / num_dp_cp_ranks,
             "perf/mfu": mfu,
             "time/step": step_time,
             "time/forward_backward": forward_backward_time,
+            "time/data/max": stats["data_time_max"].item(),
+            "time/data/mean": stats["data_time"].item() / num_dp_cp_ranks,
             "time/save_ckpt": save_ckpt_time,
             "time/evals": eval_time,
-            **get_ckpt_disk_metrics(config.run_dir),
-            **{name: value.item() for name, value in moe_stats.items()},
-            **expert_load_stats,
+            **disk_metrics,
+            **moe_metrics,
             "step": progress.step,
         }
         if grad_norm is not None:
-            metrics["optim/grad_norm"] = grad_norm.item()
+            metrics["optim/grad_norm"] = grad_norm
+            metrics["optim/grad_norm_spike"] = grad_norm_spikes.update(grad_norm)
         asyncio.run(monitors.log(metrics, step=progress.step))
 
         if heart is not None:
