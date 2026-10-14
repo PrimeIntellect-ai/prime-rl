@@ -15,7 +15,7 @@ that land with it for the first time; the ones already landed are listed under
 
 from collections.abc import Collection
 
-from prime_rl.monitors.file.traces.labels import trace_labels
+from prime_rl.monitors.file.traces.refs import trace_labels
 
 
 def walk_timing(obj: dict, prefix: str, out: dict[str, float]) -> None:

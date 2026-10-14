@@ -7,6 +7,7 @@ import asyncio
 
 import orjson
 import verifiers.v1 as vf
+from verifiers.v1.durable import call_ref
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.dashboard import server
@@ -110,12 +111,15 @@ def test_judge_calls_count_under_the_judges_model() -> None:
 # -- a trace that lands twice (a durable call reused it) ------------------------------
 
 
+JOB = {"flow": {"job": "j1"}}
+
+
 def _labelled(key: str, *calls: vf.ModelCall) -> vf.Trace:
     return vf.Trace(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi")),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         calls=list(calls),
-        info={"labels": {"flow": {"job": "j1"}, "call": {"key": key, "fingerprint": "f"}}},
+        info={"labels": {**JOB, "call": {"key": key, "fingerprint": "f", "ref": call_ref(JOB, key)}}},
     )
 
 

@@ -1,30 +1,38 @@
-"""Traces kept and found by their labels: the file monitor keeps a trace that never
-landed (``traces/partial/``) instead of deleting it, writes a labels index row for each
-labelled trace wherever it is, and ``RunTraceLookup`` answers ``vf.TraceLookup.latest``
-from that index across a run's attempts. The deltas are the real wire format
-(``verifiers.v1.serve.delta.DeltaStreamer`` over real traces)."""
+"""Durable calls' traces kept and found by their refs: the file monitor keeps a trace
+that never landed (``traces/partial/``) instead of deleting it, points each durable ref
+at the trace carrying it that moved last wherever it is, and ``RunTraceLookup`` answers
+``vf.TraceLookup.get`` from that pointer across a run's attempts. The deltas are the real
+wire format (``verifiers.v1.serve.delta.DeltaStreamer`` over real traces)."""
 
 import asyncio
 
 import orjson
 import verifiers.v1 as vf
+from verifiers.v1.durable import call_ref
 from verifiers.v1.serve.delta import DeltaStreamer, pack, unpack
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.eval import resume
 from prime_rl.monitors.file import FileMonitor
-from prime_rl.monitors.file.traces import get_labels_index_path
+from prime_rl.monitors.file.traces import get_refs_dir
 from prime_rl.monitors.file.traces.live import get_live_dir, get_partial_dir, list_live, read_live
 from prime_rl.monitors.file.traces.lookup import RunTraceLookup
+from prime_rl.monitors.file.traces.refs import read_ref
 
 JOB = {"flow": {"job": "j1"}}
 
 
-def _trace(key: str, *, start: float, checkpoints: tuple[float, ...] = (), job: str = "j1") -> vf.Trace:
+def ref(key: str) -> str:
+    """The ref of durable call ``key`` in job j1."""
+    return call_ref(JOB, key)
+
+
+def _trace(key: str, *, start: float, checkpoints: tuple[float, ...] = ()) -> vf.Trace:
+    labels = {**JOB, "call": {"key": key, "fingerprint": "f", "ref": ref(key)}}
     trace = vf.Trace(
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="hi")),
         agent=vf.AgentInfo(config=vf.AgentConfig()),
-        info={"labels": {"flow": {"job": job}, "call": {"key": key, "fingerprint": "f"}}},
+        info={"labels": labels},
     )
     trace.timing.boot.start = start
     trace.checkpoints = [vf.Checkpoint(id=f"ckpt-{t}", turns=i, time=t) for i, t in enumerate(checkpoints)]
@@ -62,26 +70,27 @@ def _land(monitor: FileMonitor, *traces: vf.Trace) -> vf.Episode:
     return episode
 
 
-def _rows(tmp_path) -> list[dict]:
-    return [orjson.loads(line) for line in get_labels_index_path(tmp_path).read_bytes().splitlines()]
+def _pointer(tmp_path, key: str) -> dict | None:
+    return read_ref(get_refs_dir(tmp_path), ref(key))
 
 
-def test_a_live_trace_is_found_by_its_labels_as_it_streams(tmp_path) -> None:
+def test_a_live_trace_is_found_by_its_ref_as_it_streams(tmp_path) -> None:
     monitor = _monitor(tmp_path)
     stream = Stream()
     trace = _trace("agent/0", start=1.0)
     stream.traces.append(trace)
     asyncio.run(monitor.log_live(stream.flush()))
     lookup = RunTraceLookup(tmp_path)
-    found = lookup.latest({**JOB, "call": {"key": "agent/0"}})
+    found = lookup.get(ref("agent/0"))
     assert found is not None and found.id == trace.id and not found.checkpoints
-    assert lookup.latest({"flow": {"job": "j2"}}) is None
+    assert lookup.get(ref("agent/1")) is None
+    assert _pointer(tmp_path, "agent/0") == {"trace": trace.id, "state": "live", "recency": 1.0, "dispatch": "d1"}
 
-    # a checkpoint moves it: a row goes out, and the lookup sees the save
+    # a checkpoint moves it: the pointer follows, and the lookup sees the save
     trace.checkpoints.append(vf.Checkpoint(id="ckpt-1", turns=1, time=5.0))
     asyncio.run(monitor.log_live(stream.flush()))
-    assert [(row["state"], row["checkpoint"]) for row in _rows(tmp_path)] == [("live", None), ("live", 5.0)]
-    assert [c.id for c in lookup.latest(JOB).checkpoints] == ["ckpt-1"]
+    assert _pointer(tmp_path, "agent/0")["recency"] == 5.0
+    assert [c.id for c in lookup.get(ref("agent/0")).checkpoints] == ["ckpt-1"]
 
 
 def test_a_crashed_episodes_partial_trace_survives_and_is_found(tmp_path) -> None:
@@ -98,16 +107,14 @@ def test_a_crashed_episodes_partial_trace_survives_and_is_found(tmp_path) -> Non
     partial = get_partial_dir(tmp_path) / f"{trace.id}.jsonl"
     assert orjson.loads(partial.read_bytes().splitlines()[-1])["end"] == "crashed"
     assert read_live(partial)[1]["id"] == trace.id  # the ending line folds away
-    assert _rows(tmp_path)[-1] | {"labels": None} == {
+    assert _pointer(tmp_path, "agent/0") == {
         "trace": trace.id,
-        "labels": None,
         "state": "partial",
-        "start": 1.0,
-        "checkpoint": 3.0,
+        "recency": 3.0,
         "dispatch": "d1",
         "end": "crashed",
     }
-    found = RunTraceLookup(tmp_path).latest({**JOB, "call": {"key": "agent/0"}})
+    found = RunTraceLookup(tmp_path).get(ref("agent/0"))
     assert found.id == trace.id
     assert [c.id for c in found.checkpoints] == ["ckpt-2.0", "ckpt-3.0"]
     assert not found.is_completed
@@ -131,13 +138,11 @@ def test_a_cancelled_or_discarded_trace_is_kept_as_partial(tmp_path) -> None:
         f"{trace.id}.jsonl" for trace in (cancelled, discarded)
     )
     assert not any(get_live_dir(tmp_path).glob("*.jsonl"))
-    ends = {row["trace"]: row.get("end") for row in _rows(tmp_path) if row["state"] == "partial"}
-    assert ends == {cancelled.id: "cancelled", discarded.id: "discarded"}
+    assert _pointer(tmp_path, "agent/0")["end"] == "cancelled"
+    assert _pointer(tmp_path, "agent/1")["end"] == "discarded"
     lookup = RunTraceLookup(tmp_path)
-    assert lookup.latest({"call": {"key": "agent/0"}}).id == cancelled.id
-    assert lookup.latest({"call": {"key": "agent/1"}}).id == discarded.id
-    # the newest of the job's traces is the one that moved last
-    assert lookup.latest(JOB).id == discarded.id
+    assert lookup.get(ref("agent/0")).id == cancelled.id
+    assert lookup.get(ref("agent/1")).id == discarded.id
 
 
 def test_a_landed_trace_is_found_in_the_stream_and_stays_final(tmp_path) -> None:
@@ -145,7 +150,6 @@ def test_a_landed_trace_is_found_in_the_stream_and_stays_final(tmp_path) -> None
     stream = Stream()
     solver = _trace("solver/0", start=1.0, checkpoints=(4.0,))
     judge = _trace("judge/0", start=2.0)
-    judge.info["labels"]["flow"]["seat"] = "judge"  # each trace is indexed by its own labels
     stream.traces[:] = [solver, judge]
     asyncio.run(monitor.log_live(stream.flush()))
     solver.is_completed = solver.ok = True
@@ -156,41 +160,32 @@ def test_a_landed_trace_is_found_in_the_stream_and_stays_final(tmp_path) -> None
 
     assert not any(get_live_dir(tmp_path).glob("*.jsonl"))
     assert not get_partial_dir(tmp_path).exists()
-    finished = [row for row in _rows(tmp_path) if row["state"] == "finished"]
-    assert [(row["trace"], row["labels"]["flow"]) for row in finished] == [
-        (solver.id, {"job": "j1"}),
-        (judge.id, {"job": "j1", "seat": "judge"}),
-    ]
+    assert [_pointer(tmp_path, key)["state"] for key in ("solver/0", "judge/0")] == ["finished"] * 2
     lookup = RunTraceLookup(tmp_path)
-    found = lookup.latest({"call": {"key": "solver/0"}})
+    found = lookup.get(ref("solver/0"))
     assert found.id == solver.id and found.is_completed and found.ok
-    assert lookup.latest({"flow": {"seat": "judge"}}).id == judge.id
-    # the trace streaming again (a durable call reusing it) leaves its finished row in charge
+    assert lookup.get(ref("judge/0")).id == judge.id
+    # the trace streaming again (a durable call reusing it) leaves its finished pointer
     reuse = Stream("d2")
     reuse.traces.append(solver)
     asyncio.run(monitor.log_live(reuse.flush()))
-    assert _rows(tmp_path)[-1]["state"] == "live"
-    assert RunTraceLookup(tmp_path).latest({"call": {"key": "solver/0"}}).is_completed
+    assert _pointer(tmp_path, "solver/0")["state"] == "finished"
+    assert RunTraceLookup(tmp_path).get(ref("solver/0")).is_completed
 
 
-def test_a_lookup_reads_only_the_rows_written_since_the_last(tmp_path, monkeypatch) -> None:
+def test_a_ref_moves_only_to_a_trace_that_moved_later(tmp_path) -> None:
+    """A call's later run (its continuation) takes the ref; an earlier run's late write
+    (its ending, after the continuation started) does not take it back."""
     monitor = _monitor(tmp_path)
-    for n in range(20):
-        _land(monitor, _trace(f"agent/{n}", start=float(n)))
-    lookup = RunTraceLookup(tmp_path)
-    assert lookup.latest({"call": {"key": "agent/3"}}).timing.boot.start == 3.0
-    assert lookup.poll() == 0  # all 20 rows read already
-
-    _land(monitor, _trace("agent/20", start=20.0))
-    assert lookup.poll() == 1  # one new row read, not the 21
-    loads = []
-    real = RunTraceLookup._load_finished
-    monkeypatch.setattr(
-        RunTraceLookup, "_load_finished", lambda self, *args: loads.append(args[1]) or real(self, *args)
-    )
-    assert lookup.latest(JOB).timing.boot.start == 20.0
-    assert len(loads) == 1  # and one trace loaded: the one returned
-    assert lookup.poll() == 0
+    stream = Stream()
+    cut = _trace("agent/0", start=1.0, checkpoints=(2.0,))
+    stream.traces.append(cut)
+    asyncio.run(monitor.log_live(stream.flush()))
+    continued = _trace("agent/0", start=5.0)
+    stream.traces.append(continued)
+    asyncio.run(monitor.log_live(stream.flush()))
+    asyncio.run(monitor.log_live([{"done": cut.id, "end": "failed"}]))
+    assert RunTraceLookup(tmp_path).get(ref("agent/0")).id == continued.id
 
 
 def test_resume_keeps_every_attempts_traces_findable(tmp_path) -> None:
@@ -202,19 +197,25 @@ def test_resume_keeps_every_attempts_traces_findable(tmp_path) -> None:
     stream.traces.append(cut)
     asyncio.run(monitor.log_live(stream.flush()))
     held = RunTraceLookup(tmp_path)  # a long-lived lookup, open across the resume
-    assert held.latest({"call": {"key": "agent/1"}}).id == cut.id
+    assert held.get(ref("agent/1")).id == cut.id
 
     # the process dies with agent/1 live; --resume archives the attempt and starts afresh
     resume.take_landed(tmp_path)
     assert [path.name for path in resume.archives(tmp_path)] == ["file.attempt_1"]
     relaunched = _monitor(tmp_path)
     asyncio.run(relaunched.log_live([]))
-    later = _trace("agent/2", start=9.0, job="j1")
+    later = _trace("agent/2", start=9.0)
     _land(relaunched, later)
+    # the cut call continues in the new attempt: its new trace takes the ref there
+    again = _trace("agent/1", start=10.0)
+    stream.traces[:] = [again]
+    asyncio.run(relaunched.log_live(stream.flush()))
 
     for lookup in (held, RunTraceLookup(tmp_path)):
-        assert lookup.latest({"call": {"key": "agent/0"}}).id == landed.id
-        resumed = lookup.latest({"call": {"key": "agent/1"}})
-        assert resumed.id == cut.id and [c.id for c in resumed.checkpoints] == ["ckpt-3.0"]
-        assert lookup.latest({"call": {"key": "agent/2"}}).id == later.id
-        assert lookup.latest(JOB).id == later.id
+        assert lookup.get(ref("agent/0")).id == landed.id
+        assert lookup.get(ref("agent/2")).id == later.id
+        assert lookup.get(ref("agent/1")).id == again.id
+    # before the continuation started, the archived attempt's cut trace was the call's
+    resumed = resume.archives(tmp_path)[0]
+    pointer = read_ref(resumed / "traces" / "refs", ref("agent/1"))
+    assert pointer["trace"] == cut.id

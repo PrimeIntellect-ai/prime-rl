@@ -1,7 +1,7 @@
 """Durable agent calls end to end: a verifiers env whose ``durable()`` is a
 ``RunTraceLookup`` over the run, served the way an env server serves it (its deltas
 through ``DeltaStreamer`` into the real ``Dispatcher``, the real ``FileMonitor`` writing
-the live, partial and finished traces and the labels index), run by the real
+the live, partial and finished traces and the ref pointers), run by the real
 ``EvalRunner``. An episode that fails after its first agent call is run again and the
 call returns its first trace without calling the model, whether the retry is the env's
 own (``--env.retries``) or a later attempt of the run (``--resume``) after the episode
@@ -21,6 +21,7 @@ from aiohttp import web
 from openai import AsyncOpenAI
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
+from verifiers.v1.durable import call_ref
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.runtimes import ProgramResult
 from verifiers.v1.serve.delta import DeltaStreamer, pack, unpack
@@ -31,9 +32,10 @@ from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.eval import resume
 from prime_rl.eval.runner import EvalRunner
 from prime_rl.monitors.file import FileMonitor
-from prime_rl.monitors.file.traces import get_labels_index_path
+from prime_rl.monitors.file.traces import get_refs_dir
 from prime_rl.monitors.file.traces.live import get_partial_dir
 from prime_rl.monitors.file.traces.lookup import RunTraceLookup
+from prime_rl.monitors.file.traces.refs import read_ref
 from prime_rl.orchestrator.dispatcher import Dispatcher
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -211,8 +213,8 @@ class Run:
         return list(resume.read_records(stream))
 
 
-def _rows(run_dir: Path) -> list[dict]:
-    return [orjson.loads(line) for line in get_labels_index_path(run_dir).read_bytes().splitlines()]
+def _pointer(run_dir: Path, job: str, key: str) -> dict | None:
+    return read_ref(get_refs_dir(run_dir), call_ref({"flow": {"job": job}}, key))
 
 
 def test_an_env_retry_reuses_the_call_that_finished_before_the_crash(tmp_path, monkeypatch, scripted) -> None:
@@ -240,9 +242,9 @@ def test_an_env_retry_reuses_the_call_that_finished_before_the_crash(tmp_path, m
     assert [t["info"]["labels"]["call"]["key"] for t in episode["traces"]] == ["solver/0", "solver/1"]
     # the abandoned attempt's trace was kept as a partial, then landed with the retry
     assert (get_partial_dir(tmp_path) / f"{first.id}.jsonl").is_file()
-    states = [(row["trace"], row["state"]) for row in _rows(tmp_path)]
-    assert (first.id, "partial") in states and states[-2:][0] == (first.id, "finished")
-    found = RunTraceLookup(tmp_path).latest({"flow": {"job": "job-1"}, "call": {"key": "solver/0"}})
+    pointer = _pointer(tmp_path, "job-1", "solver/0")
+    assert pointer["trace"] == first.id and pointer["state"] == "finished"
+    found = RunTraceLookup(tmp_path).get(call_ref({"flow": {"job": "job-1"}}, "solver/0"))
     assert found.id == first.id and found.is_completed
 
 
@@ -259,7 +261,7 @@ def test_a_cancelled_episodes_call_is_reused_after_a_resume(tmp_path, monkeypatc
             (draft,) = ReviewEnv.drafts
             partial = get_partial_dir(tmp_path) / f"{draft.id}.jsonl"
             assert orjson.loads(partial.read_bytes().splitlines()[-1])["end"] == "cancelled"
-            assert _rows(tmp_path)[-1]["state"] == "partial"
+            assert _pointer(tmp_path, "job-1", "solver/0")["state"] == "partial"
 
             assert resume.take_landed(tmp_path) == []
             ReviewEnv.hang.clear()

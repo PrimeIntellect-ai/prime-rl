@@ -24,10 +24,10 @@ def get_annotations_dir(output_dir: Path) -> Path:
     return get_trace_dir(output_dir) / "annotations"
 
 
-def get_labels_index_path(output_dir: Path) -> Path:
-    """One row per labelled trace, live, partial or finished, last row winning: what a
-    durable call's lookup reads instead of the traces (``lookup``)."""
-    return get_trace_dir(output_dir) / "labels.index.jsonl"
+def get_refs_dir(output_dir: Path) -> Path:
+    """One pointer per durable-call ref, at the trace carrying it that moved last
+    (``refs``): what a durable call's lookup reads."""
+    return get_trace_dir(output_dir) / "refs"
 
 
 def get_index_path(stream: Path) -> Path:
@@ -36,4 +36,4 @@ def get_index_path(stream: Path) -> Path:
     return stream.with_name(stream.name.removesuffix(".jsonl") + ".index.jsonl")
 
 
-__all__ = ["get_annotations_dir", "get_index_path", "get_labels_index_path", "get_trace_dir", "get_trace_stream"]
+__all__ = ["get_annotations_dir", "get_index_path", "get_refs_dir", "get_trace_dir", "get_trace_stream"]
