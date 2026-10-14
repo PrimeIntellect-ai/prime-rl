@@ -29,7 +29,6 @@ from prime_rl.trainer.model import (
     update_selection_biases,
 )
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.models.layers.moe import sequence_balance
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -205,7 +204,8 @@ def train(config: PretrainConfig):
     balance = config.model.moe.balance
     moes_with_seq_balance = list(iter_moe_blocks(model)) if balance.seq_aux_coeff > 0 else []
     for moe in moes_with_seq_balance:
-        moe.keep_routing = True
+        # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
+        moe.balance_rows = config.data.micro_batch_size
     bias_freeze_step = config.max_steps - round(balance.bias_freeze * config.max_steps)
     # Per-row balance of every MoE layer and micro-batch of the current step, for the metrics.
     step_seq_balances: list[torch.Tensor] = []
@@ -232,12 +232,10 @@ def train(config: PretrainConfig):
             )
         aux_loss_sum = torch.zeros((), device="cuda")
         if torch.is_grad_enabled():
-            # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
-            num_rows = config.data.micro_batch_size
+            row_len = input_ids.shape[1] // config.data.micro_batch_size
             for moe in moes_with_seq_balance:
-                row_balance = sequence_balance(*moe.routing, num_rows)
-                aux_loss_sum += balance.seq_aux_coeff * row_balance.sum() * (input_ids.shape[1] // num_rows)
-                step_seq_balances.append(row_balance.detach().mean())
+                aux_loss_sum += balance.seq_aux_coeff * moe.seq_balance.sum() * row_len
+                step_seq_balances.append(moe.seq_balance.detach().mean())
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     @torch.no_grad()
