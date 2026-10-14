@@ -314,18 +314,18 @@ def train(config: PretrainConfig):
 
             if is_moe_model:
                 counts, confidence = take_routing_counts(model)
-                sums["expert_counts"] = sums.get("expert_counts", 0) + counts
-                sums["routing_confidence"] = sums.get("routing_confidence", 0) + confidence
+                sums["expert_counts"] = sums.get("expert_counts", zero) + counts
+                sums["routing_confidence"] = sums.get("routing_confidence", zero) + confidence
                 # One rank's micro-batch: the imbalance that expert parallelism and the dropless dispatch see.
                 micro_max_mean = counts.amax(dim=1) / counts.mean(dim=1)
-                sums["micro_max_mean"] = sums.get("micro_max_mean", 0) + micro_max_mean.mean()
+                sums["micro_max_mean"] = sums.get("micro_max_mean", zero) + micro_max_mean.mean()
                 maxes["micro_max_mean_max"] = torch.maximum(
                     maxes.get("micro_max_mean_max", zero), micro_max_mean.amax()
                 )
                 if seq_balances:
                     rows = torch.cat(seq_balances).detach()
-                    sums["seq_balance"] = sums.get("seq_balance", 0) + rows.sum()
-                    sums["seq_balance_rows"] = sums.get("seq_balance_rows", 0) + rows.numel()
+                    sums["seq_balance"] = sums.get("seq_balance", zero) + rows.sum()
+                    sums["seq_balance_rows"] = sums.get("seq_balance_rows", zero) + rows.numel()
 
         sums["data_time"] = zero + data_time
         maxes["data_time_max"] = zero + data_time
