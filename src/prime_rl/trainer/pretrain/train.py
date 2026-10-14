@@ -20,7 +20,6 @@ from prime_rl.trainer.model import (
     forward,
     get_expert_load_stats,
     get_full_offload_dtype_policy,
-    get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
     reshard_module,
@@ -42,14 +41,11 @@ from prime_rl.trainer.pretrain.data import (
 )
 from prime_rl.trainer.pretrain.schedules import LRSchedule
 from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
+from prime_rl.trainer.step import run_micro_batches
 from prime_rl.trainer.utils import (
     GarbageCollection,
-    begin_backward,
     clip_grad_norm_,
-    finish_backward,
     get_ckpt_disk_metrics,
-    prepare_gradient_offload,
-    scale_gradients_,
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
@@ -196,7 +192,6 @@ def train(config: PretrainConfig):
     cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
-    ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     is_moe_model = is_tt_moe_model(model)
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
@@ -259,69 +254,9 @@ def train(config: PretrainConfig):
         step_start_time = time.perf_counter()
         lr_multiplier = lr_schedule.apply(progress.step - 1)
 
-        step_loss_sum = torch.tensor(0.0, device="cuda")
-        nan_loss_count = torch.tensor(0, device="cuda")
-        moe_stats = (
-            {
-                "max_vio/mean": torch.tensor(0.0),
-                "max_vio/max": torch.tensor(0.0),
-                "routing_confidence/mean": torch.tensor(0.0),
-            }
-            if is_moe_model
-            else {}
-        )
-        if gradient_manager is None:
-            micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-            step_local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
-        else:
-            micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
-            local_token_count = sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches)
-            global_step_token_count = torch.tensor(local_token_count, dtype=torch.int64, device="cuda")
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item() // cp_size
-            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-            prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=True)
-
-        step_tokens_per_expert = 0
-        step_local_num_tokens = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
-            step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            local_loss_sum, batch_token_count = compute_loss(micro_batch)
-            if gradient_manager is None:
-                step_local_token_count += batch_token_count
-            if torch.isnan(local_loss_sum.detach()):
-                nan_loss_count += 1
-                logger.warning("Local loss is nan, excluding this micro step from backward")
-                scaled_loss = torch.nan_to_num(local_loss_sum, nan=0.0) / grad_accum_steps
-            else:
-                step_loss_sum += local_loss_sum.detach()
-                scaled_loss = local_loss_sum / grad_accum_steps
-            begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
-            scaled_loss.backward()
-            finish_backward(gradient_manager)
-
-            if is_moe_model:
-                micro_moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in micro_moe_stats.items():
-                    moe_stats[f"{name}/mean"] += value / grad_accum_steps
-                    if name == "max_vio":
-                        moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
-                step_tokens_per_expert += tokens_per_expert
-
+        result = run_micro_batches(model, dataiter, compute_loss, grad_accum_steps, parallel_dims, gradient_manager)
         forward_backward_time = time.perf_counter() - step_start_time
-        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
-
-        if gradient_manager is None:
-            global_step_token_count = step_local_token_count.clone()
-            dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            global_token_count_val = global_step_token_count.item()
-            grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-            scale_gradients_(None, model, grad_scale)
-
-        dist.all_reduce(step_loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        dist.all_reduce(nan_loss_count, op=dist.ReduceOp.SUM)
-        batch_loss = (step_loss_sum / global_token_count_val).item()
-        nan_loss_count = nan_loss_count.item()
+        expert_load_stats = get_expert_load_stats(result.tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
         grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
         optimizer.step()
@@ -341,9 +276,7 @@ def train(config: PretrainConfig):
             run_evals(progress.step)
         eval_time = time.perf_counter() - eval_start_time
 
-        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens = global_num_tokens.item()
+        num_tokens = result.num_tokens
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
@@ -354,7 +287,7 @@ def train(config: PretrainConfig):
         mfu = perf_counter.get_step_mfu(num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3
 
-        step_message = f"Step {progress.step} | {step_time:.2f}s | Loss {batch_loss:.4f}"
+        step_message = f"Step {progress.step} | {step_time:.2f}s | Loss {result.loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += (
@@ -364,9 +297,9 @@ def train(config: PretrainConfig):
         logger.success(step_message)
 
         metrics = {
-            "loss/mean": batch_loss,
-            "loss/perplexity": math.exp(min(batch_loss, 20)),
-            "loss/nan_count": nan_loss_count,
+            "loss/mean": result.loss,
+            "loss/perplexity": math.exp(min(result.loss, 20)),
+            "loss/nan_count": result.nan_count,
             "optim/lr": current_lr,
             **{f"progress/{name}/epochs": epochs for name, epochs in dataset_progress["epochs"].items()},
             **{f"progress/{name}/num_tokens": tokens for name, tokens in dataset_progress["tokens"].items()},
@@ -381,7 +314,7 @@ def train(config: PretrainConfig):
             "time/save_ckpt": save_ckpt_time,
             "time/evals": eval_time,
             **get_ckpt_disk_metrics(config.run_dir),
-            **{name: value.item() for name, value in moe_stats.items()},
+            **result.moe_stats,
             **expert_load_stats,
             "schedule/lr": lr_multiplier,
             "step": progress.step,
