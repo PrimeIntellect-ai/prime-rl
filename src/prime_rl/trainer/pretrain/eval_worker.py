@@ -13,6 +13,7 @@ import json
 import os
 import time
 from datetime import timedelta
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -21,6 +22,7 @@ from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from transformers import AutoTokenizer
 
 from prime_rl import monitors
+from prime_rl.configs.monitors import PrimeEvalMonitorConfig
 from prime_rl.configs.pretrain import EvalWorkerConfig, PretrainConfig
 from prime_rl.monitors.prime import read_platform_record
 from prime_rl.trainer.ckpt import AppState
@@ -43,6 +45,7 @@ from prime_rl.trainer.utils import get_dcp_group, setup_torch_distributed
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.pathing import get_file_monitor_dir
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 
@@ -61,6 +64,17 @@ def run_config(config: EvalWorkerConfig) -> PretrainConfig:
     return run
 
 
+def platform_run_id(run_dir: Path, run: PretrainConfig, poll_seconds: int) -> str:
+    """The id of the trainer's platform run, which its monitor writes to the run dir when it starts, before the
+    trainer logs any metrics. Fails if the trainer logs metrics without it (e.g. platform runs disabled)."""
+    metrics_path = get_file_monitor_dir(run_dir) / run.monitors.file.path if run.monitors.file is not None else None
+    while (record := read_platform_record(run_dir)) is None or "id" not in record:
+        if metrics_path is not None and metrics_path.is_file() and metrics_path.stat().st_size > 0:
+            raise RuntimeError(f"The trainer logs metrics but left no platform run id in {run_dir}")
+        time.sleep(poll_seconds)
+    return record["id"]
+
+
 def broadcast(value: int) -> int:
     values = [value]
     dist.broadcast_object_list(values, src=0, group=get_dcp_group())
@@ -76,19 +90,19 @@ def main_loop(config: EvalWorkerConfig) -> None:
     torch.set_float32_matmul_precision(run.matmul_precision)
 
     os.environ.update(shared_wandb_env(config.run_dir, "eval"))
+    prime = None
     if run.monitors.prime is not None:
-        # Attach to the trainer's platform run, whose id the trainer's monitor leaves in the run dir.
-        while (record := read_platform_record(config.run_dir)) is None or "id" not in record:
-            time.sleep(config.poll_seconds)
-        os.environ["RUN_ID"] = record["id"]
+        # Metrics onto the trainer's platform run, which the trainer owns: the eval monitor only attaches to it
+        # and never reports its status.
+        os.environ["RUN_ID"] = platform_run_id(config.run_dir, run, config.poll_seconds)
+        prime = PrimeEvalMonitorConfig(name=run.monitors.prime.name)
     asyncio.run(
         monitors.setup(
             producer="eval",
             wandb=run.monitors.wandb,
-            prime=run.monitors.prime,
+            prime=prime,
             file=run.monitors.file,
             output_dir=config.run_dir,
-            run_config=run,
             overview_flavor="pretrain",
         )
     )
