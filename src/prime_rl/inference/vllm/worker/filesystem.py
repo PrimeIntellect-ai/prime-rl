@@ -111,34 +111,54 @@ class FileSystemWeightUpdateWorker(Worker):
         step = int(step_dir.name.removeprefix("step_"))
         if not (step_dir / DELTA_DIR / MANIFEST).exists():
             self._load_checkpoint(step_dir)
-        elif read_manifest(step_dir)["base_step"] == self.weight_step:
-            self._apply_delta(step_dir)
-            if anchor_complete(step_dir):
-                # Anchor step: check that the delta chain reproduced the full checkpoint bit for bit.
-                chained = weight_checksums(self._model())
-                self._load_checkpoint(step_dir)
-                mismatched = [name for name, value in weight_checksums(self._model()).items() if chained[name] != value]
-                if mismatched:
-                    raise RuntimeError(f"Sparse weight deltas diverged from the v{step} anchor: {mismatched[:8]}")
-                logger.info(f"Sparse weight delta chain matches the v{step} anchor")
         else:
-            self._replay_from_anchor(step_dir)
+            base_step = read_manifest(step_dir)["base_step"]
+            if base_step is None:
+                # The run's first broadcast: the weights the engine booted with.
+                if self.weight_step is not None:
+                    self._load_checkpoint(self._boot_dir())
+            elif base_step == self.weight_step:
+                self._apply_delta(step_dir)
+                if anchor_complete(step_dir):
+                    # Anchor step: check that the delta chain reproduced the full checkpoint bit for bit.
+                    chained = weight_checksums(self._model())
+                    self._load_checkpoint(step_dir)
+                    current = weight_checksums(self._model())
+                    mismatched = [name for name, value in current.items() if chained[name] != value]
+                    if mismatched:
+                        raise RuntimeError(f"Sparse weight deltas diverged from the v{step} anchor: {mismatched[:8]}")
+                    logger.info(f"Sparse weight delta chain matches the v{step} anchor")
+            else:
+                self._replay(step_dir)
         self.weight_step = step
-        if (step_dir / DELTA_DIR).is_dir() and not self.wrote_layout and anchor_complete(step_dir):
+        if (step_dir / DELTA_DIR).is_dir() and not self.wrote_layout:
             self._write_engine_layout(step_dir)
             self.wrote_layout = True
 
+    def _boot_dir(self) -> Path:
+        """The local dir of the checkpoint the engine booted from."""
+        model_loader = get_model_loader(self.load_config)
+        assert isinstance(model_loader, DefaultModelLoader)
+        folder, *_ = model_loader._prepare_weights(
+            self.model_config.model, None, self.model_config.revision, True, None
+        )
+        return Path(folder)
+
     def _write_engine_layout(self, step_dir: Path) -> None:
         """Tell the trainer which checkpoint tensors this engine holds in fp8 (and with which
-        scales), so it can send their deltas in the fp8 domain. Needs a full checkpoint."""
+        scales), so it can send their deltas in the fp8 domain. Reads one checkpoint tensor per fp8
+        param from the step's full checkpoint, or from the boot checkpoint."""
+        checkpoint_dir = step_dir if anchor_complete(step_dir) else self._boot_dir()
         files = {}
         tensors = {}
-        for path in step_dir.glob("*.safetensors"):
+        for path in checkpoint_dir.glob("*.safetensors"):
             with safe_open(path, framework="pt") as f:
                 for name in f.keys():
                     tensor_slice = f.get_slice(name)
                     files[name] = path
                     tensors[name] = (tensor_slice.get_shape(), _SAFETENSORS_DTYPES[tensor_slice.get_dtype()])
+        if (step_dir / DELTA_DIR / MANIFEST).exists():
+            tensors = read_manifest(step_dir)["tensors"]
         if self.index_map is None:
             self.index_map = CheckpointIndexMap(self._model(), tensors)
 
@@ -159,14 +179,18 @@ class FileSystemWeightUpdateWorker(Worker):
         os.replace(tmp, path)
         logger.info(f"Wrote the engine layout: {len(layout['fp8'])} checkpoint tensors held in fp8")
 
-    def _replay_from_anchor(self, step_dir: Path) -> None:
-        """Load the latest complete anchor at or before ``step_dir`` and replay the deltas since."""
+    def _replay(self, step_dir: Path) -> None:
+        """Load the latest complete anchor at or before ``step_dir`` (or the boot checkpoint, for a
+        chain from the run's first broadcast) and replay the deltas since."""
         chain = []
         while not anchor_complete(step_dir):
+            base_step = read_manifest(step_dir)["base_step"]
+            if base_step is None:
+                break
             chain.append(step_dir)
-            step_dir = step_dir.parent / f"step_{read_manifest(step_dir)['base_step']}"
-        logger.info(f"Replaying {len(chain)} sparse weight deltas on top of the {step_dir.name} anchor")
-        self._load_checkpoint(step_dir)
+            step_dir = step_dir.parent / f"step_{base_step}"
+        logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {step_dir.name}")
+        self._load_checkpoint(step_dir if anchor_complete(step_dir) else self._boot_dir())
         for delta_dir in reversed(chain):
             self._apply_delta(delta_dir)
 

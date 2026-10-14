@@ -45,19 +45,21 @@ class SparseDeltaEncoder:
     """Rank-local XOR deltas of the trainer's weight shards, in HF coordinates.
 
     Every rank keeps the wire-dtype bits of its own shards from the previous
-    broadcast and diffs against them on device, so no weights are gathered.
-    The prime->HF conversion is replayed once on meta tensors: every HF tensor
-    must come out as a contiguous view of one trainer tensor (renames, expert
-    unstacking), which maps a changed trainer element to its HF name and index.
+    broadcast in pinned host memory and diffs against them on device, so no
+    weights are gathered. The prime->HF conversion is replayed once on meta
+    tensors: every HF tensor must come out as a contiguous view of one trainer
+    tensor (renames, expert unstacking), which maps a changed trainer element to
+    its HF name and index.
 
-    Tensors the engines hold in fp8 (``fp8``: HF name -> scale format, from the
-    engine layout) are quantized with vLLM's own per-block quantizer and diffed
-    as fp8 bytes. Their 128-row blocks must not straddle trainer ranks, else the
-    trainer tensor is gathered. A step that changes any block scale returns no
-    delta, so it is published as a full checkpoint.
+    Tensors the engines hold in fp8 (``set_fp8_layout``: HF name -> scale format,
+    from the engine layout) are quantized with vLLM's own per-block quantizer,
+    previous and current weights alike, and diffed as fp8 bytes. Their 128-row
+    blocks must not straddle trainer ranks, else the trainer tensor is gathered.
+    A step that changes any block scale returns no delta, so it is published as
+    a full checkpoint.
     """
 
-    def __init__(self, model: nn.Module, fp8: dict[str, str]):
+    def __init__(self, model: nn.Module):
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         self.wire_dtypes: dict[str, torch.dtype] = {}
         meta: dict[str, torch.Tensor] = {}
@@ -77,20 +79,29 @@ class SparseDeltaEncoder:
             if tensor.numel() >= 2**32:
                 raise NotImplementedError(f"Sparse weight broadcast indexes tensors below 2^32 elements ({name})")
             segments[owner[id(base)]].append((tensor.storage_offset(), name))
-            dtype = "float8_e4m3fn" if name in fp8 else str(tensor.dtype).removeprefix("torch.")
-            self.hf_tensors[name] = (list(tensor.shape), dtype)
+            self.hf_tensors[name] = (list(tensor.shape), str(tensor.dtype).removeprefix("torch."))
             self.hf_numel[name] = tensor.numel()
         self.segments = {fqn: sorted(segs) for fqn, segs in segments.items()}
-
+        self.numel = {fqn: tensor.numel() for fqn, tensor in meta.items()}
         # fqn -> (ue8m0 scales, columns) for trainer tensors held in fp8; quantized as one [rows, columns] matrix
         self.fp8: dict[str, tuple[bool, int]] = {}
+        self.fp8_layout: dict[str, str] | None = None
+        self.gather: set[str] = set()
+        self.segment_starts: dict[str, torch.Tensor] = {}
+        self.snapshot: dict[str, torch.Tensor] = {}
+        self.scales_changed = False
+        self.initialized = False
+
+    def set_fp8_layout(self, model: nn.Module, fp8: dict[str, str], is_master: bool) -> None:
+        """Diff the tensors the engines hold in fp8 (HF name -> scale format) as fp8 bytes from now on."""
+        self.fp8_layout = fp8
         for fqn, segs in self.segments.items():
             modes = {fp8.get(name) for _, name in segs}
             if modes == {None}:
                 continue
             shapes = [self.hf_tensors[name][0] for _, name in segs]
             num_cols = shapes[0][-1]
-            num_rows = meta[fqn].numel() // num_cols
+            num_rows = self.numel[fqn] // num_cols
             boundaries = [start // num_cols for start, _ in segs] + [
                 start // num_cols + shape[0] for (start, _), shape in zip(segs, shapes)
             ]
@@ -101,12 +112,9 @@ class SparseDeltaEncoder:
             ):
                 raise NotImplementedError(f"Sparse weight broadcast cannot quantize {fqn} to fp8 as one matrix")
             self.fp8[fqn] = (modes.pop() == "ue8m0", num_cols)
-        self.gather: set[str] | None = None
-        self.segment_starts: dict[str, torch.Tensor] = {}
-        self.snapshot: dict[str, torch.Tensor] = {}
-        self.scales: dict[str, torch.Tensor] = {}
-        self.scales_changed = False
-        self.initialized = False
+            for _, name in segs:
+                self.hf_tensors[name] = (self.hf_tensors[name][0], "float8_e4m3fn")
+        self.gather = self._find_gathered(model, is_master)
 
     def _local_shard(self, key: str, value: torch.Tensor, is_master: bool) -> tuple[torch.Tensor, int] | None:
         """This rank's contiguous flat slice of ``value`` and its global flat offset,
@@ -144,26 +152,37 @@ class SparseDeltaEncoder:
             dist.all_reduce(flags, op=dist.ReduceOp.MAX)
         return {key for key, flag in zip(keys, flags.tolist()) if flag}
 
-    def _fp8_bits(
-        self, key: str, fqn: str, value: torch.Tensor, shard: tuple[torch.Tensor, int] | None
-    ) -> tuple[torch.Tensor, int] | None:
-        """fp8 bits of this rank's shard, quantized as the engines do."""
+    def _fp8_diff(
+        self, key: str, fqn: str, value: torch.Tensor, bits: torch.Tensor, offset: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Changed flat indices, XOR values and new fp8 bits of this rank's shard, with previous and
+        current weights quantized as the engines do; advances the snapshot."""
         ue8m0, num_cols = self.fp8[fqn]
+        previous = self.snapshot[key].to(bits.device, non_blocking=True).view(torch.bfloat16)
+        current = bits.view(torch.bfloat16)
         if key in self.gather:
-            quantized, scales = quantize_fp8_blocks(value.full_tensor().to(torch.bfloat16).view(-1, num_cols), ue8m0)
-            if shard is None:
-                return None
-            bits = quantized.view(-1)[shard[1] : shard[1] + shard[0].numel()]
-        elif shard is None or shard[0].numel() == 0:
-            return None
-        else:
-            quantized, scales = quantize_fp8_blocks(shard[0].to(torch.bfloat16).view(-1, num_cols), ue8m0)
-            bits = quantized.view(-1)
-        previous = self.scales.get(key)
-        if previous is not None and not torch.equal(previous, scales):
+            local_shape = (previous.numel() // prod(value.shape[1:]), *value.shape[1:])
+            previous = DTensor.from_local(
+                previous.view(local_shape),
+                value.device_mesh,
+                value.placements,
+                shape=value.shape,
+                stride=value.stride(),
+            ).full_tensor()
+            current = value.full_tensor().to(torch.bfloat16)
+        (previous_bits, previous_scales), (current_bits, current_scales) = (
+            quantize_fp8_blocks(weights.reshape(-1, num_cols), ue8m0) for weights in (previous, current)
+        )
+        if not torch.equal(previous_scales, current_scales):
             self.scales_changed = True
-        self.scales[key] = scales
-        return bits, shard[1]
+        if key in self.gather:
+            start = offset
+            previous_bits = previous_bits.view(-1)[start : start + bits.numel()]
+            current_bits = current_bits.view(-1)[start : start + bits.numel()]
+        xor = previous_bits.view(-1) ^ current_bits.view(-1)
+        self.snapshot[key].copy_(bits, non_blocking=True)
+        changed = xor.nonzero().squeeze(1)
+        return changed, xor[changed], current_bits.view(-1)
 
     @staticmethod
     def _diff(bits: torch.Tensor, previous: torch.Tensor, chunk: int = 1 << 28) -> tuple[torch.Tensor, torch.Tensor]:
@@ -188,8 +207,6 @@ class SparseDeltaEncoder:
         on the host, or None on the first call and when an fp8 block scale changed."""
         first = not self.initialized
         self.initialized = True
-        if self.gather is None:
-            self.gather = self._find_gathered(model, is_master)
         self.scales_changed = False
         names, counts, gaps, values = [], [], [], []
         checksum_names, checksums = [], []
@@ -198,25 +215,26 @@ class SparseDeltaEncoder:
             if fqn not in self.segments:
                 continue
             shard = self._local_shard(key, value, is_master)
-            if fqn in self.fp8:
-                shard = self._fp8_bits(key, fqn, value, shard)
-            elif shard is not None:
-                shard = (as_bits(shard[0].to(self.wire_dtypes[key])), shard[1])
             if shard is None or shard[0].numel() == 0:
+                if key in self.gather and not first:
+                    value.full_tensor()  # every rank joins the all-gathers of a gathered fp8 tensor
+                    value.full_tensor()
                 continue
-            bits, offset = shard
-            if not first:
-                for start, name in self.segments[fqn]:
-                    begin, end = max(start, offset), min(start + self.hf_numel[name], offset + bits.numel())
-                    if begin < end:
-                        checksum_names.append(name)
-                        checksums.append(bits[begin - offset : end - offset].sum(dtype=torch.int64))
+            bits, offset = as_bits(shard[0].to(self.wire_dtypes[key])), shard[1]
             if first:
                 # The previous broadcast's bits live in pinned host memory, so the trainer's GPU memory is unchanged.
                 self.snapshot[key] = torch.empty(bits.shape, dtype=bits.dtype, pin_memory=True)
                 self.snapshot[key].copy_(bits)
                 continue
-            changed, changed_values = self._diff(bits, self.snapshot[key])
+            if fqn in self.fp8:
+                changed, changed_values, bits = self._fp8_diff(key, fqn, value, bits, offset)
+            else:
+                changed, changed_values = self._diff(bits, self.snapshot[key])
+            for start, name in self.segments[fqn]:
+                begin, end = max(start, offset), min(start + self.hf_numel[name], offset + bits.numel())
+                if begin < end:
+                    checksum_names.append(name)
+                    checksums.append(bits[begin - offset : end - offset].sum(dtype=torch.int64))
             if fqn not in self.segment_starts:
                 self.segment_starts[fqn] = torch.tensor([start for start, _ in self.segments[fqn]], device=bits.device)
             starts = self.segment_starts[fqn]
@@ -232,9 +250,10 @@ class SparseDeltaEncoder:
             changed_anywhere = torch.tensor(int(self.scales_changed), device=next(model.parameters()).device)
             dist.all_reduce(changed_anywhere, op=dist.ReduceOp.MAX)
             self.scales_changed = bool(changed_anywhere.item())
+        torch.cuda.synchronize()  # the snapshot and host copies are written asynchronously
         if first or self.scales_changed:
             return None
-        counts = torch.cat(counts).tolist() if counts else []  # also waits for the copies to the host
+        counts = torch.cat(counts).tolist() if counts else []
         checksums = dict(zip(checksum_names, torch.stack(checksums).tolist())) if checksums else {}
         torch.cuda.empty_cache()
         entries = [(name, count) for name, count in zip(names, counts) if count]
@@ -245,8 +264,10 @@ class SparseDeltaEncoder:
 class FileSystemWeightSender(WeightSender):
     """Broadcast weights by saving a HF-compatible checkpoint (or, for LoRA
     runs, the PEFT-shaped adapter) to a shared filesystem. With ``sparse``,
-    steps between anchors only carry the XOR delta against the previous
-    broadcast (see ``prime_rl.utils.sparse_weights``)."""
+    steps only carry the XOR delta against the previous broadcast (see
+    ``prime_rl.utils.sparse_weights``), written on a background thread while
+    training continues; full checkpoints (anchors) serve engines that fall off
+    the delta chain."""
 
     def __init__(
         self,
@@ -262,12 +283,13 @@ class FileSystemWeightSender(WeightSender):
         self.encoder: SparseDeltaEncoder | None = None
         self.last_step: int | None = None
         self.anchor_step: int | None = None
-        self.num_deltas = 0
         self.pending_anchor: int | None = None
         # Pinned host buffer for the next anchor, allocated on a thread ahead of it
         self.anchor_buffer: Future | None = None
         self.anchor_bytes: int | None = None
         self.allocator = ThreadPoolExecutor(1)
+        # At most one delta is being written while the next step trains
+        self.writer: threading.Thread | None = None
         self.logger.debug("Initialized filesystem weight broadcast")
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
@@ -294,25 +316,41 @@ class FileSystemWeightSender(WeightSender):
         if not self.config.sparse:
             self._save_full(model, step_dir)
             return
+        if self.writer is not None:
+            self.writer.join()
+            self.writer = None
         if self.world.is_master:
             # Engines that load a step with a delta dir report their weight layout next to it.
             (step_dir / DELTA_DIR).mkdir(exist_ok=True)
         if self.encoder is None:
-            # Deltas start once every engine worker has reported which tensors it holds in fp8.
+            self.encoder = SparseDeltaEncoder(model)
+        if self.encoder.fp8_layout is None:
+            # Until every engine worker has reported which tensors it holds in fp8, steps are full checkpoints.
             layout = [read_engine_layout(step_dir.parent) if self.world.is_master else None]
             dist.broadcast_object_list(layout, src=0)
             if layout[0] is not None:
-                self.encoder = SparseDeltaEncoder(model, layout[0])
-        wrote_delta = self.encoder is not None and self._save_delta(model, step, step_dir)
-        self.num_deltas += wrote_delta
-        self.last_step = step
-        if not wrote_delta or self.num_deltas == 1:
-            # Engines need this full checkpoint now; the first delta's step is one too, so engines
-            # check the delta path against it right away.
+                self.encoder.set_fp8_layout(model, layout[0], self.world.is_master)
+        first = not self.encoder.initialized
+        start = time.perf_counter()
+        delta = self.encoder.encode(model, self.world.is_master)
+        encode_time = time.perf_counter() - start
+        if self.encoder.scales_changed:
+            self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
+        base_step, self.last_step = self.last_step, step
+        if first and step == 0:
+            # The run's first broadcast is the checkpoint the engines booted from.
+            if self.world.is_master:
+                manifest = {"step": step, "base_step": None, "files": [], "tensors": self.encoder.hf_tensors}
+                (step_dir / DELTA_DIR / MANIFEST).write_text(json.dumps(manifest))
+            self.anchor_step = step
+            return
+        if delta is None or self.encoder.fp8_layout is None:
             self._save_anchor(model, step_dir).join()
             dist.barrier()
             self.anchor_step = step
             return
+        self.writer = threading.Thread(target=self._write_delta, args=(step, base_step, step_dir, delta, encode_time))
+        self.writer.start()
         # Periodic anchors only serve engines that fall off the chain: write them off the critical path.
         # Pinning their host buffer is slow, so it starts on a thread two steps ahead.
         if 0 < -step % self.config.anchor_interval <= 2 and self.anchor_buffer is None:
@@ -324,11 +362,51 @@ class FileSystemWeightSender(WeightSender):
             and anchor_complete(self.step_dir(self.pending_anchor))
         ):
             self.anchor_step, self.pending_anchor = max(self.anchor_step, self.pending_anchor), None
-        start = [step % self.config.anchor_interval == 0 and self.pending_anchor is None]
-        dist.broadcast_object_list(start, src=0)
-        if start[0]:
+        start_anchor = [step % self.config.anchor_interval == 0 and self.pending_anchor is None]
+        dist.broadcast_object_list(start_anchor, src=0)
+        if start_anchor[0]:
             self._save_anchor(model, step_dir)
             self.pending_anchor = step
+
+    def _write_delta(self, step: int, base_step: int, step_dir: Path, delta: tuple, encode_time: float) -> None:
+        """Write this rank's delta file; the master then waits for every rank's file and commits
+        the step (manifest, then the finished marker). Runs on a thread, without collectives."""
+        assert self.encoder is not None
+        start = time.perf_counter()
+        entries, gaps, values, checksums = delta
+        delta_dir = step_dir / DELTA_DIR
+        files = [f"rank_{rank}.safetensors" for rank in range(self.world.world_size)]
+        write_rank_file(
+            delta_dir / files[self.world.rank],
+            entries,
+            gaps.numpy(),
+            values.numpy(),
+            self.encoder.hf_tensors,
+            checksums,
+        )
+        if not self.world.is_master:
+            return
+        while not all((delta_dir / name).exists() for name in files):
+            time.sleep(0.05)
+        manifest = {
+            "step": step,
+            "base_step": base_step,
+            "anchor_step": self.anchor_step,
+            "files": files,
+            "tensors": self.encoder.hf_tensors,
+        }
+        (delta_dir / MANIFEST).write_text(json.dumps(manifest))
+        super()._finish(step, step_dir)
+        num_bytes = sum((delta_dir / name).stat().st_size for name in files)
+        self.logger.info(
+            f"Sparse weight delta v{step} (base v{base_step}): {num_bytes / 2**20:.1f} MiB, "
+            f"encode {encode_time:.2f}s, write {time.perf_counter() - start:.2f}s (in the background)"
+        )
+
+    def _finish(self, step: int, step_dir: Path) -> None:
+        # A delta step is committed by its writer thread once every rank's file is on disk.
+        if self.writer is None:
+            super()._finish(step, step_dir)
 
     def _save_full(self, model: nn.Module, step_dir: Path) -> None:
         state_dict = gather_weights_parallel(model)
@@ -365,45 +443,6 @@ class FileSystemWeightSender(WeightSender):
         if self.anchor_bytes is None:
             self.anchor_bytes = owned_weight_bytes(model)
         return torch.empty(self.anchor_bytes, dtype=torch.uint8, pin_memory=True)
-
-    def _save_delta(self, model: nn.Module, step: int, step_dir: Path) -> bool:
-        """Write this step's delta (all ranks). False when the step must be a full checkpoint instead."""
-        assert self.encoder is not None
-        start = time.perf_counter()
-        delta = self.encoder.encode(model, self.world.is_master)
-        if self.encoder.scales_changed:
-            self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
-        if delta is None:
-            return False
-        entries, gaps, values, checksums = delta
-        encode_time = time.perf_counter() - start
-        file_name = f"rank_{self.world.rank}.safetensors"
-        delta_dir = step_dir / DELTA_DIR
-        dist.barrier()
-        num_bytes = write_rank_file(
-            delta_dir / file_name, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors, checksums
-        )
-        stats = (file_name, num_bytes, len(gaps), encode_time, time.perf_counter() - start)
-        all_stats: list = [None] * self.world.world_size
-        dist.all_gather_object(all_stats, stats)
-        if not self.world.is_master:
-            return True
-        manifest = {
-            "step": step,
-            "base_step": self.last_step,
-            "anchor_step": self.anchor_step,
-            "files": [file_name for file_name, *_ in all_stats],
-            "tensors": self.encoder.hf_tensors,
-        }
-        (delta_dir / MANIFEST).write_text(json.dumps(manifest))
-        num_changes = sum(stat[2] for stat in all_stats)
-        num_elements = sum(prod(shape) for shape, _ in self.encoder.hf_tensors.values())
-        self.logger.info(
-            f"Sparse weight delta v{step} (base v{self.last_step}): {num_changes / num_elements:.3%} changed, "
-            f"{sum(stat[1] for stat in all_stats) / 2**20:.1f} MiB, "
-            f"encode {max(stat[3] for stat in all_stats):.2f}s, total {max(stat[4] for stat in all_stats):.2f}s"
-        )
-        return True
 
     def _clean(self, step: int) -> None:
         # Sparse chains replay from their anchor, so keep everything since it.

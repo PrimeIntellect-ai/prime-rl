@@ -2,17 +2,19 @@
 
 A delta lives in the ``delta/`` subdir of a broadcast step dir (next to the
 full checkpoint on anchor steps): one ``rank_{r}.safetensors`` per trainer rank
-and a ``manifest.json``, written last. A rank file stores two zstd streams over its
-entries ``(hf_name, count)``: ``gaps`` (uint32 gaps between sorted flat indices,
-restarted per entry) and ``values`` (the XOR of the new and the previous raw
-bits). XOR is exact for any dtype, but applying it twice reverts it, so a delta
-must be applied on top of exactly its ``base_step``.
+and a ``manifest.json``, written last. A rank file stores zstd frames over its
+entries ``(hf_name, count)``: gaps between sorted flat indices (restarted per
+entry) and the XOR of the new and the previous raw bits. XOR is exact for any
+dtype, but applying it twice reverts it, so a delta must be applied on top of
+exactly its ``base_step``; per-tensor checksums of the new weights catch it if not.
 """
 
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
+from typing import BinaryIO
 
 import numpy as np
 import pyzstd
@@ -68,10 +70,11 @@ def write_rank_file(
     tensors: dict,
     checksums: dict[str, int],
     frame_size: int = 1 << 20,
-) -> int:
+) -> None:
     """Write a rank's delta as zstd frames of about ``frame_size`` changes each (whole entries), so
-    readers can skip frames without entries they hold. ``checksums`` (HF name -> ``bits_checksum`` of
-    the new weights this rank holds) let engines verify every step."""
+    readers can skip frames without entries they hold. Gaps are stored as uint8, with gaps of 255 or
+    more in a separate int32 stream. ``checksums`` (HF name -> ``bits_checksum`` of the new weights
+    this rank holds) let engines verify every step. Written under a temporary name, then renamed."""
     options = {pyzstd.CParameter.compressionLevel: 1, pyzstd.CParameter.checksumFlag: 1}
     frames, size = [[]], 0
     for index, (_, count) in enumerate(entries):
@@ -83,28 +86,30 @@ def write_rank_file(
     gap_ends = np.cumsum([count for _, count in entries], dtype=np.int64)
     value_ends = np.cumsum([count * bits_dtype(tensors[name][1]).itemsize for name, count in entries], dtype=np.int64)
 
-    def compress(frame: list[int]) -> tuple[bytes, bytes]:
+    def compress(frame: list[int]) -> tuple[bytes, bytes, bytes]:
         first, last = frame[0], frame[-1]
-        gap_start = gap_ends[first - 1] if first else 0
-        value_start = value_ends[first - 1] if first else 0
+        frame_gaps = gaps[(gap_ends[first - 1] if first else 0) : gap_ends[last]]
+        frame_values = values[(value_ends[first - 1] if first else 0) : value_ends[last]]
         return (
-            pyzstd.compress(gaps[gap_start : gap_ends[last]].tobytes(), options),
-            pyzstd.compress(values[value_start : value_ends[last]].tobytes(), options),
+            pyzstd.compress(np.minimum(frame_gaps, 255).astype(np.uint8).tobytes(), options),
+            pyzstd.compress(frame_gaps[frame_gaps >= 255].tobytes(), options),
+            pyzstd.compress(frame_values.tobytes(), options),
         )
 
     with ThreadPoolExecutor(8) as pool:
         compressed = list(pool.map(compress, frames if entries else []))
     arrays = {
-        "gaps": np.frombuffer(b"".join(g for g, _ in compressed), np.uint8),
-        "values": np.frombuffer(b"".join(v for _, v in compressed), np.uint8),
+        stream: np.frombuffer(b"".join(parts[index] for parts in compressed), np.uint8)
+        for index, stream in enumerate(("gaps", "escapes", "values"))
     }
     metadata = {
         "entries": json.dumps(entries),
-        "frames": json.dumps([[len(frame), len(g), len(v)] for frame, (g, v) in zip(frames, compressed)]),
+        "frames": json.dumps([[len(frame), *map(len, parts)] for frame, parts in zip(frames, compressed)]),
         "checksums": json.dumps(checksums),
     }
-    save_file(arrays, str(path), metadata=metadata)
-    return sum(array.nbytes for array in arrays.values())
+    tmp = path.with_name(f".{path.name}.tmp")
+    save_file(arrays, str(tmp), metadata=metadata)
+    tmp.rename(path)
 
 
 def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -115,48 +120,39 @@ def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
     return indices - torch.repeat_interleave(restart, counts)
 
 
-def _read_rank_file(
-    path: Path, tensors: dict, names: set[str] | None
-) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor, dict[str, int]]:
-    with open(path, "rb") as file:
-        header_size = int.from_bytes(file.read(8), "little")
-        header = json.loads(file.read(header_size))
-        metadata = header["__metadata__"]
-        gaps_start = 8 + header_size + header["gaps"]["data_offsets"][0]
-        values_start = 8 + header_size + header["values"]["data_offsets"][0]
-        entries = [tuple(entry) for entry in json.loads(metadata["entries"])]
-        frames, start, gaps_offset, values_offset = [], 0, gaps_start, values_start
-        for num_entries, num_gap_bytes, num_value_bytes in json.loads(metadata["frames"]):
-            frame_entries = entries[start : start + num_entries]
-            if names is None or any(name in names for name, _ in frame_entries):
-                frames.append((frame_entries, (gaps_offset, num_gap_bytes), (values_offset, num_value_bytes)))
-            start += num_entries
-            gaps_offset += num_gap_bytes
-            values_offset += num_value_bytes
+def _rank_file_frames(
+    file: BinaryIO, tensors: dict, names: set[str] | None
+) -> tuple[list[tuple[list[tuple[str, int]], list[tuple[int, int]]]], dict[str, int]]:
+    """The frames of an open rank file with entries in ``names``: ``(entries, [(offset, size)] of the
+    gaps, escapes and values streams)``, and the file's checksums."""
+    header_size = int.from_bytes(file.read(8), "little")
+    header = json.loads(file.read(header_size))
+    metadata = header["__metadata__"]
+    offsets = [8 + header_size + header[stream]["data_offsets"][0] for stream in ("gaps", "escapes", "values")]
+    entries = [tuple(entry) for entry in json.loads(metadata["entries"])]
+    frames, start = [], 0
+    for num_entries, *sizes in json.loads(metadata["frames"]):
+        frame_entries = entries[start : start + num_entries]
+        if names is None or any(name in names for name, _ in frame_entries):
+            frames.append((frame_entries, list(zip(offsets, sizes))))
+        start += num_entries
+        offsets = [offset + size for offset, size in zip(offsets, sizes)]
+    return frames, json.loads(metadata["checksums"])
 
-        def read_frame(frame) -> list[tuple[str, np.ndarray, np.ndarray]]:
-            frame_entries, (gap_at, gap_size), (value_at, value_size) = frame
-            frame_gaps = np.frombuffer(pyzstd.decompress(os.pread(file.fileno(), gap_size, gap_at)), np.int32)
-            frame_values = np.frombuffer(pyzstd.decompress(os.pread(file.fileno(), value_size, value_at)), np.uint8)
-            out, gap_offset, value_offset = [], 0, 0
-            for name, count in frame_entries:
-                itemsize = bits_dtype(tensors[name][1]).itemsize
-                entry_gaps = frame_gaps[gap_offset : gap_offset + count]
-                entry_values = frame_values[value_offset : value_offset + count * itemsize]
-                gap_offset += count
-                value_offset += count * itemsize
-                if names is not None and name not in names:
-                    continue
-                if len(entry_gaps):
-                    out.append((name, entry_gaps, entry_values))
-            return out
 
-        with ThreadPoolExecutor(4) as pool:
-            kept = [entry for frame in pool.map(read_frame, frames) for entry in frame]
-        drop_page_cache(file.fileno())
-    gaps = torch.from_numpy(np.concatenate([g for _, g, _ in kept]) if kept else np.empty(0, np.int32))
-    values = torch.from_numpy(np.concatenate([v for _, _, v in kept]) if kept else np.empty(0, np.uint8))
-    return [(name, len(g)) for name, g, _ in kept], gaps, values, json.loads(metadata["checksums"])
+def _read_frame(fd: int, frame, tensors: dict, names: set[str] | None) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    frame_entries, ((gaps_at, gaps_size), (escapes_at, escapes_size), (values_at, values_size)) = frame
+    gaps = np.frombuffer(pyzstd.decompress(os.pread(fd, gaps_size, gaps_at)), np.uint8).astype(np.int32)
+    gaps[gaps == 255] = np.frombuffer(pyzstd.decompress(os.pread(fd, escapes_size, escapes_at)), np.int32)
+    values = np.frombuffer(pyzstd.decompress(os.pread(fd, values_size, values_at)), np.uint8)
+    out, gap_offset, value_offset = [], 0, 0
+    for name, count in frame_entries:
+        num_bytes = count * bits_dtype(tensors[name][1]).itemsize
+        if names is None or name in names:
+            out.append((name, gaps[gap_offset : gap_offset + count], values[value_offset : value_offset + num_bytes]))
+        gap_offset += count
+        value_offset += num_bytes
+    return out
 
 
 def write_anchor_shards(state_dict: dict[str, torch.Tensor], step_dir: Path, rank: int, world_size: int) -> None:
@@ -202,7 +198,7 @@ def read_manifest(step_dir: Path) -> dict:
 
 
 def read_delta(
-    step_dir: Path, names: set[str] | None = None
+    step_dir: Path, names: set[str] | None = None, num_threads: int = 16
 ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
     """Read and decompress every rank file of a delta step dir into ``(entries,
     gaps, xor value bytes)`` in host memory; ``decode_gaps`` turns the
@@ -210,14 +206,22 @@ def read_delta(
     only those tensors (frames without any are not read).
     Also returns the new weights' ``bits_checksum`` per HF tensor, summed over ranks."""
     manifest = read_manifest(step_dir)
-    paths = [step_dir / DELTA_DIR / name for name in manifest["files"]]
-    with ThreadPoolExecutor(len(paths)) as pool:
-        files = list(pool.map(lambda path: _read_rank_file(path, manifest["tensors"], names), paths))
+    tensors = manifest["tensors"]
     checksums: dict[str, int] = {}
-    for *_, partial in files:
-        for name, value in partial.items():
-            checksums[name] = add_checksums(checksums.get(name, 0), value)
-    return [delta for *delta, _ in files], checksums
+    with ExitStack() as stack, ThreadPoolExecutor(num_threads) as pool:
+        files = [stack.enter_context(open(step_dir / DELTA_DIR / name, "rb")) for name in manifest["files"]]
+        jobs = []
+        for file in files:
+            frames, partial = _rank_file_frames(file, tensors, names)
+            jobs.extend((file.fileno(), frame) for frame in frames)
+            for tensor_name, value in partial.items():
+                checksums[tensor_name] = add_checksums(checksums.get(tensor_name, 0), value)
+        kept = [entry for frame in pool.map(lambda job: _read_frame(*job, tensors, names), jobs) for entry in frame]
+        for file in files:
+            drop_page_cache(file.fileno())
+    gaps = torch.from_numpy(np.concatenate([g for _, g, _ in kept]) if kept else np.empty(0, np.int32))
+    values = torch.from_numpy(np.concatenate([v for _, _, v in kept]) if kept else np.empty(0, np.uint8))
+    return [([(name, len(g)) for name, g, _ in kept], gaps, values)], checksums
 
 
 def drop_page_cache(fd: int) -> None:
