@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -230,4 +231,5 @@ for config, attention_flops in MODELS.values():
     counter = FlopCounter(build(config))
     assert counter([N]) - N * counter.matmul_flops_per_token == attention_flops
 """
-    subprocess.run([sys.executable, "-c", code], check=True)
+    # Hidden GPUs make this a CPU-only host on GPU runners too.
+    subprocess.run([sys.executable, "-c", code], check=True, env={**os.environ, "CUDA_VISIBLE_DEVICES": ""})
