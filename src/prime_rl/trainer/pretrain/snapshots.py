@@ -69,6 +69,8 @@ class SnapshotWriter:
         self.wait()
         state = AppState(model, [], None, None).state_dict()
         state["model"] = {name: snapshot_tensor(name, tensor) for name, tensor in state["model"].items()}
+        # DCP copies the tensors to the CPU on its own CUDA stream, which does not wait for the copies above.
+        torch.cuda.current_stream().synchronize()
         self.pending = self.executor.submit(self.write, state, snapshot_dir(self.run_dir) / f"step_{step}")
 
     def write(self, state: dict, path: Path) -> None:
