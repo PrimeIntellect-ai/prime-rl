@@ -20,6 +20,7 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
     current["a"].view(-1)[torch.randperm(2048)[:100]] += 1
     current["b"].view(-1)[torch.randperm(1000)[:10]] *= 2
 
+    tensors = {name: [list(tensor.shape), str(tensor.dtype).removeprefix("torch.")] for name, tensor in current.items()}
     # Two ranks, each holding a row slice of "a"; rank 1 also holds "b".
     delta_dir = tmp_path / DELTA_DIR
     delta_dir.mkdir()
@@ -35,20 +36,32 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
             gaps.append(encode_gaps(changed + offset, starts))
             values.append(xor[changed].view(torch.uint8))
         write_rank_file(
-            delta_dir / f"rank_{rank}.safetensors", entries, torch.cat(gaps).numpy(), torch.cat(values).numpy()
+            delta_dir / f"rank_{rank}.safetensors", entries, torch.cat(gaps).numpy(), torch.cat(values).numpy(), tensors
         )
-    tensors = {name: [list(tensor.shape), str(tensor.dtype).removeprefix("torch.")] for name, tensor in current.items()}
     files = ["rank_0.safetensors", "rank_1.safetensors"]
     (delta_dir / MANIFEST).write_text(json.dumps({"files": files, "tensors": tensors}))
 
-    patched = {name: as_bits(tensor.clone()).view(-1) for name, tensor in previous.items()}
-    for entries, gaps, values in read_delta(tmp_path):
-        indices = decode_gaps(gaps, torch.tensor([count for _, count in entries]))
-        i = b = 0
-        for name, count in entries:
-            itemsize = patched[name].element_size()
-            patched[name][indices[i : i + count]] ^= values[b : b + count * itemsize].clone().view(patched[name].dtype)
-            i += count
-            b += count * itemsize
+    def apply(spans):
+        patched = {name: as_bits(tensor.clone()).view(-1) for name, tensor in previous.items()}
+        for entries, gaps, values in read_delta(tmp_path, spans):
+            indices = decode_gaps(gaps, torch.tensor([count for _, count in entries]))
+            i = b = 0
+            for name, count in entries:
+                itemsize = patched[name].element_size()
+                patched[name][indices[i : i + count]] ^= (
+                    values[b : b + count * itemsize].clone().view(patched[name].dtype)
+                )
+                i += count
+                b += count * itemsize
+        return patched
+
+    patched = apply(None)
     for name, tensor in current.items():
         assert torch.equal(patched[name], as_bits(tensor).view(-1))
+
+    # A reader that holds rows 16-47 of "a" (spanning both rank files) and none of "b".
+    patched = apply({"a": (16 * 32, 48 * 32)})
+    expected = as_bits(previous["a"].clone())
+    expected[16:48] = as_bits(current["a"][16:48])
+    assert torch.equal(patched["a"], expected.view(-1))
+    assert torch.equal(patched["b"], as_bits(previous["b"]).view(-1))
