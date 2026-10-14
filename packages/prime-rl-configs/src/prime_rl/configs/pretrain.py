@@ -1,112 +1,176 @@
+import math
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.monitors import TrainMonitorsConfig
-from prime_rl.configs.sft import BaseDataConfig, FakeDataConfig
-from prime_rl.configs.shared import EnvVars, HeartbeatConfig, LogConfig, ResumeConfig, RunConfig, TrainerLogConfig
+from prime_rl.configs.sft import TrainRunConfig
+from prime_rl.configs.shared import LogConfig
 from prime_rl.configs.trainer import (
-    AdamWConfig,
     CheckpointConfig,
-    ConstantSchedulerConfig,
-    GCConfig,
     ModelConfig,
+    MoERuntimeConfig,
+    MuonConfig,
     OptimizerConfig,
-    SchedulerConfig,
     TokenizerConfig,
-    validate_scheduler,
 )
-from prime_rl.utils.config import BaseConfig, default_output_dir
+from prime_rl.utils.config import BaseConfig
+
+TOKENIZER_FIELDS = ("vocab_size", "bos_token_id", "eos_token_id", "pad_token_id")
+
+
+class InitConfig(BaseConfig):
+    """Random weight initialization."""
+
+    scheme: Literal["normal", "completep"] = "normal"
+    """``normal`` draws every weight matrix and the embedding from N(0, std). ``completep`` follows CompleteP (muP extended to depth, Dey et al. 2025) relative to the base shape: the embedding keeps ``std``, hidden matrices get ``std / sqrt(m_N)``, residual output projections ``std / (sqrt(m_N) * m_L)`` and the LM head ``std / m_N``, where ``m_N = hidden_size / base_hidden_size`` and ``m_L = num_layers / base_num_layers``. Norm weights start at 1, biases at 0."""
+
+    std: float = Field(0.02, gt=0)
+    """Base standard deviation."""
+
+    base_hidden_size: int = Field(256, ge=1)
+    """Hidden size of the base shape. Only used by ``completep``."""
+
+    base_num_layers: int = Field(2, ge=1)
+    """Number of layers of the base shape. Only used by ``completep``."""
+
+    seed: int = 0
+    """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
+
+
+class MoEBalanceConfig(BaseConfig):
+    """MoE load balancing as in DeepSeek-V3: an aux-loss-free selection bias plus a small sequence-wise balance
+    loss."""
+
+    bias_update_rate: float = Field(3e-3, ge=0)
+    """Step size of the selection-bias update (gamma): every step, each layer's bias moves by this towards
+    underloaded experts, mean-centred. 0 turns the update off."""
+
+    bias_freeze: float = Field(0.1, ge=0, lt=1)
+    """Fraction of ``max_steps`` at the end of training during which the biases stop updating, as DeepSeek-V3,
+    GLM-4.5 and Moonlight do in their final stage."""
+
+    seq_aux_coeff: float = Field(1e-3, ge=0)
+    """Weight of the sequence-wise balance loss (alpha), computed per packed row. 0 turns it off."""
+
+
+class PretrainMoEConfig(MoERuntimeConfig):
+    balance: MoEBalanceConfig = MoEBalanceConfig()
+    """Load balancing of the routed experts."""
 
 
 class PretrainModelConfig(ModelConfig):
-    arch: dict[str, Any] = {}
-    """HF config fields that override the config of the baseline model ``name``, e.g. ``hidden_size`` or ``num_hidden_layers``. The baseline provides the architecture class, the tokenizer and the vocabulary. The launcher writes the resulting config and tokenizer to ``<run_dir>/model`` and trains from there."""
+    arch: dict[str, Any]
+    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/model``, which ``name`` points at."""
 
+    init: InitConfig = InitConfig()
+    """Random weight initialization. Used unless the run resumes from a checkpoint."""
 
-class TextDataConfig(BaseDataConfig):
-    type: Literal["text"] = "text"
-
-    name: str = "HuggingFaceFW/fineweb-edu"
-    """HF dataset name or local path."""
-
-    subsets: list[str] | None = None
-    """Subsets (HF configs) to load."""
-
-    splits: list[str] | None = None
-    """Splits to load. Defaults to ``train``."""
-
-    revision: str | None = None
-    """HF dataset revision."""
-
-    probabilities: list[float] | None = None
-    """Sampling probabilities when interleaving several subsets/splits."""
-
-    stopping_strategy: Literal["first_exhausted", "all_exhausted"] = "all_exhausted"
-    """Stopping strategy when interleaving several subsets/splits."""
-
-    text_column: str = "text"
-    """Column holding the raw document text."""
-
-    shuffle: bool = True
-    """Shuffle the documents at the start of each epoch."""
-
-    seed: int = 0
-    """Shuffle seed. Each epoch adds its index to it."""
-
-    seq_len: int = Field(2048, ge=1)
-    """Tokens per row. Documents are packed back to back and continue across rows; nothing is truncated or padded."""
-
-    batch_size: int = Field(256, ge=1)
-    """Rows per optimizer step, so a step trains on ``batch_size * seq_len`` tokens."""
-
-    document_masking: bool = True
-    """Restrict attention to the current document and restart positions at every document boundary. If false, a row is one sequence."""
-
-    holdout_docs: int = Field(0, ge=0)
-    """Hold the last N documents (in dataset order, before shuffling) out of training. With ``[val]`` set, they are evaluated as the ``holdout`` source."""
+    moe: PretrainMoEConfig = PretrainMoEConfig()
 
     @model_validator(mode="after")
-    def validate_subsets_and_splits(self):
-        if self.subsets is not None and self.splits is not None and len(self.subsets) != len(self.splits):
-            raise ValueError("data.subsets and data.splits must have the same length")
-        sources = len(self.subsets or self.splits or [None])
-        if self.probabilities is not None and len(self.probabilities) != sources:
-            raise ValueError("data.probabilities needs one entry per subset/split")
+    def validate_arch(self):
+        if "model_type" not in self.arch:
+            raise ValueError("model.arch needs a model_type, e.g. 'glm4_moe'")
+        if derived := [key for key in TOKENIZER_FIELDS if key in self.arch]:
+            raise ValueError(f"model.arch must not set {derived}: they come from the tokenizer")
         return self
 
 
-PretrainDataConfig: TypeAlias = Annotated[FakeDataConfig | TextDataConfig, Field(discriminator="type")]
+class TokenSourceConfig(BaseConfig):
+    path: Path
+    """Folder of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``. The files are read in name order as one token stream."""
+
+    max_tokens: int | None = Field(None, ge=1)
+    """Tokens available from this source: the first ``max_tokens`` of its stream. Defaults to all tokens in the shards."""
 
 
-class ValSourceConfig(BaseConfig):
-    name: str
-    """Label for the metrics (``val/{name}/loss``, ``/ppl``, ``/bpb``)."""
+class MixturePhaseConfig(BaseConfig):
+    start: float = Field(0.0, ge=0, lt=1)
+    """Fraction of ``max_steps`` at which this phase starts."""
 
-    dataset: str
-    """HF dataset name or local path."""
+    weights: dict[str, float]
+    """Token share of each source in this phase. Shares are non-negative and sum to 1; unlisted sources get 0."""
 
-    subset: str | None = None
-    """HF config to load."""
+    @model_validator(mode="after")
+    def validate_weights(self):
+        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):
+            raise ValueError(f"Phase weights must be non-negative and sum to 1, got {self.weights}")
+        return self
 
-    split: str = "validation"
-    """Split to load."""
 
-    revision: str | None = None
-    """HF dataset revision."""
+class BaseBatchConfig(BaseConfig):
+    seq_len: int = Field(4096, ge=1)
+    """Tokens per row. Documents continue across rows; attention restarts at every document and every row."""
 
-    text_column: str = "text"
-    """Column holding the raw document text."""
+    batch_tokens: int = Field(ge=1)
+    """Tokens per optimizer step, over all GPUs. Fixed when ``seq_len`` changes, so the number of steps stays the same."""
 
-    max_tokens: int = Field(10_000_000, ge=1)
-    """Token budget. Documents are taken in dataset order until it is reached."""
+    micro_batch_tokens: int = Field(ge=1)
+    """Tokens per forward pass on one GPU."""
+
+    num_workers: int = Field(1, ge=1)
+    """Dataloader worker processes per GPU."""
+
+    seed: int = 0
+    """Seed for choosing each row's source (and the fake tokens)."""
+
+    @property
+    def batch_size(self) -> int:
+        """Rows per optimizer step."""
+        return self.batch_tokens // self.seq_len
+
+    @property
+    def micro_batch_size(self) -> int:
+        """Rows per forward pass."""
+        return self.micro_batch_tokens // self.seq_len
+
+    @model_validator(mode="after")
+    def validate_batch_tokens(self):
+        if self.batch_tokens % self.seq_len or self.micro_batch_tokens % self.seq_len:
+            raise ValueError("data.batch_tokens and data.micro_batch_tokens must be multiples of data.seq_len")
+        if self.batch_tokens % self.micro_batch_tokens:
+            raise ValueError("data.batch_tokens must be a multiple of data.micro_batch_tokens")
+        return self
+
+
+class FakeDataConfig(BaseBatchConfig):
+    """Uniformly random token ids, for smoke tests."""
+
+    type: Literal["fake"] = "fake"
+
+
+class TokensDataConfig(BaseBatchConfig):
+    """Rows of pre-tokenized datatrove shards, each row drawn from one source of a weighted mixture."""
+
+    type: Literal["tokens"] = "tokens"
+
+    sources: dict[str, TokenSourceConfig]
+    """Token sources by name. The name labels the source's metrics."""
+
+    phases: list[MixturePhaseConfig]
+    """Mixture phases in order. The first starts at 0."""
+
+    max_epochs: float = Field(1.0, gt=0)
+    """Most passes over a source's available tokens that the run (``max_steps``) may make. Checked at startup."""
+
+    @model_validator(mode="after")
+    def validate_phases(self):
+        starts = [phase.start for phase in self.phases]
+        if not starts or starts[0] != 0 or starts != sorted(set(starts)):
+            raise ValueError(f"Phase starts must begin at 0 and increase, got {starts}")
+        for phase in self.phases:
+            if unknown := phase.weights.keys() - self.sources.keys():
+                raise ValueError(f"Phase weights name unknown sources {sorted(unknown)}")
+        return self
+
+
+PretrainDataConfig: TypeAlias = Annotated[FakeDataConfig | TokensDataConfig, Field(discriminator="type")]
 
 
 class ValConfig(BaseConfig):
-    """Perplexity evals: loss, perplexity and bits per byte on fixed held-out token sets.
-    Each set is tokenized and packed once at startup, so every eval sees the same tokens."""
+    """Held-out loss, perplexity and bits per byte, computed like the training loss on held-out token shards."""
 
     interval: int = Field(500, ge=1)
     """Evaluate every N steps, after that step's optimizer update."""
@@ -114,8 +178,37 @@ class ValConfig(BaseConfig):
     eval_on_start: bool = True
     """Evaluate the initial weights before the first step (logged as step 0)."""
 
-    source: list[ValSourceConfig] = []
-    """Held-out sets. With ``data.holdout_docs > 0`` the training holdout is added as ``holdout``."""
+    sources: dict[str, TokenSourceConfig]
+    """Held-out sources by name, logged as ``val/<name>/loss``, ``/ppl`` and ``/bpb``. Each eval reads the same
+    windows: as many as fill whole micro-batches on every data-parallel rank."""
+
+
+StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Field(gt=0, lt=1)]
+
+
+def resolve_steps(value: int | float, total_steps: int) -> int:
+    """Steps as given, or a fraction of ``total_steps``."""
+    return round(value * total_steps) if isinstance(value, float) else value
+
+
+class ScheduleConfig(BaseConfig):
+    """Learning-rate multiplier ``f(step)`` (warmup, stable at 1, decay), where ``step`` counts the updates
+    completed before the current one. Every param group uses its own learning rate times ``f(step)``, so
+    ratios between groups hold. ``f(0) = 0``, the warmup reaches 1 at its last update (``warmup - 1``; a
+    warmup of 0 or 1 starts at 1), and the decay reaches ``end_ratio`` at the last update of the run."""
+
+    warmup: StepsOrFraction = 0.1
+    """Warmup updates, or a fraction of ``max_steps``."""
+
+    decay: StepsOrFraction = 0.9
+    """Decay updates at the end of the run, or a fraction of ``max_steps``. The default decays over all
+    updates after the default warmup."""
+
+    end_ratio: float = Field(0.0, ge=0)
+    """Multiplier of the last update."""
+
+    decay_shape: Literal["linear", "cosine", "1-sqrt"] = "linear"
+    """Shape of the decay from 1 to ``end_ratio``."""
 
 
 class EvalSnapshotsConfig(BaseConfig):
@@ -154,99 +247,39 @@ class EvalWorkerConfig(BaseConfig):
     log: LogConfig = LogConfig()
 
 
-class PretrainDeploymentConfig(BaseConfig):
-    num_train_gpus: int = Field(1, ge=1)
-    """GPUs for the trainer, on this node."""
+class PretrainConfig(TrainRunConfig):
+    model: PretrainModelConfig
 
+    tokenizer: TokenizerConfig
+    """The tokenizer (``tokenizer.name`` is required). It sets the vocabulary and special tokens of the model."""
 
-class PretrainConfig(BaseConfig):
-    model: PretrainModelConfig = PretrainModelConfig()
-
-    env_vars: EnvVars = {}
-    """Extra environment variables for the trainer processes."""
-
-    tokenizer: TokenizerConfig = TokenizerConfig()
-
-    data: PretrainDataConfig = TextDataConfig()
+    data: PretrainDataConfig
 
     val: ValConfig | None = None
-    """Perplexity evals. If None, none run."""
+    """Held-out evals. If None, none run."""
 
     eval_snapshots: EvalSnapshotsConfig | None = None
     """Model-only snapshots for the asynchronous eval worker. If None, none are written."""
 
-    optim: OptimizerConfig = AdamWConfig()
+    optim: OptimizerConfig = MuonConfig()
+    """Optimizer. ``optim.lr`` is required."""
 
-    scheduler: SchedulerConfig = ConstantSchedulerConfig()
+    schedule: ScheduleConfig = ScheduleConfig()
+    """Learning-rate schedule. Defaults to a warmup over 10% of the steps and a linear decay to 0 over the rest."""
 
     ckpt: CheckpointConfig | None = CheckpointConfig()
     """Checkpointing. Defaults to a checkpoint at the end of training."""
 
-    resume: ResumeConfig | None = None
-    """Resume the run from a checkpoint. If None, does not resume."""
+    max_steps: int = Field(ge=1)
+    """Training steps."""
 
-    log: TrainerLogConfig = TrainerLogConfig()
-
-    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
-
-    run: RunConfig = Field(default_factory=RunConfig)
-    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
-
-    output_dir: Path = Field(default_factory=default_output_dir)
-    """Directory that groups related runs. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
-
-    clean: bool = False
-    """Delete the run directory before starting. Required to overwrite a previous run's artifacts when not resuming."""
-
-    matmul_precision: Literal["highest", "high", "medium"] = "high"
-    """Precision for float32 matrix multiplications (``torch.set_float32_matmul_precision``)."""
-
-    max_steps: int | None = None
-    """Maximum training steps. If None, runs indefinitely."""
-
-    moe_bias_freeze: float = Field(0.1, ge=0, lt=1)
-    """Fraction of ``max_steps`` at the end of training during which the MoE selection biases stop updating, as
-    DeepSeek-V3, GLM-4.5 and Moonlight do in their final stage. Without ``max_steps`` the biases never freeze."""
-
-    gc: GCConfig | None = GCConfig()
-    """Deterministic garbage collection every N steps. Set to null for Python's default GC."""
-
-    dist_timeout_seconds: int = 900
-    """Timeout in seconds for torch distributed ops."""
-
-    heartbeat: HeartbeatConfig | None = None
-    """BetterStack heartbeat configuration."""
-
-    deployment: PretrainDeploymentConfig = PretrainDeploymentConfig()
-
-    dry_run: bool = False
-    """Only validate and dump resolved configs, then exit."""
-
-    @property
-    def run_dir(self) -> Path:
-        assert self.run.dir is not None  # resolved at construction
-        return self.output_dir / self.run.dir
-
-    @model_validator(mode="before")
-    @classmethod
-    def default_random_init(cls, data):
-        """Pretraining starts from randomly initialized weights unless ``model.debug.random_init = false``
-        (continued pretraining from ``model.name``)."""
-        if isinstance(data, dict):
-            model = data.setdefault("model", {})
-            if isinstance(model, dict):
-                debug = model.setdefault("debug", {})
-                if isinstance(debug, dict):
-                    debug.setdefault("random_init", True)
-        return data
+    def default_run_name(self) -> str:
+        """``<model_type>--<short-id>``."""
+        return f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"
 
     @model_validator(mode="after")
     def resolve_autos(self):
-        """Resolve the shared ``auto`` fields for pretraining: real random init, a trainable fp32
-        MoE router, and weight decay 0.1."""
-        if self.model.debug.random_init_mode == "auto":
-            self.model.debug.random_init_mode = "init"
+        """Resolve the shared ``auto`` fields for pretraining: a trainable fp32 MoE router and weight decay 0.1."""
         if self.model.moe_router_dtype == "auto":
             self.model.moe_router_dtype = "float32"
         if self.model.freeze_moe_router == "auto":
@@ -256,23 +289,21 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_run_identity(self):
-        if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "fake")).split("/")[-1]
-            model = self.model.name.split("/")[-1]
-            self.run.name = "--".join([dataset, model, uuid.uuid4().hex[:8]]).lower()
-        if self.run.dir is None:
-            self.run.dir = self.run.name
-        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
-            self.monitors.wandb.name = self.run.name
+    def validate_lr(self):
+        if "lr" not in self.optim.model_fields_set:
+            raise ValueError("optim.lr is required")
         return self
 
     @model_validator(mode="after")
-    def auto_setup_tokenizer(self):
+    def auto_setup_model_dir(self):
+        """The model is trained from ``<run_dir>/model``, written by the launcher from ``model.arch``."""
+        self.model.name = (self.run_dir / "model").as_posix()
+        return self
+
+    @model_validator(mode="after")
+    def validate_tokenizer(self):
         if self.tokenizer.name is None:
-            self.tokenizer.name = self.model.name
-        if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.trust_remote_code
+            raise ValueError("tokenizer.name is required")
         return self
 
     @model_validator(mode="after")
@@ -281,9 +312,6 @@ class PretrainConfig(BaseConfig):
             return self
         if self.optim.type not in ("adamw", "muon") or self.model.offload != "none":
             raise ValueError("model.init.scheme = 'completep' needs AdamW or Muon and model.offload = 'none'.")
-        if self.scheduler.type == "cosine" and self.scheduler.min_lr > 0:
-            # CosineAnnealingLR decays every parameter group to the same absolute min_lr.
-            raise ValueError("model.init.scheme = 'completep' needs scheduler.min_lr = 0 with the cosine scheduler.")
         return self
 
     @model_validator(mode="after")
@@ -298,18 +326,14 @@ class PretrainConfig(BaseConfig):
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("data.seq_len must be divisible by model.cp")
             if self.data.micro_batch_size != 1:
-                raise ValueError("data.micro_batch_size must be 1 with context parallelism")
-            if self.val is not None:
-                raise ValueError("[val] does not support context parallelism yet")
+                raise ValueError("data.micro_batch_tokens must equal data.seq_len with context parallelism")
         return self
 
     @model_validator(mode="after")
-    def validate_holdout(self):
-        if self.val is not None and self.data.type == "text" and self.data.holdout_docs == 0 and not self.val.source:
-            raise ValueError("[val] needs at least one source, or data.holdout_docs > 0")
-        return self
-
-    @model_validator(mode="after")
-    def validate_scheduler_steps(self):
-        validate_scheduler(self.scheduler, self.max_steps)
+    def validate_schedule(self):
+        phases = resolve_steps(self.schedule.warmup, self.max_steps) + resolve_steps(
+            self.schedule.decay, self.max_steps
+        )
+        if phases > self.max_steps:
+            raise ValueError(f"schedule.warmup + schedule.decay ({phases}) exceed max_steps ({self.max_steps})")
         return self

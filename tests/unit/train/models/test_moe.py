@@ -255,15 +255,15 @@ def test_expert_load_stats():
 
 
 def test_update_selection_biases_moves_towards_underloaded_experts():
-    moe = MoE.from_args(MoEArgs(num_experts=4, load_balance_coeff=0.1), dim=4, hidden_dim=8, shared_expert=None)
+    moe = MoE.from_args(MoEArgs(num_experts=4), dim=4, hidden_dim=8, shared_expert=None)
     layer = torch.nn.Module()
     layer.mlp = moe
     model = torch.nn.Module()
     model.model = torch.nn.Module()
     model.model.layers = torch.nn.ModuleList([layer])
 
-    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]))
-    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]))
+    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]), rate=0.1)
+    update_selection_biases(model, torch.tensor([[9.0, 1.0, 1.0, 1.0]]), rate=0.1)
 
     # sign(mean - load) = [-1, 1, 1, 1], centred to [-1.5, 0.5, 0.5, 0.5] per step
     torch.testing.assert_close(moe.router.selection_bias, torch.tensor([-0.3, 0.1, 0.1, 0.1]))

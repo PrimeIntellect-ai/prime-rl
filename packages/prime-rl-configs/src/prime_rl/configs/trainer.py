@@ -100,10 +100,7 @@ class DebugModelConfig(BaseConfig):
     """Override the number of transformer layers (truncates the model)."""
 
     random_init: bool = False
-    """Don't download or load weights from ``model.name``. ``random_init_mode`` sets what the weights hold instead."""
-
-    random_init_mode: Literal["auto", "skip", "init"] = "auto"
-    """What ``random_init`` does. ``skip`` leaves the weights uninitialized (arbitrary memory contents) - the fastest option, for throughput benchmarks and debugging. ``init`` initializes the weights as configured in ``model.init``. ``auto`` resolves to ``skip`` for ``sft`` and ``rl`` and to ``init`` for ``pretrain``."""
+    """Randomly initialize the model instead of loading weights."""
 
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""
@@ -233,28 +230,6 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
-class InitConfig(BaseConfig):
-    """Random weight initialization, used when ``model.debug.random_init`` resolves to ``init``."""
-
-    scheme: Literal["normal", "scaled", "completep"] = "normal"
-    """``normal`` draws every weight matrix and the embedding from N(0, std). ``scaled`` additionally divides the std of the residual output projections (``o_proj``, ``down_proj``) by sqrt(2 * num_layers). ``completep`` follows CompleteP (muP extended to depth, Dey et al. 2025) relative to the base shape: the embedding keeps ``std``, hidden matrices get ``std / sqrt(m_N)``, residual output projections ``std / (sqrt(m_N) * m_L)`` and the LM head ``std / m_N``, where ``m_N = hidden_size / base_hidden_size`` and ``m_L = num_layers / base_num_layers``. Norm weights start at 1, biases at 0."""
-
-    std: float = Field(0.02, gt=0)
-    """Base standard deviation."""
-
-    truncate: bool = False
-    """Draw from the normal distribution truncated at +-3 std instead of the full normal."""
-
-    base_hidden_size: int = Field(256, ge=1)
-    """Hidden size of the base shape. Only used by ``completep``."""
-
-    base_num_layers: int = Field(2, ge=1)
-    """Number of layers of the base shape. Only used by ``completep``."""
-
-    seed: int = 0
-    """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
-
-
 class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
@@ -320,9 +295,6 @@ class ModelConfig(BaseModelConfig):
 
     debug: DebugModelConfig = DebugModelConfig()
     """Debugging knobs for the model and distributed training."""
-
-    init: InitConfig = InitConfig()
-    """Random weight initialization, used when ``debug.random_init`` resolves to ``init``."""
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
@@ -674,13 +646,6 @@ class TrainerConfig(BaseConfig):
         """Resolve ``model.freeze_moe_router='auto'``: RL keeps the pretrained router."""
         if self.model.freeze_moe_router == "auto":
             self.model.freeze_moe_router = True
-        return self
-
-    @model_validator(mode="after")
-    def resolve_random_init_mode_auto(self):
-        """Resolve ``model.debug.random_init_mode='auto'``: RL skips weight loading without initializing."""
-        if self.model.debug.random_init_mode == "auto":
-            self.model.debug.random_init_mode = "skip"
         return self
 
     @model_validator(mode="after")

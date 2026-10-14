@@ -38,7 +38,6 @@ from prime_rl.configs.trainer import (
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
-from prime_rl.trainer.init import init_weights
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -331,15 +330,15 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
 
 
 @torch.no_grad()
-def update_selection_biases(model: nn.Module, tokens_per_expert: Tensor) -> None:
+def update_selection_biases(model: nn.Module, tokens_per_expert: Tensor, rate: float) -> None:
     """Aux-loss-free load balancing (https://arxiv.org/abs/2408.15664): move each layer's selection bias by
-    `load_balance_coeff` towards underloaded experts, given the step's global `[num_moe_layers, num_experts]` counts.
+    ``rate`` towards underloaded experts, given the step's global ``[num_moe_layers, num_experts]`` counts.
     The update is mean-centred (as in Moonlight and torchtitan), which leaves the selection unchanged but keeps
     the biases from drifting together."""
     for moe, load in zip(iter_moe_blocks(model), tokens_per_expert):
-        if moe.load_balance_coeff is not None:
+        if moe.router.selection_bias is not None:
             delta = torch.sign(load.mean() - load)
-            moe.router.selection_bias += moe.load_balance_coeff * (delta - delta.mean())
+            moe.router.selection_bias += rate * (delta - delta.mean())
 
 
 def get_model(
@@ -713,13 +712,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
 
     logger = get_logger()
     if config.debug.random_init:
-        if config.debug.random_init_mode == "init":
-            logger.info(f"Randomly initializing model weights ({config.init})")
-            init_weights(model, config.init)
-        else:
-            logger.warning(
-                "Skipping weight loading. Parameters keep arbitrary memory contents (random_init_mode='skip')."
-            )
+        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         return
 
     if not Path(config.name).exists():

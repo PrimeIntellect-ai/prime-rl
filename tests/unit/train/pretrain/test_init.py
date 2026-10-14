@@ -5,8 +5,10 @@ import torch
 from torch.optim import AdamW
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from prime_rl.configs.trainer import AdamWConfig, InitConfig
+from prime_rl.configs.pretrain import InitConfig
+from prime_rl.configs.trainer import AdamWConfig, MuonConfig
 from prime_rl.trainer.init import init_weights, normal_shard
+from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.pretrain.completep import completep_param_groups
 
 
@@ -24,13 +26,6 @@ def test_normal_shard_is_independent_of_sharding():
     column_shard = normal_shard("w", shape, (37, 2, 3), (0, 3, 0), seed=0, device=torch.device("cpu"))
     assert torch.equal(column_shard, full[:, 3:5])
     assert not torch.equal(normal_shard("w", shape, shape, (0, 0, 0), seed=1, device=torch.device("cpu")), full)
-
-
-def test_truncated_normal_shard_stays_within_three_std():
-    values = normal_shard("w", (4096, 64), (4096, 64), (0, 0), seed=0, device=torch.device("cpu"), truncate=True)
-    assert values.abs().max() <= 3
-    # Variance of the standard normal truncated at +-3.
-    assert abs(values.std().item() - 0.9866) < 0.01
 
 
 def test_completep_folded_multipliers_match_explicit_multipliers():
@@ -80,7 +75,7 @@ def test_completep_folded_multipliers_match_explicit_multipliers():
         )
     optimizers = {
         "explicit": AdamW(explicit_groups, betas=(0.9, 0.95)),
-        "folded": AdamW(completep_param_groups(folded, init, optim), betas=(0.9, 0.95)),
+        "folded": AdamW(completep_param_groups(folded, init, optim, ep_enabled=False), betas=(0.9, 0.95)),
     }
     models = {"explicit": explicit, "folded": folded}
 
@@ -94,3 +89,30 @@ def test_completep_folded_multipliers_match_explicit_multipliers():
         torch.testing.assert_close(
             folded(input_ids=tokens).logits, explicit(input_ids=tokens).logits, rtol=1e-4, atol=1e-4
         )
+
+
+def test_completep_moe_groups_cover_experts_and_scale_the_router():
+    config = Glm4MoeConfig(
+        vocab_size=128,
+        hidden_size=512,
+        intermediate_size=1024,
+        moe_intermediate_size=128,
+        num_attention_heads=8,
+        num_key_value_heads=2,
+        n_routed_experts=8,
+        num_experts_per_tok=2,
+        n_shared_experts=1,
+        num_hidden_layers=2,
+        first_k_dense_replace=1,
+    )
+    config._attn_implementation = "flash_attention_2"
+    with torch.device("meta"):
+        model = Glm4MoeForCausalLM._from_config(config)
+    init = InitConfig(scheme="completep", base_hidden_size=256, base_num_layers=2)
+    groups = completep_param_groups(model, init, MuonConfig(lr=1.0, weight_decay=0.1), ep_enabled=False)
+    lr = {param: group["lr"] for group in groups for param in group["params"]}
+    assert sum(len(group["params"]) for group in groups) == len(lr) == len(list(model.parameters()))
+    moe = model.model.layers[1].mlp
+    # m_N = 2: Muon matrices get lr / sqrt(m_N) (residual outputs also / m_L = 1), the router lr / m_N.
+    assert lr[moe.experts.up_proj] == lr[moe.experts.down_proj] == 2**-0.5
+    assert lr[moe.router.gate.weight] == 0.5

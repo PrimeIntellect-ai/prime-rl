@@ -24,8 +24,8 @@ from prime_rl.configs.pretrain import EvalWorkerConfig, PretrainConfig
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model
 from prime_rl.trainer.parallel_dims import get_parallel_dims
-from prime_rl.trainer.pretrain.evals.suite import prepare_set, score_requests, summarize, use_scoring_head
 from prime_rl.trainer.pretrain.snapshots import delete_snapshots_up_to, finished_snapshot_steps, snapshot_dir
+from prime_rl.trainer.pretrain.suite import prepare_set, score_requests, summarize, use_scoring_head
 from prime_rl.trainer.utils import get_dcp_group, setup_torch_distributed
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.config import cli

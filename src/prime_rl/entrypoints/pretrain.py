@@ -1,13 +1,16 @@
 import json
 import os
 import uuid
+from pathlib import Path
 
 from prime_rl.configs.pretrain import PretrainConfig
+from prime_rl.entrypoints.sft import submit_slurm_script, write_trainer_slurm_script
 from prime_rl.utils.config import cli, dump_resolved_config
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     format_config_message,
     format_log_message,
+    get_launcher_dir,
     prepare_attempt_dirs,
     validate_run_dir,
     write_launch_artifacts,
@@ -21,39 +24,48 @@ from prime_rl.utils.process import (
 )
 
 PRETRAIN_CONFIG = "pretrain.json"
+PRETRAIN_SBATCH = "pretrain.sbatch"
 
 
 def write_model_dir(config: PretrainConfig) -> None:
-    """Write the baseline's config with ``[model.arch]`` applied, plus its tokenizer, to
-    ``<run_dir>/model``, and point the model and tokenizer at it."""
-    from transformers import AutoConfig, AutoTokenizer
+    """Write the config built from ``[model.arch]`` and the tokenizer to ``<run_dir>/model``. The vocabulary size
+    (rounded up to a multiple of 128) and the special token ids come from the tokenizer."""
+    from transformers import AutoTokenizer
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     import prime_rl.trainer.models  # noqa: F401 - registers the custom model configs with AutoConfig
 
-    model_dir = config.run_dir / "model"
-    hf_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
-    unknown = [key for key in config.model.arch if not hasattr(hf_config, key)]
-    if unknown:
-        raise ValueError(f"[model.arch] fields {unknown} do not exist on the {hf_config.model_type!r} config")
-    for key, value in config.model.arch.items():
-        setattr(hf_config, key, value)
-    hf_config.save_pretrained(model_dir)
+    arch = dict(config.model.arch)
+    config_class = CONFIG_MAPPING[arch.pop("model_type")]
+    # PretrainedConfig keeps unknown kwargs as attributes, so a typo would silently do nothing.
+    if unknown := arch.keys() - config_class().to_dict().keys():
+        raise ValueError(f"[model.arch] fields {sorted(unknown)} do not exist on {config_class.__name__}")
     tokenizer = AutoTokenizer.from_pretrained(
         config.tokenizer.name, trust_remote_code=config.tokenizer.trust_remote_code
     )
+    hf_config = config_class(
+        **arch,
+        vocab_size=-(-len(tokenizer) // 128) * 128,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+    )
+    model_dir = Path(config.model.name)
+    hf_config.save_pretrained(model_dir)
     tokenizer.save_pretrained(model_dir)
-    config.model.name = config.tokenizer.name = model_dir.as_posix()
 
 
-def download_data(config: PretrainConfig) -> None:
-    """Download and prepare every dataset once, so the trainer ranks load them from the cache."""
-    from prime_rl.trainer.pretrain.data import load_eval_documents, load_text_dataset
-
-    if config.data.type == "text":
-        load_text_dataset(config.data)
-    if config.val is not None:
-        for source in config.val.source:
-            load_eval_documents(source.dataset, source.subset, source.split, source.revision, source.text_column)
+def pretrain_slurm(config: PretrainConfig, config_path: Path, log_dir: Path) -> None:
+    logger = get_logger()
+    script_path = get_launcher_dir(config.run_dir) / PRETRAIN_SBATCH
+    write_trainer_slurm_script(config, "pretrain", config_path, log_dir, script_path)
+    logger.info(f"Wrote SLURM script to {script_path}")
+    num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
+    log_message = format_log_message(log_dir=log_dir, trainer=True, num_train_nodes=num_nodes)
+    if config.dry_run:
+        logger.success(f"Dry run complete. To submit manually:\n\n  sbatch {script_path}\n\n{log_message}")
+        return
+    submit_slurm_script(script_path, log_message, logger)
 
 
 def pretrain(config: PretrainConfig):
@@ -78,16 +90,19 @@ def pretrain(config: PretrainConfig):
     write_launch_artifacts(config_dir, "pretrain")
 
     if not config.dry_run:
-        from prime_rl.trainer.model import pre_download_model
-
-        pre_download_model(config.model.name, skip_weights=config.model.debug.random_init)
-        if config.model.arch:
-            write_model_dir(config)
-        download_data(config)
+        write_model_dir(config)
 
     config_path = config_dir / PRETRAIN_CONFIG
-    config_path.write_text(json.dumps(dump_resolved_config(config, exclude={"dry_run", "clean"}), indent=2))
+    exclude = {"dry_run", "clean"}
+    if config.slurm is not None:
+        # A single-node job runs this launcher again on the node; the trainers of a
+        # multi-node job read the config directly.
+        exclude |= {"slurm", "deployment"} if config.deployment.type == "multi_node" else {"slurm"}
+    config_path.write_text(json.dumps(dump_resolved_config(config, exclude=exclude), indent=2))
     logger.info(f"Configs:\n{format_config_message(config_dir, 'pretrain', [('Pretrain', config_path)])}")
+    if config.slurm is not None:
+        pretrain_slurm(config, config_path, log_dir)
+        return
     if config.dry_run:
         logger.success("Dry run complete. To start the run, remove --dry-run from your command.")
         return

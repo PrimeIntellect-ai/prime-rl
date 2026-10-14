@@ -61,8 +61,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             route_scale=config.routed_scaling_factor,
             score_before_experts=False,
             top_k=config.num_experts_per_tok,
-            load_balance_coeff=config.load_balance_coeff,
-            seq_aux_loss_coeff=config.seq_aux_loss_coeff,
+            load_balance_coeff=1e-3,
         )
         if layer_idx >= config.first_k_dense_replace:
             shared_expert = None

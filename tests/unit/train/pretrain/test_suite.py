@@ -2,7 +2,7 @@ import math
 
 import numpy as np
 
-from prime_rl.trainer.pretrain.evals.suite import pack_requests, summarize_ctxcont
+from prime_rl.trainer.pretrain.suite import pack_requests, summarize_ctxcont
 
 
 def test_pack_requests_covers_every_request_within_the_budget():

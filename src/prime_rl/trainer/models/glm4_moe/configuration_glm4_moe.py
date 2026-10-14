@@ -29,6 +29,8 @@ class Glm4MoeConfig(PretrainedConfig):
             converting a multi-head checkpoint to a GQA checkpoint, each group key and value head should be constructed
             by meanpooling all the original heads within that group. For more details, check out [this
             paper](https://huggingface.co/papers/2305.13245). If it is not specified, will default to `32`.
+        head_dim (`int`, *optional*):
+            Dimension of each attention head. Defaults to `hidden_size // num_attention_heads`.
         hidden_act (`str` or `function`, *optional*, defaults to `"silu"`):
             The non-linear activation function (function or string) in the decoder.
         max_position_embeddings (`int`, *optional*, defaults to 131072):
@@ -102,10 +104,6 @@ class Glm4MoeConfig(PretrainedConfig):
             Whether to normalize the topk probabilities.
         use_qk_norm (`bool`, *optional*, defaults to `False`):
             Whether to use query-key normalization in the attention
-        load_balance_coeff (`float`, *optional*, defaults to 1e-3):
-            Update speed of the aux-loss-free load-balancing bias; `None` disables the bias.
-        seq_aux_loss_coeff (`float`, *optional*):
-            Weight of the sequence-wise balance loss (DeepSeek-V3); `None` disables it, 0 only logs it.
     ```python
     >>> from transformers import Glm4MoeModel, Glm4MoeConfig
     >>> # Initializing a Glm4Moe style configuration
@@ -148,6 +146,7 @@ class Glm4MoeConfig(PretrainedConfig):
         num_attention_heads=96,
         partial_rotary_factor=0.5,
         num_key_value_heads=8,
+        head_dim=None,
         hidden_act="silu",
         max_position_embeddings=131072,
         initializer_range=0.02,
@@ -166,8 +165,6 @@ class Glm4MoeConfig(PretrainedConfig):
         first_k_dense_replace=1,
         norm_topk_prob=True,
         use_qk_norm=False,
-        load_balance_coeff=1e-3,
-        seq_aux_loss_coeff=None,
         pad_token_id=None,
         **kwargs,
     ):
@@ -180,6 +177,7 @@ class Glm4MoeConfig(PretrainedConfig):
         self.partial_rotary_factor = partial_rotary_factor
 
         self.num_key_value_heads = num_key_value_heads
+        self.head_dim = head_dim if head_dim is not None else hidden_size // num_attention_heads
         self.hidden_act = hidden_act
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
@@ -199,8 +197,6 @@ class Glm4MoeConfig(PretrainedConfig):
         self.first_k_dense_replace = first_k_dense_replace
         self.norm_topk_prob = norm_topk_prob
         self.use_qk_norm = use_qk_norm
-        self.load_balance_coeff = load_balance_coeff
-        self.seq_aux_loss_coeff = seq_aux_loss_coeff
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
