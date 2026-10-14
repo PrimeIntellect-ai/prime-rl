@@ -1,6 +1,7 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 import asyncio
+import itertools
 import os
 import math
 import time
@@ -44,6 +45,7 @@ from prime_rl.trainer.pretrain.data import (
 )
 from prime_rl.trainer.pretrain.schedules import LRSchedule
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state
+from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
 from prime_rl.trainer.pretrain.snapshots import SnapshotWriter, shared_wandb_env
 from prime_rl.trainer.pretrain.step import run_micro_batches
 from prime_rl.trainer.pretrain.metrics import DeadExperts, SpikeDetector, grad_norms_by_group
@@ -210,6 +212,12 @@ def train(config: PretrainConfig):
     # Create the iterator only after a potential resume: iter() forks the workers with the
     # dataset's current state.
     dataiter = iter(dataloader)
+    probe = None
+    if config.diagnostics is not None:
+        # The diagnostic forward's fixed batch: the start of the first micro-batch, which is then trained on as usual.
+        first_micro_batch = next(dataiter)
+        probe = probe_batch(first_micro_batch, config.diagnostics.probe_tokens)
+        dataiter = itertools.chain([first_micro_batch], dataiter)
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -293,6 +301,7 @@ def train(config: PretrainConfig):
     loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
     last_bias_moves = None
     snapshots = SnapshotWriter(config.run_dir) if config.eval_snapshots is not None else None
+    update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
     while True:
         torch.cuda.reset_peak_memory_stats()
@@ -337,6 +346,9 @@ def train(config: PretrainConfig):
 
         group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
+        is_diagnostic_step = config.diagnostics is not None and progress.step % config.diagnostics.interval == 0
+        if is_diagnostic_step:
+            update_tracker.before_step(model)
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
@@ -353,6 +365,15 @@ def train(config: PretrainConfig):
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
+
+        diagnostic_metrics = {}
+        if is_diagnostic_step:
+            diagnostic_metrics = update_tracker.after_step(model) | run_probe(model, probe, dp_cp_group)
+            # The no-grad forward leaves the [lm_head, norm] FSDP group unsharded, and its routing must not count
+            # toward the next step's MoE statistics.
+            reshard_module(model)
+            if is_moe_model:
+                get_load_balance_stats(model)
 
         if snapshots is not None and (is_last_step or progress.step % config.eval_snapshots.interval == 0):
             snapshots.save(model, progress.step)
@@ -403,6 +424,7 @@ def train(config: PretrainConfig):
             **disk_metrics,
             **result.metrics,
             **moe_metrics,
+            **diagnostic_metrics,
             "schedule/lr": lr_multiplier,
             "step": progress.step,
         }

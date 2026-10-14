@@ -231,6 +231,18 @@ class ScheduleConfig(BaseConfig):
     """Shape of the decay from 1 to ``end_ratio``."""
 
 
+class DiagnosticsConfig(BaseConfig):
+    """Diagnostic step: on every ``interval``-th step, the optimizer update's size per parameter group and a
+    forward pass on a fixed probe batch (the first ``probe_tokens`` tokens of each rank's first micro-batch)
+    that records attention max logits and entropy per head and the residual-stream size per layer."""
+
+    interval: int = Field(100, ge=1)
+    """Run the diagnostics every N steps."""
+
+    probe_tokens: int = Field(2048, ge=64)
+    """Tokens per rank in the probe batch. Fixed across sequence lengths so attention entropy stays comparable."""
+
+
 class EvalSnapshotsConfig(BaseConfig):
     """Model-only snapshots for the asynchronous eval worker (`prime_rl.trainer.pretrain.eval_worker`), written in
     the background to ``<run_dir>/snapshots/step_N``. The worker deletes each one after scoring it."""
@@ -316,6 +328,9 @@ class PretrainConfig(BaseConfig):
 
     val: ValConfig | None = None
     """Held-out evals. If None, none run."""
+
+    diagnostics: DiagnosticsConfig | None = DiagnosticsConfig()
+    """Diagnostic step (update sizes, attention and activation probe). If None, it never runs."""
 
     eval_snapshots: EvalSnapshotsConfig | None = None
     """Model-only snapshots for the asynchronous eval worker. If None, none are written."""
@@ -478,6 +493,8 @@ class PretrainConfig(BaseConfig):
                 raise ValueError("data.seq_len must be divisible by model.cp")
             if self.data.micro_batch_size != 1:
                 raise ValueError("data.micro_batch_tokens must equal data.seq_len with context parallelism")
+            if self.diagnostics is not None:
+                raise ValueError("[diagnostics] does not support context parallelism yet; set diagnostics = null")
         return self
 
     @model_validator(mode="after")
