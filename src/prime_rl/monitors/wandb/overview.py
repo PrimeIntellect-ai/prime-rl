@@ -113,7 +113,7 @@ PRETRAIN_PERFORMANCE_METRICS = [
     "perf/peak_memory/max",
     "time/step",
     "time/data/max",
-    "time/eval_round",
+    "time/eval_suite",
 ]
 
 # Dense grid: more, smaller panels per row and enough rows that sections don't paginate.

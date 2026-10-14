@@ -1,8 +1,8 @@
 import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
 
 import asyncio
+import json
 import itertools
-import os
 import math
 import time
 from datetime import timedelta
@@ -10,6 +10,7 @@ from datetime import timedelta
 # ruff: noqa: I001
 
 from prime_rl.utils.act_offloading import maybe_activation_offloading
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch import nn
@@ -46,10 +47,17 @@ from prime_rl.trainer.pretrain.data import (
 from prime_rl.trainer.pretrain.schedules import LRSchedule
 from prime_rl.trainer.data import get_dataset_progress, get_dataset_state
 from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
-from prime_rl.trainer.pretrain.snapshots import SnapshotWriter, shared_wandb_env
+from prime_rl.trainer.pretrain.suite import (
+    length_label,
+    prepare_multi_length_set,
+    score_requests,
+    scoring_head_active,
+    summarize,
+)
 from prime_rl.trainer.pretrain.step import run_micro_batches
 from prime_rl.trainer.pretrain.metrics import DeadExperts, SpikeDetector, grad_norms_by_group
 from prime_rl.trainer.utils import (
+    get_dcp_group,
     GarbageCollection,
     clip_grad_norm_,
     get_ckpt_disk_metrics,
@@ -94,8 +102,6 @@ def train(config: PretrainConfig):
     logger = setup_logger(config.log.level, json_logging=config.log.json_logging)
     logger.info(f"Starting pretrain trainer in {world} (output_dir={config.run_dir})")
 
-    if config.eval_snapshots is not None:
-        os.environ.update(shared_wandb_env(config.run_dir, "trainer"))
     asyncio.run(
         monitors.setup(
             producer="trainer",
@@ -292,15 +298,60 @@ def train(config: PretrainConfig):
         logger.success(f"Evals | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
+    eval_sets = []
+    if config.evals is not None:
+        start_time = time.perf_counter()
+        eval_sets = [
+            prepare_multi_length_set(name, config.evals.data_dir, tokenizer, config.evals.seq_lens)
+            for name in config.evals.sets
+        ]
+        logger.info(f"Prepared {len(eval_sets)} eval sets in {time.perf_counter() - start_time:.0f}s")
+
+    @torch.no_grad()
+    def run_suite(step: int) -> None:
+        """The eval suite on the weights after ``step`` optimizer updates: the packed rows of every set are dealt
+        over the ranks, the per-token results gathered on rank 0, which summarizes and logs them."""
+        start_time = time.perf_counter()
+        metrics = {}
+        with scoring_head_active(model):
+            for eval_set in eval_sets:
+                scored = score_requests(model, eval_set.requests, config.evals.token_budget, get_dcp_group())
+                if scored is None:
+                    continue
+                logprobs, hits = scored
+                for seq_len, version in eval_set.versions.items():
+                    index = eval_set.index[seq_len]
+                    summary, arrays = summarize(version, [logprobs[i] for i in index], [hits[i] for i in index])
+                    label = length_label(seq_len)
+                    metrics |= {
+                        f"eval/{eval_set.name}/{key}@{label}": value
+                        for key, value in summary.items()
+                        if isinstance(value, float)
+                    }
+                    if config.evals.save_arrays:
+                        out = config.run_dir / "evals" / f"step_{step}"
+                        out.mkdir(parents=True, exist_ok=True)
+                        np.savez(out / f"{eval_set.name}@{label}.npz", **arrays)
+                        (out / f"{eval_set.name}@{label}.json").write_text(json.dumps(summary, default=float))
+        # The no-grad forwards leave the [lm_head, norm] FSDP group unsharded, and their routing must not count
+        # toward the next step's MoE statistics.
+        reshard_module(model)
+        if is_moe_model:
+            get_load_balance_stats(model)
+        metrics["time/eval_suite"] = time.perf_counter() - start_time
+        logger.success(f"Eval suite | Step {step} | {metrics['time/eval_suite']:.0f}s | {len(eval_sets)} sets")
+        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
+
     if checkpoint_step is None and config.val is not None and config.val.eval_on_start:
         run_evals(step=0)
+    if config.evals is not None and config.evals.eval_on_start:
+        run_suite(step=checkpoint_step or 0)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3
     dead_experts = DeadExperts()
     loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
     last_bias_moves = None
-    snapshots = SnapshotWriter(config.run_dir) if config.eval_snapshots is not None else None
     update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
     while True:
@@ -358,9 +409,6 @@ def train(config: PretrainConfig):
         disk_metrics = {}
         if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0 and not is_last_step:
             save_ckpt_start_time = time.perf_counter()
-            if snapshots is not None:
-                # Both write through the same DCP process group; their collectives must not interleave.
-                snapshots.wait()
             ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
@@ -375,12 +423,11 @@ def train(config: PretrainConfig):
             if is_moe_model:
                 get_load_balance_stats(model)
 
-        if snapshots is not None and (is_last_step or progress.step % config.eval_snapshots.interval == 0):
-            snapshots.save(model, progress.step)
-
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
             run_evals(progress.step)
+        if config.evals is not None and (is_last_step or progress.step % config.evals.interval == 0):
+            run_suite(progress.step)
         eval_time = time.perf_counter() - eval_start_time
 
         num_tokens = result.num_tokens
@@ -439,8 +486,6 @@ def train(config: PretrainConfig):
             break
         progress.step += 1
 
-    if snapshots is not None:
-        snapshots.wait()
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)

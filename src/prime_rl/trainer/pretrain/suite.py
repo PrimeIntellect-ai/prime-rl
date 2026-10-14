@@ -15,6 +15,8 @@ replaced by `scoring_head`) and summarizes them (`summarize`)."""
 import json
 import math
 import types
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -70,8 +72,14 @@ def scoring_head(self, hidden_states, labels, temperature=None, sampling_mask=No
     return {"logprobs": logprobs, "entropy": hits}
 
 
-def use_scoring_head(model: nn.Module) -> None:
+@contextmanager
+def scoring_head_active(model: nn.Module) -> Iterator[None]:
+    """The model's LM head returns per-token log-probs and greedy hits (`scoring_head`) inside the block."""
     model.lm_head.forward = types.MethodType(scoring_head, model.lm_head)
+    try:
+        yield
+    finally:
+        del model.lm_head.forward
 
 
 def pack_requests(requests: list[Request], token_budget: int) -> list[list[int]]:

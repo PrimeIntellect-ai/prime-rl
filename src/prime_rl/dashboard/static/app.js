@@ -450,7 +450,7 @@ const SFT_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memor
 const PRETRAIN_TRAIN_PANELS = [{ metric: "loss/mean" }, { metric: "loss/spike" }, { regex: "val/.*/bpb" }, { regex: "eval/.*/bpb" }];
 const PRETRAIN_STABILITY_PANELS = [{ metric: "optim/grad_norm" }, { metric: "optim/grad_norm_spike" }, { metric: "optim/lr" }, { metric: "loss/nan_count" }, { regex: "optim/grad_norm/.*" }];
 const PRETRAIN_MOE_METRICS = ["expert_load/max_mean/mean", "expert_load/max_mean/max", "expert_load/micro_max_mean/mean", "expert_load/micro_max_mean/max", "expert_load/entropy/min", "expert_load/dead", "router/confidence", "router/bias/absmax", "loss/seq_balance"];
-const PRETRAIN_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory/max", "time/step", "time/data/max", "time/eval_round"];
+const PRETRAIN_PERFORMANCE_METRICS = ["perf/mfu", "perf/throughput", "perf/peak_memory/max", "time/step", "time/data/max", "time/eval_suite"];
 
 // Multi-series inference panels (overview.py INFERENCE_PANELS): fleet aggregate
 // paired with the cross-engine tail that flags a single sick engine.

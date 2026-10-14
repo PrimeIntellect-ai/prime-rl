@@ -10,7 +10,6 @@ from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     EnvVars,
     HeartbeatConfig,
-    LogConfig,
     ResumeConfig,
     RunConfig,
     SFTDeploymentConfig,
@@ -243,16 +242,16 @@ class DiagnosticsConfig(BaseConfig):
     """Tokens per rank in the probe batch. Fixed across sequence lengths so attention entropy stays comparable."""
 
 
-class EvalSnapshotsConfig(BaseConfig):
-    """Model-only snapshots for the asynchronous eval worker (`prime_rl.trainer.pretrain.eval_worker`), written in
-    the background to ``<run_dir>/snapshots/step_N``. The worker deletes each one after scoring it."""
+class EvalsConfig(BaseConfig):
+    """The eval suite, scored inside the trainer: forward passes without gradients on the training model, every
+    ``interval`` steps. The sets are log-likelihood evals in the format of the pretrain-evals offline suite."""
 
     interval: int = Field(ge=1)
-    """Write a snapshot every N steps, and at the final step."""
+    """Score the suite every N steps (after that step's optimizer update), and at the last step."""
 
-
-class EvalSuiteConfig(BaseConfig):
-    """What the asynchronous eval worker scores."""
+    eval_on_start: bool = True
+    """Also score the weights the run starts from (the initial weights, logged as step 0, or the checkpoint it
+    resumes from, logged at that step)."""
 
     data_dir: Path
     """Eval sets, one directory per set with ``test.parquet`` and ``meta.json``."""
@@ -266,12 +265,9 @@ class EvalSuiteConfig(BaseConfig):
     same at several lengths are scored once."""
 
     token_budget: int = Field(32768, ge=1)
-    """Tokens per packed row (one forward). At least the longest context length plus one."""
+    """Tokens per packed row (one forward). Must exceed the longest context length."""
 
-    poll_seconds: int = Field(30, ge=1)
-    """Seconds to wait before looking for a new snapshot again."""
-
-    save_arrays: bool = True
+    save_arrays: bool = False
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
 
     @model_validator(mode="after")
@@ -279,27 +275,6 @@ class EvalSuiteConfig(BaseConfig):
         if self.token_budget <= max(self.seq_lens):
             raise ValueError("token_budget must exceed the longest of seq_lens")
         return self
-
-
-class EvalWorkerConfig(EvalSuiteConfig):
-    """The asynchronous eval worker (``python -m prime_rl.trainer.pretrain.eval_worker``): scores the newest snapshot
-    of a training run on the eval suite, logs the results into the run's monitors at the snapshot's step, and deletes
-    scored snapshots. The pretrain launcher writes this config and starts the worker for ``[eval_worker]``."""
-
-    run_dir: Path
-    """The training run's directory (with ``configs/latest/resolved/pretrain.json`` and ``snapshots/``)."""
-
-    log: LogConfig = LogConfig()
-
-
-class PretrainEvalWorkerConfig(EvalSuiteConfig):
-    """The eval worker, started by the launcher next to the trainer on GPUs of its own."""
-
-    num_gpus: int = Field(1, ge=1)
-    """Single-node runs: GPUs of the node for the worker, next to the trainer's ``deployment.num_train_gpus``."""
-
-    num_nodes: int = Field(1, ge=1)
-    """Multi-node runs: nodes for the worker, next to the trainer's ``deployment.num_train_nodes``."""
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -332,12 +307,8 @@ class PretrainConfig(BaseConfig):
     diagnostics: DiagnosticsConfig | None = DiagnosticsConfig()
     """Diagnostic step (update sizes, attention and activation probe). If None, it never runs."""
 
-    eval_snapshots: EvalSnapshotsConfig | None = None
-    """Model-only snapshots for the asynchronous eval worker. If None, none are written."""
-
-    eval_worker: PretrainEvalWorkerConfig | None = None
-    """The asynchronous eval worker, started by the launcher on GPUs of its own. Needs ``[eval_snapshots]``. If None,
-    none is started (a worker can still be started by hand)."""
+    evals: EvalsConfig | None = None
+    """The eval suite, scored inside the trainer. If None, it never runs."""
 
     optim: PretrainOptimizerConfig = PretrainMuonConfig()
     """Optimizer. ``optim.lr`` is required."""
@@ -481,12 +452,6 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_eval_worker(self):
-        if self.eval_worker is not None and self.eval_snapshots is None:
-            raise ValueError("[eval_worker] needs [eval_snapshots]")
-        return self
-
-    @model_validator(mode="after")
     def validate_cp(self):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
@@ -495,6 +460,8 @@ class PretrainConfig(BaseConfig):
                 raise ValueError("data.micro_batch_tokens must equal data.seq_len with context parallelism")
             if self.diagnostics is not None:
                 raise ValueError("[diagnostics] does not support context parallelism yet; set diagnostics = null")
+            if self.evals is not None:
+                raise ValueError("[evals] does not support context parallelism yet")
         return self
 
     @model_validator(mode="after")

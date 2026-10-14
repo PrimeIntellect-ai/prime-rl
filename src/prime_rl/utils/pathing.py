@@ -284,11 +284,6 @@ def get_eval_dir(output_dir: Path) -> Path:
     return output_dir / "eval"
 
 
-def get_wandb_run_id_path(output_dir: Path) -> Path:
-    """The W&B run id that a pretraining run's trainer and its eval worker (separate jobs) share."""
-    return output_dir / "wandb_run_id"
-
-
 def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 

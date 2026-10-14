@@ -127,21 +127,15 @@ interval = 500
 web = { path = "data/web-val" }
 ```
 
-**Asynchronous evals on dedicated GPUs.** With `[eval_snapshots]`, the trainer writes a model-only snapshot (bf16, router in fp32) every `interval` steps and at the last step to `<run_dir>/snapshots/step_N`, in the background: it never waits for the eval side. With `[eval_worker]`, the launcher starts the eval worker on GPUs of its own (`num_gpus` of the node in a single-node run, `num_nodes` extra nodes in a multi-node run). The worker takes the newest finished snapshot, scores it on the eval suite (`ppl`, `ctxcont` and `pairs` sets in `<data_dir>/<set>/{test.parquet,meta.json}`) at every context length in `seq_lens`, logs `eval/{set}/{metric}@{length}` (e.g. `eval/holdout/bpb@4k`) at the snapshot's step, deletes that snapshot and every older one, and repeats until it has scored the last step. The eval frequency therefore follows from the cost of a round and the number of eval GPUs. Requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once.
+**Eval suite (`[evals]`).** Every `interval` steps, at the last step and (with `eval_on_start`) on the weights the run starts from, the trainer scores the eval suite: log-likelihood sets (`ppl`, `ctxcont` and `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`, the format of the pretrain-evals offline suite) with forward passes without gradients on the training model itself (same sharding, dtype and fusions). Requests are packed into document-masked rows that are dealt over the ranks; the LM head returns fp32 per-token log-probs for the duration of the evals. Every set is scored at each context length in `seq_lens` and logged as `eval/{set}/{metric}@{length}` (e.g. `eval/fwedu-holdout/bpb@4k`, plus accuracies and greedy exact match for multiple-choice and gold-answer sets); requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once. Requires `model.cp = 1`.
 
 ```toml
-[eval_snapshots]
-interval = 50
-
-[eval_worker]
+[evals]
+interval = 1000
 data_dir = "/shared/evals-data"
 sets = ["fwedu-holdout", "lambada", "math"]
 seq_lens = [2048, 4096, 16384]
-num_gpus = 1   # single-node runs
-num_nodes = 1  # multi-node runs
 ```
-
-The trainer and the worker log into one W&B run (W&B shared mode, run id in `<run_dir>/wandb_run_id`) and, with `[monitors.prime]`, into one platform run. The worker can also be started by hand on any GPUs: `torchrun --nproc-per-node 8 -m prime_rl.trainer.pretrain.eval_worker --run-dir <run_dir> --data-dir <sets> --sets <names>`.
 
 ## Multi-node
 
