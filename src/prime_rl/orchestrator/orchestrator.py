@@ -524,6 +524,7 @@ class Orchestrator:
                         await self.finalize_eval_batch(eval_batch)
                 else:
                     train_batch = await self.train_sink.fail(item)
+                    self.forget_consumed_group(item.group_id)
                     if train_batch is not None and not self.draining and not self.stopped.is_set():
                         await self.finalize_train_batch(train_batch)
                 continue
@@ -550,10 +551,17 @@ class Orchestrator:
                 continue
 
             train_batch = await self.train_sink.add(episode)
+            self.forget_consumed_group(episode_group_id(episode))
             # In drain mode any late-arriving train batch is dropped — we
             # don't want to ship past ``max_steps``
             if train_batch is not None and not self.draining and not self.stopped.is_set():
                 await self.finalize_train_batch(train_batch)
+
+    def forget_consumed_group(self, group_id: str) -> None:
+        """Once the sink holds no member of a group the dispatcher has fully emitted, it has
+        consumed the group's last result, so a checkpoint no longer needs to save the group."""
+        if group_id not in self.train_sink.pending_groups:
+            self.dispatcher.emitted_train_groups.pop(group_id, None)
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
