@@ -156,8 +156,9 @@ class PerfCounter:
 
         # Some MoE models (e.g. DeepSeek) use moe_intermediate_size, others (e.g. Granite) just use intermediate_size
         moe_intermediate_size = getattr(config, "moe_intermediate_size", None) or intermediate_size
-        if hasattr(config, "num_shared_experts") and config.num_shared_experts:  # Shared experts
-            sparse_mlp_params += num_sparse_layers * config.num_shared_experts * 3 * moe_intermediate_size * hidden_size
+        num_shared_experts = getattr(config, "num_shared_experts", None) or getattr(config, "n_shared_experts", 0)
+        if num_shared_experts:  # Shared experts
+            sparse_mlp_params += num_sparse_layers * num_shared_experts * 3 * moe_intermediate_size * hidden_size
         if hasattr(config, "num_experts_per_tok") and config.num_experts_per_tok:  # Routed experts
             sparse_mlp_params += (
                 num_sparse_layers * config.num_experts_per_tok * 3 * moe_intermediate_size * hidden_size

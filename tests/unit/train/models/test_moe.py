@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
-from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
+from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model, update_selection_biases
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
@@ -251,3 +251,17 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+def test_update_selection_biases_moves_towards_underloaded_experts():
+    moe = MoE.from_args(MoEArgs(num_experts=4, load_balance_coeff=0.1), dim=4, hidden_dim=8, shared_expert=None)
+    layer = torch.nn.Module()
+    layer.mlp = moe
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([layer])
+
+    update_selection_biases(model, torch.tensor([[8.0, 4.0, 4.0, 0.0]]))
+    update_selection_biases(model, torch.tensor([[8.0, 4.0, 4.0, 0.0]]))
+
+    torch.testing.assert_close(moe.router.selection_bias, torch.tensor([-0.2, 0.0, 0.0, 0.2]))

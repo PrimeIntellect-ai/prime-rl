@@ -24,9 +24,11 @@ from prime_rl.trainer.model import (
     get_global_moe_stats,
     get_load_balance_stats,
     is_tt_moe_model,
+    iter_moe_blocks,
     reshard_module,
     setup_model,
     setup_tokenizer,
+    update_selection_biases,
 )
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
@@ -311,7 +313,13 @@ def train(config: PretrainConfig):
                 step_tokens_per_expert += tokens_per_expert
 
         forward_backward_time = time.perf_counter() - step_start_time
-        expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
+        expert_load_stats = {}
+        if is_moe_model:
+            expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group)
+            update_selection_biases(model, step_tokens_per_expert)
+            biases = [moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.load_balance_coeff is not None]
+            if biases:
+                expert_load_stats["expert_load/selection_bias_absmax"] = torch.stack(biases).abs().max().item()
 
         if gradient_manager is None:
             global_step_token_count = step_local_token_count.clone()
