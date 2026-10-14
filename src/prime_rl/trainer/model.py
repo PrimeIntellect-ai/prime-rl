@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import zlib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
@@ -16,12 +17,13 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import _CHECKPOINT_PREFIX
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
-from torch.distributed.tensor import Shard
+from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.parallel import parallelize_module
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -37,7 +39,7 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
+from prime_rl.trainer.distributed.embedding_parallel import AllToAllEmbeddingParallel, EmbeddingParallel
 from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
@@ -48,6 +50,8 @@ from prime_rl.trainer.models import (
     supports_custom_impl,
 )
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
+from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Indexer
+from prime_rl.trainer.models.deepseek_v41.engram import DeepseekV41Engram
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
     get_fsdp_shard_placement_fn,
@@ -203,13 +207,27 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
     num_frozen = 0
 
     for module in model.modules():
-        if isinstance(module, (Indexer, DeepseekV4Indexer, SparseAttentionIndexer)):
+        if isinstance(module, (Indexer, DeepseekV4Indexer, DeepseekV41Indexer, SparseAttentionIndexer)):
             for param in module.parameters():
                 param.requires_grad = False
                 num_frozen += 1
 
     if num_frozen > 0:
         logger.info(f"Froze {num_frozen} sparse indexer parameters")
+
+
+def freeze_engram_tables(model: nn.Module) -> None:
+    """Freeze DeepSeek-V4.1's engram n-gram tables, keeping their projections and gates trainable.
+
+    A frozen table needs no fp32 master, so it is kept in bf16, the dtype its rows are looked up in.
+    """
+    num_frozen = 0
+    for module in model.modules():
+        if isinstance(module, DeepseekV41Engram):
+            module.embed.weight = nn.Parameter(module.embed.weight.to(torch.bfloat16), requires_grad=False)
+            num_frozen += 1
+    if num_frozen > 0:
+        get_logger().info(f"Froze {num_frozen} engram tables")
 
 
 def apply_force_balanced_routing(model: nn.Module) -> None:
@@ -547,6 +565,22 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
+    # DeepSeek-V4.1's engram tables (~98B parameters each) are row-sharded over the FSDP mesh and
+    # looked up by all-to-all, so FSDP, which would all-gather them whole, never manages them. They
+    # share FSDP's process group: a second communicator over the same ranks, running its all-to-alls
+    # concurrently with FSDP's prefetch all-gathers, can order the two differently on different GPUs
+    # and deadlock.
+    engrams = [module for module in model.modules() if isinstance(module, DeepseekV41Engram)]
+    if engrams and parallel_dims.dp_replicate_enabled:
+        raise NotImplementedError("engram tables are sharded over one FSDP group; dp_replicate > 1 is not supported")
+    for engram in engrams:
+        parallelize_module(
+            engram.embed, hsdp_mesh, AllToAllEmbeddingParallel(parallel_dims.fsdp_gradient_divide_factor)
+        )
+    ignored_params = {engram.embed.weight for engram in engrams}
+    for engram in engrams:
+        fully_shard(engram, mesh=hsdp_mesh, ignored_params=ignored_params, **fsdp_config)
+
     fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
@@ -633,6 +667,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
+        ignored_params=ignored_params or None,
     )
     model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
@@ -700,6 +735,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        _random_init_(model)
         return
 
     if not Path(config.name).exists():
@@ -785,6 +821,29 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
         for module in lora_modules:
             module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
+
+
+@torch.no_grad()
+def _random_init_(model: nn.Module, std: float = 0.02) -> None:
+    """Draw every parameter shard: matrices from N(0, std), norm weights and scales one, the rest zero.
+
+    `to_empty` leaves whatever the allocator hands back, so without this a debug run computes on
+    arbitrary values. Each shard is drawn from a seed of its parameter's name and its place in the
+    parameter's mesh, so layouts that shard a parameter alike draw it alike.
+    """
+    for name, param in model.named_parameters():
+        # Activation checkpointing's wrapper is not part of the parameter's identity.
+        name = name.replace(_CHECKPOINT_PREFIX, "")
+        local = param.to_local() if isinstance(param, DTensor) else param
+        if local.ndim >= 2:
+            coordinate = param.device_mesh.get_coordinate() if isinstance(param, DTensor) else []
+            generator = torch.Generator(device=local.device)
+            generator.manual_seed(zlib.crc32(f"{name}:{coordinate}".encode()))
+            local.normal_(mean=0.0, std=std, generator=generator)
+        elif "norm" in name or name.endswith("scale"):
+            local.fill_(1.0)
+        else:
+            local.zero_()
 
 
 def reshard_module(model: nn.Module):
@@ -963,6 +1022,9 @@ def setup_model(
 
     if config.freeze_moe_router:
         freeze_moe_router(model)
+
+    if config.freeze_engram_tables:
+        freeze_engram_tables(model)
 
     if config.moe_router_dtype == "float32":
         apply_fp32_moe_router(model)
