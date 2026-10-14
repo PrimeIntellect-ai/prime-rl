@@ -45,15 +45,17 @@ from prime_rl.trainer.utils import get_dcp_group, setup_torch_distributed
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.config import cli
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import get_file_monitor_dir
+from prime_rl.utils.pathing import get_file_monitor_dir, get_platform_run_path
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
+
+RUN_CONFIG = "configs/latest/resolved/pretrain.json"
 
 
 def run_config(config: EvalWorkerConfig) -> PretrainConfig:
     """The training run's resolved config (waiting for the launcher to write it), with the parallelism of the
     worker: plain FSDP over its GPUs."""
-    path = config.run_dir / "configs/latest/resolved/pretrain.json"
+    path = config.run_dir / RUN_CONFIG
     while not path.exists():
         time.sleep(config.poll_seconds)
     run = PretrainConfig.model_validate_json(path.read_text())
@@ -66,13 +68,27 @@ def run_config(config: EvalWorkerConfig) -> PretrainConfig:
 
 def platform_run_id(run_dir: Path, run: PretrainConfig, poll_seconds: int) -> str:
     """The id of the trainer's platform run, which its monitor writes to the run dir when it starts, before the
-    trainer logs any metrics. Fails if the trainer logs metrics without it (e.g. platform runs disabled)."""
+    trainer logs any metrics. Only state of the current launch counts (a resumed run dir holds an earlier
+    attempt's record and metrics). Fails if the trainer logs metrics of this launch without it (e.g. platform
+    runs disabled)."""
+    launched = (run_dir / RUN_CONFIG).stat().st_mtime
+    record_path = get_platform_run_path(run_dir)
     metrics_path = get_file_monitor_dir(run_dir) / run.monitors.file.path if run.monitors.file is not None else None
-    while (record := read_platform_record(run_dir)) is None or "id" not in record:
-        if metrics_path is not None and metrics_path.is_file() and metrics_path.stat().st_size > 0:
-            raise RuntimeError(f"The trainer logs metrics but left no platform run id in {run_dir}")
+    while True:
+        record = read_platform_record(run_dir)
+        if record is not None and "id" in record and record_path.stat().st_mtime >= launched:
+            return record["id"]
+        if metrics_path is not None and metrics_path.is_file() and last_row_time(metrics_path) >= launched:
+            raise RuntimeError(f"The trainer logs metrics but left no platform run id for this launch in {run_dir}")
         time.sleep(poll_seconds)
-    return record["id"]
+
+
+def last_row_time(path: Path) -> float:
+    """The ``time`` of the last complete row of a ``metrics.jsonl``."""
+    with path.open("rb") as f:
+        f.seek(max(0, f.seek(0, 2) - 65536))
+        rows = f.read().splitlines()
+    return json.loads(rows[-1])["time"] if rows else 0.0
 
 
 def broadcast(value: int) -> int:
