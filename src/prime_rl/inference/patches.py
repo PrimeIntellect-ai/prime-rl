@@ -10,6 +10,7 @@ def apply_shared_vllm_patches():
     entry-point target silently skips ALL of these patches.
     """
     from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
+    from prime_rl.inference.vllm.mxfp8_weight_rounding import patch_mxfp8_weight_rounding
     from prime_rl.inference.vllm.qwen38_weight_loading import patch_qwen38_weight_loading
 
     patch_gpt_oss_weight_loading()
@@ -31,6 +32,7 @@ def apply_shared_vllm_patches():
     monkey_patch_fp8_ue8m0_weight_scales()
     monkey_patch_triton_moe_swiglu_clamp()
     monkey_patch_fp8_stochastic_weight_rounding()
+    patch_mxfp8_weight_rounding()
     monkey_patch_deepseek_v4_attn_sink_loading()
     monkey_patch_deepseek_v4_c128_boundary()
 

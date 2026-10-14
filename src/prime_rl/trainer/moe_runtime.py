@@ -26,6 +26,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     MXFP8ExpertCompute,
 )
 from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.mxfp8_qat import MXFP8QATExpertCompute
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
@@ -53,6 +54,8 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
             return FP8QATExpertCompute(compute.stochastic_rounding)
         return DeepGemmFP8ExpertCompute(stochastic_rounding=compute.stochastic_rounding)
     if isinstance(compute, MXFP8MoEComputeConfig):
+        if compute.qat:
+            return MXFP8QATExpertCompute(compute.stochastic_rounding)
         import prime_kernels
 
         kernel = prime_kernels.load("mxfp8_moe")
@@ -96,7 +99,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
         moe.experts.set_compute(compute)
-        if isinstance(compute, DeepGemmFP8ExpertCompute) and compute.stochastic_rounding:
+        if isinstance(compute, (DeepGemmFP8ExpertCompute, MXFP8QATExpertCompute)) and compute.stochastic_rounding:
             moe.experts.fp8_expert_offset = (
                 ep_mesh.get_local_rank() * (moe.experts.num_experts // parallel_dims.ep) if ep_mesh is not None else 0
             )
