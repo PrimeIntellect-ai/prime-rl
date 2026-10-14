@@ -302,7 +302,7 @@ On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (o
 
 Router replay works by capturing the expert routing decisions into a buffer. This buffer then gets sent to the trainer, which can use it instead of re-computing the routing. This lowers the trainer↔inference mismatch by an order of magnitude, resulting in more stable training.
 
-To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Capture runs on vLLM's V2 model runner (forced automatically). Under disaggregated P/D the router takes the prompt routing from the prefill instance and the completion routing from the decode instance. This needs router v0.2.3 or newer: decode responses carry routing rows only from their first forward, and the router cuts them by position.
+To enable router replay, you can set `inference.vllm.enable_return_routed_experts = true`. Capture runs on vLLM's V2 model runner (forced automatically). Under disaggregated P/D the router takes the prompt routing from the prefill instance and the completion routing from the decode instance. 
 
 ```toml
 [trainer]
