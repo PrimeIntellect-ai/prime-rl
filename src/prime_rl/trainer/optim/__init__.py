@@ -5,7 +5,7 @@ from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerConfig, OptimizerInBackwardOffloadConfig
+from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
@@ -51,21 +51,20 @@ def setup_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
-    cpu_offload: bool = False,
-    full_offload_config: OptimizerInBackwardOffloadConfig | None = None,
+    offload: OffloadMode = "none",
     model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
-    if cpu_offload and full_offload_config is not None:
-        raise ValueError("State-only and full optimizer CPU offload cannot both be enabled")
-    if full_offload_config is not None and config.type not in ("adamw", "sign_sgd"):
+    cpu_offload = offload == "optimizer"
+    full_offload = offload == "full"
+    if full_offload and config.type not in ("adamw", "sign_sgd"):
         raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
-    if full_offload_config is not None and config.max_norm is not None:
+    if full_offload and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
     optimizer_named_params = named_params
     master_weights = None
-    if full_offload_config is not None:
+    if full_offload:
         if model is None:
             raise ValueError("CPU optimizer offload requires the model")
         if full_offload_dtype_policy is None:
@@ -82,12 +81,11 @@ def setup_optimizer(
         model=model,
     )
 
-    if full_offload_config is not None:
+    if full_offload:
         assert master_weights is not None
         get_logger().info("Using CPU offload for gradients and the optimizer step")
         optimizer = FullCPUOffloadOptimizer(
             optimizer,
-            offload_config=full_offload_config,
             master_weights=master_weights,
             dp_replicate=parallel_dims.dp_replicate,
         )

@@ -18,6 +18,19 @@ class ClampedSwiglu(Activation):
         return (up + 1) * gate * torch.sigmoid(gate * 1.702)
 
 
+class ClampedSilu(Activation):
+    """SwiGLU with the gate clamped to `max=limit` and up to `[-limit, limit]` (DeepSeek V4)."""
+
+    def __init__(self, limit: float) -> None:
+        self.limit = limit
+
+    def apply(self, gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
+        assert gate is not None
+        gate = gate.clamp(max=self.limit)
+        up = up.clamp(min=-self.limit, max=self.limit)
+        return F.silu(gate) * up
+
+
 class Relu2(Activation):
     @staticmethod
     def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:

@@ -176,15 +176,15 @@ def substitute_ulysses_attn(
 
     # Resolve flash kernel + version from attn_impl.
     if attn_impl == "flash_attention_4":
-        from flash_attn.cute import flash_attn_varlen_func as flash_fn
+        from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_op as flash_fn
 
         flash_attn_version = 4
     elif attn_impl == "flash_attention_3":
-        from flash_attn_interface import flash_attn_varlen_func as flash_fn
+        from prime_rl.trainer.models.layers.attn import flash_attn_3_varlen_op as flash_fn
 
         flash_attn_version = 3
     else:
-        from flash_attn import flash_attn_varlen_func as flash_fn
+        from prime_rl.trainer.models.layers.attn import flash_attn_2_varlen_op as flash_fn
 
         flash_attn_version = 2
 

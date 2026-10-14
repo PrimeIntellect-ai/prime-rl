@@ -178,7 +178,7 @@ class OnlineEval:
 
         # Trigger before the reload: the dispatcher only schedules eval in PREFER_EVAL,
         # so nothing dispatches until ``run_epoch`` switches modes below.
-        fired = runner.eval_source.trigger(step, force=force)
+        fired, _ = runner.eval_source.trigger(step, force=force)
         self.last_step = max(self.last_step, step)
 
         if reload_weights:
