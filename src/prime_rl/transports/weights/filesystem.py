@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from collections import defaultdict
 from math import prod
@@ -20,10 +21,12 @@ from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     FP8_BLOCK,
     MANIFEST,
+    anchor_complete,
     as_bits,
     encode_gaps,
     quantize_fp8_blocks,
     read_engine_layout,
+    write_anchor_shards,
     write_rank_file,
 )
 from prime_rl.utils.weights import (
@@ -236,6 +239,7 @@ class FileSystemWeightSender(WeightSender):
         self.last_step: int | None = None
         self.anchor_step: int | None = None
         self.num_deltas = 0
+        self.pending_anchor: int | None = None
         self.logger.debug("Initialized filesystem weight broadcast")
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
@@ -259,28 +263,56 @@ class FileSystemWeightSender(WeightSender):
                 )
             return
 
-        wrote_delta = False
-        if self.config.sparse:
-            if self.world.is_master:
-                # Engines that load a step with a delta dir report their weight layout next to it.
-                (step_dir / DELTA_DIR).mkdir(exist_ok=True)
-            if self.encoder is None:
-                # Deltas start once every engine worker has reported which tensors it holds in fp8.
-                layout = [read_engine_layout(step_dir.parent) if self.world.is_master else None]
-                dist.broadcast_object_list(layout, src=0)
-                if layout[0] is not None:
-                    self.encoder = SparseDeltaEncoder(model, layout[0])
-            if self.encoder is not None:
-                wrote_delta = self._save_delta(model, step, step_dir)
-                self.num_deltas += wrote_delta
-            self.last_step = step
-        # The first delta's step is an anchor too, so engines check the delta path right away.
-        if not wrote_delta or self.num_deltas == 1 or step % self.config.anchor_interval == 0:
-            state_dict = gather_weights_parallel(model)
-            state_dict = convert_state_dict_to_hf(model, state_dict)
-            self.logger.debug(f"Saving weights to {step_dir}")
-            save_state_dict_parallel(state_dict, step_dir)
+        if not self.config.sparse:
+            self._save_full(model, step_dir)
+            return
+        if self.world.is_master:
+            # Engines that load a step with a delta dir report their weight layout next to it.
+            (step_dir / DELTA_DIR).mkdir(exist_ok=True)
+        if self.encoder is None:
+            # Deltas start once every engine worker has reported which tensors it holds in fp8.
+            layout = [read_engine_layout(step_dir.parent) if self.world.is_master else None]
+            dist.broadcast_object_list(layout, src=0)
+            if layout[0] is not None:
+                self.encoder = SparseDeltaEncoder(model, layout[0])
+        wrote_delta = self.encoder is not None and self._save_delta(model, step, step_dir)
+        self.num_deltas += wrote_delta
+        self.last_step = step
+        if not wrote_delta or self.num_deltas == 1:
+            # Engines need this full checkpoint now; the first delta's step is one too, so engines
+            # check the delta path against it right away.
+            self._save_anchor(model, step_dir).join()
+            dist.barrier()
             self.anchor_step = step
+            return
+        # Periodic anchors only serve engines that fall off the chain: write them off the critical path.
+        if (
+            self.world.is_master
+            and self.pending_anchor is not None
+            and anchor_complete(self.step_dir(self.pending_anchor))
+        ):
+            self.anchor_step, self.pending_anchor = max(self.anchor_step, self.pending_anchor), None
+        start = [step % self.config.anchor_interval == 0 and self.pending_anchor is None]
+        dist.broadcast_object_list(start, src=0)
+        if start[0]:
+            self._save_anchor(model, step_dir)
+            self.pending_anchor = step
+
+    def _save_full(self, model: nn.Module, step_dir: Path) -> None:
+        state_dict = gather_weights_parallel(model)
+        state_dict = convert_state_dict_to_hf(model, state_dict)
+        self.logger.debug(f"Saving weights to {step_dir}")
+        save_state_dict_parallel(state_dict, step_dir)
+
+    def _save_anchor(self, model: nn.Module, step_dir: Path) -> threading.Thread:
+        """Gather this rank's share of the full checkpoint to CPU, then write it on a thread
+        (no collectives); engines treat the step as an anchor once every rank's marker exists."""
+        state_dict = convert_state_dict_to_hf(model, gather_weights_parallel(model))
+        thread = threading.Thread(
+            target=write_anchor_shards, args=(state_dict, step_dir, self.world.rank, self.world.world_size)
+        )
+        thread.start()
+        return thread
 
     def _save_delta(self, model: nn.Module, step: int, step_dir: Path) -> bool:
         """Write this step's delta (all ranks). False when the step must be a full checkpoint instead."""

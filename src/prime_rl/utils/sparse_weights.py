@@ -18,6 +18,7 @@ import pyzstd
 import torch
 from safetensors import safe_open
 from safetensors.numpy import save_file
+from safetensors.torch import save_file as save_torch_file
 
 DELTA_DIR = "delta"
 MANIFEST = "manifest.json"
@@ -121,6 +122,30 @@ def _read_rank_file(
     if torch.cuda.is_available():
         gaps, values = gaps.pin_memory(), values.pin_memory()
     return entries, gaps, values
+
+
+def write_anchor_shards(state_dict: dict[str, torch.Tensor], step_dir: Path, rank: int, world_size: int) -> None:
+    """Write one trainer rank's share of a full checkpoint, without collectives; the
+    ``anchor_rank{rank}.done`` marker (holding the world size) is written last."""
+    shards, size = [[]], 0
+    for name, tensor in state_dict.items():
+        if size > 4 * 2**30:
+            shards.append([])
+            size = 0
+        shards[-1].append(name)
+        size += tensor.nbytes
+    for index, names in enumerate(shards):
+        path = step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors"
+        tmp = step_dir / f".{path.name}.tmp"
+        save_torch_file({name: state_dict[name].contiguous() for name in names}, tmp, metadata={"format": "pt"})
+        tmp.rename(path)
+    (step_dir / f"anchor_rank{rank}.done").write_text(str(world_size))
+
+
+def anchor_complete(step_dir: Path) -> bool:
+    """Whether ``step_dir`` holds a complete full checkpoint written by ``write_anchor_shards``."""
+    markers = list(step_dir.glob("anchor_rank*.done"))
+    return bool(markers) and len(markers) == int(markers[0].read_text())
 
 
 def read_engine_layout(broadcast_dir: Path) -> dict[str, str] | None:
