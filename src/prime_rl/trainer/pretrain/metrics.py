@@ -1,5 +1,6 @@
 import math
 from collections import defaultdict, deque
+from collections.abc import Iterable
 
 import torch
 import torch.distributed as dist
@@ -106,21 +107,18 @@ def param_group(name: str) -> str:
     return "mlp"
 
 
-def grad_norms_by_group(model: nn.Module) -> dict[str, Tensor]:
-    """Gradient L2 norm per parameter group (see `param_group`). The squared norms of the local shards are summed
-    over the sharded mesh dimensions only (replicated dimensions hold the same gradient), one collective per mesh
-    and placement."""
+def group_norms(named_tensors: Iterable[tuple[str, Tensor]], group_of=param_group) -> dict[str, Tensor]:
+    """L2 norm of (possibly sharded) tensors per group. The squared norms of the local shards are summed over the
+    sharded mesh dimensions only (replicated dimensions hold the same values), one collective per mesh and
+    placement."""
     by_layout: dict = defaultdict(lambda: defaultdict(list))
-    for name, param in model.named_parameters():
-        grad = param.grad
-        if grad is None:
-            continue
-        layout = (grad.device_mesh, tuple(grad.placements)) if isinstance(grad, DTensor) else None
-        by_layout[layout][param_group(name)].append(grad.to_local() if isinstance(grad, DTensor) else grad)
+    for name, tensor in named_tensors:
+        layout = (tensor.device_mesh, tuple(tensor.placements)) if isinstance(tensor, DTensor) else None
+        by_layout[layout][group_of(name)].append(tensor.to_local() if isinstance(tensor, DTensor) else tensor)
     squares: dict[str, Tensor] = {}
     for layout, groups in by_layout.items():
         local = torch.stack(
-            [torch.stack(torch._foreach_norm(grads)).double().square().sum() for grads in groups.values()]
+            [torch.stack(torch._foreach_norm(tensors)).double().square().sum() for tensors in groups.values()]
         )
         if layout is not None:
             mesh, placements = layout
@@ -130,3 +128,8 @@ def grad_norms_by_group(model: nn.Module) -> dict[str, Tensor]:
         for group, square in zip(groups, local):
             squares[group] = squares.get(group, 0) + square
     return {group: square.sqrt() for group, square in squares.items()}
+
+
+def grad_norms_by_group(model: nn.Module) -> dict[str, Tensor]:
+    """Gradient L2 norm per parameter group (see `param_group`)."""
+    return group_norms((name, param.grad) for name, param in model.named_parameters() if param.grad is not None)

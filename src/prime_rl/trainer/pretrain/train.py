@@ -33,6 +33,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.pretrain.completep import completep_param_groups
+from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
 from prime_rl.trainer.pretrain.metrics import (
     DeadExperts,
     SpikeDetector,
@@ -274,6 +275,8 @@ def train(config: PretrainConfig):
     dead_experts = DeadExperts()
     loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
     last_bias_moves = None
+    probe = None
+    update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
     while True:
         if gc_handler is not None:
@@ -299,6 +302,8 @@ def train(config: PretrainConfig):
             data_start_time = time.perf_counter()
             micro_batch = next(dataiter) if gradient_manager is None else micro_batches[micro_step]
             data_time += time.perf_counter() - data_start_time
+            if config.diagnostics is not None and probe is None:
+                probe = probe_batch(micro_batch, config.diagnostics.probe_tokens)
             sums["tokens"] += micro_batch["input_ids"].shape[1]
             local_loss_sum, batch_token_count, aux_loss_sum, seq_balances = compute_loss(micro_batch)
             sums["loss_tokens"] += batch_token_count
@@ -376,6 +381,9 @@ def train(config: PretrainConfig):
 
         group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
+        is_diagnostic_step = config.diagnostics is not None and progress.step % config.diagnostics.interval == 0
+        if is_diagnostic_step:
+            update_tracker.before_step(model)
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
@@ -390,6 +398,13 @@ def train(config: PretrainConfig):
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
+
+        diagnostic_metrics = {}
+        if is_diagnostic_step:
+            diagnostic_metrics = update_tracker.after_step(model) | run_probe(model, probe, dp_cp_group)
+            reshard_module(model)
+            if is_moe_model:
+                take_routing_counts(model)
 
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
@@ -440,6 +455,7 @@ def train(config: PretrainConfig):
             "time/evals": eval_time,
             **disk_metrics,
             **moe_metrics,
+            **diagnostic_metrics,
             "step": progress.step,
         }
         if grad_norm is not None:

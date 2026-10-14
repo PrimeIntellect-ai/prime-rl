@@ -118,6 +118,18 @@ class ValConfig(BaseConfig):
     """Held-out sets. With ``data.holdout_docs > 0`` the training holdout is added as ``holdout``."""
 
 
+class DiagnosticsConfig(BaseConfig):
+    """Diagnostic step: on every ``interval``-th step, the optimizer update's size per parameter group and a
+    forward pass on a fixed probe batch (the first ``probe_tokens`` tokens of each rank's first micro-batch)
+    that records attention max logits and entropy per head and the residual-stream size per layer."""
+
+    interval: int = Field(100, ge=1)
+    """Run the diagnostics every N steps."""
+
+    probe_tokens: int = Field(2048, ge=64)
+    """Tokens per rank in the probe batch. Fixed across sequence lengths so attention entropy stays comparable."""
+
+
 class PretrainDeploymentConfig(BaseConfig):
     num_train_gpus: int = Field(1, ge=1)
     """GPUs for the trainer, on this node."""
@@ -135,6 +147,9 @@ class PretrainConfig(BaseConfig):
 
     val: ValConfig | None = None
     """Perplexity evals. If None, none run."""
+
+    diagnostics: DiagnosticsConfig | None = DiagnosticsConfig()
+    """Diagnostic step (update sizes, attention and activation probe). If None, it never runs."""
 
     optim: OptimizerConfig = AdamWConfig()
 
@@ -262,6 +277,8 @@ class PretrainConfig(BaseConfig):
                 raise ValueError("data.micro_batch_size must be 1 with context parallelism")
             if self.val is not None:
                 raise ValueError("[val] does not support context parallelism yet")
+            if self.diagnostics is not None:
+                raise ValueError("[diagnostics] does not support context parallelism yet; set diagnostics = null")
         return self
 
     @model_validator(mode="after")
