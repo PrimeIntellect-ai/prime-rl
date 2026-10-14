@@ -33,7 +33,7 @@ class InitConfig(BaseConfig):
 
 class PretrainModelConfig(ModelConfig):
     arch: dict[str, Any]
-    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/model``, which ``name`` points at."""
+    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/configs/model``, which ``name`` points at."""
 
     init: InitConfig = InitConfig()
     """Random weight initialization. Used unless the run resumes from a checkpoint."""
@@ -226,8 +226,8 @@ class PretrainConfig(TrainRunConfig):
 
     @model_validator(mode="after")
     def auto_setup_model_dir(self):
-        """The model is trained from ``<run_dir>/model``, written by the launcher from ``model.arch``."""
-        self.model.name = (self.run_dir / "model").as_posix()
+        """The model is trained from ``<run_dir>/configs/model``, written by the launcher from ``model.arch``."""
+        self.model.name = (self.run_dir / "configs" / "model").as_posix()
         return self
 
     @model_validator(mode="after")
