@@ -1,183 +1,218 @@
-from collections.abc import Iterable, Iterator
-from typing import cast
+import bisect
+from pathlib import Path
 
-from datasets import Dataset, load_dataset
+import numpy as np
+import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
-from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import TextDataConfig
-from prime_rl.trainer.sft.data import Sample, StatefulIterableDataset, cat_collate, setup_and_interleave_datasets
+from prime_rl.configs.pretrain import MixturePhaseConfig, PretrainDataConfig, TokenSourceConfig
+from prime_rl.trainer.sft.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 
-LIST_KEYS = ("input_ids", "target_ids", "loss_mask", "position_ids", "seq_lens")
+
+class TokenShards:
+    """Datatrove tokenized shards in one folder, read as one token stream in file-name order.
+
+    ``<name>.ds`` holds the token ids (little-endian, 2 or 4 bytes as recorded on the first line of
+    ``<name>.ds.metadata``) and ``<name>.ds.index`` the uint64 end offset of every document. File
+    boundaries are document boundaries. The stream wraps around after ``num_tokens``."""
+
+    def __init__(self, config: TokenSourceConfig):
+        self.files = sorted(config.path.glob("*.ds"))
+        if not self.files:
+            raise FileNotFoundError(f"No datatrove .ds files in {config.path}")
+        self.dtypes = [token_dtype(file) for file in self.files]
+        sizes = [file.stat().st_size // dtype.itemsize for file, dtype in zip(self.files, self.dtypes)]
+        self.starts = np.cumsum([0, *sizes])
+        total = int(self.starts[-1])
+        if config.max_tokens is not None and config.max_tokens > total:
+            raise ValueError(f"{config.path} has {total:,} tokens, fewer than max_tokens={config.max_tokens:,}")
+        self.num_tokens = total if config.max_tokens is None else config.max_tokens
+        self.memmaps: dict[int, tuple[np.memmap, np.memmap]] = {}
+
+    def open(self, file_index: int) -> tuple[np.memmap, np.memmap]:
+        # Opened lazily, so every dataloader worker maps the files itself.
+        if file_index not in self.memmaps:
+            file = self.files[file_index]
+            tokens = np.memmap(file, dtype=self.dtypes[file_index], mode="r")
+            doc_ends = np.memmap(f"{file}.index", dtype="<u8", mode="r")
+            self.memmaps[file_index] = tokens, doc_ends
+        return self.memmaps[file_index]
+
+    def read(self, start: int, length: int) -> tuple[np.ndarray, list[int]]:
+        """Tokens ``[start, start + length)`` of the stream and the offsets in them where a document starts."""
+        pieces, doc_starts = [], []
+        offset = 0
+        while offset < length:
+            if offset > 0:
+                doc_starts.append(offset)
+            position = (start + offset) % self.num_tokens
+            file_index = int(np.searchsorted(self.starts, position, side="right")) - 1
+            local = position - int(self.starts[file_index])
+            size = min(length - offset, int(self.starts[file_index + 1]) - position, self.num_tokens - position)
+            tokens, doc_ends = self.open(file_index)
+            pieces.append(tokens[local : local + size])
+            first, last = np.searchsorted(doc_ends, [local, local + size], side="right")
+            doc_starts.extend(offset + int(end) - local for end in doc_ends[first:last] if end < local + size)
+            offset += size
+        return np.concatenate(pieces).astype(np.int64), doc_starts
+
+    def last_token_of_first_document(self) -> int:
+        tokens, doc_ends = self.open(0)
+        return int(tokens[int(doc_ends[0]) - 1])
 
 
-def tokenize_document(tokenizer: PreTrainedTokenizer, text: str) -> list[int]:
-    """Token ids of one document, with the tokenizer's BOS (if it adds one) and a closing EOS."""
-    token_ids = tokenizer(text)["input_ids"]
-    if not token_ids or token_ids[-1] != tokenizer.eos_token_id:
-        token_ids.append(tokenizer.eos_token_id)
-    return token_ids
+def token_dtype(file: Path) -> np.dtype:
+    first_line = Path(f"{file}.metadata").read_text().splitlines()[0]
+    return np.dtype(f"<u{int(first_line.rsplit('|', 1)[1])}")
 
 
-def cut_row(tokens: list[int], doc_starts: list[int], seq_len: int, document_masking: bool) -> Sample:
-    """One training row from ``seq_len + 1`` tokens: inputs are the first ``seq_len``, targets the
-    last ``seq_len``. ``doc_starts`` are the offsets in ``tokens`` where a document begins. With
-    document masking, every document (and the continued document at offset 0) is its own segment
-    with positions starting at 0."""
-    assert len(tokens) == seq_len + 1
-    if document_masking:
-        boundaries = sorted({0, *(start for start in doc_starts if 0 < start < seq_len)})
-        seq_lens = [end - start for start, end in zip(boundaries, [*boundaries[1:], seq_len])]
-    else:
-        seq_lens = [seq_len]
+class RandomTokens:
+    """An endless stream of uniformly random token ids without document boundaries, for smoke tests."""
+
+    num_tokens = 2**62
+
+    def __init__(self, vocab_size: int, seed: int):
+        self.vocab_size = vocab_size
+        self.seed = seed
+
+    def read(self, start: int, length: int) -> tuple[np.ndarray, list[int]]:
+        return np.random.default_rng([self.seed, start]).integers(0, self.vocab_size, length), []
+
+
+class TokenDataset(StatefulIterableDataset):
+    """``seq_len`` windows of token sources, each window from one source of a weighted mixture.
+
+    Window ``w`` belongs to step ``w // batch_size``; its source is drawn from that step's phase weights
+    with an RNG keyed by ``(seed, w)``, and it continues the source's stream where that source's last
+    window ended. Every data rank walks the whole window sequence but reads only its own windows, so the
+    state (the window counter and the tokens read per source) does not depend on the world size. Each
+    window reads one token past its end for the last target. With ``num_windows`` the dataset stops
+    after that many windows."""
+
+    def __init__(
+        self,
+        sources: dict[str, TokenShards | RandomTokens],
+        phases: list[MixturePhaseConfig],
+        seq_len: int,
+        batch_size: int,
+        max_steps: int,
+        seed: int = 0,
+        non_dp_size: int = 1,
+        num_windows: int | None = None,
+    ):
+        super().__init__(non_dp_size)
+        self.sources = sources
+        self.names = list(sources)
+        self.phase_starts = [round(phase.start * max_steps) for phase in phases]
+        self.phase_cdfs = [np.cumsum([phase.weights.get(name, 0.0) for name in self.names]) for phase in phases]
+        self.seq_len = seq_len
+        self.batch_size = batch_size
+        self.seed = seed
+        self.num_windows = num_windows
+        self.tokens = dict.fromkeys(self.names, 0)
+
+    def epochs(self) -> dict[str, float]:
+        return {name: self.tokens[name] / self.sources[name].num_tokens for name in self.names}
+
+    def state_dict(self) -> dict:
+        return {"dataset": {"step": self.step, "tokens": dict(self.tokens), "epochs": self.epochs()}}
+
+    def load_state_dict(self, state_dict: dict):
+        self.step = state_dict["dataset"]["step"]
+        self.tokens.update(state_dict["dataset"]["tokens"])
+
+    def planned_epochs(self, max_steps: int) -> dict[str, float]:
+        """Expected passes over each source's tokens in ``max_steps`` steps."""
+        ends = [*self.phase_starts[1:], max_steps]
+        step_tokens = self.batch_size * self.seq_len
+        tokens = sum(
+            (end - start) * step_tokens * np.diff(cdf, prepend=0.0)
+            for start, end, cdf in zip(self.phase_starts, ends, self.phase_cdfs)
+        )
+        return {name: float(tokens[i]) / self.sources[name].num_tokens for i, name in enumerate(self.names)}
+
+    def source(self, window: int) -> str:
+        if len(self.names) == 1:
+            return self.names[0]
+        phase = bisect.bisect_right(self.phase_starts, window // self.batch_size) - 1
+        cdf = self.phase_cdfs[phase]
+        draw = np.random.default_rng([self.seed, window]).random() * cdf[-1]
+        return self.names[min(int(np.searchsorted(cdf, draw, side="right")), len(self.names) - 1)]
+
+    def __iter__(self):
+        self._setup_world_info()
+        while self.num_windows is None or self.step < self.num_windows:
+            window = self.step
+            name = self.source(window)
+            start = self.tokens[name]
+            self.tokens[name] += self.seq_len
+            self.step += 1
+            if window % self.data_world_size != self.data_rank:
+                continue
+            tokens, doc_starts = self.sources[name].read(start, self.seq_len + 1)
+            yield {
+                "tokens": tokens,
+                "seq_lens": np.diff([0, *(s for s in doc_starts if s < self.seq_len), self.seq_len]),
+            }
+
+
+def collate_rows(rows: list[dict]) -> dict:
+    """Concatenate windows into one packed sample of shape ``[1, len(rows) * seq_len]``. Positions restart at
+    every document; attention never crosses a document or a window."""
+    tokens = torch.from_numpy(np.stack([row["tokens"] for row in rows]))
+    seq_lens = torch.from_numpy(np.concatenate([row["seq_lens"] for row in rows]))
     return {
-        "input_ids": tokens[:-1],
-        "target_ids": tokens[1:],
-        "loss_mask": [True] * seq_len,
-        "position_ids": [position for length in seq_lens for position in range(length)],
+        "input_ids": tokens[:, :-1].reshape(1, -1),
+        "target_ids": tokens[:, 1:].reshape(1, -1),
+        "loss_mask": torch.ones((1, tokens.shape[0] * (tokens.shape[1] - 1)), dtype=torch.bool),
+        "position_ids": torch.cat([torch.arange(length) for length in seq_lens.tolist()]).unsqueeze(0),
         "seq_lens": seq_lens,
         "mm_kwargs": None,
         "mm_token_type_ids": None,
     }
 
 
-class TextDataset(StatefulIterableDataset):
-    """Tokenized documents of this data rank, reshuffled every epoch. Documents are addressed by
-    their global index, so resuming jumps straight to the saved position."""
-
-    def __init__(
-        self,
-        dataset: Dataset,
-        tokenizer: PreTrainedTokenizer,
-        text_column: str = "text",
-        shuffle: bool = True,
-        seed: int = 0,
-        non_dp_size: int = 1,
-    ):
-        super().__init__(non_dp_size)
-        self.dataset = dataset
-        self.num_examples = len(dataset)
-        self.tokenizer = tokenizer
-        self.text_column = text_column
-        self.shuffle = shuffle
-        self.seed = seed
-
-    def epoch_dataset(self) -> Dataset:
-        return self.dataset.shuffle(seed=self.seed + self.epoch) if self.shuffle else self.dataset
-
-    def __iter__(self) -> Iterator[list[int]]:
-        self._setup_world_info()
-        dataset = self.epoch_dataset()
-        while True:
-            self.step += 1
-            epoch = (self.step - 1) // self.num_examples
-            if epoch > self.epoch:
-                self.epoch = epoch
-                dataset = self.epoch_dataset()
-            if (self.step - 1) % self.data_world_size != self.data_rank:
-                continue
-            example = cast(dict, dataset[(self.step - 1) % self.num_examples])
-            token_ids = tokenize_document(self.tokenizer, example[self.text_column])
-            source = example.get("__subset") or example.get("__split")
-            self.num_samples[source] += 1
-            self.num_tokens[source] += len(token_ids)
-            yield token_ids
-
-
-class StreamPacker(StatefulIterableDataset):
-    """Cuts a document stream into rows of exactly ``seq_len`` tokens (see ``cut_row``) and
-    yields ``rows_per_sample`` consecutive rows concatenated as one packed sample. Documents
-    continue across rows, so nothing is truncated or padded, but attention never crosses a
-    row. The tokens not yet emitted are part of the checkpoint state. Any iterable of
-    documents works as the source; checkpointing needs a ``TextDataset``."""
-
-    def __init__(
-        self,
-        dataset: TextDataset | Iterable[list[int]],
-        seq_len: int,
-        document_masking: bool,
-        rows_per_sample: int = 1,
-    ):
-        self.dataset = dataset
-        self.seq_len = seq_len
-        self.document_masking = document_masking
-        self.rows_per_sample = rows_per_sample
-        self.buffer: list[int] = []
-        self.doc_starts: list[int] = []
-
-    def state_dict(self) -> dict:
-        return {
-            "dataset": self.dataset.state_dict(),
-            "progress": {"num_samples": dict(self.dataset.num_samples), "num_tokens": dict(self.dataset.num_tokens)},
-            "buffer": self.buffer,
-            "doc_starts": self.doc_starts,
-        }
-
-    def load_state_dict(self, state_dict: dict):
-        self.dataset.load_state_dict(state_dict["dataset"])
-        self.dataset.num_samples.update(state_dict["progress"]["num_samples"])
-        self.dataset.num_tokens.update(state_dict["progress"]["num_tokens"])
-        self.buffer = state_dict["buffer"]
-        self.doc_starts = state_dict["doc_starts"]
-
-    def next_row(self) -> Sample:
-        row = cut_row(self.buffer[: self.seq_len + 1], self.doc_starts, self.seq_len, self.document_masking)
-        self.buffer = self.buffer[self.seq_len :]
-        self.doc_starts = [start - self.seq_len for start in self.doc_starts if start >= self.seq_len]
-        return row
-
-    def __iter__(self) -> Iterator[Sample]:
-        for document in self.dataset:
-            self.doc_starts.append(len(self.buffer))
-            self.buffer.extend(document)
-            while len(self.buffer) >= self.seq_len * self.rows_per_sample + 1:
-                rows = [self.next_row() for _ in range(self.rows_per_sample)]
-                sample = {key: [value for row in rows for value in row[key]] for key in LIST_KEYS}
-                yield {**sample, "mm_kwargs": None, "mm_token_type_ids": None}
-
-
-def load_text_dataset(config: TextDataConfig) -> Dataset:
-    """Load (and interleave) the configured subsets/splits. Only their files are downloaded."""
-    splits = config.splits or ["train"] * len(config.subsets or [None])
-    subsets = config.subsets or [None] * len(splits)
-    if len(splits) == 1:
-        dataset = load_dataset(config.name, subsets[0], split=splits[0], revision=config.revision)
-        return cast(Dataset, dataset).select_columns([config.text_column])
-    dataset = setup_and_interleave_datasets(
-        dataset_name=config.name,
-        subsets_and_splits=list(zip(subsets, splits)),
-        probabilities=config.probabilities,
-        stopping_strategy=config.stopping_strategy,
-        seed=config.seed,
-        revision=config.revision,
-    )
-    return dataset.select_columns([config.text_column, "__subset", "__split"])
-
-
-def split_holdout(dataset: Dataset, holdout_docs: int) -> tuple[Dataset, Dataset | None]:
-    """Split off the last ``holdout_docs`` documents (in dataset order) as a held-out set."""
-    if holdout_docs == 0:
-        return dataset, None
-    num_train = len(dataset) - holdout_docs
-    assert num_train > 0, f"data.holdout_docs ({holdout_docs}) must be smaller than the dataset ({len(dataset)})"
-    return dataset.select(range(num_train)), dataset.select(range(num_train, len(dataset)))
-
-
-def load_eval_documents(
-    dataset: str, subset: str | None, split: str, revision: str | None, text_column: str
-) -> Dataset:
-    return cast(Dataset, load_dataset(dataset, subset, split=split, revision=revision)).select_columns([text_column])
-
-
-def setup_text_dataloader(
-    dataset: Dataset, tokenizer: PreTrainedTokenizer, config: TextDataConfig, non_dp_size: int
-) -> StatefulDataLoader:
-    get_logger().info(f"Training on {len(dataset):,} documents from {config.name}")
-    text_dataset = TextDataset(
-        dataset, tokenizer, config.text_column, shuffle=config.shuffle, seed=config.seed, non_dp_size=non_dp_size
-    )
-    packer = StreamPacker(text_dataset, config.seq_len, config.document_masking, config.micro_batch_size)
+def setup_dataloader(dataset: TokenDataset, micro_batch_size: int, num_workers: int) -> StatefulDataLoader:
     return StatefulDataLoader(
-        packer, batch_size=1, collate_fn=cat_collate, num_workers=config.num_workers, pin_memory=True
+        dataset, batch_size=micro_batch_size, collate_fn=collate_rows, num_workers=num_workers, pin_memory=True
     )
+
+
+def setup_train_dataset(
+    config: PretrainDataConfig, max_steps: int, vocab_size: int, eos_token_id: int, non_dp_size: int
+) -> TokenDataset:
+    if config.type == "fake":
+        sources = {"fake": RandomTokens(vocab_size, config.seed)}
+        phases = [MixturePhaseConfig(weights={"fake": 1.0})]
+    else:
+        sources = {name: TokenShards(source) for name, source in config.sources.items()}
+        check_eos(sources, eos_token_id)
+        phases = config.phases
+    dataset = TokenDataset(
+        sources, phases, config.seq_len, config.batch_size, max_steps, seed=config.seed, non_dp_size=non_dp_size
+    )
+    if config.type == "tokens":
+        epochs = dataset.planned_epochs(max_steps)
+        get_logger().info(f"Planned epochs per source: {epochs}")
+        if over := {name: epoch for name, epoch in epochs.items() if epoch > config.max_epochs}:
+            raise ValueError(f"Planned epochs {over} exceed data.max_epochs={config.max_epochs}")
+    return dataset
+
+
+def setup_val_dataset(source: TokenShards, seq_len: int, num_windows: int, non_dp_size: int) -> TokenDataset:
+    """One pass over the first ``num_windows`` windows of a held-out source."""
+    phases = [MixturePhaseConfig(weights={"val": 1.0})]
+    return TokenDataset({"val": source}, phases, seq_len, 1, 1, non_dp_size=non_dp_size, num_windows=num_windows)
+
+
+def check_eos(sources: dict[str, TokenShards], eos_token_id: int) -> None:
+    """Every document ends with the tokenizer's EOS. A different token there means the shards were made with
+    another tokenizer."""
+    for name, source in sources.items():
+        last = source.last_token_of_first_document()
+        if last != eos_token_id:
+            raise ValueError(
+                f"The first document of source {name!r} ends with token {last}, not the tokenizer's EOS "
+                f"{eos_token_id}. Were the shards tokenized with tokenizer.name?"
+            )

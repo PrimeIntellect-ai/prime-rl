@@ -1,58 +1,66 @@
-from datasets import Dataset
-from transformers import AutoTokenizer
+from pathlib import Path
 
-from prime_rl.trainer.pretrain.data import StreamPacker, TextDataset, cut_row, tokenize_document
+import numpy as np
 
-
-def test_cut_row_segments_documents():
-    tokens = list(range(9))
-    row = cut_row(tokens, doc_starts=[-2, 3, 5], seq_len=8, document_masking=True)
-    assert row["input_ids"] == tokens[:8]
-    assert row["target_ids"] == tokens[1:]
-    assert row["seq_lens"] == [3, 2, 3]
-    assert row["position_ids"] == [0, 1, 2, 0, 1, 0, 1, 2]
-    unmasked = cut_row(tokens, doc_starts=[3, 5], seq_len=8, document_masking=False)
-    assert unmasked["seq_lens"] == [8]
-    assert unmasked["position_ids"] == list(range(8))
+from prime_rl.configs.pretrain import MixturePhaseConfig, TokenSourceConfig
+from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, collate_rows
 
 
-def test_stream_packer_keeps_every_token():
-    documents = [list(range(start, start + length)) for start, length in [(0, 5), (100, 9), (200, 4), (300, 30)]]
-    rows = list(StreamPacker(documents, seq_len=8, document_masking=True))
-    stream = [token for document in documents for token in document]
-    assert len(rows) == (len(stream) - 1) // 8
-    assert [token for row in rows for token in row["input_ids"]] == stream[: len(rows) * 8]
-    assert all(row["target_ids"][-1] == next_row["input_ids"][0] for row, next_row in zip(rows, rows[1:]))
-    assert rows[0]["seq_lens"] == [5, 3]
-    assert rows[1]["seq_lens"] == [6, 2]
-
-    samples = list(StreamPacker(documents, seq_len=8, document_masking=False, rows_per_sample=2))
-    assert [sample["seq_lens"] for sample in samples] == [[8, 8]] * len(samples)
-    assert samples[0]["input_ids"] == rows[0]["input_ids"] + rows[1]["input_ids"]
+def write_shard(path: Path, documents: list[list[int]]) -> None:
+    """A datatrove DocumentTokenizer shard: uint32 tokens, uint64 cumulative document ends, metadata."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.array([token for document in documents for token in document], dtype="<u4").tofile(path)
+    np.cumsum([len(document) for document in documents], dtype="<u8").tofile(f"{path}.index")
+    Path(f"{path}.metadata").write_text("tokenizer|4\n0\n0")
 
 
-def test_stream_packer_resumes_mid_document():
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
-    texts = [f"Document {i}: " + "word " * (7 * i + 3) for i in range(40)]
-    dataset = Dataset.from_list([{"text": text} for text in texts])
-
-    def packer():
-        return StreamPacker(TextDataset(dataset, tokenizer, shuffle=True, seed=1), seq_len=16, document_masking=True)
-
-    reference = packer()
-    reference_rows = iter(reference)
-    for _ in range(7):
-        next(reference_rows)
-    state = reference.state_dict()
-    expected = [next(reference_rows) for _ in range(20)]
-
-    resumed = packer()
-    resumed.load_state_dict(state)
-    assert [row for row, _ in zip(resumed, range(20))] == expected
+def test_token_shards_read_across_files_and_wrap(tmp_path):
+    write_shard(tmp_path / "a" / "00.ds", [[1, 2, 3], [4, 5]])
+    write_shard(tmp_path / "a" / "01.ds", [[6, 7, 8, 9]])
+    shards = TokenShards(TokenSourceConfig(path=tmp_path / "a"))
+    assert shards.num_tokens == 9
+    tokens, doc_starts = shards.read(1, 6)
+    assert tokens.tolist() == [2, 3, 4, 5, 6, 7]
+    assert doc_starts == [2, 4]
+    tokens, doc_starts = shards.read(7, 4)
+    assert tokens.tolist() == [8, 9, 1, 2]
+    assert doc_starts == [2]
 
 
-def test_tokenize_document_appends_eos():
-    tokenizer = AutoTokenizer.from_pretrained("PrimeIntellect/Qwen3-0.6B")
-    token_ids = tokenize_document(tokenizer, "Hello world")
-    assert token_ids[-1] == tokenizer.eos_token_id
-    assert token_ids.count(tokenizer.eos_token_id) == 1
+def test_token_dataset_resumes_and_follows_phases(tmp_path):
+    write_shard(tmp_path / "a" / "00.ds", [list(range(100, 200))])
+    write_shard(tmp_path / "b" / "00.ds", [list(range(200, 300))])
+    sources = {name: TokenShards(TokenSourceConfig(path=tmp_path / name)) for name in "ab"}
+    phases = [MixturePhaseConfig(weights={"a": 1.0}), MixturePhaseConfig(start=0.5, weights={"b": 1.0})]
+
+    def dataset():
+        return TokenDataset(sources, phases, seq_len=4, batch_size=2, max_steps=4)
+
+    full = [window["tokens"].tolist() for window in dataset()][:8]
+    assert full[:4] == [
+        [100, 101, 102, 103, 104],
+        [104, 105, 106, 107, 108],
+        [108, 109, 110, 111, 112],
+        [112, 113, 114, 115, 116],
+    ]
+    assert full[4][0] == 200
+
+    first = dataset()
+    iterator = iter(first)
+    for _ in range(3):
+        next(iterator)
+    resumed = dataset()
+    resumed.load_state_dict(first.state_dict())
+    assert [window["tokens"].tolist() for window in resumed][:5] == full[3:8]
+
+
+def test_collate_rows_restarts_positions_at_documents():
+    rows = [
+        {"tokens": np.arange(5), "seq_lens": np.array([3, 1])},
+        {"tokens": np.arange(10, 15), "seq_lens": np.array([4])},
+    ]
+    batch = collate_rows(rows)
+    assert batch["input_ids"].tolist() == [[0, 1, 2, 3, 10, 11, 12, 13]]
+    assert batch["target_ids"].tolist() == [[1, 2, 3, 4, 11, 12, 13, 14]]
+    assert batch["position_ids"].tolist() == [[0, 1, 2, 0, 0, 1, 2, 3]]
+    assert batch["seq_lens"].tolist() == [3, 1, 4]

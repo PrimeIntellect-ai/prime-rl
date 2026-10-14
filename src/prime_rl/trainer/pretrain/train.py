@@ -11,7 +11,6 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch import nn
-from transformers import AutoConfig
 
 from prime_rl import monitors
 from prime_rl.configs.pretrain import PretrainConfig
@@ -32,11 +31,17 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.pretrain.data import load_text_dataset, setup_text_dataloader, split_holdout
-from prime_rl.trainer.pretrain.evals.common import token_byte_lengths
-from prime_rl.trainer.pretrain.evals.perplexity import build_perplexity_set, evaluate_perplexity, load_perplexity_set
+from prime_rl.trainer.init import init_weights
+from prime_rl.trainer.pretrain.bytes import token_byte_lengths
+from prime_rl.trainer.pretrain.data import (
+    TokenShards,
+    check_eos,
+    setup_dataloader,
+    setup_train_dataset,
+    setup_val_dataset,
+)
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state, setup_dataloader, setup_dataset
+from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
 from prime_rl.trainer.utils import (
     GarbageCollection,
     begin_backward,
@@ -56,18 +61,6 @@ from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
-
-
-def check_arch(config: PretrainConfig) -> None:
-    """``[model.arch]`` is applied by the launcher, which writes the model dir that ``model.name``
-    points at. Fail if the trainer was started on a config that doesn't match."""
-    hf_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
-    mismatched = {key: value for key, value in config.model.arch.items() if getattr(hf_config, key, None) != value}
-    if mismatched:
-        raise ValueError(
-            f"{config.model.name} does not match [model.arch] {mismatched}. Launch through `uv run pretrain`, "
-            "which writes the model dir with the overrides applied."
-        )
 
 
 def count_parameters(model: nn.Module) -> dict[str, int]:
@@ -118,9 +111,6 @@ def train(config: PretrainConfig):
     )
     grad_accum_steps = total_micro_batches // micro_batches_per_step
 
-    if config.model.arch:
-        check_arch(config)
-
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
     checkpoint_step = None
     if config.resume is not None:
@@ -130,7 +120,10 @@ def train(config: PretrainConfig):
             checkpoint_step = config.resume.step or resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     logger.info(f"Initializing model ({config.model})")
-    model = setup_model(config.model, parallel_dims, loading_from_checkpoint_later=checkpoint_step is not None)
+    # Weights come from the checkpoint when resuming and from the random init otherwise.
+    model = setup_model(config.model, parallel_dims, loading_from_checkpoint_later=True)
+    if checkpoint_step is None:
+        init_weights(model, config.model.init)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
     num_params = count_parameters(model)
@@ -154,33 +147,32 @@ def train(config: PretrainConfig):
 
     scheduler_steps = (
         config.max_steps - checkpoint_step
-        if config.max_steps is not None and (config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None)
+        if config.ckpt and config.ckpt.skip_scheduler and checkpoint_step is not None
         else config.max_steps
     )
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
-    holdout = None
-    if config.data.type == "text":
-        documents, holdout = split_holdout(load_text_dataset(config.data), config.data.holdout_docs)
-        dataloader = setup_text_dataloader(documents, tokenizer, config.data, config.model.cp)
-    else:
-        dataloader = setup_dataloader(
-            setup_dataset(tokenizer, config.data, config.model.cp), config.data, config.model.cp
-        )
+    dataloader = setup_dataloader(
+        setup_train_dataset(
+            config.data, config.max_steps, len(tokenizer), tokenizer.eos_token_id, non_dp_size=config.model.cp
+        ),
+        config.data.micro_batch_size,
+        config.data.num_workers,
+    )
 
-    eval_seq_len = config.data.seq_len
-    perplexity_sets = []
+    val_sources = {}
     if config.val is not None:
-        if holdout is not None:
-            perplexity_sets.append(
-                build_perplexity_set(
-                    "holdout", holdout, tokenizer, eval_seq_len, max_tokens=10**12, text_column=config.data.text_column
-                )
-            )
-        perplexity_sets += [load_perplexity_set(source, tokenizer, eval_seq_len) for source in config.val.source]
-        for eval_set in perplexity_sets:
-            logger.info(f"Perplexity eval {eval_set.name!r}: {len(eval_set.rows) * eval_seq_len:,} tokens")
-    byte_lengths = token_byte_lengths(tokenizer) if perplexity_sets else None
+        val_sources = {name: TokenShards(source) for name, source in config.val.sources.items()}
+        check_eos(val_sources, tokenizer.eos_token_id)
+        byte_lengths = token_byte_lengths(tokenizer).to("cuda")
+        # Whole micro-batches on every data-parallel rank, as every forward is a collective.
+        windows_per_round = parallel_dims.get_mesh("dp").size() * config.data.micro_batch_size
+        val_windows = {}
+        for name, source in val_sources.items():
+            val_windows[name] = (source.num_tokens - 1) // config.data.seq_len // windows_per_round * windows_per_round
+            if val_windows[name] == 0:
+                raise ValueError(f"Val source {name!r} has fewer than {windows_per_round} windows of data.seq_len")
+            logger.info(f"Val source {name!r}: {val_windows[name] * config.data.seq_len:,} tokens")
 
     progress = Progress()
     if checkpoint_step is not None:
@@ -231,9 +223,24 @@ def train(config: PretrainConfig):
             )
         return out["loss"], loss_mask.sum(dtype=torch.int64)
 
+    @torch.no_grad()
     def run_evals(step: int) -> None:
-        """Perplexity evals on the weights after ``step`` optimizer updates."""
-        metrics = evaluate_perplexity(model, perplexity_sets, byte_lengths)
+        """Held-out loss, perplexity and bits per byte on the weights after ``step`` optimizer updates."""
+        metrics = {}
+        for name, source in val_sources.items():
+            val_dataset = setup_val_dataset(source, config.data.seq_len, val_windows[name], config.model.cp)
+            totals = torch.zeros(3, dtype=torch.float64, device="cuda")  # loss sum, tokens, bytes
+            for micro_batch in setup_dataloader(val_dataset, config.data.micro_batch_size, num_workers=1):
+                loss_sum, token_count = compute_loss(micro_batch)
+                # The bytes are counted on the unsharded targets, so every CP rank counts them once.
+                num_bytes = byte_lengths[micro_batch["target_ids"].to("cuda")].sum() / cp_size
+                totals += torch.stack([loss_sum.double(), token_count.double(), num_bytes.double()])
+            dist.all_reduce(totals, op=dist.ReduceOp.SUM, group=dp_cp_group)
+            loss_sum, num_tokens, num_bytes = totals.tolist()
+            loss = loss_sum / num_tokens
+            metrics[f"val/{name}/loss"] = loss
+            metrics[f"val/{name}/ppl"] = math.exp(min(loss, 20))
+            metrics[f"val/{name}/bpb"] = loss_sum / (math.log(2) * num_bytes)
         # The no-grad eval forwards leave the [lm_head, norm] FSDP group unsharded, and their
         # routing must not count toward the next step's MoE statistics.
         reshard_module(model)
@@ -247,12 +254,12 @@ def train(config: PretrainConfig):
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3
-    logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
+    logger.info(f"Starting training loop (max_steps={config.max_steps})")
     while True:
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
-        is_last_step = config.max_steps is not None and progress.step >= config.max_steps
+        is_last_step = progress.step >= config.max_steps
         step_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
@@ -365,7 +372,8 @@ def train(config: PretrainConfig):
             "loss/perplexity": math.exp(min(batch_loss, 20)),
             "loss/nan_count": nan_loss_count,
             "optim/lr": current_lr,
-            "progress/epoch": dataset_progress["epoch"],
+            **{f"progress/{name}/epochs": epochs for name, epochs in dataset_progress["epochs"].items()},
+            **{f"progress/{name}/num_tokens": tokens for name, tokens in dataset_progress["tokens"].items()},
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
             "perf/throughput": throughput,

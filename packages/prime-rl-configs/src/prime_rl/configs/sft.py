@@ -294,13 +294,6 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def resolve_random_init_mode_auto(self):
-        """Resolve ``model.debug.random_init_mode='auto'``: SFT skips weight loading without initializing."""
-        if self.model.debug.random_init_mode == "auto":
-            self.model.debug.random_init_mode = "skip"
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_run_identity(self):
         """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
         default the run directory, W&B run name and platform run name to it when not

@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+from pathlib import Path
 
 from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.utils.config import cli, dump_resolved_config
@@ -24,36 +25,31 @@ PRETRAIN_CONFIG = "pretrain.json"
 
 
 def write_model_dir(config: PretrainConfig) -> None:
-    """Write the baseline's config with ``[model.arch]`` applied, plus its tokenizer, to
-    ``<run_dir>/model``, and point the model and tokenizer at it."""
-    from transformers import AutoConfig, AutoTokenizer
+    """Write the config built from ``[model.arch]`` and the tokenizer to ``<run_dir>/model``. The vocabulary size
+    (rounded up to a multiple of 128) and the special token ids come from the tokenizer."""
+    from transformers import AutoTokenizer
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     import prime_rl.trainer.models  # noqa: F401 - registers the custom model configs with AutoConfig
 
-    model_dir = config.run_dir / "model"
-    hf_config = AutoConfig.from_pretrained(config.model.name, trust_remote_code=config.model.trust_remote_code)
-    unknown = [key for key in config.model.arch if not hasattr(hf_config, key)]
-    if unknown:
-        raise ValueError(f"[model.arch] fields {unknown} do not exist on the {hf_config.model_type!r} config")
-    for key, value in config.model.arch.items():
-        setattr(hf_config, key, value)
-    hf_config.save_pretrained(model_dir)
+    arch = dict(config.model.arch)
+    config_class = CONFIG_MAPPING[arch.pop("model_type")]
+    # PretrainedConfig keeps unknown kwargs as attributes, so a typo would silently do nothing.
+    if unknown := arch.keys() - config_class().to_dict().keys():
+        raise ValueError(f"[model.arch] fields {sorted(unknown)} do not exist on {config_class.__name__}")
     tokenizer = AutoTokenizer.from_pretrained(
         config.tokenizer.name, trust_remote_code=config.tokenizer.trust_remote_code
     )
+    hf_config = config_class(
+        **arch,
+        vocab_size=-(-len(tokenizer) // 128) * 128,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
+    )
+    model_dir = Path(config.model.name)
+    hf_config.save_pretrained(model_dir)
     tokenizer.save_pretrained(model_dir)
-    config.model.name = config.tokenizer.name = model_dir.as_posix()
-
-
-def download_data(config: PretrainConfig) -> None:
-    """Download and prepare every dataset once, so the trainer ranks load them from the cache."""
-    from prime_rl.trainer.pretrain.data import load_eval_documents, load_text_dataset
-
-    if config.data.type == "text":
-        load_text_dataset(config.data)
-    if config.val is not None:
-        for source in config.val.source:
-            load_eval_documents(source.dataset, source.subset, source.split, source.revision, source.text_column)
 
 
 def pretrain(config: PretrainConfig):
@@ -78,12 +74,7 @@ def pretrain(config: PretrainConfig):
     write_launch_artifacts(config_dir, "pretrain")
 
     if not config.dry_run:
-        from prime_rl.trainer.model import pre_download_model
-
-        pre_download_model(config.model.name, skip_weights=config.model.debug.random_init)
-        if config.model.arch:
-            write_model_dir(config)
-        download_data(config)
+        write_model_dir(config)
 
     config_path = config_dir / PRETRAIN_CONFIG
     config_path.write_text(json.dumps(dump_resolved_config(config, exclude={"dry_run", "clean"}), indent=2))

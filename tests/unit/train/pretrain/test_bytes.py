@@ -1,6 +1,6 @@
 from transformers import AutoTokenizer
 
-from prime_rl.trainer.pretrain.evals.common import token_byte_lengths
+from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 
 
 def test_token_byte_lengths_count_utf8_bytes():
