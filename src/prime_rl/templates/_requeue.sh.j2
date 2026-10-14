@@ -77,11 +77,12 @@ trap on_term TERM
 # answer within the timeout go to BAD_NODES.
 smoke_test() {
     local passed
-    # Each passing node prints its name on stdout, so no node writes to a shared file
-    passed=$(timeout 300 srun --ntasks-per-node=1 bash -s <<'SMOKE_TEST_SH' || true
+    # Each passing node prints a marked line with its name, so no node writes to a shared
+    # file; srun may merge the tasks' stderr into its stdout, hence the marker
+    passed=$(timeout 300 srun --ntasks-per-node=1 bash -s <<'SMOKE_TEST_SH' | sed -n 's/^smoke-test-passed //p' || true
 log=/tmp/prl-smoke-test-$SLURM_JOB_ID.log
 if timeout 120 torchrun --standalone --nproc-per-node="$SLURM_GPUS_ON_NODE" -m prime_rl.utils.smoke_test > "$log" 2>&1; then
-    echo "$SLURMD_NODENAME"
+    echo "smoke-test-passed $SLURMD_NODENAME"
 else
     echo "[smoke test] failed on $SLURMD_NODENAME:" >&2
     tail -n 20 "$log" >&2
