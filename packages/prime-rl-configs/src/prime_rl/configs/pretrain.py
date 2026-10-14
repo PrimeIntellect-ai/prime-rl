@@ -10,13 +10,13 @@ from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.sft import SFTDeploymentConfig, SingleNodeDeploymentConfig, setup_trainer_deployment
 from prime_rl.configs.shared import EnvVars, HeartbeatConfig, ResumeConfig, RunConfig, SlurmConfig, TrainerLogConfig
 from prime_rl.configs.trainer import (
+    AdamWConfig,
     CheckpointConfig,
     GCConfig,
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
     OffloadMode,
-    OptimizerConfig,
     TokenizerConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir
@@ -222,6 +222,19 @@ class ScheduleConfig(BaseConfig):
     """Shape of the decay from 1 to ``end_ratio``."""
 
 
+class PretrainAdamWConfig(AdamWConfig):
+    eps: float = Field(1e-8, gt=0)
+    """Adam epsilon of the base shape (scaled per role under CompleteP)."""
+
+
+class PretrainMuonConfig(MuonConfig):
+    eps: float = Field(1e-8, gt=0)
+    """Adam epsilon of the base shape for the AdamW groups (scaled per role under CompleteP)."""
+
+
+PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
+
+
 class PretrainConfig(BaseConfig):
     model: PretrainModelConfig
 
@@ -236,7 +249,7 @@ class PretrainConfig(BaseConfig):
     val: ValConfig | None = None
     """Held-out evals. If None, none run."""
 
-    optim: OptimizerConfig = MuonConfig()
+    optim: PretrainOptimizerConfig = PretrainMuonConfig()
     """Optimizer. ``optim.lr`` is required."""
 
     schedule: ScheduleConfig = ScheduleConfig()
@@ -353,9 +366,9 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_param_groups(self):
-        if self.optim.type not in ("adamw", "muon") or self.model.offload != "none":
-            raise ValueError("Pretraining's per-role parameter groups need AdamW or Muon and model.offload = 'none'.")
+    def validate_offload(self):
+        if self.model.offload != "none":
+            raise ValueError("Pretraining's per-role parameter groups need model.offload = 'none'.")
         return self
 
     @model_validator(mode="after")

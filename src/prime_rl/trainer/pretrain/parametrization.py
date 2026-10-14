@@ -2,8 +2,7 @@ from collections import defaultdict
 
 from torch import nn
 
-from prime_rl.configs.pretrain import ParametrizationConfig
-from prime_rl.configs.trainer import AdamWConfig, MuonConfig
+from prime_rl.configs.pretrain import ParametrizationConfig, PretrainAdamWConfig, PretrainMuonConfig
 from prime_rl.trainer.init import param_role
 from prime_rl.utils.weights import resolve_fqn
 
@@ -17,7 +16,7 @@ def multipliers(config: ParametrizationConfig | None, model: nn.Module) -> tuple
 
 
 def param_groups(
-    model: nn.Module, optim: AdamWConfig | MuonConfig, m_n: float, m_l: float, ep_enabled: bool
+    model: nn.Module, optim: PretrainAdamWConfig | PretrainMuonConfig, m_n: float, m_l: float, ep_enabled: bool
 ) -> list[dict]:
     """Optimizer parameter groups per role for CompleteP with alpha = 1 (Dey et al. 2025). ``optim.lr``,
     ``optim.eps`` and ``optim.weight_decay`` are the values for the base shape; each role scales

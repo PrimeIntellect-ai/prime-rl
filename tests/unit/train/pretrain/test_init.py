@@ -5,8 +5,7 @@ import torch
 from torch.optim import AdamW
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from prime_rl.configs.pretrain import InitConfig
-from prime_rl.configs.trainer import AdamWConfig, MuonConfig
+from prime_rl.configs.pretrain import InitConfig, PretrainAdamWConfig, PretrainMuonConfig
 from prime_rl.trainer.init import init_weights, normal_shard
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.pretrain.parametrization import param_groups
@@ -42,7 +41,7 @@ def test_completep_folded_multipliers_match_explicit_multipliers():
         head_dim=32,
         tie_word_embeddings=False,
     )
-    optim = AdamWConfig(lr=1e-2, eps=1e-10, weight_decay=0.1)
+    optim = PretrainAdamWConfig(lr=1e-2, eps=1e-10, weight_decay=0.1)
     m_n, m_l = 2.0, 2.0
 
     folded = LlamaForCausalLM(config)
@@ -107,7 +106,7 @@ def test_completep_moe_groups_cover_experts_and_scale_the_router():
     config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
         model = Glm4MoeForCausalLM._from_config(config)
-    groups = param_groups(model, MuonConfig(lr=1.0, weight_decay=0.1), m_n=2.0, m_l=1.0, ep_enabled=False)
+    groups = param_groups(model, PretrainMuonConfig(lr=1.0, weight_decay=0.1), m_n=2.0, m_l=1.0, ep_enabled=False)
     lr = {param: group["lr"] for group in groups for param in group["params"]}
     assert sum(len(group["params"]) for group in groups) == len(lr) == len(list(model.parameters()))
     moe = model.model.layers[1].mlp

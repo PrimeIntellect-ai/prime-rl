@@ -419,9 +419,6 @@ class AdamWConfig(BaseOptimizerConfig):
     betas2: float = Field(0.999, ge=0)
     """Adam second-moment (β2) decay."""
 
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon."""
-
 
 class MuonConfig(BaseOptimizerConfig):
     type: Literal["muon"] = "muon"
@@ -434,9 +431,6 @@ class MuonConfig(BaseOptimizerConfig):
 
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
-
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon for the AdamW sub-optimizer used on non-Muon params."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):

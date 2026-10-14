@@ -8,6 +8,7 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.pretrain import InitConfig
+from prime_rl.trainer.model import iter_moe_blocks
 from prime_rl.utils.weights import resolve_fqn
 
 ParamRole = Literal["embedding", "output", "residual_out", "hidden", "norm", "bias"]
@@ -78,7 +79,7 @@ def normal_shard(
 
 @torch.no_grad()
 def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: float = 1.0) -> None:
-    """Initialize every parameter in place, with the CompleteP multipliers ``m_N``, ``m_L``. Each rank fills only
+    """Initialize every parameter and the MoE selection biases in place, with the CompleteP multipliers ``m_N``, ``m_L``. Each rank fills only
     its local shard, without communication, and the values do not depend on the world size or the sharding."""
     for name, param in model.named_parameters():
         # Canonical names, so wrappers such as activation checkpointing don't change the values.
@@ -106,3 +107,7 @@ def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: fl
             local.device,
         )
         local.copy_(values.mul_(role_std(role, config.std, m_n, m_l)))
+    # MoE selection biases are buffers: they start at 0, so routing starts from the router scores alone.
+    for moe in iter_moe_blocks(model):
+        if moe.router.selection_bias is not None:
+            moe.router.selection_bias.zero_()
