@@ -16,6 +16,9 @@ median `time/forward_backward` over steps 5 to 20 with min and max, in seconds. 
 
 ## Summary
 
+- The branch is stacked on #4068 and must merge after it (see the cp=2 section). Against #4068 as its parent,
+  the step takes 25% less time on Qwen3-30B-A3B, 15% less on GLM-4.5-Air with 8 layers, and 12% less on
+  GLM-4.5-Air with cp=2, matching the parent with `fullgraph=true` (first section below).
 - With `fullgraph=false`, main breaks the graph twice per MoE block on the all-to-all, so every MoE block runs
   eagerly. The branch has 0 breaks and its step time matches main with `fullgraph=true`.
 - End to end, the step takes 25% less time on Qwen3-30B-A3B (5.97 s to 4.48 s) and 14% less on GLM-4.5-Air with
@@ -29,6 +32,33 @@ median `time/forward_backward` over steps 5 to 20 with min and max, in seconds. 
   With fullgraph on, main and branch both crash at the limit. With the CP fix on top (combo), recompiles drop
   to 3 and the step takes 1.54 s against 2.38 s on main. Neither fix alone compiles CP+EP MoE blocks.
 - Loss and grad norm match main within the same-code noise floor. Peak memory is identical.
+
+## Stacked on #4068: end-to-end against the parent
+
+Run on 2026-10-14 on one exclusive 8 x H200 node (job 4183), every arm alone and serial (`e2e.sh`, then
+`e2e_untraced.sh`). Parent: #4068 at `0c95d3964`. Branch: the stacked fix commit `8cb304fd3`. Same workloads
+and settings as the next section (cp=1, `ep=8`, 32k tokens per GPU). Median `time/step` over steps 5 to 20
+with min and max, in seconds. Lower is better.
+
+| Arm | Qwen3-30B-A3B step s | Qwen MFU | GLM-4.5-Air 8L step s | GLM MFU |
+|---|---|---|---|---|
+| parent, fullgraph off | 6.013 (5.961 to 6.018) | 31.4% | 2.977 (2.847 to 3.089) | 31.4% |
+| parent, fullgraph off, repeat | not run | | 2.953 (2.828 to 3.084) | 31.4% |
+| branch, fullgraph off | 4.531 (4.488 to 4.542) | 41.6% | 2.541 (2.424 to 18.67) | 36.5% |
+| branch, fullgraph off, repeat | 4.524 (4.481 to 4.544) | 41.7% | 2.551 (2.456 to 18.16) | 36.3% |
+| parent, fullgraph on | 4.529 (4.473 to 4.539) | 41.6% | 2.560 (2.431 to 19.07) | 36.4% |
+
+- Qwen3-30B-A3B: 6.01 s to 4.53 s, 25% less time per step. GLM-4.5-Air 8 layers: 2.97 s to 2.55 s, 15% less.
+  The branch matches the parent with fullgraph on in both. The cp=2 rows of the cp=2 section already measure
+  this exact code: the stacked fix commit's tree is identical to `8eba3cb67`.
+- Every arm is about 0.04 s slower than in the next section on another node, the same across arms.
+- The GLM recompile stalls at steps 2, 4, 8 and 14 remain, identical in the branch and the parent with fullgraph
+  on, so #4068 does not remove them at cp=1.
+- Numerics: curves overlap on both workloads. GLM branch vs parent: 8.1e-3 loss, 7.0e-2 grad norm, inside the
+  branch repeat floor (3.2e-2, 2.0e-1). Qwen branch vs parent: 3.8e-3 and 6.0e-2, at the eager vs compiled
+  difference that the parent itself shows.
+- Dropped to fit the walltime, since startup on this node took several minutes per run: the Qwen parent repeat
+  and the trace pairs. The trace analysis and figure in the next section ran on the same fix code against main.
 
 ## End-to-end: Qwen3-30B-A3B and GLM-4.5-Air
 
