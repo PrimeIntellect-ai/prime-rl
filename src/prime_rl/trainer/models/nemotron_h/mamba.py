@@ -13,6 +13,7 @@ import torch.distributed as dist
 from torch import nn
 
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
+from prime_rl.trainer.models.layers.optional_kernels import causal_conv1d, prepare_sequence_ids, unavailable
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 from prime_rl.utils.cp import CPContext
 
@@ -78,9 +79,10 @@ class GatedRMSNorm(nn.Module):
 class NemotronHMamba2(nn.Module):
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__()
-        from fla.modules.conv import causal_conv1d
-        from fla.ops.utils import prepare_sequence_ids
-        from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+        try:
+            from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+        except ImportError:
+            mamba_chunk_scan_combined = unavailable("mamba-ssm")
 
         self.hidden_size = config.hidden_size
         self.state_size = config.ssm_state_size

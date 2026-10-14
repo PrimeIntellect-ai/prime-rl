@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import torch
@@ -215,8 +216,18 @@ def test_attention_flops_modules_are_not_nested(name: str):
             assert not any(isinstance(child, AttentionFlops) for child in list(module.modules())[1:])
 
 
-def test_model_package_imports_without_kernel_libraries():
+def test_models_build_without_kernel_libraries():
+    """The orchestrator builds the model on meta to count FLOPs, on hosts without the `gpu` extra."""
     blocked = ["fla", "flash_attn", "flash_attn_interface", "flash_mla", "mamba_ssm", "prime_kernels"]
     blocked += ["ring_flash_attn", "tilelang", "deep_gemm", "deep_ep", "sonicmoe", "quack", "cudnn", "torchao"]
-    code = f"import sys; sys.modules.update(dict.fromkeys({blocked})); import prime_rl.trainer.models, prime_rl.trainer.perf"
+    code = f"""
+import sys
+sys.modules.update(dict.fromkeys({blocked}))
+sys.path.insert(0, {str(Path(__file__).parent)!r})
+from test_perf import MODELS, N, build
+from prime_rl.trainer.perf import FlopCounter
+for config, attention_flops in MODELS.values():
+    counter = FlopCounter(build(config))
+    assert counter([N]) - N * counter.matmul_flops_per_token == attention_flops
+"""
     subprocess.run([sys.executable, "-c", code], check=True)

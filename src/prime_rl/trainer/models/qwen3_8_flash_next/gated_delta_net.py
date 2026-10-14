@@ -3,16 +3,13 @@ import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.models.layers.attn import delta_rule_flops
+from prime_rl.trainer.models.layers.optional_kernels import (
+    FusedRMSNormGated,
+    build_cp_context,
+    causal_conv1d,
+    chunk_gated_delta_rule,
+)
 from prime_rl.utils.cp import CPContext
-
-# Guarded because flash-linear-attention ships in the linux-gated `gpu` extra; the layer needs it to build.
-try:
-    from fla.modules import FusedRMSNormGated
-    from fla.modules.conv import causal_conv1d
-    from fla.ops.cp import build_cp_context
-    from fla.ops.gated_delta_rule import chunk_gated_delta_rule
-except ImportError:
-    FusedRMSNormGated = causal_conv1d = build_cp_context = chunk_gated_delta_rule = None  # type: ignore
 
 # FLA's context carries a process group that Dynamo cannot trace through the convolution.
 causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
