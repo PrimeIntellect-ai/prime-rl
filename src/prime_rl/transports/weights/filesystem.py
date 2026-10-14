@@ -194,7 +194,9 @@ class FileSystemWeightSender(WeightSender):
         if self.world.is_master:
             delta_dir.mkdir()
         dist.barrier()
-        num_bytes = write_rank_file(delta_dir / file_name, entries, gaps.numpy(), values.numpy())
+        num_bytes = write_rank_file(
+            delta_dir / file_name, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors
+        )
         stats = (file_name, num_bytes, len(gaps), encode_time, time.perf_counter() - start)
         all_stats: list = [None] * self.world.world_size
         dist.all_gather_object(all_stats, stats)

@@ -89,6 +89,14 @@ class CheckpointIndexMap:
 
         self.num_cols = {name: (shape[-1] if shape else 1) for name, (shape, _) in tensors.items()}
         self.records = dict(records)
+        # [first, last + 1) flat checkpoint index each tensor's writes cover
+        self.spans = {
+            name: (
+                min(row0 * self.num_cols[name] + col0 for row0, _, col0, *_ in writes),
+                max((row0 + rows - 1) * self.num_cols[name] + col0 + cols for row0, rows, col0, cols, *_ in writes),
+            )
+            for name, writes in self.records.items()
+        }
 
     @torch.no_grad()
     def apply_xor(

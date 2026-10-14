@@ -56,7 +56,11 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def prefetch_weights_from_path(self, weight_path: str) -> None:
         """Start decoding the sparse delta in ``weight_path`` into pinned host memory."""
-        self.prefetched = (weight_path, _prefetch_pool.submit(read_delta, Path(weight_path)))
+        self.prefetched = (weight_path, _prefetch_pool.submit(read_delta, Path(weight_path), self._spans()))
+
+    def _spans(self) -> dict[str, tuple[int, int]] | None:
+        """The checkpoint index ranges this worker's params hold, once the index map exists."""
+        return None if self.index_map is None else self.index_map.spans
 
     def prefetch_weights_done(self) -> bool:
         return self.prefetched is None or self.prefetched[1].done()
@@ -98,7 +102,7 @@ class FileSystemWeightUpdateWorker(Worker):
         if prefetched is not None and prefetched[0] == step_dir.as_posix():
             delta = prefetched[1].result()
         else:
-            delta = read_delta(step_dir)
+            delta = read_delta(step_dir, self._spans())
         read_time = time.perf_counter() - start
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()

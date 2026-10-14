@@ -17,7 +17,7 @@ import numpy as np
 import pyzstd
 import torch
 from safetensors import safe_open
-from safetensors.numpy import load_file, save_file
+from safetensors.numpy import save_file
 
 DELTA_DIR = "delta"
 MANIFEST = "manifest.json"
@@ -43,17 +43,24 @@ def encode_gaps(indices: torch.Tensor, entry_starts: torch.Tensor) -> torch.Tens
     return (indices - previous - 1).to(torch.int32)
 
 
-def write_rank_file(path: Path, entries: list[tuple[str, int]], gaps: np.ndarray, values: np.ndarray) -> int:
-    options = {
-        pyzstd.CParameter.compressionLevel: 1,
-        pyzstd.CParameter.nbWorkers: 8,
-        pyzstd.CParameter.checksumFlag: 1,
-    }
+def write_rank_file(
+    path: Path, entries: list[tuple[str, int]], gaps: np.ndarray, values: np.ndarray, tensors: dict
+) -> int:
+    """Write every entry's gaps and values as separate zstd frames, so readers can skip entries."""
+    options = {pyzstd.CParameter.compressionLevel: 1, pyzstd.CParameter.checksumFlag: 1}
+    counts = [count for _, count in entries]
+    value_counts = [count * bits_dtype(tensors[name][1]).itemsize for name, count in entries]
+    gap_parts = np.split(gaps, np.cumsum(counts)[:-1])
+    value_parts = np.split(values, np.cumsum(value_counts)[:-1])
+    with ThreadPoolExecutor(8) as pool:
+        gap_frames = list(pool.map(lambda part: pyzstd.compress(part.tobytes(), options), gap_parts))
+        value_frames = list(pool.map(lambda part: pyzstd.compress(part.tobytes(), options), value_parts))
     arrays = {
-        "gaps": np.frombuffer(pyzstd.compress(gaps.tobytes(), options), np.uint8),
-        "values": np.frombuffer(pyzstd.compress(values.tobytes(), options), np.uint8),
+        "gaps": np.frombuffer(b"".join(gap_frames), np.uint8),
+        "values": np.frombuffer(b"".join(value_frames), np.uint8),
     }
-    save_file(arrays, str(path), metadata={"entries": json.dumps(entries)})
+    frames = [[name, count, len(g), len(v)] for (name, count), g, v in zip(entries, gap_frames, value_frames)]
+    save_file(arrays, str(path), metadata={"entries": json.dumps(frames)})
     return sum(array.nbytes for array in arrays.values())
 
 
@@ -65,12 +72,36 @@ def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
     return indices - torch.repeat_interleave(restart, counts)
 
 
-def _read_rank_file(path: Path) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]:
+def _read_rank_file(
+    path: Path, tensors: dict, spans: dict[str, tuple[int, int]] | None
+) -> tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]:
     with safe_open(str(path), framework="np") as f:
-        entries = json.loads(f.metadata()["entries"])
-    arrays = load_file(str(path))
-    gaps = torch.frombuffer(bytearray(pyzstd.decompress(arrays["gaps"])), dtype=torch.int32)
-    values = torch.frombuffer(bytearray(pyzstd.decompress(arrays["values"])), dtype=torch.uint8)
+        frames = json.loads(f.metadata()["entries"])
+        gaps_bytes, values_bytes = f.get_slice("gaps"), f.get_slice("values")
+        entries, gaps, values = [], [], []
+        gaps_offset = values_offset = 0
+        for name, count, num_gap_bytes, num_value_bytes in frames:
+            gaps_end, values_end = gaps_offset + num_gap_bytes, values_offset + num_value_bytes
+            if spans is None or name in spans:
+                entry_gaps = np.frombuffer(pyzstd.decompress(gaps_bytes[gaps_offset:gaps_end].tobytes()), np.int32)
+                entry_values = np.frombuffer(
+                    pyzstd.decompress(values_bytes[values_offset:values_end].tobytes()), np.uint8
+                )
+                if spans is not None:
+                    indices = np.cumsum(entry_gaps, dtype=np.int64) + np.arange(1, count + 1) - 1
+                    begin, end = np.searchsorted(indices, spans[name])
+                    itemsize = bits_dtype(tensors[name][1]).itemsize
+                    entry_values = entry_values[begin * itemsize : end * itemsize]
+                    entry_gaps = entry_gaps[begin:end].copy()
+                    if end > begin:
+                        entry_gaps[0] = indices[begin]
+                if len(entry_gaps):
+                    entries.append((name, len(entry_gaps)))
+                    gaps.append(entry_gaps)
+                    values.append(entry_values)
+            gaps_offset, values_offset = gaps_end, values_end
+    gaps = torch.from_numpy(np.concatenate(gaps) if gaps else np.empty(0, np.int32))
+    values = torch.from_numpy(np.concatenate(values) if values else np.empty(0, np.uint8))
     if torch.cuda.is_available():
         gaps, values = gaps.pin_memory(), values.pin_memory()
     return entries, gaps, values
@@ -80,10 +111,14 @@ def read_manifest(step_dir: Path) -> dict:
     return json.loads((step_dir / DELTA_DIR / MANIFEST).read_text())
 
 
-def read_delta(step_dir: Path) -> list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]]:
+def read_delta(
+    step_dir: Path, spans: dict[str, tuple[int, int]] | None = None
+) -> list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]]:
     """Read and decompress every rank file of a delta step dir into ``(entries,
     gaps, xor value bytes)`` in (pinned) host memory; ``decode_gaps`` turns the
-    gaps into flat indices on the device that applies them."""
-    files = read_manifest(step_dir)["files"]
-    with ThreadPoolExecutor(len(files)) as pool:
-        return list(pool.map(_read_rank_file, [step_dir / DELTA_DIR / name for name in files]))
+    gaps into flat indices on the device that applies them. With ``spans``, keep
+    only the listed tensors and, within each, the flat indices in ``[start, end)``."""
+    manifest = read_manifest(step_dir)
+    paths = [step_dir / DELTA_DIR / name for name in manifest["files"]]
+    with ThreadPoolExecutor(len(paths)) as pool:
+        return list(pool.map(lambda path: _read_rank_file(path, manifest["tensors"], spans), paths))
