@@ -173,6 +173,18 @@ def test_engine_group_is_evicted_and_readmitted_as_one():
     admin_plane.recovered = {a}
     assert admin_plane._rejoining() == []
     admin_plane.recovered = {a, b}
+    admin_plane.evicting = True
+
+    async def post(client, op, **kwargs):
+        if client is a:
+            raise httpx.ConnectError("down")
+
+    # A rejoining engine that fails an admin op keeps the rest of its group out of the update
+    with patch("prime_rl.orchestrator.clients._admin_post", side_effect=post):
+        assert asyncio.run(admin_plane._each([c, a, b], "/pause")) == [c]
+    assert not admin_plane.recovered
+
+    admin_plane.recovered = {a, b}
     asyncio.run(admin_plane._readmit([a, b], [a], step=5))
     assert admin_plane.clients == [c]
     asyncio.run(admin_plane._readmit([a, b], [a, b], step=5))
