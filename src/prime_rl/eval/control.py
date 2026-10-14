@@ -128,7 +128,10 @@ class ControlServer:
         self.loop_task = asyncio.create_task(self.serve(), name="run-control")
         path = control_path(self.runner.run_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"address": self.address, "host": socket.gethostname(), "pid": os.getpid()}))
+        # atomic: a client or a resume (``live_pid``) never reads a half-written file
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"address": self.address, "host": socket.gethostname(), "pid": os.getpid()}))
+        os.replace(tmp, path)
         get_logger().info(f"Run control at {self.address} ({path})")
 
     async def stop(self) -> None:

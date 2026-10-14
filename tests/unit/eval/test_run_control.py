@@ -283,3 +283,25 @@ def test_a_stale_control_file_fails_fast(tmp_path) -> None:
         Client(tmp_path)
     control_file.write_text(json.dumps({"address": address, "host": socket.gethostname(), "pid": os.getpid()}))
     assert Client(tmp_path).timeout == control_module.DEFAULT_TIMEOUT_S
+
+
+def test_the_control_file_appears_whole(tmp_path, monkeypatch) -> None:
+    seen: list[str | None] = []
+    replace = os.replace
+
+    def watching_replace(src, dst) -> None:
+        # what a reader sees right before the file lands: nothing, never a partial write
+        seen.append((tmp_path / CONTROL_FILE).read_text() if (tmp_path / CONTROL_FILE).exists() else None)
+        replace(src, dst)
+
+    monkeypatch.setattr(control_module.os, "replace", watching_replace)
+    server = ControlServer(SimpleNamespace(run_dir=tmp_path))
+
+    async def start_and_stop() -> None:
+        await server.start()
+        await server.stop()
+
+    asyncio.run(start_and_stop())
+
+    assert seen == [None]
+    assert sorted(path.name for path in tmp_path.iterdir()) == []  # stop removed it; no temp file left
