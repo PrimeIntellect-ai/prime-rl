@@ -73,6 +73,25 @@ deltas agree (Qwen -1520 vs -1481 ms, GLM -432 vs -413 ms). `qwen-layer2-forward
 forward: main fills the gaps between GEMMs, attention and all-to-alls with eager elementwise kernels, and the
 branch replaces them with a few fused Inductor kernels (layer 2 forward 16.3 ms to 11.0 ms).
 
+## End-to-end with context parallelism: GLM-4.5-Air, cp=2
+
+Run on 2026-10-14 on one exclusive 8 x H200 node (job 4168), every arm alone and serial (`cp_e2e.sh`). Same
+GLM-4.5-Air workload as above with `cp=2` (ring), `ep=4`, fullgraph off. All four trees share the base of #4068.
+
+| Tree | Commit | Step s, run 1 | Step s, run 2 | Recompiles | CP guard failures |
+|---|---|---|---|---|---|
+| base | `4f4d7e440` | 3.62 (3.38 to 3.70) | not run | 3 | 0 |
+| #4068 | `0c95d3964` | 3.60 (3.37 to 3.69) | 3.62 (3.42 to 3.68) | 3 | 0 |
+| base + this fix | `1ec6594f2` | 53.25 (3.29 to 55.79) | not run | 64, limit hit | 1922 |
+| #4068 + this fix | `8eba3cb67` | 3.18 (2.94 to 3.23) | 3.19 (2.94 to 3.28) | 4 | 0 |
+
+- This fix alone is unsafe with CP on real data: steps 2 to 14 take 42 to 56 s each, recompiling on
+  `DATA_PARAMS['max_seqlen_k']` and `cu_seqlens` sizes, until the recompile limit at step 15 drops the frames
+  back to eager (3.4 s). The mini-glm-moe proxy hit the limit within a few steps and hid this.
+- #4068 alone changes nothing here, because the MoE blocks still break the graph on the all-to-all.
+- Both together: 3.61 s to 3.19 s, 12% less time per step, 0 all-to-all breaks, 4 recompiles, peak memory 54.2
+  to 53.3 GiB. This PR must land after #4068.
+
 ## Fake-data RL trainer, 2 GPUs
 
 `run_trainer_arm.sh`, NLL loss (`ce_loss_fn`), seq len 2048, fake batch 8.
