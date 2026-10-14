@@ -31,6 +31,7 @@ from prime_rl.trainer.model import (
     update_selection_biases,
 )
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.models.layers.moe import sequence_balance
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -221,10 +222,10 @@ def train(config: PretrainConfig):
     moes_with_seq_balance = [moe for moe in iter_moe_blocks(model) if moe.seq_aux_loss_coeff is not None]
     bias_freeze_step = config.max_steps - round(config.moe_bias_freeze * config.max_steps) if config.max_steps else None
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens, and the MoE sequence-wise
-        balance loss summed over tokens (each token carries its row's loss, so after the division by the
-        token count it is the mean over rows)."""
+    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens, the MoE sequence-wise balance
+        loss summed over tokens (each token carries its row's loss, so after the division by the token count it
+        is the mean over rows), and the per-row balance of each MoE layer that computes it."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -241,10 +242,13 @@ def train(config: PretrainConfig):
             out = forward(
                 model, input_ids, position_ids, seq_lens=seq_lens, labels=labels, seq_lens_are_pre_shard=cp_enabled
             )
+        # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
+        num_rows = config.data.micro_batch_size
+        seq_balances = [sequence_balance(*moe.routing, num_rows) for moe in moes_with_seq_balance]
         aux_loss_sum = torch.zeros((), device="cuda")
-        for moe in moes_with_seq_balance:
-            aux_loss_sum += moe.seq_aux_loss_coeff * moe.seq_balance.sum() * input_ids.shape[1]
-        return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
+        for moe, balance in zip(moes_with_seq_balance, seq_balances):
+            aux_loss_sum += moe.seq_aux_loss_coeff * balance.sum() * (input_ids.shape[1] // num_rows)
+        return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum, seq_balances
 
     def run_evals(step: int) -> None:
         """Perplexity evals on the weights after ``step`` optimizer updates."""
@@ -299,7 +303,7 @@ def train(config: PretrainConfig):
         step_local_num_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            local_loss_sum, batch_token_count, aux_loss_sum = compute_loss(micro_batch)
+            local_loss_sum, batch_token_count, aux_loss_sum, seq_balances = compute_loss(micro_batch)
             if gradient_manager is None:
                 step_local_token_count += batch_token_count
             if torch.isnan(local_loss_sum.detach()):
@@ -323,8 +327,8 @@ def train(config: PretrainConfig):
                 micro_max_mean += (
                     tokens_per_expert.amax(dim=1) / tokens_per_expert.mean(dim=1)
                 ).mean() / grad_accum_steps
-                if moes_with_seq_balance:
-                    seq_balance += torch.cat([moe.seq_balance.detach() for moe in moes_with_seq_balance]).mean()
+                if seq_balances:
+                    seq_balance += torch.cat(seq_balances).detach().mean()
 
         forward_backward_time = time.perf_counter() - step_start_time
         expert_load_stats = {}

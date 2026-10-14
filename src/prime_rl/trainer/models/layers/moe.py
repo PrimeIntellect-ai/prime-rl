@@ -369,9 +369,9 @@ class MoE(nn.Module):
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
         # Sequence-wise balance loss (DeepSeek-V3 eq. 17-20): with a coefficient set, every forward with grad
-        # stores the per-row loss in `seq_balance`, for the training loop to add with that coefficient.
+        # keeps the scores and selections, for the training loop, which knows the packed rows, to compute it.
         self.seq_aux_loss_coeff = seq_aux_loss_coeff
-        self.seq_balance: torch.Tensor | None = None
+        self.routing: tuple[torch.Tensor, torch.Tensor] | None = None
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
@@ -415,7 +415,7 @@ class MoE(nn.Module):
         ) = self.router(x, routed_experts=routed_experts)
 
         if self.seq_aux_loss_coeff is not None and torch.is_grad_enabled():
-            self.seq_balance = sequence_balance(scores, selected_experts_indices, bs)
+            self.routing = (scores, selected_experts_indices)
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
