@@ -247,6 +247,54 @@ class PrimeTrainMonitor(Monitor):
         await asyncio.to_thread(self.run.finish)
 
 
+class _Sums:
+    """Running sums of traces' rewards and their named scores and metrics."""
+
+    def __init__(self) -> None:
+        self.traces = 0
+        self.reward = 0.0
+        self.values: dict[str, float] = {}
+        self.counts: dict[str, int] = {}
+
+    def add(self, trace: Any) -> None:
+        self.traces += 1
+        self.reward += trace.reward
+        scores = {name: reward.score for name, reward in trace.rewards.items() if reward is not None}
+        metrics = {name: value for name, value in trace.metrics.items() if value is not None}
+        for name, value in {**scores, **metrics}.items():
+            self.values[name] = self.values.get(name, 0.0) + value
+            self.counts[name] = self.counts.get(name, 0) + 1
+
+
+class EvalSummary:
+    """``pr.metrics.from_episodes`` folded window by window, so a streaming epoch's
+    summary covers every episode without keeping them: the sums over the trainable
+    traces, beside those over every trace for an epoch with none trainable."""
+
+    def __init__(self) -> None:
+        self.episodes = 0
+        self.failed = 0
+        self.trainable = _Sums()
+        self.all = _Sums()
+
+    def add(self, episodes: list[vf.Episode]) -> None:
+        for episode in episodes:
+            self.episodes += 1
+            self.failed += not episode.ok
+            for trace in episode.traces:
+                self.all.add(trace)
+                if trace.agent.trainable:
+                    self.trainable.add(trace)
+
+    def summary(self) -> dict[str, Any]:
+        scored = self.trainable if self.trainable.traces else self.all
+        return {
+            "avg_reward": scored.reward / scored.traces if scored.traces else 0.0,
+            "avg_metrics": {name: scored.values[name] / scored.counts[name] for name in scored.values},
+            "avg_error": self.failed / self.episodes if self.episodes else 0.0,
+        }
+
+
 class PrimeEvalMonitor(Monitor):
     """Streams each eval epoch to the Prime platform through ``prime_runs``: one
     evaluation per env and step, opened when the epoch starts (``log_eval_plan``), fed
@@ -274,6 +322,8 @@ class PrimeEvalMonitor(Monitor):
         # (env, step) -> its open evaluation; None once opening it failed, so the epoch's
         # episodes do not retry the platform on every arrival
         self.runs: dict[tuple[str, int], pr.Run | None] = {}
+        self.summaries: dict[tuple[str, int], EvalSummary] = {}
+        """The summary so far of each streaming epoch, folded window by window."""
         self.parent: pr.Run | None = None
         self._lock = asyncio.Lock()
         self.evaluation_id = os.getenv(EVAL_ID_VAR)
@@ -419,12 +469,32 @@ class PrimeEvalMonitor(Monitor):
             if run is not None:
                 await asyncio.to_thread(run.log_episodes, batch)  # a queue put, off the loop
 
-    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode], *, final: bool = True) -> None:
+        """Finish the epoch's evaluation with its summary. A streaming epoch's windows
+        fold into one summary, set on the evaluation as each window closes, so even an
+        interrupted epoch (closed as cancelled by ``finalize``) keeps the summary of
+        every window it closed."""
         run = await self.run_for(env_name, step)
         if run is None:
             return
+        key = (env_name, step)
+        if final and key not in self.summaries:
+            summary = pr.metrics.from_episodes(episodes)  # a bounded epoch, whole
+        else:
+            fold = self.summaries.setdefault(key, EvalSummary())
+            fold.add(episodes)
+            summary = fold.summary()
+        if not final:
+            try:
+                await asyncio.to_thread(run.update_summary, summary)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to update the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}"
+                )
+            return
+        self.summaries.pop(key, None)
         try:
-            await asyncio.to_thread(run.finish, pr.metrics.from_episodes(episodes))
+            await asyncio.to_thread(run.finish, summary)
         except Exception as e:
             self.logger.warning(f"Failed to finish the {env_name} (Step {step}) evaluation: {type(e).__name__}: {e}")
             return

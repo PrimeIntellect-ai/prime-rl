@@ -160,10 +160,13 @@ class TrainBatch:
 
 @dataclass
 class EvalBatch:
-    """One env's eval epoch.
+    """One env's eval epoch, or one window of a streaming env's epoch.
 
     ``episodes`` is the full returned cohort (errored included), while
-    ``failures`` accounts for requests that returned no verifier artifact.
+    ``failures`` accounts for requests that returned no verifier artifact. A
+    streaming epoch has no size, so it is cut into windows (``EvalSink``): each
+    window is a batch numbered by ``window``, and only the last one is ``final``.
+    A bounded epoch is one final batch with no ``window``.
     """
 
     env_name: str
@@ -171,6 +174,8 @@ class EvalBatch:
     episodes: EvalEpisodes
     failures: list[DispatchFailure]
     cancelled: int = 0
+    window: int | None = None
+    final: bool = True
 
 
 class VersionObserver(Protocol):

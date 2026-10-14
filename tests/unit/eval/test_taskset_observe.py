@@ -11,8 +11,10 @@ import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
+from prime_rl import monitors
 from prime_rl.eval import runner as runner_module
 from prime_rl.eval.runner import EvalRunner
+from prime_rl.orchestrator import eval_sink as eval_sink_module
 from prime_rl.orchestrator.dispatcher import Dispatcher
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
@@ -220,3 +222,76 @@ def test_a_streaming_taskset_waits_on_observe_without_deadlock(tmp_path, monkeyp
     assert taskset.calls == [("observe", "ok-0"), ("on_failed", "crash-0"), ("observe", "bad-0"), ("observe", "ok-1")]
     assert threading.get_ident() not in taskset.load_threads
     assert env.feed.done
+
+
+class EpochRecorder:
+    """A monitor recording each ``log_eval_epoch`` call and each metrics row."""
+
+    def __init__(self) -> None:
+        self.epochs: list[tuple[int, bool]] = []
+        self.metrics: list[dict] = []
+
+    async def log(self, data, step, kind="train", subset="effective") -> None:
+        if isinstance(data, dict):
+            self.metrics.append(data)
+
+    async def log_annotations(self, updates) -> None:
+        pass
+
+    async def log_eval_epoch(self, env_name, step, episodes, *, final=True) -> None:
+        self.epochs.append((len(episodes), final))
+
+
+def test_a_streaming_epoch_is_logged_window_by_window(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runner_module, "POLL_INTERVAL_S", 0.05)
+    monkeypatch.setattr(eval_sink_module, "STREAM_WINDOW_ATTEMPTS", 2)
+    recorder = EpochRecorder()
+    monkeypatch.setattr(monitors, "MONITORS", [recorder])
+    taskset = Chain([f"ok-{i}" for i in range(5)])
+    view = taskset.skip(0)
+    env = FakeEnv("pipeline", taskset=view)
+    env.feed = TaskFeed(iter(view), name=env.name)
+    runner = _runner(tmp_path, env)
+    held: list[int] = []
+    add = runner.eval_sink.add
+
+    def add_and_count(episode):
+        batch = add(episode)
+        held.append(sum(len(episodes) for episodes in runner.eval_sink.pending_batches.values()))
+        return batch
+
+    runner.eval_sink.add = add_and_count
+
+    asyncio.run(_run_epoch(runner))
+
+    assert recorder.epochs == [(2, False), (2, False), (1, True)]
+    assert [row["eval/pipeline/window"] for row in recorder.metrics] == [0.0, 1.0, 2.0]
+    assert max(held) < 2  # a full window is logged and dropped as it closes
+    assert runner.eval_sink.pending_batches == {}
+
+
+def test_a_streaming_window_closes_on_age(monkeypatch) -> None:
+    monkeypatch.setattr(eval_sink_module, "STREAM_WINDOW_S", 0.0)
+    stream = FakeEnv("pipeline", taskset=RecordingTaskset())
+    stream.feed = TaskFeed(iter([]), name=stream.name)
+    bounded = FakeEnv("math", taskset=RecordingTaskset(), tasks=[_task("ok-0"), _task("ok-1")])
+    eval_envs = EvalEnvs.__new__(EvalEnvs)
+    eval_envs._envs = {env.name: env for env in (stream, bounded)}
+    sink = EvalSink(eval_envs=eval_envs)
+
+    def episode(env_name: str, task_id: str) -> vf.WireEpisode:
+        landed = _episode(_task(task_id), ok=True)
+        landed.env.name = env_name
+        landed.record_run(vf.TrainRunInfo(id="run", work=vf.EvalWorkInfo(step=0)))
+        return landed
+
+    assert sink.add(episode("pipeline", "ok-0")) is None
+    assert sink.add(episode("math", "ok-0")) is None
+    (window,) = sink.due_windows()  # the bounded epoch has no window
+    assert (window.env_name, window.window, window.final, len(window.episodes)) == ("pipeline", 0, False, 1)
+    assert sink.due_windows() == []  # nothing arrived since
+    assert sorted(sink.batch_progress()) == [("math", 0, 1, 2), ("pipeline", 0, 1, None)]
+    last = sink.process_batch(("pipeline", 0))
+    assert (last.window, last.final, len(last.episodes)) == (1, True, 0)
+    whole = sink.add(episode("math", "ok-1"))
+    assert (whole.window, whole.final, len(whole.episodes)) == (None, True, 2)

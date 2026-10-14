@@ -157,11 +157,12 @@ async def log_live(events: list[dict[str, Any]]) -> None:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -> None:
-    """Log one finished eval epoch to all registered monitors."""
+async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode], *, final: bool = True) -> None:
+    """Log one finished eval epoch, or one window of a streaming epoch, to all registered
+    monitors."""
     for monitor in MONITORS:
         try:
-            await monitor.log_eval_epoch(env_name, step, episodes)
+            await monitor.log_eval_epoch(env_name, step, episodes, final=final)
         except Exception as e:
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 

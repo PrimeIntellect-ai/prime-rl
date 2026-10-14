@@ -67,10 +67,12 @@ class Monitor(ABC):
         """Log how many episodes the eval epoch of ``env_name`` at ``step`` will produce,
         known once its tasks are counted. Monitors that only carry results ignore it."""
 
-    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode]) -> None:
+    async def log_eval_epoch(self, env_name: str, step: int, episodes: list[vf.Episode], *, final: bool = True) -> None:
         """Log one finished eval epoch: every episode ``env_name`` produced for ``step``,
         errored ones included. Fires once per epoch, after the episodes streamed through
-        ``log``. Monitors that carry episodes as they arrive ignore it."""
+        ``log``. A streaming epoch fires once per window instead, each with that window's
+        episodes, and only its last window is ``final``. Monitors that carry episodes as
+        they arrive ignore it."""
 
     async def finalize(self) -> None:
         """Finalize run."""

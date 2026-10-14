@@ -230,6 +230,8 @@ class EvalRunner:
 
         while pending:
             self.request_cancels()
+            for window in self.eval_sink.due_windows():
+                await self.finalize_eval_batch(window)
             for env_name in [name for name in pending if self.stream_done(name)]:
                 await self.finalize_eval_batch(self.eval_sink.process_batch((env_name, step)))
                 pending.discard(env_name)
@@ -271,7 +273,8 @@ class EvalRunner:
                 continue
             if eval_batch is not None:
                 await self.finalize_eval_batch(eval_batch)
-                pending.discard(eval_batch.env_name)
+                if eval_batch.final:
+                    pending.discard(eval_batch.env_name)
 
         # every requested cancel's marker has landed; let its aborted runs unwind
         await asyncio.gather(*self.cancel_tasks)
@@ -388,19 +391,30 @@ class EvalRunner:
         eval_batch = self.eval_sink.add(episode)
         if eval_batch is not None:
             await self.finalize_eval_batch(eval_batch)
-            pending.discard(eval_batch.env_name)
+            if eval_batch.final:
+                pending.discard(eval_batch.env_name)
 
     async def finalize_eval_batch(self, batch: EvalBatch) -> None:
         """Persist + log one completed eval epoch through the monitors, mirroring the
-        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict."""
+        orchestrator: effective episodes plus the ``eval/{env}/...`` metric dict. A
+        streaming epoch logs window by window (``EvalSink``), each window's metrics
+        over its own attempts, so a crash loses at most the open window."""
         if not batch.episodes and not batch.failures and not batch.cancelled:
-            get_logger().warning(f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log")
+            if batch.window:  # a stream's empty last window: its earlier windows still close the epoch
+                await monitors.log_eval_epoch(batch.env_name, batch.step, [], final=True)
+                self.eval_triggered_at.pop((batch.env_name, batch.step), None)
+                get_logger().success(f"Evaluated {batch.env_name} (Step {batch.step}) in {batch.window} windows")
+                return
+            if batch.final:
+                get_logger().warning(
+                    f"Eval @ step={batch.step} env={batch.env_name}: no attempts returned, skipping log"
+                )
             return
 
         if batch.episodes.effective:
             await monitors.log(batch.episodes.effective.vf_episodes, batch.step, "eval", "effective")
             await monitors.log_annotations(stamp_batch(batch.episodes.effective.vf_episodes, batch.step))
-        await monitors.log_eval_epoch(batch.env_name, batch.step, batch.episodes.vf_episodes)
+        await monitors.log_eval_epoch(batch.env_name, batch.step, batch.episodes.vf_episodes, final=batch.final)
 
         episodes = batch.episodes
         effective = episodes.effective
@@ -417,12 +431,23 @@ class EvalRunner:
             metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
             metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
         metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
+        if batch.window is not None:
+            metrics[f"eval/{batch.env_name}/window"] = float(batch.window)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
 
         eff, full = effective.metrics, episodes.metrics
-        triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
+        key = (batch.env_name, batch.step)
+        triggered_at = self.eval_triggered_at.pop(key, None) if batch.final else self.eval_triggered_at.get(key)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
+        if not batch.final:
+            get_logger().info(
+                f"Evaluated {batch.env_name} (Step {batch.step}) window {batch.window} | "
+                f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
+                f"Error {full.has_error.mean():.1%} | Attempts {total_attempts}"
+                + (f" | Cancelled {batch.cancelled}" if batch.cancelled else "")
+            )
+            return
         if batch.cancelled:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
