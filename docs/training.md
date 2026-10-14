@@ -322,19 +322,21 @@ uv run rl @ rl.toml --ckpt.interval 25 --ckpt.keep-interval 100  # …plus perma
 
 Re-run the same launch command and pass `--resume` (latest checkpoint) or `--resume.step <N>`. Resuming reuses the run directory, so the run needs a name you can point back at — launch with `--run.name` (or pass the first run's auto-generated name). Make sure `--max-steps` is at least the target final step, not the remaining delta:
 
+Both `rl` and `sft` require every saved launcher config to match the current resolved config, excluding only `resume` and its propagated component copies. The check runs before cleanup or launch and reports differing top-level fields. Each attempt saves the full config at `configs/attempt_<n>/resolved/launcher.json`, including SLURM and deployment settings. Pass `--resume.skip-checks` for intentional changes, such as increasing `max_steps` or forking into another run, or when saved configs are missing. An external `--resume.dir` checks the source run's configs; a checkpoint copied without those configs requires the override.
+
 ```bash
 # First run: steps 1–10
 uv run rl @ rl.toml --max-steps 10 --ckpt --run.name my-run
 
 # Resume from the latest checkpoint: continue to step 20
-uv run rl @ rl.toml --max-steps 20 --ckpt --resume --run.name my-run
+uv run rl @ rl.toml --max-steps 20 --ckpt --resume.skip-checks --run.name my-run
 
 # ...or from a specific step
-uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
+uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --resume.skip-checks --run.name my-run
 
 # ...or fork another run's checkpoint into a fresh run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
-  --resume.dir outputs/my-run/checkpoints/step_10
+  --resume.dir outputs/my-run/checkpoints/step_10 --resume.skip-checks
 ```
 
 ### Pausing a Live Run

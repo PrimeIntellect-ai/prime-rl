@@ -22,8 +22,8 @@ import verifiers.v1 as vf
 from prime_rl.configs.eval import EvalConfig
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import chunk_numbers, open_chunk
-from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_file_monitor_dir
+from prime_rl.utils.resume import check_resume_config
 
 CONFIG_NAME = "eval.json"
 """The resolved config an attempt stamps into its file monitor directory once it is
@@ -65,35 +65,9 @@ def take_landed(run_dir: Path, config: EvalConfig) -> list[vf.WireEpisode]:
     directories = archives(run_dir)
     if current.is_dir() or not directories:
         directories.append(current)
-    # Enabling resume necessarily differs from the original launch.
-    expected = config.model_dump(mode="json", exclude={"resume"})
-    skip_checks = config.resume is not None and config.resume.skip_checks
-    if skip_checks:
-        get_logger().warning(
-            "Skipping resume compatibility checks; saved episodes may use different experiment settings."
-        )
+    check_resume_config(config, (directory / CONFIG_NAME for directory in directories))
     landed: list[vf.WireEpisode] = []
     for directory in directories:
-        if not skip_checks:
-            saved_path = directory / CONFIG_NAME
-            if not saved_path.is_file():
-                raise ValueError(
-                    f"--resume: no saved config at {saved_path}. "
-                    "Set --resume.skip-checks to reuse episodes without a saved config."
-                )
-            # Snapshots are resolved configs: re-validating would fill missing fields with new defaults.
-            previous = orjson.loads(saved_path.read_bytes())
-            previous.pop("resume", None)
-            changed = sorted(
-                key
-                for key in expected.keys() | previous.keys()
-                if key not in expected or key not in previous or expected[key] != previous[key]
-            )
-            if changed:
-                raise ValueError(
-                    f"--resume: config differs from {saved_path} in [{', '.join(changed)}]. "
-                    "Use the saved config, start a fresh run, or set --resume.skip-checks if the changes are intentional."
-                )
         if (directory / stream).is_dir():
             for record in read_records(directory / stream):
                 episode = vf.WireEpisode.model_validate(record)

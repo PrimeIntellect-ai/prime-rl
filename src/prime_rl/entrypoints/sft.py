@@ -36,6 +36,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.resume import check_resume_config
 
 SFT_CONFIG = "sft.json"
 SFT_SBATCH = "sft.sbatch"
@@ -248,7 +249,7 @@ def sft_slurm(config: SFTConfig):
 
     logger.info("Starting SFT run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_artifacts(config_dir, "sft")
+    write_launch_artifacts(config_dir, "sft", config)
     config_path = config_dir / SFT_CONFIG
     exclude = (
         {"deployment", "slurm", "dry_run", "clean"}
@@ -307,7 +308,7 @@ def sft_local(config: SFTConfig):
 
     logger.info("Starting SFT run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_artifacts(config_dir, "sft")
+    write_launch_artifacts(config_dir, "sft", config)
     config_path = config_dir / SFT_CONFIG
     write_config(config, config_path)
     if config.eval is not None:
@@ -469,6 +470,11 @@ def sft(config: SFTConfig):
     os.environ["PRL_RUN_NAME"] = config.run.name
 
     resuming = config.resume is not None
+    # SLURM child launchers inherit an attempt already checked at submission.
+    if resuming and "PRL_ATTEMPT_CONFIG_DIR" not in os.environ:
+        source_dir = config.resume.dir.parent.parent if config.resume.dir is not None else config.run_dir
+        snapshots = [path / "resolved" / "launcher.json" for path in sorted((source_dir / "configs").glob("attempt_*"))]
+        check_resume_config(config, snapshots or [source_dir / "configs" / "latest" / "resolved" / "launcher.json"])
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
     validate_run_dir(
