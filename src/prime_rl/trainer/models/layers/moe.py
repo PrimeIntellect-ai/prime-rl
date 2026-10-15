@@ -369,6 +369,10 @@ class MoE(nn.Module):
         # how many packed rows a sample holds, every forward with grad computes the per-row balance for its loss.
         self.balance_rows: int | None = None
         self.seq_balance: torch.Tensor | None = None
+        # Router z-loss: with compute_router_z set by the training loop, every forward with grad keeps the per-token
+        # logsumexp(logits)^2 for its loss.
+        self.compute_router_z = False
+        self.router_z: torch.Tensor | None = None
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
@@ -413,6 +417,9 @@ class MoE(nn.Module):
 
         if self.balance_rows is not None and torch.is_grad_enabled():
             self.seq_balance = sequence_balance(scores, selected_experts_indices, self.balance_rows)
+        if self.compute_router_z and torch.is_grad_enabled():
+            # The fp32 sigmoid scores give back the router logits.
+            self.router_z = torch.logsumexp(torch.logit(scores, eps=1e-6), dim=-1).square()
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
