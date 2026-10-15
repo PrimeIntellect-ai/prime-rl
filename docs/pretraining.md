@@ -22,7 +22,7 @@ num_experts_per_tok = 6
 name = "tokenizers/deepseek-v4-flash-base"
 ```
 
-The launcher writes the config and the tokenizer to `<run_dir>/configs/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the non-embedding, embedding (input embedding and LM head) and total parameter counts at startup.
+The launcher writes the config and the tokenizer to `<run_dir>/configs/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
 
 ## Initialization
 

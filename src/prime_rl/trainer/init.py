@@ -99,12 +99,7 @@ def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: fl
         else:
             local_shape, global_offset = tuple(param.shape), (0,) * param.ndim
         values = normal_shard(
-            name,
-            tuple(param.shape),
-            tuple(local_shape),
-            tuple(global_offset),
-            config.seed,
-            local.device,
+            name, tuple(param.shape), tuple(local_shape), tuple(global_offset), config.seed, local.device
         )
         local.copy_(values.mul_(role_std(role, config.std, m_n, m_l)))
     # MoE selection biases are buffers: they start at 0, so routing starts from the router scores alone.

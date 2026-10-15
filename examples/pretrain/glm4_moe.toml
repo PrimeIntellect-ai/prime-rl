@@ -8,7 +8,6 @@
 max_steps = 4096
 
 [model]
-offload = "none"
 ac = "None"
 
 [model.arch]
