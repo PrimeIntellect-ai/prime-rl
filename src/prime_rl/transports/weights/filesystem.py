@@ -2,7 +2,6 @@ import json
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import Future, ThreadPoolExecutor
 from math import prod
 from pathlib import Path
 
@@ -17,6 +16,7 @@ from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
+from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import wait_for_path
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
@@ -26,17 +26,15 @@ from prime_rl.utils.sparse_weights import (
     as_bits,
     bits_dtype,
     encode_gaps,
-    pin,
+    pin_in_background,
     quantize_fp8_blocks,
     read_engine_layout,
-    unpin,
     write_anchor_shards,
     write_rank_file,
 )
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
-    owned_weight_bytes,
     resolve_fqn,
     resolve_wire_dtype,
     save_state_dict,
@@ -92,6 +90,8 @@ class SparseDeltaEncoder:
         self.gather: set[str] = set()
         self.segment_starts: dict[str, torch.Tensor] = {}
         self.snapshot: dict[str, torch.Tensor] = {}
+        self.offsets: dict[str, int] = {}
+        self.pinning: threading.Thread | None = None
         self.scales_changed = False
         self.initialized = False
 
@@ -188,20 +188,35 @@ class SparseDeltaEncoder:
         return changed, xor[changed], current_bits.view(-1)
 
     def _allocate_snapshot(self, model: nn.Module, is_master: bool) -> None:
-        """The previous broadcast's bits live in one pinned host buffer, so trainer GPU memory is unchanged."""
+        """The previous broadcast's bits live in one host buffer, so trainer GPU memory is unchanged. It
+        is page-locked on a thread while the next step trains."""
         sizes = {}
         for key, value in model.state_dict().items():
             shard = self._local_shard(key, value, is_master) if resolve_fqn(model, key) in self.segments else None
             if shard is not None and shard[0].numel():
-                sizes[key] = (shard[0].numel(), self.wire_dtypes[key])
-        aligned = {key: -(-numel * dtype.itemsize // 8) * 8 for key, (numel, dtype) in sizes.items()}
-        start = time.perf_counter()
-        buffer, offset = pin(sum(aligned.values())), 0
-        self.pin_time = time.perf_counter() - start
-        for key, (numel, dtype) in sizes.items():
+                sizes[key] = (shard[0].numel(), shard[1], self.wire_dtypes[key])
+        aligned = {key: -(-numel * dtype.itemsize // 8) * 8 for key, (numel, _, dtype) in sizes.items()}
+        buffer, self.pinning = pin_in_background(sum(aligned.values()))
+        self.pin_start = time.perf_counter()
+        offset = 0
+        for key, (numel, global_offset, dtype) in sizes.items():
             bits = bits_dtype(str(dtype).removeprefix("torch."))
             self.snapshot[key] = buffer[offset : offset + numel * dtype.itemsize].view(bits)
+            self.offsets[key] = global_offset
             offset += aligned[key]
+
+    def anchor_parts(self, model: nn.Module) -> list[tuple[str, list[int], int, torch.Tensor]]:
+        """This rank's slices of the full HF checkpoint in the snapshot (the last broadcast's wire weights)."""
+        parts = []
+        for key, bits in self.snapshot.items():
+            fqn = resolve_fqn(model, key)
+            values, offset = bits.view(self.wire_dtypes[key]), self.offsets[key]
+            for start, name in self.segments[fqn]:
+                begin, end = max(start, offset), min(start + self.hf_numel[name], offset + bits.numel())
+                if begin < end:
+                    shape = self.hf_tensors[name][0]
+                    parts.append((name, shape, begin - start, values[begin - offset : end - offset]))
+        return parts
 
     @staticmethod
     def _diff(bits: torch.Tensor, previous: torch.Tensor, chunk: int = 1 << 28) -> tuple[torch.Tensor, torch.Tensor]:
@@ -229,6 +244,14 @@ class SparseDeltaEncoder:
         self.scales_changed = False
         if first:
             self._allocate_snapshot(model, is_master)
+        elif self.pinning is not None:
+            wait = time.perf_counter()
+            self.pinning.join()
+            self.pinning = None
+            get_logger().info(
+                f"Page-locked the sparse weight snapshot in {time.perf_counter() - self.pin_start:.1f}s "
+                f"(waited {time.perf_counter() - wait:.1f}s)"
+            )
         names, counts, gaps, values = [], [], [], []
         checksum_names, checksums = [], []
         for key, value in model.state_dict().items():
@@ -303,12 +326,9 @@ class FileSystemWeightSender(WeightSender):
         self.last_step: int | None = None
         self.anchor_step: int | None = None
         self.pending_anchor: int | None = None
-        # Pinned host buffer for the next anchor, allocated on a thread ahead of it
-        self.anchor_buffer: Future | None = None
-        self.anchor_bytes: int | None = None
-        self.allocator = ThreadPoolExecutor(1)
-        # At most one delta is being written while the next step trains
-        self.writer: threading.Thread | None = None
+        # Background writes of the last step (its delta, and its anchor on anchor steps)
+        self.writers: list[threading.Thread] = []
+        self.deferred_finish = False
         self.logger.debug("Initialized filesystem weight broadcast")
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
@@ -335,9 +355,10 @@ class FileSystemWeightSender(WeightSender):
         if not self.config.sparse:
             self._save_full(model, step_dir)
             return
-        if self.writer is not None:
-            self.writer.join()
-            self.writer = None
+        # A step's background writes read the snapshot, which the next encode updates.
+        for writer in self.writers:
+            writer.join()
+        self.writers, self.deferred_finish = [], False
         if self.world.is_master:
             # Engines that load a step with a delta dir report their weight layout next to it.
             (step_dir / DELTA_DIR).mkdir(exist_ok=True)
@@ -357,9 +378,9 @@ class FileSystemWeightSender(WeightSender):
             self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
         base_step, self.last_step = self.last_step, step
         if first:
+            num_bytes = sum(snapshot.nbytes for snapshot in self.encoder.snapshot.values())
             self.logger.info(
-                f"Initialized the sparse weight snapshot in {encode_time:.1f}s "
-                f"(pinning {sum(s.nbytes for s in self.encoder.snapshot.values()) / 2**30:.1f} GiB: {self.encoder.pin_time:.1f}s)"
+                f"Initialized the {num_bytes / 2**30:.1f} GiB sparse weight snapshot in {encode_time:.1f}s"
             )
         if first and step == 0:
             # The run's first broadcast is the checkpoint the engines booted from.
@@ -373,13 +394,11 @@ class FileSystemWeightSender(WeightSender):
             dist.barrier()
             self.anchor_step = step
             return
-        self.writer = threading.Thread(target=self._write_delta, args=(step, base_step, step_dir, delta, encode_time))
-        self.writer.start()
-        # Periodic anchors only serve engines that fall off the chain: write them off the critical path.
-        # Pinning their host buffer is slow, so it starts on a thread two steps ahead.
-        if 0 < -step % self.config.anchor_interval <= 2 and self.anchor_buffer is None:
-            self.anchor_bytes = self.anchor_bytes or owned_weight_bytes(model)
-            self.anchor_buffer = self.allocator.submit(self._allocate_anchor_buffer, model)
+        writer = threading.Thread(target=self._write_delta, args=(step, base_step, step_dir, delta, encode_time))
+        writer.start()
+        self.writers.append(writer)
+        self.deferred_finish = True
+        # Periodic anchors only serve engines that fall off the chain: written in the background too.
         if (
             self.world.is_master
             and self.pending_anchor is not None
@@ -389,7 +408,7 @@ class FileSystemWeightSender(WeightSender):
         start_anchor = [step % self.config.anchor_interval == 0 and self.pending_anchor is None]
         dist.broadcast_object_list(start_anchor, src=0)
         if start_anchor[0]:
-            self._save_anchor(model, step_dir)
+            self.writers.append(self._save_anchor(model, step_dir))
             self.pending_anchor = step
 
     def _write_delta(self, step: int, base_step: int, step_dir: Path, delta: tuple, encode_time: float) -> None:
@@ -429,7 +448,7 @@ class FileSystemWeightSender(WeightSender):
 
     def _finish(self, step: int, step_dir: Path) -> None:
         # A delta step is committed by its writer thread once every rank's file is on disk.
-        if self.writer is None:
+        if not self.deferred_finish:
             super()._finish(step, step_dir)
 
     def _save_full(self, model: nn.Module, step_dir: Path) -> None:
@@ -439,34 +458,19 @@ class FileSystemWeightSender(WeightSender):
         save_state_dict_parallel(state_dict, step_dir)
 
     def _save_anchor(self, model: nn.Module, step_dir: Path) -> threading.Thread:
-        """Gather this rank's share of the full checkpoint into a pinned host buffer, then write it
-        on a thread (no collectives) and release the buffer; engines treat the step as an anchor
-        once every rank's marker exists."""
+        """Write this rank's slices of the full checkpoint from the snapshot on a thread; engines treat
+        the step as an anchor once every rank's marker exists."""
+        assert self.encoder is not None
+        parts = self.encoder.anchor_parts(model)
         start = time.perf_counter()
-        buffer = self.anchor_buffer.result() if self.anchor_buffer is not None else self._allocate_anchor_buffer(model)
-        self.anchor_buffer = None
-        state_dict = convert_state_dict_to_hf(model, gather_weights_parallel(model, host_buffer=buffer))
-        torch.cuda.empty_cache()
-        gather_time = time.perf_counter() - start
 
         def write() -> None:
-            nonlocal buffer
-            write_anchor_shards(state_dict, step_dir, self.world.rank, self.world.world_size)
-            self.logger.debug(
-                f"Wrote the {step_dir.name} anchor: gather {gather_time:.1f}s, write {time.perf_counter() - start - gather_time:.1f}s"
-            )
-            state_dict.clear()
-            unpin(buffer)
-            buffer = None
+            write_anchor_shards(parts, step_dir, self.world.rank, self.world.world_size)
+            self.logger.debug(f"Wrote the {step_dir.name} anchor in {time.perf_counter() - start:.1f}s")
 
         thread = threading.Thread(target=write)
         thread.start()
         return thread
-
-    def _allocate_anchor_buffer(self, model: nn.Module) -> torch.Tensor:
-        if self.anchor_bytes is None:
-            self.anchor_bytes = owned_weight_bytes(model)
-        return pin(self.anchor_bytes)
 
     def _clean(self, step: int) -> None:
         # Sparse chains replay from their anchor, so keep everything since it.

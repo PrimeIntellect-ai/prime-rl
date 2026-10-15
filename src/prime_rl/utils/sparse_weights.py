@@ -11,16 +11,20 @@ exactly its ``base_step``; per-tensor checksums of the new weights catch it if n
 
 import json
 import os
+import threading
+from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from math import prod
 from pathlib import Path
 from typing import BinaryIO
 
 import numpy as np
 import pyzstd
 import torch
+from safetensors import safe_open
 from safetensors.numpy import save
-from safetensors.torch import save as save_torch
 
 DELTA_DIR = "delta"
 MANIFEST = "manifest.json"
@@ -164,20 +168,77 @@ def _write_atomically(path: Path, data: bytes) -> None:
     tmp.rename(path)
 
 
-def write_anchor_shards(state_dict: dict[str, torch.Tensor], step_dir: Path, rank: int, world_size: int) -> None:
-    """Write one trainer rank's share of a full checkpoint, without collectives; the
-    ``anchor_rank{rank}.done`` marker (holding the world size) is written last."""
-    shards, size = [[]], 0
-    for name, tensor in state_dict.items():
+def write_anchor_shards(
+    parts: list[tuple[str, list[int], int, torch.Tensor]], step_dir: Path, rank: int, world_size: int
+) -> None:
+    """Write one trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, flat values)``
+    slices, stored as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files, straight from host
+    memory and without collectives. The ``anchor_rank{rank}.done`` marker (the world size) comes last."""
+    files, size = [[]], 0
+    for part in parts:
         if size > 2**30:
-            shards.append([])
+            files.append([])
             size = 0
-        shards[-1].append(name)
-        size += tensor.nbytes
-    for index, names in enumerate(shards):
+        files[-1].append(part)
+        size += part[3].nbytes
+    for index, file_parts in enumerate(files):
+        header, offset = {"__metadata__": {"shapes": json.dumps({name: shape for name, shape, _, _ in file_parts})}}, 0
+        for name, _, start, values in file_parts:
+            dtype = _SAFETENSORS_DTYPES[values.dtype]
+            header[f"{name}@{start}"] = {
+                "dtype": dtype,
+                "shape": [values.numel()],
+                "data_offsets": [offset, offset + values.nbytes],
+            }
+            offset += values.nbytes
+        encoded = json.dumps(header).encode()
+        encoded += b" " * (-len(encoded) % 8)
         path = step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors"
-        _write_atomically(path, save_torch({name: state_dict[name] for name in names}, metadata={"format": "pt"}))
+        tmp = path.with_name(f".{path.name}.tmp")
+        with open(tmp, "wb") as file:
+            file.write(len(encoded).to_bytes(8, "little") + encoded)
+            for *_, values in file_parts:
+                file.write(memoryview(values.view(torch.uint8).numpy()))
+            drop_page_cache(file.fileno())
+        tmp.rename(path)
     (step_dir / f"anchor_rank{rank}.done").write_text(str(world_size))
+
+
+_SAFETENSORS_DTYPES = {torch.bfloat16: "BF16", torch.float16: "F16", torch.float32: "F32"}
+
+
+def anchor_index(step_dir: Path) -> tuple[dict[str, list[tuple[Path, str, int]]], dict[str, tuple[list[int], str]]]:
+    """Where each tensor's slices are in an anchor written by ``write_anchor_shards``, and its shape and dtype."""
+    slices: dict[str, list[tuple[Path, str, int]]] = defaultdict(list)
+    tensors: dict[str, tuple[list[int], str]] = {}
+    for path in sorted(step_dir.glob("model-rank*.safetensors")):
+        with safe_open(path, framework="pt") as file:
+            shapes = json.loads(file.metadata()["shapes"])
+            for key in file.keys():
+                name, start = key.rsplit("@", 1)
+                slices[name].append((path, key, int(start)))
+                dtype = str(file.get_slice(key).get_dtype())
+                tensors[name] = (shapes[name], {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}[dtype])
+    return dict(slices), tensors
+
+
+def anchor_tensors(
+    step_dir: Path, names: Iterable[str] | None = None, index=None
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """Assemble the full tensors of an anchor (all, or ``names``), in the order the trainer wrote them."""
+    slices, tensors = index or anchor_index(step_dir)
+    for name in slices if names is None else names:
+        shape, dtype = tensors[name]
+        tensor = torch.empty(prod(shape), dtype=getattr(torch, dtype))
+        for path, key, start in slices[name]:
+            with safe_open(path, framework="pt") as file:
+                values = file.get_tensor(key)
+            tensor[start : start + values.numel()] = values
+        yield name, tensor.view(shape)
+    if names is None:
+        for path in step_dir.glob("model-rank*.safetensors"):
+            with open(path, "rb") as file:
+                drop_page_cache(file.fileno())
 
 
 def anchor_complete(step_dir: Path) -> bool:
@@ -239,6 +300,23 @@ def pin(num_bytes: int) -> torch.Tensor:
         error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), num_bytes, 0)
         assert error == 0, f"cudaHostRegister failed: {error}"
     return tensor
+
+
+def pin_in_background(num_bytes: int, chunk: int = 1 << 30) -> tuple[torch.Tensor, threading.Thread]:
+    """Host memory of ``num_bytes`` that a thread page-locks chunk by chunk (``cudaHostRegister``);
+    it is usable as pageable memory right away. Page-locking a large buffer is slow on a loaded host."""
+    raw = np.empty(num_bytes + 4096, np.uint8)
+    offset = -raw.ctypes.data % 4096
+    tensor = torch.from_numpy(raw[offset : offset + num_bytes])
+
+    def register() -> None:
+        for start in range(0, num_bytes, chunk):
+            error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr() + start, min(chunk, num_bytes - start), 0)
+            assert error == 0, f"cudaHostRegister failed: {error}"
+
+    thread = threading.Thread(target=register)
+    thread.start()
+    return tensor, thread
 
 
 def unpin(tensor: torch.Tensor) -> None:
