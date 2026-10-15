@@ -1,5 +1,4 @@
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -28,24 +27,21 @@ class StepResult:
     ``routing_confidence/mean``). Empty for dense models."""
 
     tokens_per_expert: Tensor | None
-    """Global ``[num_moe_layers, num_experts]`` token counts of the step. None for dense models."""
+    """This rank's ``[num_moe_layers, num_experts]`` token counts of the step. None for dense models."""
 
 
 def run_micro_batches(
     model: nn.Module,
     dataiter: Iterator[dict],
-    compute_loss: Callable[[dict], tuple[Tensor, Tensor, Tensor | None]],
+    compute_loss: Callable[[dict], tuple[Tensor, Tensor, Tensor]],
     grad_accum_steps: int,
     parallel_dims: ParallelDims,
     gradient_manager=None,
-    *,
-    overlap_optimizer: bool = True,
-    record_function: Callable[[str], AbstractContextManager] = nullcontext,
 ) -> StepResult:
     """Forward and backward passes over the ``grad_accum_steps`` micro-batches of one step, leaving the
     gradients of the summed token loss divided by the global token count (the mean loss per token, as on one
     GPU without accumulation). ``compute_loss`` returns the summed loss and the number of unmasked tokens of a
-    micro-batch, and an optional auxiliary loss on the same scale as the summed loss that is trained but not logged."""
+    micro-batch, and an auxiliary loss on the same scale as the summed loss that is trained but not logged."""
     logger = get_logger()
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
@@ -62,12 +58,8 @@ def run_micro_batches(
         )
         dist.all_reduce(global_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         global_token_count = global_token_count.item() // parallel_dims.cp
-        grad_scale = (
-            parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count
-            if global_token_count > 0
-            else 1.0
-        )
-        prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=overlap_optimizer)
+        grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count
+        prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=True)
 
     loss_sum = torch.tensor(0.0, device="cuda")
     nan_count = torch.tensor(0, device="cuda")
@@ -85,11 +77,10 @@ def run_micro_batches(
             scaled_loss = torch.nan_to_num(micro_loss_sum, nan=0.0) / grad_accum_steps
         else:
             loss_sum += micro_loss_sum.detach()
-            scaled_loss = (micro_loss_sum if aux_loss_sum is None else micro_loss_sum + aux_loss_sum) / grad_accum_steps
-        with record_function("backward"):
-            begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
-            scaled_loss.backward()
-            finish_backward(gradient_manager)
+            scaled_loss = (micro_loss_sum + aux_loss_sum) / grad_accum_steps
+        begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
+        scaled_loss.backward()
+        finish_backward(gradient_manager)
 
         if is_moe_model:
             micro_moe_stats, micro_tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
@@ -102,10 +93,7 @@ def run_micro_batches(
     if gradient_manager is None:
         dist.all_reduce(local_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         global_token_count = local_token_count.item()
-        if global_token_count > 0:
-            scale_gradients_(
-                None, model, parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count
-            )
+        scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count)
 
     dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
     dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
@@ -113,7 +101,7 @@ def run_micro_batches(
     num_tokens = torch.tensor(local_num_tokens, dtype=torch.int64, device="cuda")
     dist.all_reduce(num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
     return StepResult(
-        loss=(loss_sum / global_token_count).item() if global_token_count > 0 else 0.0,
+        loss=(loss_sum / global_token_count).item(),
         nan_count=int(nan_count.item()),
         num_tokens=int(num_tokens.item()),
         moe_stats={name: value.item() for name, value in moe_stats.items()} if is_moe_model else {},

@@ -44,8 +44,8 @@ from prime_rl.trainer.pretrain.data import (
     setup_val_dataset,
 )
 from prime_rl.trainer.pretrain.schedules import LRSchedule
-from prime_rl.trainer.data import get_dataset_state
-from prime_rl.trainer.step import run_micro_batches
+from prime_rl.trainer.pretrain.step import run_micro_batches
+from prime_rl.trainer.sft.data import get_dataset_state
 from prime_rl.trainer.utils import (
     GarbageCollection,
     clip_grad_norm_,
@@ -187,15 +187,15 @@ def train(config: PretrainConfig):
             logger.info(f"Val source {name!r}: {val_windows[name] * config.data.seq_len:,} tokens")
 
     progress = Progress()
+    restore_dataloader = checkpoint_step is not None and not (config.ckpt or CheckpointConfig()).skip_dataloader
     if checkpoint_step is not None:
-        skip = config.ckpt or CheckpointConfig()
         ckpt_manager.load(
             checkpoint_step,
             model,
             [optimizer],
             None,
             progress,
-            dataloader=dataloader if not skip.skip_dataloader else None,
+            dataloader=dataloader if restore_dataloader else None,
             path=config.resume.dir / "trainer" if config.resume.dir is not None else None,
         )
         progress.step += 1
@@ -205,7 +205,7 @@ def train(config: PretrainConfig):
     # from the window sequence itself, which every data rank walks, so they are global without communication.
     next_window = 0
     source_totals = dict.fromkeys(train_dataset.names, 0)
-    if checkpoint_step is not None and not (config.ckpt or CheckpointConfig()).skip_dataloader:
+    if restore_dataloader:
         next_window = checkpoint_step * config.data.batch_size
         # The loaded state counts the windows before its own position, which is near next_window.
         state = next(iter(get_dataset_state(dataloader).values()))
