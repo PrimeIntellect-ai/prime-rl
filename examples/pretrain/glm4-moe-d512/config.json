@@ -27,7 +27,6 @@
     "rope_theta": 500000.0,
     "rope_type": "default"
   },
-  "rope_theta": 10000.0,
   "routed_scaling_factor": 2.5,
   "tie_word_embeddings": false,
   "transformers_version": "5.6.2",
