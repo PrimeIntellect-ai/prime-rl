@@ -61,8 +61,10 @@ def param_groups(
 
     groups = []
     for (role, experts), role_params in params.items():
+        lr_scale = optim.router_lr_scale if role == "router" else 1.0
         if optim.type == "muon" and role in muon_scales:
             lr, wd = muon_scales[role]
+            lr *= lr_scale
             group = dict(
                 params=role_params,
                 algorithm="muon",
@@ -75,7 +77,7 @@ def param_groups(
             groups.append(group)
             continue
         lr, eps, wd = adam_scales[role]
-        group = dict(params=role_params, lr=optim.lr * lr, weight_decay=optim.weight_decay * wd)
+        group = dict(params=role_params, lr=optim.lr * lr * lr_scale, weight_decay=optim.weight_decay * wd)
         if optim.type == "muon":
             group.update(algorithm="adamw", epsilon=optim.eps * eps)
         else:
