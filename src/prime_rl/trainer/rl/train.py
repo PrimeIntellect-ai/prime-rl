@@ -591,15 +591,16 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()
-            # The per-layer gather + fp8 conversion peaks ~50 GiB above the
-            # resident weights; release cached blocks (incl. offload-stream
-            # pools) so the broadcast gets the full headroom. Drain all
-            # pending work first: empty_cache returns blocks to the driver,
-            # so a still-running kernel holding a cached block (e.g. the
-            # optimizer step's tail) faults with an illegal memory access
-            # once its block is freed under it.
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+            if weight_sender.gathers_full_weights:
+                # The per-layer gather + fp8 conversion peaks ~50 GiB above the
+                # resident weights; release cached blocks (incl. offload-stream
+                # pools) so the broadcast gets the full headroom. Drain all
+                # pending work first: empty_cache returns blocks to the driver,
+                # so a still-running kernel holding a cached block (e.g. the
+                # optimizer step's tail) faults with an illegal memory access
+                # once its block is freed under it.
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
