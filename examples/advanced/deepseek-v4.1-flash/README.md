@@ -37,6 +37,6 @@ uv run sft @ examples/advanced/deepseek-v4.1-flash/sft/base.toml @ examples/adva
 
 - EP 8 + FSDP, full activation checkpointing, SignSGD (no optimizer state), frozen engram tables, 8k-token sequences.
 - For a fake-data dry run, append [`sft/fake.toml`](sft/fake.toml) instead of the data overlay.
-- Chats are rendered with [`renderer.py`](renderer.py), V4's renderer with V4.1's System token and numeric reasoning-effort prefix (text conversations without tools).
+- Chats are rendered with the `deepseek-v4.1` renderer from `renderers` (text conversations without tools).
 
 Without context or pipeline parallelism every GPU holds a shard of the whole model state, so the run needs enough GPUs for ~550B non-engram parameters (fp32 masters and gradients) plus the frozen engram shards: on 80 GB GPUs, 24 is not enough. `num_train_nodes = 12` assumes 8-GPU nodes with more memory per GPU; size it to your hardware.

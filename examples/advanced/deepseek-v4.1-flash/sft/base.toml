@@ -25,8 +25,7 @@ warmup_steps = 50
 decay_steps = 0
 
 [renderer]
-name = "custom"
-import_path = "examples/advanced/deepseek-v4.1-flash/renderer.py:DeepSeekV41Renderer"
+name = "deepseek-v4.1"
 
 [deployment]
 type = "multi_node"
