@@ -36,6 +36,8 @@ def param_groups(
     sqrt(num_experts / d) shrinks as m_N^-1/2: with Muon its learning rate is scaled by 1/m_N;
     with AdamW it follows the hidden rule.
     """
+    if optim.type == "muon" and optim.hyperball:
+        return hyperball_param_groups(model, optim, ep_enabled)
     # (lr, eps, weight decay) scale per role for AdamW. PyTorch AdamW and Dion decay by lr * weight_decay.
     adam_scales = {
         "embedding": (1.0, 1 / m_n, 1.0),
@@ -82,6 +84,35 @@ def param_groups(
             group.update(algorithm="adamw", epsilon=optim.eps * eps)
         else:
             group["eps"] = optim.eps * eps
+        groups.append(group)
+    return groups
+
+
+def hyperball_param_groups(model: nn.Module, optim: PretrainMuonConfig, ep_enabled: bool) -> list[dict]:
+    """Hyperball groups (marked ``hyperball``, see ``Hyperball``): Muon on the hidden and residual output
+    matrices, Adam on the LM head, and plain Adam at ``optim.adam_lr`` on everything else. No weight decay."""
+    params = defaultdict(list)
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            name = resolve_fqn(model, name)
+            role = param_role(name, param)
+            if role in ("hidden", "residual_out") and ".mlp.router." not in name:
+                params["muon", ".mlp.experts." in name].append(param)
+            else:
+                params["head" if role == "output" else "adam", False].append(param)
+
+    groups = []
+    for (kind, experts), group_params in params.items():
+        group = dict(params=group_params, lr=optim.lr, weight_decay=0.0, hyperball=True)
+        if kind == "muon":
+            # No shape adjustment, so the step of a packed matrix stays proportional to its Muon update.
+            group.update(algorithm="muon", adjust_lr=None, nesterov=optim.nesterov)
+            if experts and ep_enabled:
+                group["distributed_mesh_name"] = "dp_shard_mod_ep"
+        else:
+            group.update(algorithm="adamw", epsilon=optim.eps)
+            if kind == "adam":
+                group.update(lr=optim.adam_lr, hyperball=False)
         groups.append(group)
     return groups
 

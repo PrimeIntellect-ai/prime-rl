@@ -11,6 +11,7 @@ from prime_rl.trainer.init import init_weights, normal_shard
 from prime_rl.trainer.models.fusions import fuse_qkv_projections, get_model_packed_parameters
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.pretrain.hyperball import Hyperball
 from prime_rl.trainer.pretrain.parametrization import head_block_partitions, param_groups
 
 
@@ -164,3 +165,22 @@ def test_muon_orthogonalizes_each_head_block_of_the_packed_qkv(heads_per_block):
     for block_update, block_grad in zip(update.split(blocks), weight.grad.split(blocks)):
         expected = muon.zeropower_via_newtonschulz5(block_grad.bfloat16()).float()
         torch.testing.assert_close(block_update, expected, atol=1e-6, rtol=0)
+
+
+def test_hyperball_keeps_each_matrix_norm_and_steps_by_lr_times_it():
+    torch.manual_seed(0)
+    matrix, experts = torch.nn.Parameter(torch.randn(8, 16)), torch.nn.Parameter(torch.randn(4, 8, 16) * 0.1)
+    head = torch.nn.Parameter(torch.randn(8, 16))
+    optimizer = torch.optim.SGD([dict(params=[matrix, experts], lr=0.1, hyperball=True), dict(params=[head], lr=0.1)])
+    Hyperball(optimizer)
+    before = [p.detach().clone() for p in (matrix, experts, head)]
+    for p in (matrix, experts, head):
+        p.grad = torch.randn_like(p)
+    optimizer.step()
+
+    for p, w in zip((matrix, experts), before):
+        norm = w.norm(dim=(-2, -1), keepdim=True)
+        trial = w - 0.1 * norm * p.grad / p.grad.norm(dim=(-2, -1), keepdim=True)
+        torch.testing.assert_close(p.detach(), trial * norm / trial.norm(dim=(-2, -1), keepdim=True))
+        torch.testing.assert_close(p.detach().norm(dim=(-2, -1)), w.norm(dim=(-2, -1)))
+    torch.testing.assert_close(head.detach(), before[2] - 0.1 * head.grad)

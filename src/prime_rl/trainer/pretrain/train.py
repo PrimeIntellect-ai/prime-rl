@@ -33,6 +33,7 @@ from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.init import init_weights, param_role
+from prime_rl.trainer.pretrain.hyperball import Hyperball
 from prime_rl.trainer.pretrain.parametrization import head_block_partitions, multipliers, param_groups
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.data import (
@@ -173,6 +174,8 @@ def train(config: PretrainConfig):
         param_groups=param_groups(model, config.optim, m_n, m_l, parallel_dims.ep_enabled),
         muon_matrix_partitions=head_partitions,
     )
+    if config.optim.type == "muon" and config.optim.hyperball:
+        Hyperball(optimizer)
 
     # With ckpt.skip_scheduler, the schedule restarts at the resumed step and spans the remaining steps.
     restart_schedule = config.ckpt is not None and config.ckpt.skip_scheduler and checkpoint_step is not None

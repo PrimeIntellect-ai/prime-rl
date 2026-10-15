@@ -288,6 +288,12 @@ class PretrainMuonConfig(MuonConfig):
     nesterov: bool = False
     """Nesterov momentum in the Muon groups."""
 
+    hyperball: bool = False
+    """Hyperball (MuonH, Wen et al. 2026, https://arxiv.org/abs/2606.16899): every Muon matrix (per expert) and the LM head keep their Frobenius norm, and each step moves them by ``lr`` times that norm along the normalized Muon (LM head: Adam) update, then projects back onto the sphere. This replaces weight decay. Embeddings, norms, biases and the router are trained by Adam at ``adam_lr`` without weight decay. Needs no parametrization and no runtime fusions."""
+
+    adam_lr: float | None = Field(None, gt=0)
+    """Learning rate of the Adam groups with ``hyperball``."""
+
     heads_per_block: int | None = Field(1, ge=1)
     """Muon orthogonalizes the attention query, key and value projections in blocks of this many heads, each block on its own (per-head Muon, Kimi K3 report, section 2.5). If None, each projection is one matrix."""
 
@@ -389,6 +395,18 @@ class PretrainConfig(BaseConfig):
     def validate_lr(self):
         if "lr" not in self.optim.model_fields_set:
             raise ValueError("optim.lr is required")
+        return self
+
+    @model_validator(mode="after")
+    def validate_hyperball(self):
+        if self.optim.type != "muon" or not self.optim.hyperball:
+            return self
+        if self.optim.adam_lr is None:
+            raise ValueError("optim.hyperball needs optim.adam_lr")
+        if self.parametrization is not None:
+            raise ValueError("optim.hyperball does not support [parametrization]")
+        if self.model.fusions.enabled:
+            raise ValueError("optim.hyperball needs model.fusions.enabled = []: it constrains each logical matrix")
         return self
 
     @model_validator(mode="after")
