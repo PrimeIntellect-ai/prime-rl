@@ -63,6 +63,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.sft.weight_dynamics import WeightUpdateTracker, check_start_weights
+from prime_rl.trainer.sft.master_cast_probe import MasterCastProbe, load_probe_batches
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -231,6 +232,29 @@ def train(config: SFTConfig):
         )
     else:
         logger.info("Starting from scratch")
+
+    # Load the probe's fixed batches before the training loader forks its worker.
+    probe_batches = None
+    if os.environ.get("PRIME_RL_MASTER_CAST_PROBE") == "1":
+        assert checkpoint_step is None, "the master-cast probe measures displacement from the weights it starts with"
+        probe_data_config = config.data.model_copy(
+            update={"name": os.environ["PRIME_RL_MASTER_CAST_PROBE_DATA"], "shuffle": False}
+        )
+        probe_dataset = setup_dataset(
+            tokenizer,
+            probe_data_config,
+            config.model.cp,
+            max_epochs=1,
+            renderer_config=config.renderer,
+            processor=processor,
+            multimodal=multimodal,
+        )
+        probe_batches = load_probe_batches(
+            probe_dataset,
+            config.data.seq_len * config.data.micro_batch_size,
+            config.model.cp,
+            int(os.environ.get("PRIME_RL_MASTER_CAST_PROBE_MICRO_BATCHES", "2")),
+        )
 
     # Create the iterator only after a potential resume: iter() forks workers with a
     # copy of the dataset's *current* state, so a later load_state_dict never reaches
@@ -411,6 +435,17 @@ def train(config: SFTConfig):
         if os.environ.get("PRIME_RL_WEIGHT_DYNAMICS") == "1" and world.is_master
         else None
     )
+    master_cast_probe = None
+    master_cast_probe_interval = int(os.environ.get("PRIME_RL_MASTER_CAST_PROBE_INTERVAL", "50"))
+    if probe_batches is not None:
+        master_cast_probe = MasterCastProbe(
+            model,
+            probe_batches,
+            compute_loss,
+            dp_cp_group,
+            parallel_dims.fsdp_gradient_divide_factor,
+        )
+        asyncio.run(monitors.log({**master_cast_probe.measure(), "step": 0}, step=0))
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -580,6 +615,9 @@ def train(config: SFTConfig):
         mfu = perf_counter.get_step_mfu(num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
+        # After the step's timing and memory readings, so probe steps keep comparable perf metrics.
+        if master_cast_probe is not None and progress.step % master_cast_probe_interval == 0:
+            weight_dynamics_metrics |= master_cast_probe.measure()
 
         # Log step metrics
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"

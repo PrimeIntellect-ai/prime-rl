@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -14,6 +16,24 @@ from prime_rl.trainer.models.kernels.fp8_utils import (
     weight_ue8m0_for_device,
 )
 from prime_rl.utils.logger import get_logger
+
+_bf16_compute = False
+
+
+@contextmanager
+def bf16_compute() -> Iterator[None]:
+    """Run FP8 linears and DeepGEMM FP8 expert GEMMs as plain bf16 matmuls inside this context."""
+    global _bf16_compute
+    previous = _bf16_compute
+    _bf16_compute = True
+    try:
+        yield
+    finally:
+        _bf16_compute = previous
+
+
+def bf16_compute_enabled() -> bool:
+    return _bf16_compute
 
 
 @torch.library.custom_op("prime_rl::fp8_blockwise_mm", mutates_args=())
@@ -164,6 +184,8 @@ class Float8BlockwiseLinear(nn.Linear):
         self.rounding_salt = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if bf16_compute_enabled():
+            return nn.functional.linear(x, self.weight, self.bias)
         return _fp8_blockwise_mm(
             x,
             self.weight,

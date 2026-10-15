@@ -113,7 +113,10 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
         self, experts: "GroupedExperts", name: str, x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor
     ) -> torch.Tensor:
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
+        from prime_rl.trainer.models.layers.fp8_linear import bf16_compute_enabled
 
+        if bf16_compute_enabled():
+            return torch._grouped_mm(x, weight, offsets)
         if not self.stochastic_rounding:
             return self.gemm(x, weight, offsets)
         return grouped_fp8_gemm(
