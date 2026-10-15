@@ -1,4 +1,3 @@
-import fla.utils
 import torch
 import torch.nn.functional as F
 from fla.modules import FusedRMSNormGated
@@ -9,8 +8,6 @@ from torch import nn
 
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.utils.cp import CPContext
-
-fla.utils.FLA_DISABLE_TENSOR_CACHE = True
 
 # Dynamo lowers all-gather to concatenation, then fails to copy the result into
 # FLA's stacked output buffer. Keep CP convolution eager until this is fixed:
