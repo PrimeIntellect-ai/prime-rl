@@ -43,7 +43,11 @@ def take_routing_counts(model: nn.Module) -> tuple[Tensor, Tensor]:
 
 def moe_layer_indices(model: nn.Module) -> list[int]:
     """The decoder-layer index of every MoE layer, in the order of `iter_moe_blocks`."""
-    return [index for index, layer in enumerate(get_language_model(model).layers) if isinstance(getattr(layer, "mlp", None), MoE)]
+    return [
+        index
+        for index, layer in enumerate(get_language_model(model).layers)
+        if isinstance(getattr(layer, "mlp", None), MoE)
+    ]
 
 
 def expert_load_metrics(counts: Tensor, layer_indices: list[int]) -> dict[str, float]:
