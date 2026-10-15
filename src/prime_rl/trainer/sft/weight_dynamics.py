@@ -1,4 +1,4 @@
-"""Instrumentation for the FP8 weight-dynamics experiments (experiments/fp8-qat-weight-dynamics)."""
+"""Instrumentation for the FP8 weight-dynamics experiments (int4/experiments/fp8-qat-weight-dynamics in research-prod)."""
 
 import hashlib
 import math

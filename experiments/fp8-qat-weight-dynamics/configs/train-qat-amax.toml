@@ -1,5 +1,0 @@
-[model.quantization]
-type = "fp8"
-
-[model.moe.compute]
-type = "deepgemm_fp8"

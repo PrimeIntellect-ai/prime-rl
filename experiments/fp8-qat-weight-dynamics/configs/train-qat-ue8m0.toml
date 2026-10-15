@@ -1,8 +1,0 @@
-[env_vars]
-PRIME_RL_FP8_WEIGHT_UE8M0 = "1"
-
-[model.quantization]
-type = "fp8"
-
-[model.moe.compute]
-type = "deepgemm_fp8"
