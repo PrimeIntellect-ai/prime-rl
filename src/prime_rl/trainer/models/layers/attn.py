@@ -487,7 +487,9 @@ class FlashAttention(nn.Module):
             kwargs["cu_seqlens_k"] = cu_seqlens
             out, _ = self.func(q, k, v, **kwargs)
         else:
-            out = self.func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, **kwargs)
+            # Distinct tensors for q / k: dynamo cannot trace autograd.Function.apply with one tensor passed as two
+            # inputs (torch.compile fullgraph=True)
+            out = self.func(q, k, v, cu_seqlens, cu_seqlens.clone(), max_seqlen, max_seqlen, **kwargs)
         return out
 
     def forward(
