@@ -453,7 +453,6 @@ class FileSystemWeightSender(WeightSender):
         self.encoder: SparseDeltaEncoder | None = None
         self.last_step: int | None = None
         self.anchor_step: int | None = None
-        self.pending_anchor: int | None = None
         # Background work, each in order: encodes, delta writes and commits, periodic anchor writes
         self.encodes = ThreadPoolExecutor(1)
         self.writes = ThreadPoolExecutor(1)
@@ -462,6 +461,7 @@ class FileSystemWeightSender(WeightSender):
         self.errors: list[BaseException] = []
         self.weights_read: threading.Event | None = None
         self.deferred_finish = False
+        self.gathers_full_weights = not config.sparse
         self.logger.debug("Initialized filesystem weight broadcast")
 
     def wait_for_weight_reads(self) -> None:
@@ -537,20 +537,9 @@ class FileSystemWeightSender(WeightSender):
         # The run's first broadcast is the checkpoint the engines booted from; a resumed run's is an anchor.
         boot = first and step == 0
         full = (first and step != 0) or (not first and self.encoder.fp8_layout is None)
-        anchor = False
-        if not first and not full:
-            # Periodic anchors only serve engines that fall off the chain: written in the background.
-            if (
-                self.world.is_master
-                and self.pending_anchor is not None
-                and anchor_complete(self.step_dir(self.pending_anchor))
-            ):
-                self.anchor_step, self.pending_anchor = max(self.anchor_step or 0, self.pending_anchor), None
-            start_anchor = [step % self.config.anchor_interval == 0 and self.pending_anchor is None]
-            dist.broadcast_object_list(start_anchor, src=0)
-            anchor = start_anchor[0]
-            if anchor:
-                self.pending_anchor = step
+        # Periodic anchors only serve engines that fall off the chain: written in the background, each after
+        # the previous one.
+        anchor = not first and not full and step % self.config.anchor_interval == 0
         self.encoder.prepare(shards, torch.cuda.max_memory_reserved())
         ready = torch.cuda.Event()
         ready.record()
@@ -608,7 +597,7 @@ class FileSystemWeightSender(WeightSender):
             return
         self._submit(self.writes, self._write_delta, step, base_step, step_dir, delta[:4], encode_time)
         if anchor:
-            self.host_readers.append(self._submit(self.anchors, self._write_anchor, step_dir, parts))
+            self.host_readers.append(self._submit(self.anchors, self._write_anchor, step, step_dir, parts))
 
     def _scales_changed_anywhere(self, step_dir: Path, changed: bool) -> bool:
         """Agree through the step dir (the encode thread runs no collectives) whether any rank's fp8 block
@@ -660,17 +649,18 @@ class FileSystemWeightSender(WeightSender):
 
     def _write_full(self, step: int, step_dir: Path, parts: list) -> None:
         """Publish v{step} as a full checkpoint: every rank writes its slices, the master commits."""
-        self._write_anchor(step_dir, parts)
+        self._write_anchor(step, step_dir, parts)
         if self.world.is_master:
-            while not anchor_complete(step_dir):
-                time.sleep(0.1)
-            self.anchor_step = step
             WeightSender._finish(self, step, step_dir)
 
-    def _write_anchor(self, step_dir: Path, parts: list) -> None:
+    def _write_anchor(self, step: int, step_dir: Path, parts: list) -> None:
         start = time.perf_counter()
         write_anchor_shards(parts, step_dir, self.world.rank, self.world.world_size)
         self.logger.debug(f"Wrote the {step_dir.name} anchor in {time.perf_counter() - start:.1f}s")
+        if self.world.is_master:
+            while not anchor_complete(step_dir):
+                time.sleep(0.1)
+            self.anchor_step = max(self.anchor_step or 0, step)
 
     def _finish(self, step: int, step_dir: Path) -> None:
         # A delta or full step is committed by the writer thread once every rank's files are on disk.

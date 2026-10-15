@@ -44,6 +44,10 @@ class WeightSender(ABC):
     (``.finished``). The trainer therefore runs in lockstep with its consumer
     on every transport — a broadcast nobody receives blocks and then fails."""
 
+    # Gathering full weights peaks well above the resident weights, so the trainer drains the GPU and
+    # releases cached blocks before such a broadcast.
+    gathers_full_weights = True
+
     def __init__(self, output_dir: Path, timeout: int):
         self.logger = get_logger()
         self.world = get_world()
