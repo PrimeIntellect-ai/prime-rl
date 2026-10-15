@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import fcntl
+import functools
 import os
 import time
 from contextlib import contextmanager
@@ -120,6 +121,20 @@ def update_platform_record(output_dir: Path, update: dict[str, Any]) -> None:
     _merge_platform_record(output_dir, lambda record: {**record, **update})
 
 
+def _mode() -> str:
+    """$PRIME_RUNS_MODE when set, else online with a Prime API key and disabled without
+    one: the monitor is on by default, so a run without a key goes untracked instead of
+    failing."""
+    if mode := os.getenv(pr.MODE_ENV):
+        return mode
+    if os.getenv("PRIME_API_KEY") or PrimeConfig().api_key:
+        return "online"
+    get_logger().warning(
+        "No Prime API key found (set PRIME_API_KEY or run `prime login`) - the run is not tracked on the Prime platform"
+    )
+    return "disabled"
+
+
 def _base_url() -> str | None:
     """$PRIME_API_BASE historically points at the RFT API root (``.../api/v1/rft``);
     the SDK takes the platform base URL. Unset means the SDK resolves it."""
@@ -130,10 +145,9 @@ def _base_url() -> str | None:
 class PrimeTrainMonitor(Monitor):
     """Logs metrics and episodes to the Prime platform through ``prime_runs``.
 
-    The run handle owns what ``TrainRun`` used to do by hand: the RFT
-    lifecycle (register or attach, finalize), the per-step metrics POSTs, the
-    every-10th-step Parquet sample uploads (presign -> PUT -> confirm), and
-    the terminal status. Delivery is BEST-EFFORT: the SDK's atexit hook
+    The run handle owns the RFT lifecycle (register or attach, finalize), the
+    per-step metrics POSTs, the episode uploads to Prime Traces, and the
+    terminal status. Delivery is BEST-EFFORT: the SDK's atexit hook
     reports a process that exits without finalizing, but an abrupt kill
     (SIGKILL, OOM, node loss) skips the hook and a lost finalize is not
     retried here — the platform owns the terminal state of attached
@@ -192,18 +206,19 @@ class PrimeTrainMonitor(Monitor):
             # pre-SDK register sent for a config-less init.
             init_kwargs = {"name": self.config.name, "model": "unknown"}
 
-        # A configured monitor must work (see monitors.setup), so the default is
-        # mode="online": a missing key or a team outside the external-runs allowlist
-        # raises here instead of training silently untracked. $PRIME_RUNS_MODE=disabled
-        # stays the explicit opt-out.
-        self.run = await asyncio.to_thread(
-            pr.init,
-            kind="train",
-            mode=os.getenv(pr.MODE_ENV) or "online",
-            base_url=_base_url(),
-            finish_timeout=FINISH_TIMEOUT,
-            **init_kwargs,
+        init = functools.partial(
+            pr.init, kind="train", base_url=_base_url(), finish_timeout=FINISH_TIMEOUT, **init_kwargs
         )
+        try:
+            self.run = await asyncio.to_thread(init, mode=_mode())
+        except (pr.ConfigurationError, pr.APIError) as e:
+            # An attached run is the launcher's: it must be tracked. Registering a new one
+            # fails without a team or for a team outside the external-runs allowlist,
+            # which must not stop a run that has the monitor on by default.
+            if "id" in init_kwargs:
+                raise
+            self.logger.warning(f"Failed to register the platform run, training untracked: {type(e).__name__}: {e}")
+            self.run = await asyncio.to_thread(init, mode="disabled")
         if self.run.url:
             attached = " (attached via $RUN_ID)" if self.run.attached else ""
             self.logger.info(f"Logging metrics and episodes to platform run {self.run.id} ({self.run.url}){attached}")
@@ -218,7 +233,7 @@ class PrimeTrainMonitor(Monitor):
                     {"kind": "train", "id": self.run.id, "url": self.run.url},
                 )
         else:
-            self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
+            self.logger.info("Platform run disabled")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # The SDK also drops non-finite values, but silently; sanitize first so
@@ -231,11 +246,10 @@ class PrimeTrainMonitor(Monitor):
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """Only the trained cohort ships to the platform. The upload cadence
-        (every 10th step) and the Parquet encoding live in the SDK's training
-        samples sink, which reads each episode's dispatch step off ``run.work``
-        - the ``TrainRunInfo`` the dispatcher stamps at emit time."""
-        if kind != "train" or subset != "effective" or not episodes:
+        """Every train episode ships as it arrives (the ``all`` subset), errored and
+        filtered ones included. The SDK keys each to its dispatch step off
+        ``run.work`` - the ``TrainRunInfo`` the dispatcher stamps at emit time."""
+        if kind != "train" or subset != "all" or not episodes:
             return
         # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_episodes, episodes)
@@ -263,11 +277,7 @@ class PrimeEvalMonitor(Monitor):
     config: PrimeEvalMonitorConfig
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
-        self.mode = os.getenv(pr.MODE_ENV) or "online"
-        # A configured monitor must work: the SDK looks the key up when an epoch opens,
-        # which is too late to find out there is none.
-        if self.mode == "online" and not (os.getenv("PRIME_API_KEY") or PrimeConfig().api_key):
-            raise RuntimeError("API key not found - set PRIME_API_KEY or run `prime login`")
+        self.mode = _mode()
         self.model: str = config.model if config is not None else "unknown"
         self.sources = {source.resolved_name: source for source in config.source} if config is not None else {}
         self.run_id = os.getenv("PRL_RUN_ID")
@@ -301,7 +311,7 @@ class PrimeEvalMonitor(Monitor):
                 # Off the event loop: the flock retry must not stall it.
                 await asyncio.to_thread(_merge_platform_record, output_dir, _eval_init_update)
         else:
-            self.logger.info(f"Platform evaluations disabled ({pr.MODE_ENV}=disabled)")
+            self.logger.info("Platform evaluations disabled")
 
     def _attach_parent(self) -> pr.Run | None:
         """The parent training run this eval process belongs to, for metrics only.
