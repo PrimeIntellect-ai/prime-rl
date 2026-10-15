@@ -54,7 +54,8 @@ def test_training_resume_checks_saved_configs(tmp_path, config_cls, kwargs, skip
         (SFTConfig, {}),
     ],
 )
-def test_launch_snapshot_preserves_full_submission_config(tmp_path, config_cls, kwargs):
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_launch_snapshot_preserves_full_submission_config(tmp_path, config_cls, kwargs, dry_run):
     template = tmp_path / "custom.sbatch.j2"
     header = "#!/bin/bash\n\n#SBATCH --job-name=resume-test\n \t\n  # Custom setup\n#SBATCH --nodes=1\n\n"
     template.write_text(header + "true\n")
@@ -63,7 +64,7 @@ def test_launch_snapshot_preserves_full_submission_config(tmp_path, config_cls, 
         output_dir=tmp_path,
         run={"name": "resume-test"},
         slurm={"template_path": template},
-        dry_run=True,
+        dry_run=dry_run,
     )
     config_dir, log_dir = create_attempt_dirs(tmp_path / "run 'with spaces")
     write_launch_artifacts(config_dir, "sft", submission)
