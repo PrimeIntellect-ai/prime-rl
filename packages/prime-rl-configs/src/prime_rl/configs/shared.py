@@ -57,6 +57,11 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     """With ``sparse``, publish a full checkpoint every this many steps (and at the first broadcast).
     Engines that fall off the delta chain reload the last anchor and replay the deltas since."""
 
+    snapshot: Literal["auto", "gpu", "cpu"] = "auto"
+    """With ``sparse``, where each trainer rank keeps the previous broadcast's weights to diff against.
+    ``auto`` keeps them on the GPU if they fit next to the first training step's peak memory, else in
+    page-locked host memory."""
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"
