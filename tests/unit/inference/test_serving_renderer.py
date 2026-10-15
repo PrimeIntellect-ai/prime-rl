@@ -109,6 +109,15 @@ def test_request_template_kwargs_override_defaults_and_unknown_ones_are_ignored(
     assert stub.requests[0].token_ids == renderer.render_ids(MESSAGES, add_generation_prompt=True)
 
 
+def test_text_content_parts_are_joined_with_newlines():
+    parts = [{"role": "user", "content": [{"type": "text", "text": "Weather"}, {"type": "text", "text": "in Paris?"}]}]
+    stub, response = serve("Sunny.<|im_end|>", {"messages": parts})
+    assert response.status_code == 200
+    renderer = create_renderer(stub.tokenizer, Qwen3RendererConfig(enable_thinking=True))
+    expected = renderer.render_ids([{"role": "user", "content": "Weather\nin Paris?"}], add_generation_prompt=True)
+    assert stub.requests[0].token_ids == expected
+
+
 def test_token_ids_are_returned_on_request():
     stub, response = serve("<think>\n\n</think>\n\nSunny.<|im_end|>", {"return_token_ids": True})
     body = payload(response)

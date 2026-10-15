@@ -37,6 +37,15 @@ def _error(message: str, status_code: int = 400) -> JSONResponse:
     return JSONResponse({"error": error, "object": "error"}, status_code=status_code)
 
 
+def _message(message: Mapping[str, Any]) -> dict[str, Any]:
+    """Joins text-only content parts with newlines, as vLLM does before applying a chat template."""
+    message = dict(message)
+    content = message.get("content")
+    if isinstance(content, list) and all(part.get("type") == "text" for part in content):
+        message["content"] = "\n".join(part["text"] for part in content)
+    return message
+
+
 class RendererChatCompletions:
     """Serves ``/v1/chat/completions`` with a renderer on top of a ``ServingTokens`` handler."""
 
@@ -92,7 +101,7 @@ class RendererChatCompletions:
         if request.use_beam_search:
             return _error("Beam search is not supported with a renderer.")
         kwargs = self._template_kwargs(request)
-        messages = [dict(message) for message in request.messages]
+        messages = [_message(message) for message in request.messages]
         tools = [tool.model_dump(exclude_none=True) for tool in request.tools] if request.tools else None
         try:
             prompt_ids = await self._run(self._render, kwargs, messages, tools)
