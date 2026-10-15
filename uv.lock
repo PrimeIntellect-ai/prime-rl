@@ -7836,7 +7836,6 @@ dev = [
     { name = "pre-commit", specifier = ">=2.19.0" },
     { name = "pytest", specifier = ">=7.0.0,<9.1.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.16.0" },
     { name = "ty", specifier = ">=0.0.63" },
