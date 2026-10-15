@@ -4,6 +4,7 @@ import asyncio
 import json
 import itertools
 import math
+import os
 import time
 from datetime import timedelta
 
@@ -367,7 +368,18 @@ def train(config: PretrainConfig):
     last_bias_moves = None
     update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
+    # MFU investigation only: PRL_PROFILE_STEPS="first,last" traces those steps on the ranks in PRL_PROFILE_RANKS.
+    profile_steps = (
+        [int(s) for s in os.environ["PRL_PROFILE_STEPS"].split(",")] if "PRL_PROFILE_STEPS" in os.environ else None
+    )
+    profile_ranks = [int(r) for r in os.environ.get("PRL_PROFILE_RANKS", "0").split(",")]
+    profiler = None
     while True:
+        if profile_steps is not None and progress.step == profile_steps[0] and world.rank in profile_ranks:
+            profiler = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+            )
+            profiler.start()
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
@@ -376,15 +388,16 @@ def train(config: PretrainConfig):
         lr_multiplier = lr_schedule.apply(progress.step - 1)
 
         seq_balance_sums.clear()
-        result = run_micro_batches(
-            model,
-            dataiter,
-            compute_loss,
-            grad_accum_steps,
-            parallel_dims,
-            gradient_manager,
-            extra_sums=seq_balance_sums,
-        )
+        with torch.profiler.record_function("prl/forward_backward"):
+            result = run_micro_batches(
+                model,
+                dataiter,
+                compute_loss,
+                grad_accum_steps,
+                parallel_dims,
+                gradient_manager,
+                extra_sums=seq_balance_sums,
+            )
         forward_backward_time = time.perf_counter() - step_start_time
         moe_metrics = {}
         if is_moe_model:
@@ -408,13 +421,17 @@ def train(config: PretrainConfig):
                 moe_metrics["router/bias/absmax"] = stacked.abs().max().item()
                 moe_metrics["router/bias/std"] = stacked.std(dim=1).mean().item()
 
-        group_grad_norms = grad_norms_by_group(model)
-        grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
+        with torch.profiler.record_function("prl/grad_norms"):
+            group_grad_norms = grad_norms_by_group(model)
+            grad_norm = (
+                clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
+            )
         is_diagnostic_step = config.diagnostics is not None and progress.step % config.diagnostics.interval == 0
         if is_diagnostic_step:
             update_tracker.before_step(model)
-        optimizer.step()
-        optimizer.zero_grad()
+        with torch.profiler.record_function("prl/optimizer"):
+            optimizer.step()
+            optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
 
         # The last step's checkpoint is written once after the loop.
@@ -500,6 +517,11 @@ def train(config: PretrainConfig):
             metrics["optim/grad_norm_spike"] = grad_norm_spikes.update(grad_norm.item())
         asyncio.run(monitors.log(metrics, step=progress.step))
 
+        if profiler is not None and progress.step == profile_steps[1]:
+            torch.cuda.synchronize()
+            profiler.stop()
+            profiler.export_chrome_trace(os.path.join(os.environ["PRL_PROFILE_DIR"], f"rank{world.rank}.json.gz"))
+            profiler = None
         if heart is not None:
             heart.beat()
         if is_last_step:
