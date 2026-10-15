@@ -115,6 +115,12 @@ weights = { web = 0.5, code = 0.5 }
 
 Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and the number of steps. Resume restores the data position on the same GPU layout and `data.num_workers`; resuming on a different layout is not supported yet. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
 
+## Monitoring
+
+Every step logs the loss, learning rate and schedule multiplier, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, per-source token counts and epochs (`progress/<source>/*`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
+
+`[diagnostics]` (default: every 100 steps; `diagnostics = null` turns it off) adds the size of the optimizer update relative to the weights per parameter group (`update/rms_ratio/*`, `param/rms/*`) and a forward pass on a fixed probe batch: attention max logit and entropy per layer (`attn/*`, FlashAttention layers) and the residual-stream size per layer (`act/*`). It does not support context parallelism yet.
+
 ## Evals
 
 `[val]` computes the held-out loss (nats per token), perplexity and bits per UTF-8 byte (comparable across tokenizers) of every source in `val.sources`, through the same loss code as training, so it also works with context parallelism. Each eval reads the same leading windows of every source: as many as fill whole micro-batches on every data-parallel rank. Evals run after the optimizer update, so the metrics at step N describe the same weights as the step-N checkpoint. With `eval_on_start` (default), they also run before the first step (logged as step 0), and they always run at the last step.
@@ -155,4 +161,4 @@ partition = "all"
 time = "04:00:00"
 ```
 
-Row `w` of the token stream goes to data stream `w % num_streams`, with `num_streams = data_parallel_ranks * data.num_workers`, and step `s` trains on rows `s * rows_per_step` to `(s + 1) * rows_per_step - 1`. So runs with different numbers of GPUs train on the same rows at every step, only split differently into micro-batches. The loss and gradient are normalized by the token count of the whole global batch, as on one GPU with gradient accumulation.
+Row `w` of the token stream goes to data stream `w % num_streams`, with `num_streams = data_parallel_ranks * data.num_workers`, and step `s` (counted from 1) trains on rows `(s - 1) * rows_per_step` to `s * rows_per_step - 1`. So runs with different numbers of GPUs train on the same rows at every step, only split differently into micro-batches. The loss and gradient are normalized by the token count of the whole global batch, as on one GPU with gradient accumulation.

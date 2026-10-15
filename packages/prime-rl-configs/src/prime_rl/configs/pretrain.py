@@ -301,7 +301,7 @@ class PretrainConfig(BaseConfig):
     data: PretrainDataConfig
 
     val: ValConfig | None = None
-    """Held-out evals. If None, none run."""
+    """Held-out loss on token shards (``val/*``). If None, it never runs."""
 
     diagnostics: DiagnosticsConfig | None = DiagnosticsConfig()
     """Diagnostic step (update sizes, attention and activation probe). If None, it never runs."""
@@ -324,7 +324,7 @@ class PretrainConfig(BaseConfig):
     log: TrainerLogConfig = TrainerLogConfig()
 
     monitors: TrainMonitorsConfig = TrainMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
 
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
