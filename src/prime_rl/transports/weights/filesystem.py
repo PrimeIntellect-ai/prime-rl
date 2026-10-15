@@ -30,6 +30,7 @@ from prime_rl.utils.sparse_weights import (
     anchor_complete,
     as_bits,
     bits_dtype,
+    compile_fp8_quantizer,
     encode_gaps,
     quantize_fp8_blocks,
     rank_part,
@@ -107,6 +108,9 @@ class SparseDeltaEncoder:
         # fqn -> (ue8m0 scales, columns) for trainer tensors held in fp8; quantized as one [rows, columns] matrix
         self.fp8: dict[str, tuple[bool, int]] = {}
         self.fp8_layout: dict[str, str] | None = None
+        self.fp8_background: set[str] = set()
+        self.compiled_fp8 = None
+        self.scales_changed = False
         self.gather: set[str] = set()
         self.segment_starts: dict[str, torch.Tensor] = {}
         self.shard_segments: dict[str, tuple[list[str], list[int], list[int]]] = {}
@@ -148,6 +152,12 @@ class SparseDeltaEncoder:
             for _, name in segs:
                 self.hf_tensors[name] = (self.hf_tensors[name][0], "float8_e4m3fn")
         self.gather = self._find_gathered(model, is_master)
+        # Diffed on the encode thread with the ahead-of-time compiled quantizer; others on the training thread
+        self.fp8_background = {fqn for fqn, (_, num_cols) in self.fp8.items() if num_cols % FP8_BLOCK[1] == 0}
+        if self.fp8_background:
+            start = time.perf_counter()
+            self.compiled_fp8 = compile_fp8_quantizer()
+            get_logger().info(f"Compiled the fp8 quantizer ahead of time in {time.perf_counter() - start:.1f}s")
 
     def _local_shard(self, key: str, value: torch.Tensor, is_master: bool) -> tuple[torch.Tensor, int] | None:
         """This rank's contiguous flat slice of ``value`` and its global flat offset,
@@ -299,15 +309,17 @@ class SparseDeltaEncoder:
         return parts
 
     @torch.no_grad()
-    def prepare(self, shards: list[tuple], peak_reserved: int) -> bool:
+    def prepare(self, shards: list[tuple], peak_reserved: int) -> None:
         """The training thread's part of an encode, before ``encode``: place the snapshot at the first delta,
-        and diff the tensors held in fp8 (vLLM's quantizer is torch.compile'd, and running it next to the
-        training step breaks activation checkpointing there). Returns whether an fp8 block scale changed
-        on this rank."""
+        and diff the tensors held in fp8 that the ahead-of-time compiled quantizer does not cover (vLLM's
+        quantizer is torch.compile'd, and running it next to the training step breaks activation
+        checkpointing there). ``scales_changed``: whether an fp8 block scale changed on this rank, after
+        ``encode``."""
         self.previous = self.snapshot
         self.fp8_parts = []
+        self.scales_changed = False
         if not self.initialized:
-            return False
+            return
         if self.on_gpu is None:
             self._place(peak_reserved)
             if self.on_gpu:
@@ -315,8 +327,9 @@ class SparseDeltaEncoder:
                 self.snapshot = {key: torch.empty_like(bits, device=device) for key, bits in self.host.items()}
             elif not self.pinned:
                 self._page_lock()
-        fp8 = [shard for shard in shards if shard[1] in self.fp8]
-        return self._diff(fp8, self.fp8_parts.append) if fp8 else False
+        here = [shard for shard in shards if shard[1] in self.fp8 and shard[1] not in self.fp8_background]
+        if here:
+            self.scales_changed = self._diff(here, self.fp8_parts.append)
 
     @torch.no_grad()
     def encode(
@@ -338,7 +351,8 @@ class SparseDeltaEncoder:
                     return
                 for part in self.fp8_parts:
                     emit(part)
-                self._diff([shard for shard in shards if shard[1] not in self.fp8], emit)
+                rest = [shard for shard in shards if shard[1] not in self.fp8 or shard[1] in self.fp8_background]
+                self.scales_changed |= self._diff(rest, emit)
                 self.stream.synchronize()
         finally:
             weights_read.set()
@@ -427,7 +441,11 @@ class SparseDeltaEncoder:
                             current.view(torch.bfloat16),
                         )
                     (previous_fp8, previous_scales), (current_fp8, current_scales) = (
-                        quantize_fp8_blocks(weights.reshape(-1, num_cols), ue8m0)
+                        quantize_fp8_blocks(
+                            weights.reshape(-1, num_cols),
+                            ue8m0,
+                            self.compiled_fp8 if fqn in self.fp8_background else None,
+                        )
                         for weights in (previous_weights, current_weights)
                     )
                     scales_changed |= not torch.equal(previous_scales, current_scales)
@@ -600,14 +618,8 @@ class FileSystemWeightSender(WeightSender):
             if layout[0] is not None:
                 self.encoder.set_fp8_layout(model, layout[0], self.world.is_master)
         shards = self.encoder.local_shards(model, self.world.is_master)
-        scales_changed = self.encoder.prepare(shards, torch.cuda.max_memory_reserved())
-        if self.encoder.fp8:
-            changed = torch.tensor(int(scales_changed), device=f"cuda:{self.encoder.device}")
-            dist.all_reduce(changed, op=dist.ReduceOp.MAX)
-            scales_changed = bool(changed.item())
-            if scales_changed:
-                self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
-        full = self.encoder.fp8_layout is None or scales_changed
+        self.encoder.prepare(shards, torch.cuda.max_memory_reserved())
+        full = self.encoder.fp8_layout is None
         # Periodic anchors only serve engines that fall off the chain: written in the background, each after
         # the previous one.
         anchor = not full and step % self.config.anchor_interval == 0
@@ -670,7 +682,8 @@ class FileSystemWeightSender(WeightSender):
         anchor: bool,
     ) -> None:
         """Encode thread: diff v{step}, handing the delta to the writer in parts as it is encoded (on full
-        steps, only advance the snapshot and hand the checkpoint to the writer)."""
+        steps, only advance the snapshot and hand the checkpoint to the writer). With fp8 deltas, the parts
+        are held until the ranks agree that no block scale changed, else the step is a full checkpoint."""
         encoder = self.encoder
         assert encoder is not None
         if not encoder.on_gpu:
@@ -680,21 +693,42 @@ class FileSystemWeightSender(WeightSender):
             encoder.encode(shards, ready, weights_read, emit=lambda part: None)
             self._publish_full(step, step_dir)
             return
-        if self.world.is_master:
-            self._submit(self.writes, self._start_delta, step, base_step, step_dir)
+        held: list[tuple] = []
         num_parts = 0
 
         def emit(part: tuple) -> None:
             nonlocal num_parts
+            if num_parts == 0 and self.world.is_master:
+                self._submit(self.writes, self._start_delta, step, base_step, step_dir)
             self._submit(self.writes, self._write_part, step_dir, num_parts, part)
             num_parts += 1
 
-        encoder.encode(shards, ready, weights_read, emit)
+        encoder.encode(shards, ready, weights_read, held.append if encoder.fp8 else emit)
+        if encoder.fp8:
+            if self._scales_changed_anywhere(step_dir, encoder.scales_changed):
+                self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
+                self._publish_full(step, step_dir)
+                return
+            for part in held:
+                emit(part)
+        if num_parts == 0 and self.world.is_master:
+            self._submit(self.writes, self._start_delta, step, base_step, step_dir)
         self._submit(self.writes, self._finish_delta, step, base_step, step_dir, num_parts, time.perf_counter() - start)
         if anchor:
             self.host_readers.append(
                 self._submit(self.anchors, self._write_anchor, step, step_dir, self._anchor_parts())
             )
+
+    def _scales_changed_anywhere(self, step_dir: Path, changed: bool) -> bool:
+        """Agree through the step dir whether any rank's fp8 block scales changed: the encode thread runs no
+        collectives, and the training thread may be waiting for a batch that needs this step."""
+        delta_dir = step_dir / DELTA_DIR
+        delta_dir.mkdir(exist_ok=True)
+        _write_json(delta_dir / f"rank_{self.world.rank}.scales", int(changed))
+        flags = [delta_dir / f"rank_{rank}.scales" for rank in range(self.world.world_size)]
+        while not all(flag.exists() for flag in flags):
+            time.sleep(0.05)
+        return any(flag.read_text() == "1" for flag in flags)
 
     def _start_delta(self, step: int, base_step: int, step_dir: Path) -> None:
         """The manifest comes first, so engines can read part files as they appear."""
