@@ -148,6 +148,25 @@ class FileSystemWeightUpdateWorker(Worker):
         )
         return Path(folder)
 
+    def _apply_chunk(
+        self, entries: list[tuple[str, int]], gaps: torch.Tensor, values: torch.Tensor, tensors: dict, device
+    ) -> None:
+        assert self.index_map is not None
+        counts = torch.tensor([count for _, count in entries], device=device)
+        indices = decode_gaps(gaps.to(device, non_blocking=True), counts)
+        values = values.to(device, non_blocking=True)
+        offset = num_bytes = 0
+        for bits, group in itertools.groupby(entries, key=lambda entry: bits_dtype(tensors[entry[0]][1])):
+            run = list(group)
+            num_changes = sum(count for _, count in run)
+            itemsize = bits.itemsize
+            xor = values[num_bytes : num_bytes + num_changes * itemsize]
+            # A run after an odd number of narrower values is misaligned for its dtype view.
+            xor = xor.view(bits) if num_bytes % itemsize == 0 else xor.clone().view(bits)
+            self.index_map.apply_xor(run, indices[offset : offset + num_changes], xor)
+            offset += num_changes
+            num_bytes += num_changes * itemsize
+
     def _write_engine_layout(self, step_dir: Path) -> None:
         """Tell the trainer which checkpoint tensors this engine holds in fp8 (and with which
         scales), so it can send their deltas in the fp8 domain. Reads one checkpoint tensor per fp8
@@ -214,20 +233,23 @@ class FileSystemWeightUpdateWorker(Worker):
             self.index_map = CheckpointIndexMap(model, tensors)
             logger.info(f"Built the checkpoint index map in {time.perf_counter() - start - read_time:.2f}s")
         for entries, gaps, values in delta:
-            counts = torch.tensor([count for _, count in entries], device=device)
-            indices = decode_gaps(gaps.to(device, non_blocking=True), counts)
-            values = values.to(device, non_blocking=True)
-            offset = num_bytes = 0
-            for bits, group in itertools.groupby(entries, key=lambda entry: bits_dtype(tensors[entry[0]][1])):
-                run = list(group)
-                num_changes = sum(count for _, count in run)
-                itemsize = bits.itemsize
-                xor = values[num_bytes : num_bytes + num_changes * itemsize]
-                # A run after an odd number of narrower values is misaligned for its dtype view.
-                xor = xor.view(bits) if num_bytes % itemsize == 0 else xor.clone().view(bits)
-                self.index_map.apply_xor(run, indices[offset : offset + num_changes], xor)
-                offset += num_changes
-                num_bytes += num_changes * itemsize
+            # Decode in chunks of whole entries: the int64 indices take 8 B per change on the GPU.
+            first = change_offset = byte_offset = num_changes = 0
+            for last in range(len(entries)):
+                num_changes += entries[last][1]
+                if num_changes < 1 << 26 and last + 1 < len(entries):
+                    continue
+                chunk = entries[first : last + 1]
+                num_bytes = sum(count * bits_dtype(tensors[name][1]).itemsize for name, count in chunk)
+                self._apply_chunk(
+                    chunk,
+                    gaps[change_offset : change_offset + num_changes],
+                    values[byte_offset : byte_offset + num_bytes],
+                    tensors,
+                    device,
+                )
+                first, change_offset, byte_offset = last + 1, change_offset + num_changes, byte_offset + num_bytes
+                num_changes = 0
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
         apply_time = time.perf_counter() - start - read_time
