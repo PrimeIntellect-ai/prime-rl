@@ -182,6 +182,7 @@ class Qwen3_5Model(Qwen3_5PreTrainedModel):
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
         cu_seqlens_cpu = cu_seqlens.cpu()
+        torch._dynamo.mark_dynamic(cu_seqlens_cpu, 0)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds

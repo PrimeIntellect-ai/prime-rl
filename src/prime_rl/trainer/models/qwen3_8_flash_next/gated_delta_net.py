@@ -1,4 +1,3 @@
-import fla.utils
 import torch
 import torch.nn.functional as F
 from fla.modules import FusedRMSNormGated
@@ -8,8 +7,6 @@ from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 from torch import nn
 
 from prime_rl.utils.cp import CPContext
-
-fla.utils.FLA_DISABLE_TENSOR_CACHE = True
 
 # FLA's context carries a process group that Dynamo cannot trace through the convolution.
 causal_conv1d_with_context_parallelism = torch.compiler.disable(causal_conv1d)
