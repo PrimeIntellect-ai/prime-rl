@@ -74,6 +74,12 @@ class PretrainMoEConfig(MoERuntimeConfig):
     balance: MoEBalanceConfig = MoEBalanceConfig()
     """Load balancing of the routed experts."""
 
+    expert_comm: Literal["default", "int8_weights", "int8"] = "default"
+    """Wire format of the routed experts' FSDP collectives. ``default``: weights in bf16, gradients in
+    ``model.reduce_dtype``. ``int8_weights`` all-gathers the expert weights as int8
+    with one fp32 scale per 128 values, dequantized to bf16 for compute; ``int8`` also reduce-scatters their
+    gradients that way (all-to-all, summed in fp32). Master weights and optimizer states are unchanged."""
+
 
 class PretrainModelConfig(ModelConfig):
     arch: dict[str, Any]

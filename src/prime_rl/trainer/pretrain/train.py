@@ -44,6 +44,7 @@ from prime_rl.trainer.pretrain.data import (
     source_tokens,
     setup_val_dataset,
 )
+from prime_rl.trainer.pretrain.int8_comm import apply_int8_expert_comm
 from prime_rl.trainer.pretrain.schedules import LRSchedule
 from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
 from prime_rl.trainer.pretrain.suite import (
@@ -147,6 +148,8 @@ def train(config: PretrainConfig):
     logger.info(f"Initializing model ({config.model})")
     # Weights come from the checkpoint when resuming and from the random init otherwise.
     model = setup_model(config.model, parallel_dims, loading_from_checkpoint_later=True)
+    if config.model.moe.expert_comm != "default":
+        apply_int8_expert_comm(model, grads=config.model.moe.expert_comm == "int8")
     m_n, m_l = multipliers(config.parametrization, model)
     if checkpoint_step is None:
         init_weights(model, config.model.init, m_n, m_l)
