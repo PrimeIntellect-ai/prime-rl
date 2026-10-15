@@ -59,6 +59,8 @@ With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are tra
 
 In MoE models, the expert matrices follow the hidden and `down_proj` rules per expert. The router maps the width to a fixed number of experts, so under Muon its learning rate falls as 1/m_N (with AdamW it follows the hidden rule).
 
+Muon orthogonalizes each attention head's query, key and value rows on its own (`optim.heads_per_block = 1`, the per-head Muon of the [Kimi K3 report](https://arxiv.org/abs/2607.24653), section 2.5). `heads_per_block = 2` orthogonalizes pairs of heads, and `None` each whole projection. Every other matrix, including `o_proj`, is orthogonalized whole (routed experts one expert at a time, the packed gate and up projections separately). The `rms_norm` adjustment uses each block's own shape.
+
 Use QK-norm (`model.arch.use_qk_norm = true`) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
 ## Learning-rate schedule

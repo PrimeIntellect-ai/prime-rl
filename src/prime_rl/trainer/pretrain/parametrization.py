@@ -4,6 +4,7 @@ from torch import nn
 
 from prime_rl.configs.pretrain import ParametrizationConfig, PretrainAdamWConfig, PretrainMuonConfig
 from prime_rl.trainer.init import param_role
+from prime_rl.trainer.models.layers.attn import FlashAttention
 from prime_rl.utils.weights import resolve_fqn
 
 
@@ -82,3 +83,20 @@ def param_groups(
             group["eps"] = optim.eps * eps
         groups.append(group)
     return groups
+
+
+def head_block_partitions(model: nn.Module, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+    """Muon row partitions that split each attention query, key and value projection into blocks of
+    ``heads_per_block`` heads, so that Muon orthogonalizes every block on its own."""
+    partitions = {}
+    for module in model.modules():
+        if not isinstance(module, FlashAttention):
+            continue
+        block_rows = heads_per_block * module.head_dim
+        blocks = [(block_rows,) * (size // block_rows) for size in module.qkv_sizes]
+        if module.qkv_proj is None:
+            for projection, projection_blocks in zip((module.q_proj, module.k_proj, module.v_proj), blocks):
+                partitions[projection.weight] = projection_blocks
+        else:
+            partitions[module.qkv_proj.weight] = sum(blocks, ())
+    return partitions

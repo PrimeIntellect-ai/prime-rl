@@ -285,6 +285,9 @@ class PretrainMuonConfig(MuonConfig):
     eps: float = Field(1e-8, gt=0)
     """Adam epsilon of the base shape for the AdamW groups (scaled per role under CompleteP)."""
 
+    heads_per_block: int | None = Field(1, ge=1)
+    """Muon orthogonalizes the attention query, key and value projections in blocks of this many heads, each block on its own (per-head Muon, Kimi K3 report, section 2.5). If None, each projection is one matrix."""
+
 
 PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
 

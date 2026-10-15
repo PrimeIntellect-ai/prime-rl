@@ -1,14 +1,17 @@
 import copy
 import itertools
 
+import pytest
 import torch
 from torch.optim import AdamW
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from prime_rl.configs.pretrain import InitConfig, PretrainAdamWConfig, PretrainMuonConfig
 from prime_rl.trainer.init import init_weights, normal_shard
+from prime_rl.trainer.models.fusions import fuse_qkv_projections, get_model_packed_parameters
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
-from prime_rl.trainer.pretrain.parametrization import param_groups
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.pretrain.parametrization import head_block_partitions, param_groups
 
 
 def test_normal_shard_is_independent_of_sharding():
@@ -113,3 +116,51 @@ def test_completep_moe_groups_cover_experts_and_scale_the_router():
     # m_N = 2: Muon matrices get lr / sqrt(m_N) (residual outputs also / m_L = 1), the router lr / m_N.
     assert lr[moe.experts.up_proj] == lr[moe.experts.down_proj] == 2**-0.5
     assert lr[moe.router.gate.weight] == 0.5
+
+
+@pytest.mark.parametrize("heads_per_block", [1, 2, None])
+def test_muon_orthogonalizes_each_head_block_of_the_packed_qkv(heads_per_block):
+    muon = pytest.importorskip("dion.muon")
+    head_dim = 16
+    attention = FlashAttention(
+        AttentionConfig(
+            hidden_size=128,
+            head_dim=head_dim,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            is_causal=True,
+            attention_bias=False,
+            use_qk_norm=False,
+            rms_norm_eps=1e-6,
+        )
+    )
+    fuse_qkv_projections(attention)
+    weight = attention.qkv_proj.weight
+    if heads_per_block is None:
+        (packed_info,) = get_model_packed_parameters(attention)
+        partitions = {weight: packed_info.spec.muon_matrix_partitions(weight)}
+        blocks = (64, 32, 32)
+    else:
+        partitions = head_block_partitions(attention, heads_per_block)
+        blocks = (heads_per_block * head_dim,) * (128 // (heads_per_block * head_dim))
+    assert partitions[weight] == blocks
+
+    weight.grad = torch.randn_like(weight)
+    before = weight.detach().clone()
+    optimizer = muon.Muon(
+        [weight],
+        fsdp_mesh_dim=0,
+        world_mesh=None,
+        lr=1.0,
+        mu=0.0,
+        weight_decay=0.0,
+        adjust_lr=None,
+        matrix_partitions=partitions,
+    )
+    optimizer.step()
+    # With no momentum and no learning-rate adjustment, each block moves by its own orthogonalized gradient.
+    update = before - weight.detach()
+    for block_update, block_grad in zip(update.split(blocks), weight.grad.split(blocks)):
+        torch.testing.assert_close(
+            block_update, muon.zeropower_via_newtonschulz5(block_grad).float(), atol=1e-3, rtol=0
+        )

@@ -55,9 +55,11 @@ def setup_optimizer(
     model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
     param_groups: list[dict] | None = None,
+    muon_matrix_partitions: dict[nn.Parameter, tuple[int, ...]] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     """``param_groups`` replaces the default parameter groups (for Muon, each group needs an
-    ``algorithm`` key). It is not supported with CPU offloading."""
+    ``algorithm`` key). It is not supported with CPU offloading. ``muon_matrix_partitions`` gives
+    Muon the row partitions of more parameters, replacing those of runtime fusions."""
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
     if full_offload and config.type not in ("adamw", "sign_sgd"):
@@ -83,6 +85,7 @@ def setup_optimizer(
         fused_adamw=config.type == "adamw" and not cpu_offload,
         model=model,
         param_groups=param_groups,
+        muon_matrix_partitions=muon_matrix_partitions,
     )
 
     if full_offload:
@@ -110,6 +113,7 @@ def _create_optimizer(
     fused_adamw: bool = False,
     model: nn.Module | None = None,
     param_groups: list[dict] | None = None,
+    muon_matrix_partitions: dict[nn.Parameter, tuple[int, ...]] | None = None,
 ) -> Optimizer:
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
@@ -129,7 +133,9 @@ def _create_optimizer(
                 fused=fused_adamw,
             )
         case "muon":
-            return _create_muon_optimizer(config, named_params, parallel_dims, model, lr, param_groups)
+            return _create_muon_optimizer(
+                config, named_params, parallel_dims, model, lr, param_groups, muon_matrix_partitions
+            )
         case "sign_sgd":
             return SignSGD(
                 params=trainable_params,
@@ -209,6 +215,7 @@ def _create_muon_optimizer(
     model: nn.Module | None,
     lr: float | None = None,
     param_groups: list[dict] | None = None,
+    muon_matrix_partitions: dict[nn.Parameter, tuple[int, ...]] | None = None,
 ) -> Optimizer:
     if param_groups is None:
         param_groups = _default_muon_param_groups(config, named_params, parallel_dims, lr)
@@ -228,6 +235,7 @@ def _create_muon_optimizer(
             partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
+    matrix_partitions.update(muon_matrix_partitions or {})
 
     optimizer = Muon(
         params=param_groups,
