@@ -1,0 +1,104 @@
+# DeepSeek-V4-Flash RL on `math` with a bf16 trainer and online MXFP8 vLLM inference, on
+# 3 trainer nodes + 1 inference node (B300). Over 60 steps, mismatch KL averaged ~0.042 with no
+# upward drift and ~1.5% of tokens masked.
+#
+#   uv run rl @ configs/advanced/deepseek-v4-flash/rl_math_mxfp8.toml
+
+max_steps = 60
+seq_len = 4096
+
+# bf16 re-export of the published checkpoint, which vLLM cannot serve as bf16. Currently private.
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[monitors.wandb]
+project = "deepseek-v4-flash"
+group = "dsv4-mxfp8-math"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 3
+num_infer_nodes = 1
+
+[slurm]
+job_name = "ds-v4-math-mxfp8"
+partition = "all"
+
+[weight_broadcast]
+type = "nccl"
+port = 29501
+timeout = 3600
+
+[orchestrator]
+batch_size = 64
+
+[orchestrator.concurrency]
+max_inflight = 128
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+name = "deepseek-v4"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 3072
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "math-env"
+# Deterministic scoring. The default reference judge calls out to Prime inference whenever
+# math-verify scores 0, which makes the reward nondeterministic and errors the rollout if the
+# judge call fails.
+env.taskset.task.judge = "None"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer]
+enable_router_replay = true
+dist_timeout_seconds = 14400
+
+[trainer.model]
+freeze_moe_router = false
+# Compiled DeepSeek V4 blocks raise mismatch KL, so the trainer runs eager.
+compile = "None"
+ep = 8
+
+[trainer.model.moe.dispatch]
+type = "torch"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.optim]
+lr = 1e-6
+weight_decay = 0.0
+
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
+[inference.env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[inference.vllm]
+dtype = "bfloat16"
+quantization = "mxfp8"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+gpu_memory_utilization = 0.8
+max_model_len = 4096
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
+
+[inference.vllm.quantization_config]
+ignore = [
+    # vLLM's deep_gemm_fp8_o_proj treats an MXFP8 `wo_a` as blockwise FP8 and fails a DeepGEMM assert.
+    "*.wo_a",
+    # Keep the indexer bf16 so sparse top-k selection matches the trainer.
+    "re:.*indexer.*",
+]
