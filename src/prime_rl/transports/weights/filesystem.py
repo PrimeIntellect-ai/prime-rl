@@ -262,6 +262,7 @@ class SparseDeltaEncoder:
         (else placed at the first delta, against the measured training peak). The host buffer is filled in
         every mode, so its pages are resident before training: faulting them in later stalls the trainer."""
         self.shards = {key: (shard.numel(), offset) for key, _, shard, offset, _ in shards}
+        self.staging = torch.empty(1 << 28, dtype=torch.uint8, pin_memory=True)
         self._allocate_host()
         if self.snapshot_placement == "cpu":
             self._page_lock()
@@ -343,6 +344,18 @@ class SparseDeltaEncoder:
             weights_read.set()
         self.previous = self.snapshot
 
+    def _to_host(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Copy a delta part to pageable host memory through the pinned staging buffer: a copy straight
+        into pageable memory holds the CUDA driver and stalls the training step's own CUDA calls."""
+        data, host = tensor.view(torch.uint8), torch.empty(tensor.shape, dtype=tensor.dtype)
+        host_bytes = host.view(torch.uint8)
+        for begin in range(0, data.numel(), self.staging.numel()):
+            chunk = self.staging[: min(self.staging.numel(), data.numel() - begin)]
+            chunk.copy_(data[begin : begin + chunk.numel()], non_blocking=True)
+            torch.cuda.current_stream().synchronize()
+            host_bytes[begin : begin + chunk.numel()].copy_(chunk)
+        return host
+
     def _segments(self, key: str, fqn: str, offset: int, numel: int) -> tuple[list[str], list[int], list[int]]:
         """The HF tensor parts in this rank's shard of ``key``: names, and begin/end in the shard."""
         if key not in self.shard_segments:
@@ -380,8 +393,8 @@ class SparseDeltaEncoder:
         def flush() -> None:
             names = [name for part in pending for name in part[0]]
             counts = torch.cat([part[1] for part in pending]).tolist()
-            gaps = torch.cat([part[2] for part in pending]).cpu()
-            values = torch.cat([part[3] for part in pending]).cpu()
+            gaps = self._to_host(torch.cat([part[2] for part in pending]))
+            values = self._to_host(torch.cat([part[3] for part in pending]))
             checksum_names = [name for part in pending for name in part[4]]
             checksums = dict(zip(checksum_names, torch.cat([part[5] for part in pending]).tolist()))
             emit(([(name, count) for name, count in zip(names, counts) if count], gaps, values, checksums))
