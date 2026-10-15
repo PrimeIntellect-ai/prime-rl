@@ -48,11 +48,13 @@ class EvalSet:
     sha256: str
 
 
-def head_logprobs(hidden, weight, targets, chunk: int = 16384):
-    """Log-prob and greedy hit of ``targets`` under ``hidden @ weight.T``, in fp32 chunks over tokens."""
+def head_logprobs(hidden, weight, targets, chunk: int = 2048):
+    """Log-prob and greedy hit of ``targets`` under ``hidden @ weight.T``, in fp32 chunks over tokens, so the
+    fp32 logits stay at ``chunk x vocab``."""
+    weight = weight.float()
     logprobs, hits = [], []
     for start in range(0, len(targets), chunk):
-        logits = hidden[start : start + chunk].float() @ weight.float().T
+        logits = hidden[start : start + chunk].float() @ weight.T
         target = targets[start : start + chunk]
         logprobs.append(logits.gather(-1, target[:, None])[:, 0] - torch.logsumexp(logits, -1))
         hits.append(logits.argmax(-1) == target)
@@ -143,6 +145,23 @@ def score_requests(
     return logprobs, hits
 
 
+def score_sets(
+    model: nn.Module, eval_sets: list["MultiLengthSet"], token_budget: int, group: dist.ProcessGroup
+) -> list[tuple[list[np.ndarray], list[np.ndarray]]] | None:
+    """`score_requests` over the requests of all sets at once, so the rows of every set are packed and dealt
+    together (fewer padding forwards on many ranks), split back per set on rank 0 (None on the others)."""
+    scored = score_requests(model, [request for s in eval_sets for request in s.requests], token_budget, group)
+    if scored is None:
+        return None
+    logprobs, hits = scored
+    per_set, offset = [], 0
+    for eval_set in eval_sets:
+        end = offset + len(eval_set.requests)
+        per_set.append((logprobs[offset:end], hits[offset:end]))
+        offset = end
+    return per_set
+
+
 def continuation_ids(tokenizer: PreTrainedTokenizer, context: str, continuation: str) -> Request:
     """BOS + jointly tokenized context + continuation, and the index of the first continuation token (the
     first token that ends after the context; a token straddling the boundary counts as continuation)."""
@@ -191,7 +210,8 @@ def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_l
     elif kind == "pairs":
         good, bad = table.column("good").to_pylist(), table.column("bad").to_pylist()
         encoded = tokenizer(good + bad, add_special_tokens=False)["input_ids"]
-        requests = [([tokenizer.bos_token_id, *ids], 1) for ids in encoded]
+        # Cut to the window like the other kinds, so every request fits in a row of ``token_budget`` tokens.
+        requests = [([tokenizer.bos_token_id, *ids][: seq_len + 1], 1) for ids in encoded]
         context = {"num_good": len(good)}
     else:
         raise ValueError(f"Unknown eval set kind {kind!r} ({name})")
@@ -221,6 +241,12 @@ def prepare_multi_length_set(
         for seq_len, version in versions.items()
     }
     return MultiLengthSet(name, versions, [(list(ids), start) for ids, start in distinct], index)
+
+
+def set_metrics(name: str, seq_len: int, summary: dict) -> dict[str, float]:
+    """A set's summary as metrics ``eval/<set>/<metric>@<length>``, as Python floats (the summaries hold NumPy
+    scalars)."""
+    return {f"eval/{name}/{key}@{length_label(seq_len)}": float(value) for key, value in summary.items()}
 
 
 def length_label(seq_len: int) -> str:

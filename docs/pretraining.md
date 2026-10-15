@@ -22,7 +22,7 @@ num_experts_per_tok = 6
 name = "tokenizers/deepseek-v4-flash-base"
 ```
 
-The launcher writes the config and the tokenizer to `<run_dir>/configs/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the non-embedding, embedding (input embedding and LM head) and total parameter counts at startup.
+The launcher writes the config and the tokenizer to `<run_dir>/configs/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
 
 ## Initialization
 
@@ -85,7 +85,7 @@ decay_shape = "1-sqrt"  # or "linear" (default), "cosine"
 | `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
 | `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |
 
-The metrics are `expert_load/*` (global balance of the step), `expert_load/seq_balance` (1 is balanced) and `expert_load/selection_bias_absmax`.
+The metrics are `expert_load/*` (global balance of the step), `loss/seq_balance` (1 is balanced) and `router/bias/*`.
 
 ## Data
 

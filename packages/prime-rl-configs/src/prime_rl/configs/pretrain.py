@@ -24,7 +24,6 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
-    OffloadMode,
     TokenizerConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
@@ -85,8 +84,8 @@ class PretrainModelConfig(ModelConfig):
 
     moe: PretrainMoEConfig = PretrainMoEConfig()
 
-    offload: OffloadMode = "none"
-    """CPU offloading. Pretraining's per-role parameter groups need ``none``."""
+    offload: Literal["none"] = "none"
+    """CPU offloading is not supported: pretraining's per-role parameter groups need ``none``."""
 
     @model_validator(mode="after")
     def validate_arch(self):
@@ -443,12 +442,6 @@ class PretrainConfig(BaseConfig):
                 stacklevel=1,
             )
             self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
-    def validate_offload(self):
-        if self.model.offload != "none":
-            raise ValueError("Pretraining's per-role parameter groups need model.offload = 'none'.")
         return self
 
     @model_validator(mode="after")

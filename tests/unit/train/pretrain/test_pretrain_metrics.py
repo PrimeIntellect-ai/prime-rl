@@ -6,12 +6,12 @@ from prime_rl.trainer.pretrain.metrics import expert_load_metrics, grad_norms_by
 
 def test_expert_load_metrics_per_layer_summaries():
     counts = torch.tensor([[1.0, 1.0, 1.0, 1.0], [4.0, 0.0, 0.0, 0.0]], dtype=torch.float64)
-    metrics = expert_load_metrics(counts)
-    assert metrics["expert_load/max_mean/mean"] == 2.5  # layers: 1 and 4
-    assert metrics["expert_load/max_mean/max"] == 4.0
+    metrics = expert_load_metrics(counts, layer_indices=[1, 2])
     assert metrics["expert_load/min_mean/min"] == 0.0
-    assert metrics["expert_load/cold_frac/max"] == 0.75
     assert metrics["expert_load/entropy/mean"] == 0.5  # uniform layer 1, one-hot layer 0
+    assert metrics["expert_load/layer_2/max_mean"] == 4.0
+    assert metrics["expert_load/layer_1/top_share"] == 0.25
+    assert metrics["expert_load/layer_2/top_share"] == 1.0
 
 
 def test_grad_norms_by_group_add_up_to_the_total_norm():

@@ -22,8 +22,6 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.model import (
     forward,
-    get_full_offload_dtype_policy,
-    get_load_balance_stats,
     is_tt_moe_model,
     iter_moe_blocks,
     reshard_module,
@@ -47,23 +45,29 @@ from prime_rl.trainer.pretrain.data import (
     setup_val_dataset,
 )
 from prime_rl.trainer.pretrain.schedules import LRSchedule
-from prime_rl.trainer.data import get_dataset_state
 from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
 from prime_rl.trainer.pretrain.suite import (
     length_label,
     prepare_multi_length_set,
-    score_requests,
+    score_sets,
+    set_metrics,
     scoring_head_active,
     summarize,
 )
 from prime_rl.trainer.pretrain.step import run_micro_batches
-from prime_rl.trainer.pretrain.metrics import DeadExperts, SpikeDetector, grad_norms_by_group
+from prime_rl.trainer.pretrain.metrics import (
+    DeadExperts,
+    SpikeDetector,
+    grad_norms_by_group,
+    reduce_stats,
+    take_routing_counts,
+)
+from prime_rl.trainer.sft.data import get_dataset_state
 from prime_rl.trainer.utils import (
     get_dcp_group,
     GarbageCollection,
     clip_grad_norm_,
     get_ckpt_disk_metrics,
-    setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
@@ -118,11 +122,7 @@ def train(config: PretrainConfig):
 
     heart = Heartbeat(config.heartbeat) if config.heartbeat is not None and world.rank == 0 else None
 
-    setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.offload == "full"
-    )
-    if config.model.offload == "full":
-        setup_full_cpu_optimizer_offload()
+    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
     torch.set_float32_matmul_precision(config.matmul_precision)
 
     resolve_ep(config.model)
@@ -163,15 +163,11 @@ def train(config: PretrainConfig):
 
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    optimizer, gradient_manager = setup_optimizer(
+    optimizer, _ = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        offload=config.model.offload,
         model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
-        ),
         param_groups=param_groups(model, config.optim, m_n, m_l, parallel_dims.ep_enabled),
     )
 
@@ -200,15 +196,15 @@ def train(config: PretrainConfig):
             logger.info(f"Val source {name!r}: {val_windows[name] * config.data.seq_len:,} tokens")
 
     progress = Progress()
+    restore_dataloader = checkpoint_step is not None and not (config.ckpt or CheckpointConfig()).skip_dataloader
     if checkpoint_step is not None:
-        skip = config.ckpt or CheckpointConfig()
         ckpt_manager.load(
             checkpoint_step,
             model,
             [optimizer],
             None,
             progress,
-            dataloader=dataloader if not skip.skip_dataloader else None,
+            dataloader=dataloader if restore_dataloader else None,
             path=config.resume.dir / "trainer" if config.resume.dir is not None else None,
         )
         progress.step += 1
@@ -218,7 +214,7 @@ def train(config: PretrainConfig):
     # from the window sequence itself, which every data rank walks, so they are global without communication.
     next_window = 0
     source_totals = dict.fromkeys(train_dataset.names, 0)
-    if checkpoint_step is not None and not (config.ckpt or CheckpointConfig()).skip_dataloader:
+    if restore_dataloader:
         next_window = checkpoint_step * config.data.batch_size
         # The loaded state counts the windows before its own position, which is near next_window.
         state = next(iter(get_dataset_state(dataloader).values()))
@@ -285,8 +281,15 @@ def train(config: PretrainConfig):
                 )
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
+    def finish_no_grad_forwards() -> None:
+        """No-grad forwards leave the [lm_head, norm] FSDP group unsharded, and their routing must not count toward
+        the next step's MoE statistics."""
+        reshard_module(model)
+        if is_moe_model:
+            take_routing_counts(model)
+
     @torch.no_grad()
-    def run_evals(step: int) -> None:
+    def run_val(step: int) -> None:
         """Held-out loss, perplexity and bits per byte on the weights after ``step`` optimizer updates."""
         metrics = {}
         for name, source in val_sources.items():
@@ -303,12 +306,8 @@ def train(config: PretrainConfig):
             metrics[f"val/{name}/loss"] = loss
             metrics[f"val/{name}/ppl"] = math.exp(min(loss, 20))
             metrics[f"val/{name}/bpb"] = loss_sum / (math.log(2) * num_bytes)
-        # The no-grad eval forwards leave the [lm_head, norm] FSDP group unsharded, and their
-        # routing must not count toward the next step's MoE statistics.
-        reshard_module(model)
-        if is_moe_model:
-            get_load_balance_stats(model)
-        logger.success(f"Evals | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
+        finish_no_grad_forwards()
+        logger.success(f"Val | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     eval_sets = []
@@ -322,42 +321,31 @@ def train(config: PretrainConfig):
 
     @torch.no_grad()
     def run_suite(step: int) -> None:
-        """The eval suite on the weights after ``step`` optimizer updates: the packed rows of every set are dealt
+        """The eval suite on the weights after ``step`` optimizer updates: the packed rows of all sets are dealt
         over the ranks, the per-token results gathered on rank 0, which summarizes and logs them."""
         start_time = time.perf_counter()
         metrics = {}
         # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
         with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
-            for eval_set in eval_sets:
-                scored = score_requests(model, eval_set.requests, config.evals.token_budget, get_dcp_group())
-                if scored is None:
-                    continue
-                logprobs, hits = scored
+            scored = score_sets(model, eval_sets, config.evals.token_budget, get_dcp_group())
+            for eval_set, (logprobs, hits) in zip(eval_sets, scored or []):
                 for seq_len, version in eval_set.versions.items():
                     index = eval_set.index[seq_len]
                     summary, arrays = summarize(version, [logprobs[i] for i in index], [hits[i] for i in index])
                     label = length_label(seq_len)
-                    metrics |= {
-                        f"eval/{eval_set.name}/{key}@{label}": value
-                        for key, value in summary.items()
-                        if isinstance(value, float)
-                    }
+                    metrics |= set_metrics(eval_set.name, seq_len, summary)
                     if config.evals.save_arrays:
                         out = config.run_dir / "evals" / f"step_{step}"
                         out.mkdir(parents=True, exist_ok=True)
                         np.savez(out / f"{eval_set.name}@{label}.npz", **arrays)
                         (out / f"{eval_set.name}@{label}.json").write_text(json.dumps(summary, default=float))
-        # The no-grad forwards leave the [lm_head, norm] FSDP group unsharded, and their routing must not count
-        # toward the next step's MoE statistics.
-        reshard_module(model)
-        if is_moe_model:
-            get_load_balance_stats(model)
+        finish_no_grad_forwards()
         metrics["time/eval_suite"] = time.perf_counter() - start_time
         logger.success(f"Eval suite | Step {step} | {metrics['time/eval_suite']:.0f}s | {len(eval_sets)} sets")
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     if checkpoint_step is None and config.val is not None and config.val.eval_on_start:
-        run_evals(step=0)
+        run_val(step=0)
     if config.evals is not None and config.evals.eval_on_start:
         run_suite(step=checkpoint_step or 0)
 
@@ -395,7 +383,6 @@ def train(config: PretrainConfig):
                 compute_loss,
                 grad_accum_steps,
                 parallel_dims,
-                gradient_manager,
                 extra_sums=seq_balance_sums,
             )
         forward_backward_time = time.perf_counter() - step_start_time
@@ -423,9 +410,7 @@ def train(config: PretrainConfig):
 
         with torch.profiler.record_function("prl/grad_norms"):
             group_grad_norms = grad_norms_by_group(model)
-            grad_norm = (
-                clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
-            )
+            grad_norm = clip_grad_norm_(None, model, config.optim.max_norm) if config.optim.max_norm else None
         is_diagnostic_step = config.diagnostics is not None and progress.step % config.diagnostics.interval == 0
         if is_diagnostic_step:
             update_tracker.before_step(model)
@@ -433,6 +418,14 @@ def train(config: PretrainConfig):
             optimizer.step()
             optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
+        diagnostic_metrics = update_tracker.after_step(model) if is_diagnostic_step else {}
+        # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
+        local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
+        peak_memory = reduce_stats({"sum": local_peak_memory}, {"max": local_peak_memory}, dp_cp_group)
+        peak_memory_metrics = {
+            "perf/peak_memory/max": peak_memory["max"].item(),
+            "perf/peak_memory/mean": peak_memory["sum"].item() / dist.get_world_size(dp_cp_group),
+        }
 
         # The last step's checkpoint is written once after the loop.
         save_ckpt_time = 0.0
@@ -444,18 +437,13 @@ def train(config: PretrainConfig):
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
 
-        diagnostic_metrics = {}
         if is_diagnostic_step:
-            diagnostic_metrics = update_tracker.after_step(model) | run_probe(model, probe, dp_cp_group)
-            # The no-grad forward leaves the [lm_head, norm] FSDP group unsharded, and its routing must not count
-            # toward the next step's MoE statistics.
-            reshard_module(model)
-            if is_moe_model:
-                get_load_balance_stats(model)
+            diagnostic_metrics |= run_probe(model, probe, dp_cp_group)
+            finish_no_grad_forwards()
 
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
-            run_evals(progress.step)
+            run_val(progress.step)
         if config.evals is not None and (is_last_step or progress.step % config.evals.interval == 0):
             run_suite(progress.step)
         eval_time = time.perf_counter() - eval_start_time
@@ -472,14 +460,12 @@ def train(config: PretrainConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_tokens, step_time)
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3
-
         step_message = f"Step {progress.step} | {step_time:.2f}s | Loss {result.loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += (
             f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}%"
-            f" | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB"
+            f" | Peak Mem. {peak_memory_metrics['perf/peak_memory/max']:.1f}/{max_memory:.1f} GiB"
         )
         logger.success(step_message)
 
@@ -506,6 +492,7 @@ def train(config: PretrainConfig):
             "time/save_ckpt": save_ckpt_time,
             "time/evals": eval_time,
             **disk_metrics,
+            **peak_memory_metrics,
             **result.metrics,
             **moe_metrics,
             **diagnostic_metrics,
@@ -532,8 +519,6 @@ def train(config: PretrainConfig):
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
-    if gradient_manager is not None:
-        gradient_manager.close()
     logger.success("Pretrain trainer finished")
     asyncio.run(monitors.finalize())
 

@@ -7,7 +7,9 @@ import torch.distributed as dist
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor, Partial, Replicate
 
-from prime_rl.trainer.model import iter_moe_blocks
+from prime_rl.trainer.model import compute_expert_load_stats, iter_moe_blocks
+from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.utils.vlm import get_language_model
 
 
 def reduce_stats(sums: dict[str, Tensor], maxes: dict[str, Tensor], group: dist.ProcessGroup) -> dict[str, Tensor]:
@@ -39,24 +41,32 @@ def take_routing_counts(model: nn.Module) -> tuple[Tensor, Tensor]:
     return counts, confidence
 
 
-def expert_load_metrics(counts: Tensor) -> dict[str, float]:
+def moe_layer_indices(model: nn.Module) -> list[int]:
+    """The decoder-layer index of every MoE layer, in the order of `iter_moe_blocks`."""
+    return [
+        index
+        for index, layer in enumerate(get_language_model(model).layers)
+        if isinstance(getattr(layer, "mlp", None), MoE)
+    ]
+
+
+def expert_load_metrics(counts: Tensor, layer_indices: list[int]) -> dict[str, float]:
     """Balance of the `[num_moe_layers, num_experts]` expert counts of a whole step, per layer, summarized as the
-    mean and the worst layer. `max_mean` / `min_mean`: busiest / least-loaded expert over the mean load; `cv`:
-    std / mean; `cold_frac`: experts under 0.1x the mean load; `entropy`: entropy of the experts' shares of the
-    assignments over log(num_experts) (1 = uniform)."""
+    mean and the worst layer: `cv`, `max_mean` and `cold_frac` as in `compute_expert_load_stats`, plus `min_mean`
+    (least-loaded expert over the mean load) and `entropy` (entropy of the experts' shares of the assignments over
+    log(num_experts), 1 = uniform). Also per decoder layer (``layer_indices``): `max_mean` and `top_share`, the
+    busiest expert's share of the layer's assignments."""
+    metrics = {name: value.item() for name, value in compute_expert_load_stats(counts).items()}
     mean = counts.mean(dim=1)
     share = counts / counts.sum(dim=1, keepdim=True)
-    per_layer = {
-        "max_mean": (counts.amax(dim=1) / mean, "max"),
-        "min_mean": (counts.amin(dim=1) / mean, "min"),
-        "cv": (counts.std(dim=1, correction=0) / mean, "max"),
-        "cold_frac": ((counts < 0.1 * mean[:, None]).double().mean(dim=1), "max"),
-        "entropy": (-(share * share.clamp_min(1e-30).log()).sum(dim=1) / math.log(counts.shape[1]), "min"),
-    }
-    metrics = {}
-    for name, (values, worst) in per_layer.items():
+    min_mean = counts.amin(dim=1) / mean
+    entropy = -(share * share.clamp_min(1e-30).log()).sum(dim=1) / math.log(counts.shape[1])
+    for name, values in (("min_mean", min_mean), ("entropy", entropy)):
         metrics[f"expert_load/{name}/mean"] = values.mean().item()
-        metrics[f"expert_load/{name}/{worst}"] = (values.amax() if worst == "max" else values.amin()).item()
+        metrics[f"expert_load/{name}/min"] = values.amin().item()
+    for layer, max_mean, top_share in zip(layer_indices, counts.amax(dim=1) / mean, share.amax(dim=1)):
+        metrics[f"expert_load/layer_{layer}/max_mean"] = max_mean.item()
+        metrics[f"expert_load/layer_{layer}/top_share"] = top_share.item()
     return metrics
 
 
