@@ -528,11 +528,14 @@ training metadata. Each call is a valid training record in its own right. Verifi
 records only when their token prefixes match exactly; a re-rendered history starts a new
 sample with its context masked out.
 
-The inference server uses the `renderers` library to attribute prompt tokens to messages
+The inference server uses the configured `renderers` implementation for every Chat
+Completions prompt, and to attribute prompt tokens to messages
 and message bodies. ECHO uses this attribution to select observations, including when
 tokenization changes across turns. Multimodal records keep inline image URLs and exact
 placeholder ranges; the trainer builds image features from those URLs. Native vLLM handles
-sampling, and the inference renderer parses responses and tool calls. Sampling masks and
+sampling, response parsing, tools, reasoning, and streaming for both training and eval.
+`return_training_metadata=true` adds exact token IDs and attribution; logprobs remain optional.
+Sampling masks and
 expert routing travel alongside the tokens for replay in the trainer.
 
 ```toml

@@ -42,9 +42,7 @@ def test_subclass_overrides_serve_tokens_full_generator():
 
 def test_generate_response_post_process_preserves_prompt_metadata():
     compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
-    capture = _PackedOutputs(
-        _empty_request_outputs(), SimpleNamespace(sampling_params=SimpleNamespace(routed_experts_prompt_start=0))
-    )
+    capture = _PackedOutputs(_empty_request_outputs(), SimpleNamespace(logprobs=None))
     capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
     response = GenerateResponse(

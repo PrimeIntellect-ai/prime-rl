@@ -412,7 +412,7 @@ InferenceDeploymentConfig: TypeAlias = Annotated[
 
 class InferenceConfig(BaseConfig):
     renderer: RendererConfig = AutoRendererConfig()
-    """Server-side prompt rendering and message/image attribution for training records."""
+    """Prompt rendering for every Chat Completions request, including training attribution."""
 
     server: ServerConfig = ServerConfig()
 

@@ -46,10 +46,10 @@ WORKER_EXTENSION_CLS = {
 def tokenizer(request: Request):
     """Expose the token-to-ID mapping used for training Chat Completions."""
     chat = request.app.state.openai_serving_chat
-    with chat.training_renderer_lock:
-        if chat.training_tokenizer is None:
-            chat.training_tokenizer = load_tokenizer(chat.model_config.tokenizer)
-        return JSONResponse(chat.training_tokenizer.get_vocab())
+    with chat.prompt_renderer_lock:
+        if chat.prompt_tokenizer is None:
+            chat.prompt_tokenizer = load_tokenizer(chat.model_config.tokenizer)
+        return JSONResponse(chat.prompt_tokenizer.get_vocab())
 
 
 @router.post("/pause")
@@ -161,8 +161,8 @@ async def custom_init_app_state(
         upstream = state.openai_serving_chat
         chat = object.__new__(PrimeRlServingChat)
         chat.__dict__.update(upstream.__dict__)
-        chat.training_renderer_config = args.prime_renderer
-        chat.training_renderer_lock = Lock()
+        chat.prompt_renderer_config = args.prime_renderer
+        chat.prompt_renderer_lock = Lock()
         state.openai_serving_chat = chat
 
     # Under RL load the API server holds millions of live objects, and CPython's

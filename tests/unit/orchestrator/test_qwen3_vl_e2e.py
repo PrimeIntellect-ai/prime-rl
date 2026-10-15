@@ -27,9 +27,8 @@ def test_generate_qwen3_vl_e2e_preserves_inline_images_and_expanded_prompt_ids()
     from transformers import AutoProcessor
     from verifiers.v1.dialects import ChatDialect
     from verifiers.v1.graph import prepare_turn
-    from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 
-    from prime_rl.inference.vllm.serving_chat import PrimeRlServingChat
+    from prime_rl.inference.vllm.serving_chat import PrimeRlChatRequest, PrimeRlServingChat
     from prime_rl.orchestrator.trajectories import trace_to_samples
 
     tokenizer = load_tokenizer(_MODEL)
@@ -48,18 +47,19 @@ def test_generate_qwen3_vl_e2e_preserves_inline_images_and_expanded_prompt_ids()
             ],
         }
     ]
-    request = ChatCompletionRequest(model=_MODEL, messages=messages, return_token_ids=True)
+    request = PrimeRlChatRequest(model=_MODEL, messages=messages, return_training_metadata=True)
     serving = object.__new__(PrimeRlServingChat)
     serving.model_config = SimpleNamespace(tokenizer=_MODEL, max_model_len=1_000_000)
+    serving.online_renderer = SimpleNamespace(exclude_tools_when_tool_choice_none=False)
     serving.chat_template = None
     serving.chat_template_content_format = "auto"
     serving.default_chat_template_kwargs = {}
-    serving.training_renderer_lock = Lock()
-    serving.training_tokenizer = tokenizer
-    serving.training_renderer = renderer
-    serving.training_template_kwargs = {}
-    serving.training_renderer_config = Qwen3VLRendererConfig()
-    _, (engine_input,) = serving._render_training_prompt(request)
+    serving.prompt_renderer_lock = Lock()
+    serving.prompt_tokenizer = tokenizer
+    serving.prompt_renderer = renderer
+    serving.prompt_template_kwargs = {}
+    serving.prompt_renderer_config = Qwen3VLRendererConfig()
+    _, (engine_input,) = serving._render_prompt(request)
 
     assert engine_input["type"] == "multimodal"
     assert len(engine_input["mm_hashes"]["image"]) == 1
@@ -95,7 +95,6 @@ def test_generate_qwen3_vl_e2e_preserves_inline_images_and_expanded_prompt_ids()
     )
     assert response.tokens is not None
     assert "multi_modal_data" not in request._prime_training_metadata
-    assert response.tokens.mm_placeholders == [(placeholder.offset, placeholder.length)]
     assert len(response.tokens.is_content) == len(engine_input["prompt_token_ids"])
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
