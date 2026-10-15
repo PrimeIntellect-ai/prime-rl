@@ -341,6 +341,21 @@ def update_selection_biases(model: nn.Module, tokens_per_expert: Tensor, rate: f
             moe.router.selection_bias += rate * (delta - delta.mean())
 
 
+@torch.no_grad()
+def smebu_update_selection_biases(
+    model: nn.Module, tokens_per_expert: Tensor, rate: float, kappa: float, beta: float, momenta: list[Tensor]
+) -> None:
+    """SMEBU (Arcee Trinity Large, https://arxiv.org/abs/2602.17004, eqs. 23-28): each layer's bias moves by a
+    momentum average of ``rate * tanh(kappa * (mean - load) / mean)``, mean-centred, given the step's global
+    ``[num_moe_layers, num_experts]`` counts. ``momenta`` holds one buffer per biased layer and is updated in place."""
+    moes = [moe for moe in iter_moe_blocks(model) if moe.router.selection_bias is not None]
+    for moe, load, momentum in zip(moes, tokens_per_expert, momenta):
+        mean = load.mean()
+        delta = rate * torch.tanh(kappa * (mean - load) / mean)
+        momentum.mul_(beta).add_(delta - delta.mean(), alpha=1 - beta)
+        moe.router.selection_bias += momentum
+
+
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:

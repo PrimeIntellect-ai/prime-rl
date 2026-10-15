@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch import nn
+from torch.distributed.tensor import DTensor
 
 from prime_rl import monitors
 from prime_rl.configs.pretrain import PretrainConfig
@@ -27,6 +28,7 @@ from prime_rl.trainer.model import (
     reshard_module,
     setup_model,
     setup_tokenizer,
+    smebu_update_selection_biases,
     update_selection_biases,
 )
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
@@ -80,6 +82,9 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 from prime_rl.utils.weights import resolve_fqn
+
+
+MOE_TRACE_INTERVAL = 32
 
 
 def count_parameters(model: nn.Module) -> dict[str, int]:
@@ -248,6 +253,9 @@ def train(config: PretrainConfig):
     for moe in moes_with_seq_balance:
         # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
         moe.balance_rows = config.data.micro_batch_size
+    moes_with_router_z = list(iter_moe_blocks(model)) if balance.router_z_coeff > 0 else []
+    for moe in moes_with_router_z:
+        moe.compute_router_z = True
     bias_freeze_step = config.max_steps - round(balance.bias_freeze * config.max_steps)
     # Sum and count of the per-row balance of every MoE layer over the current step's micro-batches, reduced with
     # the step's statistics.
@@ -282,6 +290,12 @@ def train(config: PretrainConfig):
                 seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + moe.seq_balance.new_tensor(
                     moe.seq_balance.numel()
                 )
+            for moe in moes_with_router_z:
+                aux_loss_sum += balance.router_z_coeff * moe.router_z.sum()
+                seq_balance_sums["router_z"] = seq_balance_sums.get("router_z", 0) + moe.router_z.detach().sum()
+                seq_balance_sums["router_z_tokens"] = seq_balance_sums.get(
+                    "router_z_tokens", 0
+                ) + moe.router_z.new_tensor(moe.router_z.numel())
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     def finish_no_grad_forwards() -> None:
@@ -357,6 +371,14 @@ def train(config: PretrainConfig):
     dead_experts = DeadExperts()
     loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
     last_bias_moves = None
+    # Per-expert selection bias, router-row norm and load of every biased layer, every MOE_TRACE_INTERVAL steps.
+    moe_trace: dict[str, list] = {"step": [], "bias": [], "router_norm": [], "load": []}
+    # SMEBU momentum per biased layer; not checkpointed (with beta 0.5 it forgets within a few steps).
+    bias_momenta = [
+        torch.zeros_like(moe.router.selection_bias)
+        for moe in iter_moe_blocks(model)
+        if moe.router.selection_bias is not None
+    ]
     update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
     # MFU investigation only: PRL_PROFILE_STEPS="first,last" traces those steps on the ranks in PRL_PROFILE_RANKS.
@@ -392,14 +414,26 @@ def train(config: PretrainConfig):
         moe_metrics = {}
         if is_moe_model:
             moe_metrics["expert_load/dead"] = dead_experts.update(result.tokens_per_expert.cpu())
-            if result.sums:
+            if "balance" in result.sums:
                 moe_metrics["loss/seq_balance"] = result.sums["balance"] / result.sums["rows"]
+            if "router_z" in result.sums:
+                moe_metrics["loss/router_z"] = result.sums["router_z"] / result.sums["router_z_tokens"]
             biases = [
                 moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.router.selection_bias is not None
             ]
             if balance.bias_update_rate > 0 and progress.step <= bias_freeze_step:
                 previous_biases = [bias.clone() for bias in biases]
-                update_selection_biases(model, result.tokens_per_expert, balance.bias_update_rate)
+                if balance.bias_update == "smebu":
+                    smebu_update_selection_biases(
+                        model,
+                        result.tokens_per_expert,
+                        balance.bias_update_rate,
+                        balance.smebu_kappa,
+                        balance.smebu_momentum,
+                        bias_momenta,
+                    )
+                else:
+                    update_selection_biases(model, result.tokens_per_expert, balance.bias_update_rate)
                 if biases:
                     # Share of experts whose bias moved in the opposite direction to the previous step's move.
                     moves = torch.stack([bias - previous for bias, previous in zip(biases, previous_biases)]).sign()
@@ -410,6 +444,19 @@ def train(config: PretrainConfig):
                 stacked = torch.stack(biases)
                 moe_metrics["router/bias/absmax"] = stacked.abs().max().item()
                 moe_metrics["router/bias/std"] = stacked.std(dim=1).mean().item()
+                if progress.step % MOE_TRACE_INTERVAL == 0:
+                    gates = [
+                        moe.router.gate.weight
+                        for moe in iter_moe_blocks(model)
+                        if moe.router.selection_bias is not None
+                    ]
+                    gates = [gate.full_tensor() if isinstance(gate, DTensor) else gate for gate in gates]
+                    moe_trace["step"].append(progress.step)
+                    moe_trace["bias"].append(stacked.float().cpu().numpy())
+                    moe_trace["router_norm"].append(
+                        torch.stack([gate.detach().float().norm(dim=1) for gate in gates]).cpu().numpy()
+                    )
+                    moe_trace["load"].append(result.tokens_per_expert.float().cpu().numpy())
 
         with torch.profiler.record_function("prl/grad_norms"):
             group_grad_norms = grad_norms_by_group(model)
@@ -514,6 +561,8 @@ def train(config: PretrainConfig):
             profiler = None
         if heart is not None:
             heart.beat()
+        if moe_trace["step"] and world.rank == 0 and (is_last_step or progress.step % (16 * MOE_TRACE_INTERVAL) == 0):
+            np.savez(config.run_dir / "moe_trace.npz", **{name: np.array(values) for name, values in moe_trace.items()})
         if is_last_step:
             break
         progress.step += 1
