@@ -32,9 +32,9 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.init import init_weights, param_role
+from prime_rl.trainer.models.init import multipliers, param_role
 from prime_rl.trainer.pretrain.hyperball import Hyperball
-from prime_rl.trainer.pretrain.parametrization import head_block_partitions, multipliers, param_groups
+from prime_rl.trainer.pretrain.parametrization import head_block_partitions, param_groups
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
@@ -44,7 +44,6 @@ from prime_rl.trainer.pretrain.data import (
     source_tokens,
     setup_val_dataset,
 )
-from prime_rl.trainer.pretrain.schedules import LRSchedule
 from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
 from prime_rl.trainer.pretrain.suite import (
     length_label,
@@ -63,6 +62,7 @@ from prime_rl.trainer.pretrain.metrics import (
     take_routing_counts,
 )
 from prime_rl.trainer.sft.data import get_dataset_state
+from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.utils import (
     get_dcp_group,
     GarbageCollection,
@@ -146,10 +146,14 @@ def train(config: PretrainConfig):
 
     logger.info(f"Initializing model ({config.model})")
     # Weights come from the checkpoint when resuming and from the random init otherwise.
-    model = setup_model(config.model, parallel_dims, loading_from_checkpoint_later=True)
+    model = setup_model(
+        config.model,
+        parallel_dims,
+        loading_from_checkpoint_later=checkpoint_step is not None,
+        init=config.model.init if checkpoint_step is None else None,
+        parametrization=config.parametrization,
+    )
     m_n, m_l = multipliers(config.parametrization, model)
-    if checkpoint_step is None:
-        init_weights(model, config.model.init, m_n, m_l)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
     num_params = count_parameters(model)
@@ -177,10 +181,10 @@ def train(config: PretrainConfig):
     if config.optim.type == "muon" and config.optim.hyperball:
         Hyperball(optimizer)
 
-    # With ckpt.skip_scheduler, the schedule restarts at the resumed step and spans the remaining steps.
-    restart_schedule = config.ckpt is not None and config.ckpt.skip_scheduler and checkpoint_step is not None
-    schedule_offset = checkpoint_step if restart_schedule else 0
-    lr_schedule = LRSchedule(config.schedule, optimizer, config.max_steps - schedule_offset, schedule_offset)
+    # With ckpt.skip_scheduler, the schedule is rebuilt over the remaining steps.
+    skip_scheduler = (config.ckpt or CheckpointConfig()).skip_scheduler
+    scheduler_steps = config.max_steps - checkpoint_step if skip_scheduler and checkpoint_step else config.max_steps
+    scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
     train_dataset = setup_train_dataset(
         config.data, config.max_steps, len(tokenizer), tokenizer.eos_token_id, non_dp_size=config.model.cp
@@ -208,12 +212,15 @@ def train(config: PretrainConfig):
             checkpoint_step,
             model,
             [optimizer],
-            None,
+            None if skip_scheduler else scheduler,
             progress,
             dataloader=dataloader if restore_dataloader else None,
             path=config.resume.dir / "trainer" if config.resume.dir is not None else None,
         )
         progress.step += 1
+        if skip_scheduler:
+            # Loading the optimizer state replaces the param groups the scheduler was built on.
+            scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
         logger.info(f"Resuming from step {checkpoint_step} (dataset_state={get_dataset_state(dataloader)})")
 
     # Step s trains on the global windows [(s - 1) * batch_size, s * batch_size). The tokens per source are counted
@@ -368,7 +375,6 @@ def train(config: PretrainConfig):
             gc_handler.run(progress.step)
         is_last_step = progress.step >= config.max_steps
         step_start_time = time.perf_counter()
-        lr_multiplier = lr_schedule.apply(progress.step - 1)
 
         seq_balance_sums.clear()
         result = run_micro_batches(
@@ -410,6 +416,7 @@ def train(config: PretrainConfig):
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
+        scheduler.step()
         diagnostic_metrics = update_tracker.after_step(model) if is_diagnostic_step else {}
         # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
         local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
@@ -424,7 +431,7 @@ def train(config: PretrainConfig):
         disk_metrics = {}
         if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0 and not is_last_step:
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
@@ -488,7 +495,6 @@ def train(config: PretrainConfig):
             **result.metrics,
             **moe_metrics,
             **diagnostic_metrics,
-            "schedule/lr": lr_multiplier,
             "step": progress.step,
         }
         if grad_norm is not None:
@@ -504,7 +510,7 @@ def train(config: PretrainConfig):
 
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
+        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
     logger.success("Pretrain trainer finished")
     asyncio.run(monitors.finalize())

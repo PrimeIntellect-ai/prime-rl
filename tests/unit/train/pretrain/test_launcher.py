@@ -11,7 +11,7 @@ def test_multi_node_dry_run_writes_trainer_sbatch(tmp_path, monkeypatch):
     config = PretrainConfig.model_validate(
         {
             "output_dir": tmp_path,
-            "model": {"arch": {"model_type": "llama"}},
+            "model": {"name": "configs/debug/fake/pretrain-model"},
             "tokenizer": {"name": "PrimeIntellect/Qwen3-0.6B"},
             "data": {"type": "fake", "seq_len": 8, "batch_tokens": 16, "micro_batch_tokens": 8},
             "optim": {"lr": 1e-3},

@@ -166,10 +166,10 @@ async def log_eval_epoch(env_name: str, step: int, episodes: list[vf.Episode]) -
             get_logger().warning(f"Failed to log to {monitor.__class__.__name__}: {e}")
 
 
-async def finalize() -> None:
-    """Finalize the run on all registered monitors."""
+async def finalize(paused: bool = False) -> None:
+    """Finalize the run on all registered monitors. A paused run is not reported as completed."""
     for monitor in MONITORS:
         try:
-            await monitor.finalize()
+            await monitor.finalize(paused=paused)
         except Exception as e:
             get_logger().warning(f"Failed to finalize {monitor.__class__.__name__}: {e}")

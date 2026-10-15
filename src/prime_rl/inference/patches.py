@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -14,10 +16,12 @@ def apply_shared_vllm_patches():
 
     patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
+    monkey_patch_shm_buffer_ownership()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
+    monkey_patch_routed_experts_with_pd_connectors()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
@@ -25,11 +29,122 @@ def apply_shared_vllm_patches():
     monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_packed_sampling_masks()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+
+
+def monkey_patch_shm_buffer_ownership():
+    """Own out-of-band buffers before releasing a reusable vLLM SHM slot."""
+    import pickle
+
+    import zmq
+    from vllm.distributed.device_communicators import shm_broadcast
+
+    # Backport https://github.com/vllm-project/vllm/pull/61000; remove when our
+    # minimum vLLM version includes it. Retained routed-expert arrays otherwise
+    # alias ring slots that subsequent messages can overwrite.
+    MessageQueue = shm_broadcast.MessageQueue
+    if getattr(MessageQueue.dequeue, "_prime_rl_owns_shm_buffers", False):
+        return
+
+    def dequeue(self, timeout: float | None = None, indefinite: bool = False):
+        if self._is_local_reader:
+            with self.acquire_read(timeout, indefinite) as buf:
+                overflow = buf[0] == 1
+                if not overflow:
+                    offset = 3
+                    buf_count = shm_broadcast.from_bytes_big(buf[1:offset])
+                    all_buffers = []
+                    for i in range(buf_count):
+                        buf_offset = offset + 4
+                        buf_len = shm_broadcast.from_bytes_big(buf[offset:buf_offset])
+                        offset = buf_offset + buf_len
+                        buffer = buf[buf_offset:offset]
+                        all_buffers.append(buffer if i == 0 else bytearray(buffer))
+                    obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])
+            if overflow:
+                obj = MessageQueue.recv(self.local_socket, timeout)
+        elif self._is_remote_reader:
+            obj = MessageQueue.recv(self.remote_socket, timeout)
+        else:
+            raise RuntimeError("Only readers can dequeue")
+        return obj
+
+    def _rebuild_tensor(buf, shape: tuple[int, ...], dtype_str: str) -> torch.Tensor:
+        dtype = getattr(torch, dtype_str)
+        assert isinstance(dtype, torch.dtype)
+        if isinstance(buf, zmq.Frame):
+            try:
+                return torch.frombuffer(buf, dtype=torch.uint8).view(dtype).view(shape)
+            except ValueError:
+                pass
+        raw = buf if isinstance(buf, bytearray) else bytearray(buf)
+        if not raw:
+            assert 0 in shape
+            return torch.empty(shape, dtype=dtype)
+        return torch.frombuffer(raw, dtype=torch.uint8).view(dtype).view(shape)
+
+    # Pickle resolves this reducer by its module and name in receiving processes.
+    _rebuild_tensor.__module__ = shm_broadcast.__name__
+    _rebuild_tensor.__qualname__ = "_rebuild_tensor"
+    dequeue._prime_rl_owns_shm_buffers = True
+    shm_broadcast._rebuild_tensor = _rebuild_tensor
+    MessageQueue.dequeue = dequeue
+
+
+@dataclass
+class PackedSamplingMask:
+    """A finished request's sampling masks in CSR form: ``ids[sum(counts[:i]):][:counts[i]]``
+    are the kept token ids of completion token ``i``."""
+
+    ids: np.ndarray
+    counts: np.ndarray
+
+
+def monkey_patch_packed_sampling_masks():
+    """Keep sampling masks as numpy arrays in the API server's output processor.
+
+    vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
+    runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
+    objects per token that every gen-2 pass walks. Store only the (untracked) id
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
+    """
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
+
+    original_init = RequestState.__init__
+    original_new_completion_output = RequestState._new_completion_output
+
+    class _MaskIds(list):
+        def append(self, chunk):
+            super().append(chunk.token_ids)
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
+
+    def _new_completion_output(self, token_ids, finish_reason, stop_reason):
+        chunks = self.sampling_mask_chunks
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
+            return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        self.sampling_mask_chunks = _MaskIds()
+        output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        output.sampling_mask = PackedSamplingMask(
+            ids=np.concatenate(chunks),
+            counts=np.fromiter(map(len, chunks), dtype=np.int32, count=len(chunks)),
+        )
+        return output
+
+    RequestState.__init__ = _init
+    RequestState._new_completion_output = _new_completion_output
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
@@ -264,6 +379,105 @@ def monkey_patch_minimax_m2_think_end_passthrough():
         )
 
     minimax_m2.minimax_m2_config = _patched_config
+
+
+def monkey_patch_routed_experts_with_pd_connectors():
+    """Let vLLM's routed-experts capture (AuxOutput connector) run on NIXL P/D instances.
+
+    vLLM 0.31 rejects routed-experts capture with P/D connectors, because a decode instance never
+    computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
+    (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
+    this instance, and the worker does not buffer the
+    partially known first block. The router takes the prompt rows from the prefill instance. Delete
+    once vLLM supports routed experts with P/D connectors.
+    """
+    from vllm.config.vllm import VllmConfig
+    from vllm.distributed.aux_output_connector.connector import AuxOutputSchedulerConnector
+    from vllm.distributed.aux_output_connector.worker import AuxOutputWorkerConnector
+
+    original_verify = VllmConfig._verify_aux_output_compatibility
+    if getattr(original_verify, "_prime_rl_allows_pd", False):
+        return
+
+    def _verify_aux_output_compatibility(config):
+        kv_transfer_config = config.kv_transfer_config
+        if kv_transfer_config is None or not kv_transfer_config.has_connector("NixlConnector"):
+            return original_verify(config)
+        # The P/D connector check is the last one; every other check still runs.
+        config.kv_transfer_config = None
+        try:
+            return original_verify(config)
+        finally:
+            config.kv_transfer_config = kv_transfer_config
+
+    original_build_connector_meta = AuxOutputSchedulerConnector.build_connector_meta
+
+    def build_connector_meta(self, scheduler_output, requests):
+        metadata = original_build_connector_meta(self, scheduler_output, requests)
+        floors = _emit_floors(self)
+        for request_id, emit_start in metadata.requests.items():
+            request = requests[request_id]
+            if not _is_pd_decode_request(request):
+                continue
+            # Fixed at the first forward (built before the step advances num_computed_tokens).
+            # Normally prompt_len - 1; lower after a failed KV load, where this instance
+            # recomputes those rows itself.
+            floor = floors.setdefault(request_id, request.num_computed_tokens)
+            metadata.requests[request_id] = max(emit_start, floor)
+        return metadata
+
+    original_request_finished = AuxOutputSchedulerConnector.request_finished
+
+    def request_finished(self, request):
+        # Preemption keeps the floor: a resumed request may hit prompt blocks loaded from the prefill
+        # instance, which have no rows here.
+        if request.is_finished():
+            _emit_floors(self).pop(request.request_id, None)
+        return original_request_finished(self, request)
+
+    original_worker_init = AuxOutputWorkerConnector.__init__
+
+    def worker_init(self, *args, **kwargs):
+        original_worker_init(self, *args, **kwargs)
+        if self._buffer is not None:
+            skip_remote_prefill_partial_block(self)
+
+    _verify_aux_output_compatibility._prime_rl_allows_pd = True
+    VllmConfig._verify_aux_output_compatibility = _verify_aux_output_compatibility
+    AuxOutputSchedulerConnector.build_connector_meta = build_connector_meta
+    AuxOutputSchedulerConnector.request_finished = request_finished
+    AuxOutputWorkerConnector.__init__ = worker_init
+
+
+def skip_remote_prefill_partial_block(worker) -> None:
+    """Make an AuxOutput worker skip the mid-block start of a remotely prefilled request's first forward."""
+    from vllm.utils.math_utils import cdiv
+
+    buffer = worker._buffer
+    capture = buffer.capture
+    block_size = buffer.block_size
+
+    def _capture(request_id, token_start, rows):
+        state = worker._requests[request_id]
+        if state.capture_cursor is None and token_start % block_size and state.emit_cursor >= token_start:
+            # The rows before this token exist only on the prefill instance, so this block is never
+            # published. Buffer from the next block; this step's rows are still emitted directly.
+            state.prime_rl_buffer_start = cdiv(token_start, block_size) * block_size
+        skip = min(max(getattr(state, "prime_rl_buffer_start", 0) - token_start, 0), len(rows))
+        return capture(request_id, token_start + skip, rows[skip:])
+
+    buffer.capture = _capture
+
+
+def _emit_floors(connector) -> dict[str, int]:
+    """First output token of each remotely prefilled request on this instance."""
+    return connector.__dict__.setdefault("_prime_rl_emit_floors", {})
+
+
+def _is_pd_decode_request(request) -> bool:
+    """A request on a P/D decode instance (NIXL clears ``do_remote_prefill`` once scheduled, not ``remote_engine_id``)."""
+    params = request.kv_transfer_params or {}
+    return bool(params.get("remote_engine_id")) and not params.get("do_remote_decode")
 
 
 def monkey_patch_strip_routed_experts_from_chat():

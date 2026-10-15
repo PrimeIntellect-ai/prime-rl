@@ -31,8 +31,10 @@ from prime_rl.configs.trainer import (
     ActivationCheckpointConfig,
     CompileConfig,
     FP8Config,
+    InitConfig,
     ModelConfig,
     MXFP8Config,
+    ParametrizationConfig,
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
@@ -54,6 +56,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
+from prime_rl.trainer.models.init import init_weights, multipliers
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
@@ -368,6 +371,8 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -601,8 +606,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 reshard_after_forward=config.reshard_after_forward,
                 shard_placement_fn=shard_placement_fn,
             )
-            # Keep the router reduction from waiting for the expert reduction's input buffer.
-            block_mlp.router.set_reduce_scatter_max_input_buffers(2)
 
         fully_shard(
             transformer_block,
@@ -648,6 +651,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
     )
+    model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
     if not parallel_dims.ep_enabled:
         return
@@ -942,7 +946,12 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    init: InitConfig | None = None,
+    parametrization: ParametrizationConfig | None = None,
 ) -> nn.Module:
+    """Build the sharded model. Its weights come from ``config.name``, or later from a checkpoint
+    (``loading_from_checkpoint_later``); with ``init``, they are initialized from scratch (with the CompleteP
+    multipliers of ``parametrization``) instead."""
     resolve_auto_attn(config)
 
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
@@ -1009,9 +1018,11 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if loading_from_checkpoint_later:
+    if loading_from_checkpoint_later or init is not None:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
+            if init is None
+            else "Initializing the weights from scratch."
         )
         device = "cuda"
         model.to_empty(device=device)
@@ -1021,6 +1032,8 @@ def setup_model(
         load_dcp_from_hf(model, config, parallel_dims)
 
     _reset_runtime_moe_buffers(model)
+    if init is not None:
+        init_weights(model, init, *multipliers(parametrization, model))
     return model
 
 

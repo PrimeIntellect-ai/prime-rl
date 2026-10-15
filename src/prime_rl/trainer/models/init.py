@@ -7,8 +7,8 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
-from prime_rl.configs.pretrain import InitConfig
-from prime_rl.trainer.model import iter_moe_blocks
+from prime_rl.configs.trainer import InitConfig, ParametrizationConfig
+from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
 from prime_rl.utils.weights import resolve_fqn
 
 ParamRole = Literal["embedding", "output", "residual_out", "hidden", "norm", "bias"]
@@ -42,6 +42,14 @@ def role_std(role: ParamRole, std: float, m_n: float, m_l: float) -> float:
     residual output projections and the LM head, so the forward pass stays unchanged."""
     scale = {"embedding": 1.0, "hidden": m_n**-0.5, "residual_out": m_n**-0.5 / m_l, "output": 1 / m_n}
     return std * scale[role]
+
+
+def multipliers(config: ParametrizationConfig | None, model: nn.Module) -> tuple[float, float]:
+    """Width and depth multipliers ``(m_N, m_L)`` of the model relative to the CompleteP base shape; 1 and 1 in
+    the standard parametrization."""
+    if config is None:
+        return 1.0, 1.0
+    return model.config.hidden_size / config.base_hidden_size, model.config.num_hidden_layers / config.base_num_layers
 
 
 def block_seed(seed: int, name: str, block: int) -> int:
@@ -103,6 +111,6 @@ def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: fl
         )
         local.copy_(values.mul_(role_std(role, config.std, m_n, m_l)))
     # MoE selection biases are buffers: they start at 0, so routing starts from the router scores alone.
-    for moe in iter_moe_blocks(model):
-        if moe.router.selection_bias is not None:
-            moe.router.selection_bias.zero_()
+    for module in model.modules():
+        if isinstance(module, TokenChoiceTopKRouter) and module.selection_bias is not None:
+            module.selection_bias.zero_()

@@ -8,25 +8,21 @@ uv run pretrain @ examples/pretrain/glm4_moe.toml
 
 ## Model
 
-`[model.arch]` is the whole architecture: a `model_type` from `prime_rl.trainer.models` and the fields of its config class. Unknown fields are rejected. The vocabulary size (`len(tokenizer)` rounded up to a multiple of 128) and the BOS, EOS and pad ids come from the tokenizer, so they cannot disagree with it.
+The model is set up as in SFT and RL: `model.name` is an HF model id or a local model directory with a `config.json`. Its weights are not loaded. The model starts from a random init (below) or from a checkpoint. A new architecture is a directory with only a `config.json` for a model type in `prime_rl.trainer.models`; [`examples/pretrain/glm4-moe-d512`](../examples/pretrain/glm4-moe-d512/config.json) is the one in the example. `vocab_size` and the BOS, EOS and pad ids in the config must fit the tokenizer. The checked-in configs round `len(tokenizer)` up to a multiple of 128 and use the tokenizer's special ids, with EOS as the pad id if the tokenizer has none.
 
 ```toml
-[model.arch]
-model_type = "glm4_moe"
-hidden_size = 512
-num_hidden_layers = 8
-n_routed_experts = 64
-num_experts_per_tok = 6
+[model]
+name = "examples/pretrain/glm4-moe-d512"
 
 [tokenizer]
-name = "tokenizers/deepseek-v4-flash-base"
+name = "tokenizers/deepseek-v4-flash-base"  # defaults to model.name
 ```
 
-The launcher writes the config and the tokenizer to `<run_dir>/configs/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
+The trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all read the same model directory and tokenizer. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
 
 ## Initialization
 
-Weights start from a random init, unless the run resumes from a checkpoint.
+Weights start from a random init, unless the run resumes from a checkpoint. The init lives with the models (`prime_rl.trainer.models.init`) and runs in the shared `setup_model` when it gets an `init` config. SFT and RL do not pass one, so their behavior is unchanged.
 
 | Field | Meaning |
 |---|---|
@@ -61,21 +57,23 @@ In MoE models, the expert matrices follow the hidden and `down_proj` rules per e
 
 Muon orthogonalizes each attention head's query, key and value rows on its own (`optim.heads_per_block = 1`, the per-head Muon of the [Kimi K3 report](https://arxiv.org/abs/2607.24653), section 2.5). `heads_per_block = 2` orthogonalizes pairs of heads, and `None` each whole projection. Every other matrix, including `o_proj`, is orthogonalized whole (routed experts one expert at a time, the packed gate and up projections separately). The `rms_norm` adjustment uses each block's own shape.
 
-Use QK-norm (`model.arch.use_qk_norm = true`) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
+`optim.hyperball = true` replaces weight decay by Hyperball ([Wen et al. 2026](https://arxiv.org/abs/2606.16899), the MuonH/AdamH of Marin's MoE recipe). Every Muon matrix (each routed expert separately) and the LM head keep their Frobenius norm R. Each step is `W <- R * normalize(W - lr * R * normalize(u))`, where `u` is the Muon update (Adam for the LM head), so `optim.lr` is the relative step size per step. Embeddings, norm gains, biases and the router are trained by Adam at `optim.adam_lr` without weight decay. Hyperball needs `model.fusions.enabled = []` (each of q, k, v, gate and up keeps its own norm) and no `[parametrization]`.
+
+Use QK-norm (`"use_qk_norm": true` in the model config) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
 ## Learning-rate schedule
 
-`[schedule]` sets a multiplier `f(step)` on the learning rate, where `step` counts the optimizer updates completed so far (0 for the first update). Every param group uses its own learning rate times `f(step)`, so ratios between groups hold at every step. The default warms up over 10% of the steps and decays linearly to 0 over the remaining 90%.
+Pretraining uses the shared `[scheduler]`. Its default here is the `linear` scheduler with a warmup over 10% of the steps and a linear decay to `min_lr = 0` over the remaining 90%. Warmup and decay take a number of steps or a fraction of `max_steps` (rounded down), and `decay_shape` is `linear`, `cosine` or `1-sqrt`:
 
 ```toml
-[schedule]
-warmup = 0.05       # fraction of max_steps, or a number of steps
-decay = 0.2
-end_ratio = 0.1
-decay_shape = "1-sqrt"  # or "linear" (default), "cosine"
+[scheduler]
+type = "linear"
+warmup_steps = 0.05
+decay_steps = 0.2
+decay_shape = "1-sqrt"
 ```
 
-`f(0) = 0`, the warmup reaches 1 at its last update (`warmup - 1`; a warmup of 0 or 1 starts at 1), and the decay reaches `end_ratio` at the last update (`max_steps - 1`). AdamW and Muon apply weight decay as `lr * weight_decay`, so the schedule also scales the decay. The multiplier is recomputed from the step, so checkpoints hold no schedule state. Resuming with `ckpt.skip_scheduler = true` restarts the schedule at the resumed step, spanning the remaining steps. The multiplier is logged as `schedule/lr`.
+The schedule scales every param group's own learning rate, so ratios between groups hold. AdamW and Muon apply weight decay as `lr * weight_decay`, so the schedule also scales the decay. The scheduler state is checkpointed; resuming with `ckpt.skip_scheduler = true` rebuilds the schedule over the remaining steps.
 
 ## MoE load balancing
 
@@ -91,7 +89,7 @@ The metrics are `expert_load/*` (global balance of the step), `loss/seq_balance`
 
 ## Data
 
-`data.type = "tokens"` reads [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: per source, a folder of `*.ds` token files with their `.ds.index` (document ends) and `.ds.metadata`. The files of a source are read in name order as one stream; documents continue across rows, and attention restarts at every document and every row. Every document must end with the tokenizer's EOS; the trainer checks the first document of every source, which catches shards made with another tokenizer.
+`data.type = "tokens"` reads [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: per source, a folder of `*.ds` token files with their `.ds.index` (document ends) and `.ds.metadata`. Each epoch reads every token of a source once: in blocks of 2^20 tokens in a random order and from a random start offset, both drawn from `data.seed`, the source and the epoch. Within an epoch, the rows of each group of 4,096 consecutive rows are read in a seeded random order, so the pieces of one long document spread over many steps. So every epoch has a new order and new row boundaries, and part of an epoch is a sample of the whole source, whatever the order of the files. Documents continue across rows, and attention restarts at every document, every row and every block boundary. Held-out sources are read in file-name order. Every document must end with the tokenizer's EOS; the trainer checks the first document of every source, which catches shards made with another tokenizer.
 
 Each row comes from one source, drawn with the weights of the current mixture phase. Phases start at fractions of `max_steps`. At startup the trainer computes how many passes over each source the run makes and fails above `data.max_epochs`.
 
@@ -119,7 +117,7 @@ Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and t
 
 ## Monitoring
 
-Every step logs the loss, learning rate and schedule multiplier, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, per-source token counts and epochs (`progress/<source>/*`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
+Every step logs the loss, learning rate, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, per-source token counts and epochs (`progress/<source>/*`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
 
 `[diagnostics]` (default: every 100 steps; `diagnostics = null` turns it off) adds the size of the optimizer update relative to the weights per parameter group (`update/rms_ratio/*`, `param/rms/*`) and a forward pass on a fixed probe batch: attention max logit and entropy per layer (`attn/*`, FlashAttention layers) and the residual-stream size per layer (`act/*`). It does not support context parallelism yet.
 

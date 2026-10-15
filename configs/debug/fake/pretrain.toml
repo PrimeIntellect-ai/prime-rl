@@ -1,15 +1,8 @@
 max_steps = 5
 
 [model]
+name = "configs/debug/fake/pretrain-model"
 compile = "None"
-
-[model.arch]
-model_type = "llama"
-hidden_size = 256
-num_hidden_layers = 2
-num_attention_heads = 4
-num_key_value_heads = 2
-intermediate_size = 1024
 
 [tokenizer]
 name = "PrimeIntellect/Qwen3-0.6B"

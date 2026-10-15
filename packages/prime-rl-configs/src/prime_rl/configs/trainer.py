@@ -1,3 +1,4 @@
+import math
 import re
 import warnings
 from pathlib import Path
@@ -8,6 +9,7 @@ from pydantic import Field, field_validator, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -230,6 +232,29 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
+class InitConfig(BaseConfig):
+    """Random weight initialization: every weight matrix and the embedding from N(0, std), scaled per role under
+    CompleteP (see ``[parametrization]``). Norm weights start at 1, biases at 0."""
+
+    std: float = Field(0.02, gt=0)
+    """Base standard deviation."""
+
+    seed: int = 0
+    """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
+
+
+class ParametrizationConfig(BaseConfig):
+    """CompleteP (muP extended to depth, Dey et al. 2025, alpha = 1) relative to a base shape: init std, learning
+    rate, Adam eps and weight decay scale per parameter role with ``m_N = hidden_size / base_hidden_size`` and
+    ``m_L = num_layers / base_num_layers``, so hyperparameters tuned on the base shape carry over."""
+
+    base_hidden_size: int = Field(ge=1)
+    """Hidden size of the base shape."""
+
+    base_num_layers: int = Field(ge=1)
+    """Number of layers of the base shape."""
+
+
 class ModelConfig(BaseModelConfig):
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
@@ -282,10 +307,16 @@ class ModelConfig(BaseModelConfig):
     moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
     """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
 
+    reduce_scatter_max_input_buffers: int = Field(1, ge=1)
+    """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
+
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "tilelang"
-    """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
+
+    dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
+    """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
@@ -349,14 +380,25 @@ class ConstantSchedulerConfig(BaseConfig):
     type: Literal["constant"] = "constant"
 
 
+StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Field(gt=0, lt=1)]
+
+
+def resolve_steps(value: int | float, max_steps: int | None) -> int:
+    """Steps as given, or a fraction of ``max_steps`` rounded down."""
+    return math.floor(value * max_steps) if isinstance(value, float) else value
+
+
 class LinearSchedulerConfig(BaseConfig):
     type: Literal["linear"] = "linear"
 
-    warmup_steps: int = Field(10, ge=0)
-    """Warmup steps for the learning rate scheduler."""
+    warmup_steps: StepsOrFraction = 10
+    """Warmup steps for the learning rate scheduler, or a fraction of ``max_steps``."""
 
-    decay_steps: int = Field(10, ge=0)
-    """Steps to decay the learning rate during the final portion of training."""
+    decay_steps: StepsOrFraction = 10
+    """Steps to decay the learning rate during the final portion of training, or a fraction of ``max_steps``."""
+
+    decay_shape: Literal["linear", "cosine", "1-sqrt"] = "linear"
+    """Shape of the decay from the peak to ``min_lr``."""
 
     min_lr: float = Field(0.0, ge=0)
     """Minimum learning rate to converge to."""
@@ -387,11 +429,15 @@ def validate_scheduler(scheduler: SchedulerConfig, max_steps: int | None) -> Non
         if scheduler.decay_steps > 0:
             if max_steps is None:
                 raise ValueError("Must specify max_steps when using a linear scheduler with decay_steps > 0")
-            if scheduler.warmup_steps + scheduler.decay_steps > max_steps:
+            warmup_steps = resolve_steps(scheduler.warmup_steps, max_steps)
+            decay_steps = resolve_steps(scheduler.decay_steps, max_steps)
+            if warmup_steps + decay_steps > max_steps:
                 raise ValueError(
-                    f"warmup_steps ({scheduler.warmup_steps}) + decay_steps ({scheduler.decay_steps}) "
+                    f"warmup_steps ({warmup_steps}) + decay_steps ({decay_steps}) "
                     f"must not exceed max_steps ({max_steps})"
                 )
+        elif isinstance(scheduler.warmup_steps, float) and max_steps is None:
+            raise ValueError("Must specify max_steps when warmup_steps is a fraction")
     if isinstance(scheduler, CosineSchedulerConfig):
         if max_steps is None:
             raise ValueError("Must specify max_steps when using a cosine scheduler")
@@ -617,6 +663,10 @@ class TrainerConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: ControlConfig | None = None
+    """Serve the run control API on the master rank (pause the run after the next
+    step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""

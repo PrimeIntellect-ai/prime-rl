@@ -176,7 +176,7 @@ class PrimeTrainMonitor(Monitor):
             # Pretraining trains on token data from scratch: no environments, the model is its architecture.
             init_kwargs = dict(
                 name=self.config.name,
-                model=config.model.arch["model_type"],
+                model=config.model.name,
                 environments=[],
                 training=pr.TrainingSpec(
                     max_steps=config.max_steps,
@@ -255,11 +255,12 @@ class PrimeTrainMonitor(Monitor):
         # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_episodes, episodes)
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         # Drains queued uploads so the final step's metrics and episodes land,
         # then finalizes (idempotent on the platform side); an attached run's
-        # failure marking stays with the launcher.
-        await asyncio.to_thread(self.run.finish)
+        # failure marking stays with the launcher. A paused run only drains and
+        # stays open: it continues on resume, and its owner sets its status.
+        await asyncio.to_thread(self.run.flush if paused else self.run.finish)
 
 
 class PrimeEvalMonitor(Monitor):
@@ -445,7 +446,7 @@ class PrimeEvalMonitor(Monitor):
             return
         self.logger.info(f"Uploaded {env_name} (Step {step}) evaluation - {run.url}")
 
-    async def finalize(self) -> None:
+    async def finalize(self, paused: bool = False) -> None:
         # An epoch the run did not finish leaves its evaluation open: close it as cancelled.
         for (env_name, step), run in self.runs.items():
             if run is None or run.finished:

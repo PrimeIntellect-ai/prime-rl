@@ -6,10 +6,11 @@ import torch
 from torch.optim import AdamW
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from prime_rl.configs.pretrain import InitConfig, PretrainAdamWConfig, PretrainMuonConfig
-from prime_rl.trainer.init import init_weights, normal_shard
+from prime_rl.configs.pretrain import PretrainAdamWConfig, PretrainMuonConfig
+from prime_rl.configs.trainer import InitConfig
 from prime_rl.trainer.models.fusions import fuse_qkv_projections, get_model_packed_parameters
 from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
+from prime_rl.trainer.models.init import init_weights, normal_shard
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.pretrain.hyperball import Hyperball
 from prime_rl.trainer.pretrain.parametrization import head_block_partitions, param_groups
