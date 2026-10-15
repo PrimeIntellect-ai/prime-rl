@@ -302,17 +302,15 @@ def pin(num_bytes: int) -> torch.Tensor:
     return tensor
 
 
-def pin_in_background(num_bytes: int, chunk: int = 1 << 30) -> tuple[torch.Tensor, threading.Thread]:
-    """Host memory of ``num_bytes`` and a (not yet started) thread that page-locks it chunk by chunk
-    (``cudaHostRegister``). Page-locking a large buffer is slow on a loaded host. No CUDA copies may
-    touch the memory while the thread runs."""
-    raw = np.empty(num_bytes + 4096, np.uint8)
-    offset = -raw.ctypes.data % 4096
-    tensor = torch.from_numpy(raw[offset : offset + num_bytes])
+def pin_in_background(num_bytes: int) -> tuple[torch.Tensor, threading.Thread]:
+    """Host memory of ``num_bytes`` and a (not yet started) thread that page-locks it with one
+    ``cudaHostRegister`` (a copy may not span two registrations). Page-locking a large buffer is slow
+    on a loaded host. No CUDA copies may touch the memory while the thread runs."""
+    tensor = torch.from_numpy(np.empty(num_bytes, np.uint8))
 
     def register() -> None:
-        for start in range(0, num_bytes, chunk):
-            error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr() + start, min(chunk, num_bytes - start), 0)
+        if num_bytes:
+            error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), num_bytes, 0)
             assert error == 0, f"cudaHostRegister failed: {error}"
 
     return tensor, threading.Thread(target=register)
