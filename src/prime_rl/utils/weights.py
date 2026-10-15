@@ -163,33 +163,22 @@ def resolve_row_chunk(value: Tensor, start: int, stop: int, dtype: torch.dtype) 
     """Gather only this row interval, rather than the complete embedding table."""
     if not isinstance(value, DTensor):
         return value[start:stop].to(dtype)
-    shard_dims = [
-        i
-        for i, placement in enumerate(value.placements)
-        if isinstance(placement, Shard) and value.device_mesh.size(i) > 1
-    ]
-    if not shard_dims:
-        if any(value.device_mesh.size(i) > 1 and not isinstance(p, Replicate) for i, p in enumerate(value.placements)):
-            raise ValueError("Embedding transfer requires row-sharded or replicated weights")
-        return value.to_local()[start:stop].to(dtype)
-    if len(shard_dims) != 1 or value.placements[shard_dims[0]].dim != 0:
-        raise ValueError("Embedding transfer requires a single row-sharding mesh dimension")
-    if any(
-        value.device_mesh.size(i) > 1 and not isinstance(p, (Shard, Replicate)) for i, p in enumerate(value.placements)
-    ):
-        raise ValueError("Embedding transfer does not support partial placements")
     mesh = value.device_mesh
-    mesh_dim = shard_dims[0]
-    coordinate = mesh.get_coordinate()
-    assert coordinate is not None
+    active_dims = [
+        i for i, placement in enumerate(value.placements) if mesh.size(i) > 1 and not isinstance(placement, Replicate)
+    ]
+    if not active_dims:
+        return value.to_local()[start:stop].to(dtype)
+    if len(active_dims) != 1 or value.placements[active_dims[0]] != Shard(0):
+        raise ValueError("Embedding transfer requires replicated weights or a single row-sharding dimension")
+    mesh_dim = active_dims[0]
     rows_per_rank = (value.shape[0] + mesh.size(mesh_dim) - 1) // mesh.size(mesh_dim)
-    offset = min(rows_per_rank * coordinate[mesh_dim], value.shape[0])
-    local_rows = min(rows_per_rank, value.shape[0] - offset)
-    assert value.to_local().shape == (local_rows, *value.shape[1:]), "Unexpected embedding shard layout"
+    offset = min(rows_per_rank * mesh.get_local_rank(mesh_dim), value.shape[0])
+    local = value.to_local()
     chunk = torch.zeros((stop - start, *value.shape[1:]), dtype=dtype, device=value.device)
-    left, right = max(start, offset), min(stop, offset + local_rows)
+    left, right = max(start, offset), min(stop, offset + local.shape[0])
     if left < right:
-        chunk[left - start : right - start].copy_(value.to_local()[left - offset : right - offset])
+        chunk[left - start : right - start].copy_(local[left - offset : right - offset])
     # Each element has exactly one owner in this group; adding zero is exact.
     dist.all_reduce(chunk, group=mesh.get_group(mesh_dim))
     return chunk
