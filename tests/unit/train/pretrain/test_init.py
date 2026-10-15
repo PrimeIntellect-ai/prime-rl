@@ -113,3 +113,21 @@ def test_completep_moe_groups_cover_experts_and_scale_the_router():
     # m_N = 2: Muon matrices get lr / sqrt(m_N) (residual outputs also / m_L = 1), the router lr / m_N.
     assert lr[moe.experts.up_proj] == lr[moe.experts.down_proj] == 2**-0.5
     assert lr[moe.router.gate.weight] == 0.5
+
+
+def test_independent_weight_decay_does_not_depend_on_lr():
+    config = LlamaConfig(
+        vocab_size=128, hidden_size=64, intermediate_size=128, num_hidden_layers=2, num_attention_heads=4
+    )
+    model = LlamaForCausalLM(config)
+    weights = {name: param.detach().clone() for name, param in model.named_parameters()}
+    for lr in (1e-3, 1e-1):
+        optim = PretrainAdamWConfig(lr=lr, weight_decay=0.01, independent_weight_decay=True)
+        for name, param in model.named_parameters():
+            param.data.copy_(weights[name])
+            param.grad = torch.zeros_like(param)
+        # With zero gradients the AdamW step is the weight decay alone.
+        optimizer = AdamW(param_groups(model, optim, m_n=2.0, m_l=2.0, ep_enabled=False))
+        optimizer.step()
+        for name, param in model.named_parameters():
+            torch.testing.assert_close(param, weights[name] * (1.0 if "norm" in name else 0.99))

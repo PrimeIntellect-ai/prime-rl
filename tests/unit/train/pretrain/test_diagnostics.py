@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from prime_rl.trainer.pretrain.diagnostics import MIN_VISIBLE_KEYS, attention_stats
+from prime_rl.trainer.pretrain.diagnostics import MIN_VISIBLE_KEYS, attention_stats, logit_stats
 
 
 def test_attention_stats_respect_documents_and_causality():
@@ -20,3 +20,14 @@ def test_attention_stats_respect_documents_and_causality():
     assert torch.isclose(entropy_sum[0], torch.tensor(sum(math.log(v) for v in visible if v >= MIN_VISIBLE_KEYS)))
     second_document_keys = k[lengths[0] :, 0]
     assert torch.isclose(max_logit[1], ((second_document_keys @ q[-1, 1]).max() * 0.5).clamp(min=0))  # other queries: 0
+
+
+def test_logit_stats_match_full_logits():
+    hidden, weight = torch.randn(2, 5, 8), torch.randn(37, 8)
+    logits = hidden.reshape(10, 8) @ weight.T
+    max_logit, lse_sum, lse_min, lse_max = logit_stats(hidden, weight, chunk_size=3)
+    lse = logits.logsumexp(dim=-1)
+    torch.testing.assert_close(
+        torch.stack([max_logit, lse_sum, lse_min, lse_max]),
+        torch.stack([logits.max(), lse.sum(), lse.min(), lse.max()]),
+    )

@@ -280,10 +280,18 @@ class PretrainAdamWConfig(AdamWConfig):
     eps: float = Field(1e-8, gt=0)
     """Adam epsilon of the base shape (scaled per role under CompleteP)."""
 
+    independent_weight_decay: bool = False
+    """Decay the weights by ``weight_decay`` times the schedule's LR multiplier per step, independent of ``lr``
+    (Wortsman et al. 2023). False: by ``lr * weight_decay`` times the multiplier, as PyTorch's AdamW."""
+
 
 class PretrainMuonConfig(MuonConfig):
     eps: float = Field(1e-8, gt=0)
     """Adam epsilon of the base shape for the AdamW groups (scaled per role under CompleteP)."""
+
+    independent_weight_decay: bool = False
+    """Decay the weights by ``weight_decay`` times the schedule's LR multiplier per step, independent of ``lr``
+    (Wortsman et al. 2023). False: by ``lr * weight_decay`` times the multiplier, as Dion's Muon and AdamW."""
 
 
 PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
@@ -341,6 +349,10 @@ class PretrainConfig(BaseConfig):
     max_steps: int = Field(ge=1)
     """Training steps."""
 
+    output_z_coeff: float = Field(0.0, ge=0)
+    """Weight of the output z-loss, the squared logsumexp of the LM head's logits per token (PaLM; Wortsman et al.
+    2023 use 1e-4), logged as ``loss/z``. 0 turns it off. Needs the fused LM head."""
+
     parametrization: ParametrizationConfig | None = None
     """CompleteP relative to a base shape. If None, the standard parametrization: the same per-role parameter
     groups with every multiplier at 1 (norms and biases without weight decay)."""
@@ -383,6 +395,12 @@ class PretrainConfig(BaseConfig):
     def validate_lr(self):
         if "lr" not in self.optim.model_fields_set:
             raise ValueError("optim.lr is required")
+        return self
+
+    @model_validator(mode="after")
+    def validate_output_z(self):
+        if self.output_z_coeff > 0 and self.model.fused_lm_head_token_chunk_size == "disabled":
+            raise ValueError("output_z_coeff needs the fused LM head (model.fused_lm_head_token_chunk_size)")
         return self
 
     @model_validator(mode="after")

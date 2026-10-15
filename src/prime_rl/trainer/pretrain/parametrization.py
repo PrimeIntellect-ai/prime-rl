@@ -30,6 +30,10 @@ def param_groups(
     rate is scaled by 1/sqrt(m_N) to compensate (and weight decay by sqrt(m_N), keeping
     lr * weight_decay fixed). Everything else is trained with AdamW, as with ``optim.type = "adamw"``.
 
+    Every role keeps ``lr * weight_decay`` at ``optim.lr * optim.weight_decay``, so with
+    ``optim.independent_weight_decay`` dividing the weight decay by ``optim.lr`` makes every decayed weight shrink
+    by ``optim.weight_decay`` times the schedule's multiplier per step.
+
     MoE experts follow the same roles per expert matrix (``rms_norm`` adjusts each expert by its
     own shape). The router maps width to a fixed number of experts, so its spectral-norm target
     sqrt(num_experts / d) shrinks as m_N^-1/2: with Muon its learning rate is scaled by 1/m_N;
@@ -52,6 +56,7 @@ def param_groups(
         "residual_out": (m_n**-0.5 / m_l, m_n**0.5 * m_l),
     }
 
+    weight_decay = optim.weight_decay / optim.lr if optim.independent_weight_decay else optim.weight_decay
     params = defaultdict(list)
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -68,14 +73,14 @@ def param_groups(
                 algorithm="muon",
                 adjust_lr="rms_norm",
                 lr=optim.lr * lr,
-                weight_decay=optim.weight_decay * wd,
+                weight_decay=weight_decay * wd,
             )
             if experts and ep_enabled:
                 group["distributed_mesh_name"] = "dp_shard_mod_ep"
             groups.append(group)
             continue
         lr, eps, wd = adam_scales[role]
-        group = dict(params=role_params, lr=optim.lr * lr, weight_decay=optim.weight_decay * wd)
+        group = dict(params=role_params, lr=optim.lr * lr, weight_decay=weight_decay * wd)
         if optim.type == "muon":
             group.update(algorithm="adamw", epsilon=optim.eps * eps)
         else:

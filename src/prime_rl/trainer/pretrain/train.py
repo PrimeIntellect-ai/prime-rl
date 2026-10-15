@@ -5,6 +5,7 @@ import json
 import itertools
 import math
 import time
+from collections import Counter
 from datetime import timedelta
 
 # ruff: noqa: I001
@@ -58,6 +59,7 @@ from prime_rl.trainer.pretrain.metrics import (
     DeadExperts,
     SpikeDetector,
     grad_norms_by_group,
+    param_group,
     reduce_stats,
     take_routing_counts,
 )
@@ -151,7 +153,11 @@ def train(config: PretrainConfig):
         init_weights(model, config.model.init, m_n, m_l)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
+    model.lm_head.z_coeff = config.output_z_coeff
     num_params = count_parameters(model)
+    group_numels = Counter()
+    for name, param in model.named_parameters():
+        group_numels[param_group(name)] += param.numel()
     logger.info(
         f"Parameters: {num_params['active_non_embedding'] / 1e6:,.1f}M active non-embedding, "
         f"{num_params['non_embedding'] / 1e6:,.1f}M non-embedding, {num_params['embedding'] / 1e6:,.1f}M embedding, "
@@ -245,14 +251,15 @@ def train(config: PretrainConfig):
         # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
         moe.balance_rows = config.data.micro_batch_size
     bias_freeze_step = config.max_steps - round(balance.bias_freeze * config.max_steps)
-    # Sum and count of the per-row balance of every MoE layer over the current step's micro-batches, reduced with
-    # the step's statistics.
+    # Sum and count of the per-row balance of every MoE layer and of the output z-loss over the current step's
+    # micro-batches, reduced with the step's statistics.
     seq_balance_sums: dict[str, torch.Tensor] = {}
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens and, in training, the MoE
         sequence-wise balance loss summed over tokens (each token carries its row's loss, so after the division
-        by the token count it is the mean over rows)."""
+        by the token count it is the mean over rows). The output z-loss is trained through ``loss_sum``'s
+        gradients (see ``FusedOutputLinear``)."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -278,6 +285,9 @@ def train(config: PretrainConfig):
                 seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + moe.seq_balance.new_tensor(
                     moe.seq_balance.numel()
                 )
+            if config.output_z_coeff > 0:
+                seq_balance_sums["z"] = seq_balance_sums.get("z", 0) + out["z_loss"]
+                seq_balance_sums["z_tokens"] = seq_balance_sums.get("z_tokens", 0) + loss_mask.sum()
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     def finish_no_grad_forwards() -> None:
@@ -376,7 +386,7 @@ def train(config: PretrainConfig):
         moe_metrics = {}
         if is_moe_model:
             moe_metrics["expert_load/dead"] = dead_experts.update(result.tokens_per_expert.cpu())
-            if result.sums:
+            if "balance" in result.sums:
                 moe_metrics["loss/seq_balance"] = result.sums["balance"] / result.sums["rows"]
             biases = [
                 moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.router.selection_bias is not None
@@ -403,7 +413,12 @@ def train(config: PretrainConfig):
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
-        diagnostic_metrics = update_tracker.after_step(model) if is_diagnostic_step else {}
+        diagnostic_metrics = {}
+        if is_diagnostic_step:
+            diagnostic_metrics = update_tracker.after_step(model) | {
+                f"optim/grad_rms/{group}": norm.item() / math.sqrt(group_numels[group])
+                for group, norm in group_grad_norms.items()
+            }
         # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
         local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
         peak_memory = reduce_stats({"sum": local_peak_memory}, {"max": local_peak_memory}, dp_cp_group)
@@ -459,6 +474,7 @@ def train(config: PretrainConfig):
             "loss/perplexity": math.exp(min(result.loss, 20)),
             "loss/nan_count": result.nan_count,
             "loss/spike": loss_spikes.update(result.loss),
+            **({"loss/z": result.sums["z"] / result.sums["z_tokens"]} if "z" in result.sums else {}),
             "optim/lr": current_lr,
             **{f"optim/grad_norm/{group}": norm.item() for group, norm in group_grad_norms.items()},
             **{f"progress/{name}/step_tokens": tokens for name, tokens in step_tokens.items()},

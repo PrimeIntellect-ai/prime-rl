@@ -50,6 +50,19 @@ def attention_stats(q: Tensor, k: Tensor, cu_seqlens: Tensor, scale: float) -> t
     return torch.stack(max_logits), torch.stack(entropy_sums), valid.sum()
 
 
+def logit_stats(hidden: Tensor, weight: Tensor, chunk_size: int = 1024) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Output logits of the LM head (fp32, ``chunk_size`` tokens at a time): the max logit and the sum, min and max
+    of the per-token logsumexp. ``hidden`` is `[..., hidden_size]`, ``weight`` `[vocab, hidden_size]`."""
+    hidden = hidden.reshape(-1, hidden.shape[-1])
+    max_logit, lse = [], []
+    for start in range(0, hidden.shape[0], chunk_size):
+        logits = hidden[start : start + chunk_size].float() @ weight.float().T
+        max_logit.append(logits.amax())
+        lse.append(logits.logsumexp(dim=-1))
+    lse = torch.cat(lse)
+    return torch.stack(max_logit).amax(), lse.sum(), lse.amin(), lse.amax()
+
+
 @cache
 def warn_no_attention_stats() -> None:
     get_logger().warning(
@@ -60,7 +73,7 @@ def warn_no_attention_stats() -> None:
 @torch.no_grad()
 def run_probe(model: nn.Module, batch: dict[str, Tensor], group) -> dict[str, float]:
     """Forward the probe batch with hooks: attention max logit and entropy per layer and head (FlashAttention
-    layers), residual-stream RMS and max per layer, and the probe loss. Compiled layers run eagerly for the probe,
+    layers), residual-stream RMS and max per layer, output-logit statistics (`logit_stats`), and the probe loss. Compiled layers run eagerly for the probe,
     so the hooks see every call. Every rank probes its own batch; the statistics are reduced over ``group``."""
     layers = get_language_model(model).layers
     attentions = [module for module in layers.modules() if isinstance(module, FlashAttention)]
@@ -83,9 +96,16 @@ def run_probe(model: nn.Module, batch: dict[str, Tensor], group) -> dict[str, fl
             (hidden.square().sum(), torch.tensor(hidden.numel(), device=hidden.device), hidden.abs().amax())
         )
 
+    logits = []
+
+    def record_logits(module, args):
+        # Runs after FSDP's pre-forward hook, so the weight is unsharded.
+        logits.append(logit_stats(args[0], module.weight))
+
     for module in attentions:
         module._compute_attention = capture(module)
     hooks = [layer.register_forward_hook(record_activations) for layer in layers]
+    hooks.append(model.lm_head.register_forward_pre_hook(record_logits))
     labels = batch["target_ids"]
     with torch.compiler.set_stance("force_eager"):
         out = forward(model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], labels=labels)
@@ -95,13 +115,16 @@ def run_probe(model: nn.Module, batch: dict[str, Tensor], group) -> dict[str, fl
         hook.remove()
 
     square_sum, count, absmax = (torch.stack(values) for values in zip(*activations))
+    ((max_logit, lse_sum, lse_min, lse_max),) = logits
     sums = {
         "square_sum": square_sum,
         "count": count.double(),
         "loss": out["loss"].double(),
         "tokens": (labels != IGNORE_INDEX).sum().double(),
+        "lse_sum": lse_sum.double(),
+        "logit_tokens": labels.new_tensor(labels.numel()).double(),
     }
-    maxes = {"absmax": absmax}
+    maxes = {"absmax": absmax, "output_max_logit": max_logit, "lse_max": lse_max, "neg_lse_min": -lse_min}
     if attention:
         max_logit, entropy_sum, queries = (torch.stack(values) for values in zip(*attention))
         sums |= {"entropy_sum": entropy_sum, "queries": queries.double()}
@@ -113,6 +136,10 @@ def run_probe(model: nn.Module, batch: dict[str, Tensor], group) -> dict[str, fl
         "act/rms/max": rms.max().item(),
         "act/absmax/max": stats["absmax"].max().item(),
         "probe/loss": (stats["loss"] / stats["tokens"]).item(),
+        "logits/max": stats["output_max_logit"].item(),
+        "logits/lse/mean": (stats["lse_sum"] / stats["logit_tokens"]).item(),
+        "logits/lse/min": -stats["neg_lse_min"].item(),
+        "logits/lse/max": stats["lse_max"].item(),
     }
     for layer in range(len(rms)):
         metrics[f"act/rms/layer_{layer}"] = rms[layer].item()

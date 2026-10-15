@@ -21,6 +21,7 @@ class PrimeLmOutput(TypedDict, total=False):
     logprobs: Tensor | None
     entropy: Tensor | None
     loss: Tensor | None
+    z_loss: Tensor | None
 
 
 def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
@@ -34,6 +35,7 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
         loss=output.get("loss"),
+        z_loss=output.get("z_loss"),
     )
 
 
@@ -43,11 +45,15 @@ class FusedOutputLinear(torch.nn.Linear):
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
     as ``loss``, computing the gradients chunk by chunk in the forward pass (see ``_ChunkedCrossEntropySumFn``).
     With ``temperature`` it returns per-token ``logprobs`` and ``entropy``.
+
+    ``z_coeff`` > 0 adds a z-loss, ``z_coeff`` times the summed squared logsumexp of the logits, to the gradients
+    of ``loss`` (whose value stays the cross-entropy) and returns the summed squared logsumexp as ``z_loss``.
     """
 
     def __init__(self, in_features: int, out_features: int, chunk_size: int):
         super().__init__(in_features, out_features, bias=False)
         self.chunk_size = chunk_size
+        self.z_coeff = 0.0
 
     def forward(
         self,
@@ -64,8 +70,10 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if temperature is None:
             assert sampling_mask is None, "sampling-mask replay requires per-token temperatures"
-            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size)
-            return PrimeLmOutput(loss=loss)
+            loss, z_loss = _ChunkedCrossEntropySumFn.apply(
+                hidden_states, self.weight, labels, self.chunk_size, self.z_coeff
+            )
+            return PrimeLmOutput(loss=loss, z_loss=z_loss) if self.z_coeff else PrimeLmOutput(loss=loss)
 
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
         if sampling_mask is not None:
@@ -302,6 +310,9 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
     incoming scalar. That drops the head's matmul passes from four to three (forward logits, dX, dW).
     Same approach as torchtitan's ChunkedLossWrapper.
 
+    With ``z_coeff`` > 0 the stored gradients are those of the cross-entropy plus ``z_coeff`` times the summed
+    squared logsumexp (z-loss, PaLM), and the second output is that sum (not differentiable); with 0 it is zero.
+
     Backward only accepts a scalar upstream gradient (e.g. ``loss_sum / k``). Per-token weighted losses
     must pass a temperature and go through the logprob path instead.
     """
@@ -313,7 +324,8 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
         weight: torch.Tensor,  # [V, H]
         labels: torch.Tensor,  # [N], IGNORE_INDEX where the token has no loss
         chunk_size: int,
-    ) -> torch.Tensor:
+        z_coeff: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         assert hidden.dim() == 2 and weight.dim() == 2 and labels.dim() == 1
         assert hidden.shape[0] == labels.shape[0] and hidden.shape[1] == weight.shape[1]
         assert chunk_size > 0
@@ -322,6 +334,7 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
         grad_hidden = torch.empty_like(hidden) if needs_hidden else None
         grad_weight = torch.zeros_like(weight) if needs_weight else None
         loss = torch.zeros((), device=hidden.device, dtype=torch.float32)
+        z_loss = torch.zeros((), device=hidden.device, dtype=torch.float32)
 
         for start in range(0, hidden.shape[0], chunk_size):
             end = min(start + chunk_size, hidden.shape[0])
@@ -334,10 +347,15 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
             logz = torch.logsumexp(logits, dim=-1)
             target_logits = logits.gather(1, target).squeeze(1)
             loss += torch.where(valid, logz - target_logits, 0.0).sum()
+            if z_coeff:
+                z_loss += torch.where(valid, logz.square(), 0.0).sum()
 
             if needs_hidden or needs_weight:
                 # dx(loss)/dx(logits) is softmax minus one-hot on valid rows and zero elsewhere so it reuses the logits buffer
                 grad_logits = logits.sub_(logz.unsqueeze(-1)).exp_()
+                if z_coeff:
+                    # d(logz^2)/d(logits) = 2 logz softmax
+                    grad_logits.mul_((1 + 2 * z_coeff * logz).unsqueeze(-1))
                 grad_logits.scatter_add_(1, target, torch.full_like(target, -1, dtype=grad_logits.dtype))
                 grad_logits = grad_logits.mul_(valid.unsqueeze(-1)).to(hidden.dtype)
                 if needs_hidden:
@@ -346,16 +364,17 @@ class _ChunkedCrossEntropySumFn(torch.autograd.Function):
                     grad_weight.addmm_(grad_logits.t(), hidden_chunk)
 
         ctx.save_for_backward(grad_hidden, grad_weight)
-        return loss
+        ctx.mark_non_differentiable(z_loss)
+        return loss, z_loss
 
     @staticmethod
-    def backward(ctx, grad_loss: torch.Tensor):
+    def backward(ctx, grad_loss: torch.Tensor, _grad_z_loss: torch.Tensor):
         grad_hidden, grad_weight = ctx.saved_tensors
         if grad_hidden is not None:
             grad_hidden = grad_hidden * grad_loss.to(grad_hidden.dtype)
         if grad_weight is not None:
             grad_weight = grad_weight * grad_loss.to(grad_weight.dtype)
-        return grad_hidden, grad_weight, None, None
+        return grad_hidden, grad_weight, None, None, None
 
 
 def inject_prime_lm_head(
