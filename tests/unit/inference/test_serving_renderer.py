@@ -7,7 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from renderers import Qwen3RendererConfig, create_renderer
+from renderers import PrimeQwen3RendererConfig, Qwen3RendererConfig, create_renderer
 from renderers.base import load_tokenizer
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse, GenerateResponseChoice
@@ -49,9 +49,9 @@ class StubServingTokens:
         )
 
 
-def serve(completion: str, body: dict, **kwargs):
+def serve(completion: str, body: dict, renderer_config=Qwen3RendererConfig(), **kwargs):
     stub = StubServingTokens(completion, **kwargs)
-    handler = RendererChatCompletions(stub, Qwen3RendererConfig(), MODEL, {"enable_thinking": True})
+    handler = RendererChatCompletions(stub, renderer_config, MODEL, {"enable_thinking": True})
     request = ChatCompletionRequest.model_validate({"model": "m", "messages": MESSAGES, **body})
     response = asyncio.run(handler.create_chat_completion(request, None))
     return stub, response
@@ -116,6 +116,17 @@ def test_text_content_parts_are_joined_with_newlines():
     renderer = create_renderer(stub.tokenizer, Qwen3RendererConfig(enable_thinking=True))
     expected = renderer.render_ids([{"role": "user", "content": "Weather\nin Paris?"}], add_generation_prompt=True)
     assert stub.requests[0].token_ids == expected
+
+
+@pytest.mark.parametrize("key", ["reasoning", "reasoning_content"])
+def test_history_reasoning_is_rendered(key):
+    history = [
+        *MESSAGES,
+        {"role": "assistant", "content": "Sunny.", key: "Look it up."},
+        {"role": "user", "content": "And tomorrow?"},
+    ]
+    stub, _ = serve("Rainy.<|im_end|>", {"messages": history}, renderer_config=PrimeQwen3RendererConfig())
+    assert "<think>Look it up.</think>" in stub.tokenizer.decode(stub.requests[0].token_ids)
 
 
 def test_token_ids_are_returned_on_request():

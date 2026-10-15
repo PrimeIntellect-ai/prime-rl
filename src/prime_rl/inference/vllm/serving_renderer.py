@@ -38,11 +38,17 @@ def _error(message: str, status_code: int = 400) -> JSONResponse:
 
 
 def _message(message: Mapping[str, Any]) -> dict[str, Any]:
-    """Joins text-only content parts with newlines, as vLLM does before applying a chat template."""
+    """Normalizes a request message as vLLM does before applying a chat template.
+
+    Text-only content parts join with newlines. Request validation renames
+    ``reasoning_content`` to ``reasoning``, and renderers read ``reasoning_content``.
+    """
     message = dict(message)
     content = message.get("content")
     if isinstance(content, list) and all(part.get("type") == "text" for part in content):
         message["content"] = "\n".join(part["text"] for part in content)
+    if message.get("reasoning") is not None:
+        message["reasoning_content"] = message["reasoning"]
     return message
 
 
