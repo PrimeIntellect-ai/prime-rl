@@ -205,6 +205,10 @@ class Qwen3MoeModel(Qwen3MoePreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        if not seq_lens_are_pre_shard:
+            # FlashAttention only needs an upper bound: the packed length is constant per shape, while the per-batch
+            # longest document is a Python int that torch.compile guards on (a recompile for every new value)
+            max_seqlen = inputs_embeds.shape[1]
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
