@@ -41,6 +41,7 @@ seq_len = 16384
 
 [inference.vllm]
 max_model_len = 8192
+reasoning_parser = "qwen3"
+
 [inference.renderer]
 name = "default"
-reasoning_parser = "think"

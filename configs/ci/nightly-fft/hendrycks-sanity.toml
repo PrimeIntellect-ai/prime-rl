@@ -50,6 +50,7 @@ attn = "flash_attention_2"
 [inference.vllm]
 max_model_len = 8192
 data_parallel_size = 4
+reasoning_parser = "qwen3"
+
 [inference.renderer]
 name = "default"
-reasoning_parser = "think"
