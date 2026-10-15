@@ -147,6 +147,8 @@ def _create_muon_optimizer(
             return False
         if "embed_tokens" in n:
             return False
+        if "mlp.experts" in n and n.endswith("_bias"):
+            return False
         return True
 
     muon_params = []
