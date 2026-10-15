@@ -14,8 +14,11 @@ from prime_rl.trainer.pretrain.suite import (
     head_logprobs,
     pack_requests,
     prepare_multi_length_set,
+    prepare_set,
     score_requests,
     score_sets,
+    set_metrics,
+    summarize,
     summarize_ctxcont,
 )
 
@@ -39,6 +42,8 @@ def test_summarize_ctxcont_scores_the_gold_choice():
     assert summary["acc"] == 0.5  # item 0: gold wins; item 1: the other choice wins
     assert math.isclose(summary["bpb"], (2.0 + 2.0) / (3 * math.log(2)))  # gold nll / gold continuation bytes
     assert summary["greedy_em"] == 0.0
+    metrics = set_metrics("mc", 2048, summary)
+    assert metrics["eval/mc/acc@2k"] == 0.5 and all(type(value) is float for value in metrics.values())
 
 
 class CharTokenizer:
@@ -94,3 +99,15 @@ def test_score_sets_matches_scoring_each_set_alone(tmp_path):
             assert all(np.array_equal(x, y) for x, y in zip(hits, alone_hits))
     finally:
         dist.destroy_process_group()
+
+
+def test_pairs_requests_fit_the_window(tmp_path):
+    (tmp_path / "pairs").mkdir()
+    table = pa.table({"good": ["a long good sentence", "ok"], "bad": ["a long bad sentence!", "no"]})
+    pq.write_table(table, tmp_path / "pairs" / "test.parquet")
+    (tmp_path / "pairs" / "meta.json").write_text(json.dumps({"kind": "pairs", "parquet_sha256": "x"}))
+    eval_set = prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=8)
+    assert all(len(ids) - 1 <= 8 for ids, _ in eval_set.requests)
+    logprobs = [np.full(len(ids) - start, -1.0) for ids, start in eval_set.requests]
+    summary, _ = summarize(eval_set, logprobs, [np.ones_like(lp, dtype=bool) for lp in logprobs])
+    assert set_metrics("pairs", 8, summary)["eval/pairs/acc@8"] == 0.0  # equal scores: good never beats bad

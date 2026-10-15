@@ -49,6 +49,7 @@ from prime_rl.trainer.pretrain.suite import (
     length_label,
     prepare_multi_length_set,
     score_sets,
+    set_metrics,
     scoring_head_active,
     summarize,
 )
@@ -331,11 +332,7 @@ def train(config: PretrainConfig):
                     index = eval_set.index[seq_len]
                     summary, arrays = summarize(version, [logprobs[i] for i in index], [hits[i] for i in index])
                     label = length_label(seq_len)
-                    metrics |= {
-                        f"eval/{eval_set.name}/{key}@{label}": value
-                        for key, value in summary.items()
-                        if isinstance(value, float)
-                    }
+                    metrics |= set_metrics(eval_set.name, seq_len, summary)
                     if config.evals.save_arrays:
                         out = config.run_dir / "evals" / f"step_{step}"
                         out.mkdir(parents=True, exist_ok=True)

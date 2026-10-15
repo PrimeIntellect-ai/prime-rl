@@ -210,7 +210,8 @@ def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_l
     elif kind == "pairs":
         good, bad = table.column("good").to_pylist(), table.column("bad").to_pylist()
         encoded = tokenizer(good + bad, add_special_tokens=False)["input_ids"]
-        requests = [([tokenizer.bos_token_id, *ids], 1) for ids in encoded]
+        # Cut to the window like the other kinds, so every request fits in a row of ``token_budget`` tokens.
+        requests = [([tokenizer.bos_token_id, *ids][: seq_len + 1], 1) for ids in encoded]
         context = {"num_good": len(good)}
     else:
         raise ValueError(f"Unknown eval set kind {kind!r} ({name})")
@@ -240,6 +241,12 @@ def prepare_multi_length_set(
         for seq_len, version in versions.items()
     }
     return MultiLengthSet(name, versions, [(list(ids), start) for ids, start in distinct], index)
+
+
+def set_metrics(name: str, seq_len: int, summary: dict) -> dict[str, float]:
+    """A set's summary as metrics ``eval/<set>/<metric>@<length>``, as Python floats (the summaries hold NumPy
+    scalars)."""
+    return {f"eval/{name}/{key}@{length_label(seq_len)}": float(value) for key, value in summary.items()}
 
 
 def length_label(seq_len: int) -> str:
