@@ -195,7 +195,9 @@ class SparseDeltaEncoder:
             if shard is not None and shard[0].numel():
                 sizes[key] = (shard[0].numel(), self.wire_dtypes[key])
         aligned = {key: -(-numel * dtype.itemsize // 8) * 8 for key, (numel, dtype) in sizes.items()}
+        start = time.perf_counter()
         buffer, offset = pin(sum(aligned.values())), 0
+        self.pin_time = time.perf_counter() - start
         for key, (numel, dtype) in sizes.items():
             bits = bits_dtype(str(dtype).removeprefix("torch."))
             self.snapshot[key] = buffer[offset : offset + numel * dtype.itemsize].view(bits)
@@ -354,6 +356,11 @@ class FileSystemWeightSender(WeightSender):
         if self.encoder.scales_changed:
             self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
         base_step, self.last_step = self.last_step, step
+        if first:
+            self.logger.info(
+                f"Initialized the sparse weight snapshot in {encode_time:.1f}s "
+                f"(pinning {sum(s.nbytes for s in self.encoder.snapshot.values()) / 2**30:.1f} GiB: {self.encoder.pin_time:.1f}s)"
+            )
         if first and step == 0:
             # The run's first broadcast is the checkpoint the engines booted from.
             if self.world.is_master:
