@@ -4,9 +4,11 @@ A delta lives in the ``delta/`` subdir of a broadcast step dir (next to the
 full checkpoint on anchor steps): one ``rank_{r}.safetensors`` per trainer rank
 and a ``manifest.json``, written last. A rank file stores zstd frames over its
 entries ``(hf_name, count)``: gaps between sorted flat indices (restarted per
-entry) and the XOR of the new and the previous raw bits. XOR is exact for any
-dtype, but applying it twice reverts it, so a delta must be applied on top of
-exactly its ``base_step``; per-tensor checksums of the new weights catch it if not.
+entry) and the differences of the new and the previous raw bits (wrapping, in
+the bits dtype; mostly a few ulps), zigzag-encoded. Gaps and differences are
+stored as one byte each, with values of 255 or more in an int32 escape stream.
+A delta must be applied on top of exactly its ``base_step``; per-tensor
+checksums of the new weights catch it if not.
 """
 
 import json
@@ -16,6 +18,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
+from itertools import groupby
 from math import prod
 from pathlib import Path
 from typing import BinaryIO
@@ -57,6 +60,33 @@ def quantize_fp8_blocks(weight: torch.Tensor, ue8m0: bool) -> tuple[torch.Tensor
     return quantized.view(torch.uint8), scales
 
 
+def zigzag(delta: torch.Tensor) -> torch.Tensor:
+    """Raw-bit differences (bits dtype, wrapping) -> unsigned values of the same width, small for
+    small steps of either sign: 0, -1, 1, -2 -> 0, 1, 2, 3."""
+    signed = delta.view(torch.int8) if delta.dtype == torch.uint8 else delta
+    return ((signed << 1) ^ (signed >> (8 * signed.element_size() - 1))).view(delta.dtype)
+
+
+def _unpack_values(data: np.ndarray, entries: list[tuple[str, int]], tensors: dict) -> np.ndarray:
+    """The per-change unsigned values of ``entries`` from their raw bytes (each entry in its bits dtype)."""
+    out, offset = [], 0
+    for itemsize, group in groupby(entries, key=lambda entry: bits_dtype(tensors[entry[0]][1]).itemsize):
+        num_bytes = sum(count for _, count in group) * itemsize
+        out.append(data[offset : offset + num_bytes].view(f"<u{itemsize}").astype(np.int64))
+        offset += num_bytes
+    return np.concatenate(out) if out else np.empty(0, np.int64)
+
+
+def _pack_values(values: np.ndarray, entries: list[tuple[str, int]], tensors: dict) -> np.ndarray:
+    """Inverse of ``_unpack_values`` for signed values, wrapping to each entry's bits dtype."""
+    out, offset = [], 0
+    for itemsize, group in groupby(entries, key=lambda entry: bits_dtype(tensors[entry[0]][1]).itemsize):
+        count = sum(count for _, count in group)
+        out.append(values[offset : offset + count].astype(f"<i{itemsize}").view(np.uint8))
+        offset += count
+    return np.concatenate(out) if out else np.empty(0, np.uint8)
+
+
 def encode_gaps(indices: torch.Tensor, entry_starts: torch.Tensor) -> torch.Tensor:
     """Sorted flat indices -> ``index - previous - 1``, restarting at every
     ``entry_starts`` position (where the gap is the index itself)."""
@@ -76,8 +106,9 @@ def write_rank_file(
     frame_size: int = 1 << 20,
 ) -> None:
     """Write a rank's delta as zstd frames of about ``frame_size`` changes each (whole entries), so
-    readers can skip frames without entries they hold. Gaps are stored as uint8, with gaps of 255 or
-    more in a separate int32 stream. ``checksums`` (HF name -> ``bits_checksum`` of the new weights
+    readers can skip frames without entries they hold. ``values`` holds each entry's ``zigzag``
+    differences in its bits dtype. Gaps and values are stored as uint8; those of 255 or more go to
+    the int32 escape stream (gaps first). ``checksums`` (HF name -> ``bits_checksum`` of the new weights
     this rank holds) let engines verify every step. Written under a temporary name, then renamed."""
     options = {pyzstd.CParameter.compressionLevel: 1, pyzstd.CParameter.checksumFlag: 1}
     frames, size = [[]], 0
@@ -94,10 +125,12 @@ def write_rank_file(
         first, last = frame[0], frame[-1]
         frame_gaps = gaps[(gap_ends[first - 1] if first else 0) : gap_ends[last]]
         frame_values = values[(value_ends[first - 1] if first else 0) : value_ends[last]]
+        frame_values = _unpack_values(frame_values, entries[first : last + 1], tensors)
+        escapes = np.concatenate([frame_gaps[frame_gaps >= 255], frame_values[frame_values >= 255]])
         return (
             pyzstd.compress(np.minimum(frame_gaps, 255).astype(np.uint8).tobytes(), options),
-            pyzstd.compress(frame_gaps[frame_gaps >= 255].tobytes(), options),
-            pyzstd.compress(frame_values.tobytes(), options),
+            pyzstd.compress(escapes.astype(np.int32).tobytes(), options),
+            pyzstd.compress(np.minimum(frame_values, 255).astype(np.uint8).tobytes(), options),
         )
 
     # Few threads: this runs in the background next to training (e.g. a CPU optimizer step)
@@ -146,8 +179,13 @@ def _rank_file_frames(
 def _read_frame(fd: int, frame, tensors: dict, names: set[str] | None) -> list[tuple[str, np.ndarray, np.ndarray]]:
     frame_entries, ((gaps_at, gaps_size), (escapes_at, escapes_size), (values_at, values_size)) = frame
     gaps = np.frombuffer(pyzstd.decompress(os.pread(fd, gaps_size, gaps_at)), np.uint8).astype(np.int32)
-    gaps[gaps == 255] = np.frombuffer(pyzstd.decompress(os.pread(fd, escapes_size, escapes_at)), np.int32)
-    values = np.frombuffer(pyzstd.decompress(os.pread(fd, values_size, values_at)), np.uint8)
+    escapes = np.frombuffer(pyzstd.decompress(os.pread(fd, escapes_size, escapes_at)), np.int32)
+    gap_escapes = gaps == 255
+    num_gap_escapes = int(gap_escapes.sum())
+    gaps[gap_escapes] = escapes[:num_gap_escapes]
+    values = np.frombuffer(pyzstd.decompress(os.pread(fd, values_size, values_at)), np.uint8).astype(np.int64)
+    values[values == 255] = escapes[num_gap_escapes:].astype(np.int64) & 0xFFFFFFFF
+    values = _pack_values((values >> 1) ^ -(values & 1), frame_entries, tensors)
     out, gap_offset, value_offset = [], 0, 0
     for name, count in frame_entries:
         num_bytes = count * bits_dtype(tensors[name][1]).itemsize
@@ -274,7 +312,8 @@ def read_delta(
     step_dir: Path, names: set[str] | None = None, num_threads: int = 16
 ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
     """Read and decompress every rank file of a delta step dir into ``(entries,
-    gaps, xor value bytes)`` in host memory; ``decode_gaps`` turns the
+    gaps, value bytes)`` in host memory (values: new minus previous raw bits, in each entry's bits
+    dtype); ``decode_gaps`` turns the
     gaps into flat indices on the device that applies them. With ``names``, keep
     only those tensors (frames without any are not read).
     Also returns the new weights' ``bits_checksum`` per HF tensor, summed over ranks."""
