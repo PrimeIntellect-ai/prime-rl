@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import math
 from collections.abc import Callable
 from unittest.mock import MagicMock
@@ -10,11 +11,16 @@ from torch.utils._python_dispatch import TorchDispatchMode
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4 import attention as dsv4_attention
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext, max_sparse_attn_slots
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4HyperConnection, DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT, dsv4_mhc
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
+from prime_rl.trainer.models.layers.fp8_linear import (
+    Float8BlockwiseGroupedLinear,
+    replace_linear_with_fp8_blockwise_linear,
+)
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models import deepseek_v4_eager_reference as eager_reference
@@ -201,6 +207,7 @@ HEADS = V4FLASH_MODEL["num_attention_heads"]
 DIM = V4FLASH_MODEL["head_dim"]
 KV_GROUP = V4FLASH_MODEL["num_key_value_heads"]
 TOPK = V4FLASH_MODEL["sliding_window"] + V4FLASH_MODEL["index_topk"]
+MAX_SLOTS = max_sparse_attn_slots(V4FLASH_CONFIG)
 SM_SCALE = DIM**-0.5
 
 # The first is aligned to both of the backward's tile sizes (32 in `preprocess`, 64 in
@@ -208,6 +215,16 @@ SM_SCALE = DIM**-0.5
 # does. Sequence lengths stay modest because the float32 oracle materializes the whole gather.
 SHAPES = [(1, 256, 1024), (1, 200, 1000), (3, 128, 768)]
 SHAPE_IDS = ["aligned", "misaligned", "batched"]
+
+requires_cudnn_flashmla = pytest.mark.skipif(
+    importlib.util.find_spec("flash_mla") is None
+    or importlib.util.find_spec("cudnn") is None
+    or not torch.cuda.is_available()
+    or (torch.cuda.get_device_capability()[0] != 9 and torch.cuda.get_device_capability() not in ((10, 0), (10, 3))),
+    reason="the cudnn_flashmla backend needs the `flash-mla` extra, the cuDNN frontend and an SM90, SM100 or SM103 GPU",
+)
+
+DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
 
 # What a real query with a short window or a saturated top-k looks like; a masked slot still
 # costs a GEMM column.
@@ -219,6 +236,9 @@ MASKED_FRACTION = 0.25
 OUT_RTOL = 1e-2
 # The LSE is float32 throughout on both sides.
 LSE_RTOL = 5e-7
+# FlashMLA returns a natural-log LSE without the sink, so the base-2 sink-inclusive one is two more
+# float32 roundings away; measured at up to 5.1e-7 on the benchmark corpus, about 4 ulps.
+LSE_RTOL_BY_BACKEND: dict[str, float] = {"cudnn_flashmla": 1e-6}
 DQ_RTOL = 1e-2
 # The vendored kernel this one forked from rounds `P` and `dP` to bfloat16 before the `dKV` GEMMs
 # while the oracle keeps them in float32, on top of the bfloat16 `kv` both sides share.
@@ -329,15 +349,16 @@ def _reference_lse(q: torch.Tensor, kv: torch.Tensor, indices: torch.Tensor, sin
     return torch.cat([logits, sink_logits], dim=-1).logsumexp(dim=-1) * math.log2(math.e)
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
+def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv, backend):
     """Output and log-sum-exp against the float32 gather oracle, which has identical semantics."""
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
 
     with torch.no_grad():
-        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
         # Float32 inputs to the oracle, which is what runs it in float32: it follows the dtype it
         # is handed. Widened here rather than inside it, so the exact answer is what the bound is
         # measured against instead of one rounded back to bfloat16.
@@ -347,12 +368,13 @@ def test_kernel_forward_matches_the_dense_reference(batch, seq_len, seq_len_kv):
     assert out.shape == q.shape and out.dtype == torch.bfloat16
     assert lse.shape == (batch, seq_len, HEADS) and lse.dtype == torch.float32
     _assert_relative(out, reference_out, OUT_RTOL, "output")
-    _assert_relative(lse, reference_lse, LSE_RTOL, "lse")
+    _assert_relative(lse, reference_lse, LSE_RTOL_BY_BACKEND.get(backend, LSE_RTOL), "lse")
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
+def test_kernel_pads_a_slot_count_its_tile_does_not_divide(backend):
     """A caller states the slots it means and the kernel covers the difference to its own tile.
 
     The gather-slot axis is tiled at 64, but that is a fact about these kernels rather than
@@ -368,16 +390,17 @@ def test_kernel_pads_a_slot_count_its_tile_does_not_divide():
     indices = _build_indices(batch, seq_len, seq_len_kv, MASKED_FRACTION, topk=unaligned)
 
     with torch.no_grad():
-        out, _ = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        out, _ = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
         reference = _dense_reference(q.float(), kv.float(), indices, sinks, SM_SCALE)
 
     assert out.shape == q.shape
     _assert_relative(out, reference, OUT_RTOL, "output")
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_fully_masked_query_reads_as_zero_keys():
+def test_fully_masked_query_reads_as_zero_keys(backend):
     """A query with no keys at all must emit exactly zero, on the sink term alone.
 
     The sink carries the softmax denominator by itself here, which is what keeps `lse` finite
@@ -394,7 +417,7 @@ def test_fully_masked_query_reads_as_zero_keys():
     indices[:, 0] = IGNORE_SLOT  # the first query gathers nothing
 
     with torch.no_grad():
-        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        out, lse = dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
 
     assert torch.equal(out[:, 0], torch.zeros_like(out[:, 0])), "a fully masked query must emit exactly zero"
     expected_lse = sinks.float() * math.log2(math.e)
@@ -452,20 +475,25 @@ def test_tilelang_zero_fills_an_out_of_range_gather():
     )
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize(("batch", "seq_len", "seq_len_kv"), SHAPES, ids=SHAPE_IDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv):
+def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, seq_len_kv, backend):
     """All three differentiable inputs, each against its own bound.
 
     `dsink` is the one term the kernel forms in torch rather than in tilelang, out of the `Delta`
-    the backward returns, so it is the assertion that would catch a wrong `Lse` convention.
+    the backward returns, so it is the assertion that would catch a wrong `Lse` convention. The
+    first query gathers nothing, so its `Lse` is the sink term alone on the way back too.
     """
     q, kv, indices, sinks = _inputs(batch, seq_len, seq_len_kv)
+    indices[:, 0] = IGNORE_SLOT
     kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
     reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
 
-    out, _lse = dsv4_sparse_attn(kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE)
+    out, _lse = dsv4_sparse_attn(
+        kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS
+    )
     # One weight tensor for both losses, so the two backwards are the same function of the same
     # numbers and any difference belongs to the kernel.
     weight = torch.randn_like(out)
@@ -482,9 +510,45 @@ def test_kernel_backward_matches_autograd_through_the_reference(batch, seq_len, 
     _assert_relative(kernel_sinks.grad, reference_sinks.grad, DSINK_RTOL, "dsink")
 
 
+@requires_cudnn_flashmla
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_kernel_traces_under_torch_compile():
+def test_cudnn_flashmla_backward_compiles_one_main_kernel_for_every_width():
+    """Slot widths from 128 to 8320 share one cuDNN main kernel, and each matches the reference.
+
+    The cuDNN frontend keys its main-kernel compile on the slot width. `cudnn_dsa_patch` keys it on a
+    clamp instead, through private frontend internals that an upgrade could move without an error. 8320 is
+    DeepSeek-V4-Flash's widest HCA layer, `128 + 1048576 // 128`.
+    """
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm90 import flash_attn_bwd_sm90
+    from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
+
+    batch, seq_len, max_slots = 1, 64, 8320
+    bwd = flash_attn_bwd_sm90 if torch.cuda.get_device_capability()[0] == 9 else flash_attn_bwd_sm100
+    bwd.compile_cache.clear()
+    for width in (128, 640, max_slots):
+        q, kv, _, sinks = _inputs(batch, seq_len, max_slots)
+        indices = _build_indices(batch, seq_len, max_slots, MASKED_FRACTION, topk=width)
+        kernel_q, kernel_kv, kernel_sinks = _leaves(q, kv, sinks)
+        reference_q, reference_kv, reference_sinks = _float32_leaves(q, kv, sinks)
+
+        out, _lse = dsv4_sparse_attn(
+            kernel_q, kernel_kv, indices, kernel_sinks, SM_SCALE, backend="cudnn_flashmla", max_slots=max_slots
+        )
+        weight = torch.randn_like(out)
+        (out * weight).sum().backward()
+        reference_out = _dense_reference(reference_q, reference_kv, indices, reference_sinks, SM_SCALE)
+        (reference_out * weight).sum().backward()
+
+        _assert_relative(kernel_q.grad, reference_q.grad, DQ_RTOL, f"dq at width {width}")
+        _assert_relative(kernel_kv.grad, reference_kv.grad, DKV_RTOL, f"dkv at width {width}")
+    assert len(bwd.compile_cache) == 1
+
+
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
+@requires_sparse_attn_kernel
+@requires_datacenter_gpu
+def test_kernel_traces_under_torch_compile(backend):
     """`torch.compile(fullgraph=True)` through the op, forward and backward.
 
     `apply_compile` in `prime_rl/trainer/model.py` compiles each decoder layer, so every real
@@ -498,7 +562,7 @@ def test_kernel_traces_under_torch_compile():
     compiled_leaves = _leaves(q, kv, sinks)
 
     def attend(q: torch.Tensor, kv: torch.Tensor, sinks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE)
+        return dsv4_sparse_attn(q, kv, indices, sinks, SM_SCALE, backend=backend, max_slots=MAX_SLOTS)
 
     out, lse = attend(*eager_leaves)
     # One weight tensor for both losses, so the two backwards are the same function of the same
@@ -569,9 +633,9 @@ def _record_attention(monkeypatch) -> dict[str, torch.Tensor]:
     recorded: dict[str, torch.Tensor] = {}
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def kernel(q, kv_buf, indices, sinks, scale):
+    def kernel(q, kv_buf, indices, *args, **kwargs):
         recorded["kv_buf"], recorded["indices"] = kv_buf, indices
-        recorded["kernel"] = real_kernel(q, kv_buf, indices, sinks, scale)
+        recorded["kernel"] = real_kernel(q, kv_buf, indices, *args, **kwargs)
         return recorded["kernel"]
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", kernel)
@@ -825,10 +889,11 @@ EAGER_KERNEL_DOC_IDS = ["one-doc", "no-entries", "two-docs", "three-docs"]
 EAGER_KERNEL_RTOL, EAGER_KERNEL_GRAD_RTOL = 1e-2, 5e-2
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize("doc_lens", EAGER_KERNEL_DOC_LENS, ids=EAGER_KERNEL_DOC_IDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
+def test_sparse_attention_kernel_matches_eager(doc_lens, backend, monkeypatch):
     """The fused kernel against the naive dense softmax, single-document and packed.
 
     Every other kernel test reaches eager only transitively: the kernel is compared to the gather
@@ -850,6 +915,7 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     """
     seq_len = sum(doc_lens)
     kernel_module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    kernel_module.dsa_backend = backend
     eager_module = copy.deepcopy(kernel_module).float()
     eager_reference.use_eager_attention(eager_module)
 
@@ -861,9 +927,9 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, *args, **kwargs):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, *args, **kwargs)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
@@ -886,9 +952,10 @@ def test_sparse_attention_kernel_matches_eager(doc_lens, monkeypatch):
     _assert_relative(kernel_input.grad, eager_input.grad, EAGER_KERNEL_GRAD_RTOL, "hidden states gradient")
 
 
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
-def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
+def test_sparse_attention_kernel_packed_matches_unpacked(backend, monkeypatch):
     """The fused kernel path, end to end through one CSA layer, must respect documents.
 
     The same invariant its float32 neighbours assert, run in bfloat16 because that is the only
@@ -903,6 +970,7 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     a fallback would leave this test asserting a property of the gather reference instead.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
+    module.dsa_backend = backend
     packed = _packed_context(KERNEL_DOC_LENS, torch.bfloat16, V4FLASH_CONFIG)
     with torch.device("cuda"):
         hidden = torch.randn(1, sum(KERNEL_DOC_LENS), V4FLASH_MODEL["hidden_size"], dtype=torch.bfloat16)
@@ -911,9 +979,9 @@ def test_sparse_attention_kernel_packed_matches_unpacked(monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, *args, **kwargs):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, *args, **kwargs)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
@@ -960,9 +1028,9 @@ def test_sparse_attention_kernel_trains_every_parameter(monkeypatch):
     calls = []
     real_kernel = dsv4_attention.dsv4_sparse_attn
 
-    def counting_kernel(q, kv_buf, indices, sinks, scale):
+    def counting_kernel(q, *args, **kwargs):
         calls.append(q.shape[1])
-        return real_kernel(q, kv_buf, indices, sinks, scale)
+        return real_kernel(q, *args, **kwargs)
 
     monkeypatch.setattr(dsv4_attention, "dsv4_sparse_attn", counting_kernel)
 
@@ -1092,9 +1160,10 @@ def _assert_within_the_bfloat16_floor(
 
 @requires_sparse_attn_kernel
 @requires_datacenter_gpu
+@pytest.mark.parametrize("backend", DSV4_BACKENDS)
 @pytest.mark.parametrize("doc_lens", PARITY_DOC_LENS, ids=PARITY_DOC_IDS)
 @pytest.mark.parametrize("layer_idx", V4FLASH_LAYERS, ids=V4FLASH_LAYER_IDS)
-def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens):
+def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens, backend):
     """The two consumers of one `SparseAttnInputs` must compute the same attention, and its gradient.
 
     They are handed the identical index tensor, so this is not about which keys a query reads,
@@ -1111,6 +1180,7 @@ def test_kernel_and_eager_consumers_agree_on_shared_weights(layer_idx, doc_lens)
     its slots out differently and only CSA had coverage.
     """
     module = v4flash_attention(layer_idx, dtype=torch.bfloat16)
+    module.dsa_backend = backend
     weights = module.state_dict()
     eager_bf16 = v4flash_attention(layer_idx, dtype=torch.bfloat16, eager=True)
     eager_bf16.load_state_dict(weights)
@@ -1427,3 +1497,143 @@ def test_q_norm_rope_matches_the_composed_norm_and_rotation():
     assert torch.equal(compiled, fused)
     assert torch.equal(compiled_leaf.grad, fused_leaf.grad)
     _assert_relative(fused_leaf.grad, composed_leaf.grad, torch.finfo(torch.bfloat16).eps, "q gradient")
+
+
+O_GROUPS = V4FLASH_MODEL["o_groups"]
+O_A_IN_FEATURES = V4FLASH_MODEL["num_attention_heads"] * V4FLASH_MODEL["head_dim"] // O_GROUPS
+O_A_OUT_FEATURES = O_GROUPS * V4FLASH_MODEL["o_lora_rank"]
+# A misaligned token count, so the weight gradient's 128-token padding is exercised.
+O_A_TOKENS = 517
+# Relative Frobenius error of an FP8 matmul against bf16 on Gaussian operands, with headroom.
+O_A_FP8_RTOL = 0.06
+
+requires_fp8_einsum = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (9, 10),
+    reason="DeepGEMM's fp8_einsum runs on Hopper (SM90) and Blackwell (SM100) only",
+)
+requires_sm90 = pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
+    reason="vLLM serves wo_a with fp32 scales on Hopper only, Blackwell packs them as INT32 ue8m0",
+)
+
+
+def _fp8_o_a_proj() -> nn.Module:
+    """o_a_proj at Flash shapes, made FP8 by the same replacement pass the trainer runs.
+
+    The weight is drawn at std 0.02, so every 128x128 block's amax sits far above 448 * 1e-4,
+    where the trainer's scale floor and vLLM's amax floor would round differently.
+    """
+    with torch.device("cuda"), default_dtype(torch.bfloat16):
+        model = nn.ModuleDict({"o_a_proj": GroupedLinear(O_A_IN_FEATURES, O_A_OUT_FEATURES, O_GROUPS)})
+    nn.init.normal_(model["o_a_proj"].weight, std=0.02)
+    replace_linear_with_fp8_blockwise_linear(model, ignore_modules=[])
+    assert type(model["o_a_proj"]) is Float8BlockwiseGroupedLinear
+    return model["o_a_proj"]
+
+
+def _o_a_proj_input() -> torch.Tensor:
+    return torch.randn(1, O_A_TOKENS, O_GROUPS, O_A_IN_FEATURES, device="cuda", dtype=torch.bfloat16)
+
+
+def _bf16_o_a_proj(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    return torch.einsum("btgk,gnk->btgn", x, weight.view(O_GROUPS, -1, O_A_IN_FEATURES))
+
+
+def _assert_frobenius_relative(actual: torch.Tensor, reference: torch.Tensor, rtol: float, label: str) -> None:
+    error = (actual.float() - reference.float()).norm() / reference.float().norm()
+    assert error <= rtol, f"{label}: relative error {error} exceeds {rtol}"
+
+
+@requires_sm90
+def test_fp8_o_a_proj_quantizes_and_multiplies_like_vllm_wo_a(monkeypatch):
+    """The FP8 o_a_proj hands DeepGEMM bit for bit what vLLM's online-FP8 `wo_a` does, and gets its output.
+
+    vLLM fuses the inverse RoPE into the input cast. Position 0 makes that rotation the identity, so
+    its kernel quantizes exactly the tensor the trainer does.
+    """
+    deep_gemm = pytest.importorskip("deep_gemm")
+    pytest.importorskip("vllm")
+    from vllm.models.deepseek_v4.common.ops.fused_inv_rope_fp8_quant import fused_inv_rope_fp8_quant
+    from vllm.utils.deep_gemm import per_block_cast_to_fp8
+
+    module = _fp8_o_a_proj()
+    x = _o_a_proj_input()
+    einsum_calls = []
+    real_fp8_einsum = deep_gemm.fp8_einsum
+
+    def recording_fp8_einsum(expr, a, b, d, recipe):
+        einsum_calls.append((expr, a, b, recipe))
+        real_fp8_einsum(expr, a, b, d, recipe=recipe)
+
+    monkeypatch.setattr(deep_gemm, "fp8_einsum", recording_fp8_einsum)
+    out = module(x)
+    monkeypatch.undo()
+
+    ((expr, (x_fp8, x_sf), (weight_fp8, weight_sf), recipe),) = einsum_calls
+    heads, head_dim = V4FLASH_MODEL["num_attention_heads"], V4FLASH_MODEL["head_dim"]
+    identity_rope = torch.cat([torch.ones(1, ROPE_DIM // 2), torch.zeros(1, ROPE_DIM // 2)], dim=-1).cuda()
+    vllm_x_fp8, vllm_x_sf = fused_inv_rope_fp8_quant(
+        x.view(O_A_TOKENS, heads, head_dim),
+        torch.zeros(O_A_TOKENS, dtype=torch.int64, device="cuda"),
+        identity_rope,
+        n_groups=O_GROUPS,
+        heads_per_group=heads // O_GROUPS,
+        nope_dim=head_dim - ROPE_DIM,
+        rope_dim=ROPE_DIM,
+    )
+    vllm_weight_fp8, vllm_weight_sf = per_block_cast_to_fp8(module.weight.detach(), [128, 128], use_ue8m0=False)
+    vllm_weight_fp8 = vllm_weight_fp8.view(O_GROUPS, -1, O_A_IN_FEATURES)
+    vllm_weight_sf = vllm_weight_sf.view(O_GROUPS, -1, vllm_weight_sf.size(-1))
+
+    assert expr == "bhr,hdr->bhd"
+    assert recipe == (1, 128, 128)
+    assert torch.equal(x_fp8.view(torch.uint8), vllm_x_fp8.view(torch.uint8))
+    assert torch.equal(x_sf, vllm_x_sf)
+    assert torch.equal(weight_fp8.view(torch.uint8), vllm_weight_fp8.view(torch.uint8))
+    assert torch.equal(weight_sf, vllm_weight_sf)
+
+    vllm_out = torch.empty(O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS, device="cuda", dtype=torch.bfloat16)
+    real_fp8_einsum(expr, (vllm_x_fp8, vllm_x_sf), (vllm_weight_fp8, vllm_weight_sf), vllm_out, recipe=recipe)
+    assert out.shape == (1, O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS)
+    assert out.dtype == torch.bfloat16
+    assert torch.equal(out.view_as(vllm_out), vllm_out)
+    _assert_frobenius_relative(out, _bf16_o_a_proj(x, module.weight.detach()), O_A_FP8_RTOL, "output")
+
+
+@requires_fp8_einsum
+def test_fp8_o_a_proj_gradients_match_bf16():
+    module = _fp8_o_a_proj()
+    weight = module.weight.detach().clone().requires_grad_(True)
+    fp8_x, bf16_x = _leaves(_o_a_proj_input(), _o_a_proj_input())
+    with torch.no_grad():
+        bf16_x.copy_(fp8_x)
+    upstream = torch.randn(1, O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS, device="cuda")
+
+    (module(fp8_x).float() * upstream).sum().backward()
+    (_bf16_o_a_proj(bf16_x, weight).float() * upstream).sum().backward()
+
+    assert fp8_x.grad.dtype == torch.bfloat16 and module.weight.grad.dtype == torch.bfloat16
+    _assert_frobenius_relative(fp8_x.grad, bf16_x.grad, O_A_FP8_RTOL, "dx")
+    _assert_frobenius_relative(module.weight.grad, weight.grad, O_A_FP8_RTOL, "dweight")
+
+
+@requires_fp8_einsum
+def test_fp8_o_a_proj_traces_under_torch_compile():
+    """`torch.compile(fullgraph=True)` through the FP8 o_a_proj forward and backward is bit for bit eager."""
+    module = _fp8_o_a_proj()
+    eager_x, compiled_x = _leaves(_o_a_proj_input(), _o_a_proj_input())
+    with torch.no_grad():
+        compiled_x.copy_(eager_x)
+    upstream = torch.randn(1, O_A_TOKENS, O_GROUPS, O_A_OUT_FEATURES // O_GROUPS, device="cuda", dtype=torch.bfloat16)
+
+    eager_out = module(eager_x)
+    (eager_out * upstream).sum().backward()
+    eager_weight_grad = module.weight.grad
+    module.weight.grad = None
+    compiled_out = torch.compile(module, fullgraph=True)(compiled_x)
+    (compiled_out * upstream).sum().backward()
+
+    assert compiled_out.shape == eager_out.shape and compiled_out.dtype == eager_out.dtype
+    assert torch.equal(compiled_out, eager_out)
+    assert torch.equal(compiled_x.grad, eager_x.grad)
+    assert torch.equal(module.weight.grad, eager_weight_grad)

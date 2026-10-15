@@ -19,6 +19,7 @@ max_steps = 20
 [model]
 name = "deepseek-ai/DeepSeek-V4-Flash-0731"
 ep = 8
+dsa_backend = "cudnn_flashmla"
 
 # Torch all-to-all, not DeepEP. At full depth DeepEP dies on the first backward with
 # "RuntimeError: Autograd not support dtype: Byte", raised from `Tensor.float()` in

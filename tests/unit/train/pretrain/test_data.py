@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from prime_rl.configs.pretrain import MixturePhaseConfig, TokenSourceConfig
+from prime_rl.trainer.pretrain import data
 from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, collate_rows, source_tokens
 
 
@@ -26,6 +27,34 @@ def test_token_shards_read_across_files_and_wrap(tmp_path):
     tokens, doc_starts = shards.read(7, 4)
     assert tokens.tolist() == [8, 9, 1, 2]
     assert doc_starts == [2]
+
+
+def test_shuffled_epochs_read_every_token_once_in_a_new_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "BLOCK_TOKENS", 4)
+    write_shard(tmp_path / "a" / "00.ds", [list(range(0, 30)), list(range(30, 50))])
+    write_shard(tmp_path / "a" / "01.ds", [list(range(50, 70))])
+    shards = TokenShards(TokenSourceConfig(path=tmp_path / "a"), seed=(0, "a"))
+    epochs = [shards.read(epoch * 70, 70)[0].tolist() for epoch in range(3)]
+    assert all(sorted(epoch) == list(range(70)) for epoch in epochs)
+    assert len({tuple(epoch) for epoch in epochs}) == 3
+    # Reading in windows gives the same stream, so resuming at any position continues it.
+    windows = [shards.read(start, 7)[0].tolist() for start in range(70, 140, 7)]
+    assert sum(windows, []) == epochs[1]
+
+
+def test_window_shuffle_reads_every_window_of_an_epoch_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "WINDOW_GROUP", 5)
+    write_shard(tmp_path / "a" / "00.ds", [list(range(70))])
+    shards = TokenShards(TokenSourceConfig(path=tmp_path / "a"), seed=(0, "a"))
+    starts = [shards.window_start(position, 7) for position in range(0, 140, 7)]
+    groups = [starts[i : i + 5] for i in range(0, 20, 5)]
+    assert [sorted(group) for group in groups] == [list(range(i * 7, i * 7 + 35, 7)) for i in range(0, 20, 5)]
+    assert starts != list(range(0, 140, 7))
+    # A group never reaches into the next epoch.
+    monkeypatch.setattr(data, "WINDOW_GROUP", 100)
+    shards = TokenShards(TokenSourceConfig(path=tmp_path / "a"), seed=(0, "a"))
+    starts = [shards.window_start(position, 7) for position in range(0, 140, 7)]
+    assert sorted(starts[:10]) == list(range(0, 70, 7)) and sorted(starts[10:]) == list(range(70, 140, 7))
 
 
 def test_token_dataset_resumes_and_follows_phases(tmp_path):

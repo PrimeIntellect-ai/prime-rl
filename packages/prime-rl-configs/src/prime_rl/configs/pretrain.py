@@ -98,7 +98,7 @@ class BaseBatchConfig(BaseConfig):
     """Dataloader worker processes per GPU."""
 
     seed: int = 0
-    """Seed for choosing each row's source (and the fake tokens)."""
+    """Seed for choosing each row's source, the per-epoch order of every source (and the fake tokens)."""
 
     @property
     def batch_size(self) -> int:

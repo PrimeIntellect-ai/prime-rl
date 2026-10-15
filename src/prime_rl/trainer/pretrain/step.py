@@ -63,7 +63,7 @@ def run_micro_batches(
     sums = {"loss": zero.clone(), "loss_tokens": zero.clone(), "nan_count": zero.clone(), "tokens": zero.clone()}
     maxes = {}
     data_time = 0.0
-    for _ in range(grad_accum_steps):
+    for micro_step in range(grad_accum_steps):
         data_start_time = time.perf_counter()
         micro_batch = next(dataiter)
         data_time += time.perf_counter() - data_start_time
@@ -75,6 +75,10 @@ def run_micro_batches(
         sums["nan_count"] += is_nan
         sums["loss"] += torch.where(is_nan, 0.0, micro_loss_sum.detach())
         scaled_loss = torch.where(is_nan, torch.nan_to_num(micro_loss_sum, nan=0.0), micro_loss_sum + aux_loss_sum)
+        is_last_micro_step = micro_step == grad_accum_steps - 1
+        # Reduce-scatter (and reshard) once per step, not per micro-batch: the expert gradients cross nodes.
+        model.set_requires_gradient_sync(is_last_micro_step)
+        model.set_reshard_after_backward(is_last_micro_step)
         (scaled_loss / grad_accum_steps).backward()
 
         if is_moe_model:
