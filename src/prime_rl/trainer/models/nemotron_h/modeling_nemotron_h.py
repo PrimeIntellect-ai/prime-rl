@@ -93,7 +93,7 @@ class NemotronHDecoderLayer(nn.Module):
                 "experts": experts,
                 "shared_expert": shared_expert,
                 "score_before_experts": False,
-                "load_balance_coeff": config.load_balance_coeff,
+                "load_balance_coeff": getattr(config, "load_balance_coeff", None),
             }
             if config.moe_latent_size is None:
                 self.mlp = MoE(**moe_kwargs)
@@ -176,14 +176,17 @@ class NemotronHModel(NemotronHPreTrainedModel):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
+        input_ids: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
-        hidden_states = self.embed_tokens(input_ids)
+        if (input_ids is None) == (inputs_embeds is None):
+            raise ValueError("Exactly one of input_ids or inputs_embeds must be provided")
+        hidden_states = self.embed_tokens(input_ids) if inputs_embeds is None else inputs_embeds
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=hidden_states.device),
