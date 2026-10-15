@@ -587,6 +587,8 @@ def train(config: TrainerConfig):
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # Update the model parameters
+        if weight_sender is not None:
+            weight_sender.wait_for_weight_reads()
         optimizer.step()
         optimizer.zero_grad()
 
@@ -745,6 +747,8 @@ def train(config: TrainerConfig):
     if gradient_manager is not None:
         gradient_manager.close()
     micro_batch_workers.close()
+    if weight_sender is not None:
+        weight_sender.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")

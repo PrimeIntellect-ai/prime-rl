@@ -97,6 +97,13 @@ class WeightSender(ABC):
         """Move v{step}'s weights to the consumer. All ranks enter only after
         the master finished the handshake."""
 
+    def wait_for_weight_reads(self) -> None:
+        """Block until background work of the last broadcast no longer reads the trainer weights. Called
+        before every optimizer step."""
+
+    def close(self) -> None:
+        """Finish the background work of the last broadcast."""
+
     def _finish(self, step: int, step_dir: Path) -> None:
         """Mark v{step} complete for the consumer (master only)."""
         (step_dir / FINISHED_MARKER).touch()

@@ -528,6 +528,8 @@ def train(config: SFTConfig):
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")
+        if weight_sender is not None:
+            weight_sender.wait_for_weight_reads()
         optimizer.step()
         optimizer.zero_grad()
 
@@ -692,6 +694,7 @@ def train(config: SFTConfig):
     if weight_sender is not None and not paused:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
+        weight_sender.close()
 
     if gradient_manager is not None:
         gradient_manager.close()

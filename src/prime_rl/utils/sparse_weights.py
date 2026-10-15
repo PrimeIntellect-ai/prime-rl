@@ -12,7 +12,6 @@ exactly its ``base_step``; per-tensor checksums of the new weights catch it if n
 import json
 import os
 import re
-import threading
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -306,20 +305,6 @@ def pin(num_bytes: int) -> torch.Tensor:
         error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), num_bytes, 0)
         assert error == 0, f"cudaHostRegister failed: {error}"
     return tensor
-
-
-def pin_in_background(num_bytes: int) -> tuple[torch.Tensor, threading.Thread]:
-    """Host memory of ``num_bytes`` and a (not yet started) thread that page-locks it with one
-    ``cudaHostRegister`` (a copy may not span two registrations). Page-locking a large buffer is slow
-    on a loaded host. No CUDA copies may touch the memory while the thread runs."""
-    tensor = torch.from_numpy(np.empty(num_bytes, np.uint8))
-
-    def register() -> None:
-        if num_bytes:
-            error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), num_bytes, 0)
-            assert error == 0, f"cudaHostRegister failed: {error}"
-
-    return tensor, threading.Thread(target=register)
 
 
 def unpin(tensor: torch.Tensor) -> None:
