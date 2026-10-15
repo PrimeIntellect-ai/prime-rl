@@ -71,7 +71,11 @@ def _fp8_blockwise_mm_backward(
     if needs_grad_x:
         grad_output_fp8 = per_token_cast_to_fp8_triton(grad_output_2d, use_ue8m0, block_size)
         weight_dx_fp8 = per_block_cast_to_fp8_tp_triton(
-            weight, weight_ue8m0_for_device(weight.device), block_size, rounding_seed=rounding_seed, rounding_salt=rounding_salt
+            weight,
+            weight_ue8m0_for_device(weight.device),
+            block_size,
+            rounding_seed=rounding_seed,
+            rounding_salt=rounding_salt,
         )
         grad_x_2d = torch.empty_like(x_2d)
         deep_gemm.fp8_gemm_nt(grad_output_fp8, weight_dx_fp8, grad_x_2d)
