@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 class GRPOAlgorithm(Algorithm):
     """Group Relative Policy Optimization: sample a group of rollouts from the
-    policy per example; credit = reward minus the group mean (optionally
-    length-shaped); action tokens feed the ``rl`` loss."""
+    policy per example; credit = reward minus the length-weighted group mean
+    by default (optionally length-shaped); action tokens feed the ``rl`` loss."""
 
     def __init__(self, config: GRPOAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)

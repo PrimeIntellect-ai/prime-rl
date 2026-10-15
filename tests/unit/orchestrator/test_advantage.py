@@ -190,7 +190,9 @@ def test_grpo_length_weighted_baseline():
         _build_episode(1.0, sampled_lengths=[10, 20], obs_lengths=[5]),
         _build_episode(0.0, sampled_lengths=[10]),
     ]
-    advs = _grpo(group, length_weighted_baseline=True)
+    algo = GRPOAlgorithm(GRPOAlgoConfig(), clients=None)
+    asyncio.run(algo.score_group(group))
+    advs = [_scalar(episode) for episode in group]
     assert advs == pytest.approx([0.25, -0.75])
     # per-token advantage is zero-mean across the group's trainable tokens
     assert 30 * advs[0] + 10 * advs[1] == pytest.approx(0.0, abs=1e-6)
