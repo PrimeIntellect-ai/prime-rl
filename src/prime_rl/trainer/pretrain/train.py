@@ -438,7 +438,7 @@ def train(config: PretrainConfig):
                     moe_trace["step"].append(progress.step)
                     moe_trace["bias"].append(stacked.float().cpu().numpy())
                     moe_trace["router_norm"].append(
-                        torch.stack([gate.float().norm(dim=1) for gate in gates]).cpu().numpy()
+                        torch.stack([gate.detach().float().norm(dim=1) for gate in gates]).cpu().numpy()
                     )
                     moe_trace["load"].append(result.tokens_per_expert.float().cpu().numpy())
 
