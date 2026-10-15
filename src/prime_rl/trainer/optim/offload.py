@@ -14,7 +14,6 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.optim import AdamW, Optimizer
 
-from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
 from prime_rl.trainer.optim.base import OffloadOptimizer
 from prime_rl.trainer.optim.cpu_adam import adamw_step as native_cpu_adamw_step
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
@@ -714,12 +713,10 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
     def __init__(
         self,
         optimizer: Optimizer,
-        offload_config: OptimizerInBackwardOffloadConfig,
         master_weights: dict[int, _MasterWeight],
         dp_replicate: int = 1,
     ):
         self.optimizer = optimizer
-        self.offload_config = offload_config
         self._initialized = False
         self._master_weights = master_weights
         self._chunks = self._build_chunks()
