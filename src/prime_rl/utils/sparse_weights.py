@@ -1,8 +1,9 @@
 """Sparse weight deltas for the filesystem weight broadcast.
 
 A delta lives in the ``delta/`` subdir of a broadcast step dir (next to the
-full checkpoint on anchor steps): one ``rank_{r}.safetensors`` per trainer rank
-and a ``manifest.json``, written last. A rank file stores zstd frames over its
+full checkpoint on anchor steps): a ``manifest.json``, written first, and per
+trainer rank part files ``rank_{r}_{p}.safetensors``, written as the encode
+produces them, then a ``rank_{r}.parts`` marker. A part file stores zstd frames over its
 entries ``(hf_name, count)``: gaps between sorted flat indices (restarted per
 entry) and the differences of the new and the previous raw bits (wrapping, in
 the bits dtype; mostly a few ulps), zigzag-encoded. Gaps and differences are
@@ -14,6 +15,7 @@ checksums of the new weights catch it if not.
 import json
 import os
 import re
+import time
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -176,7 +178,10 @@ def _rank_file_frames(
     return frames, json.loads(metadata["checksums"])
 
 
-def _read_frame(fd: int, frame, tensors: dict, names: set[str] | None) -> list[tuple[str, np.ndarray, np.ndarray]]:
+def _read_frame(
+    fd: int, frame, tensors: dict, names: set[str] | None
+) -> tuple[list[tuple[str, int]], np.ndarray, np.ndarray]:
+    """A frame's kept ``(entries, gaps, value bytes)``."""
     frame_entries, ((gaps_at, gaps_size), (escapes_at, escapes_size), (values_at, values_size)) = frame
     gaps = np.frombuffer(pyzstd.decompress(os.pread(fd, gaps_size, gaps_at)), np.uint8).astype(np.int32)
     escapes = np.frombuffer(pyzstd.decompress(os.pread(fd, escapes_size, escapes_at)), np.int32)
@@ -186,14 +191,18 @@ def _read_frame(fd: int, frame, tensors: dict, names: set[str] | None) -> list[t
     values = np.frombuffer(pyzstd.decompress(os.pread(fd, values_size, values_at)), np.uint8).astype(np.int64)
     values[values == 255] = escapes[num_gap_escapes:].astype(np.int64) & 0xFFFFFFFF
     values = _pack_values((values >> 1) ^ -(values & 1), frame_entries, tensors)
-    out, gap_offset, value_offset = [], 0, 0
+    if names is None or all(name in names for name, _ in frame_entries):
+        return frame_entries, gaps, values
+    kept, kept_gaps, kept_values, gap_offset, value_offset = [], [], [], 0, 0
     for name, count in frame_entries:
         num_bytes = count * bits_dtype(tensors[name][1]).itemsize
-        if names is None or name in names:
-            out.append((name, gaps[gap_offset : gap_offset + count], values[value_offset : value_offset + num_bytes]))
+        if name in names:
+            kept.append((name, count))
+            kept_gaps.append(gaps[gap_offset : gap_offset + count])
+            kept_values.append(values[value_offset : value_offset + num_bytes])
         gap_offset += count
         value_offset += num_bytes
-    return out
+    return kept, np.concatenate(kept_gaps), np.concatenate(kept_values)
 
 
 def _write_atomically(path: Path, data: bytes) -> None:
@@ -308,32 +317,68 @@ def read_manifest(step_dir: Path) -> dict:
     return json.loads((step_dir / DELTA_DIR / MANIFEST).read_text())
 
 
+def rank_part(rank: int, part: int) -> str:
+    return f"rank_{rank}_{part}.safetensors"
+
+
+def rank_parts_marker(rank: int) -> str:
+    """Written by a trainer rank after its last part file: the number of part files."""
+    return f"rank_{rank}.parts"
+
+
 def read_delta(
-    step_dir: Path, names: set[str] | None = None, num_threads: int = 16
-) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
-    """Read and decompress every rank file of a delta step dir into ``(entries,
-    gaps, value bytes)`` in host memory (values: new minus previous raw bits, in each entry's bits
-    dtype); ``decode_gaps`` turns the
-    gaps into flat indices on the device that applies them. With ``names``, keep
-    only those tensors (frames without any are not read).
-    Also returns the new weights' ``bits_checksum`` per HF tensor, summed over ranks."""
+    step_dir: Path, names: set[str] | None = None, num_threads: int = 16, cpus: set[int] | None = None
+) -> tuple[list[tuple[list[tuple[str, int]], np.ndarray, np.ndarray]], dict[str, int]]:
+    """Read and decompress a delta step dir into ``(entries, gaps, value bytes)`` per frame in host
+    memory (values: new minus previous raw bits, in each entry's bits dtype); ``decode_gaps`` turns
+    the gaps into flat indices on the device that applies them. With ``names``, keep only those
+    tensors (frames without any are not read). Part files are read as the trainer writes them, until
+    every rank has written its parts marker. ``cpus``: CPUs for the reader threads (the device's NUMA
+    node). Also returns the new weights' ``bits_checksum`` per HF tensor, summed over ranks."""
     manifest = read_manifest(step_dir)
     tensors = manifest["tensors"]
+    delta_dir = step_dir / DELTA_DIR
     checksums: dict[str, int] = {}
-    with ExitStack() as stack, ThreadPoolExecutor(num_threads) as pool:
-        files = [stack.enter_context(open(step_dir / DELTA_DIR / name, "rb")) for name in manifest["files"]]
-        jobs = []
-        for file in files:
-            frames, partial = _rank_file_frames(file, tensors, names)
-            jobs.extend((file.fileno(), frame) for frame in frames)
-            for tensor_name, value in partial.items():
-                checksums[tensor_name] = add_checksums(checksums.get(tensor_name, 0), value)
-        kept = [entry for frame in pool.map(lambda job: _read_frame(*job, tensors, names), jobs) for entry in frame]
+    num_parts: list[int | None] = [None] * manifest["ranks"]
+    next_part = [0] * manifest["ranks"]
+    initializer = None if cpus is None else (lambda: os.sched_setaffinity(0, cpus))
+    with ExitStack() as stack, ThreadPoolExecutor(num_threads, initializer=initializer) as pool:
+        files, jobs = [], []
+        while any(count is None or next_part[rank] < count for rank, count in enumerate(num_parts)):
+            found = False
+            for rank in range(len(num_parts)):
+                if num_parts[rank] is None and (delta_dir / rank_parts_marker(rank)).exists():
+                    num_parts[rank] = int((delta_dir / rank_parts_marker(rank)).read_text())
+                path = delta_dir / rank_part(rank, next_part[rank])
+                if (num_parts[rank] is None or next_part[rank] < num_parts[rank]) and path.exists():
+                    file = stack.enter_context(open(path, "rb"))
+                    files.append(file)
+                    frames, partial = _rank_file_frames(file, tensors, names)
+                    jobs.extend(pool.submit(_read_frame, file.fileno(), frame, tensors, names) for frame in frames)
+                    for tensor_name, value in partial.items():
+                        checksums[tensor_name] = add_checksums(checksums.get(tensor_name, 0), value)
+                    next_part[rank] += 1
+                    found = True
+            if not found:
+                time.sleep(0.02)
+        frames = [frame for frame in (job.result() for job in jobs) if frame[0]]
         for file in files:
             drop_page_cache(file.fileno())
-    gaps = torch.from_numpy(np.concatenate([g for _, g, _ in kept]) if kept else np.empty(0, np.int32))
-    values = torch.from_numpy(np.concatenate([v for _, _, v in kept]) if kept else np.empty(0, np.uint8))
-    return [([(name, len(g)) for name, g, _ in kept], gaps, values)], checksums
+    return frames, checksums
+
+
+def numa_cpus(device: int) -> set[int] | None:
+    """The CPUs of the NUMA node the CUDA ``device`` hangs off, or None if unknown."""
+    props = torch.cuda.get_device_properties(device)
+    sysfs = Path(f"/sys/bus/pci/devices/{props.pci_domain_id:04x}:{props.pci_bus_id:02x}:{props.pci_device_id:02x}.0")
+    node = int((sysfs / "numa_node").read_text()) if (sysfs / "numa_node").exists() else -1
+    if node < 0:
+        return None
+    cpus = set()
+    for part in Path(f"/sys/devices/system/node/node{node}/cpulist").read_text().strip().split(","):
+        first, _, last = part.partition("-")
+        cpus.update(range(int(first), int(last or first) + 1))
+    return cpus
 
 
 def pin(num_bytes: int) -> torch.Tensor:

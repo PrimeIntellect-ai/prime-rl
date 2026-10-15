@@ -6,6 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 from safetensors import safe_open
 from torch.nn import Module
@@ -28,6 +29,7 @@ from prime_rl.utils.sparse_weights import (
     anchor_tensors,
     bits_dtype,
     decode_gaps,
+    numa_cpus,
     pin,
     read_delta,
     read_manifest,
@@ -45,6 +47,7 @@ else:
 logger = init_logger("vllm.inference.vllm.worker_filesystem")
 
 _prefetch_pool = ThreadPoolExecutor(1)
+_copy_pool: ThreadPoolExecutor | None = None
 
 _SAFETENSORS_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
@@ -83,24 +86,59 @@ class FileSystemWeightUpdateWorker(Worker):
         self, step_dir: Path
     ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
         """Read this worker's part of a delta into a pinned host buffer that is reused across steps
-        (allocating pinned memory every step is slow on a loaded host)."""
+        (allocating pinned memory every step is slow on a loaded host), in chunks of up to 2^26 changes
+        of consecutive frames. Reads and copies run on the CPUs of the GPU's NUMA node."""
+        global _copy_pool
+        cpus = numa_cpus(torch.cuda.current_device())
+        if cpus is not None:
+            os.sched_setaffinity(0, cpus)
+        if _copy_pool is None:
+            _copy_pool = ThreadPoolExecutor(
+                16, initializer=None if cpus is None else lambda: os.sched_setaffinity(0, cpus)
+            )
         start = time.perf_counter()
-        delta, checksums = read_delta(step_dir, None if self.index_map is None else self.index_map.names)
+        frames, checksums = read_delta(step_dir, None if self.index_map is None else self.index_map.names, cpus=cpus)
         read_time = time.perf_counter() - start
-        num_bytes = sum(-(-gaps.nbytes // 4) * 4 + -(-values.nbytes // 4) * 4 for _, gaps, values in delta)
+        chunks, size = [[]], 0
+        for frame in frames:
+            if size >= 1 << 26:
+                chunks.append([])
+                size = 0
+            chunks[-1].append(frame)
+            size += len(frame[1])
+        layout, num_bytes = [], 0
+        for chunk in chunks:
+            gaps_bytes = -(-sum(gaps.nbytes for _, gaps, _ in chunk) // 4) * 4
+            values_bytes = -(-sum(values.nbytes for _, _, values in chunk) // 4) * 4
+            layout.append((num_bytes, num_bytes + gaps_bytes))
+            num_bytes += gaps_bytes + values_bytes
         if self.host_buffer is None or self.host_buffer.numel() < num_bytes:
             if self.host_buffer is not None:
                 unpin(self.host_buffer)
             self.host_buffer = pin(num_bytes * 5 // 4)
-        pinned, offset = [], 0
-        for entries, gaps, values in delta:
-            parts = []
-            for array in (gaps, values):
-                part = self.host_buffer[offset : offset + array.nbytes].view(array.dtype)
-                part.copy_(array)
-                parts.append(part)
-                offset += -(-array.nbytes // 4) * 4
-            pinned.append((entries, *parts))
+        buffer = self.host_buffer.numpy()
+        copies, pinned = [], []
+        for chunk, (gaps_at, values_at) in zip(chunks, layout):
+            gaps_end, values_end = gaps_at, values_at
+            for _, gaps, values in chunk:
+                copies.append(
+                    _copy_pool.submit(np.copyto, buffer[gaps_end : gaps_end + gaps.nbytes].view(gaps.dtype), gaps)
+                )
+                copies.append(
+                    _copy_pool.submit(np.copyto, buffer[values_end : values_end + values.nbytes], values.view(np.uint8))
+                )
+                gaps_end += gaps.nbytes
+                values_end += values.nbytes
+            if chunk:
+                pinned.append(
+                    (
+                        [entry for entries, _, _ in chunk for entry in entries],
+                        self.host_buffer[gaps_at:gaps_end].view(torch.int32),
+                        self.host_buffer[values_at:values_end],
+                    )
+                )
+        for copy in copies:
+            copy.result()
         logger.info(
             f"Read sparse weight delta {step_dir.name}: {num_bytes / 2**30:.2f} GiB, "
             f"read+decompress {read_time:.2f}s, pin {time.perf_counter() - start - read_time:.2f}s"
