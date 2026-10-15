@@ -85,8 +85,8 @@ class TokenDataset(StatefulIterableDataset):
 
     Window ``w`` belongs to step ``w // batch_size``; its source is drawn from that step's phase weights
     with an RNG keyed by ``(seed, w)``, and it continues the source's stream where that source's last
-    window ended. Every data rank walks the whole window sequence but reads only its own windows, so the
-    state (the window counter and the tokens read per source) does not depend on the world size. Each
+    window ended. Every data rank walks the whole window sequence but reads only its own windows; the
+    state is the window counter and the tokens read per source. Each
     window reads one token past its end for the last target. With ``num_windows`` the dataset stops
     after that many windows."""
 
@@ -155,6 +155,15 @@ class TokenDataset(StatefulIterableDataset):
                 "tokens": tokens,
                 "seq_lens": np.diff([0, *(s for s in doc_starts if s < self.seq_len), self.seq_len]),
             }
+
+
+def source_tokens(dataset: TokenDataset, start: int, end: int) -> dict[str, int]:
+    """Tokens each source contributes to windows ``[start, end)``. Every data rank walks the same window
+    sequence, so these are global counts, computed without communication."""
+    tokens = dict.fromkeys(dataset.names, 0)
+    for window in range(start, end):
+        tokens[dataset.source(window)] += dataset.seq_len
+    return tokens
 
 
 def collate_rows(rows: list[dict]) -> dict:

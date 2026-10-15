@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from prime_rl.configs.pretrain import MixturePhaseConfig, TokenSourceConfig
-from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, collate_rows
+from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, collate_rows, source_tokens
 
 
 def write_shard(path: Path, documents: list[list[int]]) -> None:
@@ -53,6 +53,19 @@ def test_token_dataset_resumes_and_follows_phases(tmp_path):
     resumed = dataset()
     resumed.load_state_dict(first.state_dict())
     assert [window["tokens"].tolist() for window in islice(resumed, 5)] == full[3:8]
+
+
+def test_source_tokens_count_every_window_of_the_mixture(tmp_path):
+    for name in "ab":
+        write_shard(tmp_path / name / "00.ds", [list(range(100))])
+    sources = {name: TokenShards(TokenSourceConfig(path=tmp_path / name)) for name in "ab"}
+    dataset = TokenDataset(
+        sources, [MixturePhaseConfig(weights={"a": 0.3, "b": 0.7})], seq_len=4, batch_size=8, max_steps=4
+    )
+    list(islice(dataset, 32))
+    # The training loop's global per-source counts equal the tokens the dataset itself read.
+    assert source_tokens(dataset, 0, 32) == dataset.tokens
+    assert sum(source_tokens(dataset, 8, 16).values()) == 8 * 4
 
 
 def test_collate_rows_restarts_positions_at_documents():
