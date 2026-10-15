@@ -4,8 +4,9 @@ import math
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import torch
 
-from prime_rl.trainer.pretrain.suite import pack_requests, prepare_multi_length_set, summarize_ctxcont
+from prime_rl.trainer.pretrain.suite import head_logprobs, pack_requests, prepare_multi_length_set, summarize_ctxcont
 
 
 def test_pack_requests_covers_every_request_within_the_budget():
@@ -45,3 +46,12 @@ def test_multi_length_set_scores_shared_requests_once(tmp_path):
     assert len(multi.versions[8].requests) == 4 and len(multi.versions[32].requests) == 2
     assert len(multi.requests) == 5
     assert multi.index[8][0] == multi.index[32][0]
+
+
+def test_head_logprobs_chunks_match_the_full_softmax():
+    hidden, weight = torch.randn(7, 4, dtype=torch.bfloat16), torch.randn(11, 4, dtype=torch.bfloat16)
+    targets = torch.randint(0, 11, (7,))
+    logprobs, hits = head_logprobs(hidden, weight, targets, chunk=3)
+    logits = hidden.float() @ weight.float().T
+    torch.testing.assert_close(logprobs, logits.log_softmax(-1).gather(-1, targets[:, None])[:, 0])
+    assert torch.equal(hits, logits.argmax(-1) == targets)

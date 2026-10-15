@@ -48,11 +48,13 @@ class EvalSet:
     sha256: str
 
 
-def head_logprobs(hidden, weight, targets, chunk: int = 16384):
-    """Log-prob and greedy hit of ``targets`` under ``hidden @ weight.T``, in fp32 chunks over tokens."""
+def head_logprobs(hidden, weight, targets, chunk: int = 2048):
+    """Log-prob and greedy hit of ``targets`` under ``hidden @ weight.T``, in fp32 chunks over tokens, so the
+    fp32 logits stay at ``chunk x vocab``."""
+    weight = weight.float()
     logprobs, hits = [], []
     for start in range(0, len(targets), chunk):
-        logits = hidden[start : start + chunk].float() @ weight.float().T
+        logits = hidden[start : start + chunk].float() @ weight.T
         target = targets[start : start + chunk]
         logprobs.append(logits.gather(-1, target[:, None])[:, 0] - torch.logsumexp(logits, -1))
         hits.append(logits.argmax(-1) == target)

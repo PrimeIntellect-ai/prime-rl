@@ -409,6 +409,7 @@ def train(config: PretrainConfig):
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
+        diagnostic_metrics = update_tracker.after_step(model) if is_diagnostic_step else {}
         # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
         local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
         peak_memory = reduce_stats({"sum": local_peak_memory}, {"max": local_peak_memory}, dp_cp_group)
@@ -427,9 +428,8 @@ def train(config: PretrainConfig):
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
 
-        diagnostic_metrics = {}
         if is_diagnostic_step:
-            diagnostic_metrics = update_tracker.after_step(model) | run_probe(model, probe, dp_cp_group)
+            diagnostic_metrics |= run_probe(model, probe, dp_cp_group)
             finish_no_grad_forwards()
 
         eval_start_time = time.perf_counter()
