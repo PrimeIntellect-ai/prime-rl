@@ -3,7 +3,8 @@ import torch
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.models.fp8_rounding import set_fp8_rounding_step, setup_fp8_rounding
+from prime_rl.trainer.models.fp8_rounding import _stream_id, set_fp8_rounding_step, setup_fp8_rounding
+from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.kernels.fp8_utils import (
     build_grouped_layout,
     grouped_per_block_cast_to_fp8_triton,
@@ -121,6 +122,23 @@ def test_step_checkpoint_replay_and_tied_weights(compiled, checkpoint_mode):
     assert not torch.equal(y, fn(x))
     set_fp8_rounding_step(model, 9)
     assert torch.equal(y, fn(x))
+
+
+def test_fused_qkv_rounds_only_the_packed_projection():
+    attention = torch.nn.Module()
+    for name in ("q_proj", "k_proj", "v_proj"):
+        setattr(attention, name, torch.nn.Linear(256, 128, bias=False, device="cuda", dtype=torch.bfloat16))
+    fuse_qkv_projections(attention)
+    replace_linear_with_fp8_blockwise_linear(attention, [], stochastic_rounding=True)
+    setup_fp8_rounding(attention, 5)
+    assert attention.qkv_proj.rounding_salt.item() == _stream_id("qkv_proj.weight")
+    assert attention.qkv_proj.fp8_rounding is attention.fp8_rounding
+    for name in ("q_proj", "k_proj", "v_proj"):
+        assert getattr(attention, name).rounding_salt is None
+    x = torch.randn(128, 256, device="cuda", dtype=torch.bfloat16)
+    y = attention.qkv_proj(x)
+    set_fp8_rounding_step(attention, 1)
+    assert not torch.equal(y, attention.qkv_proj(x))
 
 
 def test_expert_runtime_rounding():

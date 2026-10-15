@@ -29,7 +29,8 @@ def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
     state = None
     parameter_names = {id(parameter): name for name, parameter in model.named_parameters()}
     for module in model.modules():
-        dense = isinstance(module, Float8BlockwiseLinear) and module.stochastic_rounding
+        # Projections emptied by a runtime fusion have no weight of their own to round.
+        dense = isinstance(module, Float8BlockwiseLinear) and module.stochastic_rounding and module.weight is not None
         grouped = (
             isinstance(module, GroupedExperts)
             and isinstance(module.compute, DeepGemmFP8ExpertCompute)
