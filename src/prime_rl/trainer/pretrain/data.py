@@ -157,6 +157,15 @@ class TokenDataset(StatefulIterableDataset):
             }
 
 
+def source_tokens(dataset: TokenDataset, start: int, end: int) -> dict[str, int]:
+    """Tokens each source contributes to windows ``[start, end)``. Every data rank walks the same window
+    sequence, so these are global counts, computed without communication."""
+    tokens = dict.fromkeys(dataset.names, 0)
+    for window in range(start, end):
+        tokens[dataset.source(window)] += dataset.seq_len
+    return tokens
+
+
 def collate_rows(rows: list[dict]) -> dict:
     """Concatenate windows into one packed sample of shape ``[1, len(rows) * seq_len]``. Positions restart at
     every document; attention never crosses a document or a window."""
