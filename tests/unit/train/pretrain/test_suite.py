@@ -4,9 +4,20 @@ import math
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import torch
+import torch.distributed as dist
+from torch import nn
 
-from prime_rl.trainer.pretrain.suite import head_logprobs, pack_requests, prepare_multi_length_set, summarize_ctxcont
+from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.pretrain.suite import (
+    head_logprobs,
+    pack_requests,
+    prepare_multi_length_set,
+    score_requests,
+    score_sets,
+    summarize_ctxcont,
+)
 
 
 def test_pack_requests_covers_every_request_within_the_budget():
@@ -55,3 +66,31 @@ def test_head_logprobs_chunks_match_the_full_softmax():
     logits = hidden.float() @ weight.float().T
     torch.testing.assert_close(logprobs, logits.log_softmax(-1).gather(-1, targets[:, None])[:, 0])
     assert torch.equal(hits, logits.argmax(-1) == targets)
+
+
+class TokenPositionModel(nn.Module):
+    """Scores each label by its value and position, so a request's scores do not depend on how it is packed."""
+
+    def forward(self, input_ids, position_ids, labels, seq_lens):
+        keep = labels != IGNORE_INDEX
+        return {"logprobs": (labels + position_ids / 1000)[keep].double(), "entropy": (labels % 2 == 0)[keep]}
+
+
+@pytest.mark.gpu
+def test_score_sets_matches_scoring_each_set_alone(tmp_path):
+    dist.init_process_group("gloo", init_method=f"file://{tmp_path / 'store'}", rank=0, world_size=1)
+    try:
+        for name, texts in {"a": ["short", "a much longer document"], "b": ["xyz", "another text here"]}.items():
+            (tmp_path / name).mkdir()
+            pq.write_table(pa.table({"text": texts}), tmp_path / name / "test.parquet")
+            (tmp_path / name / "meta.json").write_text(json.dumps({"kind": "ppl", "parquet_sha256": "x"}))
+        eval_sets = [prepare_multi_length_set(name, tmp_path, CharTokenizer(), [8, 32]) for name in "ab"]
+        together = score_sets(TokenPositionModel(), eval_sets, token_budget=40, group=dist.group.WORLD)
+        for eval_set, (logprobs, hits) in zip(eval_sets, together):
+            alone_logprobs, alone_hits = score_requests(
+                TokenPositionModel(), eval_set.requests, token_budget=40, group=dist.group.WORLD
+            )
+            assert all(np.array_equal(x, y) for x, y in zip(logprobs, alone_logprobs))
+            assert all(np.array_equal(x, y) for x, y in zip(hits, alone_hits))
+    finally:
+        dist.destroy_process_group()

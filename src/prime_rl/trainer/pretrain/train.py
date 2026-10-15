@@ -48,7 +48,7 @@ from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, ru
 from prime_rl.trainer.pretrain.suite import (
     length_label,
     prepare_multi_length_set,
-    score_requests,
+    score_sets,
     scoring_head_active,
     summarize,
 )
@@ -319,17 +319,14 @@ def train(config: PretrainConfig):
 
     @torch.no_grad()
     def run_suite(step: int) -> None:
-        """The eval suite on the weights after ``step`` optimizer updates: the packed rows of every set are dealt
+        """The eval suite on the weights after ``step`` optimizer updates: the packed rows of all sets are dealt
         over the ranks, the per-token results gathered on rank 0, which summarizes and logs them."""
         start_time = time.perf_counter()
         metrics = {}
         # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
         with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
-            for eval_set in eval_sets:
-                scored = score_requests(model, eval_set.requests, config.evals.token_budget, get_dcp_group())
-                if scored is None:
-                    continue
-                logprobs, hits = scored
+            scored = score_sets(model, eval_sets, config.evals.token_budget, get_dcp_group())
+            for eval_set, (logprobs, hits) in zip(eval_sets, scored or []):
                 for seq_len, version in eval_set.versions.items():
                     index = eval_set.index[seq_len]
                     summary, arrays = summarize(version, [logprobs[i] for i in index], [hits[i] for i in index])

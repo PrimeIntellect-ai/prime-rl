@@ -145,6 +145,23 @@ def score_requests(
     return logprobs, hits
 
 
+def score_sets(
+    model: nn.Module, eval_sets: list["MultiLengthSet"], token_budget: int, group: dist.ProcessGroup
+) -> list[tuple[list[np.ndarray], list[np.ndarray]]] | None:
+    """`score_requests` over the requests of all sets at once, so the rows of every set are packed and dealt
+    together (fewer padding forwards on many ranks), split back per set on rank 0 (None on the others)."""
+    scored = score_requests(model, [request for s in eval_sets for request in s.requests], token_budget, group)
+    if scored is None:
+        return None
+    logprobs, hits = scored
+    per_set, offset = [], 0
+    for eval_set in eval_sets:
+        end = offset + len(eval_set.requests)
+        per_set.append((logprobs[offset:end], hits[offset:end]))
+        offset = end
+    return per_set
+
+
 def continuation_ids(tokenizer: PreTrainedTokenizer, context: str, continuation: str) -> Request:
     """BOS + jointly tokenized context + continuation, and the index of the first continuation token (the
     first token that ends after the context; a token straddling the boundary counts as continuation)."""
