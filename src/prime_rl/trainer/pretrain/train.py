@@ -21,7 +21,6 @@ from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.model import (
     forward,
-    get_load_balance_stats,
     is_tt_moe_model,
     iter_moe_blocks,
     reshard_module,
@@ -54,7 +53,13 @@ from prime_rl.trainer.pretrain.suite import (
     summarize,
 )
 from prime_rl.trainer.pretrain.step import run_micro_batches
-from prime_rl.trainer.pretrain.metrics import DeadExperts, SpikeDetector, grad_norms_by_group, reduce_stats
+from prime_rl.trainer.pretrain.metrics import (
+    DeadExperts,
+    SpikeDetector,
+    grad_norms_by_group,
+    reduce_stats,
+    take_routing_counts,
+)
 from prime_rl.trainer.sft.data import get_dataset_state
 from prime_rl.trainer.utils import (
     get_dcp_group,
@@ -274,8 +279,15 @@ def train(config: PretrainConfig):
                 )
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
+    def finish_no_grad_forwards() -> None:
+        """No-grad forwards leave the [lm_head, norm] FSDP group unsharded, and their routing must not count toward
+        the next step's MoE statistics."""
+        reshard_module(model)
+        if is_moe_model:
+            take_routing_counts(model)
+
     @torch.no_grad()
-    def run_evals(step: int) -> None:
+    def run_val(step: int) -> None:
         """Held-out loss, perplexity and bits per byte on the weights after ``step`` optimizer updates."""
         metrics = {}
         for name, source in val_sources.items():
@@ -292,12 +304,8 @@ def train(config: PretrainConfig):
             metrics[f"val/{name}/loss"] = loss
             metrics[f"val/{name}/ppl"] = math.exp(min(loss, 20))
             metrics[f"val/{name}/bpb"] = loss_sum / (math.log(2) * num_bytes)
-        # The no-grad eval forwards leave the [lm_head, norm] FSDP group unsharded, and their
-        # routing must not count toward the next step's MoE statistics.
-        reshard_module(model)
-        if is_moe_model:
-            get_load_balance_stats(model)
-        logger.success(f"Evals | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
+        finish_no_grad_forwards()
+        logger.success(f"Val | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     eval_sets = []
@@ -336,17 +344,13 @@ def train(config: PretrainConfig):
                         out.mkdir(parents=True, exist_ok=True)
                         np.savez(out / f"{eval_set.name}@{label}.npz", **arrays)
                         (out / f"{eval_set.name}@{label}.json").write_text(json.dumps(summary, default=float))
-        # The no-grad forwards leave the [lm_head, norm] FSDP group unsharded, and their routing must not count
-        # toward the next step's MoE statistics.
-        reshard_module(model)
-        if is_moe_model:
-            get_load_balance_stats(model)
+        finish_no_grad_forwards()
         metrics["time/eval_suite"] = time.perf_counter() - start_time
         logger.success(f"Eval suite | Step {step} | {metrics['time/eval_suite']:.0f}s | {len(eval_sets)} sets")
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     if checkpoint_step is None and config.val is not None and config.val.eval_on_start:
-        run_evals(step=0)
+        run_val(step=0)
     if config.evals is not None and config.evals.eval_on_start:
         run_suite(step=checkpoint_step or 0)
 
@@ -426,15 +430,11 @@ def train(config: PretrainConfig):
         diagnostic_metrics = {}
         if is_diagnostic_step:
             diagnostic_metrics = update_tracker.after_step(model) | run_probe(model, probe, dp_cp_group)
-            # The no-grad forward leaves the [lm_head, norm] FSDP group unsharded, and its routing must not count
-            # toward the next step's MoE statistics.
-            reshard_module(model)
-            if is_moe_model:
-                get_load_balance_stats(model)
+            finish_no_grad_forwards()
 
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
-            run_evals(progress.step)
+            run_val(progress.step)
         if config.evals is not None and (is_last_step or progress.step % config.evals.interval == 0):
             run_suite(progress.step)
         eval_time = time.perf_counter() - eval_start_time

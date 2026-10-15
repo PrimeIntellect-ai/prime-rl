@@ -85,7 +85,7 @@ decay_shape = "1-sqrt"  # or "linear" (default), "cosine"
 | `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
 | `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |
 
-The metrics are `expert_load/*` (global balance of the step), `expert_load/seq_balance` (1 is balanced) and `expert_load/selection_bias_absmax`.
+The metrics are `expert_load/*` (global balance of the step), `loss/seq_balance` (1 is balanced) and `router/bias/*`.
 
 ## Data
 
