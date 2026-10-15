@@ -158,9 +158,9 @@ def test_muon_orthogonalizes_each_head_block_of_the_packed_qkv(heads_per_block):
         matrix_partitions=partitions,
     )
     optimizer.step()
-    # With no momentum and no learning-rate adjustment, each block moves by its own orthogonalized gradient.
+    # With no momentum and no learning-rate adjustment, each block moves by its own orthogonalized gradient
+    # (Muon casts the momentum to bfloat16 before Newton-Schulz).
     update = before - weight.detach()
     for block_update, block_grad in zip(update.split(blocks), weight.grad.split(blocks)):
-        torch.testing.assert_close(
-            block_update, muon.zeropower_via_newtonschulz5(block_grad).float(), atol=1e-3, rtol=0
-        )
+        expected = muon.zeropower_via_newtonschulz5(block_grad.bfloat16()).float()
+        torch.testing.assert_close(block_update, expected, atol=1e-6, rtol=0)
