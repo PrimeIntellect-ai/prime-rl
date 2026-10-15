@@ -49,17 +49,59 @@ def bits_dtype(dtype: str) -> torch.dtype:
     return _BITS_DTYPE[getattr(torch, dtype).itemsize]
 
 
-def quantize_fp8_blocks(weight: torch.Tensor, ue8m0: bool) -> tuple[torch.Tensor, torch.Tensor]:
+def quantize_fp8_blocks(weight: torch.Tensor, ue8m0: bool, compiled=None) -> tuple[torch.Tensor, torch.Tensor]:
     """vLLM's online ``fp8_per_block`` quantization of a 2-D weight: fp8 bits (uint8) and fp32 block
     scales. With ``ue8m0``, also DeepGEMM's requantization to power-of-two scales. Uses vLLM's own
-    compiled kernels: a reimplementation rounds differently on a few elements."""
+    compiled kernels: a reimplementation rounds differently on a few elements. ``compiled``: the
+    ahead-of-time compiled kernels from ``compile_fp8_quantizer`` (columns a multiple of 128), which,
+    unlike vLLM's torch.compile'd function, may run on a thread next to a compiled training step."""
     from vllm.model_executor.layers.quantization.utils.fp8_utils import requant_weight_ue8m0_inplace
     from vllm.utils.deep_gemm import per_block_cast_to_fp8
 
-    quantized, scales = per_block_cast_to_fp8(weight, FP8_BLOCK, use_ue8m0=False)
+    if compiled is None:
+        quantized, scales = per_block_cast_to_fp8(weight, FP8_BLOCK, use_ue8m0=False)
+        if ue8m0:
+            requant_weight_ue8m0_inplace(quantized, scales, FP8_BLOCK)
+        return quantized.view(torch.uint8), scales
+    cast, cast_ue8m0 = compiled
+    quantized, scales = cast(weight)
     if ue8m0:
-        requant_weight_ue8m0_inplace(quantized, scales, FP8_BLOCK)
+        # requant_weight_ue8m0_inplace, step by step
+        rows, cols = quantized.shape
+        expanded = scales.repeat_interleave(FP8_BLOCK[0], 0).repeat_interleave(FP8_BLOCK[1], 1)[:rows, :cols]
+        quantized, scales = cast_ue8m0(quantized.to(torch.float32) * expanded)
     return quantized.view(torch.uint8), scales
+
+
+def compile_fp8_quantizer() -> tuple:
+    """vLLM's ``per_block_cast_to_fp8`` compiled ahead of time with AOTInductor for any shape (bf16 input;
+    and fp32 input with ue8m0 scales, for the requantization). Matches vLLM's compiled function bit for
+    bit for columns a multiple of 128. Compile on the thread that trains: compiling next to a compiled
+    training step breaks activation checkpointing there."""
+    import tempfile
+
+    from torch.export import Dim
+    from vllm.utils.deep_gemm import per_block_cast_to_fp8
+
+    cast = per_block_cast_to_fp8._torchdynamo_orig_callable
+
+    class Cast(torch.nn.Module):
+        def __init__(self, ue8m0: bool):
+            super().__init__()
+            self.ue8m0 = ue8m0
+
+        def forward(self, weight: torch.Tensor):
+            return cast(weight, FP8_BLOCK, use_ue8m0=self.ue8m0)
+
+    compiled = []
+    for ue8m0, dtype in ((False, torch.bfloat16), (True, torch.float32)):
+        example = torch.zeros(384, 640, dtype=dtype, device="cuda")
+        program = torch.export.export(Cast(ue8m0), (example,), dynamic_shapes={"weight": {0: Dim.AUTO, 1: Dim.AUTO}})
+        path = str(Path(tempfile.mkdtemp()) / "quantize.pt2")
+        compiled.append(
+            torch._inductor.aoti_load_package(torch._inductor.aoti_compile_and_package(program, package_path=path))
+        )
+    return tuple(compiled)
 
 
 def zigzag(delta: torch.Tensor) -> torch.Tensor:
