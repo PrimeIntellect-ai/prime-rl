@@ -19,8 +19,8 @@ from typing import BinaryIO
 import numpy as np
 import pyzstd
 import torch
-from safetensors.numpy import save_file
-from safetensors.torch import save_file as save_torch_file
+from safetensors.numpy import save
+from safetensors.torch import save as save_torch
 
 DELTA_DIR = "delta"
 MANIFEST = "manifest.json"
@@ -96,7 +96,8 @@ def write_rank_file(
             pyzstd.compress(frame_values.tobytes(), options),
         )
 
-    with ThreadPoolExecutor(8) as pool:
+    # Few threads: this runs in the background next to training (e.g. a CPU optimizer step)
+    with ThreadPoolExecutor(4) as pool:
         compressed = list(pool.map(compress, frames if entries else []))
     arrays = {
         stream: np.frombuffer(b"".join(parts[index] for parts in compressed), np.uint8)
@@ -107,11 +108,7 @@ def write_rank_file(
         "frames": json.dumps([[len(frame), *map(len, parts)] for frame, parts in zip(frames, compressed)]),
         "checksums": json.dumps(checksums),
     }
-    tmp = path.with_name(f".{path.name}.tmp")
-    save_file(arrays, str(tmp), metadata=metadata)
-    tmp.rename(path)
-    with open(path, "rb") as file:
-        drop_page_cache(file.fileno())
+    _write_atomically(path, save(arrays, metadata=metadata))
 
 
 def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -157,23 +154,29 @@ def _read_frame(fd: int, frame, tensors: dict, names: set[str] | None) -> list[t
     return out
 
 
+def _write_atomically(path: Path, data: bytes) -> None:
+    """Write under a temporary name, then rename. Serializing in memory and writing with plain file
+    I/O releases the GIL during the (possibly slow) write, so background writes don't stall training."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "wb") as file:
+        file.write(data)
+        drop_page_cache(file.fileno())
+    tmp.rename(path)
+
+
 def write_anchor_shards(state_dict: dict[str, torch.Tensor], step_dir: Path, rank: int, world_size: int) -> None:
     """Write one trainer rank's share of a full checkpoint, without collectives; the
     ``anchor_rank{rank}.done`` marker (holding the world size) is written last."""
     shards, size = [[]], 0
     for name, tensor in state_dict.items():
-        if size > 4 * 2**30:
+        if size > 2**30:
             shards.append([])
             size = 0
         shards[-1].append(name)
         size += tensor.nbytes
     for index, names in enumerate(shards):
         path = step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors"
-        tmp = step_dir / f".{path.name}.tmp"
-        save_torch_file({name: state_dict[name].contiguous() for name in names}, tmp, metadata={"format": "pt"})
-        tmp.rename(path)
-        with open(path, "rb") as file:
-            drop_page_cache(file.fileno())
+        _write_atomically(path, save_torch({name: state_dict[name] for name in names}, metadata={"format": "pt"}))
     (step_dir / f"anchor_rank{rank}.done").write_text(str(world_size))
 
 
