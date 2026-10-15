@@ -38,10 +38,11 @@ from prime_rl.trainer.pretrain.data import (
     check_eos,
     setup_dataloader,
     setup_train_dataset,
+    source_tokens,
     setup_val_dataset,
 )
 from prime_rl.trainer.pretrain.schedules import LRSchedule
-from prime_rl.trainer.sft.data import get_dataset_progress, get_dataset_state
+from prime_rl.trainer.sft.data import get_dataset_state
 from prime_rl.trainer.utils import (
     GarbageCollection,
     begin_backward,
@@ -150,13 +151,10 @@ def train(config: PretrainConfig):
     schedule_offset = checkpoint_step if restart_schedule else 0
     lr_schedule = LRSchedule(config.schedule, optimizer, config.max_steps - schedule_offset, schedule_offset)
 
-    dataloader = setup_dataloader(
-        setup_train_dataset(
-            config.data, config.max_steps, len(tokenizer), tokenizer.eos_token_id, non_dp_size=config.model.cp
-        ),
-        config.data.micro_batch_size,
-        config.data.num_workers,
+    train_dataset = setup_train_dataset(
+        config.data, config.max_steps, len(tokenizer), tokenizer.eos_token_id, non_dp_size=config.model.cp
     )
+    dataloader = setup_dataloader(train_dataset, config.data.micro_batch_size, config.data.num_workers)
 
     val_sources = {}
     if config.val is not None:
@@ -186,6 +184,20 @@ def train(config: PretrainConfig):
         )
         progress.step += 1
         logger.info(f"Resuming from step {checkpoint_step} (dataset_state={get_dataset_state(dataloader)})")
+
+    # Step s trains on the global windows [(s - 1) * batch_size, s * batch_size). The tokens per source are counted
+    # from the window sequence itself, which every data rank walks, so they are global without communication.
+    next_window = 0
+    source_totals = dict.fromkeys(train_dataset.names, 0)
+    if checkpoint_step is not None and not (config.ckpt or CheckpointConfig()).skip_dataloader:
+        next_window = checkpoint_step * config.data.batch_size
+        # The loaded state counts the windows before its own position, which is near next_window.
+        state = next(iter(get_dataset_state(dataloader).values()))
+        source_totals = dict(state["tokens"])
+        start, end = sorted((state["step"], next_window))
+        sign = 1 if next_window > state["step"] else -1
+        for name, tokens in source_tokens(train_dataset, start, end).items():
+            source_totals[name] += sign * tokens
 
     # Create the iterator only after a potential resume: iter() forks the workers with the
     # dataset's current state.
@@ -345,8 +357,11 @@ def train(config: PretrainConfig):
         dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
         num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
-        dataset_progress = get_dataset_progress(dataloader)
-        progress.total_samples = dataset_progress["step"]
+        step_tokens = source_tokens(train_dataset, next_window, next_window + config.data.batch_size)
+        next_window += config.data.batch_size
+        for name, tokens in step_tokens.items():
+            source_totals[name] += tokens
+        progress.total_samples = next_window
         step_time = time.perf_counter() - step_start_time - eval_time
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
@@ -368,8 +383,12 @@ def train(config: PretrainConfig):
             "loss/perplexity": math.exp(min(batch_loss, 20)),
             "loss/nan_count": nan_loss_count,
             "optim/lr": current_lr,
-            **{f"progress/{name}/epochs": epochs for name, epochs in dataset_progress["epochs"].items()},
-            **{f"progress/{name}/num_tokens": tokens for name, tokens in dataset_progress["tokens"].items()},
+            **{f"progress/{name}/step_tokens": tokens for name, tokens in step_tokens.items()},
+            **{f"progress/{name}/num_tokens": tokens for name, tokens in source_totals.items()},
+            **{
+                f"progress/{name}/epochs": tokens / train_dataset.sources[name].num_tokens
+                for name, tokens in source_totals.items()
+            },
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
             "perf/throughput": throughput,
