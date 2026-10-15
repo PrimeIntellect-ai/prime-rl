@@ -2,7 +2,7 @@ import math
 import uuid
 import warnings
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
@@ -21,37 +21,14 @@ from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
     GCConfig,
+    InitConfig,
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
+    ParametrizationConfig,
     TokenizerConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-
-TOKENIZER_FIELDS = ("vocab_size", "bos_token_id", "eos_token_id", "pad_token_id")
-
-
-class InitConfig(BaseConfig):
-    """Random weight initialization: every weight matrix and the embedding from N(0, std), scaled per role under
-    CompleteP (see ``[parametrization]``). Norm weights start at 1, biases at 0."""
-
-    std: float = Field(0.02, gt=0)
-    """Base standard deviation."""
-
-    seed: int = 0
-    """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
-
-
-class ParametrizationConfig(BaseConfig):
-    """CompleteP (muP extended to depth, Dey et al. 2025, alpha = 1) relative to a base shape: init std, learning
-    rate, Adam eps and weight decay scale per parameter role with ``m_N = hidden_size / base_hidden_size`` and
-    ``m_L = num_layers / base_num_layers``, so hyperparameters tuned on the base shape carry over."""
-
-    base_hidden_size: int = Field(ge=1)
-    """Hidden size of the base shape."""
-
-    base_num_layers: int = Field(ge=1)
-    """Number of layers of the base shape."""
 
 
 class MoEBalanceConfig(BaseConfig):
@@ -76,9 +53,6 @@ class PretrainMoEConfig(MoERuntimeConfig):
 
 
 class PretrainModelConfig(ModelConfig):
-    arch: dict[str, Any]
-    """The architecture: ``model_type`` (a model in ``prime_rl.trainer.models``, e.g. ``glm4_moe``) and the fields of its config class. ``vocab_size`` and the special token ids come from the tokenizer. The launcher writes the config and the tokenizer to ``<run_dir>/configs/model``, which ``name`` points at."""
-
     init: InitConfig = InitConfig()
     """Random weight initialization. Used unless the run resumes from a checkpoint."""
 
@@ -86,14 +60,6 @@ class PretrainModelConfig(ModelConfig):
 
     offload: Literal["none"] = "none"
     """CPU offloading is not supported: pretraining's per-role parameter groups need ``none``."""
-
-    @model_validator(mode="after")
-    def validate_arch(self):
-        if "model_type" not in self.arch:
-            raise ValueError("model.arch needs a model_type, e.g. 'glm4_moe'")
-        if derived := [key for key in TOKENIZER_FIELDS if key in self.arch]:
-            raise ValueError(f"model.arch must not set {derived}: they come from the tokenizer")
-        return self
 
 
 class TokenSourceConfig(BaseConfig):
@@ -290,13 +256,15 @@ PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuo
 
 
 class PretrainConfig(BaseConfig):
-    model: PretrainModelConfig
+    model: PretrainModelConfig = PretrainModelConfig()
+    """The model. ``model.name`` is an HF model id or a local model directory with a ``config.json`` (as in SFT and
+    RL); its weights are not loaded: the model is initialized from scratch (``model.init``) or resumed."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer processes."""
 
-    tokenizer: TokenizerConfig
-    """The tokenizer (``tokenizer.name`` is required). It sets the vocabulary and special tokens of the model."""
+    tokenizer: TokenizerConfig = TokenizerConfig()
+    """The tokenizer. Defaults to the one in ``model.name``."""
 
     data: PretrainDataConfig
 
@@ -388,7 +356,7 @@ class PretrainConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_run_identity(self):
         if self.run.name is None:
-            self.run.name = f"{self.model.arch['model_type']}--{uuid.uuid4().hex[:8]}"
+            self.run.name = f"{Path(self.model.name).name}--{uuid.uuid4().hex[:8]}"
         if self.run.dir is None:
             self.run.dir = self.run.name
         if self.monitors.wandb is not None and self.monitors.wandb.name is None:
@@ -396,15 +364,9 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_model_dir(self):
-        """The model is trained from ``<run_dir>/configs/model``, written by the launcher from ``model.arch``."""
-        self.model.name = (self.run_dir / "configs" / "model").as_posix()
-        return self
-
-    @model_validator(mode="after")
     def auto_setup_tokenizer(self):
         if self.tokenizer.name is None:
-            raise ValueError("tokenizer.name is required")
+            self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
         return self

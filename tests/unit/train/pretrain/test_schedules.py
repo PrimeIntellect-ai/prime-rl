@@ -31,7 +31,7 @@ def test_wsd_endpoints_and_shapes():
 
 def test_schedule_phases_must_fit_max_steps():
     config = PretrainConfig(
-        model={"arch": {"model_type": "llama"}},
+        model={"name": "configs/debug/fake/pretrain-model"},
         tokenizer={"name": "t"},
         data={"type": "fake", "seq_len": 8, "batch_tokens": 8, "micro_batch_tokens": 8},
         optim={"lr": 1e-3},

@@ -27,34 +27,6 @@ PRETRAIN_CONFIG = "pretrain.json"
 PRETRAIN_SBATCH = "pretrain.sbatch"
 
 
-def write_model_dir(config: PretrainConfig) -> None:
-    """Write the config built from ``[model.arch]`` and the tokenizer to ``<run_dir>/configs/model``. The vocabulary size
-    (rounded up to a multiple of 128) and the special token ids come from the tokenizer."""
-    from transformers import AutoTokenizer
-    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
-
-    import prime_rl.trainer.models  # noqa: F401 - registers the custom model configs with AutoConfig
-
-    arch = dict(config.model.arch)
-    config_class = CONFIG_MAPPING[arch.pop("model_type")]
-    # PretrainedConfig keeps unknown kwargs as attributes, so a typo would silently do nothing.
-    if unknown := arch.keys() - config_class().to_dict().keys():
-        raise ValueError(f"[model.arch] fields {sorted(unknown)} do not exist on {config_class.__name__}")
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.tokenizer.name, trust_remote_code=config.tokenizer.trust_remote_code
-    )
-    hf_config = config_class(
-        **arch,
-        vocab_size=-(-len(tokenizer) // 128) * 128,
-        bos_token_id=tokenizer.bos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,
-    )
-    model_dir = Path(config.model.name)
-    hf_config.save_pretrained(model_dir)
-    tokenizer.save_pretrained(model_dir)
-
-
 def pretrain_slurm(config: PretrainConfig, config_path: Path, log_dir: Path) -> None:
     logger = get_logger()
     script_path = get_launcher_dir(config.run_dir) / PRETRAIN_SBATCH
@@ -90,7 +62,9 @@ def pretrain(config: PretrainConfig):
     write_launch_artifacts(config_dir, "pretrain")
 
     if not config.dry_run:
-        write_model_dir(config)
+        from prime_rl.trainer.model import pre_download_model
+
+        pre_download_model(config.model.name, skip_weights=True)
 
     config_path = config_dir / PRETRAIN_CONFIG
     exclude = {"dry_run", "clean"}

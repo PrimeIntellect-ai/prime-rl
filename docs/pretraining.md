@@ -8,25 +8,21 @@ uv run pretrain @ examples/pretrain/glm4_moe.toml
 
 ## Model
 
-`[model.arch]` is the whole architecture: a `model_type` from `prime_rl.trainer.models` and the fields of its config class. Unknown fields are rejected. The vocabulary size (`len(tokenizer)` rounded up to a multiple of 128) and the BOS, EOS and pad ids come from the tokenizer, so they cannot disagree with it.
+The model is set up as in SFT and RL: `model.name` is an HF model id or a local model directory with a `config.json`. Its weights are not loaded. The model starts from a random init (below) or from a checkpoint. A new architecture is a directory with only a `config.json` for a model type in `prime_rl.trainer.models`; [`examples/pretrain/glm4-moe-d512`](../examples/pretrain/glm4-moe-d512/config.json) is the one in the example. `vocab_size` and the BOS, EOS and pad ids in the config must fit the tokenizer. The checked-in configs round `len(tokenizer)` up to a multiple of 128 and use the tokenizer's special ids, with EOS as the pad id if the tokenizer has none.
 
 ```toml
-[model.arch]
-model_type = "glm4_moe"
-hidden_size = 512
-num_hidden_layers = 8
-n_routed_experts = 64
-num_experts_per_tok = 6
+[model]
+name = "examples/pretrain/glm4-moe-d512"
 
 [tokenizer]
-name = "tokenizers/deepseek-v4-flash-base"
+name = "tokenizers/deepseek-v4-flash-base"  # defaults to model.name
 ```
 
-The launcher writes the config and the tokenizer to `<run_dir>/configs/model` and trains from there, so the trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all see an ordinary model directory. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
+The trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all read the same model directory and tokenizer. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
 
 ## Initialization
 
-Weights start from a random init, unless the run resumes from a checkpoint.
+Weights start from a random init, unless the run resumes from a checkpoint. The init lives with the models (`prime_rl.trainer.models.init`) and runs in the shared `setup_model` when it gets an `init` config. SFT and RL do not pass one, so their behavior is unchanged.
 
 | Field | Meaning |
 |---|---|
@@ -59,7 +55,7 @@ With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are tra
 
 In MoE models, the expert matrices follow the hidden and `down_proj` rules per expert. The router maps the width to a fixed number of experts, so under Muon its learning rate falls as 1/m_N (with AdamW it follows the hidden rule).
 
-Use QK-norm (`model.arch.use_qk_norm = true`) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
+Use QK-norm (`"use_qk_norm": true` in the model config) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
 ## Learning-rate schedule
 

@@ -2,17 +2,9 @@ from collections import defaultdict
 
 from torch import nn
 
-from prime_rl.configs.pretrain import ParametrizationConfig, PretrainAdamWConfig, PretrainMuonConfig
-from prime_rl.trainer.init import param_role
+from prime_rl.configs.pretrain import PretrainAdamWConfig, PretrainMuonConfig
+from prime_rl.trainer.models.init import param_role
 from prime_rl.utils.weights import resolve_fqn
-
-
-def multipliers(config: ParametrizationConfig | None, model: nn.Module) -> tuple[float, float]:
-    """Width and depth multipliers ``(m_N, m_L)`` of the model relative to the CompleteP base shape; 1 and 1 in
-    the standard parametrization."""
-    if config is None:
-        return 1.0, 1.0
-    return model.config.hidden_size / config.base_hidden_size, model.config.num_hidden_layers / config.base_num_layers
 
 
 def param_groups(

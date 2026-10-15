@@ -32,8 +32,8 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.init import init_weights, param_role
-from prime_rl.trainer.pretrain.parametrization import multipliers, param_groups
+from prime_rl.trainer.models.init import multipliers, param_role
+from prime_rl.trainer.pretrain.parametrization import param_groups
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.data import (
     TokenShards,
@@ -145,10 +145,14 @@ def train(config: PretrainConfig):
 
     logger.info(f"Initializing model ({config.model})")
     # Weights come from the checkpoint when resuming and from the random init otherwise.
-    model = setup_model(config.model, parallel_dims, loading_from_checkpoint_later=True)
+    model = setup_model(
+        config.model,
+        parallel_dims,
+        loading_from_checkpoint_later=checkpoint_step is not None,
+        init=config.model.init if checkpoint_step is None else None,
+        parametrization=config.parametrization,
+    )
     m_n, m_l = multipliers(config.parametrization, model)
-    if checkpoint_step is None:
-        init_weights(model, config.model.init, m_n, m_l)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
     num_params = count_parameters(model)

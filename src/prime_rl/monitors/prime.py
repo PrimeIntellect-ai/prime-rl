@@ -176,7 +176,7 @@ class PrimeTrainMonitor(Monitor):
             # Pretraining trains on token data from scratch: no environments, the model is its architecture.
             init_kwargs = dict(
                 name=self.config.name,
-                model=config.model.arch["model_type"],
+                model=config.model.name,
                 environments=[],
                 training=pr.TrainingSpec(
                     max_steps=config.max_steps,
