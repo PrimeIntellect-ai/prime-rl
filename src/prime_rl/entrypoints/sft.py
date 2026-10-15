@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import uuid
@@ -233,6 +235,10 @@ def write_slurm_script(
             ),
             **eval_vars,
         )
+
+    # Record execution before the first command, preserving the #SBATCH header.
+    marker = shlex.quote(str(config.slurm.project_dir / config_path.parent / "launcher.started"))
+    script = re.sub(r"(?m)^(?=[ \t]*[^#\s])", lambda _: f"touch {marker} || exit $?\n", script, count=1)
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)

@@ -31,6 +31,8 @@ def check_resume_config(config: EvalConfig | RLConfig | SFTConfig, saved_paths: 
         return
 
     expected = config.model_dump(mode="json")
+    # A dry-run resume validates the settings used by the eventual execution.
+    expected["dry_run"] = False
     for saved_path in saved_paths:
         if not saved_path.is_file():
             raise ValueError(
