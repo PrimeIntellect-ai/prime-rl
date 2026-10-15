@@ -8,10 +8,10 @@ from pydantic import ValidationError
 from verifiers.v1.utils.eval import plan_rollouts
 
 from prime_rl.configs.eval import EvalConfig
-from prime_rl.eval import resume
 from prime_rl.monitors.file.traces import get_trace_stream
 from prime_rl.monitors.file.traces.chunks import ChunkedJsonl
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.utils import resume
 from prime_rl.utils.pathing import get_file_monitor_dir
 
 
@@ -105,7 +105,7 @@ def test_take_landed_reads_every_attempt_once(tmp_path, skip_checks) -> None:
     def land(*keys: str) -> None:
         resume.stamp_config(tmp_path, config.model_dump(mode="json"))
         if skip_checks:
-            (get_file_monitor_dir(tmp_path) / resume.CONFIG_NAME).unlink()
+            (get_file_monitor_dir(tmp_path) / resume.EVAL_CONFIG_NAME).unlink()
         stream = ChunkedJsonl(get_trace_stream(tmp_path), max_bytes=1 << 20, compress=False)
         for key in keys:
             stream.append(orjson.dumps({**_record("math", key), "id": key}, option=orjson.OPT_APPEND_NEWLINE))
