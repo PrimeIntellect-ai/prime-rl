@@ -197,7 +197,6 @@ class SparseDeltaEncoder:
                 sizes[key] = (shard[0].numel(), shard[1], self.wire_dtypes[key])
         aligned = {key: -(-numel * dtype.itemsize // 8) * 8 for key, (numel, _, dtype) in sizes.items()}
         buffer, self.pinning = pin_in_background(sum(aligned.values()))
-        self.pin_start = time.perf_counter()
         offset = 0
         for key, (numel, global_offset, dtype) in sizes.items():
             bits = bits_dtype(str(dtype).removeprefix("torch."))
@@ -288,6 +287,9 @@ class SparseDeltaEncoder:
             values.append(changed_values.view(torch.uint8).cpu())
             counts.append(torch.bincount(segment, minlength=len(starts)))
             names.extend(name for _, name in self.segments[fqn])
+        if first:
+            self.pin_start = time.perf_counter()
+            self.pinning.start()
         if self.fp8 and dist.is_initialized():
             changed_anywhere = torch.tensor(int(self.scales_changed), device=next(model.parameters()).device)
             dist.all_reduce(changed_anywhere, op=dist.ReduceOp.MAX)
