@@ -62,9 +62,9 @@ class SparseDeltaEncoder:
     Tensors the engines hold in fp8 (``set_fp8_layout``: HF name -> scale format,
     from the engine layout) are quantized with vLLM's own per-block quantizer,
     previous and current weights alike, and diffed as fp8 bytes. Their 128-row
-    blocks must not straddle trainer ranks, else the trainer tensor is gathered
-    (by the caller, before ``encode``). A step that changes any block scale is
-    published as a full checkpoint.
+    blocks must not straddle trainer ranks, else the trainer tensor is gathered.
+    They are diffed on the training thread (``prepare``). A step that changes
+    any block scale is published as a full checkpoint.
     """
 
     # Elements per transient chunk of the diff (bf16: 128 MiB per temporary)
@@ -104,6 +104,8 @@ class SparseDeltaEncoder:
         self.shards: dict[str, tuple[int, int]] = {}
         # key -> previous wire bits: GPU tensors, or views into the host buffer
         self.snapshot: dict[str, torch.Tensor] = {}
+        self.previous: dict[str, torch.Tensor] = {}
+        self.fp8_part: list | None = None
         self.on_gpu: bool | None = None  # None until placed (auto: at the first delta)
         self.host_buffer: torch.Tensor | None = None
         self.host: dict[str, torch.Tensor] = {}
@@ -173,6 +175,7 @@ class SparseDeltaEncoder:
             dist.all_reduce(flags, op=dist.ReduceOp.MAX)
         return {key for key, flag in zip(keys, flags.tolist()) if flag}
 
+    @torch.no_grad()
     def local_shards(self, model: nn.Module, is_master: bool) -> list[tuple]:
         """This rank's ``(key, fqn, flat shard, global flat offset, gathered)`` for ``encode``, taken on the
         training thread: FSDP swaps module parameters during forward, but the sharded storage stays put.
@@ -299,9 +302,27 @@ class SparseDeltaEncoder:
         return parts
 
     @torch.no_grad()
-    def encode(
-        self, shards: list[tuple], peak_reserved: int, ready: torch.cuda.Event, weights_read: threading.Event
-    ) -> tuple | None:
+    def prepare(self, shards: list[tuple], peak_reserved: int) -> None:
+        """The training thread's part of an encode, before ``encode``: place the snapshot at the first delta,
+        and diff the tensors held in fp8. vLLM's quantizer is torch.compile'd, and running it next to the
+        training step breaks activation checkpointing there."""
+        self.previous = self.snapshot
+        self.fp8_part = None
+        if not self.initialized:
+            return
+        if self.on_gpu is None:
+            self._place(peak_reserved)
+            if self.on_gpu:
+                device = f"cuda:{self.device}"
+                self.snapshot = {key: torch.empty_like(bits, device=device) for key, bits in self.host.items()}
+        fp8 = [shard for shard in shards if shard[1] in self.fp8]
+        if fp8:
+            if not self.on_gpu or self.previous is not self.snapshot:
+                self._host_ready()
+            self.fp8_part = self._diff(fp8)
+
+    @torch.no_grad()
+    def encode(self, shards: list[tuple], ready: torch.cuda.Event, weights_read: threading.Event) -> tuple | None:
         """Diff the shards against the snapshot and advance it, on the side stream once ``ready`` (recorded
         after the optimizer step) has passed. Sets ``weights_read`` once done reading the weights. Returns
         ``(entries, gaps, xor value bytes, new-weight checksum per HF tensor part, scales changed on this
@@ -316,24 +337,33 @@ class SparseDeltaEncoder:
                     self.stream.synchronize()
                     self.initialized = True
                     return None
-                return self._encode(shards, peak_reserved, weights_read)
+                if not self.on_gpu or self.previous is not self.snapshot:
+                    self._host_ready()
+                part = self._diff([shard for shard in shards if shard[1] not in self.fp8])
+                self.stream.synchronize()
         finally:
             weights_read.set()
+        self.previous = self.snapshot
+        self._pin_host()
+        if self.fp8_part is not None:
+            part = [ours + theirs for ours, theirs in zip(part[:-1], self.fp8_part[:-1])] + [self.fp8_part[-1]]
+        names, counts, gaps, values, checksum_names, checksums, scales_changed = part
+        counts = torch.cat(counts).tolist() if counts else []
+        checksums = dict(zip(checksum_names, torch.stack(checksums).tolist())) if checksums else {}
+        entries = [(name, count) for name, count in zip(names, counts) if count]
+        empty = torch.empty(0, dtype=torch.uint8)
+        gaps = torch.cat(gaps) if gaps else empty
+        return entries, gaps, torch.cat(values) if values else empty, checksums, scales_changed
 
-    def _encode(self, shards: list[tuple], peak_reserved: int, weights_read: threading.Event) -> tuple:
+    def _diff(self, shards: list[tuple]) -> list:
+        """Diff ``shards`` against ``self.previous`` on the current stream, writing the new bits to the
+        snapshot, in chunks of ``CHUNK`` elements (fp8: whole 128-row blocks)."""
         device = torch.device(f"cuda:{self.device}")
-        previous_snapshot = self.snapshot
-        if self.on_gpu is None:
-            self._place(peak_reserved)
-            if self.on_gpu:
-                self.snapshot = {key: torch.empty_like(bits, device=device) for key, bits in self.host.items()}
-        if not self.on_gpu or previous_snapshot is not self.snapshot:
-            self._host_ready()
         names, counts, gaps, values = [], [], [], []
         checksum_names, checksums = [], []
         scales_changed = False
         for key, fqn, shard, offset, gathered in shards:
-            previous, out, wire = previous_snapshot[key], self.snapshot[key], self.wire_dtypes[key]
+            previous, out, wire = self.previous[key], self.snapshot[key], self.wire_dtypes[key]
             segments = [
                 (start - offset, start - offset + self.hf_numel[name], name)
                 for start, name in self.segments[fqn]
@@ -397,15 +427,7 @@ class SparseDeltaEncoder:
             values.append(changed_values.view(torch.uint8).cpu())
             counts.append(torch.bincount(segment, minlength=len(starts)))
             names.extend(name for _, name in self.segments[fqn])
-        self.stream.synchronize()
-        weights_read.set()
-        self._pin_host()
-        counts = torch.cat(counts).tolist() if counts else []
-        checksums = dict(zip(checksum_names, torch.stack(checksums).tolist())) if checksums else {}
-        entries = [(name, count) for name, count in zip(names, counts) if count]
-        empty = torch.empty(0, dtype=torch.uint8)
-        gaps = torch.cat(gaps) if gaps else empty
-        return entries, gaps, torch.cat(values) if values else empty, checksums, scales_changed
+        return [names, counts, gaps, values, checksum_names, checksums, scales_changed]
 
 
 class FileSystemWeightSender(WeightSender):
@@ -529,10 +551,11 @@ class FileSystemWeightSender(WeightSender):
             anchor = start_anchor[0]
             if anchor:
                 self.pending_anchor = step
+        self.encoder.prepare(shards, torch.cuda.max_memory_reserved())
         ready = torch.cuda.Event()
         ready.record()
         self.weights_read = threading.Event()
-        args = (step, base_step, step_dir, shards, torch.cuda.max_memory_reserved(), ready, self.weights_read)
+        args = (step, base_step, step_dir, shards, ready, self.weights_read)
         self._submit(self.encodes, self._encode, *args, boot, full, anchor)
         if boot:
             if self.world.is_master:
@@ -553,7 +576,6 @@ class FileSystemWeightSender(WeightSender):
         base_step: int | None,
         step_dir: Path,
         shards,
-        peak_reserved: int,
         ready,
         weights_read: threading.Event,
         boot: bool,
@@ -566,7 +588,7 @@ class FileSystemWeightSender(WeightSender):
         if not encoder.on_gpu:
             self._wait_for_host_readers()  # anchors written from the host snapshot, which the encode advances
         start = time.perf_counter()
-        delta = encoder.encode(shards, peak_reserved, ready, weights_read)
+        delta = encoder.encode(shards, ready, weights_read)
         encode_time = time.perf_counter() - start
         if delta is None:
             num_bytes = sum(numel * encoder.wire_dtypes[key].itemsize for key, (numel, _) in encoder.shards.items())
