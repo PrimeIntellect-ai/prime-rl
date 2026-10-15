@@ -54,7 +54,7 @@ from prime_rl.trainer.pretrain.suite import (
     summarize,
 )
 from prime_rl.trainer.pretrain.step import run_micro_batches
-from prime_rl.trainer.pretrain.metrics import DeadExperts, SpikeDetector, grad_norms_by_group
+from prime_rl.trainer.pretrain.metrics import DeadExperts, SpikeDetector, grad_norms_by_group, reduce_stats
 from prime_rl.trainer.sft.data import get_dataset_state
 from prime_rl.trainer.utils import (
     get_dcp_group,
@@ -405,6 +405,13 @@ def train(config: PretrainConfig):
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
+        # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
+        local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
+        peak_memory = reduce_stats({"sum": local_peak_memory}, {"max": local_peak_memory}, dp_cp_group)
+        peak_memory_metrics = {
+            "perf/peak_memory/max": peak_memory["max"].item(),
+            "perf/peak_memory/mean": peak_memory["sum"].item() / dist.get_world_size(dp_cp_group),
+        }
 
         # The last step's checkpoint is written once after the loop.
         save_ckpt_time = 0.0
@@ -444,14 +451,12 @@ def train(config: PretrainConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_tokens, step_time)
-        peak_memory = torch.cuda.max_memory_reserved() / 1024**3
-
         step_message = f"Step {progress.step} | {step_time:.2f}s | Loss {result.loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
         step_message += (
             f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}%"
-            f" | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB"
+            f" | Peak Mem. {peak_memory_metrics['perf/peak_memory/max']:.1f}/{max_memory:.1f} GiB"
         )
         logger.success(step_message)
 
@@ -478,6 +483,7 @@ def train(config: PretrainConfig):
             "time/save_ckpt": save_ckpt_time,
             "time/evals": eval_time,
             **disk_metrics,
+            **peak_memory_metrics,
             **result.metrics,
             **moe_metrics,
             **diagnostic_metrics,

@@ -30,7 +30,7 @@ class StepResult:
     """Global ``[num_moe_layers, num_experts]`` token counts of the step (fp32, on the GPU). None for dense models."""
 
     metrics: dict[str, float]
-    """Statistics of the step over all ranks: data wait and peak memory (max and mean over ranks), and for MoE
+    """Statistics of the step over all ranks: data wait (max and mean over ranks), and for MoE
     models the expert balance of the global counts (`expert_load_metrics`), the busiest expert of one rank's
     micro-batch over the mean (``expert_load/micro_max_mean``, mean and max over ranks and micro-batches) and the
     routing confidence."""
@@ -85,10 +85,8 @@ def run_micro_batches(
             sums["micro_max_mean"] = sums.get("micro_max_mean", zero) + micro_max_mean.mean()
             maxes["micro_max_mean_max"] = torch.maximum(maxes.get("micro_max_mean_max", zero), micro_max_mean.amax())
 
-    # Peak memory since the caller last reset the counter (at the start of the step: the forward and backward passes).
-    peak_memory = torch.cuda.max_memory_reserved() / 1024**3
-    sums |= {"data_time": zero + data_time, "peak_memory": zero + peak_memory}
-    maxes |= {"data_time_max": zero + data_time, "peak_memory_max": zero + peak_memory}
+    sums["data_time"] = zero + data_time
+    maxes["data_time_max"] = zero + data_time
     extra_sums = extra_sums or {}
     stats = reduce_stats(sums | {f"extra/{name}": value for name, value in extra_sums.items()}, maxes, dp_cp_group)
 
@@ -99,8 +97,6 @@ def run_micro_batches(
     metrics = {
         "time/data/max": stats["data_time_max"].item(),
         "time/data/mean": stats["data_time"].item() / num_ranks,
-        "perf/peak_memory/max": stats["peak_memory_max"].item(),
-        "perf/peak_memory/mean": stats["peak_memory"].item() / num_ranks,
     }
     tokens_per_expert = None
     if is_moe_model:
