@@ -11,7 +11,7 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.model import is_tt_moe_model, iter_moe_blocks
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.pretrain.metrics import expert_load_metrics, reduce_stats, take_routing_counts
+from prime_rl.trainer.pretrain.metrics import expert_load_metrics, moe_layer_indices, reduce_stats, take_routing_counts
 from prime_rl.trainer.utils import begin_backward, finish_backward, prepare_gradient_offload, scale_gradients_
 
 
@@ -128,7 +128,7 @@ def run_micro_batches(
     if is_moe_model:
         counts = stats["expert_counts"]
         routed_tokens = counts.sum(dim=1) / next(iter_moe_blocks(model)).router.top_k
-        metrics |= expert_load_metrics(counts) | {
+        metrics |= expert_load_metrics(counts, moe_layer_indices(model)) | {
             "expert_load/micro_max_mean/mean": stats["micro_max_mean"].item() / (grad_accum_steps * num_ranks),
             "expert_load/micro_max_mean/max": stats["micro_max_mean_max"].item(),
             "router/confidence": (stats["routing_confidence"] / routed_tokens).mean().item(),

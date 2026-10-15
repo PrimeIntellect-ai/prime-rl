@@ -8,6 +8,8 @@ from torch import Tensor, nn
 from torch.distributed.tensor import DTensor, Partial, Replicate
 
 from prime_rl.trainer.model import iter_moe_blocks
+from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.utils.vlm import get_language_model
 
 
 def reduce_stats(sums: dict[str, Tensor], maxes: dict[str, Tensor], group: dist.ProcessGroup) -> dict[str, Tensor]:
@@ -39,11 +41,17 @@ def take_routing_counts(model: nn.Module) -> tuple[Tensor, Tensor]:
     return counts, confidence
 
 
-def expert_load_metrics(counts: Tensor) -> dict[str, float]:
+def moe_layer_indices(model: nn.Module) -> list[int]:
+    """The decoder-layer index of every MoE layer, in the order of `iter_moe_blocks`."""
+    return [index for index, layer in enumerate(get_language_model(model).layers) if isinstance(getattr(layer, "mlp", None), MoE)]
+
+
+def expert_load_metrics(counts: Tensor, layer_indices: list[int]) -> dict[str, float]:
     """Balance of the `[num_moe_layers, num_experts]` expert counts of a whole step, per layer, summarized as the
     mean and the worst layer. `max_mean` / `min_mean`: busiest / least-loaded expert over the mean load; `cv`:
     std / mean; `cold_frac`: experts under 0.1x the mean load; `entropy`: entropy of the experts' shares of the
-    assignments over log(num_experts) (1 = uniform)."""
+    assignments over log(num_experts) (1 = uniform). Also per decoder layer (``layer_indices``): `max_mean` and
+    `top_share`, the busiest expert's share of the layer's assignments."""
     mean = counts.mean(dim=1)
     share = counts / counts.sum(dim=1, keepdim=True)
     per_layer = {
@@ -57,6 +65,9 @@ def expert_load_metrics(counts: Tensor) -> dict[str, float]:
     for name, (values, worst) in per_layer.items():
         metrics[f"expert_load/{name}/mean"] = values.mean().item()
         metrics[f"expert_load/{name}/{worst}"] = (values.amax() if worst == "max" else values.amin()).item()
+    for layer, max_mean, top_share in zip(layer_indices, per_layer["max_mean"][0], share.amax(dim=1)):
+        metrics[f"expert_load/layer_{layer}/max_mean"] = max_mean.item()
+        metrics[f"expert_load/layer_{layer}/top_share"] = top_share.item()
     return metrics
 
 
