@@ -9,7 +9,7 @@ from typing import Any, Literal
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
-from prime_rl.orchestrator.types import DispatchFailure
+from prime_rl.orchestrator.types import DispatchFailure, EvalBatch
 from prime_rl.orchestrator.utils import compute_pass_metrics, episode_env_name, episode_group_id
 
 Subset = Literal["all", "effective"]
@@ -393,16 +393,65 @@ class EvalMetrics(EpisodeMetrics):
 
     @property
     def reward(self) -> Stat:
-        return Stat([float(record.trace.reward) for record in self.records])
+        return Stat(
+            [float(record.trace.reward) for record in self.records]
+            + [0.0] * sum(not episode.traces for episode in self.episodes)
+        )
 
-    def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
+    def to_wandb(
+        self,
+        *,
+        prefix: str,
+        subset: Subset,
+        missing: int = 0,
+        reward_names: dict[str, set[str]] | None = None,
+    ) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        for agent, traces in self.by_agent().items():
+        if reward_names is None:
+            reward_names = {
+                agent: {name for trace in traces.traces for name in trace.rewards}
+                for agent, traces in self.by_agent().items()
+            }
+        for agent, names in reward_names.items():
             metric_prefix = f"{prefix}/{subset}/{agent}"
-            out[f"{metric_prefix}/avg@{self.group_size}"] = traces.stats()["reward"].mean()
+            records = [record for record in self.records if record.trace.agent.name == agent]
+            # Keep an absent agent or unreturned attempt in the reward denominator.
+            zeros = [0.0] * (missing + len(self.episodes) - len({id(record.episode) for record in records}))
+            scores = [float(record.trace.reward) for record in records] + zeros
+            if not scores:
+                continue
+            out |= Stat(scores).to_dict(f"{metric_prefix}/reward")
+            for name in sorted(names):
+                values = [
+                    reward.value if (reward := record.trace.rewards.get(name)) is not None else 0.0
+                    for record in records
+                ]
+                out |= Stat(values + zeros).to_dict(f"{metric_prefix}/rewards/{name}")
+            out[f"{metric_prefix}/avg@{self.group_size}"] = Stat(scores).mean()
             if subset == "effective":
-                out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(traces.records).items()}
+                out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(records).items()}
         return out
+
+
+def eval_batch_metrics(batch: EvalBatch, agent_names: list[str]) -> dict[str, float]:
+    """Use the completed batch's accounting for both eval entrypoints."""
+    episodes = batch.episodes
+    effective = episodes.effective
+    missing = len(batch.failures) + batch.cancelled
+    total = len(episodes) + missing
+    if not total:
+        return {}
+    prefix = f"eval/{batch.env_name}"
+    reward_names: dict[str, set[str]] = {agent: set() for agent in agent_names}
+    for record in episodes.records:
+        reward_names.setdefault(record.trace.agent.name, set()).update(record.trace.rewards)
+    out = episodes.metrics.to_wandb(prefix=prefix, subset="all", missing=missing, reward_names=reward_names)
+    out |= effective.metrics.to_wandb(prefix=prefix, subset="effective", reward_names=reward_names)
+    out[f"{prefix}/effective/coverage/mean"] = len(effective) / total
+    out[f"{prefix}/all/has_error/mean"] = (sum(episodes.metrics.has_error.values) + len(batch.failures)) / total
+    out[f"{prefix}/all/cancelled/mean"] = batch.cancelled / total
+    out |= dispatch_failure_metrics(batch.failures, prefix=f"{prefix}/all", total_attempts=total)
+    return out
 
 
 class EpisodeCollection:
@@ -527,22 +576,39 @@ class TrainEpisodes(EpisodeCollection):
         return TrainMetrics(self.selected_episodes, self.records, self.cancelled)
 
 
+def episode_has_infra_error(episode: vf.Episode) -> bool:
+    if any(
+        trace.stop_condition in {"setup_timeout", "finalize_timeout", "scoring_timeout"} for trace in episode.traces
+    ):
+        return True
+    failed = [trace for trace in episode.traces if trace.has_error]
+    # Retry history survives recovery. Only a terminal failure classifies an outcome.
+    errors = [trace.last_error for trace in failed]
+    if not episode.ok and not failed:
+        errors.append(episode.last_error)
+        if episode.is_timeout:
+            return True
+    return any(
+        error is not None
+        and (
+            error.type in {"InterceptionError", "TunnelError"}
+            or (error.type in {"ProviderError", "SandboxError"} and error.status_code in {429, 500, 502, 503, 504})
+            or (error.type == "SandboxError" and "Failed to route request to sandbox" in error.message)
+        )
+        for error in errors
+    )
+
+
 class EvalEpisodes(EpisodeCollection):
-    def __init__(
-        self,
-        episodes: list[vf.Episode],
-        group_size: int,
-        predicate: Callable[[TraceRecord], bool] | None = None,
-    ) -> None:
-        super().__init__(episodes, predicate=predicate)
+    def __init__(self, episodes: list[vf.Episode], group_size: int) -> None:
+        super().__init__(episodes)
         self.group_size = group_size
 
     @property
     def effective(self) -> EvalEpisodes:
         return EvalEpisodes(
-            self.episodes,
+            [episode for episode in self.episodes if not episode_has_infra_error(episode)],
             self.group_size,
-            predicate=lambda record: not record.trace.has_error and record.trace.agent.trainable,
         )
 
     @property
