@@ -18,7 +18,7 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
 from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
-from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
+from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.deepseek_v41.attention import DeepseekV41Attention, PackedContext, SharedAttnState
@@ -136,12 +136,19 @@ class DeepseekV41PreTrainedModel(PreTrainedModelPrimeRL):
         return conversion_chain(config)
 
     def convert_to_prime(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        """Dequantize the published fp8 / fp4 weights to bf16, then rename.
+        """Dequantize the fp8 engram tables to bf16, then rename.
 
-        For the full checkpoint, prefer `tools/convert_deepseek_v41_to_prime.py`: this path loads the
-        whole state dict on one rank first.
+        Expects the bf16 checkpoint (`PrimeIntellect/DeepSeek-V4.1-Flash-bf16`), where everything
+        except the engram tables is already bf16. The tables stay fp8 there because vLLM serves them
+        only in fp8.
         """
-        dequantize_state_dict_(state_dict)
+        for key in [k for k in state_dict if k.endswith(".scale")]:
+            weight_key = key.removesuffix(".scale") + ".weight"
+            if ".engram.embed." not in key:
+                raise ValueError(
+                    f"{weight_key} is quantized; load the bf16 checkpoint PrimeIntellect/DeepSeek-V4.1-Flash-bf16"
+                )
+            state_dict[weight_key] = dequantize_weight(state_dict[weight_key], state_dict.pop(key))
         return super().convert_to_prime(state_dict)
 
 

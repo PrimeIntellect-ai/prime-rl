@@ -3,7 +3,7 @@
 clean = true
 
 [model]
-# A bf16 PrimeRL-format copy of deepseek-ai/DeepSeek-V4.1-Flash written by
+# A PrimeRL-format copy of PrimeIntellect/DeepSeek-V4.1-Flash-bf16 written by
 # tools/convert_deepseek_v41_to_prime.py (see the README).
 name = "/shared/models/DeepSeek-V4.1-Flash-bf16"  # FILL IN
 ep = 8
