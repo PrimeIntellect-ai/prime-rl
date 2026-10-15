@@ -17,6 +17,7 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.minimax_m2.configuration_minimax_m2 import MiniMaxM2Config
 from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain
+from prime_rl.utils.cp import RingParams
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 logger = logging.get_logger(__name__)
@@ -67,6 +68,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
+        ring_params: RingParams | None = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.FloatTensor:
         residual = hidden_states
@@ -76,6 +78,7 @@ class MiniMaxM2DecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             cu_seqlens=cu_seqlens,
             max_seqlen=max_seqlen,
+            ring_params=ring_params,
         )
         hidden_states = residual + hidden_states
 
@@ -172,6 +175,7 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        ring_params = RingParams.build(cu_seqlens, self.cp_context)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -185,6 +189,7 @@ class MiniMaxM2Model(MiniMaxM2PreTrainedModel):
                 position_embeddings=position_embeddings,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
+                ring_params=ring_params,
                 routed_experts=routed_experts_layer,
             )
 

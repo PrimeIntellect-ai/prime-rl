@@ -11,7 +11,7 @@ from prime_rl.trainer.models.gpt_oss.attention import (
     substitute_gpt_oss_ring_attention,
     substitute_gpt_oss_ulysses_attention,
 )
-from prime_rl.utils.cp import setup_cp_attention_params
+from prime_rl.utils.cp import CPContext, RingParams
 
 
 def _config() -> GptOssConfig:
@@ -100,13 +100,7 @@ def test_gpt_oss_context_parallel_attention(cp_style: str, cp_process_group):
         reference_sink_grad = attention.sinks.grad.detach().clone()
         attention.sinks.grad = None
 
-        position_ids = torch.tensor([[0, 1, 2, 3, 4, 0, 1, 2]], device="cuda")
-        setup_cp_attention_params(
-            position_ids,
-            process_group,
-            seq_lens=torch.tensor([5, 3], device="cuda"),
-            cp_style=cp_style,
-        )
+        ring_params = RingParams.build(cu_seqlens, CPContext(process_group, local_rank, 2, cp_style))
         if cp_style == "ring":
             substitute_gpt_oss_ring_attention(process_group, heads_k_stride=1)
         else:
@@ -116,7 +110,9 @@ def test_gpt_oss_context_parallel_attention(cp_style: str, cp_process_group):
         local_query = query[local_slice].detach().clone().requires_grad_()
         local_key = key[local_slice].detach().clone().requires_grad_()
         local_value = value[local_slice].detach().clone().requires_grad_()
-        actual = attention.compute_attention(local_query, local_key, local_value, cu_seqlens, 5)
+        actual = attention.compute_attention(
+            local_query, local_key, local_value, cu_seqlens, 5, ring_params=ring_params
+        )
         actual.float().square().sum().backward()
 
         gathered = [torch.empty_like(actual) for _ in range(2)]

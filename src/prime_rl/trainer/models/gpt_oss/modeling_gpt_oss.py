@@ -13,6 +13,7 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.utils.cp import RingParams
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -70,10 +71,13 @@ class GptOssDecoderLayer(nn.Module):
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
         routed_experts: torch.Tensor | None = None,
+        ring_params: RingParams | None = None,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, position_embeddings, cu_seqlens, max_seqlen)
+        hidden_states = self.self_attn(
+            hidden_states, position_embeddings, cu_seqlens, max_seqlen, ring_params=ring_params
+        )
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -144,6 +148,7 @@ class GptOssModel(GptOssPreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        ring_params = RingParams.build(cu_seqlens, self.cp_context)
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
@@ -155,6 +160,7 @@ class GptOssModel(GptOssPreTrainedModel):
                 cu_seqlens,
                 max_seqlen,
                 routed_experts=layer_routed_experts,
+                ring_params=ring_params,
             )
         return BaseModelOutput(last_hidden_state=self.norm(hidden_states))
 
