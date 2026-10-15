@@ -6,7 +6,7 @@ from tests.nightly.distributed.tiny_models import TOKENIZERS
 
 pytestmark = [pytest.mark.distributed, pytest.mark.gpu]
 
-TRAIN_STEPS, RESUME_STEPS, TIMEOUT = 5, 3, 900
+TRAIN_STEPS, RESUME_STEPS, TIMEOUT_SEC = 5, 3, 600
 
 
 @pytest.mark.parametrize("case", [case.param() for case in CASES])
@@ -17,7 +17,7 @@ def test_sft(case, tiny_checkpoint, run_process, tmp_path):
     def sft(*extra: str) -> None:
         cmd = ["uv", "run", "sft", *sft_args(case, model_name), "--output-dir", tmp_path.as_posix()]
         cmd += ["--run.name", case.id, *extra]
-        assert run_process(cmd, timeout=TIMEOUT).returncode == 0
+        assert run_process(cmd, timeout=TIMEOUT_SEC).returncode == 0
 
     if case.resume:
         sft("--max-steps", str(TRAIN_STEPS), "--ckpt")
