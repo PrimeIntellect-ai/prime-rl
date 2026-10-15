@@ -110,6 +110,8 @@ def write_rank_file(
     tmp = path.with_name(f".{path.name}.tmp")
     save_file(arrays, str(tmp), metadata=metadata)
     tmp.rename(path)
+    with open(path, "rb") as file:
+        drop_page_cache(file.fileno())
 
 
 def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -170,6 +172,8 @@ def write_anchor_shards(state_dict: dict[str, torch.Tensor], step_dir: Path, ran
         tmp = step_dir / f".{path.name}.tmp"
         save_torch_file({name: state_dict[name].contiguous() for name in names}, tmp, metadata={"format": "pt"})
         tmp.rename(path)
+        with open(path, "rb") as file:
+            drop_page_cache(file.fileno())
     (step_dir / f"anchor_rank{rank}.done").write_text(str(world_size))
 
 
@@ -222,6 +226,21 @@ def read_delta(
     gaps = torch.from_numpy(np.concatenate([g for _, g, _ in kept]) if kept else np.empty(0, np.int32))
     values = torch.from_numpy(np.concatenate([v for _, _, v in kept]) if kept else np.empty(0, np.uint8))
     return [([(name, len(g)) for name, g, _ in kept], gaps, values)], checksums
+
+
+def pin(num_bytes: int) -> torch.Tensor:
+    """Page-locked host memory of exactly ``num_bytes``, outside torch's caching host allocator
+    (which rounds sizes up and keeps freed blocks). Release it with ``unpin``."""
+    tensor = torch.from_numpy(np.empty(num_bytes, np.uint8))
+    if num_bytes:
+        error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), num_bytes, 0)
+        assert error == 0, f"cudaHostRegister failed: {error}"
+    return tensor
+
+
+def unpin(tensor: torch.Tensor) -> None:
+    if tensor.numel():
+        torch.cuda.cudart().cudaHostUnregister(tensor.data_ptr())
 
 
 def drop_page_cache(fd: int) -> None:

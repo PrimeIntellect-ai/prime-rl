@@ -85,7 +85,9 @@ class CheckpointIndexMap:
 
         def placeholders():
             for name, (shape, dtype) in tensors.items():
-                tensor = torch.empty(shape, dtype=getattr(torch, dtype), device=device)
+                # fp8 tensors of a delta are quantized from bf16 checkpoint tensors
+                checkpoint_dtype = torch.bfloat16 if dtype == "float8_e4m3fn" else getattr(torch, dtype)
+                tensor = torch.empty(shape, dtype=checkpoint_dtype, device=device)
                 source_names[tensor.untyped_storage()._cdata] = name
                 yield name, tensor
 

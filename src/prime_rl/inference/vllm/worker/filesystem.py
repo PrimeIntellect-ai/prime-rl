@@ -27,8 +27,10 @@ from prime_rl.utils.sparse_weights import (
     bits_dtype,
     decode_gaps,
     drop_page_cache,
+    pin,
     read_delta,
     read_manifest,
+    unpin,
 )
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -86,7 +88,9 @@ class FileSystemWeightUpdateWorker(Worker):
         read_time = time.perf_counter() - start
         num_bytes = sum(-(-gaps.nbytes // 4) * 4 + -(-values.nbytes // 4) * 4 for _, gaps, values in delta)
         if self.host_buffer is None or self.host_buffer.numel() < num_bytes:
-            self.host_buffer = torch.empty(num_bytes * 5 // 4, dtype=torch.uint8, pin_memory=True)
+            if self.host_buffer is not None:
+                unpin(self.host_buffer)
+            self.host_buffer = pin(num_bytes * 5 // 4)
         pinned, offset = [], 0
         for entries, gaps, values in delta:
             parts = []

@@ -24,9 +24,12 @@ from prime_rl.utils.sparse_weights import (
     MANIFEST,
     anchor_complete,
     as_bits,
+    bits_dtype,
     encode_gaps,
+    pin,
     quantize_fp8_blocks,
     read_engine_layout,
+    unpin,
     write_anchor_shards,
     write_rank_file,
 )
@@ -184,6 +187,20 @@ class SparseDeltaEncoder:
         changed = xor.nonzero().squeeze(1)
         return changed, xor[changed], current_bits.view(-1)
 
+    def _allocate_snapshot(self, model: nn.Module, is_master: bool) -> None:
+        """The previous broadcast's bits live in one pinned host buffer, so trainer GPU memory is unchanged."""
+        sizes = {}
+        for key, value in model.state_dict().items():
+            shard = self._local_shard(key, value, is_master) if resolve_fqn(model, key) in self.segments else None
+            if shard is not None and shard[0].numel():
+                sizes[key] = (shard[0].numel(), self.wire_dtypes[key])
+        aligned = {key: -(-numel * dtype.itemsize // 8) * 8 for key, (numel, dtype) in sizes.items()}
+        buffer, offset = pin(sum(aligned.values())), 0
+        for key, (numel, dtype) in sizes.items():
+            bits = bits_dtype(str(dtype).removeprefix("torch."))
+            self.snapshot[key] = buffer[offset : offset + numel * dtype.itemsize].view(bits)
+            offset += aligned[key]
+
     @staticmethod
     def _diff(bits: torch.Tensor, previous: torch.Tensor, chunk: int = 1 << 28) -> tuple[torch.Tensor, torch.Tensor]:
         """Changed flat indices of ``bits`` vs the pinned host ``previous`` and their XOR values,
@@ -208,6 +225,8 @@ class SparseDeltaEncoder:
         first = not self.initialized
         self.initialized = True
         self.scales_changed = False
+        if first:
+            self._allocate_snapshot(model, is_master)
         names, counts, gaps, values = [], [], [], []
         checksum_names, checksums = [], []
         for key, value in model.state_dict().items():
@@ -222,8 +241,6 @@ class SparseDeltaEncoder:
                 continue
             bits, offset = as_bits(shard[0].to(self.wire_dtypes[key])), shard[1]
             if first:
-                # The previous broadcast's bits live in pinned host memory, so the trainer's GPU memory is unchanged.
-                self.snapshot[key] = torch.empty(bits.shape, dtype=bits.dtype, pin_memory=True)
                 self.snapshot[key].copy_(bits)
                 continue
             if fqn in self.fp8:
@@ -242,15 +259,15 @@ class SparseDeltaEncoder:
             segment = torch.searchsorted(starts, position, right=True) - 1
             entry_starts = torch.ones_like(segment, dtype=torch.bool)
             entry_starts[1:] = segment[1:] != segment[:-1]
-            gaps.append(encode_gaps(position - starts[segment], entry_starts).to("cpu", non_blocking=True))
-            values.append(changed_values.view(torch.uint8).to("cpu", non_blocking=True))
+            gaps.append(encode_gaps(position - starts[segment], entry_starts).cpu())
+            values.append(changed_values.view(torch.uint8).cpu())
             counts.append(torch.bincount(segment, minlength=len(starts)))
             names.extend(name for _, name in self.segments[fqn])
         if self.fp8 and dist.is_initialized():
             changed_anywhere = torch.tensor(int(self.scales_changed), device=next(model.parameters()).device)
             dist.all_reduce(changed_anywhere, op=dist.ReduceOp.MAX)
             self.scales_changed = bool(changed_anywhere.item())
-        torch.cuda.synchronize()  # the snapshot and host copies are written asynchronously
+        torch.cuda.synchronize()  # the snapshot is written asynchronously
         if first or self.scales_changed:
             return None
         counts = torch.cat(counts).tolist() if counts else []
@@ -432,8 +449,8 @@ class FileSystemWeightSender(WeightSender):
                 f"Wrote the {step_dir.name} anchor: gather {gather_time:.1f}s, write {time.perf_counter() - start - gather_time:.1f}s"
             )
             state_dict.clear()
+            unpin(buffer)
             buffer = None
-            torch._C._host_emptyCache()  # return the pinned buffer to the OS
 
         thread = threading.Thread(target=write)
         thread.start()
@@ -442,7 +459,7 @@ class FileSystemWeightSender(WeightSender):
     def _allocate_anchor_buffer(self, model: nn.Module) -> torch.Tensor:
         if self.anchor_bytes is None:
             self.anchor_bytes = owned_weight_bytes(model)
-        return torch.empty(self.anchor_bytes, dtype=torch.uint8, pin_memory=True)
+        return pin(self.anchor_bytes)
 
     def _clean(self, step: int) -> None:
         # Sparse chains replay from their anchor, so keep everything since it.
