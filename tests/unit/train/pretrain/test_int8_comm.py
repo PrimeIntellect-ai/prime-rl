@@ -5,57 +5,59 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from prime_rl.trainer.pretrain.int8_comm import Int8AllGather, Int8ReduceScatter, dequantize, quantize
+from prime_rl.trainer.pretrain.int8_comm import BLOCK, Int8AllGather, Int8ReduceScatter
+
+pytestmark = [pytest.mark.gpu]
 
 # Per-rank chunk: an expert weight shard (quantized), a norm weight (raw), another expert shard (quantized).
-SEGMENTS = [(0, 512, True), (512, 6, False), (518, 256, True)]
-CHUNK = 774
+SEGMENTS = [(0, 4096, True), (4096, 6, False), (4102, 1024, True)]
+CHUNK = 5126
 
 
-def reference_values(rank: int) -> torch.Tensor:
-    generator = torch.Generator().manual_seed(rank)
-    return torch.randn(2, CHUNK, generator=generator) * torch.logspace(-3, 1, CHUNK)
+def quantize_reference(x: torch.Tensor) -> torch.Tensor:
+    """Blockwise int8 round trip: absmax / 127 scale per 128 values, round half to even."""
+    blocks = x.float().unflatten(-1, (-1, BLOCK))
+    scale = blocks.abs().amax(-1, keepdim=True) / 127
+    q = torch.where(scale > 0, blocks / scale, 0).round()
+    return (q * scale).flatten(-2)
 
 
-def fake_quantize(chunk: torch.Tensor) -> torch.Tensor:
-    out = chunk.clone()
+def round_trip(chunk: torch.Tensor) -> torch.Tensor:
+    out = chunk.float().clone()
     for offset, numel, quantized in SEGMENTS:
         if quantized:
-            out[..., offset : offset + numel] = dequantize(*quantize(chunk[..., offset : offset + numel]))
+            out[..., offset : offset + numel] = quantize_reference(chunk[..., offset : offset + numel])
     return out
+
+
+def values(seed: int) -> torch.Tensor:
+    generator = torch.Generator().manual_seed(seed)
+    x = torch.randn(CHUNK, generator=generator) * torch.logspace(-3, 1, CHUNK)
+    x[:BLOCK] = 0  # an all-zero block (FSDP padding)
+    return x.cuda()
 
 
 def run(rank: int, world_size: int) -> None:
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(29530 + world_size))
-    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
     group = dist.group.WORLD
 
     # All-gather: every rank gets every chunk with the expert segments int8-rounded, the rest exact.
-    shard = reference_values(rank)[0].to(torch.bfloat16)
-    output = torch.empty(world_size * CHUNK, dtype=torch.bfloat16)
-    output.view(world_size, CHUNK)[rank] = shard
-    Int8AllGather(SEGMENTS)(output, output.view(world_size, CHUNK)[rank], group)
-    expected = torch.stack(
-        [fake_quantize(reference_values(r)[0].to(torch.bfloat16).float()) for r in range(world_size)]
-    )
-    torch.testing.assert_close(output.view(world_size, CHUNK).float(), expected.bfloat16().float(), rtol=0, atol=0)
+    output = torch.empty(world_size, CHUNK, dtype=torch.bfloat16, device="cuda")
+    output[rank] = values(rank)
+    Int8AllGather(SEGMENTS)(output.view(-1), output[rank], group)
+    expected = torch.stack([round_trip(values(r).bfloat16()) for r in range(world_size)]).bfloat16()
+    torch.testing.assert_close(output, expected, rtol=0, atol=0)
 
     # Reduce-scatter: rank r gets the fp32 sum of every rank's int8-rounded chunk r.
-    grads = torch.cat([reference_values(rank * world_size + r)[1] for r in range(world_size)])
-    output = torch.empty(CHUNK)
+    grads = torch.cat([values(100 + rank * world_size + r) for r in range(world_size)])
+    output = torch.empty(CHUNK, device="cuda")
     Int8ReduceScatter(SEGMENTS)(output, grads, group, dist.ReduceOp.SUM)
-    expected = sum(fake_quantize(reference_values(r * world_size + rank)[1]) for r in range(world_size))
+    expected = sum(round_trip(values(100 + r * world_size + rank)) for r in range(world_size))
     torch.testing.assert_close(output, expected)
     dist.destroy_process_group()
 
 
-def test_quantize_error_is_within_half_a_step():
-    x = torch.randn(4, 1024) * torch.logspace(-4, 2, 1024)
-    q, scale = quantize(x)
-    step = scale.repeat_interleave(128, dim=-1)
-    assert ((dequantize(q, scale) - x).abs() <= step / 2 * (1 + 1e-6)).all()
-
-
-@pytest.mark.parametrize("world_size", [2, 3])
-def test_int8_collectives_match_fake_quantization(world_size):
-    mp.spawn(run, args=(world_size,), nprocs=world_size)
+def test_int8_collectives_match_reference_round_trip():
+    mp.spawn(run, args=(2,), nprocs=2)

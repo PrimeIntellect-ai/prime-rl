@@ -1,79 +1,135 @@
 """Int8 wire format for the routed experts' FSDP collectives.
 
-Each 128-value block of an expert weight row travels as int8 with one fp32 scale (absmax / 127). The all-gather
-dequantizes to bf16 on arrival, so compute, master weights and optimizer states are unchanged; every rank sees the
-same dequantized weights. Gradients are quantized per destination rank, exchanged with an all-to-all and summed in
-fp32 (NCCL cannot sum scaled int8). Other parameters in the same FSDP group travel unchanged.
+Each 128-value block of an expert weight row travels as int8 with one fp32 scale (absmax / 127, round to nearest
+even). The all-gather dequantizes to bf16 on arrival, so compute, master weights and optimizer states are unchanged;
+every rank sees the same dequantized weights. Gradients are quantized per destination rank, exchanged with an
+all-to-all and summed in fp32 (NCCL cannot sum scaled int8). Other parameters in the same FSDP group travel unchanged.
 """
-
-from collections.abc import Iterator
 
 import torch
 import torch.distributed as dist
+import triton
+import triton.language as tl
 from torch import nn
 from torch.distributed.fsdp._fully_shard._fsdp_api import AllGather, ReduceScatter
 from torch.distributed.fsdp._fully_shard._fsdp_collectives import DefaultAllocMixin
+from triton.language.extra import libdevice
 
 from prime_rl.trainer.model import get_language_model
 from prime_rl.trainer.models.layers.moe import MoE
 
 BLOCK = 128
+BLOCKS_PER_PROGRAM = 8
 
 
-def quantize(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Rows of ``x`` (last dim a multiple of BLOCK) -> int8 values and one fp32 scale per block."""
-    blocks = x.float().unflatten(-1, (-1, BLOCK))
-    scale = blocks.abs().amax(-1, keepdim=True) / 127
-    q = torch.where(scale > 0, blocks / scale, 0).round().to(torch.int8)
-    return q.flatten(-2), scale.squeeze(-1)
+@triton.jit
+def _quantize_kernel(x_ptr, q_ptr, s_ptr, x_stride, q_stride, s_stride, n_blocks, BLOCKS: tl.constexpr):
+    row = tl.program_id(0).to(tl.int64)
+    blocks = tl.program_id(1) * BLOCKS + tl.arange(0, BLOCKS)
+    cols = blocks[:, None] * 128 + tl.arange(0, 128)[None, :]
+    mask = (blocks < n_blocks)[:, None]
+    x = tl.load(x_ptr + row * x_stride + cols, mask=mask, other=0.0).to(tl.float32)
+    scale = tl.math.div_rn(tl.max(tl.abs(x), axis=1), 127.0)
+    q = tl.where(scale[:, None] > 0, libdevice.rint(tl.math.div_rn(x, scale[:, None])), 0.0)
+    tl.store(q_ptr + row * q_stride + cols, q.to(tl.int8), mask=mask)
+    tl.store(s_ptr + row * s_stride + blocks, scale, mask=blocks < n_blocks)
 
 
-def dequantize(q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return (q.unflatten(-1, (-1, BLOCK)).float() * scale.unsqueeze(-1)).flatten(-2)
+@triton.jit
+def _dequantize_kernel(
+    q_ptr, s_ptr, out_ptr, q_stride, s_stride, out_stride, n_rows, n_blocks, SUM: tl.constexpr, BLOCKS: tl.constexpr
+):
+    """SUM: out[0] = sum over rows of the dequantized rows (fp32 accumulation); else out[row] = row dequantized."""
+    blocks = tl.program_id(0) * BLOCKS + tl.arange(0, BLOCKS)
+    cols = blocks[:, None] * 128 + tl.arange(0, 128)[None, :]
+    mask = (blocks < n_blocks)[:, None]
+    if SUM:
+        acc = tl.zeros((BLOCKS, 128), dtype=tl.float32)
+        for row in range(n_rows):
+            r = row.to(tl.int64)
+            q = tl.load(q_ptr + r * q_stride + cols, mask=mask, other=0).to(tl.float32)
+            scale = tl.load(s_ptr + r * s_stride + blocks, mask=blocks < n_blocks, other=0.0)
+            acc += q * scale[:, None]
+        tl.store(out_ptr + cols, acc.to(out_ptr.dtype.element_ty), mask=mask)
+    else:
+        row = tl.program_id(1).to(tl.int64)
+        q = tl.load(q_ptr + row * q_stride + cols, mask=mask, other=0).to(tl.float32)
+        scale = tl.load(s_ptr + row * s_stride + blocks, mask=blocks < n_blocks, other=0.0)
+        tl.store(out_ptr + row * out_stride + cols, (q * scale[:, None]).to(out_ptr.dtype.element_ty), mask=mask)
 
 
 class Packing:
-    """Byte layout of one rank's flat chunk: int8 values and scales of the quantized segments, then the rest raw."""
+    """Byte layout of one rank's flat chunk: int8 values and scales of the quantized segments, then the rest raw.
+    Chunks are rows of 2D tensors: one row per rank."""
 
     def __init__(self, segments: list[tuple[int, int, bool]], dtype: torch.dtype):
-        self.segments = segments  # (offset, numel, quantized) in the flat chunk
         self.dtype = dtype
-        quantized = [numel for _, numel, q in segments if q]
-        raw = [numel for _, numel, q in segments if not q]
-        self.q_bytes = sum(quantized)
-        self.scale_bytes = 4 * self.q_bytes // BLOCK
-        self.nbytes = -(-(self.q_bytes + self.scale_bytes + dtype.itemsize * sum(raw)) // 16) * 16
+        self.layout = []  # (chunk slice, quantized, value byte offset, scale byte offset)
+        q_off = 0
+        s_off = sum(numel for _, numel, q in segments if q)
+        r_off = s_off + 4 * s_off // BLOCK
+        for offset, numel, quantized in segments:
+            position = slice(offset, offset + numel)
+            if quantized:
+                self.layout.append((position, True, q_off, s_off))
+                q_off, s_off = q_off + numel, s_off + 4 * numel // BLOCK
+            else:
+                self.layout.append((position, False, r_off, None))
+                r_off += numel * dtype.itemsize
+        self.nbytes = -(-r_off // 16) * 16
+
+    def _views(self, packed: torch.Tensor, position: slice, value_offset: int, scale_offset: int | None):
+        numel = position.stop - position.start
+        if scale_offset is None:
+            return packed[:, value_offset : value_offset + numel * self.dtype.itemsize].view(self.dtype), None
+        q = packed[:, value_offset : value_offset + numel].view(torch.int8)
+        scale = packed[:, scale_offset : scale_offset + 4 * numel // BLOCK].view(torch.float32)
+        return q, scale
 
     def pack(self, chunks: torch.Tensor) -> torch.Tensor:
         """(n, chunk numel) -> (n, nbytes) uint8."""
-        out = torch.zeros(chunks.shape[0], self.nbytes, dtype=torch.uint8, device=chunks.device)
-        q_off, s_off, r_off = 0, self.q_bytes, self.q_bytes + self.scale_bytes
-        for offset, numel, quantized in self.segments:
-            x = chunks[:, offset : offset + numel]
-            if quantized:
-                q, scale = quantize(x)
-                out[:, q_off : q_off + numel] = q.view(torch.uint8)
-                out[:, s_off : s_off + scale.shape[1] * 4] = scale.view(torch.uint8)
-                q_off, s_off = q_off + numel, s_off + scale.shape[1] * 4
-            else:
-                nbytes = numel * self.dtype.itemsize
-                out[:, r_off : r_off + nbytes] = x.contiguous().view(torch.uint8)
-                r_off += nbytes
-        return out
+        packed = torch.empty(chunks.shape[0], self.nbytes, dtype=torch.uint8, device=chunks.device)
+        for position, quantized, value_offset, scale_offset in self.layout:
+            values, scale = self._views(packed, position, value_offset, scale_offset)
+            x = chunks[:, position]
+            if not quantized:
+                values.copy_(x)
+                continue
+            n_blocks = x.shape[1] // BLOCK
+            grid = (x.shape[0], triton.cdiv(n_blocks, BLOCKS_PER_PROGRAM))
+            _quantize_kernel[grid](
+                x, values, scale, x.stride(0), values.stride(0), scale.stride(0), n_blocks, BLOCKS_PER_PROGRAM
+            )
+        return packed
 
-    def unpack(self, packed: torch.Tensor) -> Iterator[tuple[slice, torch.Tensor]]:
-        """(n, nbytes) uint8 -> each segment's position in the chunk and its (n, numel) values."""
-        q_off, s_off, r_off = 0, self.q_bytes, self.q_bytes + self.scale_bytes
-        for offset, numel, quantized in self.segments:
-            if quantized:
-                q = packed[:, q_off : q_off + numel].view(torch.int8)
-                scale = packed[:, s_off : s_off + numel // BLOCK * 4].view(torch.float32)
-                yield slice(offset, offset + numel), dequantize(q, scale)
-                q_off, s_off = q_off + numel, s_off + numel // BLOCK * 4
-            else:
-                nbytes = numel * self.dtype.itemsize
-                yield slice(offset, offset + numel), packed[:, r_off : r_off + nbytes].view(self.dtype)
-                r_off += nbytes
+    def unpack(self, packed: torch.Tensor, out: torch.Tensor) -> None:
+        """(n, nbytes) uint8 -> (n, chunk numel) ``out``."""
+        for position, quantized, value_offset, scale_offset in self.layout:
+            values, scale = self._views(packed, position, value_offset, scale_offset)
+            target = out[:, position]
+            if not quantized:
+                target.copy_(values)
+                continue
+            n_blocks = target.shape[1] // BLOCK
+            grid = (triton.cdiv(n_blocks, BLOCKS_PER_PROGRAM), target.shape[0])
+            _dequantize_kernel[grid](
+                values, scale, target, values.stride(0), scale.stride(0), target.stride(0), target.shape[0],
+                n_blocks, False, BLOCKS_PER_PROGRAM,
+            )  # fmt: skip
+
+    def unpack_sum(self, packed: torch.Tensor, out: torch.Tensor) -> None:
+        """(n, nbytes) uint8 -> fp32 sum over the n rows into the 1D ``out``."""
+        for position, quantized, value_offset, scale_offset in self.layout:
+            values, scale = self._views(packed, position, value_offset, scale_offset)
+            target = out[position]
+            if not quantized:
+                target.copy_(values.float().sum(0))
+                continue
+            n_blocks = target.shape[0] // BLOCK
+            _dequantize_kernel[(triton.cdiv(n_blocks, BLOCKS_PER_PROGRAM),)](
+                values, scale, target, values.stride(0), scale.stride(0), 0, values.shape[0], n_blocks, True,
+                BLOCKS_PER_PROGRAM,
+            )  # fmt: skip
 
 
 class Int8AllGather(DefaultAllocMixin, AllGather):
@@ -85,9 +141,7 @@ class Int8AllGather(DefaultAllocMixin, AllGather):
         packed = packing.pack(input_tensor.view(1, -1))
         gathered = torch.empty(group.size(), packing.nbytes, dtype=torch.uint8, device=packed.device)
         dist.all_gather_into_tensor(gathered, packed, group=group)
-        output = output_tensor.view(group.size(), -1)
-        for position, values in packing.unpack(gathered):
-            output[:, position] = values
+        packing.unpack(gathered, output_tensor.view(group.size(), -1))
 
 
 class Int8ReduceScatter(DefaultAllocMixin, ReduceScatter):
@@ -99,12 +153,10 @@ class Int8ReduceScatter(DefaultAllocMixin, ReduceScatter):
     def __call__(self, output_tensor, input_tensor, group, op, async_op=False):
         assert op == dist.ReduceOp.SUM, op
         packing = Packing(self.segments, input_tensor.dtype)
-        chunks = input_tensor.view(group.size(), -1)
-        packed = packing.pack(chunks)
+        packed = packing.pack(input_tensor.view(group.size(), -1))
         received = torch.empty_like(packed)
         dist.all_to_all_single(received, packed, group=group)
-        for position, values in packing.unpack(received):
-            output_tensor[position] = values.float().sum(0)
+        packing.unpack_sum(received, output_tensor)
 
 
 def apply_int8_expert_comm(model: nn.Module, grads: bool) -> None:
