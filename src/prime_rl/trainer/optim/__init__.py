@@ -60,8 +60,6 @@ def setup_optimizer(
     ``algorithm`` key). It is not supported with CPU offloading."""
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
-    if param_groups is not None and offload != "none":
-        raise ValueError("Custom parameter groups are not supported with CPU offloading")
     if full_offload and config.type not in ("adamw", "sign_sgd"):
         raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
     if full_offload and config.max_norm is not None:

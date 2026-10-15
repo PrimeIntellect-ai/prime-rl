@@ -7,7 +7,7 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.model import get_global_moe_stats, is_tt_moe_model
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.utils import begin_backward, finish_backward, prepare_gradient_offload, scale_gradients_
+from prime_rl.trainer.utils import scale_gradients_
 from prime_rl.utils.logger import get_logger
 
 
@@ -36,7 +36,6 @@ def run_micro_batches(
     compute_loss: Callable[[dict], tuple[Tensor, Tensor, Tensor]],
     grad_accum_steps: int,
     parallel_dims: ParallelDims,
-    gradient_manager=None,
 ) -> StepResult:
     """Forward and backward passes over the ``grad_accum_steps`` micro-batches of one step, leaving the
     gradients of the summed token loss divided by the global token count (the mean loss per token, as on one
@@ -47,30 +46,17 @@ def run_micro_batches(
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     is_moe_model = is_tt_moe_model(model)
 
-    if gradient_manager is None:
-        micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
-        local_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
-    else:
-        # The offloaded gradients are scaled as they stream out, so the token count is needed up front.
-        micro_batches = [next(dataiter) for _ in range(grad_accum_steps)]
-        global_token_count = torch.tensor(
-            sum(int(micro_batch["loss_mask"].sum()) for micro_batch in micro_batches), device="cuda"
-        )
-        dist.all_reduce(global_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        global_token_count = global_token_count.item() // parallel_dims.cp
-        grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count
-        prepare_gradient_offload(gradient_manager, grad_scale, overlap_optimizer=True)
-
     loss_sum = torch.tensor(0.0, device="cuda")
+    token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
     nan_count = torch.tensor(0, device="cuda")
     moe_stats = {name: torch.tensor(0.0) for name in ("max_vio/mean", "max_vio/max", "routing_confidence/mean")}
     tokens_per_expert = None
     local_num_tokens = 0
-    for micro_step, micro_batch in enumerate(micro_batches):
+    for _ in range(grad_accum_steps):
+        micro_batch = next(dataiter)
         local_num_tokens += micro_batch["input_ids"].shape[1]
         micro_loss_sum, micro_token_count, aux_loss_sum = compute_loss(micro_batch)
-        if gradient_manager is None:
-            local_token_count += micro_token_count
+        token_count += micro_token_count
         if torch.isnan(micro_loss_sum.detach()):
             nan_count += 1
             logger.warning("Local loss is nan, excluding this micro step from backward")
@@ -78,9 +64,7 @@ def run_micro_batches(
         else:
             loss_sum += micro_loss_sum.detach()
             scaled_loss = (micro_loss_sum + aux_loss_sum) / grad_accum_steps
-        begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
         scaled_loss.backward()
-        finish_backward(gradient_manager)
 
         if is_moe_model:
             micro_moe_stats, micro_tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
@@ -90,10 +74,9 @@ def run_micro_batches(
                     moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
             tokens_per_expert = micro_tokens_per_expert + (0 if tokens_per_expert is None else tokens_per_expert)
 
-    if gradient_manager is None:
-        dist.all_reduce(local_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
-        global_token_count = local_token_count.item()
-        scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count)
+    dist.all_reduce(token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
+    global_token_count = token_count.item()
+    scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count)
 
     dist.all_reduce(loss_sum, op=dist.ReduceOp.SUM, group=dp_cp_group)
     dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)

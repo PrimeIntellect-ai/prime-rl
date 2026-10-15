@@ -19,7 +19,6 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.model import (
     forward,
     get_expert_load_stats,
-    get_full_offload_dtype_policy,
     get_load_balance_stats,
     is_tt_moe_model,
     iter_moe_blocks,
@@ -50,7 +49,6 @@ from prime_rl.trainer.utils import (
     GarbageCollection,
     clip_grad_norm_,
     get_ckpt_disk_metrics,
-    setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
@@ -105,11 +103,7 @@ def train(config: PretrainConfig):
 
     heart = Heartbeat(config.heartbeat) if config.heartbeat is not None and world.rank == 0 else None
 
-    setup_torch_distributed(
-        timeout=timedelta(seconds=config.dist_timeout_seconds), enable_gloo=config.model.offload == "full"
-    )
-    if config.model.offload == "full":
-        setup_full_cpu_optimizer_offload()
+    setup_torch_distributed(timeout=timedelta(seconds=config.dist_timeout_seconds))
     torch.set_float32_matmul_precision(config.matmul_precision)
 
     resolve_ep(config.model)
@@ -150,15 +144,11 @@ def train(config: PretrainConfig):
 
     tokenizer = setup_tokenizer(config.tokenizer)
 
-    optimizer, gradient_manager = setup_optimizer(
+    optimizer, _ = setup_optimizer(
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        offload=config.model.offload,
         model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
-        ),
         param_groups=param_groups(model, config.optim, m_n, m_l, parallel_dims.ep_enabled),
     )
 
@@ -302,7 +292,7 @@ def train(config: PretrainConfig):
         step_start_time = time.perf_counter()
         lr_multiplier = lr_schedule.apply(progress.step - 1)
 
-        result = run_micro_batches(model, dataiter, compute_loss, grad_accum_steps, parallel_dims, gradient_manager)
+        result = run_micro_batches(model, dataiter, compute_loss, grad_accum_steps, parallel_dims)
         forward_backward_time = time.perf_counter() - step_start_time
         expert_load_stats = {}
         if is_moe_model:
@@ -318,7 +308,7 @@ def train(config: PretrainConfig):
             if biases:
                 expert_load_stats["expert_load/selection_bias_absmax"] = torch.stack(biases).abs().max().item()
 
-        grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm) if config.optim.max_norm else None
+        grad_norm = clip_grad_norm_(None, model, config.optim.max_norm) if config.optim.max_norm else None
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
@@ -400,8 +390,6 @@ def train(config: PretrainConfig):
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], None, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
-    if gradient_manager is not None:
-        gradient_manager.close()
     logger.success("Pretrain trainer finished")
     asyncio.run(monitors.finalize())
 
