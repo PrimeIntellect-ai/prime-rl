@@ -301,10 +301,16 @@ class PretrainAdamWConfig(AdamWConfig):
     eps: float = Field(1e-8, gt=0)
     """Adam epsilon of the base shape (scaled per role under CompleteP)."""
 
+    router_lr_scale: float = Field(1.0, gt=0)
+    """Multiplier on the MoE router's learning rate (on top of the parametrization's role scale)."""
+
 
 class PretrainMuonConfig(MuonConfig):
     eps: float = Field(1e-8, gt=0)
     """Adam epsilon of the base shape for the AdamW groups (scaled per role under CompleteP)."""
+
+    router_lr_scale: float = Field(1.0, gt=0)
+    """Multiplier on the MoE router's learning rate (on top of the parametrization's role scale)."""
 
 
 PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
