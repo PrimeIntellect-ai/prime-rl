@@ -63,6 +63,8 @@ class PrimeRlServingChat(OpenAIServingChat):
         return await super().create_chat_completion(request, raw_request)
 
     async def render_chat_request(self, request: ChatCompletionRequest):
+        if request.truncate_prompt_tokens is not None:
+            return self.create_error_response("Prompt truncation is not supported by the endpoint renderer")
         if request.continue_final_message or request.chat_template is not None:
             raise ValueError("Chat requests require complete messages and the server's configured renderer")
         error = await self._check_model(request)
