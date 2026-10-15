@@ -59,6 +59,7 @@ class WeightSender(ABC):
         """Broadcast policy v{step} to the inference pool."""
         start_time = time.perf_counter()
         step_dir = self.step_dir(step)
+        self._prepare(model, step)
         if self.world.is_master:
             # Reset per attempt so a re-broadcast (e.g. on resume) never trips
             # the consumer or the trainer on stale markers of a previous run.
@@ -95,6 +96,9 @@ class WeightSender(ABC):
                 last_log = now
             time.sleep(0.1)
         self.logger.debug("Receiver ready, starting the transfer")
+
+    def _prepare(self, model: nn.Module, step: int) -> None:
+        """Work on v{step} that needs no consumer, started before the handshake."""
 
     @abstractmethod
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
