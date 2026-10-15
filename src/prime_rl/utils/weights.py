@@ -159,17 +159,14 @@ def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, def
     return torch.float32 if keep_in_fp32 is not None and keep_in_fp32(key) else default
 
 
-def gather_weights_parallel(
-    model: nn.Module, dtype: torch.dtype = torch.bfloat16, host_buffer: Tensor | None = None
-) -> dict[str, Tensor]:
+def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
     Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
     collective and materializes the full tensor on all ranks anyway), but instead of
     only the master keeping everything, each rank copies its owned slice to CPU —
-    so the D2H traffic and the shard writes are split across ranks. With
-    ``host_buffer`` (pinned uint8 of at least ``owned_weight_bytes``), the slice is
-    copied into it instead of fresh pageable memory, which is several times faster.
+    so the D2H traffic and the shard writes are split across ranks. The copies are
+    plain blocking transfers; no stream-ordering assumptions.
 
     Parameters the model reports via ``keep_in_fp32_for_weight_transfer`` skip the
     downcast. Those lists exist because the inference engine's kernels require fp32
@@ -182,7 +179,6 @@ def gather_weights_parallel(
     world = get_world()
     owners = partition_weights(model.state_dict(), world.world_size, dtype)
     partial: dict[str, Tensor] = {}
-    offset = 0
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
@@ -194,35 +190,13 @@ def gather_weights_parallel(
                 value = cast(DTensor, value.to(target_dtype)).full_tensor()
             if owners[key] != world.rank:
                 continue
-            if host_buffer is None:
-                partial[resolve_fqn(model, key)] = value.to("cpu")
-                continue
-            out = host_buffer[offset : offset + value.nbytes].view(value.dtype).view(value.shape)
-            out.copy_(value, non_blocking=True)
-            partial[resolve_fqn(model, key)] = out
-            offset += -(-value.nbytes // 8) * 8
-        if host_buffer is not None:
-            torch.cuda.synchronize()
+            partial[resolve_fqn(model, key)] = value.to("cpu")
         dist.barrier()
 
     if any(".base_layer." in key or "lora_A" in key or "lora_B" in key for key in partial.keys()):
         raise ValueError("gather_weights_parallel does not support LoRA state dicts")
 
     return partial
-
-
-def owned_weight_bytes(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> int:
-    """Host bytes of this rank's share of ``gather_weights_parallel`` (8-byte aligned per tensor)."""
-    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
-    world = get_world()
-    owners = partition_weights(model.state_dict(), world.world_size, dtype)
-    total = 0
-    for key, value in model.state_dict().items():
-        if owners[key] == world.rank:
-            is_dtensor = isinstance(value, DTensor)
-            itemsize = resolve_wire_dtype(keep_in_fp32, key, dtype).itemsize if is_dtensor else value.element_size()
-            total += -(-value.numel() * itemsize // 8) * 8
-    return total
 
 
 def save_state_dict_parallel(state_dict: dict[str, Tensor], save_dir: Path) -> None:

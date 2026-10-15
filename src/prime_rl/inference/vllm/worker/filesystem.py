@@ -24,9 +24,10 @@ from prime_rl.utils.sparse_weights import (
     ENGINE_LAYOUT,
     MANIFEST,
     anchor_complete,
+    anchor_index,
+    anchor_tensors,
     bits_dtype,
     decode_gaps,
-    drop_page_cache,
     pin,
     read_delta,
     read_manifest,
@@ -171,23 +172,31 @@ class FileSystemWeightUpdateWorker(Worker):
         """Tell the trainer which checkpoint tensors this engine holds in fp8 (and with which
         scales), so it can send their deltas in the fp8 domain. Reads one checkpoint tensor per fp8
         param from the step's full checkpoint, or from the boot checkpoint."""
-        checkpoint_dir = step_dir if anchor_complete(step_dir) else self._boot_dir()
-        files = {}
-        tensors = {}
-        for path in checkpoint_dir.glob("*.safetensors"):
-            with safe_open(path, framework="pt") as f:
-                for name in f.keys():
-                    tensor_slice = f.get_slice(name)
-                    files[name] = path
-                    tensors[name] = (tensor_slice.get_shape(), _SAFETENSORS_DTYPES[tensor_slice.get_dtype()])
+        if anchor_complete(step_dir):
+            index = anchor_index(step_dir)
+            tensors = index[1]
+
+            def read_tensor(name: str) -> torch.Tensor:
+                return next(anchor_tensors(step_dir, [name], index))[1]
+
+        else:
+            files = {}
+            tensors = {}
+            for path in self._boot_dir().glob("*.safetensors"):
+                with safe_open(path, framework="pt") as f:
+                    for name in f.keys():
+                        tensor_slice = f.get_slice(name)
+                        files[name] = path
+                        tensors[name] = (tensor_slice.get_shape(), _SAFETENSORS_DTYPES[tensor_slice.get_dtype()])
+
+            def read_tensor(name: str) -> torch.Tensor:
+                with safe_open(files[name], framework="pt") as f:
+                    return f.get_tensor(name)
+
         if (step_dir / DELTA_DIR / MANIFEST).exists():
             tensors = read_manifest(step_dir)["tensors"]
         if self.index_map is None:
             self.index_map = CheckpointIndexMap(self._model(), tensors)
-
-        def read_tensor(name: str) -> torch.Tensor:
-            with safe_open(files[name], framework="pt") as f:
-                return f.get_tensor(name)
 
         # Each worker reports the tensors it holds; the trainer waits for all of them.
         if self.vllm_config.parallel_config.enable_expert_parallel:
@@ -282,25 +291,24 @@ class FileSystemWeightUpdateWorker(Worker):
             raise RuntimeError(f"Sparse weight delta {step_dir.name} diverged from the trainer: {mismatched[:8]}")
 
     def _load_checkpoint(self, step_dir: Path) -> None:
-        """Reload every weight from the HF-compatible checkpoint in ``step_dir``."""
+        """Reload every weight from the HF-compatible checkpoint (or sparse-run anchor) in ``step_dir``."""
         model = self._model()
-        model_loader = get_model_loader(self.load_config)
-        assert isinstance(model_loader, DefaultModelLoader)
-        local_source = DefaultModelLoader.Source(
-            step_dir.as_posix(),
-            revision=None,  # TODO: Check that this is correct or if we should use the default (model_config.revision)
-            prefix="",
-            fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
-            allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
-        )
-        weights_iterator = model_loader._get_weights_iterator(local_source)
+        if anchor_complete(step_dir):
+            weights_iterator = anchor_tensors(step_dir)
+        else:
+            model_loader = get_model_loader(self.load_config)
+            assert isinstance(model_loader, DefaultModelLoader)
+            local_source = DefaultModelLoader.Source(
+                step_dir.as_posix(),
+                revision=None,  # TODO: Check that this is correct or if we should use the default (model_config.revision)
+                prefix="",
+                fall_back_to_pt=getattr(model, "fall_back_to_pt_during_load", True),
+                allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
+            )
+            weights_iterator = model_loader._get_weights_iterator(local_source)
         load_weights_checkpoint_layerwise(
             model,
             weights_iterator,
             self.model_runner.model_config,
             self.vllm_config,
         )
-        if anchor_complete(step_dir):
-            for path in step_dir.glob("*.safetensors"):
-                with open(path, "rb") as file:
-                    drop_page_cache(file.fileno())
