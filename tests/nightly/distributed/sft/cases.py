@@ -3,11 +3,12 @@
 Every case runs on one 8-GPU node from `base.toml`, which is the `ModelConfig` defaults plus an fp32 MoE router.
 Each arch contributes two kinds of case:
 
-- A base case on every layout in `LAYOUTS`. It trains, saves a checkpoint, then resumes in a fresh process.
+- A base case on every layout in its `layouts`. It trains, saves a checkpoint, then resumes in a fresh process.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
 
-`Arch.skip` removes a layout (along with the feature cases pinned to it) or a single feature, and the reason shows
-in the pytest report. Case ids read `{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k`
+`Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1). `Arch.skip`
+removes a layout (along with the feature cases pinned to it) or a single feature, and the reason shows in the
+pytest report. Case ids read `{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k`
 selects cases by arch, layout or feature name. For example, one case:
 
     uv run pytest tests/nightly/distributed -k "qwen3_moe and cp2_ring_ep4 and base"
@@ -55,7 +56,13 @@ FSDP8_EP8 = Layout("fsdp8_ep8", dp_replicate=1, cp=1, ep=8)
 HSDP2X4_EP4 = Layout("hsdp2x4_ep4", dp_replicate=2, cp=1, ep=4)
 CP2_RING_EP4 = Layout("cp2_ring_ep4", dp_replicate=1, cp=2, ep=4)
 CP4_ULYSSES_EP8 = Layout("cp4_ulysses_ep8", dp_replicate=1, cp=4, ep=8, cp_style="ulysses")
-LAYOUTS = (FSDP8_EP8, HSDP2X4_EP4, CP2_RING_EP4, CP4_ULYSSES_EP8)
+MOE_LAYOUTS = (FSDP8_EP8, HSDP2X4_EP4, CP2_RING_EP4, CP4_ULYSSES_EP8)
+
+FSDP8_EP1 = Layout("fsdp8_ep1", dp_replicate=1, cp=1, ep=1)
+HSDP2X4_EP1 = Layout("hsdp2x4_ep1", dp_replicate=2, cp=1, ep=1)
+CP2_RING_EP1 = Layout("cp2_ring_ep1", dp_replicate=1, cp=2, ep=1)
+CP4_ULYSSES_EP1 = Layout("cp4_ulysses_ep1", dp_replicate=1, cp=4, ep=1, cp_style="ulysses")
+DENSE_LAYOUTS = (FSDP8_EP1, HSDP2X4_EP1, CP2_RING_EP1, CP4_ULYSSES_EP1)
 
 
 @dataclass(frozen=True, eq=False)
@@ -79,6 +86,7 @@ FEATURES = (AC_OFF, AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLO
 @dataclass(frozen=True, eq=False)
 class Arch:
     name: str
+    layouts: tuple[Layout, ...] = MOE_LAYOUTS
     features: tuple[Feature, ...] = ()
     skip: dict[Layout | Feature, str] = field(default_factory=dict)
 
@@ -106,7 +114,10 @@ class Case:
 
 
 def cases_for(arch: Arch) -> list[Case]:
-    return [Case(arch, layout) for layout in LAYOUTS] + [
+    for feature in arch.features:
+        if feature.layout not in arch.layouts:
+            raise ValueError(f"{arch.name}: feature {feature.name} runs on {feature.layout.name}, outside its layouts")
+    return [Case(arch, layout) for layout in arch.layouts] + [
         Case(arch, feature.layout, feature) for feature in arch.features
     ]
 
@@ -122,9 +133,50 @@ GLM_MOE_DSA = Arch(
     "glm_moe_dsa", skip={CP4_ULYSSES_EP8: "sparse MLA does its own CP and ignores cp_style, same as cp2_ring_ep4"}
 )
 DEEPSEEK_V4 = Arch("deepseek_v4", skip={CP4_ULYSSES_EP8: "DSv4 cp_support is ring-only"})
-ARCHS = (QWEN3_MOE, GLM_MOE_DSA, DEEPSEEK_V4)
+LLAMA = Arch(
+    "llama",
+    layouts=DENSE_LAYOUTS,
+    skip={layout: "SFT's llama renderer key is the gated meta-llama repo, not accessible" for layout in DENSE_LAYOUTS},
+)
+QWEN3_DENSE = Arch("qwen3_dense", layouts=DENSE_LAYOUTS)
+QWEN3_5_DENSE = Arch(
+    "qwen3_5_dense", layouts=DENSE_LAYOUTS, skip={CP2_RING_EP1: "GatedDeltaNet cp_support is ulysses-only"}
+)
+GLM4_MOE = Arch("glm4_moe")
+GPT_OSS = Arch("gpt_oss")
+LAGUNA = Arch("laguna")
+MINIMAX_M2 = Arch("minimax_m2")
+NEMOTRON_H = Arch("nemotron_h", skip={CP2_RING_EP4: "Mamba2 cp_support is ulysses-only"})
+QWEN3_5_MOE = Arch("qwen3_5_moe", skip={CP2_RING_EP4: "GatedDeltaNet cp_support is ulysses-only"})
+QWEN4_EXP = Arch("qwen4_exp", skip={CP2_RING_EP4: "qwen4_exp cp_support is ulysses-only"})
+AFMOE = Arch(
+    "afmoe", skip={layout: "SFT needs a typed renderer and none is registered for afmoe" for layout in MOE_LAYOUTS}
+)
+ARCHS = (
+    QWEN3_MOE,
+    GLM_MOE_DSA,
+    DEEPSEEK_V4,
+    LLAMA,
+    QWEN3_DENSE,
+    QWEN3_5_DENSE,
+    GLM4_MOE,
+    GPT_OSS,
+    LAGUNA,
+    MINIMAX_M2,
+    NEMOTRON_H,
+    QWEN3_5_MOE,
+    QWEN4_EXP,
+    AFMOE,
+)
 CASES = [case for arch in ARCHS for case in cases_for(arch)]
-check_k_selectable(["base", *(a.name for a in ARCHS), *(l.name for l in LAYOUTS), *(f.name for f in FEATURES)])
+check_k_selectable(
+    [
+        "base",
+        *(a.name for a in ARCHS),
+        *(l.name for l in (*MOE_LAYOUTS, *DENSE_LAYOUTS)),
+        *(f.name for f in FEATURES),
+    ]
+)
 
 
 def sft_args(case: Case, model_name: str) -> list[str]:
