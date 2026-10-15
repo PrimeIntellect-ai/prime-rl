@@ -32,6 +32,7 @@ from prime_rl.utils.sparse_weights import (
     read_engine_layout,
     write_anchor_shards,
     write_rank_file,
+    zigzag,
 )
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
@@ -44,7 +45,7 @@ from prime_rl.utils.weights import (
 
 
 class SparseDeltaEncoder:
-    """Rank-local XOR deltas of the trainer's weight shards, in HF coordinates.
+    """Rank-local deltas of the trainer's weight shards, in HF coordinates.
 
     Every rank keeps the wire-dtype bits of its own shards from the previous
     broadcast (the snapshot) and diffs against them, so no weights are gathered.
@@ -325,7 +326,7 @@ class SparseDeltaEncoder:
     def encode(self, shards: list[tuple], ready: torch.cuda.Event, weights_read: threading.Event) -> tuple | None:
         """Diff the shards against the snapshot and advance it, on the side stream once ``ready`` (recorded
         after the optimizer step) has passed. Sets ``weights_read`` once done reading the weights. Returns
-        ``(entries, gaps, xor value bytes, new-weight checksum per HF tensor part, scales changed on this
+        ``(entries, gaps, delta value bytes, new-weight checksum per HF tensor part, scales changed on this
         rank)`` on the host, or None on the first call."""
         torch.cuda.set_device(self.device)
         try:
@@ -400,15 +401,15 @@ class SparseDeltaEncoder:
                     if gathered is not None:
                         previous_fp8 = previous_fp8.view(-1)[offset : offset + shard.numel()]
                         current_fp8 = current_fp8.view(-1)[offset : offset + shard.numel()]
-                    xor = previous_fp8.view(-1) ^ current_fp8.view(-1)
+                    delta = current_fp8.view(-1) - previous_fp8.view(-1)
                     new_bits = current_fp8.view(-1)
                 else:
-                    xor = current ^ previous_bits
+                    delta = current - previous_bits
                     new_bits = current
                 out[start:end].copy_(current, non_blocking=True)
-                index = xor.nonzero().squeeze(1)
+                index = delta.nonzero().squeeze(1)
                 changed.append(index + start)
-                changed_values.append(xor[index])
+                changed_values.append(zigzag(delta[index]))
                 for i, (begin, stop, _) in enumerate(segments):
                     begin, stop = max(begin, start), min(stop, end)
                     if begin < stop:
@@ -433,7 +434,7 @@ class SparseDeltaEncoder:
 class FileSystemWeightSender(WeightSender):
     """Broadcast weights by saving a HF-compatible checkpoint (or, for LoRA
     runs, the PEFT-shaped adapter) to a shared filesystem. With ``sparse``,
-    steps only carry the XOR delta against the previous broadcast (see
+    steps only carry the delta against the previous broadcast (see
     ``prime_rl.utils.sparse_weights``). The delta is encoded and written in the
     background while the next step trains: the trainer only waits, before its
     next optimizer step, until the encode has read the weights. Full

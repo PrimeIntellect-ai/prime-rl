@@ -11,6 +11,7 @@ from prime_rl.utils.sparse_weights import (
     encode_gaps,
     read_delta,
     write_rank_file,
+    zigzag,
 )
 
 
@@ -30,13 +31,13 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
         for name, rows in names:
             checksums[name] = bits_checksum(as_bits(current[name][rows]))
             offset = 0 if rows.start is None else rows.start * 32
-            xor = as_bits(current[name][rows]).reshape(-1) ^ as_bits(previous[name][rows]).reshape(-1)
-            changed = xor.nonzero().squeeze(1)
+            delta = as_bits(current[name][rows]).reshape(-1) - as_bits(previous[name][rows]).reshape(-1)
+            changed = delta.nonzero().squeeze(1)
             starts = torch.zeros_like(changed, dtype=torch.bool)
             starts[:1] = True
             entries.append((name, len(changed)))
             gaps.append(encode_gaps(changed + offset, starts))
-            values.append(xor[changed].view(torch.uint8))
+            values.append(zigzag(delta[changed]).view(torch.uint8))
         gaps, values = torch.cat(gaps).numpy(), torch.cat(values).numpy()
         # Small frames, so a frame boundary falls inside rank 1's entries
         write_rank_file(delta_dir / f"rank_{rank}.safetensors", entries, gaps, values, tensors, checksums, frame_size=8)
@@ -52,7 +53,7 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
             i = b = 0
             for name, count in entries:
                 itemsize = patched[name].element_size()
-                patched[name][indices[i : i + count]] ^= (
+                patched[name][indices[i : i + count]] += (
                     values[b : b + count * itemsize].clone().view(patched[name].dtype)
                 )
                 i += count

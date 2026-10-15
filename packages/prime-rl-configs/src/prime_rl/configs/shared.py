@@ -49,7 +49,7 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
     sparse: bool = False
-    """Between anchors, publish only the XOR delta of the wire-dtype weights against the previous
+    """Between anchors, publish only the delta of the wire-dtype weights against the previous
     broadcast. Each trainer rank diffs its own shards; engines decode the delta while serving and
     patch their weights in place during the pause. Not supported with LoRA."""
 

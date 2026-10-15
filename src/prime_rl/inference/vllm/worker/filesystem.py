@@ -161,10 +161,10 @@ class FileSystemWeightUpdateWorker(Worker):
             run = list(group)
             num_changes = sum(count for _, count in run)
             itemsize = bits.itemsize
-            xor = values[num_bytes : num_bytes + num_changes * itemsize]
+            delta = values[num_bytes : num_bytes + num_changes * itemsize]
             # A run after an odd number of narrower values is misaligned for its dtype view.
-            xor = xor.view(bits) if num_bytes % itemsize == 0 else xor.clone().view(bits)
-            self.index_map.apply_xor(run, indices[offset : offset + num_changes], xor)
+            delta = delta.view(bits) if num_bytes % itemsize == 0 else delta.clone().view(bits)
+            self.index_map.apply_delta(run, indices[offset : offset + num_changes], delta)
             offset += num_changes
             num_bytes += num_changes * itemsize
 

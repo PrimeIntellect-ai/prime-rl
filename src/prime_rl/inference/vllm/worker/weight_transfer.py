@@ -120,7 +120,7 @@ class CheckpointIndexMap:
         self.numel = {name: prod(shape) for name, (shape, _) in tensors.items()}
         self.checksum_plan = None
         self.unpatchable = unpatchable
-        # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_xor
+        # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
         self.names = set(self.records) | unpatchable
 
     def held_checksums(self) -> tuple[list[str], torch.Tensor, torch.Tensor]:
@@ -195,10 +195,11 @@ class CheckpointIndexMap:
         return layout
 
     @torch.no_grad()
-    def apply_xor(
-        self, entries: list[tuple[str, int]], indices: torch.Tensor, xor: torch.Tensor, chunk: int = 1 << 25
+    def apply_delta(
+        self, entries: list[tuple[str, int]], indices: torch.Tensor, delta: torch.Tensor, chunk: int = 1 << 25
     ) -> None:
-        """XOR ``xor`` (bits) into the params at the checkpoint ``indices`` of ``entries``."""
+        """Add ``delta`` (raw-bit differences, wrapping in the bits dtype) to the params at the checkpoint
+        ``indices`` of ``entries``."""
         changed = [name for name, _ in entries if name in self.unpatchable]
         if changed:
             raise NotImplementedError(f"Sparse weight deltas cannot patch {changed[:8]}: the engine casts them on load")
@@ -221,7 +222,7 @@ class CheckpointIndexMap:
         entry_ends = torch.tensor([count for _, count in entries], device=device).cumsum(0)
         for start in range(0, indices.numel(), chunk):
             index = indices[start : start + chunk]
-            source = xor[start : start + chunk]
+            source = delta[start : start + chunk]
             entry = torch.searchsorted(
                 entry_ends, torch.arange(start, start + index.numel(), device=device), right=True
             )
@@ -232,9 +233,9 @@ class CheckpointIndexMap:
                 hit = (row >= 0) & (row < table[entry, 2]) & (col >= 0) & (col < table[entry, 4])
                 target = (table[entry, 6] + row * table[entry, 7] + col * table[entry, 8])[hit]
                 owner = table[entry, 5][hit]
-                self._scatter_xor(owner, target, source[hit])
+                self._scatter_add(owner, target, source[hit])
 
-    def _scatter_xor(self, owner: torch.Tensor, target: torch.Tensor, source: torch.Tensor) -> None:
+    def _scatter_add(self, owner: torch.Tensor, target: torch.Tensor, source: torch.Tensor) -> None:
         order = torch.argsort(owner, stable=True)
         owner, target, source = owner[order], target[order], source[order]
         counts = torch.bincount(owner, minlength=len(self.params)).tolist()
@@ -249,7 +250,7 @@ class CheckpointIndexMap:
                     f"Sparse weight delta dtype {source.dtype} does not match the engine param ({flat.dtype})"
                 )
             positions = target[begin:end]
-            flat.index_put_((positions,), flat[positions] ^ source[begin:end])
+            flat.index_put_((positions,), flat[positions] + source[begin:end])
 
 
 def _restore_checkpoint_format(model: Module) -> list[tuple]:
