@@ -59,7 +59,9 @@ def test_source_tokens_count_every_window_of_the_mixture(tmp_path):
     for name in "ab":
         write_shard(tmp_path / name / "00.ds", [list(range(100))])
     sources = {name: TokenShards(TokenSourceConfig(path=tmp_path / name)) for name in "ab"}
-    dataset = TokenDataset(sources, [MixturePhaseConfig(weights={"a": 0.3, "b": 0.7})], seq_len=4, batch_size=8, max_steps=4)
+    dataset = TokenDataset(
+        sources, [MixturePhaseConfig(weights={"a": 0.3, "b": 0.7})], seq_len=4, batch_size=8, max_steps=4
+    )
     list(islice(dataset, 32))
     # The training loop's global per-source counts equal the tokens the dataset itself read.
     assert source_tokens(dataset, 0, 32) == dataset.tokens
