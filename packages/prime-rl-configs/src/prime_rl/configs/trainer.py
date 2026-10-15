@@ -1,3 +1,4 @@
+import math
 import re
 import warnings
 from pathlib import Path
@@ -379,14 +380,25 @@ class ConstantSchedulerConfig(BaseConfig):
     type: Literal["constant"] = "constant"
 
 
+StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Field(gt=0, lt=1)]
+
+
+def resolve_steps(value: int | float, max_steps: int | None) -> int:
+    """Steps as given, or a fraction of ``max_steps`` rounded down."""
+    return math.floor(value * max_steps) if isinstance(value, float) else value
+
+
 class LinearSchedulerConfig(BaseConfig):
     type: Literal["linear"] = "linear"
 
-    warmup_steps: int = Field(10, ge=0)
-    """Warmup steps for the learning rate scheduler."""
+    warmup_steps: StepsOrFraction = 10
+    """Warmup steps for the learning rate scheduler, or a fraction of ``max_steps``."""
 
-    decay_steps: int = Field(10, ge=0)
-    """Steps to decay the learning rate during the final portion of training."""
+    decay_steps: StepsOrFraction = 10
+    """Steps to decay the learning rate during the final portion of training, or a fraction of ``max_steps``."""
+
+    decay_shape: Literal["linear", "cosine", "1-sqrt"] = "linear"
+    """Shape of the decay from the peak to ``min_lr``."""
 
     min_lr: float = Field(0.0, ge=0)
     """Minimum learning rate to converge to."""
@@ -417,11 +429,15 @@ def validate_scheduler(scheduler: SchedulerConfig, max_steps: int | None) -> Non
         if scheduler.decay_steps > 0:
             if max_steps is None:
                 raise ValueError("Must specify max_steps when using a linear scheduler with decay_steps > 0")
-            if scheduler.warmup_steps + scheduler.decay_steps > max_steps:
+            warmup_steps = resolve_steps(scheduler.warmup_steps, max_steps)
+            decay_steps = resolve_steps(scheduler.decay_steps, max_steps)
+            if warmup_steps + decay_steps > max_steps:
                 raise ValueError(
-                    f"warmup_steps ({scheduler.warmup_steps}) + decay_steps ({scheduler.decay_steps}) "
+                    f"warmup_steps ({warmup_steps}) + decay_steps ({decay_steps}) "
                     f"must not exceed max_steps ({max_steps})"
                 )
+        elif isinstance(scheduler.warmup_steps, float) and max_steps is None:
+            raise ValueError("Must specify max_steps when warmup_steps is a fraction")
     if isinstance(scheduler, CosineSchedulerConfig):
         if max_steps is None:
             raise ValueError("Must specify max_steps when using a cosine scheduler")

@@ -22,11 +22,14 @@ from prime_rl.configs.trainer import (
     CheckpointConfig,
     GCConfig,
     InitConfig,
+    LinearSchedulerConfig,
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
     ParametrizationConfig,
+    SchedulerConfig,
     TokenizerConfig,
+    validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
@@ -167,34 +170,6 @@ class ValConfig(BaseConfig):
     windows: as many as fill whole micro-batches on every data-parallel rank."""
 
 
-StepsOrFraction: TypeAlias = Annotated[int, Field(ge=0)] | Annotated[float, Field(gt=0, lt=1)]
-
-
-def resolve_steps(value: int | float, total_steps: int) -> int:
-    """Steps as given, or a fraction of ``total_steps`` rounded down, so fractions that sum to at most 1 fit."""
-    return math.floor(value * total_steps) if isinstance(value, float) else value
-
-
-class ScheduleConfig(BaseConfig):
-    """Learning-rate multiplier ``f(step)`` (warmup, stable at 1, decay), where ``step`` counts the updates
-    completed before the current one. Every param group uses its own learning rate times ``f(step)``, so
-    ratios between groups hold. ``f(0) = 0``, the warmup reaches 1 at its last update (``warmup - 1``; a
-    warmup of 0 or 1 starts at 1), and the decay reaches ``end_ratio`` at the last update of the run."""
-
-    warmup: StepsOrFraction = 0.1
-    """Warmup updates, or a fraction of ``max_steps``."""
-
-    decay: StepsOrFraction = 0.9
-    """Decay updates at the end of the run, or a fraction of ``max_steps``. The default decays over all
-    updates after the default warmup."""
-
-    end_ratio: float = Field(0.0, ge=0)
-    """Multiplier of the last update."""
-
-    decay_shape: Literal["linear", "cosine", "1-sqrt"] = "linear"
-    """Shape of the decay from 1 to ``end_ratio``."""
-
-
 class DiagnosticsConfig(BaseConfig):
     """Diagnostic step: on every ``interval``-th step, the optimizer update's size per parameter group and a
     forward pass on a fixed probe batch (the first ``probe_tokens`` tokens of each rank's first micro-batch)
@@ -280,7 +255,7 @@ class PretrainConfig(BaseConfig):
     optim: PretrainOptimizerConfig = PretrainMuonConfig()
     """Optimizer. ``optim.lr`` is required."""
 
-    schedule: ScheduleConfig = ScheduleConfig()
+    scheduler: SchedulerConfig = LinearSchedulerConfig(warmup_steps=0.1, decay_steps=0.9)
     """Learning-rate schedule. Defaults to a warmup over 10% of the steps and a linear decay to 0 over the rest."""
 
     ckpt: CheckpointConfig | None = CheckpointConfig()
@@ -420,10 +395,11 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_schedule(self):
-        phases = resolve_steps(self.schedule.warmup, self.max_steps) + resolve_steps(
-            self.schedule.decay, self.max_steps
-        )
-        if phases > self.max_steps:
-            raise ValueError(f"schedule.warmup + schedule.decay ({phases}) exceed max_steps ({self.max_steps})")
+    def validate_scheduler_steps(self):
+        validate_scheduler(self.scheduler, self.max_steps)
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_model_seq_len(self):
+        self.model.seq_len = self.data.seq_len
         return self
