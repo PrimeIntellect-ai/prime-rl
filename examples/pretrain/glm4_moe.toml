@@ -1,6 +1,7 @@
 # GLM-4.5-style MoE (64 routed experts, 6 active, 2 shared) with d = 512 and 8 layers, trained from scratch on
 # the Dolma 3 mixture tokenized with the DeepSeek-V4 tokenizer.
-# 4096 steps x 256K tokens = 1.1B tokens. The learning rate is the optimum of the MoE base-shape sweep.
+# 4096 steps x 256K tokens = 1.1B tokens. QK-norm and the learning rate follow the MoE QK-norm sweep (optimum 2^-7
+# with QK-norm at d = 512). [parametrization] with this base shape keeps the LR when the width grows.
 #
 #   uv run pretrain @ examples/pretrain/glm4_moe.toml
 
@@ -26,7 +27,7 @@ first_k_dense_replace = 1
 norm_topk_prob = true
 routed_scaling_factor = 2.5
 attention_bias = false
-use_qk_norm = false
+use_qk_norm = true
 partial_rotary_factor = 1.0
 rope_parameters = { rope_type = "default", rope_theta = 500000.0, partial_rotary_factor = 1.0 }
 tie_word_embeddings = false
@@ -53,8 +54,12 @@ weights = { web = 0.60, pdfs = 0.20, code = 0.12, math = 0.05, reference = 0.03 
 
 [optim]
 type = "muon"
-lr = 0.00390625
+lr = 0.0078125
 max_norm = 1.0
+
+[parametrization]
+base_hidden_size = 512
+base_num_layers = 8
 
 [val]
 interval = 512
