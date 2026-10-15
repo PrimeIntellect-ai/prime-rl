@@ -1,4 +1,5 @@
 import bisect
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -9,15 +10,28 @@ from prime_rl.configs.pretrain import MixturePhaseConfig, PretrainDataConfig, To
 from prime_rl.trainer.sft.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 
+# Unit of the per-epoch shuffle of a token source. A block boundary inside a document splits it, about once
+# per 256 windows of 4,096 tokens.
+BLOCK_TOKENS = 1 << 20
+# Unit of the window shuffle of a token source: consecutive windows, so the pieces of one long document spread
+# over many steps.
+WINDOW_GROUP = 4096
+
 
 class TokenShards:
-    """Datatrove tokenized shards in one folder, read as one token stream in file-name order.
+    """Datatrove tokenized shards in one folder, the ``num_tokens`` first tokens of the files in name order.
 
     ``<name>.ds`` holds the token ids (little-endian, 2 or 4 bytes as recorded on the first line of
     ``<name>.ds.metadata``) and ``<name>.ds.index`` the uint64 end offset of every document. File
-    boundaries are document boundaries. The stream wraps around after ``num_tokens``."""
+    boundaries are document boundaries.
 
-    def __init__(self, config: TokenSourceConfig):
+    Stream position ``p`` belongs to epoch ``p // num_tokens``, and every epoch reads every token once. With a
+    ``seed``, each epoch reads the tokens in blocks of ``BLOCK_TOKENS`` in a seeded random order, starting at a
+    seeded random offset, so epochs differ in order and window boundaries, and part of an epoch is a sample of
+    the whole source, and the windows are read shuffled within groups (``window_start``). Without one
+    (held-out sets), the stream is the files in name order."""
+
+    def __init__(self, config: TokenSourceConfig, seed: tuple[int, str] | None = None):
         self.files = sorted(config.path.glob("*.ds"))
         if not self.files:
             raise FileNotFoundError(f"No datatrove .ds files in {config.path}")
@@ -28,7 +42,10 @@ class TokenShards:
         if config.max_tokens is not None and config.max_tokens > total:
             raise ValueError(f"{config.path} has {total:,} tokens, fewer than max_tokens={config.max_tokens:,}")
         self.num_tokens = total if config.max_tokens is None else config.max_tokens
+        self.seed = None if seed is None else [seed[0], zlib.crc32(seed[1].encode())]
         self.memmaps: dict[int, tuple[np.memmap, np.memmap]] = {}
+        self.layouts: dict[int, tuple[np.ndarray, np.ndarray, int]] = {}
+        self.window_order: tuple[tuple[int, int] | None, np.ndarray | None] = (None, None)
 
     def open(self, file_index: int) -> tuple[np.memmap, np.memmap]:
         # Opened lazily, so every dataloader worker maps the files itself.
@@ -39,23 +56,61 @@ class TokenShards:
             self.memmaps[file_index] = tokens, doc_ends
         return self.memmaps[file_index]
 
+    def layout(self, epoch: int) -> tuple[np.ndarray, np.ndarray, int]:
+        """An epoch's block order, the stream offsets where its blocks start, and its start offset."""
+        if epoch not in self.layouts:
+            rng = np.random.default_rng([*self.seed, epoch])
+            order = rng.permutation(-(-self.num_tokens // BLOCK_TOKENS))
+            lengths = np.minimum(BLOCK_TOKENS, self.num_tokens - order * BLOCK_TOKENS)
+            self.layouts[epoch] = order, np.cumsum([0, *lengths]), int(rng.integers(self.num_tokens))
+        return self.layouts[epoch]
+
+    def locate(self, position: int, length: int) -> tuple[int, int, int]:
+        """File index, offset in the file and length of the contiguous file run at stream ``position``,
+        at most ``length`` tokens."""
+        epoch, position = divmod(position, self.num_tokens)
+        length = min(length, self.num_tokens - position)
+        if self.seed is not None:
+            order, block_starts, offset = self.layout(epoch)
+            position = (position + offset) % self.num_tokens
+            block = int(np.searchsorted(block_starts, position, side="right")) - 1
+            length = min(length, int(block_starts[block + 1]) - position)
+            position = int(order[block]) * BLOCK_TOKENS + position - int(block_starts[block])
+        file_index = int(np.searchsorted(self.starts, position, side="right")) - 1
+        length = min(length, int(self.starts[file_index + 1]) - position)
+        return file_index, position - int(self.starts[file_index]), length
+
     def read(self, start: int, length: int) -> tuple[np.ndarray, list[int]]:
-        """Tokens ``[start, start + length)`` of the stream and the offsets in them where a document starts."""
+        """Tokens ``[start, start + length)`` of the stream and the offsets in them where a document starts.
+        A block cut through a document starts a new one."""
         pieces, doc_starts = [], []
         offset = 0
         while offset < length:
             if offset > 0:
                 doc_starts.append(offset)
-            position = (start + offset) % self.num_tokens
-            file_index = int(np.searchsorted(self.starts, position, side="right")) - 1
-            local = position - int(self.starts[file_index])
-            size = min(length - offset, int(self.starts[file_index + 1]) - position, self.num_tokens - position)
+            file_index, local, size = self.locate(start + offset, length - offset)
             tokens, doc_ends = self.open(file_index)
             pieces.append(tokens[local : local + size])
             first, last = np.searchsorted(doc_ends, [local, local + size], side="right")
             doc_starts.extend(offset + int(end) - local for end in doc_ends[first:last] if end < local + size)
             offset += size
         return np.concatenate(pieces).astype(np.int64), doc_starts
+
+    def window_start(self, position: int, seq_len: int) -> int:
+        """Stream position of the window to read when ``position`` tokens have been read. With a seed, each epoch's
+        windows are read in a seeded random order within groups of ``WINDOW_GROUP`` consecutive windows."""
+        if self.seed is None:
+            return position
+        epoch = position // self.num_tokens
+        group = (position - epoch * self.num_tokens) // (WINDOW_GROUP * seq_len)
+        group_start = epoch * self.num_tokens + group * WINDOW_GROUP * seq_len
+        group_end = min((epoch + 1) * self.num_tokens, group_start + WINDOW_GROUP * seq_len)
+        # The windows that start in [group_start, group_end).
+        first, last = -(-group_start // seq_len), -(-group_end // seq_len)
+        if self.window_order[0] != (epoch, group):
+            order = np.random.default_rng([*self.seed, epoch, group, 1]).permutation(last - first)
+            self.window_order = (epoch, group), order
+        return (first + int(self.window_order[1][position // seq_len - first])) * seq_len
 
     def last_token_of_first_document(self) -> int:
         tokens, doc_ends = self.open(0)
@@ -78,6 +133,9 @@ class RandomTokens:
 
     def read(self, start: int, length: int) -> tuple[np.ndarray, list[int]]:
         return np.random.default_rng([self.seed, start]).integers(0, self.vocab_size, length), []
+
+    def window_start(self, position: int, seq_len: int) -> int:
+        return position
 
 
 class TokenDataset(StatefulIterableDataset):
@@ -145,7 +203,7 @@ class TokenDataset(StatefulIterableDataset):
         while self.num_windows is None or self.step < self.num_windows:
             window = self.step
             name = self.source(window)
-            start = self.tokens[name]
+            start = self.sources[name].window_start(self.tokens[name], self.seq_len)
             self.tokens[name] += self.seq_len
             self.step += 1
             if window % self.data_world_size != self.data_rank:
@@ -195,7 +253,7 @@ def setup_train_dataset(
         sources = {"fake": RandomTokens(vocab_size, config.seed)}
         phases = [MixturePhaseConfig(weights={"fake": 1.0})]
     else:
-        sources = {name: TokenShards(source) for name, source in config.sources.items()}
+        sources = {name: TokenShards(source, seed=(config.seed, name)) for name, source in config.sources.items()}
         check_eos(sources, eos_token_id)
         phases = config.phases
     dataset = TokenDataset(
