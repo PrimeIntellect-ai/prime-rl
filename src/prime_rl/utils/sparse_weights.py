@@ -11,6 +11,7 @@ exactly its ``base_step``; per-tensor checksums of the new weights catch it if n
 
 import json
 import os
+import re
 import threading
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
@@ -222,12 +223,17 @@ def anchor_index(step_dir: Path) -> tuple[dict[str, list[tuple[Path, str, int]]]
     return dict(slices), tensors
 
 
+def _numeric_order(name: str) -> list:
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
+
+
 def anchor_tensors(
     step_dir: Path, names: Iterable[str] | None = None, index=None
 ) -> Iterator[tuple[str, torch.Tensor]]:
-    """Assemble the full tensors of an anchor (all, or ``names``), in the order the trainer wrote them."""
+    """Assemble the full tensors of an anchor (all, or ``names``)."""
     slices, tensors = index or anchor_index(step_dir)
-    for name in slices if names is None else names:
+    # Layer by layer (numeric order), so the engine's layerwise reload holds few layers at a time
+    for name in sorted(slices, key=_numeric_order) if names is None else names:
         shape, dtype = tensors[name]
         tensor = torch.empty(prod(shape), dtype=getattr(torch, dtype))
         for path, key, start in slices[name]:
