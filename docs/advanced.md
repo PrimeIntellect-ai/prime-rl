@@ -35,9 +35,9 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | DeepSeek V4.1 (`deepseek_v41`) | `deepseek-ai/DeepSeek-V4.1-Flash` (text model) | ✅ | ❌ |
 
 DeepSeek V4.1's two engram n-gram tables (~98B parameters each) are row-sharded across the FSDP ranks and looked up
-with all-to-alls instead of being managed by FSDP; `model.freeze_engram_tables` freezes them. Convert the published
-fp8/fp4 checkpoint to a bf16 PrimeRL checkpoint once with `tools/convert_deepseek_v41_to_prime.py`, then point
-`model.name` at the output; see [`examples/advanced/deepseek-v4.1-flash`](../examples/advanced/deepseek-v4.1-flash/README.md).
+with all-to-alls instead of being managed by FSDP; `model.freeze_engram_tables` freezes them. Start from the bf16
+checkpoint `PrimeIntellect/DeepSeek-V4.1-Flash-bf16`, convert it to a PrimeRL checkpoint once with
+`tools/convert_deepseek_v41_to_prime.py`, then point `model.name` at the output; see [`examples/advanced/deepseek-v4.1-flash`](../examples/advanced/deepseek-v4.1-flash/README.md).
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.

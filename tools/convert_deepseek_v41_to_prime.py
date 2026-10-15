@@ -1,4 +1,8 @@
-"""Convert the published DeepSeek-V4.1 checkpoint (fp8 / fp4) into a bf16 PrimeRL-format checkpoint.
+"""Convert a DeepSeek-V4.1 checkpoint into a bf16 PrimeRL-format checkpoint.
+
+The input is either the published fp8 / fp4 checkpoint or its bf16 copy
+(`PrimeIntellect/DeepSeek-V4.1-Flash-bf16`, fp8 engram tables only); any weight with a `.scale`
+sibling is dequantized.
 
 The trainer can convert a checkpoint itself, but it loads the whole state dict on one rank first,
 and V4.1 Flash is ~1.5 TB in bf16 (two ~98B-parameter engram tables alone are ~400 GB). This

@@ -12,10 +12,12 @@ Context parallelism and pipeline parallelism are not supported for this model ye
 
 ## Convert the checkpoint
 
-The published checkpoint is fp8 / fp4 (~500 GB) and becomes ~1.5 TB in bf16. Convert it once into a PrimeRL-format bf16 checkpoint, streaming layer by layer (one process per GPU):
+The trainer loads [`PrimeIntellect/DeepSeek-V4.1-Flash-bf16`](https://huggingface.co/PrimeIntellect/DeepSeek-V4.1-Flash-bf16), a bf16 copy of the published fp8 / fp4 checkpoint under the published names (1.34 TB). Its engram tables stay fp8 because vLLM serves them only in fp8; the trainer dequantizes them on load.
+
+The trainer's automatic conversion to its own layout loads the whole checkpoint on one rank, which needs ~1.5 TB of host memory. Convert it once into a PrimeRL-format checkpoint instead, streaming layer by layer (one process per GPU):
 
 ```bash
-SNAPSHOT=$(hf download deepseek-ai/DeepSeek-V4.1-Flash)
+SNAPSHOT=$(hf download PrimeIntellect/DeepSeek-V4.1-Flash-bf16)
 OUT=/shared/models/DeepSeek-V4.1-Flash-bf16
 for k in $(seq 0 7); do
   uv run python tools/convert_deepseek_v41_to_prime.py $SNAPSHOT $OUT --worker $k --num-workers 8 &
