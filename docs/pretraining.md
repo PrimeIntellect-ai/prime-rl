@@ -63,17 +63,17 @@ Use QK-norm (`model.arch.use_qk_norm = true`) with CompleteP. Without it, Comple
 
 ## Learning-rate schedule
 
-`[schedule]` sets a multiplier `f(step)` on the learning rate, where `step` counts the optimizer updates completed so far (0 for the first update). Every param group uses its own learning rate times `f(step)`, so ratios between groups hold at every step. The default warms up over 10% of the steps and decays linearly to 0 over the remaining 90%.
+Pretraining uses the shared `[scheduler]`. Its default here is the `linear` scheduler with a warmup over 10% of the steps and a linear decay to `min_lr = 0` over the remaining 90%. Warmup and decay take a number of steps or a fraction of `max_steps` (rounded down), and `decay_shape` is `linear`, `cosine` or `1-sqrt`:
 
 ```toml
-[schedule]
-warmup = 0.05       # fraction of max_steps, or a number of steps
-decay = 0.2
-end_ratio = 0.1
-decay_shape = "1-sqrt"  # or "linear" (default), "cosine"
+[scheduler]
+type = "linear"
+warmup_steps = 0.05
+decay_steps = 0.2
+decay_shape = "1-sqrt"
 ```
 
-`f(0) = 0`, the warmup reaches 1 at its last update (`warmup - 1`; a warmup of 0 or 1 starts at 1), and the decay reaches `end_ratio` at the last update (`max_steps - 1`). AdamW and Muon apply weight decay as `lr * weight_decay`, so the schedule also scales the decay. The multiplier is recomputed from the step, so checkpoints hold no schedule state. Resuming with `ckpt.skip_scheduler = true` restarts the schedule at the resumed step, spanning the remaining steps. The multiplier is logged as `schedule/lr`.
+The schedule scales every param group's own learning rate, so ratios between groups hold. AdamW and Muon apply weight decay as `lr * weight_decay`, so the schedule also scales the decay. The scheduler state is checkpointed; resuming with `ckpt.skip_scheduler = true` rebuilds the schedule over the remaining steps.
 
 ## MoE load balancing
 
@@ -117,7 +117,7 @@ Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and t
 
 ## Monitoring
 
-Every step logs the loss, learning rate and schedule multiplier, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, per-source token counts and epochs (`progress/<source>/*`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
+Every step logs the loss, learning rate, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, per-source token counts and epochs (`progress/<source>/*`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
 
 `[diagnostics]` (default: every 100 steps; `diagnostics = null` turns it off) adds the size of the optimizer update relative to the weights per parameter group (`update/rms_ratio/*`, `param/rms/*`) and a forward pass on a fixed probe batch: attention max logit and entropy per layer (`attn/*`, FlashAttention layers) and the residual-stream size per layer (`act/*`). It does not support context parallelism yet.
 
