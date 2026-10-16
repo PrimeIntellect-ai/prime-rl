@@ -47,16 +47,16 @@ def _prequantized_gemm_fake(
 
 
 # The input-gradient GEMM's blocks (the transpose of the all-gathered ones) per all-gathered data tensor, made once per
-# all-gather and dropped when FSDP refills the buffers.
-_TRANSPOSED_BLOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+# all-gather and dropped when FSDP refills the buffers. Keyed by id: tensors compare elementwise.
+_TRANSPOSED_BLOCKS: dict[int, tuple[weakref.ref, tuple[torch.Tensor, torch.Tensor]]] = {}
 
 
 def _transposed_blocks(weight_data: torch.Tensor, weight_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    blocks = _TRANSPOSED_BLOCKS.get(weight_data)
-    if blocks is None:
+    entry = _TRANSPOSED_BLOCKS.get(id(weight_data))
+    if entry is None or entry[0]() is not weight_data:
         blocks = (weight_data.transpose(1, 2).contiguous(), weight_scale.transpose(1, 2).contiguous())
-        _TRANSPOSED_BLOCKS[weight_data] = blocks
-    return blocks
+        entry = _TRANSPOSED_BLOCKS[id(weight_data)] = (weakref.ref(weight_data), blocks)
+    return entry[1]
 
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm_prequantized_backward", mutates_args=())
@@ -229,7 +229,7 @@ class Fp8ExpertMaster(torch.Tensor):
     def fsdp_post_all_gather(self, all_gather_outputs, metadata, param_dtype, *, out=None):
         if out is not None:  # FSDP refilled the same buffers that the weight views
             weight = out.to_local() if isinstance(out, DTensor) else out
-            _TRANSPOSED_BLOCKS.pop(weight._data, None)
+            _TRANSPOSED_BLOCKS.pop(id(weight._data), None)
             return
         if len(all_gather_outputs) == 1:
             (packed,) = all_gather_outputs
