@@ -90,13 +90,16 @@ jobs:
                   echo "Discovered nightly RL configs:"
                   echo "$files"
 
-                  # Build JSON of the form: { "config_file": ["tests/regression/configs/rl/foo.toml", ...] }
-                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{config_file: .}')
+                  # Build JSON of the form: [{"config_file": "tests/regression/configs/rl/foo-bar.toml", "name": "Foo Bar"}, ...]
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc 'map({
+                      config_file: .,
+                      name: (split("/")[-1] | rtrimstr(".toml") | split("-") | map((.[:1] | ascii_upcase) + .[1:]) | join(" "))
+                  })')
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
 
     rl:
-        name: RL / Dispatch
+        name: RL / ${{ matrix.name }}
         needs: rl-plan
         runs-on: ubuntu-latest
         permissions:
@@ -105,7 +108,8 @@ jobs:
         timeout-minutes: 30
         strategy:
             fail-fast: false
-            matrix: ${{ fromJSON(needs.rl-plan.outputs.matrix) }}
+            matrix:
+                include: ${{ fromJSON(needs.rl-plan.outputs.matrix) }}
 
         steps:
             - name: Checkout repository
