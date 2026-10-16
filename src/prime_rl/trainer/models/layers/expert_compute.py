@@ -110,6 +110,11 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
         super().__init__(gemm, token_group_alignment=GROUP_ALIGNMENT)
 
+    # Eager: the FP8 all-gathered weights are a tensor subclass that should not cross a compiled graph's boundary.
+    @torch.compiler.disable
+    def __call__(self, experts: "GroupedExperts", x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor:
+        return super().__call__(experts, x, num_tokens_per_expert)
+
 
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):
     def __init__(self, kernel: ModuleType, high_precision_wgrad: bool) -> None:

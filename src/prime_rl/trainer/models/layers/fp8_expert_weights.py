@@ -145,7 +145,6 @@ class _PrequantizedGroupedGemm(torch.autograd.Function):
         return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
 
 
-@torch.compiler.disable
 def prequantized_grouped_fp8_gemm(x: torch.Tensor, weight: Fp8ExpertWeight, offs: torch.Tensor) -> torch.Tensor:
     """``grouped_fp8_gemm`` on an all-gathered FP8 weight, given as its ``[experts, in, out]`` view."""
     assert weight._transposed
