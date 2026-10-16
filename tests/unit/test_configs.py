@@ -42,11 +42,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
-    config_files = list(Path("configs").rglob("*.toml"))
-    example_files = list(Path("examples").rglob("*.toml"))
-
-    return config_files + example_files
+    """Any TOML file inside `configs/`, `examples/` or `tests/regression/configs/`."""
+    roots = [Path("configs"), Path("examples"), Path("tests/regression/configs")]
+    return [path for root in roots for path in root.rglob("*.toml")]
 
 
 def can_parse(config_cls: type, args: list[str]) -> bool:

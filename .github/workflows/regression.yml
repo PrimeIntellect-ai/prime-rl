@@ -2,7 +2,7 @@ name: Regression
 
 # Scheduled regression suites, one job group per suite. Dispatch with `suite`
 # to run one of them.
-#   rl: every configs/ci/nightly/*.toml as a hosted RL run
+#   rl: every tests/regression/configs/rl/*.toml as a hosted RL run
 
 on:
     workflow_dispatch:
@@ -13,7 +13,7 @@ on:
                 options: [all, rl]
                 default: all
             rl_config_file:
-                description: "rl: config to dispatch (e.g. configs/ci/nightly/wordle.toml). Leave empty to run all."
+                description: "rl: config to dispatch (e.g. tests/regression/configs/rl/wordle.toml). Leave empty to run all."
                 required: false
                 default: ""
             rl_image_tag:
@@ -47,7 +47,7 @@ jobs:
               id: build-matrix
               run: |
                   # Find all nightly RL configs
-                  files=$(ls configs/ci/nightly/*.toml)
+                  files=$(ls tests/regression/configs/rl/*.toml)
 
                   # Filter to specific config if provided in workflow_dispatch
                   if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.rl_config_file }}" ]; then
@@ -62,7 +62,7 @@ jobs:
                   echo "Discovered nightly RL configs:"
                   echo "$files"
 
-                  # Build JSON of the form: { "config_file": ["configs/ci/nightly/foo.toml", ...] }
+                  # Build JSON of the form: { "config_file": ["tests/regression/configs/rl/foo.toml", ...] }
                   json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{config_file: .}')
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
