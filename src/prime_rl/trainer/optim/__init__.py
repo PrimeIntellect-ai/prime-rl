@@ -258,28 +258,25 @@ def _head_block_partitions(model: nn.Module, heads_per_block: int) -> dict[nn.Pa
     """Blocks of ``heads_per_block`` heads in every attention module's q, k and v projections (packed or not)."""
     partitions = {}
     for name, module in model.named_modules():
-        head_dim = getattr(module, "head_dim", None)
-        projections = [getattr(module, f"{x}_proj", None) for x in "qkv"]
-        if not isinstance(head_dim, int) or any(projection is None for projection in projections):
+        if not hasattr(module, "qkv_sizes"):
             continue
-        qkv_proj = getattr(module, "qkv_proj", None)
-        if qkv_proj is not None:
-            weights = {qkv_proj.weight: tuple(module.qkv_sizes)}
-        elif all(isinstance(getattr(projection, "weight", None), torch.Tensor) for projection in projections):
-            weights = {projection.weight: (projection.weight.shape[0],) for projection in projections}
+        if module.qkv_sizes[0] != module.o_proj.in_features:
+            raise ValueError(f"optim.heads_per_block does not support {name}: its query projection also holds a gate")
+        if module.qkv_proj is not None:
+            weights = {module.qkv_proj.weight: module.qkv_sizes}
         else:
-            continue
-        block_rows = heads_per_block * head_dim
+            weights = {
+                proj.weight: (size,)
+                for proj, size in zip((module.q_proj, module.k_proj, module.v_proj), module.qkv_sizes)
+            }
+        block_rows = heads_per_block * module.head_dim
         for weight, sizes in weights.items():
             if any(size % block_rows for size in sizes):
                 raise ValueError(
                     f"optim.heads_per_block = {heads_per_block} does not divide the heads of {name} "
-                    f"(q/k/v rows {sizes}, head_dim {head_dim})"
+                    f"(q/k/v rows {sizes}, head_dim {module.head_dim})"
                 )
             partitions[weight] = tuple(block_rows for size in sizes for _ in range(size // block_rows))
     if not partitions:
-        raise ValueError(
-            "optim.heads_per_block needs attention modules with q_proj, k_proj, v_proj weights and a head_dim "
-            "(MLA and LoRA-wrapped projections are not supported)"
-        )
+        raise ValueError("optim.heads_per_block found no attention modules with q/k/v projections (qkv_sizes)")
     return partitions
