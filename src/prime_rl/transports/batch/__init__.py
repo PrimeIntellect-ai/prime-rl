@@ -32,12 +32,12 @@ def setup_batch_sender(
 
 
 def setup_batch_receiver(
-    output_dir: Path, data_rank: int, current_step: int, transport: TransportConfig
+    output_dir: Path, data_rank: int, rank: int, world_size: int, current_step: int, transport: TransportConfig
 ) -> BatchReceiver:
     if transport.type == "filesystem":
-        return FileSystemBatchReceiver(output_dir, data_rank, current_step)
+        return FileSystemBatchReceiver(output_dir, data_rank, rank, world_size, current_step)
     elif transport.type == "zmq":
-        return ZMQBatchReceiver(output_dir, data_rank, current_step, transport)
+        return ZMQBatchReceiver(output_dir, data_rank, rank, world_size, current_step, transport)
     else:
         raise ValueError(f"Invalid transport type: {transport.type}")
 

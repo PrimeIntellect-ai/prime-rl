@@ -16,7 +16,6 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
@@ -48,6 +47,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.base import CPStyle
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
@@ -357,6 +357,8 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -418,6 +420,7 @@ def get_model(
     if config.cp > 1:
         cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
         support = cp_model_cls.cp_support(model_config)
+        resolve_cp_style(config, model_config, support.styles)
         if config.cp_style not in support.styles:
             supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
             raise ValueError(
@@ -590,8 +593,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 reshard_after_forward=config.reshard_after_forward,
                 shard_placement_fn=shard_placement_fn,
             )
-            # Keep the router reduction from waiting for the expert reduction's input buffer.
-            block_mlp.router.set_reduce_scatter_max_input_buffers(2)
 
         fully_shard(
             transformer_block,
@@ -637,6 +638,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
     )
+    model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
     if not parallel_dims.ep_enabled:
         return
@@ -837,16 +839,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
-        layer = language_model.layers[layer_id]
-        if isinstance(layer, CheckpointWrapper) and any(
-            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
-        ):
-            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
-            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
-            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
-            layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -935,6 +929,24 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     config.attn = resolved
 
 
+def resolve_cp_style(config: ModelConfig, model_config: PretrainedConfig, styles: frozenset[CPStyle]) -> None:
+    """Resolve ``cp_style='auto'`` in-place: ulysses if the model supports it and ``cp`` shards its heads, else ring.
+
+    Ulysses balances the causal work across CP ranks; ring gives the last rank the most work.
+    """
+    if config.cp_style != "auto":
+        return
+    text_config = getattr(model_config, "text_config", model_config)
+    q_heads = text_config.num_attention_heads
+    kv_heads = getattr(text_config, "num_key_value_heads", None) or q_heads
+    heads_shard = q_heads % config.cp == 0 and (kv_heads % config.cp == 0 or config.cp % kv_heads == 0)
+    if "ulysses" in styles and (heads_shard or "ring" not in styles):
+        config.cp_style = "ulysses"
+    else:
+        config.cp_style = "ring"
+    get_logger().info(f"Auto-resolved cp_style='auto' to '{config.cp_style}' (cp={config.cp})")
+
+
 def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
@@ -998,14 +1010,13 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-
-    setup_fsdp(model, config, parallel_dims)
-
     if config.compile is not None:
         apply_compile(model, config.compile)
+
+    setup_fsdp(model, config, parallel_dims)
 
     if loading_from_checkpoint_later:
         logger.warning(
