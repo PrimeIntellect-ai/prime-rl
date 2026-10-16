@@ -17,6 +17,7 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [Optimizer Offloading](#optimizer-offloading)
   - [LM Head Chunking](#lm-head-chunking)
 - [Memory-Tight Recipe](#memory-tight-recipe)
+- [Max Trainer Throughput Recipe](#max-trainer-throughput-recipe)
 - [SLURM](#slurm)
   - [Activation](#activation)
   - [`[deployment]` Block](#deployment-block)
@@ -172,6 +173,27 @@ max_inflight_activations = 1
 ```
 
 The defaults already cover: fused LM head chunking (`8192`), `torch.compile` (fullgraph=False), AC (full mode), AC offloading (`max_inflight_activations=5`), and optimizer CPU offload. Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
+
+## Max Trainer Throughput Recipe
+
+The trainer defaults are tuned for memory, not speed: optimizer CPU offload, AC offloading, and `torch.compile` without `fullgraph` let large models fit on few GPUs, at a throughput cost. When you have enough GPUs to keep the model state and activations on GPU, turn them off:
+
+```toml
+[model]
+offload = "none"            # optimizer states stay on GPU
+ac_offloading = "None"      # activations stay on GPU
+moe_router_dtype = "bfloat16"  # fullgraph needs the router inside the block's FSDP unit; an fp32 router is not
+
+[model.compile]
+fullgraph = true            # compile each block as a single graph
+```
+
+Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. The SFT default router dtype is already `bfloat16`. RL defaults to an fp32 router, so check that bf16 routing is acceptable for your model before using `fullgraph` in RL.
+
+Examples:
+
+- [`examples/advanced/qwen3-235b-a22b/sft-max-perf.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-235b-a22b): Qwen3-235B-A22B SFT on 4 x 8 B300 at 16k, around 46% MFU.
+- [`examples/advanced/glm-5.3/sft/h200/16k-12-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3/sft/h200): the same recipe as an overlay for GLM-5.3 SFT on 12 H200 nodes.
 
 ## SLURM
 

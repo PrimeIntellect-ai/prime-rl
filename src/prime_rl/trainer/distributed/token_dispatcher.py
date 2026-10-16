@@ -83,7 +83,7 @@ class PermutationState:
 @dataclass(frozen=True)
 class LocalDispatchState:
     num_tokens: int
-    token_indices_experts_sorted: torch.Tensor
+    route_indices_experts_sorted: torch.Tensor
     scores_after_experts: torch.Tensor | None
     permutation: PermutationState
 
@@ -118,7 +118,33 @@ def permute_for_grouped_gemm(
 
     x = torch.vstack((x, x.new_zeros((1, x.shape[-1]))))
     state = PermutationState(input_shape=x.shape, permuted_indices=permuted_indices)
-    return x[permuted_indices], num_tokens_per_expert, state
+    return _GatherPermutedRows.apply(x, permuted_indices), num_tokens_per_expert, state
+
+
+class _GatherPermutedRows(torch.autograd.Function):
+    """Computes `x[permuted_indices]` for indices that permute the real rows and fill padding slots with the zero row.
+
+    Each real row appears exactly once, so the gather's backward is a gather by the inverse permutation:
+    every real row reads its gradient from its one slot, and the constant zero row gets none.
+    Autograd's `index` backward cannot assume this and scatter-adds, serializing on the zero row's repeats.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, permuted_indices: torch.Tensor) -> torch.Tensor:
+        inverse_permutation = permuted_indices.new_empty(x.shape[0])
+        inverse_permutation[permuted_indices] = torch.arange(
+            permuted_indices.numel(), device=permuted_indices.device, dtype=permuted_indices.dtype
+        )
+        ctx.save_for_backward(inverse_permutation[:-1])
+        return x[permuted_indices]
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        (real_row_inverse_permutation,) = ctx.saved_tensors
+        grad_x = torch.cat(
+            (grad_output[real_row_inverse_permutation], grad_output.new_zeros((1, grad_output.shape[-1])))
+        )
+        return grad_x, None
 
 
 def unpermute_from_grouped_gemm(x: torch.Tensor, state: PermutationState) -> torch.Tensor:
@@ -142,27 +168,37 @@ def _local_reorder(
         min=0,
         max=num_experts,
     ).to(torch.int64)
-    token_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
-    top_scores_experts_sorted = top_scores.reshape(-1)[token_indices_experts_sorted]
-    token_indices_experts_sorted = token_indices_experts_sorted // top_k
-    routed_input = x[token_indices_experts_sorted]
-    return routed_input, token_indices_experts_sorted, top_scores_experts_sorted, num_tokens_per_expert
+    route_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
+    top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
+    # A route slot is token_index * top_k + expert_slot (position among selected experts).
+    # // top_k recovers its token; keep the full slot index to restore outputs in combine.
+    routed_input = x[route_indices_experts_sorted // top_k]
+    return routed_input, route_indices_experts_sorted, top_scores_experts_sorted, num_tokens_per_expert
 
 
-def _scatter_routed_output(
+def _combine_routed_output(
     routed_output: torch.Tensor,
     *,
     num_tokens: int,
-    token_indices_experts_sorted: torch.Tensor,
+    route_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
 ) -> torch.Tensor:
     if scores_after_experts is not None:
         routed_output = (routed_output.float() * scores_after_experts.reshape(-1, 1)).to(routed_output.dtype)
 
+    if num_tokens == 0:
+        return routed_output
+
     dim = routed_output.shape[-1]
-    output = routed_output.new_zeros((num_tokens, dim))
-    routed_indices = token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
-    return output.scatter_add(0, routed_indices, routed_output)
+    # There is one output row per selected expert per token.
+    top_k = routed_output.shape[0] // num_tokens
+    # Undo expert-ID sorting so each token's routes can be summed without atomic additions.
+    # Each row is written once, so the buffer needs no initialization.
+    output = torch.empty_like(routed_output)
+    # Copy source row i to its original slot, route_indices_experts_sorted[i].
+    output[route_indices_experts_sorted] = routed_output
+    accumulation_dtype = torch.float32 if output.dtype in (torch.bfloat16, torch.float16) else output.dtype
+    return output.view(num_tokens, top_k, dim).sum(dim=1, dtype=accumulation_dtype).to(output.dtype)
 
 
 class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
@@ -178,7 +214,7 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, LocalDispatchState]:
-        routed_input, token_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
+        routed_input, route_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
             x,
             top_scores,
             selected_experts_indices,
@@ -200,7 +236,7 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
         )
         state = LocalDispatchState(
             num_tokens=x.shape[0],
-            token_indices_experts_sorted=token_indices,
+            route_indices_experts_sorted=route_indices,
             scores_after_experts=scores_after_experts,
             permutation=permutation,
         )
@@ -208,10 +244,10 @@ class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):
 
     def combine(self, routed_output: torch.Tensor, state: LocalDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
-        return _scatter_routed_output(
+        return _combine_routed_output(
             routed_output,
             num_tokens=state.num_tokens,
-            token_indices_experts_sorted=state.token_indices_experts_sorted,
+            route_indices_experts_sorted=state.route_indices_experts_sorted,
             scores_after_experts=state.scores_after_experts,
         )
 
@@ -252,7 +288,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         *,
         score_before_experts: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, TorchDispatchState]:
-        routed_input, token_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
+        routed_input, route_indices, sorted_scores, num_tokens_per_expert = _local_reorder(
             x,
             top_scores,
             selected_experts_indices,
@@ -286,7 +322,7 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
         )
         state = TorchDispatchState(
             num_tokens=x.shape[0],
-            token_indices_experts_sorted=token_indices,
+            route_indices_experts_sorted=route_indices,
             scores_after_experts=scores_after_experts,
             permutation=permutation,
             input_splits=input_splits,
@@ -297,10 +333,10 @@ class TorchTokenDispatcher(TokenDispatcherBase[TorchDispatchState]):
     def combine(self, routed_output: torch.Tensor, state: TorchDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
         routed_output = self._combine_tokens(routed_output, state.input_splits, state.output_splits)
-        return _scatter_routed_output(
+        return _combine_routed_output(
             routed_output,
             num_tokens=state.num_tokens,
-            token_indices_experts_sorted=state.token_indices_experts_sorted,
+            route_indices_experts_sorted=state.route_indices_experts_sorted,
             scores_after_experts=state.scores_after_experts,
         )
 
