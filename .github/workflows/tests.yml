@@ -186,10 +186,17 @@ jobs:
           RL: ${{ steps.filter.outputs.rl || 'false' }}
         run: |
           tests=$(jq -cn --argjson all "$RUN_ALL" --argjson sft "$SFT" --argjson rl "$RL" '[
-              if $all or $sft then "reverse_text_sft", "reverse_text_sft_lora" else empty end,
+              if $all or $sft then
+                {test: "reverse_text_sft", name: "Reverse Text SFT"},
+                {test: "reverse_text_sft_lora", name: "Reverse Text SFT LoRA"}
+              else empty end,
               if $all or $rl then
-                "reverse_text", "reverse_text_rl_opd", "reverse_text_rl_sft",
-                "alphabet_sort", "reverse_text_lora", "reverse_text_moe"
+                {test: "reverse_text", name: "Reverse Text"},
+                {test: "reverse_text_rl_opd", name: "Reverse Text RL OPD"},
+                {test: "reverse_text_rl_sft", name: "Reverse Text RL SFT"},
+                {test: "alphabet_sort", name: "Alphabet Sort"},
+                {test: "reverse_text_lora", name: "Reverse Text LoRA"},
+                {test: "reverse_text_moe", name: "Reverse Text MoE"}
               else empty end
             ]')
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
@@ -237,7 +244,7 @@ jobs:
         run: uv run pytest tests/unit -m gpu
 
   integration:
-    name: Integration / ${{ matrix.test }}
+    name: Integration / ${{ matrix.name }}
     needs: changes
     runs-on: prime-rl-2xh200
     container:
@@ -251,7 +258,7 @@ jobs:
       # i.e. 6 h200 pods per PR. Tune together with the ARC scale set maxRunners.
       max-parallel: 5
       matrix:
-        test: ${{ fromJSON(needs.changes.outputs.integration) }}
+        include: ${{ fromJSON(needs.changes.outputs.integration) }}
     steps:
       - name: Install Git
         run: |
@@ -297,7 +304,7 @@ jobs:
           if-no-files-found: ignore
 
   integration-eval:
-    name: Integration / gsm8k_eval
+    name: Integration / GSM8K Eval
     needs: changes
     if: needs.changes.outputs.eval == 'true'
     runs-on: ubuntu-latest
