@@ -1,10 +1,10 @@
-# Nightly eval regression: the full gsm8k test split (1319 tasks), one rollout
+# Eval regression suite: the full gsm8k test split (1319 tasks), one rollout
 # each, with the null harness (one chat completion per task, no sandbox) against
-# Prime Inference. The nightly workflow runs it once and compares the result
+# Prime Inference. The regression workflow (eval job) runs it once and compares the result
 # against gsm8k.baseline.json, which holds 5 repeats of the same eval. Refresh
 # the baseline after you change this config or the model.
 #
-#   uv run eval @ configs/ci/eval-regression/gsm8k.toml
+#   uv run eval @ configs/ci/regression/eval/gsm8k.toml
 
 model = "internal/glm-5.3-high-throughput"
 group_size = 1

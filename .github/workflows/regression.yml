@@ -1,22 +1,31 @@
-name: Eval Regression
+name: Regression
+
+# Nightly regression suites, one job group per suite. Each suite compares
+# tonight's run against a committed baseline and fails on a regression.
+#   eval: configs/ci/regression/eval/*.toml against Prime Inference
 
 on:
     workflow_dispatch:
         inputs:
-            repeats:
-                description: "Independent eval runs. Use 5 to produce a new baseline."
+            suite:
+                description: "Suite to run"
+                type: choice
+                options: [all, eval]
+                default: all
+            eval_repeats:
+                description: "eval: independent runs. Use 5 to produce a new baseline."
                 required: false
                 default: "1"
-            model:
-                description: "Model id on Prime Inference (empty: the config's model)"
+            eval_model:
+                description: "eval: model id on Prime Inference (empty: the config's model)"
                 required: false
                 default: ""
     pull_request:
         paths:
-            - .github/workflows/eval_regression.yaml
-            - configs/ci/eval-regression/**
+            - .github/workflows/regression.yml
+            - configs/ci/regression/**
             - scripts/eval_regression.py
-    # 4AM PST (12PM UTC), after the nightly tests start
+    # 4AM PST (12PM UTC)
     schedule:
         - cron: "0 12 * * *"
 
@@ -25,28 +34,29 @@ concurrency:
     cancel-in-progress: true
 
 env:
-    REPEATS: ${{ inputs.repeats || '1' }}
-    CONFIG: configs/ci/eval-regression/gsm8k.toml
+    EVAL_REPEATS: ${{ inputs.eval_repeats || '1' }}
+    EVAL_CONFIG: configs/ci/regression/eval/gsm8k.toml
 
 jobs:
-    plan:
-        name: Plan repeats
+    eval-plan:
+        name: "eval: plan"
+        if: ${{ !inputs.suite || inputs.suite == 'all' || inputs.suite == 'eval' }}
         runs-on: ubuntu-latest
         outputs:
             repeats: ${{ steps.plan.outputs.repeats }}
         steps:
             - id: plan
-              run: echo "repeats=$(jq -nc "[range(1; $REPEATS + 1)]")" >> "$GITHUB_OUTPUT"
+              run: echo "repeats=$(jq -nc "[range(1; $EVAL_REPEATS + 1)]")" >> "$GITHUB_OUTPUT"
 
     eval:
-        name: Eval (repeat ${{ matrix.repeat }})
-        needs: plan
+        name: "eval: run ${{ matrix.repeat }}"
+        needs: eval-plan
         runs-on: ubuntu-latest
         timeout-minutes: 60
         strategy:
             fail-fast: false
             matrix:
-                repeat: ${{ fromJSON(needs.plan.outputs.repeats) }}
+                repeat: ${{ fromJSON(needs.eval-plan.outputs.repeats) }}
         steps:
             - name: Checkout repository
               uses: actions/checkout@v7
@@ -69,10 +79,10 @@ jobs:
                   HF_TOKEN: ${{ secrets.HF_TOKEN }}
                   PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
                   PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
-                  MODEL: ${{ inputs.model }}
+                  MODEL: ${{ inputs.eval_model }}
               run: |
                   start=$(date +%s)
-                  uv run eval @ "$CONFIG" ${MODEL:+-m "$MODEL"} \
+                  uv run eval @ "$EVAL_CONFIG" ${MODEL:+-m "$MODEL"} \
                       --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
                   python3 scripts/eval_regression.py collect "outputs/repeat-${{ matrix.repeat }}" \
                       --repeat ${{ matrix.repeat }} --wall-s "$(( $(date +%s) - start ))" --out result.json
@@ -80,7 +90,7 @@ jobs:
               if: always()
               uses: actions/upload-artifact@v7
               with:
-                  name: eval-regression-${{ matrix.repeat }}
+                  name: eval-result-${{ matrix.repeat }}
                   path: |
                       result.json
                       outputs/repeat-${{ matrix.repeat }}/logs
@@ -89,10 +99,10 @@ jobs:
                   if-no-files-found: ignore
                   retention-days: 30
 
-    summary:
-        name: Summary
+    eval-summary:
+        name: "eval: summary"
         needs: eval
-        if: always()
+        if: ${{ always() && needs.eval.result != 'skipped' }}
         runs-on: ubuntu-latest
         steps:
             - name: Checkout repository
@@ -101,26 +111,26 @@ jobs:
                   submodules: false
                   sparse-checkout: |
                       scripts/eval_regression.py
-                      configs/ci/eval-regression
+                      configs/ci/regression/eval
                   sparse-checkout-cone-mode: false
             - name: Download results
               uses: actions/download-artifact@v8
               with:
                   path: artifacts
-                  pattern: eval-regression-*
+                  pattern: eval-result-*
             - name: Compare against baseline
               run: |
                   shopt -s nullglob
                   status=0
-                  python3 scripts/eval_regression.py summarize artifacts/*/result.json --expected "$REPEATS" \
-                      --baseline "${CONFIG%.toml}.baseline.json" --write-baseline baseline.json \
+                  python3 scripts/eval_regression.py summarize artifacts/*/result.json --expected "$EVAL_REPEATS" \
+                      --baseline "${EVAL_CONFIG%.toml}.baseline.json" --write-baseline baseline.json \
                       > summary.md || status=$?
-                  cat summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+                  tee -a "$GITHUB_STEP_SUMMARY" < summary.md
                   exit $status
             - name: Upload new baseline
               if: always() && hashFiles('baseline.json') != ''
               uses: actions/upload-artifact@v7
               with:
-                  name: eval-regression-baseline
+                  name: eval-baseline
                   path: baseline.json
                   retention-days: 90

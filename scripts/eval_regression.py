@@ -1,4 +1,4 @@
-"""Collect, summarize and gate eval runs for the nightly eval regression workflow.
+"""Collect, summarize and gate runs of the eval suite in the regression workflow.
 
     python scripts/eval_regression.py collect <run_dir> --repeat 1 --wall-s 312 --out result.json
     python scripts/eval_regression.py summarize results/*.json --baseline <config>.baseline.json
