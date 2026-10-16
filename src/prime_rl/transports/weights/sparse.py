@@ -503,12 +503,11 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.part_bytes = 0
 
     def wait_for_weight_reads(self) -> None:
-        if self.weights_read is None:
-            return
-        start = time.perf_counter()
-        self.weights_read.wait()
-        self.weights_read = None
-        self.logger.debug(f"Waited {time.perf_counter() - start:.2f}s for the sparse weight encode")
+        if self.weights_read is not None:
+            start = time.perf_counter()
+            self.weights_read.wait()
+            self.weights_read = None
+            self.logger.debug(f"Waited {time.perf_counter() - start:.2f}s for the sparse weight encode")
         self._raise_errors()
 
     def close(self) -> None:
@@ -532,14 +531,13 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         return pool.submit(run)
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
+        self.wait_for_weight_reads()
         if self.world.is_master:
             (step_dir / DELTA_DIR).mkdir(exist_ok=True)
-        assert self.encoder is not None
         first = self.last_step is None
         base_step, self.last_step = self.last_step, step
         if first:
-            # The snapshot is recorded (``_prepare``) before the first training step.
-            self.wait_for_weight_reads()
+            self._record(model)
             if step == 0:
                 # The run's first broadcast is the checkpoint the engines booted from.
                 self.anchor_step = step
@@ -576,24 +574,16 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.logger.debug(f"Waited {time.monotonic() - start:.2f}s for the engine weight layout")
         return layout
 
-    def _prepare(self, model: nn.Module, step: int) -> None:
-        self.wait_for_weight_reads()
-        self._raise_errors()
-        if self.encoder is None:
-            # The first broadcast only records the snapshot, while the master waits for the receivers.
-            self.encoder = SparseDeltaEncoder(model, self.config.snapshot)
-            shards = self.encoder.local_shards(model, self.world.is_master)
-            ready = torch.cuda.Event()
-            ready.record()
-            self.weights_read = threading.Event()
-            self._submit(self.encodes, self._record, shards, ready, self.weights_read)
-
-    def _record(self, shards, ready, weights_read: threading.Event) -> None:
-        encoder = self.encoder
-        assert encoder is not None
+    def _record(self, model: nn.Module) -> None:
+        """The first broadcast only records the snapshot."""
         start = time.perf_counter()
-        encoder.encode(shards, ready, weights_read, emit=None)
-        num_bytes = sum(numel * encoder.wire_dtypes[key].itemsize for key, (numel, _) in encoder.shards.items())
+        self.encoder = SparseDeltaEncoder(model, self.config.snapshot)
+        ready = torch.cuda.Event()
+        ready.record()
+        self.encoder.encode(self.encoder.local_shards(model, self.world.is_master), ready, threading.Event(), emit=None)
+        num_bytes = sum(
+            numel * self.encoder.wire_dtypes[key].itemsize for key, (numel, _) in self.encoder.shards.items()
+        )
         self.logger.info(
             f"Recorded the {num_bytes / 2**30:.1f} GiB sparse weight snapshot in {time.perf_counter() - start:.1f}s"
         )
