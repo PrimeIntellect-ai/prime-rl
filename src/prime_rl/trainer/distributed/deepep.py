@@ -7,9 +7,8 @@ from deep_ep import Buffer
 from torch.distributed import ProcessGroup
 
 from prime_rl.trainer.distributed.token_dispatcher import (
-    LocalDispatchState,
+    PermutationState,
     TokenDispatcherBase,
-    _scatter_routed_output,
     permute_for_grouped_gemm,
     unpermute_from_grouped_gemm,
 )
@@ -168,7 +167,11 @@ def _create_buffer(group: ProcessGroup, hidden_bytes: int) -> None:
 
 
 @dataclass(frozen=True)
-class DeepEPDispatchState(LocalDispatchState):
+class DeepEPDispatchState:
+    num_tokens: int
+    token_indices_experts_sorted: torch.Tensor
+    scores_after_experts: torch.Tensor | None
+    permutation: PermutationState
     num_input_tokens: int
     handle_id: torch.Tensor
 
@@ -231,10 +234,9 @@ class DeepEPTokenDispatcher(TokenDispatcherBase[DeepEPDispatchState]):
 
     def combine(self, routed_output: torch.Tensor, state: DeepEPDispatchState) -> torch.Tensor:
         routed_output = unpermute_from_grouped_gemm(routed_output, state.permutation)
-        routed_output = _scatter_routed_output(
-            routed_output,
-            num_tokens=state.num_tokens,
-            token_indices_experts_sorted=state.token_indices_experts_sorted,
-            scores_after_experts=state.scores_after_experts,
-        )
+        if state.scores_after_experts is not None:
+            routed_output = (routed_output.float() * state.scores_after_experts.reshape(-1, 1)).to(routed_output.dtype)
+        dim = routed_output.shape[-1]
+        token_indices = state.token_indices_experts_sorted.reshape(-1, 1).expand(-1, dim)
+        routed_output = routed_output.new_zeros((state.num_tokens, dim)).scatter_add(0, token_indices, routed_output)
         return torch.ops.deepep.combine(routed_output, state.handle_id, state.num_input_tokens)
