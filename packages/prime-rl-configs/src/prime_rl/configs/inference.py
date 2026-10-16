@@ -29,7 +29,7 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-QuantizationType = Literal["fp8_per_block"]
+QuantizationType = Literal["fp8_per_block", "mxfp8"]
 
 
 class VllmConfig(BaseConfig):
@@ -474,16 +474,6 @@ class InferenceConfig(BaseConfig):
                 "The llm-d router backend does not support routed-expert return "
                 "(enable_return_routed_experts): it breaks P/D and is unverified for multi-node. "
                 "Use router type 'vllm-router' for routed-expert runs."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_disaggregated_no_routed_experts(self):
-        """vLLM rejects routed-expert capture with NIXL KV transfer."""
-        if self.deployment.type == "disaggregated" and self.vllm.enable_return_routed_experts:
-            raise ValueError(
-                "Routed-expert return (enable_return_routed_experts) is not supported with disaggregated P/D: "
-                "vLLM does not capture routed experts across NIXL KV transfer."
             )
         return self
 

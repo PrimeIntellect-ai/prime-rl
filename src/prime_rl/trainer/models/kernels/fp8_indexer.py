@@ -57,7 +57,7 @@ def _per_token_group_quant_fp8(
 
 
 def per_token_group_quant_fp8(
-    x: torch.Tensor, group_size: int, use_ue8m0: bool = True
+    x: torch.Tensor, group_size: int, use_ue8m0: bool = True, eps: float = FP8_EPS
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert x.shape[-1] % group_size == 0
     assert x.stride(-1) == 1
@@ -78,7 +78,7 @@ def per_token_group_quant_fp8(
         group_size,
         x.shape[-1],
         x.stride(-2),
-        FP8_EPS,
+        eps,
         FP8_MIN,
         FP8_MAX,
         use_ue8m0=use_ue8m0,
@@ -167,6 +167,7 @@ def fp8_indexer(
     ke: torch.Tensor,
     topk: int,
     weight_scale: float = 1.0,
+    amax_floor: float = FP8_EPS,
 ) -> torch.Tensor:
     """Triton FP8 indexer: UE8M0 quantization + fused scoring kernel + topk.
 
@@ -178,6 +179,7 @@ def fp8_indexer(
         ke: [S_q] int32 causal end per token (in K's coordinate system, = global position + 1)
         topk: number of top indices to return
         weight_scale: constant scaling factor for weights
+        amax_floor: lower bound on each query head's and key's absolute maximum before its UE8M0 scale is taken
 
     Returns:
         [S_q, topk] int32 selected token indices per query (sentinel = S_k)
@@ -189,10 +191,10 @@ def fp8_indexer(
     device = q.device
 
     q_flat = q.reshape(S_q * H, D).contiguous()
-    q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True)
+    q_fp8, q_scales = per_token_group_quant_fp8(q_flat, group_size=D, use_ue8m0=True, eps=amax_floor)
     S_k_aligned = triton.cdiv(S_k, KEY_ALIGNMENT) * KEY_ALIGNMENT
     k = torch.nn.functional.pad(k, (0, 0, 0, S_k_aligned - S_k))
-    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True)
+    k_fp8, k_scales = per_token_group_quant_fp8(k.contiguous(), group_size=D, use_ue8m0=True, eps=amax_floor)
 
     q_fp8 = q_fp8.view(S_q, H, D).permute(1, 0, 2).contiguous()
 
@@ -242,5 +244,5 @@ def fp8_indexer(
 
 
 @fp8_indexer.register_fake
-def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0):
+def _fp8_indexer_fake(q, k, w, ks, ke, topk, weight_scale=1.0, amax_floor=FP8_EPS):
     return q.new_empty((q.shape[0], topk), dtype=torch.int32)
