@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 from typing import BinaryIO
 
+import orjson
 import pyzstd
 
 LEVEL = 3
@@ -21,6 +22,9 @@ LEVEL = 3
 
 FRAME_BYTES = 4 << 20
 """Independent frames in a sealed chunk: a seek decompresses one of these, not the chunk."""
+
+RECOVERY_BLOCK_BYTES = 64 << 10
+"""Backward scan block size when checking an interrupted live JSONL tail."""
 
 
 def chunk_path(directory: Path, number: int) -> Path:
@@ -43,6 +47,42 @@ def open_chunk(directory: Path, number: int) -> BinaryIO:
         return open(path, "rb")
     except FileNotFoundError:
         return pyzstd.SeekableZstdFile(path.with_name(path.name + ".zst"), "rb")
+
+
+def _recover_tail(path: Path) -> bool:
+    """Drop a torn final record and report whether a complete unterminated record remains."""
+    try:
+        file = open(path, "r+b")
+    except FileNotFoundError:
+        return False
+
+    with file:
+        end = file.seek(0, 2)
+        if not end:
+            return False
+        file.seek(end - 1)
+        if file.read(1) == b"\n":
+            return False
+
+        scan_end = end
+        record_start = 0
+        while scan_end:
+            block_start = max(0, scan_end - RECOVERY_BLOCK_BYTES)
+            file.seek(block_start)
+            block = file.read(scan_end - block_start)
+            newline = block.rfind(b"\n")
+            if newline >= 0:
+                record_start = block_start + newline + 1
+                break
+            scan_end = block_start
+
+        file.seek(record_start)
+        try:
+            orjson.loads(file.read(end - record_start))
+        except orjson.JSONDecodeError:
+            file.truncate(record_start)
+            return False
+        return True
 
 
 def seal(path: Path) -> None:
@@ -75,11 +115,16 @@ class ChunkedJsonl:
         for number, plain in numbers.items():
             if plain and number != self.number and compress:
                 self._seal(number)
+        self._needs_separator = _recover_tail(chunk_path(directory, self.number))
         self.file = open(chunk_path(directory, self.number), "ab")
         self.size = self.file.tell()
 
     def append(self, line: bytes) -> tuple[int, int]:
         """Write one line; returns ``(chunk, offset)``, the address a reader seeks to."""
+        if self._needs_separator and line:
+            self.file.write(b"\n")
+            self.size += 1
+            self._needs_separator = False
         if self.size and self.size + len(line) > self.max_bytes:
             self._roll()
         offset = self.size
@@ -107,6 +152,7 @@ class ChunkedJsonl:
         self.number += 1
         self.file = open(chunk_path(self.directory, self.number), "ab")
         self.size = 0
+        self._needs_separator = False
 
     def _seal(self, number: int) -> None:
         # not a daemon: a process that exits mid-seal waits for it rather than leaving a torn twin
