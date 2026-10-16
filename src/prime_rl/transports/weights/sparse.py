@@ -304,6 +304,8 @@ class SparseDeltaEncoder:
             self.snapshot = dict(self.host)
         self.boot_files = safetensors_index(boot_dir)
         self.boot_pending = set(self.shards) - self.gather
+        # The snapshot was just allocated on this stream, whose earlier work may still use that memory
+        self.stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(self.stream):
             for key in self.gather & set(self.shards):
                 self._read_boot(key)
