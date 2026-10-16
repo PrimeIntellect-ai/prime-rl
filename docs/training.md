@@ -268,6 +268,9 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
+| `model.implementation` | The model class to build instead of prime-rl's own for the checkpoint's architecture, e.g. one with an added head |
+
+**Custom model class.** `model.implementation` is the import path of a subclass of prime-rl's class for the architecture (e.g. `prime_rl.trainer.models.qwen3.modeling_qwen3.Qwen3ForCausalLM`). It keeps the base class's module names, so the checkpoint at `model.name` loads as usual, and the checkpoint must also hold the weights of every module the class adds (loading fails on a missing key). With LoRA, train an added module in full with `model.lora.modules_to_save`. prime-rl replaces the model's `forward` with its own, so the class changes what the model holds, not the loss. Inference servers keep serving the registered architecture.
 
 ### Important Metrics
 

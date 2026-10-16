@@ -232,6 +232,11 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    implementation: str | None = None
+    """Import path of the model class to build from the checkpoint at ``name``, for a model that extends a supported one
+    (e.g. an added head). Must subclass ``PreTrainedModelPrimeRL``. If None, uses prime-rl's implementation for the
+    architecture. Inference servers keep serving the registered architecture."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
