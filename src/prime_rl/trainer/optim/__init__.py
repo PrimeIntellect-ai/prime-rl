@@ -151,6 +151,11 @@ def _default_muon_param_groups(
             return False
         if "embed_tokens" in n:
             return False
+        if "ngram_embedding" in n:
+            return False
+        # Expert biases should not go to Muon (and would also raise under EP).
+        if "mlp.experts" in n and n.endswith("_bias"):
+            return False
         return True
 
     muon_params = []
