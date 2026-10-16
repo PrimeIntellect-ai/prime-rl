@@ -12,13 +12,14 @@ A delta must be applied on top of exactly its ``base_step``; per-tensor
 checksums of the new weights catch it if not.
 """
 
+import itertools
 import json
 import os
 import re
 import threading
 import time
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from itertools import groupby
@@ -252,7 +253,7 @@ def _read_frame(
     return kept, np.concatenate(kept_gaps), np.concatenate(kept_values)
 
 
-def write_file(path: Path, data: bytes | list) -> None:
+def write_file(path: Path, data: bytes | Iterable) -> None:
     """Write ``data`` (bytes, or buffers written back to back) under a temporary name, then rename, so
     readers never see a partial file. Plain file I/O releases the GIL during the (possibly slow) write,
     so background writes don't stall training."""
@@ -265,11 +266,16 @@ def write_file(path: Path, data: bytes | list) -> None:
 
 
 def write_anchor_shards(
-    parts: list[tuple[str, list[int], int, torch.Tensor]], step_dir: Path, rank: int, world_size: int
+    parts: list[tuple[str, list[int], int, torch.Tensor]],
+    step_dir: Path,
+    rank: int,
+    world_size: int,
+    to_host: Callable[[torch.Tensor], Iterable] = lambda values: [values.view(torch.uint8).numpy()],
 ) -> None:
     """Write one trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, flat values)``
-    slices, stored as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files, straight from host
-    memory and without collectives. The ``anchor_rank{rank}.done`` marker (the world size) comes last."""
+    slices, stored as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files, without collectives.
+    ``to_host`` yields each slice's bytes on the host, each written before the next is taken. The
+    ``anchor_rank{rank}.done`` marker (the world size) comes last."""
     files, size = [[]], 0
     for part in parts:
         if size > 2**30:
@@ -289,8 +295,9 @@ def write_anchor_shards(
             offset += values.nbytes
         encoded = json.dumps(header).encode()
         encoded += b" " * (-len(encoded) % 8)
-        buffers = [len(encoded).to_bytes(8, "little") + encoded]
-        buffers.extend(values.view(torch.uint8).numpy() for *_, values in file_parts)
+        buffers = itertools.chain(
+            [len(encoded).to_bytes(8, "little") + encoded], (chunk for *_, v in file_parts for chunk in to_host(v))
+        )
         write_file(step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors", buffers)
     write_file(step_dir / f"anchor_rank{rank}.done", str(world_size).encode())
 
