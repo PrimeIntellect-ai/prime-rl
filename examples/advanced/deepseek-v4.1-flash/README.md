@@ -1,6 +1,6 @@
 # DeepSeek-V4.1-Flash
 
-SFT configs for [`deepseek-ai/DeepSeek-V4.1-Flash`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash). Only the text model is trained; the vision tower and the DSpark draft head in the checkpoint are dropped.
+SFT and RL configs for [`deepseek-ai/DeepSeek-V4.1-Flash`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash). Only the text model is trained; the vision tower and the DSpark draft head in the checkpoint are dropped.
 
 V4.1 is V4's architecture (shared-KV latent attention, mHC residual streams, sqrt-softplus MoE) with three additions the trainer implements in `prime_rl/trainer/models/deepseek_v41/`:
 
@@ -40,3 +40,14 @@ uv run sft @ examples/advanced/deepseek-v4.1-flash/sft/base.toml @ examples/adva
 - Chats are rendered with the `deepseek-v4.1` renderer from `renderers` (text conversations without tools).
 
 Without context or pipeline parallelism every GPU holds a shard of the whole model state, so the run needs enough GPUs for ~550B non-engram parameters (fp32 masters and gradients) plus the frozen engram shards: on 80 GB GPUs, 24 is not enough. `num_train_nodes = 12` assumes 8-GPU nodes with more memory per GPU; size it to your hardware.
+
+## RL
+
+```bash
+uv run rl @ examples/advanced/deepseek-v4.1-flash/rl/math.toml
+```
+
+- **Inference:** one node serves the bf16 checkpoint, which vLLM quantizes online to per-block FP8. It runs DP 8 with expert parallelism and keeps fp32 FP8 scales to match the trainer's Hopper FP8 kernels.
+- **Trainer:** seven nodes run the SFT setup (EP 8 + FSDP, SignSGD, frozen engram tables).
+- **Weight broadcast:** after every step the trainer sends its weights over NCCL. The engram tables can't be gathered whole, so the rank that holds each part of a table sends it in fp8 chunks, and vLLM writes the chunks straight into its host-memory copy of the table.
+- **DeepGEMM:** V4.1's indexer needs DeepGEMM 2.8 or later on Hopper, because it reads its KV cache in 32-token blocks.

@@ -101,6 +101,7 @@ class AllToAllEmbeddingParallel(ParallelStyle):
             local, device_mesh, [Shard(0)], run_check=False, shape=weight.shape, stride=weight.stride()
         )
         module.weight = nn.Parameter(sharded, requires_grad=weight.requires_grad)
+        module.rows_per_rank = rows_per_rank
         group = device_mesh.get_group()
         grad_scale, output_dtype = 1.0 / self.grad_divide_factor, self.output_dtype
 
