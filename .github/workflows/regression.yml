@@ -68,12 +68,15 @@ jobs:
                   echo "Discovered nightly tests:"
                   echo "$files"
 
-                  # Build JSON of the form: { "test_file": ["tests/nightly/test_a.py", ...] }
-                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{test_file: .}')
+                  # Build JSON of the form: [{"test_file": "tests/nightly/test_foo_bar.py", "name": "Foo Bar"}, ...]
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc 'map({
+                      test_file: .,
+                      name: (split("/")[-1] | ltrimstr("test_") | rtrimstr(".py") | split("_") | map((.[:1] | ascii_upcase) + .[1:]) | join(" "))
+                  })')
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
     rl:
-        name: RL / Run
+        name: RL / ${{ matrix.name }}
         needs: rl-plan
         runs-on: research-cluster
         container:
@@ -85,7 +88,8 @@ jobs:
         timeout-minutes: 1440 # 24 hours
         strategy:
             fail-fast: false
-            matrix: ${{ fromJSON(needs.rl-plan.outputs.matrix) }}
+            matrix:
+                include: ${{ fromJSON(needs.rl-plan.outputs.matrix) }}
 
         steps:
             - name: Install Git
@@ -159,13 +163,16 @@ jobs:
                   echo "Discovered nightly FFT configs:"
                   echo "$files"
 
-                  # Build JSON of the form: { "config_file": ["configs/ci/nightly-fft/foo.toml", ...] }
-                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{config_file: .}')
+                  # Build JSON of the form: [{"config_file": "configs/ci/nightly-fft/foo-bar.toml", "name": "Foo Bar"}, ...]
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc 'map({
+                      config_file: .,
+                      name: (split("/")[-1] | rtrimstr(".toml") | split("-") | map((.[:1] | ascii_upcase) + .[1:]) | join(" "))
+                  })')
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
 
     fft:
-        name: FFT / Dispatch
+        name: FFT / ${{ matrix.name }}
         needs: fft-plan
         runs-on: ubuntu-latest
         permissions:
@@ -174,7 +181,8 @@ jobs:
         timeout-minutes: 30
         strategy:
             fail-fast: false
-            matrix: ${{ fromJSON(needs.fft-plan.outputs.matrix) }}
+            matrix:
+                include: ${{ fromJSON(needs.fft-plan.outputs.matrix) }}
 
         steps:
             - name: Checkout repository
