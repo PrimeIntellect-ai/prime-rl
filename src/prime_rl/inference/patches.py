@@ -34,6 +34,7 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    monkey_patch_deepseek_v41_streaming_weight_update()
 
 
 @dataclass
@@ -123,34 +124,42 @@ def monkey_patch_deepseek_v4_c128_boundary():
 
 
 def monkey_patch_deepseek_v4_attn_sink_loading():
-    """Fix DeepSeek V4 weight updates silently keeping the boot-time attention sinks.
+    """Fix DeepSeek V4 and V4.1 weight updates silently keeping the boot-time attention sinks.
 
     ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
     ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
     that go through a loader, so the copy is silently dropped. This pads this rank's heads back
     to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
 
-    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
-    ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
+    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only the
+    ``nvidia/model.py`` variants are covered, not the MTP, DSpark or non-NVIDIA ones.
     """
     from vllm.logger import init_logger
-    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
     from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+    from vllm.models.deepseek_v41.nvidia import model as dsv41_model
 
-    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    for module in (dsv4_model, dsv41_model):
+        _patch_attn_sink_loading(module)
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 / V4.1 attn_sink loads through param.weight_loader.")
+
+
+def _patch_attn_sink_loading(module):
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+
+    original_load_weights = module.DeepseekV4Model.load_weights
     if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
         return
 
     def load_weights(self, weights):
         params = dict(self.named_parameters())
-        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        tp_size = module.get_tensor_model_parallel_world_size()
         heads_per_rank = self.config.num_attention_heads // tp_size
-        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        head_start = heads_per_rank * module.get_tensor_model_parallel_rank()
         loaded_params: set[str] = set()
 
         def remaining_weights():
             for name, weight in weights:
-                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                if "attn_sink" not in name or module.is_pp_missing_parameter(name, self):
                     yield name, weight
                     continue
                 param = params[name]
@@ -164,8 +173,41 @@ def monkey_patch_deepseek_v4_attn_sink_loading():
         return loaded_params
 
     load_weights._prime_rl_uses_weight_loaders = True
-    dsv4_model.DeepseekV4Model.load_weights = load_weights
-    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 attn_sink loads through param.weight_loader.")
+    module.DeepseekV4Model.load_weights = load_weights
+
+
+def monkey_patch_deepseek_v41_streaming_weight_update():
+    """Stream DeepSeek-V4.1 weight updates instead of holding the whole model on the GPU.
+
+    The vision-language wrapper's ``load_weights`` sorts every weight before loading any, so the
+    vision and text groups each reach their loader in one piece. A weight update streamed from
+    the trainer arrives as GPU tensors, and sorting it would hold the whole ~1.1 TB update on
+    the GPU. Once the model is loaded, updates carry only text weights, so they go straight to
+    the language model, unsorted.
+    """
+    from vllm.logger import init_logger
+    from vllm.models.deepseek_v41.nvidia import vl_model
+
+    original_load_weights = vl_model.DeepseekV41ForCausalLM.load_weights
+    if getattr(original_load_weights, "_prime_rl_streams_updates", False):
+        return
+
+    def load_weights(self, weights):
+        if not getattr(self, "_weights_finalized", False):
+            return original_load_weights(self, weights)
+
+        def text_weights():
+            for name, weight in self.hf_to_vllm_mapper.apply(weights):
+                prefix, dot, rest = name.partition(".")
+                if prefix != "language_model" or not dot:
+                    raise ValueError(f"DeepSeek-V4.1 weight updates carry only text weights, got {name}")
+                yield rest, weight
+
+        return {f"language_model.{name}" for name in self.language_model.load_weights(text_weights())}
+
+    load_weights._prime_rl_streams_updates = True
+    vl_model.DeepseekV41ForCausalLM.load_weights = load_weights
+    init_logger("vllm.prime_rl.deepseek_v41").info("DeepSeek-V4.1 weight updates stream to the language model.")
 
 
 def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
