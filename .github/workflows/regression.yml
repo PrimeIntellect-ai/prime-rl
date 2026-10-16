@@ -120,9 +120,10 @@ jobs:
                   pattern: eval-result-*
             - name: Compare against baseline
               run: |
-                  shopt -s nullglob
+                  # A single downloaded artifact lands in artifacts/ itself, several land in subdirectories.
                   status=0
-                  python3 scripts/eval_regression.py summarize artifacts/*/result.json --expected "$EVAL_REPEATS" \
+                  python3 scripts/eval_regression.py summarize $(find artifacts -name result.json 2>/dev/null) \
+                      --expected "$EVAL_REPEATS" \
                       --baseline "${EVAL_CONFIG%.toml}.baseline.json" --write-baseline baseline.json \
                       > summary.md || status=$?
                   tee -a "$GITHUB_STEP_SUMMARY" < summary.md
