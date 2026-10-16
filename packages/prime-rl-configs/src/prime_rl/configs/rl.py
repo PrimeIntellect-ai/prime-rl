@@ -562,21 +562,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_no_routed_experts(self):
-        """Runs after ``auto_setup_router_replay``, which sets the inference flag after InferenceConfig's validators."""
-        inference = self.inference
-        if (
-            inference is not None
-            and inference.deployment.type == "disaggregated"
-            and inference.vllm.enable_return_routed_experts
-        ):
-            raise ValueError(
-                "Router replay (inference.vllm.enable_return_routed_experts / trainer.enable_router_replay) "
-                "is not supported with disaggregated P/D: vLLM does not capture routed experts across NIXL KV transfer."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_router_replay_without_kv_offload(self):
         if (
             self.trainer.enable_router_replay
@@ -781,6 +766,8 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
         """Auto-setup the default single-node/multi-node SLURM template if no custom template is provided."""
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = self.run.name
         if self.slurm is not None and self.slurm.template_path is None:
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:
