@@ -302,6 +302,22 @@ def write_anchor_shards(
     write_file(step_dir / f"anchor_rank{rank}.done", str(world_size).encode())
 
 
+def safetensors_index(directory: Path) -> dict[str, list[tuple[int, Path, torch.dtype, int]]]:
+    """Tensor name -> its slices ``(flat start, file, dtype, data offset)`` in the safetensors files in
+    ``directory``: a HF checkpoint (one slice at 0), or an anchor (``"{name}@{start}"`` slices)."""
+    index = defaultdict(list)
+    for path in directory.glob("*.safetensors"):
+        with open(path, "rb") as file:
+            header_size = int.from_bytes(file.read(8), "little")
+            header = json.loads(file.read(header_size))
+        header.pop("__metadata__", None)
+        for key, info in header.items():
+            name, _, start = key.partition("@")
+            dtype = getattr(torch, SAFETENSORS_DTYPES[info["dtype"]])
+            index[name].append((int(start or 0), path, dtype, 8 + header_size + info["data_offsets"][0]))
+    return dict(index)
+
+
 def anchor_index(step_dir: Path) -> tuple[dict[str, list[tuple[Path, str, int]]], dict[str, tuple[list[int], str]]]:
     """Where each tensor's slices are in an anchor written by ``write_anchor_shards``, and its shape and dtype."""
     slices: dict[str, list[tuple[Path, str, int]]] = defaultdict(list)

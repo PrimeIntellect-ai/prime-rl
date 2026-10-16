@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from bisect import bisect_left, bisect_right
@@ -12,6 +13,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from huggingface_hub import snapshot_download
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
@@ -34,6 +36,7 @@ from prime_rl.utils.sparse_weights import (
     rank_parts_marker,
     read_engine_layout,
     revalidate,
+    safetensors_index,
     write_anchor_shards,
     write_file,
     write_rank_file,
@@ -57,8 +60,9 @@ class SparseDeltaEncoder:
     goes. The snapshot is placed at the first broadcast after a training step: on
     the GPU when it fits next to that step's peak memory, else in one page-locked
     host buffer (locked only between training steps: registering it can stall the
-    trainer's CUDA calls). With a GPU snapshot, a pageable host buffer holds anchor
-    copies, allocated at the first periodic anchor.
+    trainer's CUDA calls). It starts as the checkpoint the engines booted from,
+    read back from storage. With a GPU snapshot, a pageable host buffer holds
+    anchor copies, allocated at the first periodic anchor.
 
     Tensors the engines hold in fp8 (``set_fp8_layout``: HF name -> scale format,
     from the engine layout) are quantized with vLLM's own per-block quantizer,
@@ -112,6 +116,9 @@ class SparseDeltaEncoder:
         self.on_gpu: bool | None = None  # None until placed, at the first broadcast after a training step
         self.host_buffer: torch.Tensor | None = None
         self.write_staging: torch.Tensor | None = None
+        # HF name -> (file, dtype, data offset) in the boot checkpoint, and keys whose v0 is still to read from it
+        self.boot_files: dict[str, list[tuple[int, Path, torch.dtype, int]]] = {}
+        self.boot_pending: set[str] = set()
         self.host: dict[str, torch.Tensor] = {}
         self.pinned = False
         self.initialized = False
@@ -278,45 +285,67 @@ class SparseDeltaEncoder:
         return parts
 
     @torch.no_grad()
-    def prepare(self, shards: list[tuple], peak_reserved: int) -> None:
-        """The training thread's part of an encode, before ``encode``. The first one places and allocates
-        the snapshot, against the measured training peak; the host buffer only holds a CPU snapshot."""
-        if not self.initialized:
-            self.track(shards)
-            self._place(peak_reserved)
-            self.staging = torch.empty(1 << 28, dtype=torch.uint8, pin_memory=True)
-            if self.on_gpu:
-                device = f"cuda:{self.device}"
-                self.snapshot = {
-                    key: torch.empty(numel, dtype=self._bits(key), device=device)
-                    for key, (numel, _) in self.shards.items()
-                }
-            else:
-                self._allocate_host()
-                self._page_lock()
-                self.snapshot = dict(self.host)
+    def initialize(self, model: nn.Module, is_master: bool, peak_reserved: int, boot_dir: Path) -> None:
+        """At the first delta (v1), on the training thread: place the snapshot against the measured training
+        peak and allocate it (the host buffer only for a CPU snapshot). The snapshot starts as v0, the
+        checkpoint in ``boot_dir`` the engines booted from, read as the encode goes (tensors gathered for fp8
+        are read here, before ``local_shards`` gathers them)."""
+        self.track(self.local_shards(model, is_master))
+        self._place(peak_reserved)
+        self.staging = torch.empty(1 << 28, dtype=torch.uint8, pin_memory=True)
+        if self.on_gpu:
+            device = f"cuda:{self.device}"
+            self.snapshot = {
+                key: torch.empty(numel, dtype=self._bits(key), device=device) for key, (numel, _) in self.shards.items()
+            }
+        else:
+            self._allocate_host()
+            self._page_lock()
+            self.snapshot = dict(self.host)
+        self.boot_files = safetensors_index(boot_dir)
+        self.boot_pending = set(self.shards) - self.gather
+        with torch.cuda.stream(self.stream):
+            for key in self.gather & set(self.shards):
+                self._read_boot(key)
+            self.stream.synchronize()
+        self.initialized = True
+
+    def _read_boot(self, key: str) -> None:
+        """Fill the snapshot of ``key`` with this rank's slice of the boot checkpoint, through the pinned
+        staging buffer, on the current stream."""
+        out = self.snapshot[key].view(self.wire_dtypes[key])
+        numel, offset = self.shards[key]
+        staging = self.staging.numpy()
+        for start, name in self.segments[self.key_fqn[key]]:
+            begin, end = max(start, offset), min(start + prod(self.hf_tensors[name][0]), offset + numel)
+            if begin >= end:
+                continue
+            first, path, dtype, data_start = max(s for s in self.boot_files[name] if s[0] <= begin - start)
+            itemsize = dtype.itemsize
+            with open(path, "rb") as file:
+                for chunk in range(begin, end, self.staging.numel() // itemsize):
+                    count = min(self.staging.numel() // itemsize, end - chunk)
+                    file_offset = data_start + (chunk - start - first) * itemsize
+                    assert os.preadv(file.fileno(), [staging[: count * itemsize]], file_offset) == count * itemsize
+                    os.posix_fadvise(file.fileno(), file_offset, count * itemsize, os.POSIX_FADV_DONTNEED)
+                    out[chunk - offset : chunk - offset + count].copy_(
+                        self.staging[: count * itemsize].view(dtype), non_blocking=True
+                    )
+                    torch.cuda.current_stream().synchronize()
 
     @torch.no_grad()
     def encode(
         self, shards: list[tuple], ready: torch.cuda.Event, weights_read: threading.Event, emit: Callable
     ) -> None:
         """Diff the shards against the snapshot and advance it, on the side stream once ``ready`` (recorded
-        after the optimizer step) has passed; the first call only fills the snapshot. Hands the delta to
-        ``emit`` in parts ``(entries, gaps, value bytes, new-weight checksum per HF tensor part)`` on the
-        host as they are encoded. Sets ``weights_read`` once done reading the weights. ``scales_changed``:
-        whether an fp8 block scale changed on this rank."""
+        after the optimizer step) has passed. Hands the delta to ``emit`` in parts ``(entries, gaps, value
+        bytes, new-weight checksum per HF tensor part)`` on the host as they are encoded. Sets ``weights_read``
+        once done reading the weights. ``scales_changed``: whether an fp8 block scale changed on this rank."""
         torch.cuda.set_device(self.device)
         try:
             with torch.cuda.stream(self.stream):
                 self.stream.wait_event(ready)
-                if not self.initialized:
-                    for key, _, shard, _, _ in shards:
-                        self.snapshot[key].copy_(
-                            as_bits(shard.reshape(-1).to(self.wire_dtypes[key])), non_blocking=True
-                        )
-                    self.initialized = True
-                else:
-                    self.scales_changed = self._diff(shards, emit)
+                self.scales_changed = self._diff(shards, emit)
                 self.stream.synchronize()
         finally:
             weights_read.set()
@@ -408,6 +437,9 @@ class SparseDeltaEncoder:
 
         for key, fqn, shard, offset, gathered in shards:
             shard = shard.reshape(-1)
+            if key in self.boot_pending:
+                self._read_boot(key)
+                self.boot_pending.discard(key)
             previous = out = self.snapshot[key]
             wire = self.wire_dtypes[key]
             segment_names, begins, ends, shifts = self._segments(key, fqn, offset, shard.numel())
@@ -488,6 +520,12 @@ class SparseDeltaEncoder:
         return bool(scales_changed)
 
 
+def _model_dir(model: nn.Module) -> Path:
+    """The local dir of the checkpoint the model was loaded from, as the trainer resolves it."""
+    name = model.config.name_or_path
+    return Path(name) if Path(name).exists() else Path(snapshot_download(repo_id=name, repo_type="model"))
+
+
 def _write_json(path: Path, value) -> None:
     write_file(path, json.dumps(value).encode())
 
@@ -520,6 +558,9 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.errors: list[BaseException] = []
         self.weights_read: threading.Event | None = None
         self.part_bytes = 0
+        # The checkpoint the engines hold before the first delta: the model's (None), or a resumed run's first
+        # broadcast
+        self.boot_dir: Path | None = None
 
     def wait_for_weight_reads(self) -> None:
         if self.weights_read is not None:
@@ -565,28 +606,33 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
                 _write_json(step_dir / DELTA_DIR / MANIFEST, manifest)
                 WeightSender._finish(self, step, step_dir)
             return
-        if encoder.initialized and encoder.fp8_layout is None:
-            # Every engine worker reports which tensors it holds in fp8 when it loads the first broadcast.
-            layout = [self._wait_for_engine_layout(step_dir.parent) if self.world.is_master else None]
-            dist.broadcast_object_list(layout, src=0)
-            encoder.set_fp8_layout(model, layout[0], self.world.is_master)
-        shards = encoder.local_shards(model, self.world.is_master)
         if base_step is None:
-            # A resumed run's startup broadcast: a full checkpoint, written from the weights before training.
+            # A resumed run's startup broadcast: a full checkpoint, written from the weights before training. The
+            # next broadcast's delta is against it.
+            shards = encoder.local_shards(model, self.world.is_master)
             encoder.track(shards)
             source = {key: as_bits(shard.reshape(-1).to(encoder.wire_dtypes[key])) for key, _, shard, _, _ in shards}
             torch.cuda.synchronize()
             self._write_full(step, step_dir, encoder.anchor_parts(source))
+            self.boot_dir = step_dir
             return
-        full = not encoder.initialized
-        encoder.prepare(shards, torch.cuda.max_memory_reserved())
+        if encoder.fp8_layout is None:
+            # Every engine worker reports which tensors it holds in fp8 when it loads the first broadcast.
+            layout = [self._wait_for_engine_layout(step_dir.parent) if self.world.is_master else None]
+            dist.broadcast_object_list(layout, src=0)
+            encoder.set_fp8_layout(model, layout[0], self.world.is_master)
+        if not encoder.initialized:
+            encoder.initialize(
+                model, self.world.is_master, torch.cuda.max_memory_reserved(), self.boot_dir or _model_dir(model)
+            )
+        shards = encoder.local_shards(model, self.world.is_master)
         # Periodic anchors only serve engines that fall off the chain: written in the background, each after
         # the previous one.
         anchor = step % self.config.anchor_interval == 0
         ready = torch.cuda.Event()
         ready.record()
         self.weights_read = threading.Event()
-        args = (step, base_step, step_dir, shards, ready, self.weights_read, full, anchor)
+        args = (step, base_step, step_dir, shards, ready, self.weights_read, anchor)
         self._submit(self.encodes, self._encode, *args)
 
     def _wait_for_engine_layout(self, broadcast_dir: Path) -> dict[str, str]:
@@ -627,21 +673,14 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         shards,
         ready,
         weights_read: threading.Event,
-        full: bool,
         anchor: bool,
     ) -> None:
         """Encode thread: diff v{step}, handing the delta to the writer in parts as it is encoded. With fp8
         deltas, the parts are held until the ranks agree that no block scale changed, else the step is a
-        full checkpoint. The first broadcast after a training step only fills the snapshot and is published
-        as a full checkpoint (the engines reload it once)."""
+        full checkpoint."""
         encoder = self.encoder
         assert encoder is not None
         self._wait(self.snapshot_writes)
-        if full:
-            encoder.encode(shards, ready, weights_read, emit=None)
-            shards.clear()
-            self._write_from_snapshot(self.writes, self._write_full, step, step_dir, full=True)
-            return
         start = time.perf_counter()
         held: list[tuple] = []
         num_parts = 0
