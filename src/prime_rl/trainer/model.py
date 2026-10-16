@@ -48,6 +48,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
@@ -68,7 +69,7 @@ from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.vlm import get_language_model, get_vision_encoder
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.utils import format_time
+from prime_rl.utils.utils import format_time, import_object
 from prime_rl.utils.weights import (
     load_state_dict,
     load_state_dict_keys,
@@ -384,8 +385,16 @@ def get_model(
         )
         target_config.num_hidden_layers = num_hidden_layers
 
-    custom_vlm_cls = get_custom_vlm_cls(model_config)
-    if custom_vlm_cls is None and not supports_custom_impl(model_config):
+    implementation_cls = import_object(config.implementation) if config.implementation is not None else None
+    if implementation_cls is not None and not (
+        isinstance(implementation_cls, type) and issubclass(implementation_cls, PreTrainedModelPrimeRL)
+    ):
+        raise TypeError(
+            f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {config.implementation!r} "
+            f"({implementation_cls!r})"
+        )
+    custom_vlm_cls = get_custom_vlm_cls(model_config) if implementation_cls is None else None
+    if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
             f"{model_config.model_type!r} has no PrimeRL model implementation. "
             "The trainer only supports the architectures in prime_rl.trainer.models."
@@ -393,7 +402,7 @@ def get_model(
 
     # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
-        cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
+        cp_model_cls = implementation_cls or custom_vlm_cls or get_custom_causal_lm_cls(model_config)
         cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
         if cp_blocker is not None:
             raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
@@ -404,7 +413,7 @@ def get_model(
         )
 
     with device:
-        model_cls = custom_vlm_cls or AutoModelForCausalLMPrimeRL
+        model_cls = implementation_cls or custom_vlm_cls or AutoModelForCausalLMPrimeRL
 
         load_model_start_time = time.perf_counter()
         if device == torch.device("meta"):
