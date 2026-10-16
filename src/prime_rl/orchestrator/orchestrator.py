@@ -416,8 +416,12 @@ class Orchestrator:
         # A failed component (e.g. the watcher after a weight update fails) cancels the step loop
         # wherever it waits, instead of relying on the loop to poll for it.
         main_task = asyncio.current_task()
+
+        def on_component_done(task: asyncio.Task) -> None:
+            self._on_component_done(task, main_task)
+
         for task in self.component_tasks:
-            task.add_done_callback(lambda task: self._on_component_done(task, main_task))
+            task.add_done_callback(on_component_done)
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
@@ -436,6 +440,9 @@ class Orchestrator:
             self._raise_if_component_stopped()
             raise
         finally:
+            # Teardown stops the components itself; one failing now must not cancel the teardown.
+            for task in self.component_tasks:
+                task.remove_done_callback(on_component_done)
             elapsed = format_time(time.perf_counter() - start_time)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
