@@ -227,6 +227,10 @@ class Fp8ExpertMaster(torch.Tensor):
         return f"Fp8ExpertMaster({self._tensor})"
 
 
+# Checkpoints hold the master shards as this subclass.
+torch.serialization.add_safe_globals([Fp8ExpertMaster])
+
+
 def all_gather_expert_weights_in_fp8(experts: nn.Module) -> None:
     """Make FSDP all-gather ``experts``' 3-D weights as FP8 blocks. Call before ``fully_shard``."""
     for name, param in list(experts.named_parameters(recurse=False)):
