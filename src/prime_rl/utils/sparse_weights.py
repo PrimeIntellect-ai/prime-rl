@@ -280,7 +280,7 @@ def write_anchor_shards(
     for index, file_parts in enumerate(files):
         header, offset = {"__metadata__": {"shapes": json.dumps({name: shape for name, shape, _, _ in file_parts})}}, 0
         for name, _, start, values in file_parts:
-            dtype = next(name for name, dtype in SAFETENSORS_DTYPES.items() if getattr(torch, dtype) == values.dtype)
+            dtype = next(key for key, dtype in SAFETENSORS_DTYPES.items() if getattr(torch, dtype) == values.dtype)
             header[f"{name}@{start}"] = {
                 "dtype": dtype,
                 "shape": [values.numel()],
