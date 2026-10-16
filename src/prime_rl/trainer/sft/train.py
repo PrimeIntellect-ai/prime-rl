@@ -482,7 +482,11 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
+                final_backward = micro_step == grad_accum_steps - 1
+                if final_backward and weight_sender is not None:
+                    # The offloaded optimizer step overlaps the final backward and updates the weights
+                    weight_sender.wait_for_weight_reads()
+                begin_backward(gradient_manager, final_backward=final_backward)
                 scaled_loss.backward()
                 finish_backward(gradient_manager)
 
@@ -528,8 +532,6 @@ def train(config: SFTConfig):
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
         logger.debug("Optimizer step")
-        if weight_sender is not None:
-            weight_sender.wait_for_weight_reads()
         optimizer.step()
         optimizer.zero_grad()
 

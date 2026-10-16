@@ -507,7 +507,11 @@ def train(config: TrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
+                final_backward = micro_step == len(micro_batches) - 1
+                if final_backward and weight_sender is not None:
+                    # The offloaded optimizer step overlaps the final backward and updates the weights
+                    weight_sender.wait_for_weight_reads()
+                begin_backward(gradient_manager, final_backward=final_backward)
                 loss.backward()
                 finish_backward(gradient_manager)
 
@@ -587,8 +591,6 @@ def train(config: TrainerConfig):
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # Update the model parameters
-        if weight_sender is not None:
-            weight_sender.wait_for_weight_reads()
         optimizer.step()
         optimizer.zero_grad()
 
