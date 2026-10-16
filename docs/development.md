@@ -18,13 +18,12 @@ This page covers workflows for developing on `prime-rl` itself — running the t
 
 ## Test Suite
 
-The test suite is split into three tiers, each with its own CI workflow.
+The test suite is split into two tiers. The nightly regression suites run outside of `tests/`.
 
 ### Layout
 
 - **`tests/unit/`** — fast-running, hermetic tests for isolated logic: config parsing and validation, advantage / loss / scheduler / packer math, individual dataset paths, model-conversion roundtrips, etc. Tests that need a GPU are tagged with the `gpu` marker.
 - **`tests/integration/`** — full-stack RL/SFT runs on a tiny model end-to-end through inference + orchestrator + trainer.
-- **`tests/nightly/`** — runs the configs in [`examples/`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples) every night to catch regressions in the shipped examples.
 
 ### Running Tests Locally
 
@@ -42,7 +41,7 @@ uv run pytest tests/integration/test_reverse_text.py -vvs  # one specific scenar
 | Workflow | Trigger | What runs | Where |
 |---|---|---|---|
 | [`tests.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/tests.yml) | CPU jobs: every PR + push to `main`. GPU jobs: relevant changes in non-draft PRs; full suite on push to `main` or manual dispatch | CPU: `pytest tests/unit -m "not gpu"`, plus a slim-wheel install check that `prime-rl-configs` imports cleanly without heavy deps (no torch / vllm / transformers / wandb / verifiers / datasets / liger / loguru in `sys.modules`). GPU: `pytest tests/unit -m gpu`, plus RL/SFT integration scenarios (`reverse_text`, `reverse_text_sft`, `reverse_text_sft_lora`, `reverse_text_lora`, `reverse_text_moe`, `reverse_text_rl_opd`, `reverse_text_rl_sft`, `alphabet_sort`) with `max-parallel: 5`; separate hosted `gsm8k_eval` job | CPU: `ubuntu-latest`. GPU: self-hosted `prime-rl-2xh200` k8s scale set (2xH200); `ubuntu-latest` for test selection and hosted eval |
-| [`regression.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/regression.yml) | 03:00 PST daily + manual `workflow_dispatch` (`suite` picks one suite; single-file filters optional) | `rl`: every file in `tests/nightly/`, one matrix job per file. `fft`: every `configs/ci/nightly-fft/*.toml`, dispatched as a hosted full-finetune run | `rl`: `research-cluster`. `fft`: `ubuntu-latest` (dispatch only) |
+| [`regression.yml`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/.github/workflows/regression.yml) | 03:00 PST daily + manual `workflow_dispatch` (`suite` picks one suite; single-config filter optional) | `rl`: every `configs/ci/nightly/*.toml`, dispatched as a hosted RL run | `ubuntu-latest` (dispatch only) |
 
 The GPU jobs skip drafts — open the PR as **Draft** until you're ready to consume CI compute, then mark it ready for review to trigger the GPU matrix.
 
