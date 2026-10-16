@@ -130,6 +130,10 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
 
         if ep_mesh is not None:
             parallelize_module(moe.experts, device_mesh=ep_mesh, parallelize_plan=ExpertWeightParallel())
+        if isinstance(compute, DeepGemmFP8ExpertCompute):
+            from prime_rl.trainer.models.layers.fp8_expert_weights import all_gather_expert_weights_in_fp8
+
+            all_gather_expert_weights_in_fp8(moe.experts)
 
     get_logger().info(
         f"Configured {len(selected_moes)}/{len(moe_layers)} MoE layers with compute={type(selected_compute).__name__}, "
