@@ -1,6 +1,5 @@
 import itertools
 import json
-import os
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -29,7 +28,6 @@ from prime_rl.utils.sparse_weights import (
     anchor_tensors,
     bits_dtype,
     decode_gaps,
-    numa_cpus,
     pin,
     read_delta,
     read_manifest,
@@ -86,15 +84,10 @@ class FileSystemWeightUpdateWorker(Worker):
     ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
         """Read this worker's part of a delta into a pinned host buffer that is reused across steps
         (allocating pinned memory every step is slow on a loaded host), in chunks of up to 2^26 changes
-        of consecutive frames. Reads and copies run on the CPUs of the GPU's NUMA node."""
+        of consecutive frames."""
         global _reader_pool
-        cpus = numa_cpus(torch.cuda.current_device())
-        if cpus is not None:
-            os.sched_setaffinity(0, cpus)
         if _reader_pool is None:
-            _reader_pool = ThreadPoolExecutor(
-                16, initializer=None if cpus is None else lambda: os.sched_setaffinity(0, cpus)
-            )
+            _reader_pool = ThreadPoolExecutor(16)
         start = time.perf_counter()
         frames, checksums = read_delta(step_dir, _reader_pool, None if self.index_map is None else self.index_map.names)
         read_time = time.perf_counter() - start
