@@ -2,7 +2,10 @@
 
 The policy watcher calls ``trigger(step)`` after each applied policy,
 including startup. The dispatcher pulls via ``next_task()`` until
-``bool(source) == False``. Constructed only when eval is configured."""
+``bool(source) == False``. Constructed only when eval is configured.
+
+A standalone eval may stream an infinite taskset through its one epoch: its tasks are
+pulled off the env's ``TaskFeed`` as they become ready, until the taskset ends."""
 
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from prime_rl.orchestrator.types import TaskRequest
 
 if TYPE_CHECKING:
     from prime_rl.orchestrator.envs import EvalEnvs
+    from prime_rl.orchestrator.task_feed import TaskFeed
 
 
 class EvalSource:
@@ -37,14 +41,22 @@ class EvalSource:
         self.skip_first_step = skip_first_step
 
         self.tasks_by_env: dict[str, list[vf.Task]] = {}
+        self.feeds: dict[str, TaskFeed] = {}
         self.group_sizes: dict[str, int] = {}
         self.intervals: dict[str, int] = {}
         for env in eval_envs:
             self.tasks_by_env[env.name] = list(env.examples)
+            if env.feed is not None:
+                if intervals is not None:  # evals that repeat per checkpoint need a fixed set
+                    raise ValueError(f"Eval env {env.name} has an infinite taskset — set select.limit to bound it")
+                self.feeds[env.name] = env.feed
             self.group_sizes[env.name] = env.config.group_size
             self.intervals[env.name] = intervals[env.name] if intervals is not None else 1
 
         self.queue: deque[TaskRequest] = deque()
+        self.streams: dict[str, tuple[int, dict[str, tuple[int, str]]]] = {}
+        """Fired streaming envs: their step, and per task hash with restored episodes the
+        rollouts it still owes and the group they join."""
 
         # A fresh run evaluates the base policy. Resumed runs apply interval
         # rules to the loaded checkpoint and later policies.
@@ -63,12 +75,15 @@ class EvalSource:
         fired = [
             name
             for name, interval in self.intervals.items()
-            if (is_first or force or step % interval == 0) and self.tasks_by_env[name]
+            if (is_first or force or step % interval == 0) and (self.tasks_by_env[name] or name in self.feeds)
         ]
         saved: dict[str, list[vf.WireEpisode]] = defaultdict(list)
         for episode in completed:
             saved[episode.env.name or episode.env.id].append(episode)
         restored: list[vf.WireEpisode] = []
+        for name in fired:
+            if name in self.feeds:
+                self.streams[name] = (step, self.restore_stream(saved[name], self.group_sizes[name], restored))
         # Round-robin across fired envs (A₁, B₁, A₂, B₂, …) so the
         # dispatcher rotates at example granularity. ``try_schedule``'s
         # continue-group branch still keeps each example's group_size
@@ -90,11 +105,39 @@ class EvalSource:
                     )
         return fired, restored
 
+    @staticmethod
+    def restore_stream(
+        saved: list[vf.WireEpisode], group_size: int, restored: list[vf.WireEpisode]
+    ) -> dict[str, tuple[int, str]]:
+        """A stream's tasks are not known up front: restore up to a group of each task's
+        saved episodes, as ``plan_rollouts`` does, and return what each task hash still owes."""
+        by_hash: dict[str, list[vf.WireEpisode]] = defaultdict(list)
+        for episode in {episode.id: episode for episode in saved}.values():
+            by_hash[episode.task.hash or vf.Task(episode.task.data).hash].append(episode)
+        owed: dict[str, tuple[int, str]] = {}
+        for task_hash, episodes in by_hash.items():
+            group = vf.GroupInfo(id=str(uuid.uuid4()))
+            for episode in episodes[:group_size]:
+                episode.group = group
+                restored.append(episode)
+            owed[task_hash] = (group_size - len(episodes[:group_size]), group.id)
+        return owed
+
     def next_task(self) -> TaskRequest | None:
-        """Pop the next eval task, or ``None`` when the queue is empty."""
-        if not self.queue:
-            return None
-        return self.queue.popleft()
+        """Pop the next eval task, or ``None`` when the queue is empty and no stream has a
+        task ready."""
+        if self.queue:
+            return self.queue.popleft()
+        for env_name, (step, owed) in self.streams.items():
+            while (task := self.feeds[env_name].poll()) is not None:
+                rollouts, group_id = owed.pop(task.hash, (self.group_sizes[env_name], None))
+                if rollouts > 0:
+                    return TaskRequest(env_name=env_name, task=task, step=step, rollouts=rollouts, group_id=group_id)
+        return None
+
+    def streaming(self, env_name: str) -> bool:
+        """Whether ``env_name`` is a fired stream whose taskset has not ended."""
+        return env_name in self.streams and not self.feeds[env_name].done
 
     def cancel_step(self, step: int) -> list[TaskRequest]:
         """Remove and return queued examples for a superseded eval step."""
@@ -103,7 +146,8 @@ class EvalSource:
         return cancelled
 
     def __bool__(self) -> bool:
-        return bool(self.queue)
+        # a stream with no task ready yet still has work until its taskset ends
+        return bool(self.queue) or any(self.streaming(name) for name in self.streams)
 
     def __len__(self) -> int:
         return len(self.queue)
