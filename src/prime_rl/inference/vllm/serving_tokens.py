@@ -31,6 +31,7 @@ import numpy as np
 import pybase64
 from fastapi import Request
 from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
@@ -40,6 +41,7 @@ from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
+from vllm.sampling_params import SamplingParams
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
@@ -78,14 +80,25 @@ class _PackedOutputs:
     """Wraps the result generator: takes the per-token payloads off each final
     output (so upstream builds no per-token objects) and keeps them packed."""
 
-    def __init__(self, generator: AsyncIterator[RequestOutput], request: GenerateRequest):
+    def __init__(
+        self,
+        generator: AsyncIterator[RequestOutput],
+        logprob_options: SamplingParams | ChatCompletionRequest,
+        *,
+        collect: bool = True,
+    ):
         self._generator = generator
-        self._request = request
+        self._logprob_options = logprob_options
+        self._collect = collect
         self.fields: dict[int, dict[str, Any]] = {}
 
     async def __aiter__(self):
         async for request_output in self._generator:
             for output in request_output.outputs:
+                if not self._collect:
+                    output.routed_experts = None
+                    output.sampling_mask = None
+                    continue
                 fields = self.fields.setdefault(output.index, {})
                 if output.routed_experts is not None:
                     # vLLM's capturer picks uint8 or uint16 from the model's expert count. Rows end at the
@@ -100,7 +113,7 @@ class _PackedOutputs:
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
                     output.logprobs = None
                     # Upstream would build ``logprobs.content`` from the logprobs we took.
-                    self._request.sampling_params.logprobs = None
+                    self._logprob_options.logprobs = None
                 mask = output.sampling_mask
                 if mask is not None:
                     fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
@@ -142,7 +155,7 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
-        packed = _PackedOutputs(result_generator, request)
+        packed = _PackedOutputs(result_generator, request.sampling_params)
         response = await super().serve_tokens_full_generator(
             request,
             packed,

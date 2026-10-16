@@ -41,5 +41,5 @@ env.agent.runtime.type = "subprocess"
 [inference.vllm]
 enable_lora = true
 gpu_memory_utilization = 0.7
-[orchestrator.renderer]
+[inference.renderer]
 name = "prime-qwen3"

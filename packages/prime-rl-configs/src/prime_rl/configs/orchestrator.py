@@ -5,7 +5,6 @@ from typing import Annotated, Any, Literal, TypeAlias, get_args
 import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
-from renderers import AutoRendererConfig, RendererConfig
 from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
@@ -477,12 +476,6 @@ class OrchestratorConfig(BaseConfig):
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
-    renderer: RendererConfig = AutoRendererConfig()
-    """Typed renderer config (``renderers.RendererConfig`` discriminated union), required —
-    training is renderer-only. Defaults to ``"auto"``, which resolves from
-    ``tokenizer.name_or_path`` via ``MODEL_RENDERER_MAP``. RL/OPD roll out through the renderer
-    client; SFT uses it to backfill tokens for its chat-completions teacher."""
-
     eval: RLOnlineEvalConfig | None = None
     """Evaluation configuration."""
 
@@ -640,40 +633,6 @@ class OrchestratorConfig(BaseConfig):
     def any_policy_sourced(self) -> bool:
         """True when at least one train env samples rollouts from the live policy."""
         return any(env.algo.sampling.source == "policy" for env in self.train.source)
-
-    @model_validator(mode="after")
-    def validate_renderer_auto_resolves(self):
-        """Reject the silent DefaultRenderer fallback at config time.
-
-        When ``renderer.name='auto'`` and the model isn't in
-        ``MODEL_RENDERER_MAP``, ``create_renderer`` would fall back to
-        ``DefaultRenderer``. That fallback doesn't fix the
-        position-dependent chat-template bug the renderer client exists
-        to solve, and rejects envs that pass tools (the rollout dies
-        with "RendererPool does not support tools") unless
-        ``DefaultRendererConfig.tool_parser`` is configured. Surface at
-        config time so ``--dry-run`` reports the error.
-        """
-        if self.renderer.name != "auto":
-            return self
-        from renderers.base import MODEL_RENDERER_MAP
-
-        model_id = self.tokenizer.name or self.model.name
-        if model_id in MODEL_RENDERER_MAP:
-            return self
-        raise ValueError(
-            f"orchestrator.renderer.name='auto' but "
-            f"{model_id!r} is not in renderers.base.MODEL_RENDERER_MAP, so it "
-            f"would silently fall back to DefaultRenderer. Pick one: "
-            f"(a) [orchestrator.renderer] name='default' — for fine-tunes / "
-            f"vendored mirrors with custom chat templates (DefaultRenderer "
-            f"calls apply_chat_template); set tool_parser=<name> if the env "
-            f"uses tools. "
-            f"(b) [orchestrator.renderer] name=<model-specific renderer> — "
-            f"if {model_id!r} is template-identical to a mapped family "
-            f"(and ideally also add it upstream to "
-            f"renderers.base.MODEL_RENDERER_MAP)."
-        )
 
     @model_validator(mode="after")
     def resolve_batching(self):

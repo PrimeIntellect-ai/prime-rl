@@ -66,10 +66,6 @@ num_output_tokens_weight = 0.1
 num_input_tokens_weight = 0.1
 num_turns_weight = 0.1
 
-[orchestrator.renderer]
-name = "glm-4.5"
-thinking_retention = "all"
-
 [[orchestrator.train.source]]
 name = "scaleswe"
 env.taskset.id = "scaleswe"
@@ -88,6 +84,10 @@ env.agent.timeout.rollout = 3600
 # --- Inference ---
 
 [inference]
+
+[inference.renderer]
+name = "glm-4.5"
+thinking_retention = "all"
 
 [inference.vllm]
 gpu_memory_utilization = 0.85
