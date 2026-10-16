@@ -336,6 +336,7 @@ def anchor_tensors(
 
 def anchor_complete(step_dir: Path) -> bool:
     """Whether ``step_dir`` holds a complete full checkpoint written by ``write_anchor_shards``."""
+    revalidate(step_dir)
     markers = list(step_dir.glob("anchor_rank*.done"))
     return bool(markers) and len(markers) == int(markers[0].read_text())
 
@@ -343,6 +344,7 @@ def anchor_complete(step_dir: Path) -> bool:
 def read_engine_layout(broadcast_dir: Path) -> dict[str, str] | None:
     """Checkpoint tensor -> fp8 scale format (``"fp32"``/``"ue8m0"``) the engines hold it in,
     or None until every engine worker has reported."""
+    revalidate(broadcast_dir / ENGINE_LAYOUT)
     layouts = [json.loads(path.read_text()) for path in (broadcast_dir / ENGINE_LAYOUT).glob("*.json")]
     if not layouts or len(layouts) < layouts[0]["world_size"]:
         return None
