@@ -8,6 +8,7 @@ from pydantic import Field, field_validator, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -288,7 +289,10 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "tilelang"
-    """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
+
+    dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
+    """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
@@ -625,6 +629,10 @@ class TrainerConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: ControlConfig | None = None
+    """Serve the run control API on the master rank (pause the run after the next
+    step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
