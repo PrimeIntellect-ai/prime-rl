@@ -4,9 +4,9 @@ on:
     workflow_dispatch:
         inputs:
             repeats:
-                description: "Independent eval runs to measure the run-to-run spread"
+                description: "Independent eval runs. Use 5 to produce a new baseline."
                 required: false
-                default: "5"
+                default: "1"
             model:
                 description: "Model id on Prime Inference (empty: the config's model)"
                 required: false
@@ -25,7 +25,7 @@ concurrency:
     cancel-in-progress: true
 
 env:
-    REPEATS: ${{ inputs.repeats || '5' }}
+    REPEATS: ${{ inputs.repeats || '1' }}
     CONFIG: configs/ci/eval-regression/gsm8k.toml
 
 jobs:
@@ -99,17 +99,28 @@ jobs:
               uses: actions/checkout@v7
               with:
                   submodules: false
-                  sparse-checkout: scripts/eval_regression.py
+                  sparse-checkout: |
+                      scripts/eval_regression.py
+                      configs/ci/eval-regression
                   sparse-checkout-cone-mode: false
             - name: Download results
               uses: actions/download-artifact@v8
               with:
                   path: artifacts
                   pattern: eval-regression-*
-            - name: Write summary
+            - name: Compare against baseline
               run: |
                   shopt -s nullglob
+                  status=0
                   python3 scripts/eval_regression.py summarize artifacts/*/result.json --expected "$REPEATS" \
-                      | tee -a "$GITHUB_STEP_SUMMARY"
-                  results=(artifacts/*/result.json)
-                  [ ${#results[@]} -gt 0 ]
+                      --baseline "${CONFIG%.toml}.baseline.json" --write-baseline baseline.json \
+                      > summary.md || status=$?
+                  cat summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+                  exit $status
+            - name: Upload new baseline
+              if: always() && hashFiles('baseline.json') != ''
+              uses: actions/upload-artifact@v7
+              with:
+                  name: eval-regression-baseline
+                  path: baseline.json
+                  retention-days: 90
