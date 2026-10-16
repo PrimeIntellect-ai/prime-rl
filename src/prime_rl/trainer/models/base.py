@@ -37,6 +37,11 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         return False
 
     @classmethod
+    def mxfp8_ignore_patterns(cls) -> tuple[str, ...]:
+        """Module name patterns that vLLM's online MXFP8 always serves in BF16 for this architecture, whatever its ignore list."""
+        return ()
+
+    @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
         """Public from_config that mirrors the Auto class API."""
         return cls._from_config(config, **kwargs)
