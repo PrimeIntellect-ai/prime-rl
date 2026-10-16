@@ -548,6 +548,9 @@ class SFTObjectiveDataset(SFTDataset):
                     f"{where}: make_sample must return a list for {key!r}, got {type(sample.get(key)).__name__}"
                 )
         num_tokens = len(sample["input_ids"])
+        if num_tokens == 0:
+            # Packing drops empty samples, which would misalign objective_data; return None to skip a row.
+            raise ValueError(f"{where}: make_sample returned an empty sample")
         lengths = {key: len(sample[key]) for key in ("input_ids", "position_ids", "loss_mask", "target_ids")}
         if len(set(lengths.values())) != 1:
             raise ValueError(f"{where}: make_sample returned fields of different lengths: {lengths}")

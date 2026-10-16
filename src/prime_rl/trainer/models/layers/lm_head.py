@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import types
-from typing import TypedDict
+from collections.abc import Callable
+from typing import Any, TypedDict
 
 import torch
 import torch.nn as nn
@@ -21,7 +22,6 @@ class PrimeLmOutput(TypedDict, total=False):
     logprobs: Tensor | None
     entropy: Tensor | None
     loss: Tensor | None
-    hidden_states: Tensor | None
 
 
 def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
@@ -35,7 +35,6 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
         loss=output.get("loss"),
-        hidden_states=output.get("hidden_states"),
     )
 
 
@@ -108,6 +107,15 @@ def cross_entropy_sum(logits: Tensor, labels: Tensor) -> Tensor:
     return F.cross_entropy(
         logits.view(-1, logits.shape[-1]).float(), labels.reshape(-1), ignore_index=IGNORE_INDEX, reduction="sum"
     )
+
+
+def token_logprobs(lm_head: nn.Module, hidden_states: Tensor, labels: Tensor) -> Tensor:
+    """Per-token log-probabilities of ``labels`` (token ids, ``[batch, seq]``) through either LM head, in one call: the
+    fused head never builds full logits, and unlike its summed cross-entropy it keeps no weight-sized buffer per call."""
+    output = lm_head(hidden_states, labels, temperature=torch.ones(labels.shape, device=labels.device))
+    if output.get("logprobs") is not None:
+        return output["logprobs"].float()
+    return output["logits"].float().log_softmax(-1).gather(-1, labels.unsqueeze(-1)).squeeze(-1)
 
 
 def _online_logsumexp_and_weighted_update(
@@ -413,9 +421,9 @@ def _patch_model_forward(model: nn.Module) -> None:
         logits_to_keep: int = 0,
         temperature: torch.Tensor | None = None,
         sampling_mask: torch.Tensor | None = None,
-        return_hidden_states: bool = False,
+        hidden_states_fn: Callable[[Tensor], Any] | None = None,
         **kwargs: object,
-    ) -> PrimeLmOutput:
+    ) -> PrimeLmOutput | Any:
         # For VLM with images, don't create position_ids - let model compute MRoPE internally
         is_multimodal = kwargs.get("pixel_values") is not None
         if position_ids is None and not is_multimodal:
@@ -426,9 +434,10 @@ def _patch_model_forward(model: nn.Module) -> None:
             model_kwargs["inputs_embeds"] = inputs_embeds
         outputs = self.model(**model_kwargs)
         hidden_states = outputs.last_hidden_state
-        if return_hidden_states:
-            # The backbone's final (post-norm) states, without the vocabulary projection.
-            return PrimeLmOutput(hidden_states=hidden_states)
+        if hidden_states_fn is not None:
+            # A loss of the caller's own on the backbone's final (post-norm) states, inside the forward pass like the
+            # LM head's, so FSDP keeps the root unit gathered for it and tracks the modules it calls.
+            return hidden_states_fn(hidden_states)
 
         # Slice hidden states for logits_to_keep
         slice_indices = (

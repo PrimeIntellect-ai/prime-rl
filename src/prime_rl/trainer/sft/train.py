@@ -297,10 +297,22 @@ def train(config: SFTConfig):
             }
             with maybe_activation_offloading(config.model.ac_offloading):
                 outputs = objective_loss(objective, model, batch)
-            if metrics is not None:
+            count = torch.as_tensor(outputs.count, device="cuda")
+            if count.ndim != 0 or count.is_floating_point():
+                raise TypeError(f"objective count must be an integer, got {outputs.count!r}")
+            # A NaN micro-batch is left out of the metrics, as it is of the loss.
+            if metrics is not None and not torch.isnan(outputs.loss.detach()):
+                if metrics and outputs.metrics.keys() != metrics.keys():
+                    raise ValueError(
+                        f"objective metrics must have the same names on every call: {sorted(outputs.metrics)}"
+                    )
                 for name, value in outputs.metrics.items():
+                    if value.ndim != 0:
+                        raise ValueError(
+                            f"objective metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}"
+                        )
                     metrics[name] = metrics.get(name, 0.0) + value.detach().float().to("cuda")
-            return outputs.loss, torch.as_tensor(outputs.count, dtype=torch.int64, device="cuda")
+            return outputs.loss, count.to(torch.int64)
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -356,9 +368,9 @@ def train(config: SFTConfig):
         dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
-        # Every rank reports the same metric names, since one objective computes them all.
-        for value in metrics.values():
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        # Every rank reports the same metric names, since one objective computes them all; reduce them in one order.
+        for name in sorted(metrics):
+            dist.all_reduce(metrics[name], op=dist.ReduceOp.SUM, group=dp_cp_group)
 
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
         mean_metrics = {name: (value / total_token_count).item() for name, value in metrics.items()}
@@ -532,9 +544,13 @@ def train(config: SFTConfig):
             global_step_token_count = step_local_token_count.clone()
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item()
-            if global_token_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+            # With nothing to average over, no update: an objective may return a loss with a count of 0.
+            grad_scale = (
+                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                if global_token_count_val > 0
+                else 0.0
+            )
+            scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -553,8 +569,8 @@ def train(config: SFTConfig):
         else:
             batch_loss = 0.0
         nan_loss_count = nan_loss_count.item()
-        for value in step_metrics.values():
-            dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_cp_group)
+        for name in sorted(step_metrics):
+            dist.all_reduce(step_metrics[name], op=dist.ReduceOp.SUM, group=dp_cp_group)
         objective_metrics = {
             f"loss/{name}": (value / global_token_count_val).item() if global_token_count_val > 0 else 0.0
             for name, value in step_metrics.items()

@@ -14,9 +14,9 @@ from transformers import PretrainedConfig
 import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTConfig, SFTDataConfig, SFTObjectiveConfig
 from prime_rl.configs.trainer import ModelConfig
-from prime_rl.trainer.model import forward, setup_fsdp
+from prime_rl.trainer.model import forward, reshard_module, setup_fsdp
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head, token_logprobs
 from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.sft.data import CatDataset, SFTDataset, SFTObjectiveDataset, cat_collate, setup_dataset
 from prime_rl.trainer.sft.objective import (
@@ -50,7 +50,9 @@ class PairObjective:
 
     def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
         readout = inputs.hidden_states[inputs.batch["loss_mask"]].sum(-1)
-        labels = torch.tensor([data["label"] for data in inputs.batch["objective_data"]], dtype=readout.dtype)
+        labels = torch.tensor(
+            [data["label"] for data in inputs.batch["objective_data"]], dtype=readout.dtype, device=readout.device
+        )
         errors = readout.view(-1, 2).mean(-1) - labels
         return ObjectiveOutputs(
             loss=(errors**2).sum(), count=len(labels), metrics={"abs_error": errors.abs().sum().detach()}
@@ -139,6 +141,16 @@ def test_load_objective():
         load_objective(SFTObjectiveConfig(import_path="collections.OrderedDict"))
     with pytest.raises(TypeError, match="one positional argument"):
         load_objective(SFTObjectiveConfig(import_path=f"{__name__}.OldSignatureObjective"))
+    with pytest.raises(TypeError, match="holds parameters"):
+        load_objective(SFTObjectiveConfig(import_path=f"{__name__}.HeadHoldingObjective"))
+
+
+class HeadHoldingObjective(PairObjective):
+    """Holds a module of its own, which the trainer would never train."""
+
+    def __init__(self):
+        super().__init__()
+        self.head = nn.Linear(2, 1)
 
 
 class BrokenObjective(PairObjective):
@@ -156,6 +168,8 @@ class BrokenObjective(PairObjective):
             sample["seq_lens"] = [1, len(sample["input_ids"]) - 1]
         elif self.bad == "dict":
             return list(sample.items())
+        elif self.bad == "empty":
+            sample = {**sample, **{key: [] for key in ("input_ids", "position_ids", "loss_mask", "target_ids")}}
         return sample
 
 
@@ -166,6 +180,7 @@ class BrokenObjective(PairObjective):
         ("type", "must return a list"),
         ("seq_lens", "one entry per sample"),
         ("dict", "must return a dict"),
+        ("empty", "empty sample"),
     ],
 )
 def test_malformed_samples_are_rejected_at_the_source(bad, message):
@@ -238,21 +253,35 @@ class TinyCausalLM(nn.Module):
         return SimpleNamespace(last_hidden_state=self.norm(self.embed(input_ids)))
 
 
-def test_forward_returns_hidden_states():
+def tiny_causal_lm(chunk_size: int | None = None) -> TinyCausalLM:
+    torch.manual_seed(0)
     model = TinyCausalLM()
     model.model = nn.Module()  # inject_prime_lm_head expects a backbone module at model.model
     model.model.forward = model.backbone
-    inject_prime_lm_head(model)
-    input_ids = torch.tensor([[1, 2, 3]])
-    position_ids = torch.tensor([[0, 1, 2]])
-    seq_lens = torch.tensor([3])
+    inject_prime_lm_head(model, chunk_size=chunk_size)
+    return model
 
-    out = forward(model, input_ids, position_ids, seq_lens=seq_lens, return_hidden_states=True)
-    assert out["logits"] is None and out["loss"] is None
-    torch.testing.assert_close(out["hidden_states"], model.backbone(input_ids, position_ids).last_hidden_state)
+
+def test_forward_runs_a_function_on_the_hidden_states():
+    model = tiny_causal_lm()
+    input_ids, position_ids, seq_lens = torch.tensor([[1, 2, 3]]), torch.tensor([[0, 1, 2]]), torch.tensor([3])
+
+    out = forward(model, input_ids, position_ids, seq_lens=seq_lens, hidden_states_fn=lambda h: {"h": h})
+    torch.testing.assert_close(out["h"], model.backbone(input_ids, position_ids).last_hidden_state)
 
     out = forward(model, input_ids, position_ids, seq_lens=seq_lens)
-    assert out["hidden_states"] is None and out["logits"].shape == (1, 3, 11)
+    assert out["logits"].shape == (1, 3, 11)
+
+
+@pytest.mark.parametrize("chunk_size", [None, 4])  # the vanilla and the fused LM head
+def test_token_logprobs(chunk_size):
+    model = tiny_causal_lm(chunk_size)
+    hidden_states, labels = torch.randn(1, 5, 4, requires_grad=True), torch.tensor([[1, 0, 10, 3, 3]])
+    logprobs = token_logprobs(model.lm_head, hidden_states, labels)
+    expected = (hidden_states @ model.lm_head.weight.T).log_softmax(-1).gather(-1, labels[..., None])[..., 0]
+    torch.testing.assert_close(logprobs, expected)
+    logprobs.sum().backward()
+    assert hidden_states.grad.abs().sum() > 0 and model.lm_head.weight.grad.abs().sum() > 0
 
 
 def test_objective_config_rejects_unsupported_setups():
@@ -292,8 +321,8 @@ class Backbone(nn.Module):
 
 
 class HeadsModel(PreTrainedModelPrimeRL):
-    """A causal LM with its LM head tied to the embeddings and a head of its own: under prime-rl's FSDP setup both
-    belong to the root unit, which is resharded when the forward pass ends."""
+    """A causal LM with a head of its own, its LM head tied to the embeddings or not. Under prime-rl's FSDP setup the
+    score head and a tied LM head belong to the root unit; an untied LM head shares a unit with the final norm."""
 
     config_class = HeadsConfig
 
@@ -301,7 +330,8 @@ class HeadsModel(PreTrainedModelPrimeRL):
         super().__init__(config)
         self.model = Backbone(vocab, hidden)
         self.lm_head = nn.Linear(hidden, vocab, bias=False)
-        self.lm_head.weight = self.model.embed_tokens.weight
+        if config.tie_word_embeddings:
+            self.lm_head.weight = self.model.embed_tokens.weight
         self.score_head = nn.Linear(hidden, 1)
 
     def init_buffers_post_meta(self):
@@ -309,7 +339,7 @@ class HeadsModel(PreTrainedModelPrimeRL):
 
 
 class HeadsObjective:
-    """Uses both heads after the forward pass: token cross-entropy through the tied LM head plus a score head."""
+    """Calls the LM head twice (the summed cross-entropy, then per-token log-probabilities) and the score head."""
 
     def make_sample(self, inputs: SampleInputs):
         raise NotImplementedError
@@ -317,13 +347,15 @@ class HeadsObjective:
     def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
         batch, head = inputs.batch, inputs.model.score_head
         ce = inputs.model.lm_head(inputs.hidden_states, batch["target_ids"].masked_fill(~batch["loss_mask"], -100))
+        logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
         scores = head(inputs.hidden_states[batch["loss_mask"]].to(head.weight.dtype)).float()
-        return ObjectiveOutputs(loss=ce["loss"] + scores.square().sum(), count=batch["loss_mask"].sum())
+        loss = ce["loss"] - (logprobs * batch["loss_mask"]).sum() + scores.square().sum()
+        return ObjectiveOutputs(loss=loss, count=batch["loss_mask"].sum())
 
 
-def heads_model() -> HeadsModel:
+def heads_model(tied: bool) -> HeadsModel:
     torch.manual_seed(0)
-    model = HeadsModel(HeadsConfig(tie_word_embeddings=True))
+    model = HeadsModel(HeadsConfig(tie_word_embeddings=tied))
     inject_prime_lm_head(model)
     return model
 
@@ -340,32 +372,34 @@ def heads_batch(rank: int) -> dict:
     }
 
 
-def fsdp_worker(rank: int, world: int, init_file: str, out_dir: str) -> None:
+def fsdp_worker(rank: int, world: int, tied: bool, init_file: str, out_dir: str) -> None:
     os.environ.update(RANK=str(rank), WORLD_SIZE=str(world), LOCAL_RANK=str(rank), LOCAL_WORLD_SIZE=str(world))
     dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world)
     parallel_dims_module.device_type = "cpu"  # the mesh is built on CUDA by default
     config = ModelConfig(name="heads", ep=1, compile=None)
-    model = heads_model()
+    model = heads_model(tied)
     setup_fsdp(model, config, get_parallel_dims(config))  # prime-rl's real FSDP setup
 
     objective_loss(HeadsObjective(), model, heads_batch(rank)).loss.backward()
     grads = {name: p.grad.full_tensor() for name, p in model.named_parameters()}
-    with torch.no_grad():  # as in validation
+    with torch.no_grad():  # as in validation, which the trainer follows with reshard_module before clipping
         objective_loss(HeadsObjective(), model, heads_batch(rank))
+    reshard_module(model)
     resharded = all(isinstance(p, DTensor) for p in model.parameters())
     torch.save({"grads": grads, "resharded": resharded}, os.path.join(out_dir, f"{rank}.pt"))
     dist.destroy_process_group()
 
 
-def test_objective_loss_under_fsdp_uses_heads_of_the_root_unit(tmp_path):
+@pytest.mark.parametrize("tied", [True, False])
+def test_objective_loss_under_fsdp(tied, tmp_path):
     world = 2
-    mp.spawn(fsdp_worker, args=(world, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
+    mp.spawn(fsdp_worker, args=(world, tied, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
 
-    # The same micro-batches on one process without FSDP; FSDP averages the gradients over ranks.
-    model = heads_model()
+    # The same micro-batches on one process without FSDP, in bf16 as FSDP computes; FSDP averages over ranks.
+    model = heads_model(tied).to(torch.bfloat16)
     sum(objective_loss(HeadsObjective(), model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
     for rank in range(world):
         result = torch.load(tmp_path / f"{rank}.pt")
-        assert result["resharded"]  # a loss without a backward leaves the parameters sharded again
+        assert result["resharded"]  # after a loss without a backward, every FSDP unit reshards
         for name, param in model.named_parameters():
-            torch.testing.assert_close(result["grads"][name], param.grad, rtol=0.05, atol=0.02)  # bf16 compute
+            torch.testing.assert_close(result["grads"][name], param.grad.float(), rtol=0.05, atol=0.02)

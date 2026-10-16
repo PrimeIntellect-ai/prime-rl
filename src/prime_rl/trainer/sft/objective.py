@@ -4,10 +4,8 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-import torch
 from jaxtyping import Float
 from torch import Tensor, nn
-from torch.distributed.fsdp import FSDPModule
 
 from prime_rl.configs.sft import SFTObjectiveConfig
 from prime_rl.trainer.model import forward
@@ -57,8 +55,21 @@ class SFTObjective(Protocol):
     def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs: ...
 
 
+def _holds_parameters(objective: object) -> bool:
+    """Whether the objective, or a module or parameter it holds directly, has parameters."""
+    for value in [objective, *getattr(objective, "__dict__", {}).values()]:
+        if isinstance(value, nn.Parameter) or (
+            isinstance(value, nn.Module) and next(value.parameters(), None) is not None
+        ):
+            return True
+    return False
+
+
 def load_objective(config: SFTObjectiveConfig) -> SFTObjective:
     objective = import_object(config.import_path)(**config.kwargs)
+    if _holds_parameters(objective):
+        # The optimizer, rank sync and checkpoints see only the model's parameters.
+        raise TypeError(f"{config.import_path} holds parameters, which would not be trained; give them to the model")
     if not isinstance(objective, SFTObjective):
         raise TypeError(f"{config.import_path} must implement make_sample and loss (see SFTObjective)")
     for name in ("make_sample", "loss"):
@@ -73,17 +84,16 @@ def load_objective(config: SFTObjectiveConfig) -> SFTObjective:
 
 
 def objective_loss(objective: SFTObjective, model: nn.Module, batch: Batch) -> ObjectiveOutputs:
-    """The objective's loss on one micro-batch: the backbone's hidden states, then ``objective.loss``."""
-    hidden_states = forward(
-        model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], return_hidden_states=True
-    )["hidden_states"]
-    if not isinstance(model, FSDPModule):
-        return objective.loss(ObjectiveInputs(model=model, hidden_states=hidden_states, batch=batch))
-    # FSDP reshards the root unit's parameters when the forward pass ends, but the loss may still use them, e.g. an
-    # LM head tied to the embeddings (setup_fsdp gives lm_head its own unit only when untied). Gather them again;
-    # backward reshards them, and without a backward (validation) they are resharded here.
-    model.unshard()
-    outputs = objective.loss(ObjectiveInputs(model=model, hidden_states=hidden_states, batch=batch))
-    if not torch.is_grad_enabled():
-        model.reshard()
-    return outputs
+    """The objective's loss on one micro-batch, computed inside the model's forward pass on the backbone's final
+    hidden states, where stock SFT computes its cross-entropy: FSDP keeps the root unit gathered for it and treats the
+    modules it calls, such as the LM head, as part of the forward."""
+
+    def loss(hidden_states: Tensor) -> dict:
+        outputs = objective.loss(ObjectiveInputs(model=model, hidden_states=hidden_states, batch=batch))
+        # A dict, not the dataclass: FSDP hooks backward onto the tensors of the forward's output pytree.
+        return {"loss": outputs.loss, "count": outputs.count, "metrics": outputs.metrics}
+
+    outputs = forward(
+        model, batch["input_ids"], batch["position_ids"], seq_lens=batch["seq_lens"], hidden_states_fn=loss
+    )
+    return ObjectiveOutputs(**outputs)

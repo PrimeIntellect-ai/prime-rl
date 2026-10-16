@@ -271,10 +271,13 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 ### Custom Objective
 
-`[objective]` replaces two parts of the SFT trainer: how a dataset row becomes a sample and the loss (in place of token cross-entropy). The stock rendering stays available to it: `inputs.render()` gives the row's chat as tokens plus a loss mask, following `data.columns` and `[loss_mask]`, so an objective can start from what stock SFT would train on, or build samples from any other columns. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: you write a class whose `loss` returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss).
+`[objective]` replaces two parts of the SFT trainer: how a dataset row becomes a sample and the loss (in place of token cross-entropy). The stock rendering stays available to it: `inputs.render()` gives the row's chat as tokens plus a loss mask, following `data.columns` and `[loss_mask]`, so an objective can start from what stock SFT would train on, or build samples from any other columns. Shuffling, rank sharding, epochs, resume, packing, normalization, clipping, validation and checkpointing stay the trainer's. The loss is computed **per micro-batch** on the backbone's final hidden states: you write a class whose `loss` returns a summed loss and the count it averages over, and the trainer divides by the global count across ranks and micro-batches, as it does with the token count for cross-entropy. This is the SFT counterpart of the RL [custom loss](algorithms.md#custom-loss), with two differences: it is a class built once from `[objective.kwargs]` (it also builds the samples), not a function receiving kwargs on every call, and its metrics are summed and divided by the global count rather than averaged per sequence.
 
 ```python
 # my_module.py
+import torch
+
+from prime_rl.trainer.models.layers.lm_head import token_logprobs
 from prime_rl.trainer.sft.objective import ObjectiveInputs, ObjectiveOutputs, SampleInputs
 
 class WeightedSFT:
@@ -293,17 +296,14 @@ class WeightedSFT:
 
     def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
         batch = inputs.batch
-        labels = batch["target_ids"].masked_fill(~batch["loss_mask"], -100)
-        loss = ce = 0.0
-        start = 0
-        for length, data in zip(batch["seq_lens"].tolist(), batch["objective_data"]):  # one entry per sample
-            end = start + length
-            # the model's LM head returns the summed cross-entropy over labels != -100
-            sample_ce = inputs.model.lm_head(inputs.hidden_states[:, start:end], labels[:, start:end])["loss"]
-            loss = loss + data["weight"] * sample_ce
-            ce = ce + sample_ce.detach()
-            start = end
-        return ObjectiveOutputs(loss=loss, count=batch["loss_mask"].sum(), metrics={"ce": ce})
+        # one LM-head call for the whole micro-batch: each token's log-probability of its target
+        logprobs = token_logprobs(inputs.model.lm_head, inputs.hidden_states, batch["target_ids"])
+        token_ce = -logprobs[0] * batch["loss_mask"][0]
+        weights = torch.tensor([data["weight"] for data in batch["objective_data"]], device=token_ce.device)
+        token_weights = weights.repeat_interleave(batch["seq_lens"].to(token_ce.device))  # one entry per sample
+        return ObjectiveOutputs(
+            loss=(token_weights * token_ce).sum(), count=batch["loss_mask"].sum(), metrics={"ce": token_ce.sum().detach()}
+        )
 ```
 
 Wire it up:
@@ -336,7 +336,7 @@ class ObjectiveOutputs:
     metrics: dict[str, Tensor] = {}           # summed; divided like the loss, same names on every call
 ```
 
-The loss can use any module of the model, such as its LM head above (`lm_head(hidden_states, labels)` returns the summed cross-entropy), tied to the embeddings or not; the trainer gathers the FSDP-sharded parameters before calling it. Constructor arguments come from `[objective.kwargs]`; metrics must be tensors. A sample's four token fields are lists of one length; `seq_lens` may be omitted. Packing records one entry per sample, so a sample holding several independent sequences must keep them apart itself. Samples longer than `data.seq_len` are skipped. `objective_data` holds plain values (it is pickled into the dataloader checkpoint). `make_sample` runs in the dataloader workers, so the objective instance must be picklable. `[renderer]` must still name a typed renderer for the model, as for any SFT run, even if the objective never calls `inputs.render()`. Stock SFT asserts that a stop token is among the targets; an objective that masks or drops tokens decides that itself. Not supported with context parallelism, VLM training or `model.offload = "full"`.
+The loss runs inside the model's forward pass, where stock SFT computes its cross-entropy, so it can call any module of the model, such as the LM head through `token_logprobs` above (one call per micro-batch: with a trainable LM head, each call of the fused head's summed cross-entropy keeps a weight-sized gradient buffer until backward). Call modules rather than reading their weights: an untied LM head is its own FSDP unit, and its `weight` stays sharded unless the module runs. Constructor arguments come from `[objective.kwargs]`; an objective holds no parameters of its own (the optimizer, rank sync and checkpoints see only the model's), so a trainable module belongs to the model. `count` is an integer; metrics are scalar tensors with the same names on every call; with a global count of 0 a step makes no update. A sample's four token fields are lists of one length; `seq_lens` may be omitted. Packing records one entry per sample, so a sample holding several independent sequences must keep them apart itself. Samples longer than `data.seq_len` are skipped. `objective_data` holds plain values (it is pickled into the dataloader checkpoint). `make_sample` runs in the dataloader workers, so the objective instance must be picklable. `[renderer]` must still name a typed renderer for the model, as for any SFT run, even if the objective never calls `inputs.render()`. Stock SFT asserts that a stop token is among the targets; an objective that masks or drops tokens decides that itself. Not supported with context parallelism, VLM training or `model.offload = "full"`.
 
 ### Important Metrics
 
