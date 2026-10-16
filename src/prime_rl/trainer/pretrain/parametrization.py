@@ -22,6 +22,9 @@ def param_groups(
     rate is scaled by 1/sqrt(m_N) to compensate (and weight decay by sqrt(m_N), keeping
     lr * weight_decay fixed). Everything else is trained with AdamW, as with ``optim.type = "adamw"``.
 
+    Gated Residual projections (``hyper_connection``) follow the hidden rule but always train with AdamW, as in
+    Qwen3.8-Next.
+
     MoE experts follow the same roles per expert matrix (``rms_norm`` adjusts each expert by its
     own shape). The router maps width to a fixed number of experts, so its spectral-norm target
     sqrt(num_experts / d) shrinks as m_N^-1/2: with Muon its learning rate is scaled by 1/m_N;
@@ -32,6 +35,7 @@ def param_groups(
         "embedding": (1.0, 1 / m_n, 1.0),
         "hidden": (1 / m_n, 1 / (m_n * m_l), m_n),
         "router": (1 / m_n, 1 / (m_n * m_l), m_n),
+        "hyper_connection": (1 / m_n, 1 / (m_n * m_l), m_n),
         "residual_out": (1 / (m_n * m_l), 1 / m_n, m_n * m_l),
         "output": (1 / m_n, 1.0, m_n),
         "norm": (1.0, 1 / m_n, 0.0),
@@ -48,7 +52,11 @@ def param_groups(
     for name, param in model.named_parameters():
         if param.requires_grad:
             name = resolve_fqn(model, name)
-            role = "router" if ".mlp.router." in name and param.ndim == 2 else param_role(name, param)
+            role = param_role(name, param)
+            if role == "hidden" and ".mlp.router." in name:
+                role = "router"
+            elif role == "hidden" and "hyper_connection" in name:
+                role = "hyper_connection"
             params[role, ".mlp.experts." in name].append(param)
 
     groups = []
