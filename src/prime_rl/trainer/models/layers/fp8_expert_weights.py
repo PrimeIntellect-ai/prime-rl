@@ -7,8 +7,6 @@ is the one the GEMM did on the bf16 weight, and the input-gradient GEMM's blocks
 are unchanged.
 """
 
-import weakref
-
 import torch
 import torch.utils._pytree as pytree
 from torch import nn
@@ -46,17 +44,17 @@ def _prequantized_gemm_fake(
     return x.new_empty((x.shape[0], weight_data.shape[1]))
 
 
-# The input-gradient GEMM's blocks (the transpose of the all-gathered ones) per all-gathered data tensor, made once per
-# all-gather and dropped when FSDP refills the buffers. Keyed by id: tensors compare elementwise.
-_TRANSPOSED_BLOCKS: dict[int, tuple[weakref.ref, tuple[torch.Tensor, torch.Tensor]]] = {}
+# The input-gradient GEMM's blocks (the transpose of the all-gathered ones), made once per all-gather. Keyed by the
+# gathered data's address: under torch.compile the op sees new tensor objects for the same buffer. Every all-gather
+# clears the cache, so an address is never reused for other data while its entry lives.
+_TRANSPOSED_BLOCKS: dict[tuple[int, torch.Size], tuple[torch.Tensor, torch.Tensor]] = {}
 
 
 def _transposed_blocks(weight_data: torch.Tensor, weight_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    entry = _TRANSPOSED_BLOCKS.get(id(weight_data))
-    if entry is None or entry[0]() is not weight_data:
-        blocks = (weight_data.transpose(1, 2).contiguous(), weight_scale.transpose(1, 2).contiguous())
-        entry = _TRANSPOSED_BLOCKS[id(weight_data)] = (weakref.ref(weight_data), blocks)
-    return entry[1]
+    key = (weight_data.data_ptr(), weight_data.shape)
+    if key not in _TRANSPOSED_BLOCKS:
+        _TRANSPOSED_BLOCKS[key] = (weight_data.transpose(1, 2).contiguous(), weight_scale.transpose(1, 2).contiguous())
+    return _TRANSPOSED_BLOCKS[key]
 
 
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm_prequantized_backward", mutates_args=())
@@ -227,9 +225,8 @@ class Fp8ExpertMaster(torch.Tensor):
         return (data, scale), None
 
     def fsdp_post_all_gather(self, all_gather_outputs, metadata, param_dtype, *, out=None):
+        _TRANSPOSED_BLOCKS.clear()
         if out is not None:  # FSDP refilled the same buffers that the weight views
-            weight = out.to_local() if isinstance(out, DTensor) else out
-            _TRANSPOSED_BLOCKS.pop(id(weight._data), None)
             return
         if len(all_gather_outputs) == 1:
             (packed,) = all_gather_outputs
