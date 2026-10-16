@@ -64,6 +64,8 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.server import ControlServer
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -105,10 +107,10 @@ def train(config: SFTConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+        enable_gloo=config.model.offload == "full",
     )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
+    if config.model.offload == "full":
+        setup_full_cpu_optimizer_offload()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -167,11 +169,10 @@ def train(config: SFTConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
+        offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
     )
 
@@ -405,12 +406,19 @@ def train(config: SFTConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
+    controller = Controller(requires_step=False)
+    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server.start()
+    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
+        if config.control is not None:
+            paused = broadcast_pause(controller, progress.step)
+            is_last_step = is_last_step or paused
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
@@ -676,13 +684,17 @@ def train(config: SFTConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None:
+    if config.ckpt is not None or paused:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-        ckpt_manager.maybe_clean()
+        if paused:
+            controller.mark_saved(progress.step)
+        else:
+            ckpt_manager.maybe_clean()
 
-    # Broadcast the final weights so the evals process can run its forced final epoch
-    if weight_sender is not None:
+    # Broadcast the final weights so the evals process can run its forced final epoch. A paused
+    # run has no final epoch.
+    if weight_sender is not None and not paused:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
 
@@ -690,8 +702,12 @@ def train(config: SFTConfig):
         gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("SFT trainer finished")
-    asyncio.run(monitors.finalize())
+    logger.success("SFT trainer paused" if paused else "SFT trainer finished")
+    asyncio.run(monitors.finalize(paused=paused))
+    if paused and world.is_master:
+        # The run's owner reads the committed pause from the control API, then stops the run.
+        logger.info("Paused, serving the control API until the run is stopped")
+        control_server.wait()
 
 
 def main():

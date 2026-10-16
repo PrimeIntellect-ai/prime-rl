@@ -75,6 +75,8 @@ from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
+from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import die_with_parent, set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
@@ -111,10 +113,10 @@ def train(config: TrainerConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+        enable_gloo=config.model.offload == "full",
     )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
+    if config.model.offload == "full":
+        setup_full_cpu_optimizer_offload()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -170,11 +172,10 @@ def train(config: TrainerConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
+        offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
     )
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
@@ -257,12 +258,19 @@ def train(config: TrainerConfig):
         maybe_record_function = record_function
     start_step = progress.step
     max_peak_memory = 0.0
+    controller = Controller(requires_step=False)
+    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server.start()
+    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
+        if config.control is not None:
+            paused = broadcast_pause(controller, progress.step)
+            is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -513,7 +521,9 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+            # Every CP rank computes the whole sequence's loss, and the global normalizers count each
+            # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
+            tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
             masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
@@ -729,18 +739,25 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None:
+    if config.ckpt is not None or paused:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        ckpt_manager.maybe_clean()
+        if paused:
+            controller.mark_saved(progress.step)
+        else:
+            ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:
         gradient_manager.close()
     micro_batch_workers.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("RL trainer finished")
-    asyncio.run(monitors.finalize())
+    logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")
+    asyncio.run(monitors.finalize(paused=paused))
+    if paused and world.is_master:
+        # The run's owner reads the committed pause from the control API, then stops the run.
+        logger.info("Paused, serving the control API until the run is stopped")
+        control_server.wait()
 
 
 def main():

@@ -30,6 +30,11 @@ DEFAULT_COMMON_ENV_VARS: dict[str, str] = {
 
 DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    # NCCL flight recorder: on a collective timeout every rank dumps its last 2000 collectives
+    # to /tmp/nccl_trace_<uid>_rank_<rank> (read with `torchfrtrace`), showing which rank hung where.
+    "TORCH_FR_BUFFER_SIZE": "2000",
+    "TORCH_NCCL_DUMP_ON_TIMEOUT": "1",
+    "TORCH_FR_DUMP_TEMP_FILE": f"/tmp/nccl_trace_{os.getuid()}_rank_",
 }
 
 DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
@@ -37,6 +42,10 @@ DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
     "VLLM_ENGINE_READY_TIMEOUT_S": "4200",
     "UCX_TLS": "all",
+    # vLLM's AOT compile cache and FlashInfer's JIT cache default to $HOME; a partial cache shared across
+    # nodes makes TP ranks load different compiled artifacts and hang.
+    "VLLM_CACHE_ROOT": f"/tmp/.vllm-cache-{os.getuid()}",
+    "FLASHINFER_WORKSPACE_BASE": f"/tmp/.flashinfer-cache-{os.getuid()}",
 }
 
 

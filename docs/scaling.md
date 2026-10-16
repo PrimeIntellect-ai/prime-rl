@@ -17,6 +17,7 @@ This page covers how to scale `prime-rl` from a single GPU to a 1000-GPU cluster
   - [Optimizer Offloading](#optimizer-offloading)
   - [LM Head Chunking](#lm-head-chunking)
 - [Memory-Tight Recipe](#memory-tight-recipe)
+- [Max Trainer Throughput Recipe](#max-trainer-throughput-recipe)
 - [SLURM](#slurm)
   - [Activation](#activation)
   - [`[deployment]` Block](#deployment-block)
@@ -86,9 +87,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 |---|---|
 | `trainer.model.dp_replicate` | Number of dimensions to **replicate** instead of shard. Set to 2 to run 2-way DP replication × FSDP sharding within each replica — useful for very large clusters where pure FSDP communication dominates. |
 | `trainer.model.reshard_after_forward` | If `true` (default), parameters are resharded after the forward pass to free memory; the backward pass re-gathers. Set `false` to keep params resident — faster but more memory. |
-| `trainer.model.fsdp_cpu_offload` | Offload params + grads + optimizer state to CPU. Big memory win, large throughput hit. |
-| `trainer.model.optim_cpu_offload` | Offload optimizer state to CPU between steps. Enabled by default. |
-| `trainer.model.full_offload` | Offload gradients, FP32 masters, and optimizer state and run the optimizer (AdamW or SignSGD) on CPU during backward. Disabled by default. |
+| `trainer.model.offload` | CPU offloading: `optimizer` (default) offloads optimizer state between steps; `full` offloads gradients, FP32 masters, and optimizer state and runs the optimizer (AdamW or SignSGD) on CPU during backward; `none` disables offloading. |
 
 ### Expert Parallelism
 
@@ -143,7 +142,7 @@ Activation offloading still applies to tensors saved by autograd, but tensors re
 
 ### Optimizer Offloading
 
-State-only optimizer offload remains enabled by default with `model.optim_cpu_offload = true`. For full offload, set `model.optim_cpu_offload = false` and `model.full_offload = true`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
+State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
 
 ### LM Head Chunking
 
@@ -175,11 +174,34 @@ max_inflight_activations = 1
 
 The defaults already cover: fused LM head chunking (`8192`), `torch.compile` (fullgraph=False), AC (full mode), AC offloading (`max_inflight_activations=5`), and optimizer CPU offload. Walks through every memory lever in order: FSDP+EP shard the weights, CP shards the activations along the token dim, AC + AC offloading shrink the activation footprint, fused LM head chunks the loss, `torch.compile` reduces fragmentation, optim offload moves Adam state off GPU. Apply selectively — each knob has a throughput cost.
 
+## Max Trainer Throughput Recipe
+
+The trainer defaults are tuned for memory, not speed: optimizer CPU offload, AC offloading, and `torch.compile` without `fullgraph` let large models fit on few GPUs, at a throughput cost. When you have enough GPUs to keep the model state and activations on GPU, turn them off:
+
+```toml
+[model]
+offload = "none"            # optimizer states stay on GPU
+ac_offloading = "None"      # activations stay on GPU
+moe_router_dtype = "bfloat16"  # fullgraph needs the router inside the block's FSDP unit; an fp32 router is not
+
+[model.compile]
+fullgraph = true            # compile each block as a single graph
+```
+
+Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. The SFT default router dtype is already `bfloat16`. RL defaults to an fp32 router, so check that bf16 routing is acceptable for your model before using `fullgraph` in RL.
+
+Examples:
+
+- [`examples/advanced/qwen3-235b-a22b/sft-max-perf.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/qwen3-235b-a22b): Qwen3-235B-A22B SFT on 4 x 8 B300 at 16k, around 46% MFU.
+- [`examples/advanced/glm-5.3/sft/h200/16k-12-node.toml`](https://github.com/PrimeIntellect-ai/prime-rl/tree/main/examples/advanced/glm-5.3/sft/h200): the same recipe as an overlay for GLM-5.3 SFT on 12 H200 nodes.
+
 ## SLURM
 
 The `rl`, `sft`, and `inference` entrypoints all submit to SLURM when a `[slurm]` table is present — there's no separate entrypoint.
 
 > **The prime-rl checkout and its `uv` venv must live on a shared filesystem** visible to every node. The generated sbatch script runs a single `uv sync --all-extras --all-packages` on the batch node (not once per node), so all ranks share that one environment — a node-local venv would leave the other nodes stale.
+
+Compile and JIT caches are node-local by default: the launcher sets `TRITON_CACHE_DIR=/tmp/triton-<uid>` for every component, and `VLLM_CACHE_ROOT=/tmp/.vllm-cache-<uid>` and `FLASHINFER_WORKSPACE_BASE=/tmp/.flashinfer-cache-<uid>` for inference. Ranks writing one cache on a shared filesystem can crash or hang. Override them in `[env_vars]` or a component's `env_vars`.
 
 ### Activation
 
