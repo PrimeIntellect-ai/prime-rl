@@ -2,6 +2,7 @@ import logging
 import os
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -520,7 +521,7 @@ def _expert_shard_placement_fn(
     return placement_fn
 
 
-def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims, fp32_residual: bool = False):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
     offload_policy: OffloadPolicy = OffloadPolicy()
 
@@ -589,6 +590,9 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                     block_mlp.experts, expert_mesh_info, shard_placement_fn
                 ),
             }
+        if fp32_residual:
+            # The block's fp32 input (the residual stream) stays fp32; the caller casts its norms' outputs.
+            block_fsdp_config = {**block_fsdp_config, "mp_policy": replace(mp_policy, cast_forward_inputs=False)}
 
         if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
             if fullgraph:
@@ -948,6 +952,7 @@ def setup_model(
     loading_from_checkpoint_later: bool = False,
     init: InitConfig | None = None,
     parametrization: ParametrizationConfig | None = None,
+    fp32_residual: bool = False,
 ) -> nn.Module:
     """Build the sharded model. Its weights come from ``config.name``, or later from a checkpoint
     (``loading_from_checkpoint_later``); with ``init``, they are initialized from scratch (with the CompleteP
@@ -1016,7 +1021,7 @@ def setup_model(
     if config.compile is not None:
         apply_compile(model, config.compile)
 
-    setup_fsdp(model, config, parallel_dims)
+    setup_fsdp(model, config, parallel_dims, fp32_residual)
 
     if loading_from_checkpoint_later or init is not None:
         logger.warning(

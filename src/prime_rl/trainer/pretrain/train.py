@@ -44,6 +44,8 @@ from prime_rl.trainer.pretrain.data import (
     setup_val_dataset,
 )
 from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
+from prime_rl.trainer.pretrain.grad_clamp import install_grad_clamp
+from prime_rl.utils.vlm import get_language_model
 from prime_rl.trainer.pretrain.suite import (
     length_label,
     prepare_multi_length_set,
@@ -151,7 +153,17 @@ def train(config: PretrainConfig):
         loading_from_checkpoint_later=checkpoint_step is not None,
         init=config.model.init if checkpoint_step is None else None,
         parametrization=config.parametrization,
+        fp32_residual=config.model.fp32_residual,
     )
+    layers = get_language_model(model).layers
+    if config.model.fp32_residual:
+        model.model.embed_tokens.register_forward_hook(lambda module, args, output: output.float())
+        for layer in layers:
+            for norm in (layer.input_layernorm, layer.post_attention_layernorm):
+                norm.register_forward_hook(lambda module, args, output: output.to(torch.bfloat16))
+    grad_vector_stats = None
+    if config.model.grad_clamp_factor is not None:
+        grad_vector_stats = install_grad_clamp(layers, config.model.grad_clamp_factor)
     m_n, m_l = multipliers(config.parametrization, model)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -411,6 +423,17 @@ def train(config: PretrainConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
         diagnostic_metrics = update_tracker.after_step(model) if is_diagnostic_step else {}
+        grad_vector_metrics = {}
+        if grad_vector_stats is not None:
+            # Per layer over the step's micro-batches and ranks: the largest token gradient-vector norm over the median,
+            # and the clamped vectors.
+            stats = reduce_stats({"clamped": grad_vector_stats[:, 1]}, {"ratio": grad_vector_stats[:, 0]}, dp_cp_group)
+            grad_vector_stats.zero_()
+            grad_vector_metrics = {
+                "grad_vec/max_over_median/max": stats["ratio"].max().item(),
+                "grad_vec/clamped": stats["clamped"].sum().item(),
+                **{f"grad_vec/max_over_median/layer_{i}": ratio.item() for i, ratio in enumerate(stats["ratio"])},
+            }
         # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
         local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
         peak_memory = reduce_stats({"sum": local_peak_memory}, {"max": local_peak_memory}, dp_cp_group)
@@ -488,6 +511,7 @@ def train(config: PretrainConfig):
             **result.metrics,
             **moe_metrics,
             **diagnostic_metrics,
+            **grad_vector_metrics,
             "step": progress.step,
         }
         if grad_norm is not None:

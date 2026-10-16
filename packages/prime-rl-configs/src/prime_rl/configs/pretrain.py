@@ -64,6 +64,15 @@ class PretrainModelConfig(ModelConfig):
     offload: Literal["none"] = "none"
     """CPU offloading is not supported: pretraining's per-role parameter groups need ``none``."""
 
+    grad_clamp_factor: float | None = Field(None, gt=0)
+    """Activation-gradient clamp (Step 5 Preview): in the backward pass, every token's residual-stream gradient
+    vector at a decoder layer's output whose norm exceeds this factor times the median norm over the micro-batch is
+    scaled down to that norm. ``inf`` only measures (``grad_vec/*`` metrics). None turns it off."""
+
+    fp32_residual: bool = False
+    """Keep the residual stream (the hidden states between decoder layers and their gradients) in fp32; the layers
+    still compute in bf16 or FP8."""
+
 
 class TokenSourceConfig(BaseConfig):
     path: Path
