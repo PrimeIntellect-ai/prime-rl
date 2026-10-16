@@ -90,8 +90,8 @@ class SparseDeltaEncoder:
             base = tensor if tensor._base is None else tensor._base
             if id(base) not in owner or not tensor.is_contiguous():
                 raise NotImplementedError(f"Sparse weight broadcast cannot map {name} to a contiguous trainer slice")
-            if tensor.numel() >= 2**32:
-                raise NotImplementedError(f"Sparse weight broadcast indexes tensors below 2^32 elements ({name})")
+            if tensor.numel() >= 2**31:
+                raise NotImplementedError(f"Sparse weight broadcast indexes tensors below 2^31 elements ({name})")
             segments[owner[id(base)]].append((tensor.storage_offset(), name))
             self.hf_tensors[name] = (list(tensor.shape), str(tensor.dtype).removeprefix("torch."))
         self.segments = {fqn: sorted(segs) for fqn, segs in segments.items()}
