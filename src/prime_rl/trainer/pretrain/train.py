@@ -158,6 +158,8 @@ def train(config: PretrainConfig):
     layers = get_language_model(model).layers
     if config.model.fp32_residual:
         model.model.embed_tokens.register_forward_hook(lambda module, args, output: output.float())
+        # RoPE's cos/sin take the dtype of the (now fp32) hidden states; attention needs bf16.
+        model.model.rotary_emb.register_forward_hook(lambda module, args, output: tuple(t.bfloat16() for t in output))
         for layer in layers:
             for norm in (layer.input_layernorm, layer.post_attention_layernorm):
                 norm.register_forward_hook(lambda module, args, output: output.to(torch.bfloat16))
