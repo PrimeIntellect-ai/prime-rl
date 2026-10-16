@@ -426,9 +426,13 @@ def numa_cpus(device: int) -> set[int] | None:
 def pin(num_bytes: int) -> torch.Tensor:
     """Page-locked host memory of exactly ``num_bytes``, outside torch's caching host allocator
     (which rounds sizes up and keeps freed blocks). Release it with ``unpin``."""
-    tensor = torch.from_numpy(np.empty(num_bytes, np.uint8))
-    if num_bytes:
-        error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), num_bytes, 0)
+    return page_lock(torch.from_numpy(np.empty(num_bytes, np.uint8)))
+
+
+def page_lock(tensor: torch.Tensor) -> torch.Tensor:
+    """Page-lock a host tensor in place with one ``cudaHostRegister`` (a copy may not span two)."""
+    if tensor.numel():
+        error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), tensor.nbytes, 0)
         assert error == 0, f"cudaHostRegister failed: {error}"
     return tensor
 
@@ -443,10 +447,13 @@ def drop_page_cache(fd: int) -> None:
     os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
 
 
-def bits_checksum(bits: torch.Tensor) -> int:
-    """Wrapping int64 sum of raw bits: additive over any split of a tensor, so trainer
-    ranks and engine workers can each sum the part they hold."""
-    return int(bits.sum(dtype=torch.int64))
+def bits_checksum(bits: torch.Tensor, start: int = 0) -> int:
+    """Wrapping int64 sum of the raw bits of a flat tensor slice, each weighted by its flat index + 1
+    in the full tensor (the slice starts at ``start``): additive over any split of a tensor, so
+    trainer ranks and engine workers can each sum the part they hold, and a change written at a
+    wrong position is caught."""
+    positions = torch.arange(start + 1, start + 1 + bits.numel(), device=bits.device)
+    return int((bits.reshape(-1).long() * positions).sum())
 
 
 def add_checksums(a: int, b: int) -> int:

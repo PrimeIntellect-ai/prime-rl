@@ -32,6 +32,7 @@ from prime_rl.utils.sparse_weights import (
     bits_dtype,
     compile_fp8_quantizer,
     encode_gaps,
+    page_lock,
     quantize_fp8_blocks,
     rank_part,
     rank_parts_marker,
@@ -48,6 +49,9 @@ from prime_rl.utils.weights import (
     save_state_dict,
     save_state_dict_parallel,
 )
+
+# Elements per block of the position-weighted checksums (int64 temporaries of 8 B each)
+SUM_BLOCK = 1 << 22
 
 
 class SparseDeltaEncoder:
@@ -241,11 +245,10 @@ class SparseDeltaEncoder:
             offset += sizes[key]
 
     def _page_lock(self) -> None:
-        """Page-lock the host buffer with one ``cudaHostRegister`` (a copy may not span two registrations).
-        Only while no training step runs: registering a large buffer can stall the trainer's CUDA calls."""
+        """Page-lock the host buffer, only while no training step runs: registering a large buffer can
+        stall the trainer's CUDA calls."""
         start = time.perf_counter()
-        error = torch.cuda.cudart().cudaHostRegister(self.host_buffer.data_ptr(), self.host_buffer.numel(), 0)
-        assert error == 0, f"cudaHostRegister failed: {error}"
+        page_lock(self.host_buffer)
         self.pinned = True
         get_logger().info(
             f"Page-locked the {self.host_buffer.numel() / 2**30:.1f} GiB sparse weight host buffer in "
@@ -293,8 +296,7 @@ class SparseDeltaEncoder:
         assert self.on_gpu
         with torch.cuda.stream(self.stream):
             for key, bits in self.snapshot.items():
-                self.host[key].copy_(bits, non_blocking=self.pinned)
-            self.stream.synchronize()
+                self._to_host(bits, self.host[key])
 
     def anchor_parts(self) -> list[tuple[str, list[int], int, torch.Tensor]]:
         """This rank's slices of the full HF checkpoint of the last broadcast, from host memory (the CPU
@@ -358,11 +360,12 @@ class SparseDeltaEncoder:
             weights_read.set()
         self.previous = self.snapshot
 
-    def _to_host(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Copy a delta part to pageable host memory through the pinned staging buffer: a copy straight
-        into pageable memory holds the CUDA driver and stalls the training step's own CUDA calls."""
-        data, host = tensor.view(torch.uint8), torch.empty(tensor.shape, dtype=tensor.dtype)
-        host_bytes = host.view(torch.uint8)
+    def _to_host(self, tensor: torch.Tensor, host: torch.Tensor | None = None) -> torch.Tensor:
+        """Copy a GPU tensor to pageable host memory (``host``, or a new tensor) through the pinned staging
+        buffer: a copy straight into pageable memory holds the CUDA driver and stalls the training step's
+        own CUDA calls."""
+        host = torch.empty(tensor.shape, dtype=tensor.dtype) if host is None else host
+        data, host_bytes = tensor.view(torch.uint8), host.view(torch.uint8)
         for begin in range(0, data.numel(), self.staging.numel()):
             chunk = self.staging[: min(self.staging.numel(), data.numel() - begin)]
             chunk.copy_(data[begin : begin + chunk.numel()], non_blocking=True)
@@ -370,30 +373,40 @@ class SparseDeltaEncoder:
             host_bytes[begin : begin + chunk.numel()].copy_(chunk)
         return host
 
-    def _segments(self, key: str, fqn: str, offset: int, numel: int) -> tuple[list[str], list[int], list[int]]:
-        """The HF tensor parts in this rank's shard of ``key``: names, and begin/end in the shard."""
+    def _segments(
+        self, key: str, fqn: str, offset: int, numel: int
+    ) -> tuple[list[str], list[int], list[int], list[int]]:
+        """The HF tensor parts in this rank's shard of ``key``: names, begin/end in the shard, and the shift
+        from a shard position to the HF flat index."""
         if key not in self.shard_segments:
-            names, begins, ends = [], [], []
+            names, begins, ends, shifts = [], [], [], []
             for start, name in self.segments[fqn]:
-                if start < offset + numel and start + self.hf_numel[name] > offset:
+                hf_numel = prod(self.hf_tensors[name][0])
+                if start < offset + numel and start + hf_numel > offset:
                     names.append(name)
                     begins.append(max(start - offset, 0))
-                    ends.append(min(start - offset + self.hf_numel[name], numel))
-            self.shard_segments[key] = (names, begins, ends)
+                    ends.append(min(start - offset + hf_numel, numel))
+                    shifts.append(offset - start)
+            self.shard_segments[key] = (names, begins, ends, shifts)
         return self.shard_segments[key]
 
     @staticmethod
-    def _segment_sums(bits: torch.Tensor, begins: list[int], ends: list[int]) -> torch.Tensor:
-        """Wrapping int64 sums of ``bits[begin:end]``, one reduction per run of adjacent equal-length
-        segments (e.g. unstacked experts)."""
-        sums, i = [], 0
-        while i < len(begins):
-            length, j = ends[i] - begins[i], i + 1
-            while j < len(begins) and begins[j] == ends[j - 1] and ends[j] - begins[j] == length:
-                j += 1
-            sums.append(bits[begins[i] : begins[i] + (j - i) * length].view(j - i, length).sum(1, dtype=torch.int64))
-            i = j
-        return torch.cat(sums)
+    def _segment_sums(bits: torch.Tensor, begins: list[int], ends: list[int], firsts: list[int]) -> torch.Tensor:
+        """``bits_checksum`` of each ``bits[begin:end]`` whose first element is at HF flat index ``first``:
+        Σ bits[k]·(first + k - begin + 1), wrapping int64, from cumulative sums over blocks of
+        ``SUM_BLOCK`` elements."""
+        device = bits.device
+        begins, ends, firsts = (torch.tensor(values, device=device) for values in (begins, ends, firsts))
+        plain = torch.zeros(len(begins), dtype=torch.int64, device=device)
+        weighted = torch.zeros_like(plain)
+        for start in range(0, bits.numel(), SUM_BLOCK):
+            values = bits[start : start + SUM_BLOCK].long()
+            first, last = (bound.clamp(start, start + values.numel()) - start for bound in (begins, ends))
+            positions = torch.arange(start + 1, start + 1 + values.numel(), device=device)
+            for total, summed in ((plain, values), (weighted, values * positions)):
+                cumulative = torch.cat([summed.new_zeros(1), summed.cumsum(0)])
+                total += cumulative[last] - cumulative[first]
+        return weighted + (firsts - begins) * plain
 
     def _diff(self, shards: list[tuple], emit: Callable) -> bool:
         """Diff ``shards`` against ``self.previous`` on the current stream, writing the new bits to the
@@ -416,7 +429,7 @@ class SparseDeltaEncoder:
 
         for key, fqn, shard, offset, gathered in shards:
             previous, out, wire = self.previous[key], self.snapshot[key], self.wire_dtypes[key]
-            segment_names, begins, ends = self._segments(key, fqn, offset, shard.numel())
+            segment_names, begins, ends, shifts = self._segments(key, fqn, offset, shard.numel())
             sums = torch.zeros(len(segment_names), dtype=torch.int64, device=device)
             changed, changed_values = [], []
             if fqn in self.fp8:
@@ -467,6 +480,7 @@ class SparseDeltaEncoder:
                         new_bits,
                         [max(begin, start) - start for begin in begins[first:last]],
                         [min(stop, end) - start for stop in ends[first:last]],
+                        [max(begin, start) + shift for begin, shift in zip(begins[first:last], shifts[first:last])],
                     )
             changed, changed_values = torch.cat(changed), torch.cat(changed_values)
             if fqn not in self.segment_starts:
