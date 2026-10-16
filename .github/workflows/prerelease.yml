@@ -1,4 +1,4 @@
-name: DevX Tag
+name: Prerelease
 
 on:
   push:
@@ -94,13 +94,13 @@ jobs:
                 await github.rest.actions.createWorkflowDispatch({
                   owner,
                   repo,
-                  workflow_id: "build_image.yaml",
+                  workflow_id: "image.yml",
                   ref: "main",
                   inputs: { ref: tag, tag, platforms: "both" },
                 });
-                core.notice(`Dispatched build_image.yaml for ${tag}`);
+                core.notice(`Dispatched image.yml for ${tag}`);
               } catch (error) {
-                core.setFailed(`Failed to dispatch build_image.yaml: ${error.message}`);
+                core.setFailed(`Failed to dispatch image.yml: ${error.message}`);
               }
               return;
             }
