@@ -439,6 +439,9 @@ class MuonConfig(BaseOptimizerConfig):
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
+    heads_per_block: int | None = Field(None, ge=1)
+    """Orthogonalize the attention query, key and value projections in blocks of this many heads, each block on its own (per-head Muon, Kimi K3 report, section 2.5; ``1`` = per head). GQA key/value projections are split by their own heads; ``o_proj`` stays one matrix. If None, each projection is one matrix."""
+
 
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"

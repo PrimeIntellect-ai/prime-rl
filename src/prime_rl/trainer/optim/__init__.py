@@ -208,16 +208,12 @@ def _create_muon_optimizer(
     else:
         distributed_mesh = parallel_dims.world_mesh
 
-    # Runtime fusions pack several logical matrices into one physical parameter. Muon
-    # orthogonalizes each of them separately, so a packed parameter trains exactly as the
-    # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
     matrix_partitions = {}
     if model is not None:
         muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-        for packed_info in get_model_packed_parameters(model):
-            partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
-            if partitions is not None and packed_info.parameter in muon_params:
-                matrix_partitions[packed_info.parameter] = partitions
+        matrix_partitions = muon_matrix_partitions(model, muon_params, config.heads_per_block)
+    elif config.heads_per_block is not None:
+        raise ValueError("optim.heads_per_block needs the model")
 
     optimizer = Muon(
         params=param_groups,
@@ -237,3 +233,53 @@ def _create_muon_optimizer(
     if expert_params and parallel_dims.ep_enabled:
         _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
     return optimizer
+
+
+def muon_matrix_partitions(
+    model: nn.Module, muon_params: set[nn.Parameter], heads_per_block: int | None
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    """The row partitions that Muon orthogonalizes separately, for the parameters in ``muon_params``.
+
+    Runtime fusions pack several logical matrices into one physical parameter. Muon orthogonalizes each of them
+    separately, so a packed parameter trains exactly as the matrices it replaces would. With ``heads_per_block``,
+    the query, key and value projections are further split into blocks of that many heads.
+    """
+    partitions = {}
+    for packed_info in get_model_packed_parameters(model):
+        sizes = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
+        if sizes is not None:
+            partitions[packed_info.parameter] = sizes
+    if heads_per_block is not None:
+        partitions |= _head_block_partitions(model, heads_per_block)
+    return {param: sizes for param, sizes in partitions.items() if param in muon_params}
+
+
+def _head_block_partitions(model: nn.Module, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+    """Blocks of ``heads_per_block`` heads in every attention module's q, k and v projections (packed or not)."""
+    partitions = {}
+    for name, module in model.named_modules():
+        head_dim = getattr(module, "head_dim", None)
+        projections = [getattr(module, f"{x}_proj", None) for x in "qkv"]
+        if not isinstance(head_dim, int) or any(projection is None for projection in projections):
+            continue
+        qkv_proj = getattr(module, "qkv_proj", None)
+        if qkv_proj is not None:
+            weights = {qkv_proj.weight: tuple(module.qkv_sizes)}
+        elif all(isinstance(getattr(projection, "weight", None), torch.Tensor) for projection in projections):
+            weights = {projection.weight: (projection.weight.shape[0],) for projection in projections}
+        else:
+            continue
+        block_rows = heads_per_block * head_dim
+        for weight, sizes in weights.items():
+            if any(size % block_rows for size in sizes):
+                raise ValueError(
+                    f"optim.heads_per_block = {heads_per_block} does not divide the heads of {name} "
+                    f"(q/k/v rows {sizes}, head_dim {head_dim})"
+                )
+            partitions[weight] = tuple(block_rows for size in sizes for _ in range(size // block_rows))
+    if not partitions:
+        raise ValueError(
+            "optim.heads_per_block needs attention modules with q_proj, k_proj, v_proj weights and a head_dim "
+            "(MLA and LoRA-wrapped projections are not supported)"
+        )
+    return partitions
