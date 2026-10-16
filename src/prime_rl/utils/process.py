@@ -28,6 +28,11 @@ DEFAULT_COMMON_ENV_VARS: dict[str, str] = {
 
 DEFAULT_TRAINER_ENV_VARS: dict[str, str] = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    # NCCL flight recorder: on a collective timeout every rank dumps its last 2000 collectives
+    # to /tmp/nccl_trace_<uid>_rank_<rank> (read with `torchfrtrace`), showing which rank hung where.
+    "TORCH_FR_BUFFER_SIZE": "2000",
+    "TORCH_NCCL_DUMP_ON_TIMEOUT": "1",
+    "TORCH_FR_DUMP_TEMP_FILE": f"/tmp/nccl_trace_{os.getuid()}_rank_",
 }
 
 DEFAULT_INFERENCE_ENV_VARS: dict[str, str] = {

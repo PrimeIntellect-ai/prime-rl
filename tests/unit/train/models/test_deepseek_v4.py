@@ -324,13 +324,15 @@ def test_deepseek_v4_hash_table_survives_the_load_path(tmp_path, monkeypatch):
         meta_model = DeepseekV4ForCausalLM(MODEL_CONFIG)
     expected = tables[0]
 
-    def fake_dcp_load(state_dict, storage_reader=None):
+    def fake_dcp_load(state_dict, storage_reader=None, process_group=None):
         buffer = state_dict["model.layers.0.mlp.router.tid2eid"]
         buffer.copy_(expected.to(device=buffer.device))
 
     monkeypatch.setattr("prime_rl.trainer.model.dcp_load", fake_dcp_load)
     monkeypatch.setattr("prime_rl.trainer.model.load_state_dict_keys", lambda path: meta_model.state_dict().keys())
     monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.get_dcp_group", lambda: None)
 
     load_dcp_from_hf(meta_model, ModelConfig(name=str(tmp_path)))
 

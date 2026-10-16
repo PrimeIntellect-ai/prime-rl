@@ -13,6 +13,7 @@ from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -253,6 +254,10 @@ class SFTConfig(BaseConfig):
     resume: ResumeConfig | None = None
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
+    control: ControlConfig | None = None
+    """Serve the run control API on the master rank (pause the run after the next
+    step). If None, the run takes no control requests."""
+
     log: TrainerLogConfig = TrainerLogConfig()
 
     monitors: TrainMonitorsConfig = TrainMonitorsConfig()
@@ -326,8 +331,8 @@ class SFTConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 3600
-    """Timeout in seconds for torch distributed ops."""
+    dist_timeout_seconds: int = 900
+    """Timeout in seconds for torch distributed ops: a hung collective (e.g. a dead rank) fails the run after this long."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
@@ -643,6 +648,8 @@ class SFTConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = self.run.name
         if self.slurm is not None and self.slurm.template_path is None:
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:

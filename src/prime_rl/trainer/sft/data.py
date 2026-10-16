@@ -105,7 +105,7 @@ class FakeDataset(StatefulIterableDataset):
             else self.seq_len
         )
         random_input_ids = (
-            torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
+            torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).long().tolist()
             if self.input_ids == "random"
             else None
         )
@@ -144,7 +144,7 @@ class FakeDataset(StatefulIterableDataset):
                 "mm_token_type_ids": None,
             }
             self.num_samples["fake"] += 1
-            self.num_tokens["fake"] += len(input_ids)
+            self.num_tokens["fake"] += seq_len
             yield fake_sample
 
 

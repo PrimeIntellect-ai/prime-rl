@@ -8,6 +8,7 @@ from pydantic import Field, field_validator, model_validator
 from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -42,11 +43,10 @@ class ActivationCheckpointConfig(BaseConfig):
 
 
 class ActivationOffloadingConfig(BaseConfig):
-    pin_memory: bool = True
-    """Pin offloaded activations to CPU memory."""
+    """Offload tensors saved for backward to pinned CPU memory during the forward pass."""
 
     max_inflight_activations: int = Field(5, ge=1)
-    """Max activations kept in flight while offloading. More activations smooth overlap at the cost of GPU memory."""
+    """Max activations kept on GPU while their offload copies are in flight on the side stream. Higher values give more copy/compute overlap at the cost of GPU memory."""
 
 
 OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
@@ -280,10 +280,16 @@ class ModelConfig(BaseModelConfig):
     moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
     """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
 
+    reduce_scatter_max_input_buffers: int = Field(1, ge=1)
+    """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
+
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "tilelang"
-    """Kernels for the DSA sparse MLA attention (``glm_moe_dsa``, e.g. GLM-5). ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90 GPU (SM100/SM103 are wired up but untested)."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
+
+    dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
+    """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""
@@ -311,9 +317,9 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def ac_offloading_requires_ac(self):
-        """Automatically enable activation checkpointing when activation offloading is enabled."""
-        if self.ac_offloading is not None and self.ac is None:
-            self.ac = ActivationCheckpointConfig()
+        """Activation offloading requires activation checkpointing, so ``ac = None`` disables both."""
+        if self.ac is None:
+            self.ac_offloading = None
         return self
 
     @model_validator(mode="after")
@@ -554,7 +560,7 @@ class DataLoaderConfig(BaseConfig):
     fake: FakeDataLoaderConfig | None = None
     """Use a fake data loader sampling random micro-batches (for debugging)."""
 
-    num_workers: int = Field(0, ge=0)
+    num_workers: int = Field(1, ge=0)
     """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
 
 
@@ -610,11 +616,15 @@ class TrainerConfig(BaseConfig):
     trace_path: Path | None = None
     """Path to write the PyTorch profiler trace to."""
 
-    dist_timeout_seconds: int = 3600
-    """Timeout in seconds for torch distributed ops."""
+    dist_timeout_seconds: int = 900
+    """Timeout in seconds for torch distributed ops: a hung collective (e.g. a dead rank) fails the run after this long."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: ControlConfig | None = None
+    """Serve the run control API on the master rank (pause the run after the next
+    step). If None, the run takes no control requests."""
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
