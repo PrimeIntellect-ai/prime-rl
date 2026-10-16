@@ -272,7 +272,10 @@ class ModelConfig(BaseModelConfig):
     """Routed-expert compute and token-dispatch runtime."""
 
     fp8_rounding_seed: int = 0
-    """Rank-independent seed for FP8 stochastic weight rounding, refreshed each optimizer step."""
+    """Rank-independent seed for FP8 stochastic weight rounding, refreshed each optimizer step unless ``fp8_rounding_frozen``."""
+
+    fp8_rounding_frozen: bool = False
+    """Keep the FP8 stochastic weight-rounding seed at the first training step's value for the whole run, so each weight element keeps one fixed rounding threshold. Requires ``stochastic_rounding`` on both ``quantization`` and ``moe.compute``."""
 
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
@@ -313,6 +316,18 @@ class ModelConfig(BaseModelConfig):
     def vlm_cp_requires_ulysses(self):
         if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
             raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
+        return self
+
+    @model_validator(mode="after")
+    def validate_fp8_rounding_frozen(self):
+        if self.fp8_rounding_frozen:
+            dense = isinstance(self.quantization, FP8Config) and self.quantization.stochastic_rounding
+            experts = getattr(self.moe.compute, "stochastic_rounding", False)
+            if not (dense and experts):
+                raise ValueError(
+                    "model.fp8_rounding_frozen requires stochastic_rounding on model.quantization (fp8) and on "
+                    "model.moe.compute (deepgemm_fp8), otherwise the run silently uses round-to-nearest."
+                )
         return self
 
     @model_validator(mode="after")

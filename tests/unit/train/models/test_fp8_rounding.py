@@ -3,7 +3,13 @@ import torch
 
 from prime_rl.configs.trainer import ActivationCheckpointConfig
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
-from prime_rl.trainer.models.fp8_rounding import _stream_id, set_fp8_rounding_step, setup_fp8_rounding
+from prime_rl.trainer.models.fp8_rounding import (
+    FROZEN_STEP,
+    _stream_id,
+    seed_for_step,
+    set_fp8_rounding_step,
+    setup_fp8_rounding,
+)
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.kernels.fp8_utils import (
     build_grouped_layout,
@@ -186,3 +192,78 @@ def test_rounding_streams_share_compiled_graph(grouped):
         for module in model:
             assert torch.equal(module(*inputs), module.forward(*inputs))
         assert len(graphs) == (2 if step == 2 else 1)
+
+
+def _frozen_linear(weight: torch.Tensor, frozen: bool) -> torch.nn.Sequential:
+    model = torch.nn.Sequential(torch.nn.Linear(weight.shape[1], weight.shape[0], bias=False, device="cuda"))
+    model[0].weight = torch.nn.Parameter(weight.clone())
+    replace_linear_with_fp8_blockwise_linear(model, [], stochastic_rounding=True)
+    setup_fp8_rounding(model, 3, frozen=frozen)
+    return model
+
+
+def test_frozen_rounding_keeps_the_first_step_stream():
+    torch.manual_seed(31)
+    weight = torch.randn(256, 384, device="cuda", dtype=torch.bfloat16)
+    x = torch.randn(128, 384, device="cuda", dtype=torch.bfloat16)
+    frozen = _frozen_linear(weight, frozen=True)
+    stepwise = _frozen_linear(weight, frozen=False)
+    assert frozen.fp8_rounding.seed.item() == seed_for_step(3, FROZEN_STEP)
+    set_fp8_rounding_step(frozen, 1)
+    y = frozen(x)
+    for step in (2, 9, 1000):
+        set_fp8_rounding_step(frozen, step)
+        assert torch.equal(frozen(x), y)
+    set_fp8_rounding_step(stepwise, FROZEN_STEP)
+    assert torch.equal(stepwise(x), y)
+    set_fp8_rounding_step(stepwise, FROZEN_STEP + 1)
+    assert not torch.equal(stepwise(x), y)
+
+
+def test_frozen_cast_differs_from_rtn_on_the_expected_share(monkeypatch):
+    monkeypatch.setenv("PRIME_RL_FP8_WEIGHT_UE8M0", "1")
+    torch.manual_seed(32)
+    weight = 0.02 * torch.randn(1024, 1024, device="cuda", dtype=torch.bfloat16)
+    seed = torch.tensor(seed_for_step(3, FROZEN_STEP), device="cuda")
+    salt = torch.tensor(11, device="cuda")
+    q_frozen, scale = per_block_cast_to_fp8_triton(weight, True, rounding_seed=seed, rounding_salt=salt)
+    q_rtn, scale_rtn = per_block_cast_to_fp8_triton(weight, True)
+    assert torch.equal(scale, scale_rtn)
+    scaled = weight.float() / scale.repeat_interleave(128, 0).repeat_interleave(128, 1)
+    spacing = torch.exp2(torch.clamp(torch.floor(torch.log2(scaled.abs().clamp_min(2.0**-12))) - 3, min=-9))
+    # Stochastic rounding takes the farther neighbour with probability |x - RTN(x)| / spacing.
+    probability = ((scaled - q_rtn.float()).abs() / spacing).clamp(max=1.0)
+    observed = (q_frozen.float() != q_rtn.float()).float().sum().item()
+    expected = probability.sum().item()
+    tolerance = 5 * (probability * (1 - probability)).sum().sqrt().item()
+    assert abs(observed - expected) < tolerance, (observed, expected, tolerance)
+
+
+def test_frozen_rounding_backward_reuses_the_forward_cast(monkeypatch):
+    import deep_gemm
+
+    monkeypatch.setenv("PRIME_RL_FP8_WEIGHT_UE8M0", "1")
+    torch.manual_seed(33)
+    weight = torch.randn(512, 256, device="cuda", dtype=torch.bfloat16)
+    model = _frozen_linear(weight, frozen=True)
+    x = torch.randn(137, 256, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    dy = torch.randn(137, 512, device="cuda", dtype=torch.bfloat16)
+    set_fp8_rounding_step(model, 6)
+    model(x).backward(dy)
+    seed = torch.tensor(seed_for_step(3, FROZEN_STEP), device="cuda")
+    q, s = per_block_cast_to_fp8_triton(weight, True, rounding_seed=seed, rounding_salt=model[0].rounding_salt)
+    expected = torch.empty_like(x)
+    mode = ue8m0_for_device(x.device)
+    deep_gemm.fp8_gemm_nt(per_token_cast_to_fp8_triton(dy, mode), (q.T.contiguous(), s.T.contiguous()), expected)
+    assert torch.equal(x.grad, expected)
+
+
+def test_frozen_rounding_requires_stochastic_rounding_everywhere():
+    from prime_rl.configs.trainer import DeepGemmFP8MoEComputeConfig, FP8Config, ModelConfig, MoERuntimeConfig
+
+    stochastic_experts = MoERuntimeConfig(compute=DeepGemmFP8MoEComputeConfig(stochastic_rounding=True))
+    ModelConfig(fp8_rounding_frozen=True, quantization=FP8Config(stochastic_rounding=True), moe=stochastic_experts)
+    with pytest.raises(ValueError, match="fp8_rounding_frozen"):
+        ModelConfig(fp8_rounding_frozen=True, quantization=FP8Config(), moe=stochastic_experts)
+    with pytest.raises(ValueError, match="fp8_rounding_frozen"):
+        ModelConfig(fp8_rounding_frozen=True, quantization=FP8Config(stochastic_rounding=True))

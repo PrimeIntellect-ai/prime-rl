@@ -6,22 +6,32 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from prime_rl.utils.logger import get_logger
+
+FROZEN_STEP = 1
+
 
 def _stream_id(name: str) -> int:
     return int.from_bytes(hashlib.blake2b(name.encode(), digest_size=8).digest(), "little") & ((1 << 63) - 1)
+
+
+def seed_for_step(base_seed: int, step: int) -> int:
+    """The rounding seed that ``set_fp8_rounding_step(model, step)`` installs, without touching any state."""
+    return _stream_id(f"{base_seed}:{step}")
 
 
 @dataclass
 class FP8RoundingState:
     base_seed: int
     seed: torch.Tensor
+    frozen: bool = False
 
     def set_step(self, step: int) -> None:
         # Keep each forward's seed immutable until its backward has consumed it.
-        self.seed = torch.tensor(_stream_id(f"{self.base_seed}:{step}"), device=self.seed.device, dtype=torch.int64)
+        self.seed = torch.tensor(seed_for_step(self.base_seed, step), device=self.seed.device, dtype=torch.int64)
 
 
-def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
+def setup_fp8_rounding(model: nn.Module, base_seed: int = 0, frozen: bool = False) -> None:
     from prime_rl.trainer.models.layers.expert_compute import DeepGemmFP8ExpertCompute
     from prime_rl.trainer.models.layers.fp8_linear import Float8BlockwiseLinear
     from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -39,8 +49,8 @@ def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
         if not (dense or grouped):
             continue
         if state is None:
-            state = FP8RoundingState(base_seed, torch.empty((), device="cuda", dtype=torch.int64))
-            state.set_step(0)
+            state = FP8RoundingState(base_seed, torch.empty((), device="cuda", dtype=torch.int64), frozen)
+            state.set_step(FROZEN_STEP if frozen else 0)
         module.fp8_rounding = state
         # Tensor stream IDs let identical blocks share a compiled graph.
         if dense:
@@ -57,9 +67,14 @@ def setup_fp8_rounding(model: nn.Module, base_seed: int = 0) -> None:
             if not hasattr(module, "fp8_expert_offset"):
                 module.fp8_expert_offset = 0
     model.fp8_rounding = state
+    if frozen:
+        assert state is not None, "frozen FP8 rounding needs stochastically rounded FP8 modules"
+        get_logger().info(
+            f"FP8 weight rounding frozen at stream {base_seed}:{FROZEN_STEP} (seed {seed_for_step(base_seed, FROZEN_STEP)})"
+        )
 
 
 def set_fp8_rounding_step(model: nn.Module, step: int) -> None:
     state = model.fp8_rounding
-    if state is not None:
+    if state is not None and not state.frozen:
         state.set_step(step)

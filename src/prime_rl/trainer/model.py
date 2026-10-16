@@ -979,7 +979,7 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
-    setup_fp8_rounding(model, config.fp8_rounding_seed)
+    setup_fp8_rounding(model, config.fp8_rounding_seed, config.fp8_rounding_frozen)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.

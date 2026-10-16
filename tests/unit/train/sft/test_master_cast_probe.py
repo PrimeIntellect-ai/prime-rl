@@ -7,10 +7,13 @@ from torch import nn
 from prime_rl.configs.trainer import FP8Config
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.model import forward
+from prime_rl.trainer.models.fp8_rounding import FROZEN_STEP, seed_for_step, set_fp8_rounding_step, setup_fp8_rounding
 from prime_rl.trainer.models.kernels.fp8_utils import per_block_cast_to_fp8_triton
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, DeepGemmFP8ExpertCompute
+from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 from prime_rl.trainer.models.layers.fp8_linear import (
     Float8BlockwiseLinear,
+    _fp8_blockwise_mm,
     bf16_compute,
     bf16_compute_enabled,
     replace_linear_with_fp8_blockwise_linear,
@@ -18,15 +21,28 @@ from prime_rl.trainer.models.layers.fp8_linear import (
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX, inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE
 from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
-from prime_rl.trainer.sft.master_cast_probe import FP8_COVERED_PARAM, MasterCastProbe, ue8m0_rtn
+from prime_rl.trainer.sft.master_cast_probe import (
+    FP8_COVERED_PARAM,
+    FP8FlipRate,
+    MasterCastProbe,
+    ue8m0_cast,
+    ue8m0_rtn,
+)
 from prime_rl.utils.utils import default_dtype
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")]
 
 SEQ_LEN = 256
+BASE_SEED = 7
+KINDS = ("bf16", "rtn", "sr", "fixed")
 
 
-def make_model(fp8: bool) -> nn.Module:
+@pytest.fixture(autouse=True)
+def _ue8m0_weight_casts(monkeypatch):
+    monkeypatch.setenv("PRIME_RL_FP8_WEIGHT_UE8M0", "1")
+
+
+def make_model(kind: str) -> nn.Module:
     config = Qwen3MoeConfig(
         head_dim=128,
         hidden_size=256,
@@ -52,16 +68,18 @@ def make_model(fp8: bool) -> nn.Module:
             else:
                 nn.init.normal_(param, std=0.05)
     inject_prime_lm_head(model, chunk_size=SEQ_LEN)
-    if fp8:
-        replace_linear_with_fp8_blockwise_linear(model, FP8Config().ignore_patterns)
+    if kind != "bf16":
+        stochastic = kind in ("sr", "fixed")
+        replace_linear_with_fp8_blockwise_linear(model, FP8Config().ignore_patterns, stochastic_rounding=stochastic)
         for moe in (module for module in model.modules() if isinstance(module, MoE)):
-            compute = DeepGemmFP8ExpertCompute()
+            compute = DeepGemmFP8ExpertCompute(stochastic_rounding=stochastic)
             moe.experts.set_compute(compute)
             moe.token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
                 top_k=moe.router.top_k,
                 token_group_alignment=compute.token_group_alignment,
             )
+    setup_fp8_rounding(model, BASE_SEED, frozen=kind == "fixed")
     return model
 
 
@@ -105,6 +123,51 @@ def loss_and_grads(model: nn.Module, batches: list[dict]) -> tuple[float, list[t
             loss_sum += loss.item()
             tokens += count.item()
     return loss_sum / tokens, [grad_sum.double() / tokens for grad_sum in grad_sums]
+
+
+def own_salts(model: nn.Module) -> list[torch.Tensor | None]:
+    salts = {}
+    for module in model.modules():
+        if isinstance(module, Float8BlockwiseLinear) and module.weight is not None:
+            salts[id(module.weight)] = module.rounding_salt
+        elif isinstance(module, GroupedExperts):
+            for name, param in module.named_parameters(recurse=False):
+                salts[id(param)] = getattr(module, "rounding_salts", {}).get(name)
+    return [salts[id(param)] for param in covered(model)]
+
+
+def dot(a: list[torch.Tensor], b: list[torch.Tensor]) -> float:
+    return sum((x * y).sum().item() for x, y in zip(a, b))
+
+
+def reference_cast_metrics(model: nn.Module, batches: list[dict], start: list[torch.Tensor], casts: list) -> dict:
+    """Probe metrics for one cast, from a deep copy whose covered weights are replaced by ``casts[i](weight)``."""
+    loss_master, grads_master = loss_and_grads(model, batches)
+    cast_model = copy.deepcopy(model)
+    with torch.no_grad():
+        for cast, param in zip(casts, covered(cast_model)):
+            param.copy_(cast(param))
+    loss_cast, grads_cast = loss_and_grads(cast_model, batches)
+    masters = [master.detach() for master in covered(model)]
+    displacement = [master.double() - s.double() for master, s in zip(masters, start)]
+    cast_displacement = [cast(m).double() - cast(s).double() for cast, m, s in zip(casts, masters, start)]
+    d_norm = dot(displacement, displacement) ** 0.5
+    grad_change = [cast - master for cast, master in zip(grads_cast, grads_master)]
+    return {
+        "loss_master": loss_master,
+        "loss_cast": loss_cast,
+        "gap": loss_cast - loss_master,
+        "displacement_norm": d_norm,
+        "grad_norm_master": dot(grads_master, grads_master) ** 0.5,
+        "grad_norm_cast": dot(grads_cast, grads_cast) ** 0.5,
+        "descent_master": -dot(grads_master, displacement) / d_norm,
+        "descent_cast": -dot(grads_cast, displacement) / d_norm,
+        "grad_change_cos_displacement": dot(grad_change, displacement)
+        / (dot(grad_change, grad_change) ** 0.5 * d_norm),
+        "forward_visible_fraction": dot(cast_displacement, displacement) / d_norm**2,
+        "cast_changed_fraction": sum((cast(m) != m).sum().item() for cast, m in zip(casts, masters))
+        / sum(m.numel() for m in masters),
+    }
 
 
 def train_step(model: nn.Module, optimizer: torch.optim.Optimizer, batch: dict) -> None:
@@ -158,14 +221,16 @@ def test_bf16_compute_bypasses_fp8_and_restores_it_on_exit():
     assert not bf16_compute_enabled()
 
 
-@pytest.mark.parametrize("fp8", [False, True])
-def test_probe_matches_reference_and_leaves_training_state_unchanged(fp8):
-    model = make_model(fp8)
+@pytest.mark.parametrize("kind", KINDS)
+def test_probe_matches_reference_and_leaves_training_state_unchanged(kind):
+    model = make_model(kind)
     batches = make_batches(2, seed=3)
     start = [param.detach().clone() for param in covered(model)]
     probe = MasterCastProbe(model, batches, lambda batch: compute_loss(model, batch), None, 1)
+    assert probe.kind == kind
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
-    for batch in make_batches(2, seed=4):
+    for step, batch in enumerate(make_batches(2, seed=4), start=1):
+        set_fp8_rounding_step(model, step)
         train_step(model, optimizer, batch)
 
     params = {name: param.detach().clone() for name, param in model.named_parameters()}
@@ -174,7 +239,7 @@ def test_probe_matches_reference_and_leaves_training_state_unchanged(fp8):
     with torch.no_grad():
         fp8_out = compute_loss(model, probe_input)[0]
 
-    metrics = probe.measure()
+    metrics = probe.measure(4)
 
     for name, param in model.named_parameters():
         assert torch.equal(param, params[name]), name
@@ -186,50 +251,108 @@ def test_probe_matches_reference_and_leaves_training_state_unchanged(fp8):
     with torch.no_grad():
         assert torch.equal(compute_loss(model, probe_input)[0], fp8_out)
 
-    loss_master, grads_master = loss_and_grads(model, batches)
-    cast_model = copy.deepcopy(model)
-    with torch.no_grad():
-        for param in covered(cast_model):
-            param.copy_(ue8m0_rtn(param))
-    loss_cast, grads_cast = loss_and_grads(cast_model, batches)
-    masters = covered(model)
-    displacement = [master.detach().double() - s.double() for master, s in zip(masters, start)]
-    cast_displacement = [
-        ue8m0_rtn(master.detach()).double() - ue8m0_rtn(s).double() for master, s in zip(masters, start)
-    ]
-
-    def dot(a: list[torch.Tensor], b: list[torch.Tensor]) -> float:
-        return sum((x * y).sum().item() for x, y in zip(a, b))
-
-    d_norm = dot(displacement, displacement) ** 0.5
-    grad_change = [cast - master for cast, master in zip(grads_cast, grads_master)]
-    expected = {
-        "loss_master": loss_master,
-        "loss_cast": loss_cast,
-        "gap": loss_cast - loss_master,
-        "displacement_norm": d_norm,
-        "grad_norm_master": dot(grads_master, grads_master) ** 0.5,
-        "grad_norm_cast": dot(grads_cast, grads_cast) ** 0.5,
-        "descent_master": -dot(grads_master, displacement) / d_norm,
-        "descent_cast": -dot(grads_cast, displacement) / d_norm,
-        "grad_change_cos_displacement": dot(grad_change, displacement)
-        / (dot(grad_change, grad_change) ** 0.5 * d_norm),
-        "forward_visible_fraction": dot(cast_displacement, displacement) / d_norm**2,
-        "cast_changed_fraction": sum((ue8m0_rtn(m.detach()) != m).sum().item() for m in masters)
-        / sum(m.numel() for m in masters),
-    }
-    assert d_norm > 0 and expected["gap"] != 0
+    n_covered = len(start)
+    expected = reference_cast_metrics(model, batches, start, [ue8m0_rtn] * n_covered)
+    assert expected["displacement_norm"] > 0 and expected["gap"] != 0
     for key, value in expected.items():
         assert metrics[f"master_cast_probe/{key}"] == pytest.approx(value, rel=1e-3, abs=1e-6), key
 
+    own = {key.removeprefix("master_cast_probe/own/"): value for key, value in metrics.items() if "/own/" in key}
+    if kind == "rtn":
+        for key, value in own.items():
+            assert value == metrics[f"master_cast_probe/{key}"], key
+    elif kind == "bf16":
+        assert own["gap"] == 0 and own["forward_visible_fraction"] == 1
+        assert own["descent_cast"] == metrics["master_cast_probe/descent_master"]
+    else:
+        seed = torch.tensor(seed_for_step(BASE_SEED, 5 if kind == "sr" else FROZEN_STEP), device="cuda")
+        casts = [lambda weight, salt=salt: ue8m0_cast(weight, seed, salt) for salt in own_salts(model)]
+        expected_own = reference_cast_metrics(model, batches, start, casts)
+        if kind == "sr":
+            assert own.pop("forward_visible_fraction") == 1
+            own["forward_visible_fraction"] = own.pop("forward_visible_fraction_realized")
+        assert expected_own["gap"] != expected["gap"]
+        for key in (
+            "loss_cast",
+            "gap",
+            "grad_norm_cast",
+            "descent_cast",
+            "grad_change_cos_displacement",
+            "forward_visible_fraction",
+            "cast_changed_fraction",
+        ):
+            assert own[key] == pytest.approx(expected_own[key], rel=1e-3, abs=1e-6), key
+
+
+def test_own_cast_reproduces_the_stochastic_forward():
+    torch.manual_seed(8)
+    seed = torch.tensor(seed_for_step(BASE_SEED, 3), device="cuda")
+    salt = torch.tensor(1234, device="cuda")
+    x = torch.randn(200, 256, device="cuda", dtype=torch.bfloat16)
+    linear = nn.Sequential(nn.Linear(256, 512, bias=False, device="cuda", dtype=torch.bfloat16))
+    replace_linear_with_fp8_blockwise_linear(linear, [], stochastic_rounding=True)
+    setup_fp8_rounding(linear, BASE_SEED)
+    set_fp8_rounding_step(linear, 3)
+    weight = linear[0].weight.detach()
+    stochastic = linear(x)
+    assert not torch.equal(stochastic, _fp8_blockwise_mm(x, weight, 128))
+    own = ue8m0_cast(weight, seed, linear[0].rounding_salt)
+    assert torch.equal(stochastic, _fp8_blockwise_mm(x, own, 128))
+
+    x = torch.randn(384, 128, device="cuda", dtype=torch.bfloat16)
+    stored = torch.randn(3, 256, 128, device="cuda", dtype=torch.bfloat16)
+    offsets = torch.tensor([128, 128, 384], device="cuda", dtype=torch.int32)
+    offset = 4 * 256 * 128
+    stochastic = grouped_fp8_gemm(x, stored.transpose(1, 2), offsets, seed, salt, offset)
+    own = ue8m0_cast(stored, seed, salt, offset)
+    assert torch.equal(stochastic, grouped_fp8_gemm(x, own.transpose(1, 2), offsets))
+
+
+@pytest.mark.parametrize("kind", ("rtn", "sr", "fixed"))
+def test_flip_rate_tracks_forward_and_master_changes(kind):
+    model = make_model(kind)
+    probe = MasterCastProbe(model, make_batches(2, seed=3), lambda batch: compute_loss(model, batch), None, 1)
+    flip = FP8FlipRate(probe)
+    set_fp8_rounding_step(model, 1)
+    first = flip.step(1)
+    assert first["fp8_flip/forward_changed_vs_first"] == 0 and first["fp8_flip/master_changed_vs_start"] == 0
+    assert "fp8_flip/forward_changed_vs_prev" not in first
+    set_fp8_rounding_step(model, 2)
+    unchanged = flip.step(2)
+    assert unchanged["fp8_flip/master_changed_vs_prev"] == 0
+    if kind == "sr":
+        # Each element keeps its value with probability 1 - 2p(1 - p), so about a third of them re-roll.
+        assert 0.2 < unchanged["fp8_flip/forward_changed_vs_prev"] < 0.45
+    else:
+        assert unchanged["fp8_flip/forward_changed_vs_prev"] == 0
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    train_step(model, optimizer, make_batches(1, seed=4)[0])
+    set_fp8_rounding_step(model, 3)
+    moved = flip.step(3)
+    assert 0 < moved["fp8_flip/master_changed_vs_prev"] == moved["fp8_flip/master_changed_vs_start"]
+    if kind != "sr":
+        assert 0 < moved["fp8_flip/forward_changed_vs_prev"] < moved["fp8_flip/master_changed_vs_prev"]
+
+
+def test_fixed_and_stochastic_own_casts_agree_at_step_zero():
+    metrics = {}
+    for kind in ("sr", "fixed"):
+        model = make_model(kind)
+        probe = MasterCastProbe(model, make_batches(2, seed=3), lambda batch: compute_loss(model, batch), None, 1)
+        metrics[kind] = probe.measure(0)
+    for key in ("own/loss_cast", "own/cast_changed_fraction", "own/grad_norm_cast"):
+        assert metrics["sr"][f"master_cast_probe/{key}"] == pytest.approx(
+            metrics["fixed"][f"master_cast_probe/{key}"], rel=1e-4
+        ), key
+
 
 def test_on_grid_start_has_zero_gap():
-    model = make_model(fp8=True)
+    model = make_model("rtn")
     with torch.no_grad():
         for param in covered(model):
             param.copy_(ue8m0_rtn(param))
     probe = MasterCastProbe(model, make_batches(2, seed=6), lambda batch: compute_loss(model, batch), None, 1)
-    metrics = probe.measure()
+    metrics = probe.measure(4)
     assert metrics["master_cast_probe/gap"] == 0
     assert metrics["master_cast_probe/displacement_norm"] == 0
     assert metrics["master_cast_probe/cast_changed_fraction"] == 0

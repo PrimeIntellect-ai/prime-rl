@@ -63,7 +63,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.sft.weight_dynamics import WeightUpdateTracker, check_start_weights
-from prime_rl.trainer.sft.master_cast_probe import MasterCastProbe, load_probe_batches
+from prime_rl.trainer.sft.master_cast_probe import FP8FlipRate, MasterCastProbe, load_probe_batches
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -445,7 +445,11 @@ def train(config: SFTConfig):
             dp_cp_group,
             parallel_dims.fsdp_gradient_divide_factor,
         )
-        asyncio.run(monitors.log({**master_cast_probe.measure(), "step": 0}, step=0))
+        asyncio.run(monitors.log({**master_cast_probe.measure(0), "step": 0}, step=0))
+    fp8_flip_rate = None
+    if os.environ.get("PRIME_RL_FP8_FLIP_RATE") == "1":
+        assert master_cast_probe is not None, "PRIME_RL_FP8_FLIP_RATE needs PRIME_RL_MASTER_CAST_PROBE"
+        fp8_flip_rate = FP8FlipRate(master_cast_probe)
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
@@ -459,6 +463,7 @@ def train(config: SFTConfig):
 
         step_start_time = time.perf_counter()
         set_fp8_rounding_step(model, progress.step)
+        fp8_flip_metrics = fp8_flip_rate.step(progress.step) if fp8_flip_rate is not None else {}
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
@@ -570,6 +575,7 @@ def train(config: SFTConfig):
         optimizer.step()
         optimizer.zero_grad()
         weight_dynamics_metrics = weight_update_tracker.step() if weight_update_tracker is not None else {}
+        weight_dynamics_metrics |= fp8_flip_metrics
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
@@ -617,7 +623,7 @@ def train(config: SFTConfig):
         max_peak_memory = max(max_peak_memory, peak_memory)
         # After the step's timing and memory readings, so probe steps keep comparable perf metrics.
         if master_cast_probe is not None and progress.step % master_cast_probe_interval == 0:
-            weight_dynamics_metrics |= master_cast_probe.measure()
+            weight_dynamics_metrics |= master_cast_probe.measure(progress.step)
 
         # Log step metrics
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
