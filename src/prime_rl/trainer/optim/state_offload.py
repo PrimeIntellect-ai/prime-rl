@@ -1,6 +1,8 @@
 import copy
 
 import torch
+from dion import Muon
+from dion.opt_utils import create_param_batches
 from torch.distributed.tensor import DTensor
 from torch.optim import AdamW, Optimizer
 
@@ -78,7 +80,7 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return result
 
         # A parameter without state yet (no grad on any earlier step) is initialized by the full path below.
-        if isinstance(self.optimizer, AdamW) and all(
+        if isinstance(self.optimizer, (AdamW, Muon)) and all(
             p in self.state for group in self.param_groups for p in group["params"] if p.grad is not None
         ):
             return self._chunked_step()
@@ -94,23 +96,46 @@ class CPUOffloadOptimizer(OffloadOptimizer):
 
         return result
 
+    def _units(self) -> list[list[torch.Tensor]]:
+        """Parameters that step together. Muon updates each batch of same-shape matrices with collectives,
+        so its units are Muon's own batches, and AdamW inside Muon is one foreach update."""
+        state = self.optimizer.state
+        if not isinstance(self.optimizer, Muon):
+            return [[param] for param in state]
+        units = []
+        for group in self.optimizer.param_groups:
+            params = [param for param in group["params"] if param in state]
+            if group["algorithm"] != "muon":
+                units.append(params)
+                continue
+            world_size = self.optimizer._get_group_mesh_info(group)[1]
+            units.extend(create_param_batches(params, world_size, self.optimizer._matrix_partitions))
+        return [unit for unit in units if unit]
+
     def _plan_chunks(self) -> tuple[list[tuple[set[torch.Tensor], list[tuple[torch.Tensor, str, int]]]], int]:
-        """Group whole parameters into chunks; each state except the CPU step counter gets an offset into a staging buffer."""
-        chunks, params, entries, used, max_used = [], set(), [], 0, 0
-        for param, state in self.optimizer.state.items():
-            param_entries, param_bytes = [], 0
-            for key, value in state.items():
-                if key == "step":
-                    continue
-                local = _local(value)
-                param_entries.append((param, key, param_bytes))
-                param_bytes += -(-local.numel() * local.element_size() // ALIGN_BYTES) * ALIGN_BYTES
-            if params and used + param_bytes > CHUNK_BYTES:
+        """Group units into chunks; each state except the CPU step counter gets an offset into a staging buffer.
+
+        Chunks are cut on the mean shard size, not the local one, so every rank cuts at the same units
+        even with uneven shards: Muon's collectives need the same batches on every rank."""
+        chunks, params, entries, used, planned, max_used = [], set(), [], 0, 0, 0
+        for unit in self._units():
+            unit_entries, unit_bytes, unit_planned = [], 0, 0
+            for param in unit:
+                for key, value in self.optimizer.state[param].items():
+                    if key == "step":
+                        continue
+                    local = _local(value)
+                    unit_entries.append((param, key, unit_bytes))
+                    unit_bytes += -(-local.numel() * local.element_size() // ALIGN_BYTES) * ALIGN_BYTES
+                    shards = value.device_mesh.size() if isinstance(value, DTensor) else 1
+                    unit_planned += value.numel() * value.element_size() // shards
+            if params and planned + unit_planned > CHUNK_BYTES:
                 chunks.append((params, entries))
-                params, entries, used = set(), [], 0
-            params.add(param)
-            entries.extend((param, key, used + offset) for param, key, offset in param_entries)
-            used += param_bytes
+                params, entries, used, planned = set(), [], 0, 0
+            params.update(unit)
+            entries.extend((param, key, used + offset) for param, key, offset in unit_entries)
+            used += unit_bytes
+            planned += unit_planned
             max_used = max(max_used, used)
         if params:
             chunks.append((params, entries))
@@ -162,10 +187,15 @@ class CPUOffloadOptimizer(OffloadOptimizer):
                     state[param][key] = _with_local(cpu_value, gpu_local)
                 return h2d.record_event()
 
+        # Muon counts steps per param group, so every chunk starts from the same count.
+        group_steps = [group.get("step") for group in self.param_groups]
         loaded = load(0)
         for i, (params, _) in enumerate(chunks):
             next_loaded = load(i + 1) if i + 1 < len(chunks) else None
             compute.wait_event(loaded)
+            for group, step in zip(self.param_groups, group_steps):
+                if step is not None:
+                    group["step"] = step
             self._step_params(params)
             d2h.wait_stream(compute)
             with torch.cuda.stream(d2h):

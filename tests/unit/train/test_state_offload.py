@@ -2,8 +2,10 @@ from typing import NamedTuple
 
 import pytest
 import torch
+from dion import Muon
 from torch.optim import Optimizer
 
+from prime_rl.trainer.optim import state_offload
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
 
 pytestmark = [pytest.mark.gpu]
@@ -131,3 +133,21 @@ def test_parameter_without_grad_on_the_first_step_is_stepped_later() -> None:
 
     for reference, offloaded in zip(train(False), train(True)):
         assert torch.equal(reference, offloaded)
+
+
+def test_chunked_muon_matches_plain_muon(monkeypatch) -> None:
+    monkeypatch.setattr(state_offload, "CHUNK_BYTES", 1)
+
+    def train(wrap: bool) -> torch.nn.Module:
+        model = make_model(0)
+        matrices = [param for param in model.parameters() if param.ndim == 2]
+        biases = [param for param in model.parameters() if param.ndim == 1]
+        optimizer = Muon(
+            [dict(params=matrices), dict(params=biases, algorithm="adamw")], fsdp_mesh_dim=0, world_mesh=None, lr=1e-2
+        )
+        if wrap:
+            optimizer = CPUOffloadOptimizer(optimizer)
+        run_steps(model, optimizer, num_steps=4, seed=1)
+        return model
+
+    assert_params_equal(train(False), train(True))
