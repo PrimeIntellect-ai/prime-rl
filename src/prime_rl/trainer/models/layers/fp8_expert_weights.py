@@ -7,6 +7,8 @@ is the one the GEMM did on the bf16 weight, and the input-gradient GEMM's blocks
 are unchanged.
 """
 
+import weakref
+
 import torch
 import torch.utils._pytree as pytree
 from torch import nn
@@ -44,6 +46,19 @@ def _prequantized_gemm_fake(
     return x.new_empty((x.shape[0], weight_data.shape[1]))
 
 
+# The input-gradient GEMM's blocks (the transpose of the all-gathered ones) per all-gathered data tensor, made once per
+# all-gather and dropped when FSDP refills the buffers.
+_TRANSPOSED_BLOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _transposed_blocks(weight_data: torch.Tensor, weight_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    blocks = _TRANSPOSED_BLOCKS.get(weight_data)
+    if blocks is None:
+        blocks = (weight_data.transpose(1, 2).contiguous(), weight_scale.transpose(1, 2).contiguous())
+        _TRANSPOSED_BLOCKS[weight_data] = blocks
+    return blocks
+
+
 @torch.library.custom_op("prime_rl::grouped_fp8_gemm_prequantized_backward", mutates_args=())
 def _prequantized_backward(
     grad_output: torch.Tensor,
@@ -58,7 +73,7 @@ def _prequantized_backward(
     return _backward(
         grad_output,
         x,
-        lambda: (weight_data.transpose(1, 2).contiguous(), weight_scale.transpose(1, 2).contiguous()),
+        lambda: _transposed_blocks(weight_data, weight_scale),
         torch.Size((groups, cols, rows)),
         torch.bfloat16,
         offs,
@@ -213,6 +228,8 @@ class Fp8ExpertMaster(torch.Tensor):
 
     def fsdp_post_all_gather(self, all_gather_outputs, metadata, param_dtype, *, out=None):
         if out is not None:  # FSDP refilled the same buffers that the weight views
+            weight = out.to_local() if isinstance(out, DTensor) else out
+            _TRANSPOSED_BLOCKS.pop(weight._data, None)
             return
         if len(all_gather_outputs) == 1:
             (packed,) = all_gather_outputs
