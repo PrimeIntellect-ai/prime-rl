@@ -5,6 +5,7 @@ import json
 import itertools
 import math
 import time
+from contextlib import contextmanager
 from datetime import timedelta
 
 # ruff: noqa: I001
@@ -58,6 +59,7 @@ from prime_rl.trainer.pretrain.metrics import (
     SpikeDetector,
     grad_norms_by_group,
     reduce_stats,
+    routed_k_metrics,
     take_routing_counts,
 )
 from prime_rl.trainer.sft.data import get_dataset_state
@@ -251,6 +253,23 @@ def train(config: PretrainConfig):
     for moe in moes_with_seq_balance:
         # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
         moe.balance_rows = config.data.micro_batch_size
+    batch_routers = [moe.router for moe in iter_moe_blocks(model) if moe.router.batch_topk_max_k]
+    if batch_routers and cp_enabled:
+        raise ValueError("Batch top-k routing needs whole rows on every rank (model.cp = 1).")
+    for router in batch_routers:
+        router.batch_rows = config.data.micro_batch_size
+        router.batch_group = dp_cp_group if dist.get_world_size(dp_cp_group) > 1 else None
+
+    @contextmanager
+    def token_choice_routing():
+        """The eval suite's packed rows and the diagnostic probe have no aligned rows to route together: batch
+        top-k routers fall back to each token's top-k."""
+        for router in batch_routers:
+            router.batch_rows = None
+        yield
+        for router in batch_routers:
+            router.batch_rows = config.data.micro_batch_size
+
     bias_freeze_step = config.max_steps - round(balance.bias_freeze * config.max_steps)
     # Sum and count of the per-row balance of every MoE layer over the current step's micro-batches, reduced with
     # the step's statistics.
@@ -332,7 +351,7 @@ def train(config: PretrainConfig):
         start_time = time.perf_counter()
         metrics = {}
         # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
-        with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
+        with scoring_head_active(model), torch.compiler.set_stance("force_eager"), token_choice_routing():
             scored = score_sets(model, eval_sets, config.evals.token_budget, get_dcp_group())
             for eval_set, (logprobs, hits) in zip(eval_sets, scored or []):
                 for seq_len, version in eval_set.versions.items():
@@ -400,6 +419,7 @@ def train(config: PretrainConfig):
                 stacked = torch.stack(biases)
                 moe_metrics["router/bias/absmax"] = stacked.abs().max().item()
                 moe_metrics["router/bias/std"] = stacked.std(dim=1).mean().item()
+            moe_metrics |= routed_k_metrics(model, dp_cp_group)
 
         group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(None, model, config.optim.max_norm) if config.optim.max_norm else None
@@ -430,7 +450,8 @@ def train(config: PretrainConfig):
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
 
         if is_diagnostic_step:
-            diagnostic_metrics |= run_probe(model, probe, dp_cp_group)
+            with token_choice_routing():
+                diagnostic_metrics |= run_probe(model, probe, dp_cp_group)
             finish_no_grad_forwards()
 
         eval_start_time = time.perf_counter()

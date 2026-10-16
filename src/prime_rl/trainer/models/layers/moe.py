@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
@@ -61,6 +62,8 @@ class MoEArgs:
     # token-choice
     top_k: int = 1
     load_balance_coeff: float | None = 1e-3
+    num_null_experts: int = 0
+    batch_topk_max_k: int = 0
 
     def __post_init__(self) -> None:
         ActivationDispatch[self.activation]
@@ -144,6 +147,12 @@ class TokenChoiceTopKRouter(nn.Module):
         selection_bias (bool): Whether to keep a persistent selection-only bias. The bias affects
             expert selection but not routing weights.
         topk_sorted (bool): Whether selected experts are returned in descending score order.
+        num_null_experts (int): Zero-output experts next to the routed ones (AdaMoE). They are scored, selected and
+            balanced like the others, so a token that selects them uses fewer routed experts.
+        batch_topk_max_k (int): Above 0, position-wise batch top-k while ``batch_rows`` is set: at every position,
+            the ``batch_rows`` rows (on every rank of ``batch_group``) select their ``top_k * rows`` highest
+            (token, expert) selection scores together, each token from its own ``batch_topk_max_k`` best, so
+            ``top_k`` is the mean per token. Unselected slots have index -1 and score 0.
     """
 
     def __init__(
@@ -158,8 +167,11 @@ class TokenChoiceTopKRouter(nn.Module):
         gate_bias: bool = False,
         selection_bias: bool = False,
         topk_sorted: bool = True,
+        num_null_experts: int = 0,
+        batch_topk_max_k: int = 0,
     ):
         super().__init__()
+        num_experts += num_null_experts
         self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
         self.register_buffer(
             "selection_bias",
@@ -167,6 +179,11 @@ class TokenChoiceTopKRouter(nn.Module):
         )
         self.num_experts = num_experts
         self.top_k = top_k
+        self.num_null_experts = num_null_experts
+        self.batch_topk_max_k = batch_topk_max_k
+        # Set by the training loop: rows per forward, and the data-parallel group whose rows route together.
+        self.batch_rows: int | None = None
+        self.batch_group: dist.ProcessGroup | None = None
         self.score_func = score_func
         self.route_norm = route_norm
         self.route_scale = route_scale
@@ -237,13 +254,21 @@ class TokenChoiceTopKRouter(nn.Module):
             selection_scores = scores
             if self.selection_bias is not None:
                 selection_scores = selection_scores + self.selection_bias
-            _, selected_experts_indices = torch.topk(
-                selection_scores,
-                k=self.top_k,
-                dim=1,
-                sorted=self.topk_sorted,
-            )
-            top_scores = scores.gather(dim=1, index=selected_experts_indices)
+            if self.batch_topk_max_k and self.batch_rows is not None:
+                candidate_scores, selected_experts_indices = torch.topk(
+                    selection_scores, k=self.batch_topk_max_k, dim=1
+                )
+                selected = self.batch_select(candidate_scores.detach())
+                selected_experts_indices = selected_experts_indices.masked_fill(~selected, -1)
+                top_scores = scores.gather(dim=1, index=selected_experts_indices.clamp_min(0)) * selected
+            else:
+                _, selected_experts_indices = torch.topk(
+                    selection_scores,
+                    k=self.top_k,
+                    dim=1,
+                    sorted=self.topk_sorted,
+                )
+                top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
         if self.score_func == "topk_softmax":
             top_scores = F.softmax(top_scores, dim=-1, dtype=top_scores.dtype)
@@ -270,27 +295,55 @@ class TokenChoiceTopKRouter(nn.Module):
 
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, scores
 
+    @property
+    def variable_k(self) -> bool:
+        """Whether tokens can use different numbers of routed experts."""
+        return self.num_null_experts > 0 or self.batch_topk_max_k > 0
+
+    @property
+    def dispatch_top_k(self) -> int:
+        """Routes per dispatched row: variable-k routing dispatches one (token, expert) pair per row."""
+        return 1 if self.variable_k else self.top_k
+
+    def batch_select(self, candidate_scores: torch.Tensor) -> torch.Tensor:
+        """Which of the ``(rows * slen, batch_topk_max_k)`` candidates win their position's batch top-k. Every rank
+        of ``batch_group`` gathers all candidates and computes the same winners."""
+        rows, max_k = self.batch_rows, self.batch_topk_max_k
+        candidates = candidate_scores.view(rows, -1, max_k)
+        rank = 0
+        if self.batch_group is not None:
+            rank = dist.get_rank(self.batch_group)
+            gathered = candidates.new_empty(dist.get_world_size(self.batch_group) * rows, *candidates.shape[1:])
+            dist.all_gather_into_tensor(gathered, candidates.contiguous(), group=self.batch_group)
+            candidates = gathered
+        per_position = candidates.transpose(0, 1).reshape(candidates.shape[1], -1)
+        winners = per_position.topk(self.top_k * candidates.shape[0], dim=1, sorted=False).indices
+        selected = torch.zeros_like(per_position, dtype=torch.bool).scatter_(1, winners, True)
+        selected = selected.view(per_position.shape[0], -1, max_k)[:, rank * rows : (rank + 1) * rows]
+        return selected.transpose(0, 1).reshape(-1, max_k)
+
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
         if self.gate.bias is not None:
             nn.init.zeros_(self.gate.bias)
 
 
-def sequence_balance(scores: torch.Tensor, selected_experts: torch.Tensor, num_rows: int) -> torch.Tensor:
+def sequence_balance(scores: torch.Tensor, selected_experts: torch.Tensor, num_rows: int, top_k: int) -> torch.Tensor:
     """DeepSeek-V3's sequence-wise balance loss without its coefficient, per row: ``sum_i f_i P_i`` with
     ``f_i`` the row's share of expert ``i``'s selections times ``num_experts / top_k`` (1 when balanced) and
     ``P_i`` its mean score normalized over all experts. 1 for a balanced row, up to ``num_experts / top_k``.
 
     Args:
         scores: ``(num_rows * slen, num_experts)`` scores of all experts.
-        selected_experts: ``(num_rows * slen, top_k)`` selected experts.
+        selected_experts: ``(num_rows * slen, slots)`` selected experts, -1 for an unused slot.
+        top_k: Mean selections per token.
     """
     num_experts = scores.shape[1]
     selections = selected_experts.view(num_rows, -1)
-    counts = torch.zeros(num_rows, num_experts, device=scores.device).scatter_add_(
-        1, selections, torch.ones_like(selections, dtype=torch.float32)
-    )
-    f = counts * (num_experts / selections.shape[1])
+    counts = torch.zeros(num_rows, num_experts + 1, device=scores.device).scatter_add_(
+        1, selections.remainder(num_experts + 1), torch.ones_like(selections, dtype=torch.float32)
+    )[:, :num_experts]
+    f = counts * (num_experts / (scores.shape[0] // num_rows * top_k))
     p = (scores / scores.sum(dim=-1, keepdim=True)).view(num_rows, -1, num_experts).mean(dim=1)
     return (f * p).sum(dim=-1)
 
@@ -322,6 +375,8 @@ class MoE(nn.Module):
             route_norm=args.route_norm,
             route_scale=args.route_scale,
             selection_bias=args.load_balance_coeff is not None,
+            num_null_experts=args.num_null_experts,
+            batch_topk_max_k=args.batch_topk_max_k,
         )
         return cls(
             router=router,
@@ -348,7 +403,7 @@ class MoE(nn.Module):
 
         self.token_dispatcher: TokenDispatcher = LocalTokenDispatcher(
             num_experts=experts.num_experts,
-            top_k=router.top_k,
+            top_k=router.dispatch_top_k,
             token_group_alignment=experts.token_group_alignment,
         )
         # define fields for auxiliary-loss-free load balancing (https://arxiv.org/abs/2408.15664)
@@ -361,7 +416,15 @@ class MoE(nn.Module):
         # tokens_per_expert tracks expert usage for selection-bias updates and metrics.
         self.register_buffer(
             "tokens_per_expert",
-            torch.zeros(experts.num_experts, dtype=torch.float32),
+            torch.zeros(router.num_experts, dtype=torch.float32),
+            persistent=False,
+        )
+        # Training tokens per number of routed experts used, for variable-k routing.
+        self.register_buffer(
+            "routed_k_counts",
+            torch.zeros((router.batch_topk_max_k or router.top_k) + 1, dtype=torch.float32)
+            if router.variable_k
+            else None,
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
@@ -412,7 +475,7 @@ class MoE(nn.Module):
         ) = self.router(x, routed_experts=routed_experts)
 
         if self.balance_rows is not None and torch.is_grad_enabled():
-            self.seq_balance = sequence_balance(scores, selected_experts_indices, self.balance_rows)
+            self.seq_balance = sequence_balance(scores, selected_experts_indices, self.balance_rows, self.router.top_k)
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():
@@ -423,13 +486,33 @@ class MoE(nn.Module):
                 routing_confidence_sum,
             )
 
-        routed_output = self.token_dispatcher.run(
-            self.prepare_expert_input(x),
-            top_scores,
-            selected_experts_indices,
-            self.experts,
-            score_before_experts=self.score_before_experts,
-        )
+        if self.router.variable_k:
+            # Dispatch only the (token, routed expert) pairs: no unselected slots or null experts.
+            routed = (selected_experts_indices >= 0) & (selected_experts_indices < self.experts.num_experts)
+            if torch.is_grad_enabled():
+                with torch.no_grad():
+                    self.routed_k_counts += torch.bincount(routed.sum(dim=1), minlength=self.routed_k_counts.numel())
+            token_indices, slots = routed.nonzero(as_tuple=True)
+            pair_output = self.token_dispatcher.run(
+                self.prepare_expert_input(x)[token_indices],
+                top_scores[token_indices, slots].unsqueeze(1),
+                selected_experts_indices[token_indices, slots].unsqueeze(1),
+                self.experts,
+                score_before_experts=self.score_before_experts,
+            )
+            routed_output = (
+                torch.zeros(x.shape, dtype=torch.float32, device=x.device)
+                .index_add(0, token_indices, pair_output.float())
+                .to(x.dtype)
+            )
+        else:
+            routed_output = self.token_dispatcher.run(
+                self.prepare_expert_input(x),
+                top_scores,
+                selected_experts_indices,
+                self.experts,
+                score_before_experts=self.score_before_experts,
+            )
 
         shared_output = None
         if self.shared_expert is not None:
@@ -455,7 +538,9 @@ class MoE(nn.Module):
             self.shared_expert.init_weights(init_std)
 
         with torch.device(buffer_device):
-            self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+            self.tokens_per_expert = torch.zeros(self.router.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
+            if self.routed_k_counts is not None:
+                self.routed_k_counts = torch.zeros_like(self.routed_k_counts, device=buffer_device)
             if self.router.selection_bias is not None:
-                self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
+                self.router.selection_bias = torch.zeros(self.router.num_experts, dtype=torch.float32)

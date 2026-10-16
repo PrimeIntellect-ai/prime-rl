@@ -104,6 +104,12 @@ class Glm4MoeConfig(PretrainedConfig):
             Whether to normalize the topk probabilities.
         use_qk_norm (`bool`, *optional*, defaults to `False`):
             Whether to use query-key normalization in the attention
+        n_null_experts (`int`, *optional*, defaults to 0):
+            Zero-output experts the router can select next to the routed experts (AdaMoE); a token that selects
+            them uses fewer routed experts.
+        batch_topk_max_k (`int`, *optional*, defaults to 0):
+            Above 0, position-wise batch top-k routing: at every position, the batch's sequences together select
+            their `num_experts_per_tok` x rows highest-scoring (token, expert) pairs, each token at most this many.
     ```python
     >>> from transformers import Glm4MoeModel, Glm4MoeConfig
     >>> # Initializing a Glm4Moe style configuration
@@ -165,6 +171,8 @@ class Glm4MoeConfig(PretrainedConfig):
         first_k_dense_replace=1,
         norm_topk_prob=True,
         use_qk_norm=False,
+        n_null_experts=0,
+        batch_topk_max_k=0,
         pad_token_id=None,
         **kwargs,
     ):
@@ -197,6 +205,8 @@ class Glm4MoeConfig(PretrainedConfig):
         self.first_k_dense_replace = first_k_dense_replace
         self.norm_topk_prob = norm_topk_prob
         self.use_qk_norm = use_qk_norm
+        self.n_null_experts = n_null_experts
+        self.batch_topk_max_k = batch_topk_max_k
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
