@@ -1,14 +1,23 @@
+import os
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from datasets import Dataset
 from pydantic import ValidationError
 from torch import nn
+from torch.distributed.tensor import DTensor
+from transformers import PretrainedConfig
 
+import prime_rl.trainer.parallel_dims as parallel_dims_module
 from prime_rl.configs.sft import LossMaskConfig, SFTColumnsConfig, SFTConfig, SFTDataConfig, SFTObjectiveConfig
-from prime_rl.trainer.model import forward
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import forward, setup_fsdp
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.trainer.parallel_dims import get_parallel_dims
 from prime_rl.trainer.sft.data import CatDataset, SFTDataset, SFTObjectiveDataset, cat_collate, setup_dataset
 from prime_rl.trainer.sft.objective import (
     ObjectiveInputs,
@@ -16,6 +25,7 @@ from prime_rl.trainer.sft.objective import (
     SampleInputs,
     SFTObjective,
     load_objective,
+    objective_loss,
 )
 
 
@@ -252,3 +262,110 @@ def test_objective_config_rejects_unsupported_setups():
         SFTConfig(objective=objective, data={"type": "fake"})
     with pytest.raises(ValidationError, match="not supported with context parallelism"):
         SFTConfig(objective=objective, model={"cp": 2})
+
+
+class HeadsConfig(PretrainedConfig):
+    model_type = "objective_heads_test"
+
+
+class Block(nn.Module):
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.mix = nn.Linear(hidden, hidden)
+
+    def forward(self, x):
+        return x + torch.tanh(self.mix(x))
+
+
+class Backbone(nn.Module):
+    def __init__(self, vocab: int, hidden: int):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(vocab, hidden)
+        self.layers = nn.ModuleList([Block(hidden), Block(hidden)])
+        self.norm = nn.LayerNorm(hidden)
+
+    def forward(self, input_ids, position_ids, *, seq_lens, seq_lens_are_pre_shard=False):
+        x = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            x = layer(x)
+        return SimpleNamespace(last_hidden_state=self.norm(x))
+
+
+class HeadsModel(PreTrainedModelPrimeRL):
+    """A causal LM with its LM head tied to the embeddings and a head of its own: under prime-rl's FSDP setup both
+    belong to the root unit, which is resharded when the forward pass ends."""
+
+    config_class = HeadsConfig
+
+    def __init__(self, config, vocab: int = 32, hidden: int = 8):
+        super().__init__(config)
+        self.model = Backbone(vocab, hidden)
+        self.lm_head = nn.Linear(hidden, vocab, bias=False)
+        self.lm_head.weight = self.model.embed_tokens.weight
+        self.score_head = nn.Linear(hidden, 1)
+
+    def init_buffers_post_meta(self):
+        pass
+
+
+class HeadsObjective:
+    """Uses both heads after the forward pass: token cross-entropy through the tied LM head plus a score head."""
+
+    def make_sample(self, inputs: SampleInputs):
+        raise NotImplementedError
+
+    def loss(self, inputs: ObjectiveInputs) -> ObjectiveOutputs:
+        batch, head = inputs.batch, inputs.model.score_head
+        ce = inputs.model.lm_head(inputs.hidden_states, batch["target_ids"].masked_fill(~batch["loss_mask"], -100))
+        scores = head(inputs.hidden_states[batch["loss_mask"]].to(head.weight.dtype)).float()
+        return ObjectiveOutputs(loss=ce["loss"] + scores.square().sum(), count=batch["loss_mask"].sum())
+
+
+def heads_model() -> HeadsModel:
+    torch.manual_seed(0)
+    model = HeadsModel(HeadsConfig(tie_word_embeddings=True))
+    inject_prime_lm_head(model)
+    return model
+
+
+def heads_batch(rank: int) -> dict:
+    generator = torch.Generator().manual_seed(rank)
+    input_ids = torch.randint(0, 32, (1, 10), generator=generator)
+    return {
+        "input_ids": input_ids,
+        "position_ids": torch.tensor([[*range(6), *range(4)]]),
+        "seq_lens": torch.tensor([6, 4]),
+        "target_ids": torch.roll(input_ids, -1, dims=1),
+        "loss_mask": torch.tensor([[False, True, True, False, True, True, False, True, True, True]]),
+    }
+
+
+def fsdp_worker(rank: int, world: int, init_file: str, out_dir: str) -> None:
+    os.environ.update(RANK=str(rank), WORLD_SIZE=str(world), LOCAL_RANK=str(rank), LOCAL_WORLD_SIZE=str(world))
+    dist.init_process_group("gloo", init_method=f"file://{init_file}", rank=rank, world_size=world)
+    parallel_dims_module.device_type = "cpu"  # the mesh is built on CUDA by default
+    config = ModelConfig(name="heads", ep=1, compile=None)
+    model = heads_model()
+    setup_fsdp(model, config, get_parallel_dims(config))  # prime-rl's real FSDP setup
+
+    objective_loss(HeadsObjective(), model, heads_batch(rank)).loss.backward()
+    grads = {name: p.grad.full_tensor() for name, p in model.named_parameters()}
+    with torch.no_grad():  # as in validation
+        objective_loss(HeadsObjective(), model, heads_batch(rank))
+    resharded = all(isinstance(p, DTensor) for p in model.parameters())
+    torch.save({"grads": grads, "resharded": resharded}, os.path.join(out_dir, f"{rank}.pt"))
+    dist.destroy_process_group()
+
+
+def test_objective_loss_under_fsdp_uses_heads_of_the_root_unit(tmp_path):
+    world = 2
+    mp.spawn(fsdp_worker, args=(world, str(tmp_path / "rendezvous"), str(tmp_path)), nprocs=world, join=True)
+
+    # The same micro-batches on one process without FSDP; FSDP averages the gradients over ranks.
+    model = heads_model()
+    sum(objective_loss(HeadsObjective(), model, heads_batch(rank)).loss for rank in range(world)).div(world).backward()
+    for rank in range(world):
+        result = torch.load(tmp_path / f"{rank}.pt")
+        assert result["resharded"]  # a loss without a backward leaves the parameters sharded again
+        for name, param in model.named_parameters():
+            torch.testing.assert_close(result["grads"][name], param.grad, rtol=0.05, atol=0.02)  # bf16 compute

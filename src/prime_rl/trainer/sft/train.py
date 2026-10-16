@@ -45,7 +45,7 @@ from prime_rl.trainer.sft.data import (
     setup_dataloader,
     setup_dataset,
 )
-from prime_rl.trainer.sft.objective import ObjectiveInputs, load_objective
+from prime_rl.trainer.sft.objective import load_objective, objective_loss
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -296,10 +296,7 @@ def train(config: SFTConfig):
                 "seq_lens": seq_lens,
             }
             with maybe_activation_offloading(config.model.ac_offloading):
-                hidden_states = forward(model, input_ids, position_ids, seq_lens=seq_lens, return_hidden_states=True)[
-                    "hidden_states"
-                ]
-                outputs = objective.loss(ObjectiveInputs(model=model, hidden_states=hidden_states, batch=batch))
+                outputs = objective_loss(objective, model, batch)
             if metrics is not None:
                 for name, value in outputs.metrics.items():
                     metrics[name] = metrics.get(name, 0.0) + value.detach().float().to("cuda")
