@@ -157,7 +157,7 @@ class FileSystemWeightUpdateWorker(Worker):
         held_step, self.weight_step = self.weight_step, -1
         if not (step_dir / DELTA_DIR / MANIFEST).exists():
             self._load_checkpoint(step_dir)
-            if (step_dir / DELTA_DIR).is_dir():
+            if anchor_complete(step_dir):
                 # A sparse run's full checkpoint
                 self._write_engine_layout(step_dir, step_dir)
         else:

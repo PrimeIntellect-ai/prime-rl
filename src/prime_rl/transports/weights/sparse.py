@@ -533,7 +533,6 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
 
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         if self.world.is_master:
-            # Engines that load a step with a delta dir report their weight layout next to it.
             (step_dir / DELTA_DIR).mkdir(exist_ok=True)
         assert self.encoder is not None
         first = self.last_step is None
