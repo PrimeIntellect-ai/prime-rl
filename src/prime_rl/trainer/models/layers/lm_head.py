@@ -64,7 +64,11 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if temperature is None:
             assert sampling_mask is None, "sampling-mask replay requires per-token temperatures"
-            loss = _ChunkedCrossEntropySumFn.apply(hidden_states, self.weight, labels, self.chunk_size)
+            # Only supervised rows reach the vocab GEMMs; ignored rows (prompt, image tokens) get zero grad.
+            supervised = labels != IGNORE_INDEX
+            loss = _ChunkedCrossEntropySumFn.apply(
+                hidden_states[supervised], self.weight, labels[supervised], self.chunk_size
+            )
             return PrimeLmOutput(loss=loss)
 
         inv_t = 1.0 / temperature.reshape(b * s).contiguous()  # [N]
@@ -94,9 +98,10 @@ class VanillaOutputLinear(torch.nn.Linear):
         temperature: Tensor | None = None,
         sampling_mask: Tensor | None = None,
     ) -> PrimeLmOutput:
-        logits = super().forward(hidden_states)
         if labels is not None and temperature is None:
-            return PrimeLmOutput(loss=cross_entropy_sum(logits, labels))
+            supervised = labels != IGNORE_INDEX
+            return PrimeLmOutput(loss=cross_entropy_sum(super().forward(hidden_states[supervised]), labels[supervised]))
+        logits = super().forward(hidden_states)
         # train.py applies temperature scaling and sampling-mask replay to the logits.
         return PrimeLmOutput(logits=logits)
 

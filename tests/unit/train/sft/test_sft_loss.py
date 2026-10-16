@@ -22,19 +22,20 @@ def _reference_and_grads(hidden, weight, target_ids, loss_mask):
     return loss.detach(), hidden.grad, weight.grad
 
 
-def _inputs():
+def _inputs(supervised_fraction: float = 0.7):
     torch.manual_seed(0)
     hidden = torch.randn(B, S, H)
     weight = torch.randn(V, H)
     target_ids = torch.randint(0, V, (B, S))
-    loss_mask = torch.rand(B, S) > 0.3
+    loss_mask = torch.rand(B, S) < supervised_fraction
     return hidden, weight, target_ids, loss_mask
 
 
 @pytest.mark.parametrize("head", list(HEADS))
 @pytest.mark.parametrize("chunk_size", [1, 5, 64])
-def test_lm_head_labels_without_temperature_returns_summed_cross_entropy(head, chunk_size):
-    hidden, weight, target_ids, loss_mask = _inputs()
+@pytest.mark.parametrize("supervised_fraction", [0.7, 0.1, 0.0])
+def test_lm_head_labels_without_temperature_returns_summed_cross_entropy(head, chunk_size, supervised_fraction):
+    hidden, weight, target_ids, loss_mask = _inputs(supervised_fraction)
     reference, ref_hidden_grad, ref_weight_grad = _reference_and_grads(hidden, weight, target_ids, loss_mask)
 
     lm_head = HEADS[head](chunk_size)
