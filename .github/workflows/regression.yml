@@ -2,7 +2,9 @@ name: Regression
 
 # Nightly regression suites, one job group per suite. Each suite compares
 # tonight's run against a committed baseline and fails on a regression.
-#   eval: configs/ci/regression/eval/*.toml against Prime Inference
+# Suites live in tests/regression/: configs/<suite>/ to run, baselines/<suite>/
+# to compare against, and reports/<suite>/ with the error bars of each baseline.
+#   eval: `uv run eval` against Prime Inference
 
 on:
     workflow_dispatch:
@@ -16,6 +18,10 @@ on:
                 description: "eval: independent runs. Use 5 to produce a new baseline."
                 required: false
                 default: "1"
+            eval_set_baseline:
+                description: "eval: open a PR that makes these runs the new baseline (needs 2+ runs)"
+                type: boolean
+                default: false
             eval_model:
                 description: "eval: model id on Prime Inference (empty: the config's model)"
                 required: false
@@ -23,8 +29,7 @@ on:
     pull_request:
         paths:
             - .github/workflows/regression.yml
-            - configs/ci/regression/**
-            - scripts/eval_regression.py
+            - tests/regression/**
     # 4AM PST (12PM UTC)
     schedule:
         - cron: "0 12 * * *"
@@ -38,7 +43,7 @@ concurrency:
 
 env:
     EVAL_REPEATS: ${{ inputs.eval_repeats || '1' }}
-    EVAL_CONFIG: configs/ci/regression/eval/gsm8k.toml
+    EVAL_NAME: gsm8k
 
 jobs:
     eval-plan:
@@ -85,9 +90,9 @@ jobs:
                   MODEL: ${{ inputs.eval_model }}
               run: |
                   start=$(date +%s)
-                  uv run eval @ "$EVAL_CONFIG" ${MODEL:+-m "$MODEL"} \
+                  uv run eval @ "tests/regression/configs/eval/$EVAL_NAME.toml" ${MODEL:+-m "$MODEL"} \
                       --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
-                  python3 scripts/eval_regression.py collect "outputs/repeat-${{ matrix.repeat }}" \
+                  python3 tests/regression/eval_regression.py collect "outputs/repeat-${{ matrix.repeat }}" \
                       --repeat ${{ matrix.repeat }} --wall-s "$(( $(date +%s) - start ))" --out result.json
             - name: Upload result
               if: always()
@@ -105,17 +110,16 @@ jobs:
     eval-summary:
         name: "eval: summary"
         needs: eval
-        if: ${{ always() && needs.eval.result != 'skipped' }}
+        if: ${{ !cancelled() && needs.eval.result != 'skipped' }}
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
+            pull-requests: write
         steps:
             - name: Checkout repository
               uses: actions/checkout@v7
               with:
                   submodules: false
-                  sparse-checkout: |
-                      scripts/eval_regression.py
-                      configs/ci/regression/eval
-                  sparse-checkout-cone-mode: false
             - name: Download results
               uses: actions/download-artifact@v8
               with:
@@ -125,16 +129,32 @@ jobs:
               run: |
                   # A single downloaded artifact lands in artifacts/ itself, several land in subdirectories.
                   status=0
-                  python3 scripts/eval_regression.py summarize $(find artifacts -name result.json 2>/dev/null) \
-                      --expected "$EVAL_REPEATS" \
-                      --baseline "${EVAL_CONFIG%.toml}.baseline.json" --write-baseline baseline.json \
+                  python3 tests/regression/eval_regression.py summarize $(find artifacts -name result.json) \
+                      --expected "$EVAL_REPEATS" --baseline "tests/regression/baselines/eval/$EVAL_NAME.json" \
                       > summary.md || status=$?
                   tee -a "$GITHUB_STEP_SUMMARY" < summary.md
                   exit $status
-            - name: Upload new baseline
-              if: always() && hashFiles('baseline.json') != ''
-              uses: actions/upload-artifact@v7
-              with:
-                  name: eval-baseline
-                  path: baseline.json
-                  retention-days: 90
+            - name: Open baseline PR
+              if: ${{ !cancelled() && inputs.eval_set_baseline }}
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  branch="regression/eval-baseline-${{ github.run_id }}"
+                  python3 tests/regression/eval_regression.py baseline $(find artifacts -name result.json) \
+                      --out "tests/regression/baselines/eval/$EVAL_NAME.json" \
+                      --report "tests/regression/reports/eval/$EVAL_NAME.md"
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git checkout -b "$branch"
+                  git add tests/regression/baselines/eval tests/regression/reports/eval
+                  git commit -m "Refresh $EVAL_NAME eval regression baseline"
+                  git push origin "$branch"
+                  {
+                      echo "## Summary"
+                      echo
+                      echo "- Refresh the \`$EVAL_NAME\` eval regression baseline from [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+                      echo
+                      cat summary.md
+                  } > body.md
+                  gh pr create --base main --head "$branch" --body-file body.md \
+                      --title "chore: refresh $EVAL_NAME eval regression baseline"

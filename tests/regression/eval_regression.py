@@ -1,10 +1,12 @@
 """Collect, summarize and gate runs of the eval suite in the regression workflow.
 
-    python scripts/eval_regression.py collect <run_dir> --repeat 1 --wall-s 312 --out result.json
-    python scripts/eval_regression.py summarize results/*.json --baseline <config>.baseline.json
+    python tests/regression/eval_regression.py collect <run_dir> --repeat 1 --wall-s 312 --out result.json
+    python tests/regression/eval_regression.py summarize results/*.json --baseline baselines/eval/gsm8k.json
+    python tests/regression/eval_regression.py baseline results/*.json \
+        --out baselines/eval/gsm8k.json --report reports/eval/gsm8k.md
 
 `summarize` compares the results against the baseline and exits 1 on a regression.
-`--write-baseline` turns two or more results into a new baseline file to commit.
+`baseline` turns two or more results into a new baseline and its report.
 
 Stdlib only, so the summary job needs no `uv sync`.
 """
@@ -237,6 +239,28 @@ def make_baseline(results: list[dict]) -> dict:
     }
 
 
+def report(baseline: dict) -> str:
+    """Render the error bars of a baseline as Markdown."""
+    results = baseline["results"]
+    first = results[0]
+    lines = [
+        f"# Eval baseline: {first['env']}",
+        "",
+        f"`{first['model']}` · {first['tasks']} tasks × {first['episodes'] // first['tasks']} rollouts"
+        f" · {len(results)} repeats from [{baseline['date']}]({baseline['source']})"
+        + (f" at `{baseline['commit'][:9]}`" if baseline.get("commit") else ""),
+        "",
+        "Mean ± 95% CI of the mean (Student-t).",
+        "",
+        *spread(results),
+        "",
+        "## Per repeat",
+        "",
+        *per_repeat(results),
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -251,9 +275,11 @@ def main() -> None:
     p_summarize.add_argument("results", type=Path, nargs="*")
     p_summarize.add_argument("--expected", type=int, default=None, help="Number of repeats launched.")
     p_summarize.add_argument("--baseline", type=Path, default=None, help="Baseline file to compare against.")
-    p_summarize.add_argument(
-        "--write-baseline", type=Path, default=None, help="Write a new baseline (needs 2+ results)."
-    )
+
+    p_baseline = sub.add_parser("baseline", help="Turn 2+ result JSONs into a baseline and its report.")
+    p_baseline.add_argument("results", type=Path, nargs="+")
+    p_baseline.add_argument("--out", type=Path, required=True, help="Baseline JSON to write.")
+    p_baseline.add_argument("--report", type=Path, required=True, help="Markdown report to write.")
 
     args = parser.parse_args()
     if args.cmd == "collect":
@@ -263,11 +289,17 @@ def main() -> None:
         return
 
     results = [json.loads(path.read_text()) for path in args.results]
+    if args.cmd == "baseline":
+        if len(results) < 2:
+            raise SystemExit(f"a baseline needs 2+ results to measure the spread, got {len(results)}")
+        baseline = make_baseline(results)
+        args.out.write_text(json.dumps(baseline, indent=2) + "\n")
+        args.report.write_text(report(baseline))
+        return
+
     baseline = json.loads(args.baseline.read_text()) if args.baseline and args.baseline.exists() else None
     markdown, regressed = summarize(results, args.expected, baseline)
     sys.stdout.write(markdown)
-    if args.write_baseline and len(results) > 1:
-        args.write_baseline.write_text(json.dumps(make_baseline(results), indent=2) + "\n")
     sys.exit(1 if regressed else 0)
 
 
