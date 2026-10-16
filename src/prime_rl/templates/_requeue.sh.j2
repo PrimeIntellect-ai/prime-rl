@@ -1,0 +1,155 @@
+# Requeue on failure, shared by the SLURM templates. A requeued job keeps its job ID,
+# appends to the same job log, writes component logs into a restart_<n> subdirectory
+# of the attempt, and (RL/SFT) resumes from the latest complete checkpoint.
+export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
+RESUME_ARGS=""
+if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ]; then
+    export PRL_ATTEMPT_LOG_DIR={{ log_dir }}/restart_${SLURM_RESTART_COUNT}
+    RESUME_ARGS="--resume.step None --resume.dir None"
+    echo "Restart ${SLURM_RESTART_COUNT} of job ${SLURM_JOB_ID}"
+fi
+export RESUME_ARGS
+JOB_START=$(date +%s)
+{%- set watchdog = trainer_step_path is defined and step_timeout %}
+{%- if max_requeues %}
+mkdir -p {{ launcher_dir }}
+
+job_state() {
+    scontrol show job "$SLURM_JOB_ID" | grep -oP 'JobState=\K\S+' || true
+}
+
+# Requeue the job (kind "failure" or "signal") and exclude the nodes given after the kind.
+# Failures count against max_requeues; the count resets when a newer complete checkpoint
+# exists. A job that is already ending (scancel, time limit) is not requeued.
+requeue() {
+    local kind=$1 latest="" last="" count=0 excluded
+    shift
+    if [ "$(job_state)" != RUNNING ]; then
+        return
+    fi
+    if [ "$kind" = failure ]; then
+{%- if ckpt_dir %}
+        latest=$(ls -d {{ ckpt_dir }}/step_*/trainer/.metadata 2>/dev/null | sort -V | tail -n 1)
+{%- endif %}
+        latest=${latest:-none}
+        [ ! -f {{ launcher_dir }}/requeue_$SLURM_JOB_ID ] || read -r last count < {{ launcher_dir }}/requeue_$SLURM_JOB_ID
+        [ "$latest" = "$last" ] || count=0
+        if [ "$count" -ge {{ max_requeues }} ]; then
+            echo "Not requeueing: {{ max_requeues }} requeues in a row without a new complete checkpoint"
+            return
+        fi
+        echo "$latest $((count + 1))" > {{ launcher_dir }}/requeue_$SLURM_JOB_ID
+        echo "Requeueing ($((count + 1)) of {{ max_requeues }} without a new complete checkpoint)"
+    fi
+    REQUEUEING=1
+    scontrol requeue "$SLURM_JOB_ID"
+    # Slurm only changes the excluded nodes of a job that is no longer running.
+    if [ $# -gt 0 ]; then
+        excluded=$(scontrol show job "$SLURM_JOB_ID" | grep -oP 'ExcNodeList=\K\S+' | grep -v null || true)
+        excluded=$(IFS=,; echo "${excluded:+$excluded,}$*")
+        scontrol update JobId="$SLURM_JOB_ID" ExcNodeList="$excluded" && echo "Excluded nodes: $excluded"
+    fi
+}
+
+# A SIGTERM to the batch script of a running job (scancel --signal=TERM --batch, or
+# --signal=B:TERM before the time limit) requeues it without counting as a failure,
+# after an in-flight trainer checkpoint (the newest one, while it has no DCP .metadata yet)
+# finishes, up to 30 s less than the signal's lead time.
+on_term() {
+    [ -z "${REQUEUEING:-}" ] || return 0
+    [ "$(job_state)" = RUNNING ] || exit 143
+    echo "Got SIGTERM - requeueing"
+{%- if ckpt_dir %}
+    local deadline=$(($(date +%s) + {{ requeue_signal_grace - 30 }})) latest
+    while latest=$(ls -d {{ ckpt_dir }}/step_*/trainer 2>/dev/null | sort -V | tail -n 1) \
+        && [ -n "$latest" ] && [ ! -f "$latest/.metadata" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+        sleep 5
+    done
+{%- endif %}
+    requeue signal
+    exit 143
+}
+trap on_term TERM
+{%- endif %}
+{%- if smoke_test %}
+
+# Run a short all-reduce over the GPUs of every node; the nodes that fail or do not
+# answer within the timeout go to BAD_NODES.
+smoke_test() {
+    local passed
+    # Each passing node prints a marked line with its name, so no node writes to a shared
+    # file; srun may merge the tasks' stderr into its stdout, hence the marker
+    passed=$(timeout 300 srun --ntasks-per-node=1 bash -s <<'SMOKE_TEST_SH' | sed -n 's/^smoke-test-passed //p' || true
+log=/tmp/prl-smoke-test-$SLURM_JOB_ID.log
+if timeout 120 torchrun --standalone --nproc-per-node="$SLURM_GPUS_ON_NODE" -m prime_rl.utils.smoke_test > "$log" 2>&1; then
+    echo "smoke-test-passed $SLURMD_NODENAME"
+else
+    echo "[smoke test] failed on $SLURMD_NODENAME:" >&2
+    tail -n 20 "$log" >&2
+fi
+SMOKE_TEST_SH
+)
+    BAD_NODES=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | grep -vxFf <(echo "$passed") | paste -sd' ' || true)
+    [ -z "$BAD_NODES" ]
+}
+{%- endif %}
+{%- if watchdog %}
+
+# Kill the job's main command when the trainer makes no progress: the trainer master
+# writes "step <n>" to trainer_step_path after every step and "done <n>" once it has
+# finished (after the final checkpoint). The limit applies from the first step of this job
+# until "done", so startup and the final evals that drain after the trainer are not bounded.
+watch_trainer() {
+    local pid=$1 mtime phase
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 30
+        mtime=$(stat -c %Y "{{ trainer_step_path }}" 2>/dev/null || echo 0)
+        [ "$mtime" -ge "$JOB_START" ] || continue
+        phase=$(cat "{{ trainer_step_path }}" 2>/dev/null || true)
+        case "$phase" in done*) return ;; esac
+        if [ $(($(date +%s) - mtime)) -ge {{ step_timeout }} ]; then
+            echo "[watchdog] no trainer step for $(($(date +%s) - mtime))s (last: $phase, limit: {{ step_timeout }}s) - killing the job"
+            kill -TERM "$pid" 2>/dev/null
+            sleep 60
+            kill -KILL "$pid" 2>/dev/null
+            return
+        fi
+    done
+}
+{%- endif %}
+
+# Run the job's main command; requeue the job if it fails.
+launch() {
+    local pid code=0
+{%- if smoke_test %}
+    if ! smoke_test; then
+        echo "Smoke test failed on: $BAD_NODES"
+{%- if max_requeues %}
+        requeue failure $BAD_NODES
+{%- endif %}
+        return 1
+    fi
+{%- endif %}
+    "$@" <&0 &
+    pid=$!
+{%- if watchdog %}
+    watch_trainer "$pid" &
+    local watchdog_pid=$!
+{%- endif %}
+    wait "$pid" || code=$?
+{%- if watchdog %}
+    kill "$watchdog_pid" 2>/dev/null || true
+{%- endif %}
+{%- if max_requeues %}
+    if [ "$code" -ne 0 ]; then
+        echo "Job failed with exit code $code"
+{%- if smoke_test %}
+        # Leftovers of the failed run must not fail the smoke test of a healthy node
+        ! declare -F node_cleanup > /dev/null || node_cleanup
+        smoke_test || echo "Smoke test failed on: $BAD_NODES"
+{%- endif %}
+        requeue failure $BAD_NODES
+    fi
+{%- endif %}
+    return "$code"
+}

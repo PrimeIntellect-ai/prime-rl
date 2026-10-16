@@ -79,6 +79,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
         config_dir=config_path.parent,
         log_dir=log_dir,
         output_dir=config.output_dir,
+        launcher_dir=get_launcher_dir(config.output_dir),
         launcher_log_dir=get_launcher_log_dir(config.output_dir),
         gpus_per_node=config.deployment.gpus_per_node,
         dp_per_node=dp_per_node,

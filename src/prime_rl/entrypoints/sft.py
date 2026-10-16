@@ -22,6 +22,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    get_trainer_step_path,
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -171,6 +172,13 @@ def write_slurm_script(
         **config.env_vars,
     }
 
+    requeue_vars = {
+        "trainer_step_path": get_trainer_step_path(config.run_dir),
+        "ckpt_dir": get_ckpt_dir(get_ckpt_base(config)),
+        "ckpt_with_orchestrator": False,
+        "resume_latest": config.resume is not None and config.resume.dir is None and config.resume.step is None,
+    }
+
     if config.deployment.type == "single_node":
         script = template.render(
             **config.slurm.template_vars,
@@ -179,6 +187,7 @@ def write_slurm_script(
             log_dir=log_dir,
             output_dir=config.run_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             gpus_per_node=config.deployment.gpus_per_node,
         )
@@ -215,6 +224,7 @@ def write_slurm_script(
             log_dir=log_dir,
             output_dir=config.run_dir,
             launcher_dir=get_launcher_dir(config.run_dir),
+            **requeue_vars,
             launcher_log_dir=get_launcher_log_dir(config.run_dir),
             trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_train_nodes,

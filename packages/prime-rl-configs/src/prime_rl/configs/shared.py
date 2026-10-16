@@ -164,6 +164,15 @@ class SlurmConfig(BaseConfig):
     cleanup_grace_period: int = Field(3600, ge=0)
     """Maximum seconds a multi-node RL job that hit a non-zero exit waits for an in-flight trainer checkpoint to finish before tearing down. Without an in-flight checkpoint (or without ``[ckpt]``) it tears down immediately. Set to 0 to never wait."""
 
+    max_requeues: int = Field(0, ge=0)
+    """Requeue the job (same job ID) after it fails, at most this many times in a row without a new complete checkpoint: the count resets once a newer checkpoint is complete. A requeued RL or SFT job resumes from the latest complete checkpoint, overriding any ``resume.step`` / ``resume.dir`` of the first attempt. A SIGTERM sent only to the batch script of the running job also requeues it, without counting: ``scancel --signal=TERM --batch``, and, when ``time`` is set, the SIGTERM Slurm sends ``cleanup_grace_period`` seconds (60 to 600) before the time limit. 0 (default) disables requeueing."""
+
+    smoke_test: bool = False
+    """Before the job's main command and after it fails, run a short all-reduce over the GPUs of every node (2 min timeout). With ``max_requeues``, nodes that fail it are added to the job's excluded nodes and the job requeues."""
+
+    step_timeout: int | None = Field(None, ge=60)
+    """Kill the job if the trainer has not finished a step for this many seconds after its last step (RL and SFT only). It applies from the first step of the job until the trainer finishes, so set it above the step time plus the checkpoint save time. With ``max_requeues`` the job then requeues. None (default) disables this limit."""
+
     shared_fs: bool = True
     """Whether the project filesystem (including the venv) is shared across nodes (e.g. NFS). When True, a single ``uv sync`` on the batch node suffices. Set to False when the venv is node-local (e.g. ``UV_PROJECT_ENVIRONMENT`` on ``/tmp``) so ``uv sync`` runs on every node via srun."""
 
@@ -181,6 +190,10 @@ class SlurmConfig(BaseConfig):
             "pre_run_command": self.pre_run_command,
             "cleanup_grace_period": self.cleanup_grace_period,
             "shared_fs": self.shared_fs,
+            "max_requeues": self.max_requeues,
+            "requeue_signal_grace": max(60, min(self.cleanup_grace_period, 600)),
+            "smoke_test": self.smoke_test,
+            "step_timeout": self.step_timeout,
         }
 
     @model_validator(mode="after")
