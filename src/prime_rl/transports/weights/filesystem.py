@@ -22,7 +22,6 @@ from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.pathing import wait_for_path
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     FP8_BLOCK,
@@ -37,7 +36,9 @@ from prime_rl.utils.sparse_weights import (
     rank_part,
     rank_parts_marker,
     read_engine_layout,
+    revalidate,
     write_anchor_shards,
+    write_file,
     write_rank_file,
     zigzag,
 )
@@ -76,8 +77,9 @@ class SparseDeltaEncoder:
     from the engine layout) are quantized with vLLM's own per-block quantizer,
     previous and current weights alike, and diffed as fp8 bytes. Their 128-row
     blocks must not straddle trainer ranks, else the trainer tensor is gathered.
-    They are diffed on the training thread (``prepare``). A step that changes
-    any block scale is published as a full checkpoint.
+    The quantizer is compiled ahead of time, so it can run on the encode thread
+    (columns a multiple of 128). A step that changes any block scale is
+    published as a full checkpoint.
     """
 
     # Elements per transient chunk of the diff (bf16: 128 MiB per temporary)
@@ -97,7 +99,6 @@ class SparseDeltaEncoder:
 
         segments = defaultdict(list)
         self.hf_tensors: dict[str, tuple[list[int], str]] = {}
-        self.hf_numel: dict[str, int] = {}
         for name, tensor in convert_state_dict_to_hf(model, dict(meta)).items():
             base = tensor if tensor._base is None else tensor._base
             if id(base) not in owner or not tensor.is_contiguous():
@@ -106,25 +107,22 @@ class SparseDeltaEncoder:
                 raise NotImplementedError(f"Sparse weight broadcast indexes tensors below 2^32 elements ({name})")
             segments[owner[id(base)]].append((tensor.storage_offset(), name))
             self.hf_tensors[name] = (list(tensor.shape), str(tensor.dtype).removeprefix("torch."))
-            self.hf_numel[name] = tensor.numel()
         self.segments = {fqn: sorted(segs) for fqn, segs in segments.items()}
         self.numel = {fqn: tensor.numel() for fqn, tensor in meta.items()}
         # fqn -> (ue8m0 scales, columns) for trainer tensors held in fp8; quantized as one [rows, columns] matrix
         self.fp8: dict[str, tuple[bool, int]] = {}
         self.fp8_layout: dict[str, str] | None = None
-        self.fp8_background: set[str] = set()
         self.compiled_fp8 = None
         self.scales_changed = False
         self.gather: set[str] = set()
         self.segment_starts: dict[str, torch.Tensor] = {}
-        self.shard_segments: dict[str, tuple[list[str], list[int], list[int]]] = {}
+        self.shard_segments: dict[str, tuple[list[str], list[int], list[int], list[int]]] = {}
         self.snapshot_placement = snapshot
         # key -> (local numel, global flat offset) of this rank's shard
         self.shards: dict[str, tuple[int, int]] = {}
         # key -> previous wire bits: GPU tensors, or views into the host buffer
         self.snapshot: dict[str, torch.Tensor] = {}
         self.previous: dict[str, torch.Tensor] = {}
-        self.fp8_parts: list[tuple] = []
         self.on_gpu: bool | None = None  # None until placed (auto: at the first delta)
         self.host_buffer: torch.Tensor | None = None
         self.host: dict[str, torch.Tensor] = {}
@@ -148,6 +146,7 @@ class SparseDeltaEncoder:
             ]
             if (
                 len(modes) > 1
+                or num_cols % FP8_BLOCK[1]
                 or any(len(shape) != 2 or shape[1] != num_cols for shape in shapes)
                 or any(row % FP8_BLOCK[0] and row != num_rows for row in boundaries)
             ):
@@ -156,9 +155,7 @@ class SparseDeltaEncoder:
             for _, name in segs:
                 self.hf_tensors[name] = (self.hf_tensors[name][0], "float8_e4m3fn")
         self.gather = self._find_gathered(model, is_master)
-        # Diffed on the encode thread with the ahead-of-time compiled quantizer; others on the training thread
-        self.fp8_background = {fqn for fqn, (_, num_cols) in self.fp8.items() if num_cols % FP8_BLOCK[1] == 0}
-        if self.fp8_background:
+        if self.fp8:
             start = time.perf_counter()
             self.compiled_fp8 = compile_fp8_quantizer()
             get_logger().info(f"Compiled the fp8 quantizer ahead of time in {time.perf_counter() - start:.1f}s")
@@ -260,10 +257,7 @@ class SparseDeltaEncoder:
         num_bytes = sum(numel * self.wire_dtypes[key].itemsize for key, (numel, _) in self.shards.items())
         total = torch.cuda.get_device_properties(self.device).total_memory
         headroom = total - peak_reserved - num_bytes
-        if self.snapshot_placement == "auto":
-            self.on_gpu = headroom >= max(4 * 2**30, total // 20)
-        else:
-            self.on_gpu = self.snapshot_placement == "gpu"
+        self.on_gpu = self.snapshot_placement == "auto" and headroom >= max(4 * 2**30, total // 20)
         get_logger().info(
             f"Sparse weight snapshot ({num_bytes / 2**30:.1f} GiB) on the {'GPU' if self.on_gpu else 'host'} "
             f"(training peak {peak_reserved / 2**30:.1f} GiB of {total / 2**30:.1f} GiB, "
@@ -271,9 +265,9 @@ class SparseDeltaEncoder:
         )
 
     def _fill(self, shards: list[tuple]) -> None:
-        """The first broadcast only records the weights, in the host buffer, and on the GPU if forced there
-        (else placed at the first delta, against the measured training peak). The host buffer is filled in
-        every mode, so its pages are resident before training: faulting them in later stalls the trainer."""
+        """The first broadcast only records the weights, in the host buffer (placed at the first delta,
+        against the measured training peak). The host buffer is filled in every mode, so its pages are
+        resident before training: faulting them in later stalls the trainer."""
         self.shards = {key: (shard.numel(), offset) for key, _, shard, offset, _ in shards}
         self.staging = torch.empty(1 << 28, dtype=torch.uint8, pin_memory=True)
         self._allocate_host()
@@ -283,12 +277,7 @@ class SparseDeltaEncoder:
             for start in range(0, shard.numel(), self.CHUNK):
                 end = start + self.CHUNK
                 self.host[key][start:end].copy_(as_bits(shard[start:end].to(self.wire_dtypes[key])), non_blocking=True)
-        if self.snapshot_placement == "gpu":
-            self.on_gpu = True
-            for key, _, shard, _, _ in shards:
-                self.snapshot[key] = as_bits(shard.to(f"cuda:{self.device}", self.wire_dtypes[key], copy=True))
-        else:
-            self.snapshot = dict(self.host)
+        self.snapshot = dict(self.host)
 
     def copy_snapshot_to_host(self) -> None:
         """Copy a GPU snapshot (the last broadcast's weights) into the host buffer, for an anchor. Callers wait
@@ -305,33 +294,23 @@ class SparseDeltaEncoder:
         for key, bits in self.host.items():
             values, (numel, offset) = bits.view(self.wire_dtypes[key]), self.shards[key]
             for start, name in self.segments[self.key_fqn[key]]:
-                begin, end = max(start, offset), min(start + self.hf_numel[name], offset + numel)
+                begin, end = max(start, offset), min(start + prod(self.hf_tensors[name][0]), offset + numel)
                 if begin < end:
                     parts.append((name, self.hf_tensors[name][0], begin - start, values[begin - offset : end - offset]))
         return parts
 
     @torch.no_grad()
-    def prepare(self, shards: list[tuple], peak_reserved: int) -> None:
-        """The training thread's part of an encode, before ``encode``: place the snapshot at the first delta,
-        and diff the tensors held in fp8 that the ahead-of-time compiled quantizer does not cover (vLLM's
-        quantizer is torch.compile'd, and running it next to the training step breaks activation
-        checkpointing there). ``scales_changed``: whether an fp8 block scale changed on this rank, after
-        ``encode``."""
+    def prepare(self, peak_reserved: int) -> None:
+        """The training thread's part of an encode, before ``encode``: place the snapshot at the first delta."""
         self.previous = self.snapshot
-        self.fp8_parts = []
-        self.scales_changed = False
-        if not self.initialized:
+        if not self.initialized or self.on_gpu is not None:
             return
-        if self.on_gpu is None:
-            self._place(peak_reserved)
-            if self.on_gpu:
-                device = f"cuda:{self.device}"
-                self.snapshot = {key: torch.empty_like(bits, device=device) for key, bits in self.host.items()}
-            elif not self.pinned:
-                self._page_lock()
-        here = [shard for shard in shards if shard[1] in self.fp8 and shard[1] not in self.fp8_background]
-        if here:
-            self.scales_changed = self._diff(here, self.fp8_parts.append)
+        self._place(peak_reserved)
+        if self.on_gpu:
+            device = f"cuda:{self.device}"
+            self.snapshot = {key: torch.empty_like(bits, device=device) for key, bits in self.host.items()}
+        elif not self.pinned:
+            self._page_lock()
 
     @torch.no_grad()
     def encode(
@@ -340,7 +319,8 @@ class SparseDeltaEncoder:
         """Diff the shards against the snapshot and advance it, on the side stream once ``ready`` (recorded
         after the optimizer step) has passed; the first call only records the snapshot. Hands the delta to
         ``emit`` in parts ``(entries, gaps, value bytes, new-weight checksum per HF tensor part)`` on the
-        host as they are encoded. Sets ``weights_read`` once done reading the weights."""
+        host as they are encoded. Sets ``weights_read`` once done reading the weights. ``scales_changed``:
+        whether an fp8 block scale changed on this rank."""
         torch.cuda.set_device(self.device)
         try:
             with torch.cuda.stream(self.stream):
@@ -351,14 +331,10 @@ class SparseDeltaEncoder:
                     self.stream.synchronize()
                     self.initialized = True
                     return
-                for part in self.fp8_parts:
-                    emit(part)
-                rest = [shard for shard in shards if shard[1] not in self.fp8 or shard[1] in self.fp8_background]
-                self.scales_changed |= self._diff(rest, emit)
+                self.scales_changed = self._diff(shards, emit)
                 self.stream.synchronize()
         finally:
             weights_read.set()
-        self.previous = self.snapshot
 
     def _to_host(self, tensor: torch.Tensor, host: torch.Tensor | None = None) -> torch.Tensor:
         """Copy a GPU tensor to pageable host memory (``host``, or a new tensor) through the pinned staging
@@ -454,11 +430,7 @@ class SparseDeltaEncoder:
                             current.view(torch.bfloat16),
                         )
                     (previous_fp8, previous_scales), (current_fp8, current_scales) = (
-                        quantize_fp8_blocks(
-                            weights.reshape(-1, num_cols),
-                            ue8m0,
-                            self.compiled_fp8 if fqn in self.fp8_background else None,
-                        )
+                        quantize_fp8_blocks(weights.reshape(-1, num_cols), ue8m0, self.compiled_fp8)
                         for weights in (previous_weights, current_weights)
                     )
                     scales_changed |= not torch.equal(previous_scales, current_scales)
@@ -512,9 +484,7 @@ class SparseDeltaEncoder:
 
 
 def _write_json(path: Path, value) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(value))
-    tmp.rename(path)
+    write_file(path, json.dumps(value).encode())
 
 
 class FileSystemWeightSender(WeightSender):
@@ -548,6 +518,7 @@ class FileSystemWeightSender(WeightSender):
         self.errors: list[BaseException] = []
         self.weights_read: threading.Event | None = None
         self.deferred_finish = False
+        self.part_bytes = 0
         self.gathers_full_weights = not config.sparse
         self.logger.debug("Initialized filesystem weight broadcast")
 
@@ -626,23 +597,30 @@ class FileSystemWeightSender(WeightSender):
             self.deferred_finish = True
             return
         if self.encoder.fp8_layout is None:
-            # Until every engine worker has reported which tensors it holds in fp8, steps are full checkpoints.
-            layout = [read_engine_layout(step_dir.parent) if self.world.is_master else None]
+            # Every engine worker reports which tensors it holds in fp8 when it loads the first broadcast.
+            layout = [self._wait_for_engine_layout(step_dir.parent) if self.world.is_master else None]
             dist.broadcast_object_list(layout, src=0)
-            if layout[0] is not None:
-                self.encoder.set_fp8_layout(model, layout[0], self.world.is_master)
+            self.encoder.set_fp8_layout(model, layout[0], self.world.is_master)
         shards = self.encoder.local_shards(model, self.world.is_master)
-        self.encoder.prepare(shards, torch.cuda.max_memory_reserved())
-        full = self.encoder.fp8_layout is None
+        self.encoder.prepare(torch.cuda.max_memory_reserved())
         # Periodic anchors only serve engines that fall off the chain: written in the background, each after
         # the previous one.
-        anchor = not full and step % self.config.anchor_interval == 0
+        anchor = step % self.config.anchor_interval == 0
         ready = torch.cuda.Event()
         ready.record()
         self.weights_read = threading.Event()
-        args = (step, base_step, step_dir, shards, ready, self.weights_read, full, anchor)
+        args = (step, base_step, step_dir, shards, ready, self.weights_read, anchor)
         self._submit(self.encodes, self._encode, *args)
         self.deferred_finish = True
+
+    def _wait_for_engine_layout(self, broadcast_dir: Path) -> dict[str, str]:
+        start = time.monotonic()
+        while (layout := read_engine_layout(broadcast_dir)) is None:
+            if time.monotonic() - start > self.timeout:
+                raise TimeoutError(f"Not every engine worker reported its weight layout within {self.timeout}s")
+            time.sleep(0.1)
+        self.logger.debug(f"Waited {time.monotonic() - start:.2f}s for the engine weight layout")
+        return layout
 
     def _prepare(self, model: nn.Module, step: int) -> None:
         if self.lora_config is not None or not self.config.sparse:
@@ -692,21 +670,16 @@ class FileSystemWeightSender(WeightSender):
         shards,
         ready,
         weights_read: threading.Event,
-        full: bool,
         anchor: bool,
     ) -> None:
-        """Encode thread: diff v{step}, handing the delta to the writer in parts as it is encoded (on full
-        steps, only advance the snapshot and hand the checkpoint to the writer). With fp8 deltas, the parts
-        are held until the ranks agree that no block scale changed, else the step is a full checkpoint."""
+        """Encode thread: diff v{step}, handing the delta to the writer in parts as it is encoded. With fp8
+        deltas, the parts are held until the ranks agree that no block scale changed, else the step is a
+        full checkpoint."""
         encoder = self.encoder
         assert encoder is not None
         if not encoder.on_gpu:
             self._wait_for_host_readers()  # anchors written from the host snapshot, which the encode advances
         start = time.perf_counter()
-        if full:
-            encoder.encode(shards, ready, weights_read, emit=lambda part: None)
-            self._publish_full(step, step_dir)
-            return
         held: list[tuple] = []
         num_parts = 0
 
@@ -742,6 +715,7 @@ class FileSystemWeightSender(WeightSender):
         flags = [delta_dir / f"rank_{rank}.scales" for rank in range(self.world.world_size)]
         while not all(flag.exists() for flag in flags):
             time.sleep(0.05)
+            revalidate(delta_dir)
         return any(flag.read_text() == "1" for flag in flags)
 
     def _start_delta(self, step: int, base_step: int, step_dir: Path) -> None:
@@ -750,7 +724,6 @@ class FileSystemWeightSender(WeightSender):
         manifest = {
             "step": step,
             "base_step": base_step,
-            "anchor_step": self.anchor_step,
             "ranks": self.world.world_size,
             "tensors": self.encoder.hf_tensors,
         }
@@ -760,20 +733,24 @@ class FileSystemWeightSender(WeightSender):
         assert self.encoder is not None
         entries, gaps, values, checksums = part
         path = step_dir / DELTA_DIR / rank_part(self.world.rank, index)
-        write_rank_file(path, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors, checksums)
+        self.part_bytes += write_rank_file(
+            path, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors, checksums
+        )
 
     def _finish_delta(self, step: int, base_step: int, step_dir: Path, num_parts: int, encode_time: float) -> None:
         """After this rank's last part: its parts marker. The master then waits for every rank's marker and
         commits the step. Runs on the writer thread, without collectives."""
         delta_dir = step_dir / DELTA_DIR
-        _write_json(delta_dir / rank_parts_marker(self.world.rank), num_parts)
+        _write_json(delta_dir / rank_parts_marker(self.world.rank), {"parts": num_parts, "bytes": self.part_bytes})
+        self.part_bytes = 0
         if not self.world.is_master:
             return
         markers = [delta_dir / rank_parts_marker(rank) for rank in range(self.world.world_size)]
         while not all(marker.exists() for marker in markers):
             time.sleep(0.05)
+            revalidate(delta_dir)
         WeightSender._finish(self, step, step_dir)
-        num_bytes = sum(path.stat().st_size for path in delta_dir.glob("rank_*.safetensors"))
+        num_bytes = sum(json.loads(marker.read_text())["bytes"] for marker in markers)
         self.logger.info(
             f"Sparse weight delta v{step} (base v{base_step}): {num_bytes / 2**20:.1f} MiB, "
             f"encode {encode_time:.2f}s (parts written as encoded)"
@@ -825,11 +802,14 @@ class FileSystemWeightReceiver(WeightReceiver):
         # read and decode them while they keep serving, and the pause only applies the delta.
         while not (manifest.exists() or finished.exists()):
             await asyncio.sleep(0.05)
+            revalidate(manifest.parent)
         if manifest.exists():
             start = time.perf_counter()
             await self.admin_plane.prefetch_weights(weights_dir)
             self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
-        await wait_for_path(finished)
+        while not finished.exists():
+            await asyncio.sleep(0.05)
+            revalidate(weights_dir)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir)
             return

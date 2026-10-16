@@ -264,10 +264,6 @@ class CheckpointIndexMap:
             if not count:
                 continue
             flat = as_bits(self.params[index].data).view(-1)
-            if flat.dtype != source.dtype:
-                raise RuntimeError(
-                    f"Sparse weight delta dtype {source.dtype} does not match the engine param ({flat.dtype})"
-                )
             positions = target[begin:end]
             flat.index_put_((positions,), flat[positions] + source[begin:end])
 
