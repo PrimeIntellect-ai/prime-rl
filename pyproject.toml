@@ -28,10 +28,12 @@ dependencies = [
     "rich>=14.0.0",
     "setproctitle>=1.3.0",
     "uvloop>=0.21.0",
-    "verifiers[harbor]>=0.3.2.dev158",
-    "renderers[multimodal]>=0.1.12.dev2",
+    "verifiers[harbor]>=0.4.0",
+    "renderers[multimodal]>=0.1.12",
     "pybase64>=1.4.2",
     "msgspec>=0.18",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.scripts]
@@ -174,8 +176,10 @@ members = [
 ]
 # Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
 # Apex pins a verifiers git revision instead of the editable workspace member.
+# ALE CLI requires numpy>=2.4.4, while vLLM 0.31.0 (via mistral-common) requires numpy<2.4.
 # A workspace shares one lock, so these packages need separate environments.
 exclude = [
+    "deps/prime-envs/environments/office/ale_cli",
     "deps/prime-envs/environments/tool_use/tau2_bench",
     "deps/prime-envs/environments/tool_use/tau2_synth",
     "deps/prime-envs/environments/tool_use/tau3_bench",
@@ -271,13 +275,13 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
-dion = { git = "https://github.com/samsja/dion.git", rev = "6f9242d" }
+dion = { git = "https://github.com/samsja/dion.git", rev = "0c801b0" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 vllm-router = [
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.2/vllm_router-0.2.2-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.2/vllm_router-0.2.2-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.3/vllm_router-0.2.3-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.3/vllm_router-0.2.3-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
     { url = "https://github.com/vllm-project/vllm/releases/download/v0.31.0/vllm-0.31.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
