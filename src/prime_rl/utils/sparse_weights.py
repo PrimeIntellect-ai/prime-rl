@@ -15,6 +15,7 @@ checksums of the new weights catch it if not.
 import json
 import os
 import re
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
@@ -36,6 +37,8 @@ MANIFEST = "manifest.json"
 # Dir next to the step dirs where every engine worker writes which checkpoint tensors it holds in fp8.
 ENGINE_LAYOUT = "engine_layout"
 FP8_BLOCK = [128, 128]
+# safetensors dtype -> torch dtype name
+SAFETENSORS_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
 _BITS_DTYPE = {1: torch.uint8, 2: torch.int16, 4: torch.int32, 8: torch.int64}
 
@@ -148,12 +151,12 @@ def write_rank_file(
     tensors: dict,
     checksums: dict[str, int],
     frame_size: int = 1 << 20,
-) -> None:
+) -> int:
     """Write a rank's delta as zstd frames of about ``frame_size`` changes each (whole entries), so
     readers can skip frames without entries they hold. ``values`` holds each entry's ``zigzag``
     differences in its bits dtype. Gaps and values are stored as uint8; those of 255 or more go to
     the int32 escape stream (gaps first). ``checksums`` (HF name -> ``bits_checksum`` of the new weights
-    this rank holds) let engines verify every step. Written under a temporary name, then renamed."""
+    this rank holds) let engines verify every step. Returns the file size."""
     options = {pyzstd.CParameter.compressionLevel: 1, pyzstd.CParameter.checksumFlag: 1}
     frames, size = [[]], 0
     for index, (_, count) in enumerate(entries):
@@ -189,7 +192,9 @@ def write_rank_file(
         "frames": json.dumps([[len(frame), *map(len, parts)] for frame, parts in zip(frames, compressed)]),
         "checksums": json.dumps(checksums),
     }
-    _write_atomically(path, save(arrays, metadata=metadata))
+    data = save(arrays, metadata=metadata)
+    write_file(path, data)
+    return len(data)
 
 
 def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
@@ -247,12 +252,14 @@ def _read_frame(
     return kept, np.concatenate(kept_gaps), np.concatenate(kept_values)
 
 
-def _write_atomically(path: Path, data: bytes) -> None:
-    """Write under a temporary name, then rename. Serializing in memory and writing with plain file
-    I/O releases the GIL during the (possibly slow) write, so background writes don't stall training."""
-    tmp = path.with_name(f".{path.name}.tmp")
+def write_file(path: Path, data: bytes | list) -> None:
+    """Write ``data`` (bytes, or buffers written back to back) under a temporary name, then rename, so
+    readers never see a partial file. Plain file I/O releases the GIL during the (possibly slow) write,
+    so background writes don't stall training."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     with open(tmp, "wb") as file:
-        file.write(data)
+        for buffer in [data] if isinstance(data, bytes) else data:
+            file.write(buffer)
         drop_page_cache(file.fileno())
     tmp.rename(path)
 
@@ -273,7 +280,7 @@ def write_anchor_shards(
     for index, file_parts in enumerate(files):
         header, offset = {"__metadata__": {"shapes": json.dumps({name: shape for name, shape, _, _ in file_parts})}}, 0
         for name, _, start, values in file_parts:
-            dtype = _SAFETENSORS_DTYPES[values.dtype]
+            dtype = next(name for name, dtype in SAFETENSORS_DTYPES.items() if getattr(torch, dtype) == values.dtype)
             header[f"{name}@{start}"] = {
                 "dtype": dtype,
                 "shape": [values.numel()],
@@ -282,18 +289,10 @@ def write_anchor_shards(
             offset += values.nbytes
         encoded = json.dumps(header).encode()
         encoded += b" " * (-len(encoded) % 8)
-        path = step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors"
-        tmp = path.with_name(f".{path.name}.tmp")
-        with open(tmp, "wb") as file:
-            file.write(len(encoded).to_bytes(8, "little") + encoded)
-            for *_, values in file_parts:
-                file.write(memoryview(values.view(torch.uint8).numpy()))
-            drop_page_cache(file.fileno())
-        tmp.rename(path)
-    (step_dir / f"anchor_rank{rank}.done").write_text(str(world_size))
-
-
-_SAFETENSORS_DTYPES = {torch.bfloat16: "BF16", torch.float16: "F16", torch.float32: "F32"}
+        buffers = [len(encoded).to_bytes(8, "little") + encoded]
+        buffers.extend(values.view(torch.uint8).numpy() for *_, values in file_parts)
+        write_file(step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors", buffers)
+    write_file(step_dir / f"anchor_rank{rank}.done", str(world_size).encode())
 
 
 def anchor_index(step_dir: Path) -> tuple[dict[str, list[tuple[Path, str, int]]], dict[str, tuple[list[int], str]]]:
@@ -307,7 +306,7 @@ def anchor_index(step_dir: Path) -> tuple[dict[str, list[tuple[Path, str, int]]]
                 name, start = key.rsplit("@", 1)
                 slices[name].append((path, key, int(start)))
                 dtype = str(file.get_slice(key).get_dtype())
-                tensors[name] = (shapes[name], {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}[dtype])
+                tensors[name] = (shapes[name], SAFETENSORS_DTYPES[dtype])
     return dict(slices), tensors
 
 
@@ -364,33 +363,34 @@ def rank_part(rank: int, part: int) -> str:
 
 
 def rank_parts_marker(rank: int) -> str:
-    """Written by a trainer rank after its last part file: the number of part files."""
+    """Written by a trainer rank after its last part file: the number of part files and their bytes."""
     return f"rank_{rank}.parts"
 
 
 def read_delta(
-    step_dir: Path, names: set[str] | None = None, num_threads: int = 16, cpus: set[int] | None = None
+    step_dir: Path, pool: ThreadPoolExecutor, names: set[str] | None = None
 ) -> tuple[list[tuple[list[tuple[str, int]], np.ndarray, np.ndarray]], dict[str, int]]:
     """Read and decompress a delta step dir into ``(entries, gaps, value bytes)`` per frame in host
-    memory (values: new minus previous raw bits, in each entry's bits dtype); ``decode_gaps`` turns
-    the gaps into flat indices on the device that applies them. With ``names``, keep only those
+    memory (values: new minus previous raw bits, in each entry's bits dtype) on ``pool``; ``decode_gaps``
+    turns the gaps into flat indices on the device that applies them. With ``names``, keep only those
     tensors (frames without any are not read). Part files are read as the trainer writes them, until
-    every rank has written its parts marker. ``cpus``: CPUs for the reader threads (the device's NUMA
-    node). Also returns the new weights' ``bits_checksum`` per HF tensor, summed over ranks."""
+    every rank has written its parts marker. Also returns the new weights' ``bits_checksum`` per HF
+    tensor, summed over ranks."""
     manifest = read_manifest(step_dir)
     tensors = manifest["tensors"]
     delta_dir = step_dir / DELTA_DIR
     checksums: dict[str, int] = {}
     num_parts: list[int | None] = [None] * manifest["ranks"]
     next_part = [0] * manifest["ranks"]
-    initializer = None if cpus is None else (lambda: os.sched_setaffinity(0, cpus))
-    with ExitStack() as stack, ThreadPoolExecutor(num_threads, initializer=initializer) as pool:
+    with ExitStack() as stack:
         files, jobs = [], []
         while any(count is None or next_part[rank] < count for rank, count in enumerate(num_parts)):
             found = False
+            revalidate(delta_dir)
             for rank in range(len(num_parts)):
-                if num_parts[rank] is None and (delta_dir / rank_parts_marker(rank)).exists():
-                    num_parts[rank] = int((delta_dir / rank_parts_marker(rank)).read_text())
+                marker = delta_dir / rank_parts_marker(rank)
+                if num_parts[rank] is None and marker.exists():
+                    num_parts[rank] = json.loads(marker.read_text())["parts"]
                 path = delta_dir / rank_part(rank, next_part[rank])
                 if (num_parts[rank] is None or next_part[rank] < num_parts[rank]) and path.exists():
                     file = stack.enter_context(open(path, "rb"))
@@ -440,6 +440,17 @@ def page_lock(tensor: torch.Tensor) -> torch.Tensor:
 def unpin(tensor: torch.Tensor) -> None:
     if tensor.numel():
         torch.cuda.cudart().cudaHostUnregister(tensor.data_ptr())
+
+
+def revalidate(directory: Path) -> None:
+    """Make an NFS client see files another host just created in ``directory``: opening a dir (and
+    the one above, which may hold ``directory`` itself) revalidates it, instead of answering from
+    cached "not found" lookups for up to ~30 s."""
+    for path in (directory.parent, directory):
+        try:
+            os.close(os.open(path, os.O_RDONLY | os.O_DIRECTORY))
+        except FileNotFoundError:
+            pass
 
 
 def drop_page_cache(fd: int) -> None:

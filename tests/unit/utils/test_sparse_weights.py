@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 
@@ -43,12 +44,13 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
         gaps, values = torch.cat(gaps).numpy(), torch.cat(values).numpy()
         # Small frames, so a frame boundary falls inside rank 1's entries
         write_rank_file(delta_dir / rank_part(rank, 0), entries, gaps, values, tensors, checksums, frame_size=8)
-        (delta_dir / rank_parts_marker(rank)).write_text("1")
+        (delta_dir / rank_parts_marker(rank)).write_text(json.dumps({"parts": 1}))
     (delta_dir / MANIFEST).write_text(json.dumps({"ranks": 2, "tensors": tensors}))
 
     def apply(names):
         patched = {name: as_bits(tensor.clone()).view(-1) for name, tensor in previous.items()}
-        delta, checksums = read_delta(tmp_path, names)
+        with ThreadPoolExecutor(4) as pool:
+            delta, checksums = read_delta(tmp_path, pool, names)
         assert checksums == {name: bits_checksum(as_bits(tensor)) for name, tensor in current.items()}
         for entries, gaps, values in delta:
             gaps, values = torch.from_numpy(gaps), torch.from_numpy(values)

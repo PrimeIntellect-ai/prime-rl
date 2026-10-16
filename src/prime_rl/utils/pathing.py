@@ -435,13 +435,15 @@ def sync_wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) ->
         wait_time += interval
 
 
-async def wait_for_path(path: Path, interval: float = 0.1, log_interval: float = 10) -> None:
+async def wait_for_path(path: Path, interval: int = 1, log_interval: int = 10) -> None:
     logger = get_logger()
+    wait_time = 0
     logger.debug(f"Waiting for path `{path}`")
-    start = last_log = time.monotonic()
-    while not path.exists():
-        if time.monotonic() - last_log >= log_interval:
-            last_log = time.monotonic()
-            logger.debug(f"Waiting for path `{path}` for {last_log - start:.0f} seconds")
+    while True:
+        if path.exists():
+            logger.debug(f"Found path `{path}`")
+            break
+        if wait_time % log_interval == 0 and wait_time > 0:  # Every log_interval seconds
+            logger.debug(f"Waiting for path `{path}` for {wait_time} seconds")
         await asyncio.sleep(interval)
-    logger.debug(f"Found path `{path}`")
+        wait_time += interval

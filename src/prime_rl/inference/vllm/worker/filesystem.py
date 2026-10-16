@@ -23,6 +23,7 @@ from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     ENGINE_LAYOUT,
     MANIFEST,
+    SAFETENSORS_DTYPES,
     anchor_complete,
     anchor_index,
     anchor_tensors,
@@ -33,6 +34,7 @@ from prime_rl.utils.sparse_weights import (
     read_delta,
     read_manifest,
     unpin,
+    write_file,
 )
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -46,9 +48,7 @@ else:
 logger = init_logger("vllm.inference.vllm.worker_filesystem")
 
 _prefetch_pool = ThreadPoolExecutor(1)
-_copy_pool: ThreadPoolExecutor | None = None
-
-_SAFETENSORS_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
+_reader_pool: ThreadPoolExecutor | None = None
 
 
 class FileSystemWeightUpdateWorker(Worker):
@@ -87,16 +87,16 @@ class FileSystemWeightUpdateWorker(Worker):
         """Read this worker's part of a delta into a pinned host buffer that is reused across steps
         (allocating pinned memory every step is slow on a loaded host), in chunks of up to 2^26 changes
         of consecutive frames. Reads and copies run on the CPUs of the GPU's NUMA node."""
-        global _copy_pool
+        global _reader_pool
         cpus = numa_cpus(torch.cuda.current_device())
         if cpus is not None:
             os.sched_setaffinity(0, cpus)
-        if _copy_pool is None:
-            _copy_pool = ThreadPoolExecutor(
+        if _reader_pool is None:
+            _reader_pool = ThreadPoolExecutor(
                 16, initializer=None if cpus is None else lambda: os.sched_setaffinity(0, cpus)
             )
         start = time.perf_counter()
-        frames, checksums = read_delta(step_dir, None if self.index_map is None else self.index_map.names, cpus=cpus)
+        frames, checksums = read_delta(step_dir, _reader_pool, None if self.index_map is None else self.index_map.names)
         read_time = time.perf_counter() - start
         chunks, size = [[]], 0
         for frame in frames:
@@ -121,10 +121,12 @@ class FileSystemWeightUpdateWorker(Worker):
             gaps_end, values_end = gaps_at, values_at
             for _, gaps, values in chunk:
                 copies.append(
-                    _copy_pool.submit(np.copyto, buffer[gaps_end : gaps_end + gaps.nbytes].view(gaps.dtype), gaps)
+                    _reader_pool.submit(np.copyto, buffer[gaps_end : gaps_end + gaps.nbytes].view(gaps.dtype), gaps)
                 )
                 copies.append(
-                    _copy_pool.submit(np.copyto, buffer[values_end : values_end + values.nbytes], values.view(np.uint8))
+                    _reader_pool.submit(
+                        np.copyto, buffer[values_end : values_end + values.nbytes], values.view(np.uint8)
+                    )
                 )
                 gaps_end += gaps.nbytes
                 values_end += values.nbytes
@@ -220,7 +222,7 @@ class FileSystemWeightUpdateWorker(Worker):
                     for name in f.keys():
                         tensor_slice = f.get_slice(name)
                         files[name] = path
-                        tensors[name] = (tensor_slice.get_shape(), _SAFETENSORS_DTYPES[tensor_slice.get_dtype()])
+                        tensors[name] = (tensor_slice.get_shape(), SAFETENSORS_DTYPES[tensor_slice.get_dtype()])
 
             def read_tensor(name: str) -> torch.Tensor:
                 with safe_open(files[name], framework="pt") as f:
@@ -239,9 +241,7 @@ class FileSystemWeightUpdateWorker(Worker):
         layout = {"world_size": group.world_size, "fp8": self.index_map.fp8_layout(read_tensor)}
         path = step_dir.parent / ENGINE_LAYOUT / f"rank_{group.rank_in_group}.json"
         path.parent.mkdir(exist_ok=True)
-        tmp = path.with_suffix(f".tmp{os.getpid()}")
-        tmp.write_text(json.dumps(layout))
-        os.replace(tmp, path)
+        write_file(path, json.dumps(layout).encode())
         logger.info(f"Wrote the engine layout: {len(layout['fp8'])} checkpoint tensors held in fp8")
 
     def _replay(self, step_dir: Path) -> None:
@@ -277,23 +277,7 @@ class FileSystemWeightUpdateWorker(Worker):
             self.index_map = CheckpointIndexMap(model, tensors)
             logger.info(f"Built the checkpoint index map in {time.perf_counter() - start - read_time:.2f}s")
         for entries, gaps, values in delta:
-            # Decode in chunks of whole entries: the int64 indices take 8 B per change on the GPU.
-            first = change_offset = byte_offset = num_changes = 0
-            for last in range(len(entries)):
-                num_changes += entries[last][1]
-                if num_changes < 1 << 26 and last + 1 < len(entries):
-                    continue
-                chunk = entries[first : last + 1]
-                num_bytes = sum(count * bits_dtype(tensors[name][1]).itemsize for name, count in chunk)
-                self._apply_chunk(
-                    chunk,
-                    gaps[change_offset : change_offset + num_changes],
-                    values[byte_offset : byte_offset + num_bytes],
-                    tensors,
-                    device,
-                )
-                first, change_offset, byte_offset = last + 1, change_offset + num_changes, byte_offset + num_bytes
-                num_changes = 0
+            self._apply_chunk(entries, gaps, values, tensors, device)
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
         apply_time = time.perf_counter() - start - read_time
@@ -306,7 +290,8 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def _verify(self, step_dir: Path, checksums: dict[str, int]) -> None:
         """Check every tensor this worker holds against the trainer's checksum of the new weights.
-        Tensors split across TP workers are summed over the TP group first."""
+        Tensors split across TP workers are summed over the TP group first; without TP, tensors a worker
+        holds only part of are not checked."""
         assert self.index_map is not None
         names, totals, partial = self.index_map.held_checksums()
         tp_group = get_tp_group()
@@ -315,7 +300,6 @@ class FileSystemWeightUpdateWorker(Worker):
             torch.distributed.all_reduce(reduced, group=tp_group.device_group)
             totals[partial] = reduced
         elif partial.any():
-            totals[partial] = 0
             names = [name if not is_partial else None for name, is_partial in zip(names, partial.tolist())]
         mismatched = [
             name
