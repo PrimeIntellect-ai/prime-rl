@@ -241,6 +241,11 @@ def test_probe_matches_reference_and_leaves_training_state_unchanged(kind):
 
     metrics = probe.measure(4)
 
+    visible_keys = [key for key in metrics if "forward_visible_fraction" in key]
+    assert "master_cast_probe/own/forward_visible_fraction" in visible_keys
+    for key in visible_keys:
+        assert metrics[key.replace("forward_visible_fraction", "update_kept")] == metrics[key], key
+
     for name, param in model.named_parameters():
         assert torch.equal(param, params[name]), name
         assert param.grad is None, name

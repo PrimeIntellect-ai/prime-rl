@@ -1,5 +1,6 @@
 """Master-versus-cast probe for the FP8 weight-dynamics experiments (int4/experiments/fp8-weight-dynamics in research-prod)."""
 
+import hashlib
 import math
 import re
 import time
@@ -12,6 +13,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
+from prime_rl.configs.sft import SFTDataConfig
 from prime_rl.trainer.model import get_load_balance_stats, reshard_module
 from prime_rl.trainer.models.fp8_rounding import FROZEN_STEP, seed_for_step
 from prime_rl.trainer.models.kernels.fp8_utils import grouped_per_block_cast_to_fp8_triton, weight_ue8m0_for_device
@@ -73,10 +75,41 @@ def ue8m0_rtn(weight: torch.Tensor) -> torch.Tensor:
     return ue8m0_cast(weight)
 
 
-def load_probe_batches(dataset: StatefulIterableDataset, seq_len: int, cp: int, count: int) -> list[Batch]:
-    """The first ``count`` packed micro-batches of this rank's share of ``dataset``, as the training loader packs them."""
-    packed = iter(CatDataset(dataset, seq_len, pad_to_multiple_of=cp))
-    return [cat_collate([next(packed)]) for _ in range(count)]
+def _pad_pack(pack: dict, multiple: int) -> dict:
+    pad_len = -len(pack["input_ids"]) % multiple
+    padded = {key: list(value) for key, value in pack.items() if isinstance(value, list)}
+    padded["input_ids"] += [0] * pad_len
+    padded["position_ids"] += list(range(pad_len))
+    padded["loss_mask"] += [False] * pad_len
+    padded["target_ids"] += [0] * pad_len
+    padded["seq_lens"][-1] += pad_len
+    if pack.get("mm_token_type_ids") is not None:
+        padded["mm_token_type_ids"] += [0] * pad_len
+    return {**pack, **padded}
+
+
+def probe_data_config(data: SFTDataConfig, name: str, seq_len: int) -> SFTDataConfig:
+    """The training data config pointed at the probe rows, shuffled with a fixed seed and packed at ``seq_len``."""
+    return data.model_copy(update={"name": name, "shuffle": True, "seed": 0, "seq_len": seq_len, "micro_batch_size": 1})
+
+
+def load_probe_batches(
+    dataset: StatefulIterableDataset, seq_len: int, cp: int, num_packs: int, dp_rank: int, dp_size: int
+) -> list[Batch]:
+    """This data rank's share of the first ``num_packs`` packs of ``seq_len`` tokens of ``dataset``, which must give
+    every rank every row, so the packs are the same for any world size, context parallelism and training seq_len."""
+    assert num_packs % dp_size == 0, f"{num_packs} probe packs do not split evenly over {dp_size} data ranks"
+    packed = iter(CatDataset(dataset, seq_len, pad_to_multiple_of=1))
+    packs = [next(packed) for _ in range(num_packs)]
+    digest = hashlib.sha256()
+    for pack in packs:
+        digest.update(torch.tensor(pack["input_ids"], dtype=torch.int64).numpy().tobytes())
+    get_logger().info(
+        f"Master-cast probe: {num_packs} packs of at most {seq_len} tokens, {sum(len(p['input_ids']) for p in packs)} tokens, "
+        f"{sum(sum(p['loss_mask']) for p in packs)} loss tokens, sha256 {digest.hexdigest()[:16]}, "
+        f"{num_packs // dp_size} packs on data rank {dp_rank} of {dp_size}"
+    )
+    return [cat_collate([_pad_pack(pack, cp)]) for pack in packs[dp_rank::dp_size]]
 
 
 @dataclass
@@ -336,6 +369,11 @@ class MasterCastProbe:
             # One stochastic realization; the forward is unbiased, E[Q(x)] = x, so its expected visible fraction is 1.
             metrics[own + "forward_visible_fraction_realized"] = metrics[own + "forward_visible_fraction"]
             metrics[own + "forward_visible_fraction"] = 1.0
+        metrics |= {
+            key.replace("forward_visible_fraction", "update_kept"): value
+            for key, value in list(metrics.items())
+            if "forward_visible_fraction" in key
+        }
         metrics[f"{PREFIX}time"] = time.perf_counter() - start_time
         return metrics
 

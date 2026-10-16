@@ -63,7 +63,12 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.sft.weight_dynamics import WeightUpdateTracker, check_start_weights
-from prime_rl.trainer.sft.master_cast_probe import FP8FlipRate, MasterCastProbe, load_probe_batches
+from prime_rl.trainer.sft.master_cast_probe import (
+    FP8FlipRate,
+    MasterCastProbe,
+    load_probe_batches,
+    probe_data_config,
+)
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -237,13 +242,13 @@ def train(config: SFTConfig):
     probe_batches = None
     if os.environ.get("PRIME_RL_MASTER_CAST_PROBE") == "1":
         assert checkpoint_step is None, "the master-cast probe measures displacement from the weights it starts with"
-        probe_data_config = config.data.model_copy(
-            update={"name": os.environ["PRIME_RL_MASTER_CAST_PROBE_DATA"], "shuffle": False}
-        )
+        probe_seq_len = int(os.environ.get("PRIME_RL_MASTER_CAST_PROBE_SEQ_LEN", "8192"))
+        probe_data = probe_data_config(config.data, os.environ["PRIME_RL_MASTER_CAST_PROBE_DATA"], probe_seq_len)
+        # A non-data-parallel size of the whole world gives every rank every row.
         probe_dataset = setup_dataset(
             tokenizer,
-            probe_data_config,
-            config.model.cp,
+            probe_data,
+            world.world_size,
             max_epochs=1,
             renderer_config=config.renderer,
             processor=processor,
@@ -251,9 +256,11 @@ def train(config: SFTConfig):
         )
         probe_batches = load_probe_batches(
             probe_dataset,
-            config.data.seq_len * config.data.micro_batch_size,
+            probe_seq_len,
             config.model.cp,
-            int(os.environ.get("PRIME_RL_MASTER_CAST_PROBE_MICRO_BATCHES", "2")),
+            int(os.environ.get("PRIME_RL_MASTER_CAST_PROBE_PACKS", "16")),
+            world.rank // config.model.cp,
+            world.world_size // config.model.cp,
         )
 
     # Create the iterator only after a potential resume: iter() forks workers with a
@@ -646,6 +653,8 @@ def train(config: SFTConfig):
             "progress/epoch": dataset_progress["epoch"],
             "progress/num_samples": progress.total_samples,
             "progress/num_tokens": progress.total_tokens,
+            "progress/step_tokens": num_tokens,
+            "progress/step_trainable_tokens": global_token_count_val,
             "step": progress.step,
         }
         # At least two subsets/splits

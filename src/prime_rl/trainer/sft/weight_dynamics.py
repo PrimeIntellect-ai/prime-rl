@@ -13,7 +13,7 @@ from torch.distributed.tensor import DTensor
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.weights import resolve_fqn
 
-UPDATE_LAGS = (1, 4, 16, 64)
+UPDATE_LAGS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 
 def _local(param: torch.Tensor) -> torch.Tensor:
