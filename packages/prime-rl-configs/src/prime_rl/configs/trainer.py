@@ -439,6 +439,9 @@ class MuonConfig(BaseOptimizerConfig):
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
+    bf16_momentum: bool = False
+    """Keep the Muon momentum in bfloat16 instead of the parameter dtype. Halves Muon's optimizer state and its CPU offload traffic, at the cost of momentum precision. Muon already casts the momentum to bfloat16 before Newton-Schulz."""
+
 
 class SignSGDConfig(BaseOptimizerConfig):
     type: Literal["sign_sgd"] = "sign_sgd"

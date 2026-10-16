@@ -47,6 +47,24 @@ def _warmup_muon_mesh(mesh: DeviceMesh) -> None:
     get_logger().info(f"Finished warming Muon all-to-all connections on group {group.group_name}")
 
 
+class BF16MomentumMuon(Muon):
+    """Muon whose momentum is bfloat16, also after a checkpoint load (which casts states to the param dtype)."""
+
+    def _get_or_initialize_state(self, param: torch.Tensor, algo: str) -> dict:
+        state = self.state[param]
+        if not state and algo == "muon":
+            state["momentum"] = torch.zeros_like(param, dtype=torch.bfloat16)
+        return super()._get_or_initialize_state(param, algo)
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        super().load_state_dict(state_dict)
+        for group in self.param_groups:
+            if group["algorithm"] == "muon":
+                for param in group["params"]:
+                    if "momentum" in self.state[param]:
+                        self.state[param]["momentum"] = self.state[param]["momentum"].bfloat16()
+
+
 def setup_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
@@ -219,7 +237,8 @@ def _create_muon_optimizer(
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
 
-    optimizer = Muon(
+    muon_cls = BF16MomentumMuon if config.bf16_momentum else Muon
+    optimizer = muon_cls(
         params=param_groups,
         matrix_partitions=matrix_partitions,
         lr=lr,
