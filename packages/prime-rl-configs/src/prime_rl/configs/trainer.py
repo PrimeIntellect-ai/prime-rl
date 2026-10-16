@@ -472,6 +472,9 @@ class MuonConfig(BaseOptimizerConfig):
     mu: float = Field(0.95, ge=0)
     """Momentum factor for the Muon algorithm."""
 
+    nesterov: bool = True
+    """Nesterov momentum for the Muon updates."""
+
     betas1: float = Field(0.9, ge=0)
     """β1 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
