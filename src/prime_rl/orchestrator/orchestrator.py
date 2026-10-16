@@ -505,6 +505,8 @@ class Orchestrator:
 
         The sinks return a finalized batch (or ``None``); we just dispatch on
         the result."""
+        # Queued traces restored from a checkpoint may already fill a batch
+        await self.handle_train_result(await self.train_sink.take_batch())
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
