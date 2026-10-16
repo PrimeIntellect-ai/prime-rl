@@ -567,9 +567,9 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
         loss = self.trainer.loss
-        ipo = loss.type in ("ipo", "ipo_tis") and loss.score_centering
-        exact = ipo and loss.score_centering_topk is None
-        if loss.type != "score_centering" and not ipo:
+        weighted_sc = loss.type in ("ipo", "ipo_tis", "icepop_tis") and loss.score_centering
+        exact = weighted_sc and loss.score_centering_topk is None
+        if loss.type != "score_centering" and not weighted_sc:
             return self
         samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
@@ -586,7 +586,7 @@ class RLConfig(BaseConfig):
                 raise ValueError(
                     "The top-k score_centering loss requires untruncated sampling; use IPO score_centering for sampling replay"
                 )
-            k = sampling.top_k if exact else (loss.score_centering_topk if ipo else loss.topk)
+            k = sampling.top_k if exact else (loss.score_centering_topk if weighted_sc else loss.topk)
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)

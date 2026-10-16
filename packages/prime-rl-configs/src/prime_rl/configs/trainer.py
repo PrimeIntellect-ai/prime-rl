@@ -624,6 +624,41 @@ class IcePopLossConfig(BaseConfig):
         return self
 
 
+class IcePopTISLossConfig(BaseConfig):
+    type: Literal["icepop_tis"] = "icepop_tis"
+
+    ratio_low: float = Field(0.2, gt=0, allow_inf_nan=False)
+    """Lower accepted trainer-to-sampler probability ratio."""
+
+    ratio_high: float = Field(5.0, gt=0, allow_inf_nan=False)
+    """Upper accepted ratio; rejected positions have no sampled loss."""
+
+    ratio_cap: float = Field(2.0, ge=1, allow_inf_nan=False)
+    """Upper score coefficient for accepted tokens; independent of the acceptance band."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    score_centering: bool = False
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Captured full-vocabulary head with a proportional sampler tail; None uses complete replay support."""
+
+    score_centering_gate: Literal["weighted", "sample", "head"] = "weighted"
+    """weighted centers all draws; sample conditions on ratio-band acceptance;
+    head gates the whole update on every captured candidate passing the band."""
+
+    score_centering_min_acceptance: float = Field(1e-4, gt=0, le=1, allow_inf_nan=False)
+    """Skip both conditional terms below this modeled acceptance mass."""
+
+    @model_validator(mode="after")
+    def validate_score_centering(self):
+        if self.ratio_low > self.ratio_high:
+            raise ValueError("ratio_low must not exceed ratio_high")
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        if self.score_centering_gate != "weighted" and not self.score_centering:
+            raise ValueError("score_centering_gate requires score_centering = true")
+        return self
+
+
 class PPOLossConfig(BaseConfig):
     type: Literal["ppo"] = "ppo"
 
@@ -679,6 +714,7 @@ class CustomLossConfig(BaseConfig):
 LossConfig: TypeAlias = Annotated[
     IPOLossConfig
     | IPOTISLossConfig
+    | IcePopTISLossConfig
     | IcePopLossConfig
     | PPOLossConfig
     | CISPOLossConfig

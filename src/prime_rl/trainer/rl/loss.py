@@ -11,6 +11,7 @@ from prime_rl.configs.trainer import (
     CISPOLossConfig,
     CustomLossConfig,
     IcePopLossConfig,
+    IcePopTISLossConfig,
     IPOLossConfig,
     IPOTISLossConfig,
     LossConfig,
@@ -214,11 +215,19 @@ class ScoreCenteringLoss:
         )
 
 
-class _ProbabilityMaskedISLoss:
-    def __init__(self, config: IPOLossConfig | IPOTISLossConfig):
+class _MaskedISLoss:
+    def __init__(self, config: IPOLossConfig | IPOTISLossConfig | IcePopTISLossConfig):
         self.config = config
-        self.track_truncation = isinstance(config, IPOTISLossConfig)
-        self.ratio_cap = config.ratio_cap if isinstance(config, IPOTISLossConfig) else config.max_importance_ratio
+        self.track_truncation = isinstance(config, (IPOTISLossConfig, IcePopTISLossConfig))
+        self.ratio_cap = config.ratio_cap if self.track_truncation else config.max_importance_ratio
+
+    def _accepted(self, logp: Tensor, logq: Tensor) -> Tensor:
+        if isinstance(self.config, IcePopTISLossConfig):
+            log_ratio = logp.detach() - logq.detach()
+            return (log_ratio >= log_ratio.new_tensor(self.config.ratio_low).log()) & (
+                log_ratio <= log_ratio.new_tensor(self.config.ratio_high).log()
+            )
+        return _absolute_probability_difference(logp, logq) <= self.config.eps
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
@@ -228,8 +237,7 @@ class _ProbabilityMaskedISLoss:
         weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
 
         log_importance_ratio = trainer_logprobs - inference_logprobs
-        abs_probs_diff = _absolute_probability_difference(trainer_logprobs, inference_logprobs)
-        is_masked = abs_probs_diff > loss_config.eps
+        is_masked = ~self._accepted(trainer_logprobs, inference_logprobs)
         keep_mask = ~is_masked
 
         importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], self.ratio_cap)
@@ -245,7 +253,7 @@ class _ProbabilityMaskedISLoss:
                 q = sampler.exp().masked_fill(~valid, 0.0)
                 # q * min(p/q, cap) avoids division by tiny sampler probabilities.
                 mass = torch.minimum(p, q * self.ratio_cap)
-                head_masked = ~valid | (_absolute_probability_difference(head, sampler) > loss_config.eps)
+                head_masked = ~valid | ~self._accepted(head, sampler)
                 mass = mass.masked_fill(head_masked, 0.0)
                 if self.track_truncation:
                     accepted_mass = p.masked_fill(head_masked, 0.0)
@@ -257,12 +265,16 @@ class _ProbabilityMaskedISLoss:
                     rho = q_tail / p_tail.clamp_min(1e-6)
                     # Every modeled tail action obeys |p_v - q_v| <= |1-rho| P_tail.
                     tail_bound = (1.0 - rho).abs() * p_tail
-                    if bool(((q_tail > 0) & (tail_bound > loss_config.eps)).any()):
+                    if not isinstance(loss_config, IcePopTISLossConfig) and bool(
+                        ((q_tail > 0) & (tail_bound > loss_config.eps)).any()
+                    ):
                         raise ValueError(
                             "IPO score-centering tail may cross the trust region; increase score_centering_topk "
                             "or use complete sampling-support centering"
                         )
                     alpha = (rho * self.ratio_cap).clamp_max(1.0)
+                    if isinstance(loss_config, IcePopTISLossConfig):
+                        alpha = alpha.masked_fill(~self._accepted(p_tail.log(), q_tail.log()), 0.0)
                     mass = mass - alpha.unsqueeze(-1) * p
                     centering_metrics["score_centering/tail_change_bound"] = tail_bound
                     centering_metrics["score_centering/tail_scale"] = alpha
@@ -295,21 +307,23 @@ class _ProbabilityMaskedISLoss:
         return LossOutputs(loss=loss, metrics=metrics)
 
 
-class _GatedProbabilityMaskedISLoss(_ProbabilityMaskedISLoss):
-    """Shared position gates and conditional centering for IPO importance weights.
+class _GatedMaskedISLoss(_MaskedISLoss):
+    """Shared position gates and conditional centering for masked IS weights.
 
     On a proportional tail, rejected candidates satisfy |1-rho|*p_v > eps.
     Their total probability difference is at most one, so the largest
     ceil(1/eps) tail probabilities contain every exception. This permits
     per-action tail masking without transporting more sampler probabilities.
     Cancellation with a captured head is only as accurate as its tail model.
+    IcePop's modeled tail has one ratio, so all tail words share acceptance.
     """
 
-    def __init__(self, config: IPOLossConfig | IPOTISLossConfig):
+    def __init__(self, config: IPOLossConfig | IPOTISLossConfig | IcePopTISLossConfig):
         super().__init__(config)
         self.tail_topk = (
             ceil(1 / config.eps)
-            if config.score_centering_gate == "sample"
+            if not isinstance(config, IcePopTISLossConfig)
+            and config.score_centering_gate == "sample"
             and config.score_centering_topk is not None
             and 0 < config.eps < 1
             else 0
@@ -338,8 +352,8 @@ class _GatedProbabilityMaskedISLoss(_ProbabilityMaskedISLoss):
         with torch.no_grad():
             p = head.exp().masked_fill(~valid, 0.0)
             q = sampler.exp().masked_fill(~valid, 0.0)
-            head_keep = valid & (_absolute_probability_difference(head, sampler) <= config.eps)
-            sampled_keep = _absolute_probability_difference(logp, logq) <= config.eps
+            head_keep = valid & self._accepted(head, sampler)
+            sampled_keep = self._accepted(logp, logq)
             mass = torch.minimum(p, self.ratio_cap * q)
             acceptance = torch.ones_like(logp)
             tail_p = tail.exp()
@@ -347,6 +361,7 @@ class _GatedProbabilityMaskedISLoss(_ProbabilityMaskedISLoss):
             tail_rejected = torch.zeros_like(tail_p, dtype=torch.bool)
             alpha = torch.zeros_like(logp)
             tail_bound = torch.zeros_like(logp)
+            tail_ratio_masked = torch.zeros_like(logp, dtype=torch.bool)
 
             if config.score_centering_gate == "sample":
                 mass = mass.masked_fill(~head_keep, 0.0)
@@ -363,11 +378,17 @@ class _GatedProbabilityMaskedISLoss(_ProbabilityMaskedISLoss):
                 alpha = (log_rho + logp.new_tensor(self.ratio_cap).log()).clamp_max(0).exp()
                 tail_bound = (log_p_tail.exp() - q_tail).abs()
                 if config.score_centering_gate == "sample":
-                    tail_conditional = (tail - safe_log_p_tail.unsqueeze(-1)).exp()
-                    tail_rejected = (tail_p - q_tail.unsqueeze(-1) * tail_conditional).abs() > config.eps
-                    tail_mass = -alpha.unsqueeze(-1) * tail_p.masked_fill(~tail_rejected, 0.0)
-                    rejected_fraction = tail_conditional.masked_fill(~tail_rejected, 0.0).sum(-1)
-                    acceptance = acceptance + q_tail * (1 - rejected_fraction).clamp_min(0.0)
+                    if isinstance(config, IcePopTISLossConfig):
+                        tail_keep = has_tail & self._accepted(log_p_tail, q_tail.log())
+                        tail_ratio_masked = has_tail & ~tail_keep
+                        acceptance = acceptance + q_tail.masked_fill(~tail_keep, 0.0)
+                        alpha = alpha.masked_fill(~tail_keep, 0.0)
+                    else:
+                        tail_conditional = (tail - safe_log_p_tail.unsqueeze(-1)).exp()
+                        tail_rejected = (tail_p - q_tail.unsqueeze(-1) * tail_conditional).abs() > config.eps
+                        tail_mass = -alpha.unsqueeze(-1) * tail_p.masked_fill(~tail_rejected, 0.0)
+                        rejected_fraction = tail_conditional.masked_fill(~tail_rejected, 0.0).sum(-1)
+                        acceptance = acceptance + q_tail * (1 - rejected_fraction).clamp_min(0.0)
                 mass = mass - alpha.unsqueeze(-1) * p
 
             low_acceptance = acceptance < config.score_centering_min_acceptance
@@ -406,7 +427,14 @@ class _GatedProbabilityMaskedISLoss(_ProbabilityMaskedISLoss):
                 "score_centering/acceptance_mass": acceptance,
                 "score_centering/low_acceptance": low_acceptance.float(),
                 "score_centering/position_masked": (~keep).float(),
-                "score_centering/sampled_ipo_masked": (~sampled_keep).float(),
+                "score_centering/sampled_icepop_masked"
+                if isinstance(config, IcePopTISLossConfig)
+                else "score_centering/sampled_ipo_masked": (~sampled_keep).float(),
+                **(
+                    {"score_centering/tail_ratio_masked": tail_ratio_masked.float()}
+                    if isinstance(config, IcePopTISLossConfig)
+                    else {}
+                ),
                 "score_centering/tail_masked_count": tail_rejected.sum(-1).float(),
                 "score_centering/tail_change_bound": tail_bound,
                 "score_centering/tail_scale": alpha,
@@ -416,7 +444,7 @@ class _GatedProbabilityMaskedISLoss(_ProbabilityMaskedISLoss):
         )
 
 
-class IPOLoss(_GatedProbabilityMaskedISLoss):
+class IPOLoss(_GatedMaskedISLoss):
     """Probability-difference masking with optional conditional score centering.
 
     Without SC, a rejected sampled word removes the entire position's loss.
@@ -435,7 +463,7 @@ class IPOLoss(_GatedProbabilityMaskedISLoss):
     """
 
 
-class IPOTISLoss(_GatedProbabilityMaskedISLoss):
+class IPOTISLoss(_GatedMaskedISLoss):
     """IPO acceptance with truncated importance coefficients and optional SC.
 
     IPO can accept large p/q when both probabilities are small. TIS limits
@@ -453,6 +481,27 @@ class IPOTISLoss(_GatedProbabilityMaskedISLoss):
     it does not restore signal removed by masking/truncation or guarantee
     stability. Captured-head centering uses a proportional-tail approximation.
     All centering coefficients are detached and use the same ratio cap.
+    """
+
+
+class IcePopTISLoss(_GatedMaskedISLoss):
+    """Ratio-band acceptance with the same TIS and SC gates as IPO+TIS+SC.
+
+    Only acceptance changes: m_v=1[ratio_low <= p_v/q_v <= ratio_high].
+    Accepted words retain coefficient t_v=min(p_v/q_v, ratio_cap); the cap
+    saturates the score coefficient rather than zeroing its gradient.
+    Conditional SC uses A*m_y*(t_y*s_y-B/Z), B=E_q[m*t*s], Z=E_q[m].
+    Head gating uses A*M*(t_y*s_y-E_q[t*s]), where M is independent of the
+    sampled word and requires every captured candidate to pass the band.
+    Rejected positions skip both terms. Small Z skips the entire position.
+
+    Coefficients and gates are detached. Both variants cancel constant-
+    advantage drift under the modeled sampler. On a proportional tail,
+    every omitted word has ratio P_tail/Q_tail, so the conditional baseline
+    accepts or rejects the entire modeled tail without extra candidates.
+    Cancellation under the actual sampler remains limited by that model.
+    For conditional or weighted centering, ratio_cap >= ratio_high leaves
+    every accepted ratio unchanged and is equivalent to disabling TIS.
     """
 
 
@@ -632,6 +681,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IPOTISLossConfig():
             return IPOTISLoss(loss_config)
+        case IcePopTISLossConfig():
+            return IcePopTISLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
         case PPOLossConfig():

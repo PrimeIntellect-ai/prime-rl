@@ -5,6 +5,7 @@ from prime_rl.configs.trainer import (
     CISPOLossConfig,
     CustomLossConfig,
     IcePopLossConfig,
+    IcePopTISLossConfig,
     IPOLossConfig,
     IPOTISLossConfig,
     PPOLossConfig,
@@ -26,13 +27,21 @@ pytestmark = [pytest.mark.gpu]
 
 
 @pytest.mark.parametrize(
-    "config_cls,gate", [(IPOLossConfig, "sample"), (IPOTISLossConfig, "sample"), (IPOTISLossConfig, "head")]
+    "config_cls,gate,cap",
+    [
+        (IPOLossConfig, "sample", 1e4),
+        (IPOTISLossConfig, "sample", 2.0),
+        (IPOTISLossConfig, "head", 2.0),
+        (IcePopTISLossConfig, "sample", 2.0),
+        (IcePopTISLossConfig, "head", 2.0),
+        (IcePopTISLossConfig, "sample", 5.0),
+    ],
 )
 @pytest.mark.parametrize(
     "case", ["diffuse", "concentrated", "zero", "tiny", "tiny_tail", "eps_one", "complete", "guard"]
 )
 @pytest.mark.parametrize("constant_advantage", [False, True])
-def test_gated_score_centering_dense_gradient_cpu(config_cls, gate, case, constant_advantage):
+def test_gated_score_centering_dense_gradient_cpu(config_cls, gate, cap, case, constant_advantage):
     from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
 
     eps, head_size = 0.2, 2
@@ -62,7 +71,8 @@ def test_gated_score_centering_dense_gradient_cpu(config_cls, gate, case, consta
     if case == "complete":
         head_size = len(p)
     config = config_cls(
-        eps=eps,
+        **({} if config_cls is IcePopTISLossConfig else {"eps": eps}),
+        **({"max_importance_ratio": cap} if config_cls is IPOLossConfig else {"ratio_cap": cap}),
         score_centering=True,
         score_centering_topk=None if case == "complete" else head_size,
         score_centering_gate=gate,
@@ -95,7 +105,13 @@ def test_gated_score_centering_dense_gradient_cpu(config_cls, gate, case, consta
     )
     detached_p = logp.detach().exp()
     tis = (detached_p / q).clamp_max(loss_fn.ratio_cap)
-    accepted = (detached_p - q).abs() <= eps
+    if config_cls is IcePopTISLossConfig and gate == "sample" and cap >= config.ratio_high:
+        tis = detached_p / q
+    accepted = (
+        ((detached_p / q) >= config.ratio_low) & ((detached_p / q) <= config.ratio_high)
+        if config_cls is IcePopTISLossConfig
+        else (detached_p - q).abs() <= eps
+    )
     if gate == "sample":
         z = (q * accepted).sum(-1)
         safe = z >= config.score_centering_min_acceptance
@@ -115,15 +131,22 @@ def test_gated_score_centering_dense_gradient_cpu(config_cls, gate, case, consta
         torch.testing.assert_close(actual.sum(0), torch.zeros_like(p), atol=2e-12, rtol=0)
     if case in ("zero", "tiny"):
         assert torch.count_nonzero(actual) == 0
-    if gate == "sample" and case == "concentrated":
+    if config_cls is not IcePopTISLossConfig and gate == "sample" and case == "concentrated":
         assert result.metrics["score_centering/tail_masked_count"].max() == 1
-    if gate == "sample" and case == "diffuse":
+    if config_cls is not IcePopTISLossConfig and gate == "sample" and case == "diffuse":
         assert result.metrics["score_centering/tail_change_bound"].min() > eps
         assert result.metrics["score_centering/position_masked"].max() == 0
 
 
 @pytest.mark.parametrize(
-    "config_cls,gate", [(IPOLossConfig, "sample"), (IPOTISLossConfig, "sample"), (IPOTISLossConfig, "head")]
+    "config_cls,gate",
+    [
+        (IPOLossConfig, "sample"),
+        (IPOTISLossConfig, "sample"),
+        (IPOTISLossConfig, "head"),
+        (IcePopTISLossConfig, "sample"),
+        (IcePopTISLossConfig, "head"),
+    ],
 )
 def test_gated_score_centering_excluded_nonfinite_cpu(config_cls, gate):
     config = config_cls(score_centering=True, score_centering_gate=gate)
@@ -172,7 +195,8 @@ def test_score_centering_matches_full_modeled_sampler_gradient(head_size):
 @pytest.mark.parametrize("eps,cap", [(0.1, 2.0), (1.0, 1.1)])
 @pytest.mark.parametrize("topk", [None, 4])
 @pytest.mark.parametrize(
-    "config_cls,cap_field", [(IPOLossConfig, "max_importance_ratio"), (IPOTISLossConfig, "ratio_cap")]
+    "config_cls,cap_field",
+    [(IPOLossConfig, "max_importance_ratio"), (IPOTISLossConfig, "ratio_cap"), (IcePopTISLossConfig, "ratio_cap")],
 )
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_ipo_score_centering_cancels_constant_advantage_drift(eps, cap, topk, config_cls, cap_field, device):
@@ -191,13 +215,16 @@ def test_ipo_score_centering_cancels_constant_advantage_drift(eps, cap, topk, co
         q.log().expand(4, -1),
         torch.ones((4, 4), device=device, dtype=torch.bool),
     )
-    config = config_cls(eps=eps, **{cap_field: cap})
+    mask_settings = {} if config_cls is IcePopTISLossConfig else {"eps": eps}
+    config = config_cls(**mask_settings, **{cap_field: cap})
     plain_loss = setup_rl_loss_fn(config)
     if config_cls is IPOTISLossConfig:
         assert isinstance(plain_loss, IPOTISLoss)
     plain = plain_loss.loss(inputs).loss
     centered = (
-        setup_rl_loss_fn(config_cls(eps=eps, **{cap_field: cap}, score_centering=True, score_centering_topk=topk))
+        setup_rl_loss_fn(
+            config_cls(**mask_settings, **{cap_field: cap}, score_centering=True, score_centering_topk=topk)
+        )
         .loss(inputs)
         .loss
     )
@@ -209,7 +236,8 @@ def test_ipo_score_centering_cancels_constant_advantage_drift(eps, cap, topk, co
 
 @pytest.mark.parametrize("q_head,cap", [([0.45, 0.4], 2.0), ([0.6, 0.38], 1.1)])
 @pytest.mark.parametrize(
-    "config_cls,cap_field", [(IPOLossConfig, "max_importance_ratio"), (IPOTISLossConfig, "ratio_cap")]
+    "config_cls,cap_field",
+    [(IPOLossConfig, "max_importance_ratio"), (IPOTISLossConfig, "ratio_cap"), (IcePopTISLossConfig, "ratio_cap")],
 )
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
 def test_ipo_score_centering_topk_matches_full_modeled_sampler(q_head, cap, config_cls, cap_field, device):
@@ -226,10 +254,20 @@ def test_ipo_score_centering_topk_matches_full_modeled_sampler(q_head, cap, conf
     sampler = torch.cat([q_head.log(), q_head.new_zeros(1)]).expand(3, -1)
     valid = torch.tensor([[True, True, False]], device=device).expand(3, -1)
     inputs = LossInputs(logp[sampled], q[sampled].log(), None, advantage, mask, weights, head, sampler, valid)
-    config = config_cls(eps=0.1, **{cap_field: cap}, score_centering=True, score_centering_topk=2)
+    config = config_cls(
+        **({} if config_cls is IcePopTISLossConfig else {"eps": 0.1}),
+        **{cap_field: cap},
+        score_centering=True,
+        score_centering_topk=2,
+    )
     result = setup_rl_loss_fn(config).loss(inputs)
     actual = result.loss
-    w = (p / q).clamp_max(cap) * ((p - q).abs() <= config.eps)
+    accepted = (
+        ((p / q) >= config.ratio_low) & ((p / q) <= config.ratio_high)
+        if config_cls is IcePopTISLossConfig
+        else (p - q).abs() <= config.eps
+    )
+    w = (p / q).clamp_max(cap) * accepted
     center = ((q * w).detach() * logp).sum()
     correction_l1 = torch.autograd.grad(center, logits, retain_graph=True)[0].abs().sum()
     torch.testing.assert_close(

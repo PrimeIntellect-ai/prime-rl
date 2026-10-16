@@ -232,6 +232,11 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
     assert ipo_tis.eps == 0.2
     assert ipo_tis.ratio_cap == 2.0
     assert not ipo_tis.score_centering
+    icepop_tis = TrainerConfig.model_validate({"loss": {"type": "icepop_tis"}}).loss
+    assert (icepop_tis.ratio_low, icepop_tis.ratio_high, icepop_tis.ratio_cap) == (0.2, 5.0, 2.0)
+    assert not icepop_tis.score_centering
+    with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
+        TrainerConfig.model_validate({"loss": {"type": "icepop_tis", "ratio_low": 6.0}})
     assert default_config.loss.eps == 0.3
     assert default_config.loss.max_importance_ratio == 1e4
     for cap in (0.5, float("inf"), float("nan")):
@@ -239,7 +244,13 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
             TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "ratio_cap": cap}})
     with pytest.raises(ValidationError, match="score_centering_topk requires"):
         TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "score_centering_topk": 128}})
-    for loss_type, gate in (("ipo", "sample"), ("ipo_tis", "sample"), ("ipo_tis", "head")):
+    for loss_type, gate in (
+        ("ipo", "sample"),
+        ("ipo_tis", "sample"),
+        ("ipo_tis", "head"),
+        ("icepop_tis", "sample"),
+        ("icepop_tis", "head"),
+    ):
         with pytest.raises(ValidationError, match="score_centering_gate requires"):
             TrainerConfig.model_validate({"loss": {"type": loss_type, "score_centering_gate": gate}})
         gated = {"type": loss_type, "score_centering": True, "score_centering_gate": gate}
