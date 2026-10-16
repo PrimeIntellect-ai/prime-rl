@@ -54,11 +54,11 @@ class SparseDeltaEncoder:
     ``encode`` runs on a background thread and a side CUDA stream while the
     next step trains, without collectives; it only reads the weights before
     ``weights_read`` is set, and hands the delta to the writer in parts as it
-    goes. The snapshot lives on the GPU when it fits next to the first training
-    step's peak memory, else in one page-locked host buffer (locked only between
-    training steps: registering it can stall the trainer's CUDA calls). With a
-    GPU snapshot, the same host buffer (pageable) holds anchor copies instead, so
-    a rank has at most one shard-sized host copy.
+    goes. The snapshot is placed at the first broadcast after a training step: on
+    the GPU when it fits next to that step's peak memory, else in one page-locked
+    host buffer (locked only between training steps: registering it can stall the
+    trainer's CUDA calls). With a GPU snapshot, a pageable host buffer holds anchor
+    copies, allocated at the first periodic anchor.
 
     Tensors the engines hold in fp8 (``set_fp8_layout``: HF name -> scale format,
     from the engine layout) are quantized with vLLM's own per-block quantizer,
