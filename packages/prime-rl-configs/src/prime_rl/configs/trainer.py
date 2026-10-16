@@ -218,8 +218,33 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class MegaMoeMoEDispatchConfig(BaseConfig):
+    type: Literal["mega_moe"] = "mega_moe"
+    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
+    """Precision of the fused expert GEMMs. ``mxfp8`` runs forward and backward on the MXFP8 kernels
+    (E4M3 data with 1x32 UE8M0 block scales, like the ``mxfp8`` expert compute); expert weights and
+    routed activations are quantized per call, gradients stay BF16/FP32. SM100 only. ``fp8`` runs forward and backward in Hopper
+    blockwise FP8 (E4M3 weights with 128x128 fp32 block scales quantized per call, tokens dispatched as E4M3
+    with 1x128 scales; the backward recomputes gate/up from the gathered tokens); SM90 only. ``fp8_bwd`` keeps the BF16 forward and
+    runs only the backward in Hopper blockwise FP8, recomputing gate/up from the gathered tokens; SM90 only."""
+
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Upper bound on tokens per rank per MoE forward call, used to size Mega MoE's symmetric buffer
+    once at startup. Defaults to the micro batch: ``model.seq_len`` for RL (one packed sequence per
+    micro batch) and ``data.micro_batch_size * data.seq_len`` for SFT. Set it to size the buffer for
+    a different bound."""
+
+    num_reserved_sms: int = Field(16, ge=1)
+    """SMs left free for concurrent NCCL kernels (FSDP all-gathers etc.). The Mega MoE kernels are
+    persistent grids that synchronize across ranks; if they occupied every SM while an NCCL kernel
+    on another stream was waiting for a peer, the two would deadlock. ``NCCL_MAX_CTAS`` caps the
+    CTAs (one per SM) a NCCL kernel launches, so set it to this value in ``env_vars``; startup fails
+    if it is unset or larger. 16 is enough for FSDP's collectives; every reserved SM is taken from
+    the GEMMs, so don't reserve more than NCCL uses."""
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -335,6 +360,8 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
@@ -644,6 +671,14 @@ class TrainerConfig(BaseConfig):
         """Resolve ``optim.weight_decay='auto'``: RL optimizes the reward objective, not a fixed dataset — L2 decay toward zero fights it, so default to no weight decay."""
         if self.optim.weight_decay == "auto":
             self.optim.weight_decay = 0.0
+        return self
+
+    @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe" and dispatch.max_tokens_per_rank is None:
+            dispatch.max_tokens_per_rank = self.model.seq_len
         return self
 
     @model_validator(mode="after")
