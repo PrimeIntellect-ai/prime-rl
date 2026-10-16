@@ -33,3 +33,13 @@ def test_circuit_breaker_opens_probes_and_recovers():
     breaker.on_dispatch()
     assert breaker.record(True, None, 33, uuid.uuid4(), 32) == "closed"
     assert breaker.allows(now=33) and breaker.cooldown == 10 and not breaker.failed_groups
+
+
+def test_inconclusive_probe_waits_another_cooldown():
+    breaker = CircuitBreaker(CircuitBreakerConfig(failures=1, cooldown=10))
+    assert breaker.record(False, "SandboxError: 503", 0, uuid.uuid4(), 0) == "open"
+    breaker.on_dispatch()
+    breaker.inconclusive(now=12, started_at=11)
+    assert breaker.state == "open" and breaker.cooldown == 10
+    assert not breaker.allows(now=21)
+    assert breaker.allows(now=22)

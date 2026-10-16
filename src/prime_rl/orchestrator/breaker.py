@@ -65,6 +65,12 @@ class CircuitBreaker:
             return self.trip(reason, now)
         return None
 
+    def inconclusive(self, now: float, started_at: float) -> None:
+        """The probe failed in a way that says nothing about the infrastructure (task or
+        harness error, timeout): wait another cooldown before the next probe."""
+        if self.probing and started_at >= self.opened_at:
+            self.probing, self.opened_at = False, now
+
     def trip(self, reason: str | None, now: float) -> BreakerState:
         self.state, self.probing, self.opened_at, self.reason = "open", False, now, reason
         return "open"

@@ -740,6 +740,8 @@ class Dispatcher:
             self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
         elif episode.ok:
             self.record_outcome(meta, ok=True)
+        elif meta.kind == "train" and meta.env_name in self.breakers:
+            self.breakers[meta.env_name].inconclusive(time.monotonic(), meta.started_at)
         if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(episode.num_total_tokens)
         await self.emit_episode(meta, group, episode)
