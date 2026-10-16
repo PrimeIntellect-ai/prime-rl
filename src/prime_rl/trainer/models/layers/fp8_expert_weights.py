@@ -193,13 +193,22 @@ class Fp8ExpertMaster(torch.Tensor):
         data, scale = grouped_per_block_cast_to_fp8_triton(
             self._tensor.to(mp_policy.param_dtype), ue8m0_for_device(self._tensor.device), GROUP_ALIGNMENT
         )
+        if mesh.size() == 1:  # FSDP copies a single input instead of all-gathering: pack both into one byte buffer
+            packed = torch.cat((data.view(torch.uint8).flatten(), scale.view(torch.uint8).flatten()))
+            return (packed,), (data.shape, scale.shape)
         return (data, scale), None
 
     def fsdp_post_all_gather(self, all_gather_outputs, metadata, param_dtype, *, out=None):
-        data, scale = all_gather_outputs
-        if out is not None:  # FSDP refilled the same data and scale buffers
+        if out is not None:  # FSDP refilled the same buffers that the weight views
             return
-        return Fp8ExpertWeight(data, scale, param_dtype), (data, scale)
+        if len(all_gather_outputs) == 1:
+            (packed,) = all_gather_outputs
+            data_shape, scale_shape = metadata
+            data = packed[: data_shape.numel()].view(torch.float8_e4m3fn).view(data_shape)
+            scale = packed[data_shape.numel() :].view(torch.float32).view(scale_shape)
+        else:
+            data, scale = all_gather_outputs
+        return Fp8ExpertWeight(data, scale, param_dtype), ()
 
     def __repr__(self):
         return f"Fp8ExpertMaster({self._tensor})"
