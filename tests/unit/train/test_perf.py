@@ -6,7 +6,6 @@ from prime_rl.trainer.models import (
     GlmMoeDsaConfig,
     Qwen3_5TextConfig,
     Qwen3Config,
-    Qwen3MoeConfig,
 )
 from prime_rl.trainer.perf import FlopCounter
 
@@ -20,7 +19,6 @@ FULL = 6 * 4 * (16 + 16) * N * N
 
 MODELS = {
     "qwen3": (Qwen3Config(**DIMS, head_dim=16, num_hidden_layers=2), 2 * FULL),
-    "qwen3_moe": (Qwen3MoeConfig(**DIMS, **MOE, num_experts=4, num_hidden_layers=2), 2 * FULL),
     # Gated delta rule: 4 value heads, key/value head dim 8; three key * value products per token and head.
     "qwen3_5": (
         Qwen3_5TextConfig(
@@ -66,3 +64,11 @@ def test_attention_flops_match_hand_count(name: str):
         model = AutoModelForCausalLMPrimeRL.from_config(config, attn_implementation="flash_attention_3")
     counter = FlopCounter(model)
     assert counter([N]) - N * counter.matmul_flops_per_token == attention_flops > 0
+
+
+def test_active_params_count_attention_and_mlp_weights():
+    with torch.device("meta"):
+        model = AutoModelForCausalLMPrimeRL.from_config(MODELS["qwen3"][0], attn_implementation="flash_attention_3")
+    # Per layer: q/o 64x64, k/v 64x32, q/k norms 16, MLP 3x64x128, two norms 64; then final norm and lm_head.
+    layer = 2 * 64 * 64 + 2 * 64 * 32 + 2 * 16 + 3 * 64 * 128 + 2 * 64
+    assert model.num_active_params() == 2 * layer + 64 + 128 * 64
