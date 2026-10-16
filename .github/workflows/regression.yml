@@ -35,7 +35,7 @@ permissions:
 
 jobs:
     rl-plan:
-        name: "rl: plan"
+        name: RL / Plan
         if: ${{ !inputs.suite || inputs.suite == 'all' || inputs.suite == 'rl' }}
         runs-on: ubuntu-latest
 
@@ -73,7 +73,7 @@ jobs:
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
     rl:
-        name: "rl: run"
+        name: RL / Run
         needs: rl-plan
         runs-on: research-cluster
         container:
@@ -127,7 +127,7 @@ jobs:
                   uv run pytest "${{ matrix.test_file }}"
 
     fft-plan:
-        name: "fft: plan"
+        name: FFT / Plan
         if: ${{ !inputs.suite || inputs.suite == 'all' || inputs.suite == 'fft' }}
         runs-on: ubuntu-latest
 
@@ -165,7 +165,7 @@ jobs:
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
 
     fft:
-        name: "fft: dispatch"
+        name: FFT / Dispatch
         needs: fft-plan
         runs-on: ubuntu-latest
         permissions:

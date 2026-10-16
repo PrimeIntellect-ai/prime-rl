@@ -35,7 +35,7 @@ concurrency:
 
 jobs:
   authorize:
-    name: Authorize dispatcher
+    name: Authorize
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -68,7 +68,7 @@ jobs:
           esac
 
   prepare:
-    name: Prepare build
+    name: Prepare
     needs: authorize
     runs-on: ubuntu-latest
     permissions:
@@ -149,7 +149,7 @@ jobs:
           echo "platforms=${PLATFORMS}" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build and push (${{ matrix.suffix }})
+    name: Build (${{ matrix.suffix }})
     needs: prepare
     strategy:
       fail-fast: true
@@ -291,7 +291,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   manifest:
-    name: Create multi-arch manifest
+    name: Manifest
     needs: [prepare, build]
     if: needs.prepare.outputs.platforms == 'both'
     runs-on: ubuntu-latest

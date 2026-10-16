@@ -15,7 +15,6 @@ concurrency:
 
 jobs:
   create-dev-tag:
-    name: Create .dev tag
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
