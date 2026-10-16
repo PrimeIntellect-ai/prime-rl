@@ -192,7 +192,7 @@ uv sync --all-extras --all-packages
 {{ pre_run_command }}
 {% endif %}
 
-{% if ckpt_dir %}{% include '_resume.sh.j2' %}{% endif %}
+{% include '_resume.sh.j2' %}
 
 # Cleanup stale node-local state from prior jobs. Orphan python/torchrun/vllm
 # processes and vLLM/torch IPC files under /dev/shm and /tmp can survive SLURM
