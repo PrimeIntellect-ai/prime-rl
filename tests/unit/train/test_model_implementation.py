@@ -77,6 +77,11 @@ def test_added_modules_load_from_the_checkpoint(checkpoint, monkeypatch):
         torch.testing.assert_close(tensor.cpu(), expected[name].to(tensor.dtype))
 
 
+def test_a_mistyped_implementation_names_the_setting(checkpoint):
+    with pytest.raises(ImportError, match="model.implementation 'no_such_module.Model' cannot be imported"):
+        get_model(model_config(checkpoint, implementation="no_such_module.Model"), device=torch.device("meta"))
+
+
 def test_implementation_is_refused_where_it_cannot_be_served():
     model = {"implementation": f"{__name__}.Qwen3WithHead"}
     assert SFTConfig(model=model).model.implementation == model["implementation"]
