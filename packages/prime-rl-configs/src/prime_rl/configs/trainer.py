@@ -301,7 +301,7 @@ class ModelConfig(BaseModelConfig):
 
     @model_validator(mode="after")
     def vlm_cp_requires_ulysses(self):
-        if self.vlm is not None and self.cp > 1 and self.cp_style == "ring":
+        if self.vlm is not None and self.cp > 1 and self.cp_style not in ("auto", "ulysses"):
             raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
         return self
 
