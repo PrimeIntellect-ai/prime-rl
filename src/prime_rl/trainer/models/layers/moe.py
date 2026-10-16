@@ -450,10 +450,13 @@ class MoE(nn.Module):
         """Compare replayed routes with the router's own top-k. Trainer and sampler weights
         differ slightly, so most tokens share most experts; tokens sharing none point at
         routes misaligned with their tokens. Rows with a repeated expert id are padding or
-        capture holes (a real top-k has distinct ids) and are skipped."""
+        capture holes (a real top-k has distinct ids) and are skipped. So are rows equal to
+        the previous row: inference never forwards a sample's final token, so its row is a
+        copy of the previous one, which shares no expert with the trainer's in most early layers."""
         shared = (own.unsqueeze(-1) == routed_experts.unsqueeze(-2)).any(dim=-1).sum(dim=-1)
         sorted_ids = routed_experts.sort(dim=-1).values
         valid = (sorted_ids[:, 1:] != sorted_ids[:, :-1]).all(dim=-1)
+        valid[1:] &= (routed_experts[1:] != routed_experts[:-1]).any(dim=-1)
         top_k = routed_experts.shape[-1]
         return torch.stack(
             (

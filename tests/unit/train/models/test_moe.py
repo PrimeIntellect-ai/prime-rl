@@ -273,3 +273,11 @@ def test_router_replay_agreement_stats(learned_selection):
     else:
         assert stats["router_replay/agreement"] is None
     assert not moe.replay_agreement.any()
+
+
+def test_router_replay_agreement_skips_repeated_rows():
+    moe = MoE.from_args(MoEArgs(num_experts=4, top_k=2), dim=4, hidden_dim=8, shared_expert=None)
+    own = torch.tensor([[0, 1], [2, 3], [2, 3]])
+    # last row: the inference placeholder for a sample's final token, a copy of the previous row
+    routed = torch.tensor([[0, 1], [1, 0], [1, 0]])
+    assert moe._replay_agreement(own, routed).tolist() == [3.0, 2.0, 1.0, 1.0]
