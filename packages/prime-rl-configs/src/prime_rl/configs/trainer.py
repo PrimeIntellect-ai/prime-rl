@@ -254,7 +254,7 @@ class ModelConfig(BaseModelConfig):
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
     offload: OffloadMode = "optimizer"
-    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
+    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward (Muon updates momentum there and runs Newton-Schulz on GPU after backward); it disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -662,12 +662,6 @@ class TrainerConfig(BaseConfig):
                 stacklevel=1,
             )
             self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
-    def full_optimizer_offload_requires_supported_optimizer(self):
-        if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
-            raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
         return self
 
     @model_validator(mode="after")

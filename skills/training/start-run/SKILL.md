@@ -28,8 +28,8 @@ SLURM launches write generated scripts and coordination files under `<run_dir>/l
 - Friendly errors: required-field boxes, validator errors point at the offending flag, unknown flags get a "did you mean" hint.
 - State-only optimizer offload is enabled by default (`model.offload = "optimizer"`).
 - For gradients, FP32 masters, optimizer state, and optimizer-in-backward CPU execution, set
-  `model.offload = "full"`. This mode uses the native CPU optimizer kernel, only supports
-  AdamW and SignSGD (SignSGD is stateless and halves the host RAM footprint), disables
+  `model.offload = "full"`. This mode uses the native CPU optimizer kernel, supports
+  AdamW, SignSGD, and Muon (SignSGD is stateless and halves the host RAM footprint), disables
   gradient clipping, and pins each rank's CPUs to its GPU's NUMA node.
 
 ## `rl` — RL training

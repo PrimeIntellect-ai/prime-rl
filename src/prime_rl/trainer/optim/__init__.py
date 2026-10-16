@@ -57,8 +57,6 @@ def setup_optimizer(
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
-    if full_offload and config.type not in ("adamw", "sign_sgd"):
-        raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
     if full_offload and config.max_norm is not None:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
@@ -84,10 +82,20 @@ def setup_optimizer(
     if full_offload:
         assert master_weights is not None
         get_logger().info("Using CPU offload for gradients and the optimizer step")
+        muon_matrix_partitions = {}
+        if config.type == "muon":
+            muon_model_params = {
+                master_weights[id(p)].model_param
+                for group in optimizer.param_groups
+                if group["algorithm"] == "muon"
+                for p in group["params"]
+            }
+            muon_matrix_partitions = _get_muon_matrix_partitions(model, muon_model_params)
         optimizer = FullCPUOffloadOptimizer(
             optimizer,
             master_weights=master_weights,
             dp_replicate=parallel_dims.dp_replicate,
+            muon_matrix_partitions=muon_matrix_partitions,
         )
         return optimizer, optimizer._gradient_manager
 
@@ -131,6 +139,17 @@ def _create_optimizer(
                 lr=lr,
                 weight_decay=config.weight_decay,
             )
+
+
+def _get_muon_matrix_partitions(
+    model: nn.Module, muon_params: set[nn.Parameter]
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    matrix_partitions = {}
+    for packed_info in get_model_packed_parameters(model):
+        partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
+        if partitions is not None and packed_info.parameter in muon_params:
+            matrix_partitions[packed_info.parameter] = partitions
+    return matrix_partitions
 
 
 def _create_muon_optimizer(
@@ -211,13 +230,12 @@ def _create_muon_optimizer(
     # Runtime fusions pack several logical matrices into one physical parameter. Muon
     # orthogonalizes each of them separately, so a packed parameter trains exactly as the
     # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
+    # Under full offload the optimizer owns CPU master shards, and FullCPUOffloadOptimizer
+    # partitions the model's parameters instead.
     matrix_partitions = {}
     if model is not None:
         muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-        for packed_info in get_model_packed_parameters(model):
-            partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
-            if partitions is not None and packed_info.parameter in muon_params:
-                matrix_partitions[packed_info.parameter] = partitions
+        matrix_partitions = _get_muon_matrix_partitions(model, muon_params)
 
     optimizer = Muon(
         params=param_groups,

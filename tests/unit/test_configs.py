@@ -368,17 +368,6 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
 
 
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
-def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
-    with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
-        config_cls.model_validate(
-            {
-                "model": {"offload": "full"},
-                "optim": {"type": "muon", "max_norm": None},
-            }
-        )
-
-
-@pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
 def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
     config = config_cls.model_validate(
         {

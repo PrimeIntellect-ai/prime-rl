@@ -10,12 +10,16 @@ from typing import Callable
 
 import torch
 import torch.distributed as dist
+from dion import Muon
+from dion.muon import muon_update_batch_async
+from dion.opt_utils import create_param_batches, pad_batch
 from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.optim import AdamW, Optimizer
 
 from prime_rl.trainer.optim.base import OffloadOptimizer
 from prime_rl.trainer.optim.cpu_adam import adamw_step as native_cpu_adamw_step
+from prime_rl.trainer.optim.cpu_adam import add_bfloat16_ as native_add_bfloat16_
 from prime_rl.trainer.optim.cpu_adam import copy_or_add_bfloat16_multi_ as native_copy_or_add_bfloat16_multi_
 from prime_rl.trainer.optim.cpu_adam import load_cpu_adamw_kernel
 from prime_rl.trainer.optim.cpu_adam import sign_sgd_step as native_cpu_sign_sgd_step
@@ -715,8 +719,10 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         optimizer: Optimizer,
         master_weights: dict[int, _MasterWeight],
         dp_replicate: int = 1,
+        muon_matrix_partitions: dict[nn.Parameter, tuple[int, ...]] | None = None,
     ):
         self.optimizer = optimizer
+        self._muon_matrix_partitions = muon_matrix_partitions or {}
         self._initialized = False
         self._master_weights = master_weights
         self._chunks = self._build_chunks()
@@ -728,9 +734,15 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         self._cuda_device = torch.cuda.current_device()
         self._chunk_groups = self._build_chunk_groups()
         self._adamw = isinstance(optimizer, AdamW)
-        get_logger().info(
-            f"Loading native read-only-gradient multi-tensor CPU {'AdamW' if self._adamw else 'SignSGD'} kernel"
-        )
+        self._muon = isinstance(optimizer, Muon)
+        self._muon_chunks = {
+            chunk_idx
+            for chunk_idx, groups in enumerate(self._chunk_groups)
+            if self._muon and groups[0][0]["algorithm"] == "muon"
+        }
+        self._muon_params_with_grad: set[int] = set()
+        self._muon_slots: list[tuple[torch.Tensor, torch.Tensor, torch.cuda.Event, torch.cuda.Event]] = []
+        get_logger().info(f"Loading native read-only-gradient multi-tensor CPU {type(optimizer).__name__} kernel")
         load_cpu_adamw_kernel()
         self._gradient_manager = GradientOffloadManager(
             [[master_weights[id(param)].model_param for param in chunk] for chunk in self._chunks],
@@ -752,6 +764,11 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         chunk: list[nn.Parameter] = []
         chunk_numel = 0
         for group in self.optimizer.param_groups:
+            # Chunks never span param groups, so a Muon chunk holds only Muon matrices
+            if chunk:
+                chunks.append(chunk)
+                chunk = []
+                chunk_numel = 0
             for param in group["params"]:
                 if chunk and chunk_numel + param.numel() > target_numel:
                     chunks.append(chunk)
@@ -822,19 +839,29 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
                 continue
             states = [self.optimizer.state[param] for param in params_with_grad]
             group_compute_params = [compute_by_param_id[id(param)] for param in params_with_grad]
-            beta1, beta2 = group["betas"]
+            if self._muon:
+                # Dion's AdamW keeps its step count on the group and bumps it in step(), after the chunks ran
+                exp_avgs = [state["momentum"] for state in states]
+                exp_avg_sqs = [state["variance"] for state in states]
+                steps = [torch.tensor(float(group["step"])) for _ in states]
+                beta1, beta2, eps = group["beta1"], group["beta2"], group["epsilon"]
+            else:
+                exp_avgs = [state["exp_avg"] for state in states]
+                exp_avg_sqs = [state["exp_avg_sq"] for state in states]
+                steps = [state["step"] for state in states]
+                (beta1, beta2), eps = group["betas"], group["eps"]
             native_cpu_adamw_step(
                 params_with_grad,
                 [gradient_by_param_id[id(param)] for param in params_with_grad],
-                [state["exp_avg"] for state in states],
-                [state["exp_avg_sq"] for state in states],
-                [state["step"] for state in states],
+                exp_avgs,
+                exp_avg_sqs,
+                steps,
                 group_compute_params,
                 lr=group["lr"],
                 beta1=beta1,
                 beta2=beta2,
                 weight_decay=group["weight_decay"],
-                eps=group["eps"],
+                eps=eps,
                 gradient_scale=self._gradient_manager.gradient_scale,
             )
 
@@ -876,14 +903,37 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         gradients: list[torch.Tensor | None],
         compute_params: list[torch.Tensor],
     ) -> None:
-        if self._adamw:
+        if self._adamw or self._muon:
             self._step_native_cpu_adamw_chunk(chunk_idx, gradients, compute_params)
         else:
             self._step_native_cpu_sign_sgd_chunk(chunk_idx, gradients, compute_params)
 
+    @torch.no_grad()
+    def _update_muon_momentum(self, chunk_idx: int, gradients: list[torch.Tensor | None]) -> None:
+        """Fold this step's gradients into the FP32 CPU momentum; Newton-Schulz runs in step()."""
+        gradient_by_param_id = {
+            id(param): gradient for param, gradient in zip(self._chunks[chunk_idx], gradients) if gradient is not None
+        }
+        for group, params in self._chunk_groups[chunk_idx]:
+            if group["nesterov"]:
+                raise NotImplementedError("Full offload does not support Nesterov Muon")
+            for param in params:
+                if id(param) not in gradient_by_param_id:
+                    continue
+                momentum = self.optimizer.state[param]["momentum"]
+                momentum.mul_(group["mu"]).add_(
+                    gradient_by_param_id[id(param)], alpha=self._gradient_manager.gradient_scale
+                )
+                self._muon_params_with_grad.add(id(param))
+
     def _step_cpu_chunk(self, chunk_idx: int) -> None:
         gradients = self._gradient_manager.load_cpu_chunk(chunk_idx, wait=False)
         timings = self._gradient_manager._timings
+        if chunk_idx in self._muon_chunks:
+            kernel_start = time.perf_counter()
+            self._update_muon_momentum(chunk_idx, gradients)
+            timings["muon_momentum"] = timings.get("muon_momentum", 0.0) + time.perf_counter() - kernel_start
+            return
         acquire_start = time.perf_counter()
         output_slots, compute_params = self._gradient_manager.acquire_output_chunk(chunk_idx)
         kernel_start = time.perf_counter()
@@ -894,15 +944,145 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self._update_compute_weights(chunk_idx, self._h2d_stream, compute_params)
             self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
 
+    def _muon_batches(self, group: dict, cpu_params: list[nn.Parameter]):
+        """Yield Dion's batches of same-shaped matrices as (model params, CPU masters, mesh info)."""
+        mesh_info = self.optimizer._get_group_mesh_info(group)
+        cpu_by_model_param = {id(self._master_weights[id(param)].model_param): param for param in cpu_params}
+        partitions = self._muon_matrix_partitions
+        model_params = [self._master_weights[id(param)].model_param for param in cpu_params]
+        for batch in create_param_batches(model_params, batch_size=mesh_info[1], matrix_partitions=partitions):
+            yield batch, [cpu_by_model_param[id(param)] for param in batch], partitions.get(batch[0]), mesh_info
+
+    def _muon_transfer_slots(self) -> list[tuple[torch.Tensor, torch.Tensor, torch.cuda.Event, torch.cuda.Event]]:
+        if not self._muon_slots:
+            max_numel = max_bytes = 0
+            for group in self.optimizer.param_groups:
+                if group["algorithm"] != "muon":
+                    continue
+                for batch, _, _, _ in self._muon_batches(group, group["params"]):
+                    locals_ = [param.to_local() for param in batch]
+                    max_numel = max(max_numel, sum(local.numel() for local in locals_))
+                    max_bytes = max(max_bytes, sum(local.nbytes for local in locals_))
+            self._muon_slots = [
+                (
+                    torch.empty(max_numel, dtype=torch.bfloat16, pin_memory=True),
+                    torch.empty(max_bytes, dtype=torch.uint8, pin_memory=True),
+                    torch.cuda.Event(),
+                    torch.cuda.Event(),
+                )
+                for _ in range(2)
+            ]
+        return self._muon_slots
+
+    @torch.no_grad()
+    def _step_muon_matrices(self) -> None:
+        """Orthogonalize the CPU momentum on GPU and apply the update to the CPU masters.
+
+        Per batch of same-shaped matrices, BF16 momentum goes H2D and Dion's batched Newton-Schulz
+        runs on it, including its all-to-all for FSDP-sharded matrices. Dion gets a zero gradient,
+        unit momentum, and a zero parameter, so its in-place update leaves exactly
+        -adjusted_lr * orthogonalized momentum, which goes D2H and is added to the FP32 master.
+        Two batches are in flight, so transfers and CPU work overlap Newton-Schulz.
+        """
+        slots = self._muon_transfer_slots()
+        pending = []
+        index = 0
+        for group in self.optimizer.param_groups:
+            group["step"] += 1
+            if group["algorithm"] != "muon":
+                continue
+            cpu_params = [param for param in group["params"] if id(param) in self._muon_params_with_grad]
+            for batch, batch_cpu_params, partitions, mesh_info in self._muon_batches(group, cpu_params):
+                device_rank, world_size, process_group, _ = mesh_info
+                momentum_buffer, update_buffer, h2d_done, d2h_done = slots[index % len(slots)]
+                index += 1
+                h2d_done.synchronize()
+                shard_dim, is_local = self.optimizer._get_matrix_shard_dim(batch[0], group["flatten"], process_group)
+
+                momentums, updates, update_views = [], [], []
+                numel_offset = byte_offset = 0
+                self._h2d_stream.wait_stream(torch.cuda.current_stream())
+                for model_param, cpu_param in zip(batch, batch_cpu_params):
+                    local = model_param.to_local()
+                    staged = momentum_buffer.narrow(0, numel_offset, local.numel()).view(local.shape)
+                    staged.copy_(self.optimizer.state[cpu_param]["momentum"])
+                    numel_offset += local.numel()
+                    update_views.append(
+                        update_buffer.narrow(0, byte_offset, local.nbytes).view(local.dtype).view(local.shape)
+                    )
+                    byte_offset += local.nbytes
+                    momentum = torch.empty_like(local, dtype=torch.bfloat16)
+                    with torch.cuda.stream(self._h2d_stream):
+                        momentum.copy_(staged, non_blocking=True)
+                    momentums.append(momentum)
+                    updates.append(DTensor(torch.zeros_like(local), model_param._spec, requires_grad=False))
+                torch.cuda.current_stream().wait_stream(self._h2d_stream)
+                gradients = [update.to_local() for update in updates]
+                if not is_local:
+                    updates = pad_batch(updates, world_size)
+                    gradients = pad_batch(gradients, world_size)
+                    momentums = pad_batch(momentums, world_size)
+                for _ in muon_update_batch_async(
+                    X=updates,
+                    G=gradients,
+                    M=momentums,
+                    lr=torch.tensor(group["lr"]),
+                    momentum=torch.tensor(1.0),
+                    weight_decay=torch.tensor(0.0),
+                    epsilon=torch.tensor(group["epsilon"]),
+                    nesterov=False,
+                    flatten=group["flatten"],
+                    adjust_lr=group["adjust_lr"],
+                    device_rank=device_rank,
+                    world_size=world_size,
+                    shard_dim=shard_dim,
+                    is_local=is_local,
+                    process_group=process_group,
+                    newton_schulz_func=self.optimizer._newton_schulz_func,
+                    partitions=partitions,
+                ):
+                    pass
+                self._d2h_stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self._d2h_stream):
+                    for update, view in zip(updates, update_views):
+                        view.copy_(update.to_local(), non_blocking=True)
+                        update.to_local().record_stream(self._d2h_stream)
+                d2h_done.record(self._d2h_stream)
+                pending.append((group, batch, batch_cpu_params, update_views, h2d_done, d2h_done))
+                if len(pending) == len(slots):
+                    self._apply_muon_update(*pending.pop(0))
+        for args in pending:
+            self._apply_muon_update(*args)
+        self._muon_params_with_grad.clear()
+
+    def _apply_muon_update(self, group, batch, cpu_params, update_views, h2d_done, d2h_done) -> None:
+        d2h_done.synchronize()
+        decay = 1 - group["lr"] * group["weight_decay"]
+        for model_param, cpu_param, view in zip(batch, cpu_params, update_views):
+            if decay != 1:
+                cpu_param.mul_(decay)
+            if view.dtype == torch.bfloat16:
+                native_add_bfloat16_(cpu_param, view)
+            else:
+                cpu_param.add_(view)
+            view.copy_(cpu_param)
+            with torch.cuda.stream(self._h2d_stream):
+                model_param.to_local().copy_(view, non_blocking=True)
+        h2d_done.record(self._h2d_stream)
+
     def step(self, closure=None):
         if closure is not None:
             raise ValueError("Optimizer closures are not supported with CPU optimizer offload")
         if self._gradient_manager.optimizer_overlapped:
             drain_start = time.perf_counter()
             self._gradient_manager.wait_for_optimizer()
-            torch.cuda.current_stream().wait_stream(self._h2d_stream)
             timings = self._gradient_manager.consume_timings()
             timings["drain"] = time.perf_counter() - drain_start
+            if self._muon:
+                muon_start = time.perf_counter()
+                self._step_muon_matrices()
+                timings["muon_matrices"] = time.perf_counter() - muon_start
+            torch.cuda.current_stream().wait_stream(self._h2d_stream)
             get_logger().debug(
                 "Offload pipeline: " + " ".join(f"{key}={value:.3f}s" for key, value in sorted(timings.items()))
             )
@@ -913,10 +1093,15 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         # Synchronous path (validation steps and checkpoint boundaries).
         gradients_by_chunk = [self._gradient_manager.load_cpu_chunk(i) for i in range(len(self._chunks))]
         for i in range(len(self._chunks)):
+            if i in self._muon_chunks:
+                self._update_muon_momentum(i, gradients_by_chunk[i])
+                continue
             output_slots, compute_params = self._gradient_manager.acquire_output_chunk(i)
             self._step_native_cpu_chunk(i, gradients_by_chunk[i], compute_params)
             self._update_compute_weights(i, self._h2d_stream, compute_params)
             self._gradient_manager.release_output_chunk(output_slots, self._h2d_stream)
+        if self._muon:
+            self._step_muon_matrices()
         torch.cuda.current_stream().wait_stream(self._h2d_stream)
         torch.cuda.synchronize()
         self.optimizer._opt_called = True
@@ -955,6 +1140,15 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             # SignSGD is stateless: no moments or step counters to materialize.
             return
         if self.optimizer.state:
+            return
+        if self._muon:
+            # Dion's state layout: Muon matrices keep momentum, its AdamW parameters add variance
+            for group in self.optimizer.param_groups:
+                for param in group["params"]:
+                    state = {"momentum": torch.zeros_like(param)}
+                    if group["algorithm"] == "adamw":
+                        state["variance"] = torch.zeros_like(param)
+                    self.optimizer.state[param] = state
             return
         alignment = 256 // torch.empty((), dtype=torch.float32).element_size()
         offsets = {}

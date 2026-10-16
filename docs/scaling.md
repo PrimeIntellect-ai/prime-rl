@@ -142,7 +142,7 @@ Activation offloading still applies to tensors saved by autograd, but tensors re
 
 ### Optimizer Offloading
 
-State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload only supports AdamW and SignSGD (`optim.type = "sign_sgd"`) and disables gradient clipping. SignSGD is stateless, so it halves the host RAM footprint versus AdamW (8 instead of 16 bytes per parameter: FP32 master + FP32 accumulated gradient, no moments).
+State-only optimizer offload is enabled by default (`model.offload = "optimizer"`). For full offload, set `model.offload = "full"`; this keeps BF16 compute weights on GPU and runs CPU optimizer chunks as gradients become ready during backward. Full offload supports AdamW, SignSGD (`optim.type = "sign_sgd"`), and Muon, and disables gradient clipping. Host RAM per parameter is 16 bytes for AdamW (FP32 master, accumulated gradient, and two moments), 8 for SignSGD (stateless), and 12 for Muon (one momentum). Muon updates its momentum on CPU during backward, then runs Newton-Schulz on GPU after backward, streaming BF16 momentum in and BF16 updates out one batch of matrices at a time.
 
 ### LM Head Chunking
 

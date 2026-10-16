@@ -392,12 +392,6 @@ class SFTConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def full_optimizer_offload_requires_supported_optimizer(self):
-        if self.model.offload == "full" and self.optim.type not in ("adamw", "sign_sgd"):
-            raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
-        return self
-
-    @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
         if self.model.offload == "full" and self.optim.max_norm is not None:
             warnings.warn(
