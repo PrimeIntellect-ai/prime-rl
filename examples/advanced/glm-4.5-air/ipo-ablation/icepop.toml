@@ -1,0 +1,12 @@
+# IcePop arm: mask a token when p_train / p_infer falls outside [ratio_low, ratio_high].
+
+[slurm]
+job_name = "ipo-ablation-icepop"
+
+[monitors.wandb]
+name = "icepop"
+
+[trainer.loss]
+type = "icepop"
+ratio_low = 0.2
+ratio_high = 5.0

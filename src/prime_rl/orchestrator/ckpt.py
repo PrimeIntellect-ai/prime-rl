@@ -14,10 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import verifiers.v1 as vf
 
 from prime_rl.configs.orchestrator import CheckpointConfig
-from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.train_source import TrainSource
 from prime_rl.orchestrator.types import Progress
 from prime_rl.utils.logger import format_time, get_logger
@@ -48,26 +46,16 @@ class CheckpointManager:
     def get_ckpt_path(self, step: int) -> Path:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
-    async def save(
-        self,
-        progress: Progress,
-        train_source: TrainSource,
-        train_sink: TrainSink,
-        open_groups: dict[str, tuple[str, vf.Task]],
-        step: int,
-    ) -> None:
-        """One file, so the queued work and the dataset cursor always restore together.
-        The state is snapshotted on the event loop (the dispatcher cannot mutate it
-        mid-snapshot) and pickled in a thread, since the queue can be large."""
+    async def save(self, state: dict[str, Any], step: int) -> None:
+        """Pickled in a thread, since the queued work can be large."""
+        await asyncio.to_thread(self.save_state, state, step)
+
+    def save_state(self, state: dict[str, Any], step: int) -> None:
+        """Save a ``build_state`` snapshot as the checkpoint of ``step``."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
-        state = {
-            "progress": copy.copy(progress),
-            "train_source": copy.deepcopy(train_source.state_dict()),
-            "train_sink": train_sink.state_dict(open_groups),
-        }
-        await asyncio.to_thread(_atomic_save, state, ckpt_path / "progress.pt")
+        _atomic_save(state, ckpt_path / "progress.pt")
         get_logger().debug(
             f"Orchestrator checkpoint saved to {ckpt_path} in {format_time(time.perf_counter() - start)}"
         )
@@ -97,6 +85,15 @@ class CheckpointManager:
                 get_logger().info(f"Resumed curriculum state for env {name}")
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
         return state.get("train_sink")
+
+
+def build_state(progress: Progress, train_source: TrainSource, train_sink_state: dict[str, Any]) -> dict:
+    """A snapshot of the orchestrator's checkpointed state, independent of later changes. One
+    file, so the queued work (a ``TrainSink.state_dict`` snapshot) and the dataset cursor
+    always restore together."""
+    return copy.deepcopy({"progress": progress, "train_source": train_source.state_dict()}) | {
+        "train_sink": train_sink_state
+    }
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:
