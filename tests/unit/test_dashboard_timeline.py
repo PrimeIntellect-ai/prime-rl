@@ -1,4 +1,5 @@
 from prime_rl.dashboard.server import project_episode_timeline
+from prime_rl.monitors.file.traces.index import index_row, summarize_episode
 
 
 def _node(
@@ -46,6 +47,25 @@ def _episode(nodes: list[dict], calls: list[dict]) -> dict:
             }
         ]
     }
+
+
+def test_episode_summary_excludes_copied_assistant_context_from_turns() -> None:
+    response = {"role": "assistant", "content": "Search the property details"}
+    nodes = [
+        {"parent": None, "message": {"role": "user", "content": "Find a property"}},
+        {"parent": 0, "message": response, "sampled": True},
+        {"parent": 0, "message": response.copy(), "sampled": False},
+        {"parent": 2, "message": {"role": "tool", "content": "Property details"}},
+        {"parent": 3, "message": {"role": "assistant", "content": "Found it"}, "sampled": True},
+        {"parent": 0, "message": response.copy()},
+    ]
+    episode = _episode(nodes, [_call(1, 0.0, 1.0), _call(4, 2.0, 3.0)])
+    episode["traces"].append(
+        {"nodes": [{"parent": None, "message": response.copy(), "sampled": True}], "calls": [_call(0, 0.0, 1.0)]}
+    )
+
+    assert summarize_episode(1, episode)["turns"] == 3
+    assert index_row(1, episode, chunk=0, offset=0)["turns"] == 3
 
 
 def test_semantic_timeline_projects_concurrent_fork_join() -> None:
