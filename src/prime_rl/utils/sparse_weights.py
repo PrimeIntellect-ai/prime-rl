@@ -418,20 +418,6 @@ def read_delta(
     return frames, checksums
 
 
-def numa_cpus(device: int) -> set[int] | None:
-    """The CPUs of the NUMA node the CUDA ``device`` hangs off, or None if unknown."""
-    props = torch.cuda.get_device_properties(device)
-    sysfs = Path(f"/sys/bus/pci/devices/{props.pci_domain_id:04x}:{props.pci_bus_id:02x}:{props.pci_device_id:02x}.0")
-    node = int((sysfs / "numa_node").read_text()) if (sysfs / "numa_node").exists() else -1
-    if node < 0:
-        return None
-    cpus = set()
-    for part in Path(f"/sys/devices/system/node/node{node}/cpulist").read_text().strip().split(","):
-        first, _, last = part.partition("-")
-        cpus.update(range(int(first), int(last or first) + 1))
-    return cpus
-
-
 def pin(num_bytes: int) -> torch.Tensor:
     """Page-locked host memory of exactly ``num_bytes``, outside torch's caching host allocator
     (which rounds sizes up and keeps freed blocks). Release it with ``unpin``."""
