@@ -1,0 +1,46 @@
+max_steps = 4
+
+[env_vars]
+TRITON_CACHE_DIR = "/tmp/.cache/triton_cache"
+
+[model]
+name = "zai-org/GLM-5.3-BF16"
+attn = "flash_attention_2"
+cp = 8
+ep = 8
+offload = "optimizer"
+
+[model.ac]
+freq = 1
+
+[model.ac_offloading]
+max_inflight_activations = 5
+
+[optim]
+type = "sign_sgd"
+lr = 5e-5
+weight_decay = 0.01
+
+[scheduler]
+type = "linear"
+warmup_steps = 50
+decay_steps = 0
+
+[renderer]
+name = "glm-5.3"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+gpus_per_node = 8
+
+[model.debug]
+force_balanced_routing = true  # debug only
+
+[data]
+type = "sft"
+name = "datasets/intellect-3-sft-10k"  # put it on the volume first (step 2); volume-relative
+splits = ["math"]
+batch_size = 8
+micro_batch_size = 1
+seq_len = 4096

@@ -1,0 +1,23 @@
+max_steps = 10
+
+[ckpt]               # checkpoint at the end of training, saved to the volume
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"  # must be in the cluster model cache
+
+[data]
+name = "datasets/reverse-text"  # volume-relative; the platform resolves it to /volume/datasets/reverse-text
+type = "sft"
+seq_len = 2048        # add splits = ["train"] for multi-split datasets
+batch_size = 8
+
+[optim]
+lr = 2e-5
+
+[deployment]
+type = "single_node"
+num_train_gpus = 1
+gpus_per_node = 1
+
+[renderer]
+name = "prime-qwen3"  # must match the model family
