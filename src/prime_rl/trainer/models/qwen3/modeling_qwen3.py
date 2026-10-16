@@ -11,7 +11,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig, attention_head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
@@ -274,6 +274,9 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 rotary_emb.config, rotary_emb.inv_freq.device
             )
             rotary_emb.inv_freq.copy_(inv_freq)
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return attention_head_partitions((layer.self_attn for layer in self.model.layers), heads_per_block)
 
 
 __all__ = ["Qwen3ForCausalLM", "Qwen3Model", "Qwen3PreTrainedModel"]

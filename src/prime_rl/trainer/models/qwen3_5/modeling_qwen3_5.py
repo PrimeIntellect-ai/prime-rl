@@ -3,6 +3,7 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.attn import attention_head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -383,6 +384,12 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel):
                 module.routing_confidence_sum.zero_()
                 if module.router.selection_bias is not None:
                     module.router.selection_bias.zero_()
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        if self.is_vlm:
+            raise NotImplementedError("optim.heads_per_block does not cover the Qwen3.5 vision encoder")
+        attention_layers = (layer for layer in self.model.layers if layer.layer_type == "full_attention")
+        return attention_head_partitions((layer.self_attn for layer in attention_layers), heads_per_block)
 
 
 __all__ = [

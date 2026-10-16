@@ -3,6 +3,7 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.attn import attention_head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
@@ -305,6 +306,11 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
                 module.routing_confidence_sum.zero_()
                 if module.router.selection_bias is not None:
                     module.router.selection_bias.zero_()
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        text_model = getattr(self.model, "language_model", self.model)
+        attention_layers = (layer for layer in text_model.layers if layer.layer_type != "linear_attention")
+        return attention_head_partitions((layer.self_attn for layer in attention_layers), heads_per_block)
 
 
 __all__ = [
