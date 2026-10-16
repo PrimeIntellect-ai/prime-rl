@@ -117,6 +117,14 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes all its artifacts to ``output_dir / dir``. Defaults to ``run.name``; set it only when the directory should differ from the display name."""
 
 
+class ControlConfig(BaseConfig):
+    host: str = "0.0.0.0"
+    """Address the control API binds to."""
+
+    port: int = Field(8040, ge=1, le=65535)
+    """Port the control API listens on."""
+
+
 class ResumeConfig(BaseConfig):
     """Resume the run from a checkpoint. A bare ``--resume`` (or empty ``[resume]`` block)
     resumes from the latest checkpoint."""
@@ -308,10 +316,7 @@ class ZMQTransportConfig(BaseTransportConfig):
     """Host address for ZMQ transport."""
 
     port: int = 5555
-    """Base port for ZMQ transport."""
-
-    hwm: int = 10
-    """High-water mark (max in-flight messages per ZMQ socket)."""
+    """Port for ZMQ transport."""
 
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]
