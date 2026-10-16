@@ -49,6 +49,21 @@ class MoEBalanceConfig(BaseConfig):
     seq_aux_coeff: float = Field(1e-3, ge=0)
     """Weight of the sequence-wise balance loss (alpha), computed per packed row. 0 turns it off."""
 
+    bias_update: Literal["sign", "smebu"] = "sign"
+    """``sign``: move each bias by ``bias_update_rate`` times the sign of its expert's underload. ``smebu``: Arcee
+    Trinity's soft-clamped momentum update (https://arxiv.org/abs/2602.17004, eqs. 23-28), with
+    ``bias_update_rate`` as its step size lambda: ``rate * tanh(kappa * (mean - load) / mean)``, mean-centred and
+    smoothed by momentum."""
+
+    smebu_kappa: float = Field(2.0, gt=0)
+    """Softness of the SMEBU clamp: the slope of tanh at zero relative load violation."""
+
+    smebu_momentum: float = Field(0.5, ge=0, lt=1)
+    """Momentum (beta) of the SMEBU bias update."""
+
+    router_z_coeff: float = Field(0.0, ge=0)
+    """Weight of the router z-loss, the mean over tokens of ``logsumexp(router logits)^2``. 0 turns it off."""
+
 
 class PretrainMoEConfig(MoERuntimeConfig):
     balance: MoEBalanceConfig = MoEBalanceConfig()

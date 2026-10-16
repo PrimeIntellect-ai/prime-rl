@@ -1,10 +1,17 @@
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
-from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model, update_selection_biases
+from prime_rl.trainer.model import (
+    compute_expert_load_stats,
+    is_tt_moe_model,
+    smebu_update_selection_biases,
+    update_selection_biases,
+)
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
@@ -270,6 +277,23 @@ def test_update_selection_biases_moves_towards_underloaded_experts():
 
     # sign(mean - load) = [-1, 1, 1, 1], centred to [-1.5, 0.5, 0.5, 0.5] per step
     torch.testing.assert_close(moe.router.selection_bias, torch.tensor([-0.3, 0.1, 0.1, 0.1]))
+
+
+def test_smebu_update_selection_biases_soft_clamps_and_smooths():
+    moe = MoE.from_args(MoEArgs(num_experts=4), dim=4, hidden_dim=8, shared_expert=None)
+    layer = torch.nn.Module()
+    layer.mlp = moe
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([layer])
+    momenta = [torch.zeros(4)]
+
+    for _ in range(2):
+        smebu_update_selection_biases(model, torch.tensor([[8.0, 4.0, 4.0, 0.0]]), 0.1, 2.0, 0.5, momenta)
+
+    # relative underload [-1, 0, 0, 1] -> 0.1 * tanh(2 * v); momentum 0.5 gives 0.5 + 0.75 = 1.25 steps after two updates
+    step = 0.1 * math.tanh(2.0)
+    torch.testing.assert_close(moe.router.selection_bias, torch.tensor([-1.25 * step, 0.0, 0.0, 1.25 * step]))
 
 
 def test_sequence_balance():
