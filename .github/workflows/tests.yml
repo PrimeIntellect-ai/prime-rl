@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  cpu-unit-tests:
-    name: Unit tests (CPU)
+  unit-cpu:
+    name: Unit (CPU)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -52,8 +52,8 @@ jobs:
       - name: Cleanup output_dir
         run: rm -rf /tmp/outputs
 
-  slim-configs-install:
-    name: Slim install (prime-rl-configs only)
+  slim:
+    name: Slim install
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -117,7 +117,7 @@ jobs:
           PY
 
   changes:
-    name: Select tests
+    name: Changes
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     permissions:
@@ -194,8 +194,8 @@ jobs:
             ]')
           echo "tests=$tests" >> "$GITHUB_OUTPUT"
 
-  gpu-unit-tests:
-    name: Unit tests (GPU)
+  unit-gpu:
+    name: Unit (GPU)
     needs: changes
     runs-on: prime-rl-2xh200
     container:
@@ -236,8 +236,8 @@ jobs:
           PYTEST_OUTPUT_DIR: /tmp/outputs
         run: uv run pytest tests/unit -m gpu
 
-  integration-tests:
-    name: Integration tests (${{ matrix.test }})
+  integration:
+    name: Integration / ${{ matrix.test }}
     needs: changes
     runs-on: prime-rl-2xh200
     container:
@@ -296,8 +296,8 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  eval-tests:
-    name: Integration tests (gsm8k_eval)
+  integration-eval:
+    name: Integration / gsm8k_eval
     needs: changes
     if: needs.changes.outputs.eval == 'true'
     runs-on: ubuntu-latest

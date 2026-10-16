@@ -30,7 +30,7 @@ permissions:
 
 jobs:
     rl-plan:
-        name: "rl: plan"
+        name: RL / Plan
         if: ${{ !inputs.suite || inputs.suite == 'all' || inputs.suite == 'rl' }}
         runs-on: ubuntu-latest
 
@@ -68,7 +68,7 @@ jobs:
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
 
     rl:
-        name: "rl: dispatch"
+        name: RL / Dispatch
         needs: rl-plan
         runs-on: ubuntu-latest
         permissions:
