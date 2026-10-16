@@ -14,6 +14,7 @@ def apply_shared_vllm_patches():
 
     patch_gpt_oss_weight_loading()
     patch_qwen38_weight_loading()
+    monkey_patch_shm_buffer_ownership()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
     monkey_patch_nano_v3_reasoning_parser()
@@ -30,6 +31,65 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+
+
+def monkey_patch_shm_buffer_ownership():
+    """Own out-of-band buffers before releasing a reusable vLLM SHM slot."""
+    import pickle
+
+    import zmq
+    from vllm.distributed.device_communicators import shm_broadcast
+
+    # Backport https://github.com/vllm-project/vllm/pull/61000; remove when our
+    # minimum vLLM version includes it. Retained routed-expert arrays otherwise
+    # alias ring slots that subsequent messages can overwrite.
+    MessageQueue = shm_broadcast.MessageQueue
+    if getattr(MessageQueue.dequeue, "_prime_rl_owns_shm_buffers", False):
+        return
+
+    def dequeue(self, timeout: float | None = None, indefinite: bool = False):
+        if self._is_local_reader:
+            with self.acquire_read(timeout, indefinite) as buf:
+                overflow = buf[0] == 1
+                if not overflow:
+                    offset = 3
+                    buf_count = shm_broadcast.from_bytes_big(buf[1:offset])
+                    all_buffers = []
+                    for i in range(buf_count):
+                        buf_offset = offset + 4
+                        buf_len = shm_broadcast.from_bytes_big(buf[offset:buf_offset])
+                        offset = buf_offset + buf_len
+                        buffer = buf[buf_offset:offset]
+                        all_buffers.append(buffer if i == 0 else bytearray(buffer))
+                    obj = pickle.loads(all_buffers[0], buffers=all_buffers[1:])
+            if overflow:
+                obj = MessageQueue.recv(self.local_socket, timeout)
+        elif self._is_remote_reader:
+            obj = MessageQueue.recv(self.remote_socket, timeout)
+        else:
+            raise RuntimeError("Only readers can dequeue")
+        return obj
+
+    def _rebuild_tensor(buf, shape: tuple[int, ...], dtype_str: str) -> torch.Tensor:
+        dtype = getattr(torch, dtype_str)
+        assert isinstance(dtype, torch.dtype)
+        if isinstance(buf, zmq.Frame):
+            try:
+                return torch.frombuffer(buf, dtype=torch.uint8).view(dtype).view(shape)
+            except ValueError:
+                pass
+        raw = buf if isinstance(buf, bytearray) else bytearray(buf)
+        if not raw:
+            assert 0 in shape
+            return torch.empty(shape, dtype=dtype)
+        return torch.frombuffer(raw, dtype=torch.uint8).view(dtype).view(shape)
+
+    # Pickle resolves this reducer by its module and name in receiving processes.
+    _rebuild_tensor.__module__ = shm_broadcast.__name__
+    _rebuild_tensor.__qualname__ = "_rebuild_tensor"
+    dequeue._prime_rl_owns_shm_buffers = True
+    shm_broadcast._rebuild_tensor = _rebuild_tensor
+    MessageQueue.dequeue = dequeue
 
 
 def monkey_patch_deepseek_v4_allowed_layer_types():
