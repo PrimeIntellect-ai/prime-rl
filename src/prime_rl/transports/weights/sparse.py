@@ -615,7 +615,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         return self.encoder.anchor_parts()
 
     def _publish_full(self, step: int, step_dir: Path) -> None:
-        self.host_readers.append(self._submit(self.writes, self._write_full, step, step_dir, self._anchor_parts()))
+        parts = self._anchor_parts()  # before reading self.host_readers, which this resets
+        self.host_readers.append(self._submit(self.writes, self._write_full, step, step_dir, parts))
 
     def _encode(
         self,
@@ -660,9 +661,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             self._submit(self.writes, self._start_delta, step, base_step, step_dir)
         self._submit(self.writes, self._finish_delta, step, base_step, step_dir, num_parts, time.perf_counter() - start)
         if anchor:
-            self.host_readers.append(
-                self._submit(self.anchors, self._write_anchor, step, step_dir, self._anchor_parts())
-            )
+            parts = self._anchor_parts()  # before reading self.host_readers, which this resets
+            self.host_readers.append(self._submit(self.anchors, self._write_anchor, step, step_dir, parts))
 
     def _scales_changed_anywhere(self, step_dir: Path, changed: bool) -> bool:
         """Agree through the step dir whether any rank's fp8 block scales changed: the encode thread runs no
