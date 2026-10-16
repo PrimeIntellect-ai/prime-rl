@@ -1,0 +1,115 @@
+name: Eval Regression
+
+on:
+    workflow_dispatch:
+        inputs:
+            repeats:
+                description: "Independent eval runs to measure the run-to-run spread"
+                required: false
+                default: "5"
+            model:
+                description: "Model id on Prime Inference (empty: the config's model)"
+                required: false
+                default: ""
+    pull_request:
+        paths:
+            - .github/workflows/eval_regression.yaml
+            - configs/ci/eval-regression/**
+            - scripts/eval_regression.py
+    # 4AM PST (12PM UTC), after the nightly tests start
+    schedule:
+        - cron: "0 12 * * *"
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+    cancel-in-progress: true
+
+env:
+    REPEATS: ${{ inputs.repeats || '5' }}
+    CONFIG: configs/ci/eval-regression/gsm8k.toml
+
+jobs:
+    plan:
+        name: Plan repeats
+        runs-on: ubuntu-latest
+        outputs:
+            repeats: ${{ steps.plan.outputs.repeats }}
+        steps:
+            - id: plan
+              run: echo "repeats=$(jq -nc "[range(1; $REPEATS + 1)]")" >> "$GITHUB_OUTPUT"
+
+    eval:
+        name: Eval (repeat ${{ matrix.repeat }})
+        needs: plan
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        strategy:
+            fail-fast: false
+            matrix:
+                repeat: ${{ fromJSON(needs.plan.outputs.repeats) }}
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+            - parallel:
+                  - name: Init public submodules
+                    run: |
+                        git config --global url."https://github.com/".insteadOf "git@github.com:"
+                        git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+                  - name: Install uv
+                    uses: astral-sh/setup-uv@v10.0.1
+                    with:
+                        enable-cache: true
+                        cache-dependency-glob: "uv.lock"
+            - name: Install dependencies
+              run: uv sync --all-packages --locked
+            - name: Run eval
+              env:
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+                  PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+                  MODEL: ${{ inputs.model }}
+              run: |
+                  start=$(date +%s)
+                  uv run eval @ "$CONFIG" ${MODEL:+-m "$MODEL"} \
+                      --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
+                  python3 scripts/eval_regression.py collect "outputs/repeat-${{ matrix.repeat }}" \
+                      --repeat ${{ matrix.repeat }} --wall-s "$(( $(date +%s) - start ))" --out result.json
+            - name: Upload result
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: eval-regression-${{ matrix.repeat }}
+                  path: |
+                      result.json
+                      outputs/repeat-${{ matrix.repeat }}/logs
+                      outputs/repeat-${{ matrix.repeat }}/monitors/file/metrics.jsonl
+                      outputs/repeat-${{ matrix.repeat }}/monitors/file/traces/stream.index.jsonl
+                  if-no-files-found: ignore
+                  retention-days: 30
+
+    summary:
+        name: Summary
+        needs: eval
+        if: always()
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+                  sparse-checkout: scripts/eval_regression.py
+                  sparse-checkout-cone-mode: false
+            - name: Download results
+              uses: actions/download-artifact@v8
+              with:
+                  path: artifacts
+                  pattern: eval-regression-*
+            - name: Write summary
+              run: |
+                  shopt -s nullglob
+                  python3 scripts/eval_regression.py summarize artifacts/*/result.json --expected "$REPEATS" \
+                      | tee -a "$GITHUB_STEP_SUMMARY"
+                  results=(artifacts/*/result.json)
+                  [ ${#results[@]} -gt 0 ]

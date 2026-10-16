@@ -1,0 +1,22 @@
+# Nightly eval regression: the full gsm8k test split (1319 tasks), one rollout
+# each, with the null harness (one chat completion per task, no sandbox) against
+# Prime Inference. The workflow runs this config several times to measure the
+# run-to-run spread of accuracy and time to finish.
+#
+#   uv run eval @ configs/ci/eval-regression/gsm8k.toml
+
+model = "internal/glm-5.3-high-throughput"
+group_size = 1
+dashboard = false
+
+[concurrency]
+min_inflight = 256
+max_inflight = 256
+
+[sampling]
+max_completion_tokens = 8192
+
+[[source]]
+env.taskset.id = "gsm8k"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
