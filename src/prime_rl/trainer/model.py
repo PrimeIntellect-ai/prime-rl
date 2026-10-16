@@ -417,6 +417,14 @@ def get_model(
             f"model.implementation must name a PreTrainedModelPrimeRL subclass, got {config.implementation!r} "
             f"({implementation_cls!r})"
         )
+    if implementation_cls is not None:
+        supported = [get_custom_vlm_cls(model_config) if is_vlm_arch else None]
+        supported.append(get_custom_causal_lm_cls(model_config) if supports_custom_impl(model_config) else None)
+        if not any(cls is not None and issubclass(implementation_cls, cls) for cls in supported):
+            raise TypeError(
+                f"model.implementation must extend prime-rl's class for {model_config.model_type!r}, "
+                f"got {config.implementation!r}"
+            )
     custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch and implementation_cls is None else None
     if implementation_cls is None and custom_vlm_cls is None and not supports_custom_impl(model_config):
         raise ValueError(
