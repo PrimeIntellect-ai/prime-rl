@@ -104,6 +104,11 @@ class Glm4MoeConfig(PretrainedConfig):
             Whether to normalize the topk probabilities.
         use_qk_norm (`bool`, *optional*, defaults to `False`):
             Whether to use query-key normalization in the attention
+        hc_count (`int`, *optional*, defaults to 1):
+            Number of residual streams. Above 1, Gated Residual connections (Qwen3.8-Next) replace the pre-norms
+            and the final norm.
+        hc_lowrank (`int`, *optional*):
+            Rank of the Gated Residual read gates; required when `hc_count` is above 1.
     ```python
     >>> from transformers import Glm4MoeModel, Glm4MoeConfig
     >>> # Initializing a Glm4Moe style configuration
@@ -165,6 +170,8 @@ class Glm4MoeConfig(PretrainedConfig):
         first_k_dense_replace=1,
         norm_topk_prob=True,
         use_qk_norm=False,
+        hc_count=1,
+        hc_lowrank=None,
         pad_token_id=None,
         **kwargs,
     ):
@@ -197,6 +204,8 @@ class Glm4MoeConfig(PretrainedConfig):
         self.first_k_dense_replace = first_k_dense_replace
         self.norm_topk_prob = norm_topk_prob
         self.use_qk_norm = use_qk_norm
+        self.hc_count = hc_count
+        self.hc_lowrank = hc_lowrank
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,

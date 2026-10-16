@@ -9,6 +9,7 @@ from torch.distributed.tensor._utils import compute_local_shape_and_global_offse
 
 from prime_rl.configs.trainer import InitConfig, ParametrizationConfig
 from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
+from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm
 from prime_rl.utils.weights import resolve_fqn
 
 ParamRole = Literal["embedding", "output", "residual_out", "hidden", "norm", "bias"]
@@ -111,6 +112,9 @@ def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: fl
         )
         local.copy_(values.mul_(role_std(role, config.std, m_n, m_l)))
     # MoE selection biases are buffers: they start at 0, so routing starts from the router scores alone.
+    # Gated Residual norm gains are zero-centred (scale 1 + w), so they start at 0.
     for module in model.modules():
         if isinstance(module, TokenChoiceTopKRouter) and module.selection_bias is not None:
             module.selection_bias.zero_()
+        if isinstance(module, ExpandedRMSNorm):
+            module.weight.zero_()

@@ -106,6 +106,8 @@ def param_group(name: str) -> str:
         return "lm_head"
     if any("norm" in part for part in parts):
         return "norm"
+    if any("hyper_connection" in part for part in parts):
+        return "hyper_connection"
     if "router" in parts:
         return "router"
     if "shared_expert" in parts:
