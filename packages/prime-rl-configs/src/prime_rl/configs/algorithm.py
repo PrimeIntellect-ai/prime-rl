@@ -227,16 +227,15 @@ class BaseAlgoConfig(BaseConfig):
 
 class GRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["grpo"] = "grpo"
-    """GRPO: scalar advantage = reward minus the per-group mean baseline,
-    consumed by the ``rl`` loss component on the rollout's action tokens."""
+    """GRPO: scalar advantage = reward minus the per-group token-length-weighted mean
+    ``sum_i(L_i * r_i) / sum_i(L_i)``, where ``L_i`` counts trainable (mask-True,
+    policy-sampled) tokens across all turns. Consumed by the ``rl`` loss component
+    on the rollout's action tokens."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: LengthPenaltyConfig | None = None
     """Penalty subtracted from each reward before the GRPO baseline: ``linear`` (``LinearLengthPenaltyConfig``, a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max) or ``cost`` (``CostPenaltyConfig``, a ``pass_rate``-scaled modelled deployment cost). None disables it."""
-
-    length_weighted_baseline: bool = False
-    """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""
 
     loss_aggregation: Literal["token", "prompt"] = "token"
     """How the rl loss weights tokens across prompt groups. ``token``: every loss token in the batch weighs the same, so groups with more total tokens dominate the gradient. ``prompt``: prompt-mean (MiMo-V2.6 Eq. 1) — each trainable token of group ``q`` gets rl weight ``1 / T_q`` (``T_q`` = the group's trainable tokens), and the trainer divides the rl loss by the summed weights, i.e. the number of groups. All rl envs of a run must use the same value."""
