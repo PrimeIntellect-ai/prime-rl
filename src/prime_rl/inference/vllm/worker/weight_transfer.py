@@ -124,42 +124,61 @@ class CheckpointIndexMap:
         self.names = set(self.records) | unpatchable
 
     def held_checksums(self) -> tuple[list[str], torch.Tensor, torch.Tensor]:
-        """``bits_checksum`` of the live param elements each checkpoint tensor was written to: the
-        names, their sums, and a mask of the ones this worker holds only part of (TP slices)."""
+        """``bits_checksum`` of the live param elements each checkpoint tensor was written to, weighted by
+        their checkpoint positions: the names, their sums, and a mask of the ones this worker holds only
+        part of (TP slices)."""
         if self.checksum_plan is None:
             self.checksum_plan = self._plan_checksums()
         names, partial, row_ranges, other_writes = self.checksum_plan
         totals = torch.zeros(len(names), dtype=torch.int64, device=partial.device)
-        for index, (starts, ends, ids) in row_ranges.items():
-            param = self.params[index]
-            row_sums = as_bits(param.data).reshape(-1, param.shape[-1]).sum(dim=1, dtype=torch.int64)
-            cumulative = torch.cat([row_sums.new_zeros(1), row_sums.cumsum(0)])
-            totals.index_add_(0, ids, cumulative[ends] - cumulative[starts])
-        for name_id, rows, cols, index, offset, *strides in other_writes:
+        for index, (starts, ends, ids, num_cols, firsts) in row_ranges.items():
+            bits = as_bits(self.params[index].data)
+            bits = bits.reshape(-1, bits.shape[-1])
+            row_sums = bits.sum(dim=1, dtype=torch.int64)
+            # Σ_c c·bits[row, c], in blocks of rows that bound the int64 temporary
+            columns = torch.arange(bits.shape[1], device=bits.device)
+            moments = torch.cat([(block * columns).sum(1) for block in bits.split(max(1, (1 << 24) // bits.shape[1]))])
+            rows = torch.arange(bits.shape[0], device=bits.device)
+            plain, by_row, by_col = (
+                cumulative[ends] - cumulative[starts]
+                for cumulative in (
+                    torch.cat([values.new_zeros(1), values.cumsum(0)])
+                    for values in (row_sums, rows * row_sums, moments)
+                )
+            )
+            totals.index_add_(0, ids, num_cols * by_row + firsts * plain + by_col)
+        for name_id, num_cols, first, rows, cols, index, offset, *strides in other_writes:
             view = as_bits(self.params[index].data).view(-1).as_strided((rows, cols), strides, offset)
-            totals[name_id] += view.sum(dtype=torch.int64)
+            row_weights = first + num_cols * torch.arange(rows, device=view.device)
+            totals[name_id] += (row_weights * view.sum(1, dtype=torch.int64)).sum()
+            totals[name_id] += (torch.arange(cols, device=view.device) * view.sum(0, dtype=torch.int64)).sum()
         return names, totals, partial
 
     def _plan_checksums(self):
-        """Writes that cover whole rows of a param become row ranges, summed with one cumsum per param."""
+        """Writes that cover whole rows of a param become row ranges, summed with cumsums over the rows
+        of each param. Element ``(row, col)`` of a write is weighted by its checkpoint flat index + 1:
+        ``row * num_cols + first + col`` for a row range, with ``first`` per write."""
         names = [
             name
             for name, writes in self.records.items()
             if name not in self.unpatchable and sum(rows * cols for _, rows, _, cols, *_ in writes) <= self.numel[name]
         ]
         device = self.params[0].device
-        ranges: dict[int, list[list[int]]] = defaultdict(lambda: [[], [], []])
+        ranges: dict[int, list[list[int]]] = defaultdict(lambda: [[], [], [], [], []])
         other_writes = []
         for name_id, name in enumerate(names):
-            for _, rows, _, cols, index, offset, row_stride, col_stride in self.records[name]:
+            num_cols = self.num_cols[name]
+            for row0, rows, col0, cols, index, offset, row_stride, col_stride in self.records[name]:
                 width = self.params[index].shape[-1]
                 if col_stride == 1 and row_stride == width and cols == width and offset % width == 0:
-                    starts, ends, ids = ranges[index]
-                    starts.append(offset // width)
-                    ends.append(offset // width + rows)
-                    ids.append(name_id)
+                    start = offset // width
+                    for values, value in zip(
+                        ranges[index], (start, start + rows, name_id, num_cols, (row0 - start) * num_cols + col0 + 1)
+                    ):
+                        values.append(value)
                 else:
-                    other_writes.append((name_id, rows, cols, index, offset, row_stride, col_stride))
+                    first = row0 * num_cols + col0 + 1
+                    other_writes.append((name_id, num_cols, first, rows, cols, index, offset, row_stride, col_stride))
         row_ranges = {
             index: tuple(torch.tensor(values, device=device) for values in lists) for index, lists in ranges.items()
         }
@@ -289,20 +308,6 @@ def _restore_kernel_format(swapped: list[tuple]) -> None:
             layer.register_parameter(name, param)
         for name, buffer in buffers.items():
             layer.register_buffer(name, buffer, persistent=name not in non_persistent)
-
-
-@torch.no_grad()
-def weight_checksums(model: Module, chunk: int = 1 << 24) -> dict[str, int]:
-    """Position-weighted sum of every parameter's raw bits (exact, any dtype)."""
-    sums = {}
-    for name, param in model.named_parameters():
-        bits = as_bits(param.data).reshape(-1)
-        total = torch.zeros((), dtype=torch.int64, device=bits.device)
-        for start in range(0, bits.numel(), chunk):
-            part = bits[start : start + chunk].long()
-            total += (part * torch.arange(start + 1, start + 1 + part.numel(), device=bits.device)).sum()
-        sums[name] = total
-    return {name: int(total) for name, total in sums.items()}
 
 
 @torch.no_grad()

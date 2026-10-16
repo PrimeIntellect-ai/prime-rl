@@ -31,8 +31,8 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
     for rank, names in enumerate([[("a", slice(0, 32))], [("a", slice(32, 64)), ("b", slice(None))]]):
         entries, gaps, values, checksums = [], [], [], {}
         for name, rows in names:
-            checksums[name] = bits_checksum(as_bits(current[name][rows]))
             offset = 0 if rows.start is None else rows.start * 32
+            checksums[name] = bits_checksum(as_bits(current[name][rows]), offset)
             delta = as_bits(current[name][rows]).reshape(-1) - as_bits(previous[name][rows]).reshape(-1)
             changed = delta.nonzero().squeeze(1)
             starts = torch.zeros_like(changed, dtype=torch.bool)

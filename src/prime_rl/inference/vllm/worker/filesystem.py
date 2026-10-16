@@ -18,7 +18,6 @@ from prime_rl.inference.vllm.worker.weight_transfer import (
     CheckpointIndexMap,
     load_weights_checkpoint_layerwise,
     update_mla_absorbed_weights,
-    weight_checksums,
 )
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
@@ -154,29 +153,21 @@ class FileSystemWeightUpdateWorker(Worker):
         step = int(step_dir.name.removeprefix("step_"))
         if not (step_dir / DELTA_DIR / MANIFEST).exists():
             self._load_checkpoint(step_dir)
+            if (step_dir / DELTA_DIR).is_dir():
+                # A sparse run's full checkpoint
+                self._write_engine_layout(step_dir, step_dir)
         else:
             base_step = read_manifest(step_dir)["base_step"]
             if base_step is None:
                 # The run's first broadcast: the weights the engine booted with.
                 if self.weight_step is not None:
                     self._load_checkpoint(self._boot_dir())
+                self._write_engine_layout(step_dir, self._boot_dir())
             elif base_step == self.weight_step:
                 self._apply_delta(step_dir)
-                if anchor_complete(step_dir):
-                    # Anchor step: check that the delta chain reproduced the full checkpoint bit for bit.
-                    chained = weight_checksums(self._model())
-                    self._load_checkpoint(step_dir)
-                    current = weight_checksums(self._model())
-                    mismatched = [name for name, value in current.items() if chained[name] != value]
-                    if mismatched:
-                        raise RuntimeError(f"Sparse weight deltas diverged from the v{step} anchor: {mismatched[:8]}")
-                    logger.info(f"Sparse weight delta chain matches the v{step} anchor")
             else:
                 self._replay(step_dir)
         self.weight_step = step
-        if (step_dir / DELTA_DIR).is_dir() and not self.wrote_layout:
-            self._write_engine_layout(step_dir)
-            self.wrote_layout = True
 
     def _boot_dir(self) -> Path:
         """The local dir of the checkpoint the engine booted from."""
@@ -206,21 +197,25 @@ class FileSystemWeightUpdateWorker(Worker):
             offset += num_changes
             num_bytes += num_changes * itemsize
 
-    def _write_engine_layout(self, step_dir: Path) -> None:
+    def _write_engine_layout(self, step_dir: Path, checkpoint_dir: Path) -> None:
         """Tell the trainer which checkpoint tensors this engine holds in fp8 (and with which
-        scales), so it can send their deltas in the fp8 domain. Reads one checkpoint tensor per fp8
-        param from the step's full checkpoint, or from the boot checkpoint."""
-        if anchor_complete(step_dir):
-            index = anchor_index(step_dir)
+        scales), so it can send their deltas in the fp8 domain. Once per engine, while its weights
+        are those of ``checkpoint_dir`` (an anchor or the boot checkpoint): it reads one checkpoint
+        tensor per fp8 param from there."""
+        if self.wrote_layout:
+            return
+        self.wrote_layout = True
+        if anchor_complete(checkpoint_dir):
+            index = anchor_index(checkpoint_dir)
             tensors = index[1]
 
             def read_tensor(name: str) -> torch.Tensor:
-                return next(anchor_tensors(step_dir, [name], index))[1]
+                return next(anchor_tensors(checkpoint_dir, [name], index))[1]
 
         else:
             files = {}
             tensors = {}
-            for path in self._boot_dir().glob("*.safetensors"):
+            for path in checkpoint_dir.glob("*.safetensors"):
                 with safe_open(path, framework="pt") as f:
                     for name in f.keys():
                         tensor_slice = f.get_slice(name)
@@ -252,15 +247,17 @@ class FileSystemWeightUpdateWorker(Worker):
     def _replay(self, step_dir: Path) -> None:
         """Load the latest complete anchor at or before ``step_dir`` (or the boot checkpoint, for a
         chain from the run's first broadcast) and replay the deltas since."""
-        chain = []
-        while not anchor_complete(step_dir):
-            base_step = read_manifest(step_dir)["base_step"]
+        chain, source = [], step_dir
+        while not anchor_complete(source):
+            base_step = read_manifest(source)["base_step"]
             if base_step is None:
                 break
-            chain.append(step_dir)
-            step_dir = step_dir.parent / f"step_{base_step}"
-        logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {step_dir.name}")
-        self._load_checkpoint(step_dir if anchor_complete(step_dir) else self._boot_dir())
+            chain.append(source)
+            source = source.parent / f"step_{base_step}"
+        logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {source.name}")
+        source = source if anchor_complete(source) else self._boot_dir()
+        self._load_checkpoint(source)
+        self._write_engine_layout(step_dir, source)
         for delta_dir in reversed(chain):
             self._apply_delta(delta_dir)
 
