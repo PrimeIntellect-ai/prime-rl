@@ -7,6 +7,7 @@ from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -140,8 +141,16 @@ def _create_muon_optimizer(
     model: nn.Module | None,
     lr: float | None = None,
 ) -> Optimizer:
+    # Depthwise convolutions (gated delta net, Mamba, PLE) hold per-channel filters, not matrices: Muon would
+    # orthogonalize each channel's taps on their own, so they go to AdamW.
+    conv_weights = set()
+    if model is not None:
+        conv_weights = {f"{name}.weight" for name, module in model.named_modules() if isinstance(module, nn.Conv1d)}
+
     def muon_enabled(n, p):
         if p.ndim < 2:
+            return False
+        if n in conv_weights:
             return False
         if "lm_head" in n:
             return False
@@ -218,6 +227,10 @@ def _create_muon_optimizer(
             partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
+        # A grouped linear is n_groups independent matrices stacked along the output rows.
+        for module in model.modules():
+            if isinstance(module, GroupedLinear) and module.weight in muon_params:
+                matrix_partitions[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
 
     optimizer = Muon(
         params=param_groups,
