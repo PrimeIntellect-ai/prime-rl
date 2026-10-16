@@ -300,8 +300,9 @@ def train(config: SFTConfig):
             count = torch.as_tensor(outputs.count, device="cuda")
             if count.ndim != 0 or count.is_floating_point():
                 raise TypeError(f"objective count must be an integer, got {outputs.count!r}")
-            # A NaN micro-batch is left out of the metrics, as it is of the loss.
-            if metrics is not None and not torch.isnan(outputs.loss.detach()):
+            if metrics is not None:
+                # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
+                nan_loss = torch.isnan(outputs.loss.detach())
                 if metrics and outputs.metrics.keys() != metrics.keys():
                     raise ValueError(
                         f"objective metrics must have the same names on every call: {sorted(outputs.metrics)}"
@@ -311,7 +312,8 @@ def train(config: SFTConfig):
                         raise ValueError(
                             f"objective metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}"
                         )
-                    metrics[name] = metrics.get(name, 0.0) + value.detach().float().to("cuda")
+                    value = value.detach().float().to("cuda")
+                    metrics[name] = metrics.get(name, 0.0) + torch.where(nan_loss, 0.0, value)
             return outputs.loss, count.to(torch.int64)
 
         token_count = loss_mask.sum(dtype=torch.int64)
@@ -544,7 +546,7 @@ def train(config: SFTConfig):
             global_step_token_count = step_local_token_count.clone()
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item()
-            # With nothing to average over, no update: an objective may return a loss with a count of 0.
+            # With nothing to average over, the gradients are zeroed: an objective may return a loss with a count of 0.
             grad_scale = (
                 parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
                 if global_token_count_val > 0
