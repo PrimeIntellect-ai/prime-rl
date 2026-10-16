@@ -337,7 +337,7 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
 
-The orchestrator checkpoint keeps the work a restart would otherwise redo, in the same file as the data state. A resume ships the samples that were queued for the next batch first. Every train group that was still running is resumed with the same task: its finished rollouts are kept and only the missing ones run. Saved rollouts that would exceed `max_off_policy_steps` at the resumed step are dropped (their group reruns them). Queued samples restored this way train normally but are left out of the first steps' rollout metrics.
+The orchestrator checkpoint keeps the work a restart would otherwise redo, in the same file as the data state. A resume ships the samples that were queued for the next batch first. Every train group that was still running is resumed with the same task: its finished rollouts are kept and only the missing ones run. Saved rollouts that would exceed `max_off_policy_steps` at the resumed step are dropped (their group reruns them); saved rollouts that exceed it by the time their group completes are left out of the group's scoring. Queued samples restored this way train normally but are left out of the first steps' rollout metrics.
 
 ### Pausing a Live Run
 

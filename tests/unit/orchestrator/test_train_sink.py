@@ -14,6 +14,7 @@ from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserM
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
@@ -227,5 +228,23 @@ def test_partial_window_and_shutdown_release():
         assert window.attempts == 1
         assert window.metrics.to_dict()["rollout/queued/cancelled"] == 1
         assert s.take_rollout_window(force=True) is None
+
+    asyncio.run(run())
+
+
+def test_resumed_group_scores_only_members_within_max_off_policy_steps():
+    async def run():
+        s = sink()
+        env = s.train_envs.get("test")
+        env.config.group_size = 3
+        env.algorithm = GRPOAlgorithm(GRPOAlgoConfig(), None)
+        s.progress.step = 10  # trains v9; max_off_policy_steps=1 keeps v8 and newer
+        right, wrong, saved = trace(), trace(), trace()
+        wrong.rewards = saved.rewards = {"correct": vf.Reward(score=0.0)}
+        for t, version in ((saved, 7), (right, 9), (wrong, 9)):
+            await s.add(episode([t], version=version))
+        assert set(s.pending_batch) == {right.id, wrong.id}
+        assert s.pending_batch[right.id][0].advantages[-1] == 0.5
+        assert s.rollout_window.metrics.to_dict()["off_policy/dropped"] == 1
 
     asyncio.run(run())

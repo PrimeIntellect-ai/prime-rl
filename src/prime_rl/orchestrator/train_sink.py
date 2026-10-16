@@ -272,6 +272,20 @@ class TrainSink:
             episode_env_name(group[0]) if group else (failures[0].env_name if failures else cancellation.env_name)
         )
         env = self.train_envs.get(env_name)
+        # Only a group resumed from a checkpoint mixes dispatch versions; its saved members may
+        # have aged past the bound since. Score it on the members that can still ship.
+        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
+        fresh = [
+            episode
+            for episode in group
+            if (policy := train_work(episode).policy) is None or policy.start >= min_version
+        ]
+        if fresh and len(fresh) < len(group):
+            self.rollout_window.metrics.count(
+                "off_policy/dropped",
+                float(sum(len(episode.traces) for episode in group) - sum(len(episode.traces) for episode in fresh)),
+            )
+            group = fresh
         traces = [trace for episode in group for trace in episode.traces]
         task_idx = next((trace.task.data.idx for trace in traces), None)
         num_errored = (
@@ -345,8 +359,7 @@ class TrainSink:
         queued = set(samples_by_trace) & self.pending_batch.keys()
         self._record_group(group, failures, cancellation, env_name, queued_trace_ids=queued, cancelled=not queued)
         # A group's traces share one dispatch version, so the insertion sweep
-        # voids all or none of them (except a group completed after a resume,
-        # whose saved members are older). A fully-voided group shipped nothing —
+        # voids all or none of them. A fully-voided group shipped nothing —
         # advance the zero-output tally instead of resetting it, or a stalled
         # trainer plus a tight bound could void groups forever without ever
         # surfacing the warning.
