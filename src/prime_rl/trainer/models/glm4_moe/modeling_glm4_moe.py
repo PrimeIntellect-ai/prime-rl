@@ -28,6 +28,7 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.hyper_connection import HyperConnection
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -85,8 +86,21 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
                 activation=config.hidden_act,
             )
 
-        self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
-        self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.gated_residual = config.hc_count > 1
+        if self.gated_residual:
+            connection_args = {
+                "hidden_size": config.hidden_size,
+                "stream_count": config.hc_count,
+                "low_rank": config.hc_lowrank,
+                "norm_eps": config.rms_norm_eps,
+            }
+            self.attn_hyper_connection = HyperConnection(**connection_args)
+            self.mlp_hyper_connection = HyperConnection(**connection_args)
+        else:
+            self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+            self.post_attention_layernorm = RMSNorm(
+                RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
+            )
 
     def forward(
         self,
@@ -96,6 +110,19 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
         max_seqlen: Optional[int] = None,
         routed_experts: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
+        if self.gated_residual:
+            block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
+            block_output, _ = self.self_attn(
+                hidden_states=block_input,
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
+            hidden_states = self.attn_hyper_connection.combine(block_output, residual_state)
+            block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states)
+            block_output = self.mlp(block_input, routed_experts=routed_experts)
+            return self.mlp_hyper_connection.combine(block_output, residual_state)
+
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         # Self Attention
@@ -167,7 +194,16 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         self.layers = nn.ModuleList(
             [Glm4MoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        if config.hc_count > 1:
+            self.hyper_connection_mixer = HyperConnection(
+                hidden_size=config.hidden_size,
+                stream_count=config.hc_count,
+                low_rank=config.hc_lowrank,
+                norm_eps=config.rms_norm_eps,
+                with_residual_injection=False,
+            )
+        else:
+            self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
 
         if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
             rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
@@ -215,8 +251,9 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
-        hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+        # Gated Residual: every residual stream starts from the token embedding.
+        hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
 
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             # .contiguous(): the per-layer slice is a strided view of [tokens, layers, topk]
@@ -232,7 +269,10 @@ class Glm4MoeModel(Glm4MoePreTrainedModel):
                 routed_experts=routed_experts_layer,
             )
 
-        hidden_states = self.norm(hidden_states)
+        if self.config.hc_count > 1:
+            hidden_states, _ = self.hyper_connection_mixer(hidden_states)
+        else:
+            hidden_states = self.norm(hidden_states)
         return BaseModelOutputWithPast(last_hidden_state=hidden_states)
 
 

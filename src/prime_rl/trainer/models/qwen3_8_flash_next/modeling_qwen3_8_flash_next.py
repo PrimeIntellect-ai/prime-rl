@@ -3,6 +3,7 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.layers.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
@@ -16,7 +17,6 @@ from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next im
     is_prime_state_dict,
 )
 from prime_rl.trainer.models.qwen3_8_flash_next.gated_delta_net import GatedDeltaNet
-from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
