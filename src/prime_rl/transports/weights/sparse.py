@@ -41,9 +41,6 @@ from prime_rl.utils.sparse_weights import (
 )
 from prime_rl.utils.weights import convert_state_dict_to_hf, resolve_fqn, resolve_wire_dtype
 
-# Elements per block of the position-weighted checksums (int64 temporaries of 8 B each)
-SUM_BLOCK = 1 << 22
-
 
 class SparseDeltaEncoder:
     """Rank-local deltas of the trainer's weight shards, in HF coordinates.
@@ -359,20 +356,21 @@ class SparseDeltaEncoder:
     @staticmethod
     def _segment_sums(bits: torch.Tensor, begins: list[int], ends: list[int], firsts: list[int]) -> torch.Tensor:
         """``bits_checksum`` of each ``bits[begin:end]`` whose first element is at HF flat index ``first``:
-        Σ bits[k]·(first + k - begin + 1), wrapping int64, from cumulative sums over blocks of
-        ``SUM_BLOCK`` elements."""
-        device = bits.device
-        begins, ends, firsts = (torch.tensor(values, device=device) for values in (begins, ends, firsts))
-        plain = torch.zeros(len(begins), dtype=torch.int64, device=device)
-        weighted = torch.zeros_like(plain)
-        for start in range(0, bits.numel(), SUM_BLOCK):
-            values = bits[start : start + SUM_BLOCK].long()
-            first, last = (bound.clamp(start, start + values.numel()) - start for bound in (begins, ends))
-            positions = torch.arange(start + 1, start + 1 + values.numel(), device=device)
-            for total, summed in ((plain, values), (weighted, values * positions)):
-                cumulative = torch.cat([summed.new_zeros(1), summed.cumsum(0)])
-                total += cumulative[last] - cumulative[first]
-        return weighted + (firsts - begins) * plain
+        Σ bits[k]·(first + k - begin + 1), wrapping int64. One reduction per run of adjacent equal-length
+        segments (e.g. unstacked experts): few kernels, as the encode thread shares the GIL with training."""
+        sums, i = [], 0
+        while i < len(begins):
+            length, j = ends[i] - begins[i], i + 1
+            while j < len(begins) and begins[j] == ends[j - 1] and ends[j] - begins[j] == length:
+                j += 1
+            rows = bits[begins[i] : begins[i] + (j - i) * length].view(j - i, length)
+            positions = torch.arange(1, length + 1, device=bits.device)
+            sums.append(
+                (rows * positions).sum(1)
+                + rows.sum(1, dtype=torch.int64) * torch.tensor(firsts[i:j], device=bits.device)
+            )
+            i = j
+        return torch.cat(sums)
 
     def _diff(self, shards: list[tuple], emit: Callable) -> bool:
         """Diff ``shards`` against ``self.previous`` on the current stream, writing the new bits to the
