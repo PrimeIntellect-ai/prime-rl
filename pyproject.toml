@@ -34,6 +34,8 @@ dependencies = [
     "msgspec>=0.18",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "s3fs>=2026.2.0",
+    "gcsfs>=2026.2.0",
 ]
 
 [project.scripts]
