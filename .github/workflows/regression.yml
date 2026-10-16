@@ -2,8 +2,7 @@ name: Regression
 
 # Scheduled regression suites, one job group per suite. Dispatch with `suite`
 # to run one of them.
-#   rl:   every tests/nightly/test_*.py on the research cluster
-#   fft:  every configs/ci/nightly-fft/*.toml as a hosted full-finetune run
+#   rl:   every configs/ci/nightly/*.toml as a hosted RL run
 #   eval: `uv run eval` against Prime Inference. Lives in tests/regression/:
 #         configs/eval/ to run, baselines/eval/ to compare against, and
 #         reports/eval/ with the error bars of each baseline. Also runs on PRs
@@ -15,18 +14,14 @@ on:
             suite:
                 description: "Suite to run"
                 type: choice
-                options: [all, rl, fft, eval]
+                options: [all, rl, eval]
                 default: all
-            rl_test_file:
-                description: "rl: single test file to run (e.g. tests/nightly/test_my_exp.py). Leave empty to run all."
+            rl_config_file:
+                description: "rl: config to dispatch (e.g. configs/ci/nightly/wordle.toml). Leave empty to run all."
                 required: false
                 default: ""
-            fft_config_file:
-                description: "fft: full-FT config to dispatch (e.g. configs/ci/nightly-fft/wordle.toml). Leave empty to run all."
-                required: false
-                default: ""
-            fft_image_tag:
-                description: "fft: prime-rl image tag to pin (e.g. v0.7.1.dev58). Leave empty to auto-resolve the newest v*.dev* with a published manifest."
+            rl_image_tag:
+                description: "rl: prime-rl image tag to pin (e.g. v0.7.1.dev58). Leave empty to auto-resolve the newest v*.dev* with a published manifest."
                 required: false
                 default: ""
             eval_repeats:
@@ -76,125 +71,33 @@ jobs:
               with:
                   submodules: false
 
-            - name: Build matrix from nightly test files
+            - name: Build matrix from nightly RL configs
               id: build-matrix
               run: |
-                  # Find all nightly test files
-                  files=$(ls tests/nightly/test_*.py)
-
-                  # Filter to specific test file if provided in workflow_dispatch
-                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.rl_test_file }}" ]; then
-                      # Filter to only the specified test file
-                      filtered=$(echo "$files" | grep -F "${{ inputs.rl_test_file }}" || true)
-                      if [ -z "$filtered" ]; then
-                          echo "Error: Test file '${{ inputs.rl_test_file }}' not found"
-                          exit 1
-                      fi
-                      files="$filtered"
-                  fi
-
-                  echo "Discovered nightly tests:"
-                  echo "$files"
-
-                  # Build JSON of the form: { "test_file": ["tests/nightly/test_a.py", ...] }
-                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{test_file: .}')
-
-                  echo "matrix=$json" >> "$GITHUB_OUTPUT"
-    rl:
-        name: "rl: run"
-        needs: rl-plan
-        runs-on: research-cluster
-        container:
-            image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
-            # --shm-size: vLLM V1's DP engine/API-server IPC uses POSIX shm-backed
-            # MessageQueue (~160MB per queue); Docker's default 64MB /dev/shm triggers
-            # SIGBUS in DP engine cores on VLM runs (mm data overflows tmpfs).
-            options: --gpus all --shm-size=16g
-        timeout-minutes: 1440 # 24 hours
-        strategy:
-            fail-fast: false
-            matrix: ${{ fromJSON(needs.rl-plan.outputs.matrix) }}
-
-        steps:
-            - name: Install Git
-              run: |
-                  apt-get update
-                  apt-get install -y git
-                  git config --global --add safe.directory "$GITHUB_WORKSPACE"
-            - name: Checkout repository
-              uses: actions/checkout@v7
-              with:
-                  submodules: false
-            - name: Init public submodules
-              run: |
-                  git config --global url."https://github.com/".insteadOf "git@github.com:"
-                  git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
-            - name: Install uv
-              uses: astral-sh/setup-uv@v10.0.1
-              with:
-                  enable-cache: true
-                  cache-dependency-glob: "uv.lock"
-            - name: Install dependencies
-              run: uv sync --all-extras --all-packages --locked
-            - name: Run experiment
-              env:
-                  USERNAME_CI: CI_RUNNER
-                  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-                  # Set WANDB_MODE to online only if WANDB_API_KEY is available, otherwise set to offline
-                  # This is to allow running tests on forks without WANDB_API_KEY
-                  WANDB_MODE: ${{ secrets.WANDB_API_KEY && 'online' || 'offline' }}
-                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
-                  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-                  PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
-                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
-                  PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
-                  GITHUB_REF_NAME: ${{ github.ref_name }}
-                  GITHUB_HEAD_REF: ${{ github.head_ref }}
-              run: |
-                  echo "Running test file: ${{ matrix.test_file }}"
-                  uv run pytest "${{ matrix.test_file }}"
-
-    fft-plan:
-        name: "fft: plan"
-        if: ${{ github.event_name != 'pull_request' && (!inputs.suite || inputs.suite == 'all' || inputs.suite == 'fft') }}
-        runs-on: ubuntu-latest
-
-        outputs:
-            matrix: ${{ steps.build-matrix.outputs.matrix }}
-
-        steps:
-            - name: Checkout repository
-              uses: actions/checkout@v7
-              with:
-                  submodules: false
-
-            - name: Build matrix from nightly FFT configs
-              id: build-matrix
-              run: |
-                  # Find all nightly full-finetune configs
-                  files=$(ls configs/ci/nightly-fft/*.toml)
+                  # Find all nightly RL configs
+                  files=$(ls configs/ci/nightly/*.toml)
 
                   # Filter to specific config if provided in workflow_dispatch
-                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.fft_config_file }}" ]; then
-                      filtered=$(echo "$files" | grep -F "${{ inputs.fft_config_file }}" || true)
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.rl_config_file }}" ]; then
+                      filtered=$(echo "$files" | grep -F "${{ inputs.rl_config_file }}" || true)
                       if [ -z "$filtered" ]; then
-                          echo "Error: Config file '${{ inputs.fft_config_file }}' not found"
+                          echo "Error: Config file '${{ inputs.rl_config_file }}' not found"
                           exit 1
                       fi
                       files="$filtered"
                   fi
 
-                  echo "Discovered nightly FFT configs:"
+                  echo "Discovered nightly RL configs:"
                   echo "$files"
 
-                  # Build JSON of the form: { "config_file": ["configs/ci/nightly-fft/foo.toml", ...] }
+                  # Build JSON of the form: { "config_file": ["configs/ci/nightly/foo.toml", ...] }
                   json=$(printf '%s\n' "$files" | jq -R . | jq -sc '{config_file: .}')
 
                   echo "matrix=$json" >> "$GITHUB_OUTPUT"
 
-    fft:
-        name: "fft: dispatch"
-        needs: fft-plan
+    rl:
+        name: "rl: dispatch"
+        needs: rl-plan
         runs-on: ubuntu-latest
         permissions:
             contents: read
@@ -202,7 +105,7 @@ jobs:
         timeout-minutes: 30
         strategy:
             fail-fast: false
-            matrix: ${{ fromJSON(needs.fft-plan.outputs.matrix) }}
+            matrix: ${{ fromJSON(needs.rl-plan.outputs.matrix) }}
 
         steps:
             - name: Checkout repository
@@ -218,7 +121,7 @@ jobs:
                   # cannot break out of shell context via $(...) or embedded
                   # quotes — the GitHub expression is substituted before Bash
                   # parses the script.
-                  REQUESTED_IMAGE_TAG: ${{ inputs.fft_image_tag }}
+                  REQUESTED_IMAGE_TAG: ${{ inputs.rl_image_tag }}
               run: |
                   # If workflow_dispatch passed an explicit image_tag, validate
                   # it as a Docker/OCI tag, verify its manifest is pullable,
@@ -322,7 +225,7 @@ jobs:
                   cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
                   echo "Dispatched run name: $run_name"
                   # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
-                  # the full-FT dispatch path (`prime train`) only picks up
+                  # the hosted dispatch path (`prime train`) only picks up
                   # secrets that were explicitly collected via `-e` / `--env-file`,
                   # not ambient env, so the workflow env: block alone is not
                   # enough to reach the hosted trainer/orchestrator pods.
