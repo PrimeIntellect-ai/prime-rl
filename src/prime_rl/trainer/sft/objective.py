@@ -79,9 +79,9 @@ def objective_loss(objective: SFTObjective, model: nn.Module, batch: Batch) -> O
     )["hidden_states"]
     if not isinstance(model, FSDPModule):
         return objective.loss(ObjectiveInputs(model=model, hidden_states=hidden_states, batch=batch))
-    # FSDP reshards the root unit's parameters when the forward pass ends, but the loss may still use them: a module
-    # of the model's own (e.g. a decision head) or an LM head tied to the embeddings. Gather them again; backward
-    # reshards them, and without a backward (validation) they are resharded here.
+    # FSDP reshards the root unit's parameters when the forward pass ends, but the loss may still use them, e.g. an
+    # LM head tied to the embeddings (setup_fsdp gives lm_head its own unit only when untied). Gather them again;
+    # backward reshards them, and without a backward (validation) they are resharded here.
     model.unshard()
     outputs = objective.loss(ObjectiveInputs(model=model, hidden_states=hidden_states, batch=batch))
     if not torch.is_grad_enabled():
