@@ -9,6 +9,7 @@ from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
+from prime_rl.trainer.optim.newton_schulz import newton_schulz
 from prime_rl.trainer.optim.offload import (
     FullCPUOffloadOptimizer,
     GradientOffloadManager,
@@ -237,6 +238,9 @@ def _create_muon_optimizer(
             if partitions is not None and packed_info.parameter in muon_params:
                 matrix_partitions[packed_info.parameter] = partitions
 
+    newton_schulz_func = None
+    if config.newton_schulz_coefficients != "muon" or config.update_rms != 0.2:
+        newton_schulz_func = newton_schulz(config.newton_schulz_coefficients, config.update_rms)
     muon_cls = BF16MomentumMuon if config.bf16_momentum else Muon
     optimizer = muon_cls(
         params=param_groups,
@@ -246,6 +250,7 @@ def _create_muon_optimizer(
         betas=(config.betas1, config.betas2),
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
+        newton_schulz_func=newton_schulz_func,
         distributed_mesh=distributed_mesh,
         world_mesh=parallel_dims.world_mesh,
         fsdp_mesh_dim=1 if parallel_dims.dp_replicate_enabled else 0,

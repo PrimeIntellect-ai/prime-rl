@@ -439,6 +439,12 @@ class MuonConfig(BaseOptimizerConfig):
     betas2: float = Field(0.95, ge=0)
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
+    newton_schulz_coefficients: Literal["muon", "deepseek_v4"] = "muon"
+    """Newton-Schulz schedule. ``muon``: dion's 5 steps. ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 of (2, -1.5, 0.5) (DeepSeek-V4 report, section 2.4); twice the Newton-Schulz cost, singular values closer to 1."""
+
+    update_rms: float = Field(0.2, gt=0)
+    """RMS of a Muon update per unit of learning rate (Moonlight's matching of AdamW: 0.2; DeepSeek-V4: 0.18)."""
+
     bf16_momentum: bool = False
     """Keep the Muon momentum in bfloat16 instead of the parameter dtype. Halves Muon's optimizer state and its CPU offload traffic, at the cost of momentum precision. Muon already casts the momentum to bfloat16 before Newton-Schulz."""
 
