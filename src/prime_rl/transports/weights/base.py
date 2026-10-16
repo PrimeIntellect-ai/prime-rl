@@ -107,7 +107,7 @@ class WeightSender(ABC):
 
     def wait_for_weight_reads(self) -> None:
         """Block until background work of the last broadcast no longer reads the trainer weights. Called
-        before every optimizer step."""
+        before the final backward of every step, which may already run the (overlapped) optimizer step."""
 
     def close(self) -> None:
         """Finish the background work of the last broadcast."""

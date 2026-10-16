@@ -151,19 +151,18 @@ class SparseDeltaEncoder:
             get_logger().info(f"Compiled the fp8 quantizer ahead of time in {time.perf_counter() - start:.1f}s")
 
     def _local_shard(self, key: str, value: torch.Tensor, is_master: bool) -> tuple[torch.Tensor, int] | None:
-        """This rank's contiguous flat slice of ``value`` and its global flat offset,
-        or None when another rank owns the elements."""
+        """This rank's dim-0 slice of ``value`` and its global flat offset, or None when another rank owns the
+        elements. Flattened only where it is read (``reshape(-1)``), as that copies a non-contiguous slice."""
         if not isinstance(value, DTensor):
-            return (value.detach().reshape(-1), 0) if is_master else None
+            return (value.detach(), 0) if is_master else None
         if all(placement.is_replicate() for placement in value.placements):
-            return (value.to_local().detach().reshape(-1), 0) if is_master else None
+            return (value.to_local().detach(), 0) if is_master else None
         local_shape, global_offset = compute_local_shape_and_global_offset(
             value.shape, value.device_mesh, value.placements
         )
         if tuple(local_shape[1:]) != tuple(value.shape[1:]) or any(global_offset[1:]):
             raise NotImplementedError(f"Sparse weight broadcast needs dim-0 shards ({key}: {value.placements})")
-        local = value.to_local().detach()[: local_shape[0]]
-        return local.reshape(-1), global_offset[0] * prod(value.shape[1:])
+        return value.to_local().detach()[: local_shape[0]], global_offset[0] * prod(value.shape[1:])
 
     def _find_gathered(self, model: nn.Module, is_master: bool) -> set[str]:
         """fp8 trainer tensors whose 128-row blocks straddle ranks on some rank."""
@@ -188,7 +187,7 @@ class SparseDeltaEncoder:
 
     @torch.no_grad()
     def local_shards(self, model: nn.Module, is_master: bool) -> list[tuple]:
-        """This rank's ``(key, fqn, flat shard, global flat offset, gathered)`` for ``encode``, taken on the
+        """This rank's ``(key, fqn, shard, global flat offset, gathered)`` for ``encode``, taken on the
         training thread: FSDP swaps module parameters during forward, but the sharded storage stays put.
         ``gathered`` is ``(previous, current)`` bf16 full tensors of fp8 tensors whose blocks straddle ranks
         (the all-gathers run here, as ``encode`` runs no collectives)."""
@@ -264,20 +263,19 @@ class SparseDeltaEncoder:
         if self.snapshot_placement == "cpu":
             self._page_lock()
         for key, _, shard, _, _ in shards:
+            shard = shard.reshape(-1)
             for start in range(0, shard.numel(), self.CHUNK):
                 end = start + self.CHUNK
                 self.host[key][start:end].copy_(as_bits(shard[start:end].to(self.wire_dtypes[key])), non_blocking=True)
         self.snapshot = dict(self.host)
 
     def copy_snapshot_to_host(self) -> None:
-        """Copy a GPU snapshot (the last broadcast's weights) into the host buffer, for an anchor. Callers wait
-        for earlier readers of the host buffer first. The pageable copy stalls the training step while it
-        runs; a copy through the pinned staging buffer lets the step run alongside it, but then raised the
-        step's peak memory by 14 GiB (Qwen3-30B)."""
+        """Copy a GPU snapshot (the last broadcast's weights) into the host buffer, for an anchor, through the
+        pinned staging buffer. Callers wait for earlier readers of the host buffer first."""
         assert self.on_gpu
         with torch.cuda.stream(self.stream):
             for key, bits in self.snapshot.items():
-                self.host[key].copy_(bits)
+                self._to_host(bits, self.host[key])
 
     def anchor_parts(self) -> list[tuple[str, list[int], int, torch.Tensor]]:
         """This rank's slices of the full HF checkpoint of the last broadcast, from host memory (the CPU
@@ -328,11 +326,12 @@ class SparseDeltaEncoder:
         finally:
             weights_read.set()
 
-    def _to_host(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Copy a delta part to pageable host memory through the pinned staging buffer: a copy straight
-        into pageable memory holds the CUDA driver and stalls the training step's own CUDA calls."""
-        data, host = tensor.view(torch.uint8), torch.empty(tensor.shape, dtype=tensor.dtype)
-        host_bytes = host.view(torch.uint8)
+    def _to_host(self, tensor: torch.Tensor, host: torch.Tensor | None = None) -> torch.Tensor:
+        """Copy a GPU tensor to pageable host memory (``host``, or a new tensor) through the pinned staging
+        buffer: a copy straight into pageable memory holds the CUDA driver and stalls the training step's
+        own CUDA calls."""
+        host = torch.empty(tensor.shape, dtype=tensor.dtype) if host is None else host
+        data, host_bytes = tensor.view(torch.uint8), host.view(torch.uint8)
         for begin in range(0, data.numel(), self.staging.numel()):
             chunk = self.staging[: min(self.staging.numel(), data.numel() - begin)]
             chunk.copy_(data[begin : begin + chunk.numel()], non_blocking=True)
@@ -395,6 +394,7 @@ class SparseDeltaEncoder:
             pending.clear()
 
         for key, fqn, shard, offset, gathered in shards:
+            shard = shard.reshape(-1)
             previous, out, wire = self.previous[key], self.snapshot[key], self.wire_dtypes[key]
             segment_names, begins, ends, shifts = self._segments(key, fqn, offset, shard.numel())
             sums = torch.zeros(len(segment_names), dtype=torch.int64, device=device)
@@ -482,8 +482,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
     """Filesystem broadcast where steps only carry the delta against the
     previous broadcast (see ``prime_rl.utils.sparse_weights``). The delta is
     encoded and written in the background while the next step trains: the
-    trainer only waits, before its next optimizer step, until the encode has
-    read the weights. Full checkpoints (anchors) serve engines that fall off
+    trainer only waits, before its next step's final backward (which may run
+    the optimizer step), until the encode has read the weights. Full checkpoints (anchors) serve engines that fall off
     the delta chain. Steps are committed by the writer thread once every rank's
     files are on disk."""
 
@@ -646,6 +646,9 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             num_parts += 1
 
         encoder.encode(shards, ready, weights_read, held.append if encoder.fp8 else emit)
+        # Free the gathered fp8 tensors now, not after the anchor copy below, which may overlap the next step's
+        # memory peak.
+        shards.clear()
         if encoder.fp8:
             if self._scales_changed_anywhere(step_dir, encoder.scales_changed):
                 self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")

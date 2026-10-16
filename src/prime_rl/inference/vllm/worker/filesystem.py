@@ -153,6 +153,8 @@ class FileSystemWeightUpdateWorker(Worker):
         """Move to the broadcast step in ``weight_path`` (a full HF checkpoint and/or a sparse delta)."""
         step_dir = Path(weight_path)
         step = int(step_dir.name.removeprefix("step_"))
+        # Unknown until this update succeeds: after a failure, the next update reloads and replays
+        held_step, self.weight_step = self.weight_step, -1
         if not (step_dir / DELTA_DIR / MANIFEST).exists():
             self._load_checkpoint(step_dir)
             if (step_dir / DELTA_DIR).is_dir():
@@ -162,10 +164,10 @@ class FileSystemWeightUpdateWorker(Worker):
             base_step = read_manifest(step_dir)["base_step"]
             if base_step is None:
                 # The run's first broadcast: the weights the engine booted with.
-                if self.weight_step is not None:
+                if held_step is not None:
                     self._load_checkpoint(self._boot_dir())
                 self._write_engine_layout(step_dir, self._boot_dir())
-            elif base_step == self.weight_step:
+            elif base_step == held_step:
                 self._apply_delta(step_dir)
             else:
                 self._replay(step_dir)
