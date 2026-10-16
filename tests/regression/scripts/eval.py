@@ -1,8 +1,8 @@
 """Collect, summarize and gate runs of the eval suite in the regression workflow.
 
-    python tests/regression/eval_regression.py collect <run_dir> --repeat 1 --wall-s 312 --out result.json
-    python tests/regression/eval_regression.py summarize results/*.json --baseline baselines/eval/gsm8k.json
-    python tests/regression/eval_regression.py baseline results/*.json \
+    python tests/regression/scripts/eval.py collect <run_dir> --repeat 1 --wall-s 312 --out result.json
+    python tests/regression/scripts/eval.py summarize results/*.json --baseline baselines/eval/gsm8k.json
+    python tests/regression/scripts/eval.py baseline results/*.json \
         --out baselines/eval/gsm8k.json --report reports/eval/gsm8k.md
 
 `summarize` compares the results against the baseline and exits 1 on a regression.

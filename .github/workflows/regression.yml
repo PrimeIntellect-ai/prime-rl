@@ -92,7 +92,7 @@ jobs:
                   start=$(date +%s)
                   uv run eval @ "tests/regression/configs/eval/$EVAL_NAME.toml" ${MODEL:+-m "$MODEL"} \
                       --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
-                  python3 tests/regression/eval_regression.py collect "outputs/repeat-${{ matrix.repeat }}" \
+                  python3 tests/regression/scripts/eval.py collect "outputs/repeat-${{ matrix.repeat }}" \
                       --repeat ${{ matrix.repeat }} --wall-s "$(( $(date +%s) - start ))" --out result.json
             - name: Upload result
               if: always()
@@ -129,7 +129,7 @@ jobs:
               run: |
                   # A single downloaded artifact lands in artifacts/ itself, several land in subdirectories.
                   status=0
-                  python3 tests/regression/eval_regression.py summarize $(find artifacts -name result.json) \
+                  python3 tests/regression/scripts/eval.py summarize $(find artifacts -name result.json) \
                       --expected "$EVAL_REPEATS" --baseline "tests/regression/baselines/eval/$EVAL_NAME.json" \
                       > summary.md || status=$?
                   tee -a "$GITHUB_STEP_SUMMARY" < summary.md
@@ -140,7 +140,7 @@ jobs:
                   GH_TOKEN: ${{ github.token }}
               run: |
                   branch="regression/eval-baseline-${{ github.run_id }}"
-                  python3 tests/regression/eval_regression.py baseline $(find artifacts -name result.json) \
+                  python3 tests/regression/scripts/eval.py baseline $(find artifacts -name result.json) \
                       --out "tests/regression/baselines/eval/$EVAL_NAME.json" \
                       --report "tests/regression/reports/eval/$EVAL_NAME.md"
                   git config user.name "github-actions[bot]"
