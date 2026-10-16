@@ -326,7 +326,10 @@ class NCCLWeightReceiver(WeightReceiver):
         once the group is rebuilt, or it had already finished the transfer."""
         aborted = self.step_dir(step) / f".aborted_{self.port}"
         finished = self.step_dir(step) / FINISHED_MARKER
+        deadline = time.monotonic() + self.config.timeout
         while not (aborted.exists() or finished.exists()):
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"The trainer neither aborted nor finished v{step} within {self.config.timeout}s")
             await asyncio.sleep(0.1)
         return aborted.exists()
 
