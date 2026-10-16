@@ -430,7 +430,12 @@ def get_model(
         if getattr(target_config, "layer_types", None) is not None:
             target_config.layer_types = target_config.layer_types[:num_hidden_layers]
 
-    implementation_cls = import_object(config.implementation) if config.implementation is not None else None
+    implementation_cls = None
+    if config.implementation is not None:
+        try:
+            implementation_cls = import_object(config.implementation)
+        except (ImportError, AttributeError, ValueError) as error:
+            raise ImportError(f"model.implementation {config.implementation!r} cannot be imported: {error}") from error
     if implementation_cls is not None and not (
         isinstance(implementation_cls, type) and issubclass(implementation_cls, PreTrainedModelPrimeRL)
     ):
