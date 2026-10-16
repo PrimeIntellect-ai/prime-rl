@@ -100,9 +100,15 @@ class BF16ExpertCompute(GroupedGemmExpertCompute):
 class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
     def __init__(self) -> None:
         from prime_rl.trainer.models.kernels.fp8_utils import GROUP_ALIGNMENT
+        from prime_rl.trainer.models.layers.fp8_expert_weights import Fp8ExpertWeight, prequantized_grouped_fp8_gemm
         from prime_rl.trainer.models.layers.fp8_grouped_gemm import grouped_fp8_gemm
 
-        super().__init__(grouped_fp8_gemm, token_group_alignment=GROUP_ALIGNMENT)
+        def gemm(x: torch.Tensor, weight: torch.Tensor, offs: torch.Tensor) -> torch.Tensor:
+            if isinstance(weight, Fp8ExpertWeight):
+                return prequantized_grouped_fp8_gemm(x, weight, offs)
+            return grouped_fp8_gemm(x, weight, offs)
+
+        super().__init__(gemm, token_group_alignment=GROUP_ALIGNMENT)
 
 
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):

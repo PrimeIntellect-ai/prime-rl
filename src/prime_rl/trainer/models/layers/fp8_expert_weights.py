@@ -103,7 +103,7 @@ class Fp8ExpertWeight(torch.Tensor):
     @classmethod
     def __torch_dispatch__(cls, func, types, args, kwargs=None):
         kwargs = kwargs or {}
-        aten, prime_rl = torch.ops.aten, torch.ops.prime_rl
+        aten = torch.ops.aten
         if func in (aten.detach.default, aten.alias.default):
             return args[0]._like(args[0]._transposed)
         if func in (aten.view.default, aten.as_strided.default, aten._unsafe_view.default) and tuple(args[1]) == tuple(
@@ -114,16 +114,6 @@ class Fp8ExpertWeight(torch.Tensor):
             return args[0]._like(not args[0]._transposed)
         if func in (aten.zeros_like.default, aten.empty_like.default):
             return func(torch.empty(args[0].shape, dtype=args[0].dtype, device=args[0].device), **kwargs)
-        if func == prime_rl.grouped_fp8_gemm.default:
-            x, weight, offs = args
-            assert weight._transposed
-            return prime_rl.grouped_fp8_gemm_prequantized(x, weight._data, weight._scale, offs)
-        if func == prime_rl.grouped_fp8_gemm_backward.default:
-            grad_output, x, weight, offs, needs_grad_x, needs_grad_weight, grad_weight_transposed = args
-            assert weight._transposed and grad_weight_transposed
-            return prime_rl.grouped_fp8_gemm_prequantized_backward(
-                grad_output, x, weight._data, weight._scale, offs, needs_grad_x, needs_grad_weight
-            )
         raise NotImplementedError(f"{func} is not supported on an FP8 all-gathered expert weight")
 
     def __tensor_flatten__(self):
@@ -136,6 +126,30 @@ class Fp8ExpertWeight(torch.Tensor):
 
     def __repr__(self):
         return f"Fp8ExpertWeight(shape={tuple(self.shape)}, transposed={self._transposed})"
+
+
+class _PrequantizedGroupedGemm(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, weight: Fp8ExpertWeight, offs: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(x, offs)
+        ctx.weight = weight
+        return torch.ops.prime_rl.grouped_fp8_gemm_prequantized(x, weight._data, weight._scale, offs)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        x, offs = ctx.saved_tensors
+        needs_grad_x, needs_grad_weight, _ = ctx.needs_input_grad
+        grad_x, grad_weight = torch.ops.prime_rl.grouped_fp8_gemm_prequantized_backward(
+            grad_output, x, ctx.weight._data, ctx.weight._scale, offs, needs_grad_x, needs_grad_weight
+        )
+        return grad_x if needs_grad_x else None, grad_weight if needs_grad_weight else None, None
+
+
+@torch.compiler.disable
+def prequantized_grouped_fp8_gemm(x: torch.Tensor, weight: Fp8ExpertWeight, offs: torch.Tensor) -> torch.Tensor:
+    """``grouped_fp8_gemm`` on an all-gathered FP8 weight, given as its ``[experts, in, out]`` view."""
+    assert weight._transposed
+    return _PrequantizedGroupedGemm.apply(x, weight, offs)
 
 
 # FSDP pads and copies the local shard when it shards the parameter; these keep the master subclass.
