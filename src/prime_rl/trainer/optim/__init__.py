@@ -259,6 +259,16 @@ def _head_block_partitions(model: nn.Module, heads_per_block: int) -> dict[nn.Pa
     partitions = {}
     for name, module in model.named_modules():
         if not hasattr(module, "qkv_sizes"):
+            if hasattr(module, "kv_b_proj"):
+                # MLA: per-head blocks of the query and key/value up-projections (GLM-5 "Muon Split")
+                if module.num_heads % heads_per_block:
+                    raise ValueError(
+                        f"optim.heads_per_block = {heads_per_block} does not divide the {module.num_heads} heads of {name}"
+                    )
+                blocks = module.num_heads // heads_per_block
+                kv_head_rows = module.qk_nope_head_dim + module.v_head_dim
+                partitions[module.q_b_proj.weight] = (heads_per_block * module.qk_head_dim,) * blocks
+                partitions[module.kv_b_proj.weight] = (heads_per_block * kv_head_rows,) * blocks
             continue
         if module.qkv_sizes[0] != module.o_proj.in_features:
             raise ValueError(f"optim.heads_per_block does not support {name}: its query projection also holds a gate")
@@ -278,5 +288,7 @@ def _head_block_partitions(model: nn.Module, heads_per_block: int) -> dict[nn.Pa
                 )
             partitions[weight] = tuple(block_rows for size in sizes for _ in range(size // block_rows))
     if not partitions:
-        raise ValueError("optim.heads_per_block found no attention modules with q/k/v projections (qkv_sizes)")
+        raise ValueError(
+            "optim.heads_per_block found no attention modules with q/k/v projections (qkv_sizes) or MLA up-projections"
+        )
     return partitions

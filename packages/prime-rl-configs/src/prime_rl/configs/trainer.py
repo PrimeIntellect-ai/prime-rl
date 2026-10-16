@@ -440,7 +440,7 @@ class MuonConfig(BaseOptimizerConfig):
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
     heads_per_block: int | None = Field(None, ge=1)
-    """Orthogonalize the attention query, key and value projections in blocks of this many heads, each block on its own (per-head Muon, Kimi K3 report, section 2.5; ``1`` = per head). GQA key/value projections are split by their own heads; ``o_proj`` stays one matrix. If None, each projection is one matrix."""
+    """Orthogonalize the attention query, key and value projections in blocks of this many heads, each block on its own (per-head Muon, Kimi K3 report, section 2.5; ``1`` = per head). GQA key/value projections are split by their own heads; ``o_proj`` stays one matrix. For MLA, the query and key/value up-projections are split by head (GLM-5 "Muon Split"). If None, each projection is one matrix."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):
