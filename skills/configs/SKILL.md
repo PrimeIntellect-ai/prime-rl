@@ -42,7 +42,7 @@ Incompatible combinations (e.g. CP requires flash attention) must raise in a `mo
 
 **Sources are one block** — inside a `[[...source]]` entry, write nested sub-configs as dotted keys in the same block (`env.taskset.id = "..."`, `env.agent.harness.id = "..."`), not one subsection header per nested config. Nested arrays of tables (e.g. `[[orchestrator.train.source.env.taskset.task.judges]]`) keep full-path headers — they attach to the preceding `[[...source]]` entry.
 
-**Booleans** — CLI `--flag` / `--no-flag`; TOML must be explicit (`enforce_eager = true`).
+**Booleans** — CLI `--flag` / `--no-flag`; TOML must be explicit (`enable_prefix_caching = true`).
 
 **None** — TOML has no null, use the string `"None"` (`max_model_len = "None"`); CLI: `--vllm.max-model-len None`.
 

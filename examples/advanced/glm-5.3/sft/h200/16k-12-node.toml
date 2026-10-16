@@ -4,7 +4,7 @@
 
 [model]
 cp = 1
-optim_cpu_offload = false
+offload = "none"
 ac_offloading = "None"
 
 [model.compile]

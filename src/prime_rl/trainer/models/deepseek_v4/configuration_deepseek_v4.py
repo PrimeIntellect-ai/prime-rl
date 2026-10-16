@@ -82,6 +82,7 @@ class DeepseekV4Config(PretrainedConfig):
         attention_bias: Whether the attention projections carry a bias.
         mlp_bias: Whether the MLP projections carry a bias.
         attention_dropout: Dropout ratio on the attention probabilities.
+        kv_precision: Precision attention reads keys and values at, `"bf16"` or `"fp8"` (vLLM's `fp8_ds_mla` rounding).
         output_router_logits: Whether to return the router logits.
         router_aux_loss_coef: Coefficient of the router auxiliary loss.
         router_jitter_noise: Jitter noise added to the router inputs during training.
@@ -145,6 +146,7 @@ class DeepseekV4Config(PretrainedConfig):
         attention_bias: bool = False,
         mlp_bias: bool = False,
         attention_dropout: float = 0.0,
+        kv_precision: str = "bf16",
         output_router_logits: bool = False,
         router_aux_loss_coef: float = 0.001,
         router_jitter_noise: float = 0.0,
@@ -178,6 +180,7 @@ class DeepseekV4Config(PretrainedConfig):
         self.o_lora_rank = o_lora_rank
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.kv_precision = kv_precision
         self.index_n_heads = index_n_heads
         self.index_head_dim = index_head_dim
         self.index_topk = index_topk

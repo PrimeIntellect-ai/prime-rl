@@ -331,8 +331,7 @@ def test_removed_moe_runtime_fields_are_rejected(removed):
 def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     config = config_cls.model_validate({})
 
-    assert config.model.optim_cpu_offload is True
-    assert config.model.full_offload is None
+    assert config.model.offload == "optimizer"
 
 
 def test_moe_router_dtype_auto_resolves_per_trainer():
@@ -360,7 +359,7 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
         config = config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"max_norm": 1.0},
             }
         )
@@ -373,7 +372,7 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
     with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
         config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"type": "muon", "max_norm": None},
             }
         )
@@ -383,11 +382,11 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
 def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
     config = config_cls.model_validate(
         {
-            "model": {"optim_cpu_offload": False, "full_offload": True},
+            "model": {"offload": "full"},
             "optim": {"type": "sign_sgd", "max_norm": None},
         }
     )
-    assert config.model.full_offload is not None
+    assert config.model.offload == "full"
     assert config.optim.type == "sign_sgd"
 
 
@@ -714,6 +713,24 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference.vllm.data_parallel_size == 2
 
 
+def test_disaggregated_inference_inherits_deployment_gpus_per_node():
+    config = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": {"tensor_parallel_size": 2}, "deployment": {"type": "disaggregated"}},
+        "deployment": {"type": "multi_node", "gpus_per_node": 4, "num_train_nodes": 1},
+        "slurm": {},
+    }
+    resolved = RLConfig.model_validate(config)
+    assert resolved.inference.deployment.gpus_per_node == 4
+    assert resolved.inference.vllm.data_parallel_size_local == 2
+
+    config["deployment"].pop("gpus_per_node")
+    config["inference"]["deployment"]["gpus_per_node"] = 4
+    with pytest.raises(ValidationError, match="gpus_per_node must match"):
+        RLConfig.model_validate(config)
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(
@@ -759,6 +776,12 @@ def test_trainer_rejects_vlm_cp_with_ring():
 
     with pytest.raises(ValidationError, match="cp_style='ulysses'"):
         TrainerConfig.model_validate(config)
+
+
+def test_ac_none_disables_ac_offloading():
+    config = TrainerModelConfig.model_validate({"ac": None})
+    assert config.ac is None
+    assert config.ac_offloading is None
 
 
 def test_shared_model_name_propagates_to_subconfigs():
@@ -1139,11 +1162,14 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-def test_combined_replay_uses_v2_runner(monkeypatch):
+@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
     config = InferenceConfig(
+        deployment=deployment,
+        slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
         vllm={"enable_return_routed_experts": True},
     )
