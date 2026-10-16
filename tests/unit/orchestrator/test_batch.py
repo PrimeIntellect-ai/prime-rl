@@ -658,14 +658,16 @@ def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
     assert masks[False][0].tolist() == [5, 6]
 
 
-def test_pread_retries_short_reads(tmp_path, monkeypatch):
-    """A short read (a shared filesystem serving a stale view) is retried, then raises."""
+def test_pread_retries_stale_reads(tmp_path, monkeypatch):
+    """A missing file or a short read (a shared filesystem serving a stale view) is retried, then raises."""
     from prime_rl.transports import payload
 
     rows = np.arange(6, dtype=np.int32).reshape(3, 2)
     path = tmp_path / "late.bin"
-    path.write_bytes(b"")
     monkeypatch.setattr(payload.time, "sleep", lambda _: path.write_bytes(rows.tobytes()))
+    assert payload._pread_file([(str(path), 0, 24)]) == [rows.tobytes()]
+
+    path.write_bytes(b"")
     assert payload._pread_file([(str(path), 0, 24)]) == [rows.tobytes()]
 
     monkeypatch.setattr(payload.time, "sleep", lambda _: None)
