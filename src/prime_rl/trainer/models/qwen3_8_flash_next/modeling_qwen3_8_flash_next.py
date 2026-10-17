@@ -21,7 +21,9 @@ from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
-from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding
+from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding, build_mrope_position_ids
+from prime_rl.trainer.models.qwen3_8_flash_next.vision import Qwen3_8FlashNextVisionModel
+from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -181,12 +183,17 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         self,
         input_ids: torch.LongTensor,
         position_ids: torch.LongTensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
-        inputs_embeds = self.embed_tokens(input_ids)
+        """``input_ids`` are always required, image placeholders included: PLE hashes their n-grams even when
+        ``inputs_embeds`` carries the image embeddings. ``position_ids`` is ``[batch, seq]`` or ``[3, batch, seq]``
+        MRoPE positions."""
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
         if position_ids is None:
             position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
 
@@ -211,10 +218,16 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
         return BaseModelOutput(last_hidden_state=hidden_states)
 
 
-class Qwen3_8FlashNextModel(nn.Module):
+class Qwen3_8FlashNextVLMModel(nn.Module):
+    """Composite (``qwen4_exp``) model: image embeddings replace the image placeholder embeddings, while PLE keeps
+    hashing the raw placeholder ids."""
+
     def __init__(self, config: Qwen3_8FlashNextConfig) -> None:
         super().__init__()
+        self.config = config
+        self.visual = Qwen3_8FlashNextVisionModel(config.vision_config)
         self.language_model = Qwen3_8FlashNextTextModel(config.text_config)
+        self.cp_context = CPContext()
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.language_model.get_input_embeddings()
@@ -222,18 +235,89 @@ class Qwen3_8FlashNextModel(nn.Module):
     def set_input_embeddings(self, embeddings: nn.Embedding) -> None:
         self.language_model.set_input_embeddings(embeddings)
 
+    def prepare_inputs(
+        self,
+        input_ids: torch.LongTensor,
+        position_ids: torch.LongTensor | None,
+        pixel_values: torch.Tensor | None,
+        image_grid_thw: torch.LongTensor | None,
+        mm_token_type_ids: torch.LongTensor | None,
+        seq_lens: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.LongTensor]:
+        vision_config = self.config.vision_config
+        inputs_embeds = self.language_model.embed_tokens(input_ids)
+        has_images = pixel_values is not None
+        vision_grid = image_grid_thw
+        if has_images:
+            pixel_values = pixel_values.to(self.visual.dtype)
+        else:
+            merge_size = vision_config.spatial_merge_size
+            patch_dim = vision_config.in_channels * vision_config.temporal_patch_size * vision_config.patch_size**2
+            pixel_values = torch.zeros(merge_size**2, patch_dim, device=inputs_embeds.device, dtype=self.visual.dtype)
+            vision_grid = torch.tensor([[1, merge_size, merge_size]], device=inputs_embeds.device)
+
+        image_embeds = self.visual(pixel_values, vision_grid).pooler_output.to(inputs_embeds.dtype)
+        if has_images:
+            image_mask = (input_ids == self.config.image_token_id).unsqueeze(-1).expand_as(inputs_embeds)
+            inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        else:
+            # Every rank must retain the vision graph so FSDP collectives stay symmetric.
+            inputs_embeds = inputs_embeds + image_embeds.sum() * 0.0
+
+        if position_ids is None:
+            if image_grid_thw is None:
+                position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
+            else:
+                if mm_token_type_ids is None:
+                    raise ValueError("mm_token_type_ids are required with Qwen3.8 Flash Next image inputs")
+                position_ids = build_mrope_position_ids(
+                    input_ids=input_ids,
+                    mm_token_type_ids=mm_token_type_ids,
+                    image_grid_thw=image_grid_thw,
+                    spatial_merge_size=vision_config.spatial_merge_size,
+                    seq_lens=seq_lens,
+                )
+        return inputs_embeds, position_ids
+
     def forward(
         self,
         input_ids: torch.LongTensor,
         position_ids: torch.LongTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.LongTensor | None = None,
         routed_experts: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutput:
+        inputs_embeds, position_ids = self.prepare_inputs(
+            input_ids,
+            position_ids,
+            pixel_values,
+            image_grid_thw,
+            mm_token_type_ids,
+            seq_lens,
+        )
+        if image_grid_thw is not None and self.cp_context.cp_enabled:
+            rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
+            setup_cp_attention_params(
+                position_ids,
+                cp_group=self.cp_context.cp_group,
+                cp_style=self.cp_context.cp_style,
+                seq_lens=seq_lens,
+            )
+            inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
+            input_ids = shard_for_cp(input_ids, cp_rank=rank, cp_world_size=world_size)
+            position_ids = shard_position_ids_for_cp(position_ids, cp_rank=rank, cp_world_size=world_size)
+            if routed_experts is not None:
+                routed_experts = shard_for_cp(routed_experts, cp_rank=rank, cp_world_size=world_size)
+            seq_lens_are_pre_shard = True
+
         return self.language_model(
             input_ids=input_ids,
             position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
             routed_experts=routed_experts,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
@@ -246,10 +330,10 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
 
     def __init__(self, config: Qwen3_8FlashNextConfig) -> None:
         super().__init__(config)
-        text_config = getattr(config, "text_config", config)
-        self.model = (
-            Qwen3_8FlashNextModel(config) if hasattr(config, "text_config") else Qwen3_8FlashNextTextModel(config)
-        )
+        self.is_vlm = hasattr(config, "vision_config")
+        text_config = config.text_config if self.is_vlm else config
+        self.model = Qwen3_8FlashNextVLMModel(config) if self.is_vlm else Qwen3_8FlashNextTextModel(config)
+        self.supports_packed_multimodal_training = self.is_vlm
         self.vocab_size = text_config.vocab_size
         self.num_experts = text_config.num_experts
         self.num_experts_per_tok = text_config.num_experts_per_tok
@@ -271,18 +355,33 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         temperature: torch.Tensor | None = None,
         sampling_mask: torch.Tensor | None = None,
         routed_experts: torch.LongTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.LongTensor | None = None,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
         **kwargs,
     ) -> PrimeLmOutput:
-        outputs = self.model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            routed_experts=routed_experts,
-            seq_lens=seq_lens,
-            seq_lens_are_pre_shard=seq_lens_are_pre_shard,
-        )
+        if self.is_vlm:
+            outputs = self.model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                mm_token_type_ids=mm_token_type_ids,
+                routed_experts=routed_experts,
+                seq_lens=seq_lens,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            )
+        else:
+            outputs = self.model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                routed_experts=routed_experts,
+                seq_lens=seq_lens,
+                seq_lens_are_pre_shard=seq_lens_are_pre_shard,
+            )
         if isinstance(logits_to_keep, int):
             slice_indices = slice(-logits_to_keep, None) if logits_to_keep > 0 else slice(None)
         else:
@@ -295,8 +394,10 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
         )
 
     def init_buffers_post_meta(self) -> None:
-        language_model = getattr(self.model, "language_model", self.model)
+        language_model = self.model.language_model if self.is_vlm else self.model
         language_model.rotary_emb.reset_parameters()
+        if self.is_vlm:
+            self.model.visual.rotary_pos_emb.reset_parameters()
         for module in self.modules():
             if isinstance(module, NGramEmbedding):
                 module.reset_parameters()
@@ -310,7 +411,7 @@ class Qwen3_8FlashNextForCausalLM(Qwen3_8FlashNextPreTrainedModel):
 __all__ = [
     "Qwen3_8FlashNextDecoderLayer",
     "Qwen3_8FlashNextForCausalLM",
-    "Qwen3_8FlashNextModel",
     "Qwen3_8FlashNextPreTrainedModel",
     "Qwen3_8FlashNextTextModel",
+    "Qwen3_8FlashNextVLMModel",
 ]
