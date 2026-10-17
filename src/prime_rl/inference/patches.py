@@ -11,6 +11,7 @@ def apply_shared_vllm_patches():
     vLLM swallows plugin load failures (``load_plugins_by_group`` logs and continues), so a broken
     entry-point target silently skips ALL of these patches.
     """
+    from prime_rl.inference.vllm.deepseek_v4_router import patch_deepseek_v4_router
     from prime_rl.inference.vllm.gpt_oss_weight_loading import patch_gpt_oss_weight_loading
     from prime_rl.inference.vllm.qwen38_weight_loading import patch_qwen38_weight_loading
 
@@ -34,6 +35,7 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
+    patch_deepseek_v4_router()
 
 
 @dataclass
