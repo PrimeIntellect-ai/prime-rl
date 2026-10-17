@@ -112,8 +112,12 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
-    def __init__(self, client_config: ClientConfig):
+    roles: list[str | None] | None = None
+    """P/D role of each client, in client order. Prefill engines pause before decode engines."""
+
+    def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
         self.clients = setup_admin_clients(client_config)
+        self.roles = roles
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -186,7 +190,7 @@ class AdminPlane:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        await _pause_engines(self.clients, step=step)
+        await _pause_engines(self.clients, step=step, roles=self.roles)
         try:
             if on_paused is not None:
                 on_paused()
@@ -209,13 +213,15 @@ class AdminPlane:
             await client.aclose()
 
 
-def setup_admin_plane(client_config: PolicyClientConfig, model_name: str) -> AdminPlane:
+def setup_admin_plane(
+    client_config: PolicyClientConfig, model_name: str, roles: list[str | None] | None = None
+) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
         return DynamoAdminPlane(client_config, model_name)
-    return AdminPlane(client_config)
+    return AdminPlane(client_config, roles)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -400,13 +406,22 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
-    """Pause all inference engines, waiting for in-flight requests to drain."""
+async def _pause_engines(admin_clients: list[AsyncClient], *, step: int, roles: list[str | None] | None = None) -> None:
+    """Pause all inference engines, waiting for in-flight requests to drain.
+
+    Prefill engines pause first. A prefill engine's pause waits until decode has pulled the KV
+    blocks it still holds, and a paused decode engine never pulls them: the prefill would wait
+    for vLLM's NIXL KV lease to expire (30 s by default) and decode would later read the
+    released blocks."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
-    )
+    roles = roles or [None] * len(admin_clients)
+    prefill = [client for client, role in zip(admin_clients, roles, strict=True) if role == "prefill"]
+    rest = [client for client, role in zip(admin_clients, roles, strict=True) if role != "prefill"]
+    for clients in (prefill, rest):
+        await asyncio.gather(
+            *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in clients]
+        )
     logger.debug("All inference engines paused")
 
 
