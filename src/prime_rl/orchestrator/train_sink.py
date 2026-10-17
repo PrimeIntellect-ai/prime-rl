@@ -11,8 +11,11 @@ observations; only queued traces retain verifier objects. The consumer drains
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from typing import Any
 
 import verifiers.v1 as vf
 
@@ -22,10 +25,21 @@ from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
+from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TaskRequest, TrainBatch
 from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
+
+
+@dataclass(frozen=True)
+class QueuedTrace:
+    """What the sink needs about a queued trace besides its samples; also what a
+    resume replays from the checkpoint."""
+
+    env_name: str
+    policy_start: float
+    """Policy version the trace's group was dispatched at; ``inf`` for frozen-sourced
+    traces, which never go stale."""
 
 
 def _prune_zero_advantages(sample: TrainingSample) -> bool:
@@ -83,12 +97,65 @@ class TrainSink:
         # episodes the group will never deliver.
         self.pending_group_cancellations: dict[str, GroupCancellation] = {}
         self.pending_batch: dict[str, list[TrainingSample]] = {}
+        self.queued: dict[str, QueuedTrace] = {}
+        # Episodes of queued traces, for the shipped cohort's metrics. Traces
+        # replayed from a checkpoint have none.
         self.episode_by_trace: dict[str, vf.Episode] = {}
         # Step of the last full staleness sweep — queued traces only age when
         # ``progress.step`` advances, so one full sweep per step suffices.
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
+
+    def state_dict(self, open_groups: dict[str, tuple[str, vf.Task]]) -> dict[str, Any]:
+        """Work a resume would otherwise regenerate: the accepted traces waiting
+        for a batch (samples plus :class:`QueuedTrace`, no episodes), and every
+        train group still open in the dispatcher (``open_groups``: group id ->
+        env and task) with its finished episodes. Copies are shallow: queued
+        samples and finished episodes are not mutated before they ship."""
+        return {
+            "pending_batch": dict(self.pending_batch),
+            "queued": dict(self.queued),
+            "open_groups": {
+                # Parametrized pydantic episode classes do not pickle; JSON round-trips them.
+                group_id: (
+                    env_name,
+                    task,
+                    [episode.model_dump_json() for episode in self.pending_groups.get(group_id, [])],
+                )
+                for group_id, (env_name, task) in open_groups.items()
+            },
+        }
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> list[TaskRequest]:
+        """Re-queue saved traces and finished group members that are still within
+        ``max_off_policy_steps`` of the resumed step. Returns one request per saved
+        group for its missing members (same task, same group id), which the train
+        source hands out before any new task."""
+        self.pending_batch = state_dict["pending_batch"]
+        self.queued = state_dict["queued"]
+        self._drop_stale()
+        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
+        requests = []
+        kept = 0
+        for group_id, (env_name, task, episodes) in state_dict["open_groups"].items():
+            fresh = [
+                episode
+                for episode in map(vf.WireEpisode.model_validate_json, episodes)
+                if (policy := train_work(episode).policy) is None or policy.start >= min_version
+            ]
+            if fresh:
+                self.pending_groups[group_id] = fresh
+                kept += len(fresh)
+            rollouts = self.group_size_for(env_name) - len(fresh)
+            requests.append(
+                TaskRequest(env_name=env_name, task=task, step=self.progress.step, rollouts=rollouts, group_id=group_id)
+            )
+        get_logger().info(
+            f"Resuming with {len(self.pending_batch)} queued traces and {len(requests)} open groups "
+            f"({kept} finished episodes kept)"
+        )
+        return requests
 
     def group_size_for(self, env_name: str) -> int:
         return self.train_envs.get(env_name).config.group_size
@@ -103,9 +170,8 @@ class TrainSink:
 
     def pending_batch_by_env(self) -> dict[str, int]:
         counts: dict[str, int] = defaultdict(int)
-        for trace_id in self.pending_batch:
-            episode = self.episode_by_trace[trace_id]
-            counts[episode_env_name(episode)] += 1
+        for queued in self.queued.values():
+            counts[queued.env_name] += 1
         return dict(counts)
 
     async def add(self, episode: vf.Episode) -> TrainBatch | None:
@@ -177,12 +243,11 @@ class TrainSink:
             return
         dropped = 0
         for trace_id in trace_ids:
-            episode = self.episode_by_trace[trace_id]
-            policy = train_work(episode).policy
-            if policy is None or policy.start >= min_version:
+            if self.queued[trace_id].policy_start >= min_version:
                 continue
             del self.pending_batch[trace_id]
-            del self.episode_by_trace[trace_id]
+            self.episode_by_trace.pop(trace_id, None)
+            del self.queued[trace_id]
             dropped += 1
         if dropped:
             self.rollout_window.metrics.count("off_policy/dropped", float(dropped))
@@ -207,6 +272,20 @@ class TrainSink:
             episode_env_name(group[0]) if group else (failures[0].env_name if failures else cancellation.env_name)
         )
         env = self.train_envs.get(env_name)
+        # Only a group resumed from a checkpoint mixes dispatch versions; its saved members may
+        # have aged past the bound since. Score it on the members that can still ship.
+        min_version = min_fresh_version(self.progress.step, self.config.max_off_policy_steps)
+        fresh = [
+            episode
+            for episode in group
+            if (policy := train_work(episode).policy) is None or policy.start >= min_version
+        ]
+        if fresh and len(fresh) < len(group):
+            self.rollout_window.metrics.count(
+                "off_policy/dropped",
+                float(sum(len(episode.traces) for episode in group) - sum(len(episode.traces) for episode in fresh)),
+            )
+            group = fresh
         traces = [trace for episode in group for trace in episode.traces]
         task_idx = next((trace.task.data.idx for trace in traces), None)
         num_errored = (
@@ -271,8 +350,10 @@ class TrainSink:
 
         self.pending_batch.update(samples_by_trace)
         for episode in group:
+            policy = train_work(episode).policy
             for trace in episode.traces:
                 if trace.id in samples_by_trace:
+                    self.queued[trace.id] = QueuedTrace(env_name, policy.start if policy is not None else math.inf)
                     self.episode_by_trace[trace.id] = episode.model_copy(update={"traces": [trace]})
         self._drop_stale(samples_by_trace)
         queued = set(samples_by_trace) & self.pending_batch.keys()
@@ -319,6 +400,7 @@ class TrainSink:
         if self.pending_batch:
             self.rollout_window.metrics.count("rollout/queued/cancelled", float(len(self.pending_batch)))
         self.pending_batch.clear()
+        self.queued.clear()
         self.episode_by_trace.clear()
 
     def _admit(self, group: list[vf.Episode]) -> bool:
@@ -346,7 +428,10 @@ class TrainSink:
         )
 
     async def process_batch(self) -> TrainBatch:
-        selected = list(self.pending_batch.items())[: self.batch_size]
+        # Oldest policy version first, so leftovers are the traces with the most staleness budget left.
+        selected = sorted(self.pending_batch.items(), key=lambda item: self.queued[item[0]].policy_start)[
+            : self.batch_size
+        ]
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
@@ -369,8 +454,10 @@ class TrainSink:
         traces_by_episode: dict[str, list[vf.Trace]] = defaultdict(list)
         selected_episodes: dict[str, vf.Episode] = {}
         for trace_id in selected_ids:
-            episode = self.episode_by_trace.pop(trace_id)
-            if trace_id in shipped_ids:
+            del self.queued[trace_id]
+            episode = self.episode_by_trace.pop(trace_id, None)
+            # Traces replayed from a checkpoint have no episode and stay out of the cohort's metrics
+            if episode is not None and trace_id in shipped_ids:
                 selected_episodes[episode.id] = episode
                 traces_by_episode[episode.id].extend(episode.traces)
         if pruned := len(selected_ids - shipped_ids):

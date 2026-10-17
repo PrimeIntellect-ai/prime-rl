@@ -63,6 +63,7 @@ from prime_rl.orchestrator.types import (
     TrainBatch,
 )
 from prime_rl.orchestrator.utils import (
+    episode_group_id,
     episode_staleness,
     eval_work,
     intercept_vf_logging,
@@ -274,10 +275,13 @@ class Orchestrator:
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
         self.train_source = TrainSource(self.train_envs)
+        sink_state = None
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
-            self.ckpt_manager.load(self.progress, self.train_source, step=self.resume_step, path=resume_path)
+            sink_state = self.ckpt_manager.load(
+                self.progress, self.train_source, step=self.resume_step, path=resume_path
+            )
             self.progress.step = self.resume_step + 1
 
         get_logger().info("Waiting for policy inference pool to be ready")
@@ -362,6 +366,8 @@ class Orchestrator:
             batch_size=config.batch_size,
             on_result=self.train_source.on_result,
         )
+        if sink_state is not None:
+            self.train_source.resumed.extend(self.train_sink.load_state_dict(sink_state))
 
         self.eval_sink = EvalSink(eval_envs=self.eval_envs) if self.eval_envs is not None else None
         self.watcher = WeightWatcher(
@@ -437,7 +443,7 @@ class Orchestrator:
             if loop_done and self.config.ckpt is not None and self.progress.step > 1:
                 self.progress.step -= 1
                 get_logger().info(f"Saving final checkpoint at step {self.progress.step}")
-                self.ckpt_manager.save(self.progress, self.train_source, step=self.progress.step)
+                await self.ckpt_manager.save(self.snapshot_state(), self.progress.step)
             if clean_exit:
                 get_logger().success(f"Orchestrator step loop done in {elapsed}")
                 # The background loggers write through the monitors, so they must
@@ -499,6 +505,8 @@ class Orchestrator:
 
         The sinks return a finalized batch (or ``None``); we just dispatch on
         the result."""
+        # Queued traces restored from a checkpoint may already fill a batch
+        await self.handle_train_result(await self.train_sink.take_batch())
         while not self.stopped.is_set():
             self._raise_if_component_stopped()
             if self.draining and self.dispatcher.is_idle:
@@ -525,6 +533,7 @@ class Orchestrator:
                         await self.finalize_eval_batch(eval_batch)
                 else:
                     train_batch = await self.train_sink.fail(item)
+                    self.forget_consumed_group(item.group_id)
                     await self.handle_train_result(train_batch)
                 continue
             episode = item
@@ -550,6 +559,7 @@ class Orchestrator:
                 continue
 
             train_batch = await self.train_sink.add(episode)
+            self.forget_consumed_group(episode_group_id(episode))
             await self.handle_train_result(train_batch)
 
     async def handle_train_result(self, batch: TrainBatch | None) -> None:
@@ -601,6 +611,12 @@ class Orchestrator:
                 "Review max_off_policy_steps, episode errors, and reward signal."
             )
         return metrics
+
+    def forget_consumed_group(self, group_id: str) -> None:
+        """Once the sink holds no member of a group the dispatcher has fully emitted, it has
+        consumed the group's last result, so a checkpoint no longer needs to save the group."""
+        if group_id not in self.train_sink.pending_groups:
+            self.dispatcher.emitted_train_groups.pop(group_id, None)
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
@@ -671,7 +687,7 @@ class Orchestrator:
         self.progress.step += 1
         self.update_dispatch_gate()
         if self.controller is not None:
-            self.shipped_state = (step, build_state(self.progress, self.train_source))
+            self.shipped_state = (step, self.snapshot_state())
             self.apply_control()
         # Checkpoint the step we just shipped (resume point: continue at step + 1).
         save_ckpt_time = await self.maybe_save_ckpt(step)
@@ -942,10 +958,14 @@ class Orchestrator:
             return 0.0
         get_logger().info(f"Saving checkpoint at step {step}")
         t = time.perf_counter()
-        # Synchronous on purpose: the payload is tiny, and snapshotting on the
-        # event loop keeps the dispatcher from mutating TrainSource mid-save
-        self.ckpt_manager.save(self.progress, self.train_source, step)
+        await self.ckpt_manager.save(self.snapshot_state(), step)
         return time.perf_counter() - t
+
+    def snapshot_state(self) -> dict:
+        # Resumed groups not yet handed to the dispatcher are still open
+        open_groups = self.dispatcher.open_train_groups()
+        open_groups |= {request.group_id: (request.env_name, request.task) for request in self.train_source.resumed}
+        return build_state(self.progress, self.train_source, self.train_sink.state_dict(open_groups))
 
     def apply_control(self) -> None:
         """Save the state as of shipping the last step if a pause is due at it. A trainer paused
