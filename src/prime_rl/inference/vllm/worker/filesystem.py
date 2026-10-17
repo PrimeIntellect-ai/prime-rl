@@ -59,7 +59,6 @@ class FileSystemWeightUpdateWorker(Worker):
     weight_step: int | None = None
     prefetched: tuple[str, Future] | None = None
     index_map: CheckpointIndexMap | None = None
-    wrote_layout = False
     host_buffer: torch.Tensor | None = None
 
     def liveness_probe(self) -> None:
