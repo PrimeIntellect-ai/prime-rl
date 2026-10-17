@@ -74,7 +74,7 @@ from prime_rl.control.controller import Controller, broadcast_pause
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -82,6 +82,8 @@ from prime_rl.utils.utils import clean_exit
 def train(config: TrainerConfig):
     # Setup world and logger
     world = get_world()
+    if world.is_master:
+        write_resolved_config(config.output_dir, config, "trainer")
     logger = setup_logger(
         config.log.level,
         json_logging=config.log.json_logging,
