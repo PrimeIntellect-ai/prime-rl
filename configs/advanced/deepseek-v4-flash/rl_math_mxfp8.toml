@@ -1,6 +1,12 @@
-# DeepSeek-V4-Flash RL on `math` with a bf16 trainer and online MXFP8 vLLM inference, on
-# 3 trainer nodes + 1 inference node (B300). Over 60 steps, mismatch KL averaged ~0.042 with no
-# upward drift and ~1.5% of tokens masked.
+# DeepSeek-V4-Flash RL on `math` with online MXFP8 vLLM inference and a trainer whose forward is
+# quantized the same way, on 3 trainer nodes + 1 inference node (B300).
+#
+# The checkpoint's dense weights sit exactly on the e4m3 grid (DeepSeek ships them as FP8), so an
+# lr-1e-6 update mostly rounds back to the base value when vLLM re-quantizes. A bf16 trainer then
+# drifts away from inference step by step; quantizing the trainer's forward identically keeps
+# both on the same weights.
+#
+# Needs the online-MXFP8 MoE reload fix (#4109) and a prime-kernels build with `mxfp8_moe`.
 #
 #   uv run rl @ configs/advanced/deepseek-v4-flash/rl_math_mxfp8.toml
 
@@ -70,6 +76,29 @@ ep = 8
 [trainer.model.moe.dispatch]
 type = "torch"
 
+# Routed experts in MXFP8, like vLLM's FLASHINFER_TRTLLM MoE.
+[trainer.model.moe.compute]
+type = "mxfp8"
+
+# Every linear vLLM runs in MXFP8 (wq_a, wkv, wq_b, wo_b, shared experts, indexer wq_b) runs in
+# MXFP8 here too; what vLLM keeps bf16 (wo_a, compressors, indexer weights_proj, router, lm_head)
+# stays bf16. Both quantize 1x32 with power-of-two scales rounded up, so weights match bit for bit.
+[trainer.model.quantization]
+type = "mxfp8"
+recipe = "mxfp8_rceil_wgrad_with_hp"
+ignore_patterns = [
+    "lm_head",
+    "router",
+    'mlp\.gate\.',
+    'shared_expert\.output_gate',
+    "eh_proj",
+    "weights_proj",
+    "in_proj_a",
+    "in_proj_b",
+    "o_a_proj",
+    'compressor\.',
+]
+
 [trainer.model.ac]
 freq = 1
 
@@ -96,9 +125,5 @@ kv_cache_dtype = "fp8"
 block_size = 256
 
 [inference.vllm.quantization_config]
-ignore = [
-    # vLLM's deep_gemm_fp8_o_proj treats an MXFP8 `wo_a` as blockwise FP8 and fails a DeepGEMM assert.
-    "*.wo_a",
-    # Keep the indexer bf16 so sparse top-k selection matches the trainer.
-    "re:.*indexer.*",
-]
+# vLLM's deep_gemm_fp8_o_proj treats an MXFP8 `wo_a` as blockwise FP8 and fails a DeepGEMM assert.
+ignore = ["*.wo_a"]
