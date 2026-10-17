@@ -1,3 +1,5 @@
+import asyncio
+import time
 from pathlib import Path
 
 import torch.nn as nn
@@ -8,7 +10,7 @@ from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
-from prime_rl.utils.pathing import wait_for_path
+from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST, revalidate
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -66,8 +68,20 @@ class FileSystemWeightReceiver(WeightReceiver):
 
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
+        manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
         self._ack(step)
-        await wait_for_path(weights_dir / FINISHED_MARKER)
+        # A sparse delta's manifest comes first and its part files as the trainer encodes: the engines
+        # read and decode them while they keep serving, and the pause only applies the delta.
+        while not (manifest.exists() or finished.exists()):
+            await asyncio.sleep(0.05)
+            revalidate(manifest.parent)
+        if manifest.exists():
+            start = time.perf_counter()
+            await self.admin_plane.prefetch_weights(weights_dir)
+            self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
+        while not finished.exists():
+            await asyncio.sleep(0.05)
+            revalidate(weights_dir)
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir)
         else:

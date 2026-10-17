@@ -275,6 +275,23 @@ ModelExpress exchanges peer metadata during startup. Weight updates reuse prepar
 
 By default, the trainer and inference worker each allocate one transfer arena. Set `weight_broadcast.overlap_transfer_and_replay = true` to allocate two arenas on both sides and replay one weight group while receiving the next. The additional arena is the size of the largest transfer group per GPU; allocation errors are reported instead of silently disabling overlap.
 
+### Sparse filesystem weight broadcast
+
+With `[weight_broadcast] type = "filesystem"` and `sparse = true`, the trainer publishes only the weight elements that changed since the previous broadcast, in the engine's weight format (bf16, or fp8 for engines that quantize online to `fp8_per_block`). Engines read and decode each delta while they keep serving, patch their weights in place during the pause, and verify every update against trainer checksums.
+
+```toml
+[weight_broadcast]
+type = "filesystem"
+sparse = true
+anchor_interval = 25  # full checkpoint every N steps
+snapshot = "auto"     # previous weights on the GPU if they fit, else in pinned host memory
+```
+
+- With `model.offload = "full"`, deltas come from the optimizer step: no snapshot of the weights is kept, except a small one for tensors that are not optimizer parameters.
+- Otherwise each trainer rank diffs its own shards against a snapshot of the previous broadcast (2 B per parameter) while the next step trains; the trainer only waits before its next final backward. Each rank also allocates a host buffer of the same size before training, so trainer hosts need that much free memory.
+- Anchors (full checkpoints) are written every `anchor_interval` steps. An engine that joins, restarts or fails an update loads the latest complete anchor, reading only the rows it holds, and replays the deltas since. An anchor whose copy holds back the next step's diff for more than 30 s is skipped. Anchors written in the optimizer step slow that step down, so prefer a larger `anchor_interval` there.
+- Not supported: LoRA, fp8 tensors whose columns are not a multiple of 128, and engines that transform weights after loading other than online `fp8_per_block` (e.g. FlashInfer TRTLLM/CUTLASS MoE, Marlin). fp8 deltas need the same vLLM and torch versions on the trainer and the engines.
+
 ### Custom Templates
 
 For unusual partitions, module loads, or environment setup, supply your own Jinja2 template:

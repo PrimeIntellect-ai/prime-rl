@@ -9,13 +9,14 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.transports.weights import SparseFileSystemWeightSender, prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim.offload import FullCPUOffloadOptimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch
@@ -192,6 +193,8 @@ def train(config: TrainerConfig):
             config.model.lora,
         )
         logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
+        if isinstance(weight_sender, SparseFileSystemWeightSender) and isinstance(optimizer, FullCPUOffloadOptimizer):
+            weight_sender.diff_in_optimizer(optimizer)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -507,7 +510,11 @@ def train(config: TrainerConfig):
 
             # Backward pass
             with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
+                final_backward = micro_step == len(micro_batches) - 1
+                if final_backward and weight_sender is not None:
+                    # The offloaded optimizer step overlaps the final backward and updates the weights
+                    weight_sender.wait_for_weight_reads()
+                begin_backward(gradient_manager, final_backward=final_backward)
                 loss.backward()
                 finish_backward(gradient_manager)
 
@@ -602,15 +609,16 @@ def train(config: TrainerConfig):
             broadcast_weights_time = 0
         else:
             broadcast_weights_start_time = time.perf_counter()
-            # The per-layer gather + fp8 conversion peaks ~50 GiB above the
-            # resident weights; release cached blocks (incl. offload-stream
-            # pools) so the broadcast gets the full headroom. Drain all
-            # pending work first: empty_cache returns blocks to the driver,
-            # so a still-running kernel holding a cached block (e.g. the
-            # optimizer step's tail) faults with an illegal memory access
-            # once its block is freed under it.
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+            if weight_sender.gathers_full_weights:
+                # The per-layer gather + fp8 conversion peaks ~50 GiB above the
+                # resident weights; release cached blocks (incl. offload-stream
+                # pools) so the broadcast gets the full headroom. Drain all
+                # pending work first: empty_cache returns blocks to the driver,
+                # so a still-running kernel holding a cached block (e.g. the
+                # optimizer step's tail) faults with an illegal memory access
+                # once its block is freed under it.
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
@@ -745,6 +753,8 @@ def train(config: TrainerConfig):
     if gradient_manager is not None:
         gradient_manager.close()
     micro_batch_workers.close()
+    if weight_sender is not None:
+        weight_sender.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
     logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")

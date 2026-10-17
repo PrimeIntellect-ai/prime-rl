@@ -44,6 +44,10 @@ class WeightSender(ABC):
     (``.finished``). The trainer therefore runs in lockstep with its consumer
     on every transport — a broadcast nobody receives blocks and then fails."""
 
+    # Gathering full weights peaks well above the resident weights, so the trainer drains the GPU and
+    # releases cached blocks before such a broadcast.
+    gathers_full_weights = True
+
     def __init__(self, output_dir: Path, timeout: int):
         self.logger = get_logger()
         self.world = get_world()
@@ -66,8 +70,7 @@ class WeightSender(ABC):
         wait_for_master(f"weight_broadcast/{step}", self.timeout)
         self._broadcast(model, step, step_dir)
         if self.world.is_master:
-            (step_dir / FINISHED_MARKER).touch()
-            self._clean(step)
+            self._finish(step, step_dir)
             self.logger.debug(f"Broadcasted weights for step {step} in {time.perf_counter() - start_time:.2f}s")
 
     def step_dir(self, step: int) -> Path:
@@ -97,6 +100,18 @@ class WeightSender(ABC):
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
         """Move v{step}'s weights to the consumer. All ranks enter only after
         the master finished the handshake."""
+
+    def wait_for_weight_reads(self) -> None:
+        """Block until background work of the last broadcast no longer reads the trainer weights. Called
+        before the final backward of every step, which may already run the (overlapped) optimizer step."""
+
+    def close(self) -> None:
+        """Finish the background work of the last broadcast."""
+
+    def _finish(self, step: int, step_dir: Path) -> None:
+        """Mark v{step} complete for the consumer (master only)."""
+        (step_dir / FINISHED_MARKER).touch()
+        self._clean(step)
 
     def _clean(self, step: int) -> None:
         """Remove old broadcast dirs, keeping ``step`` and ``step - 1`` (a

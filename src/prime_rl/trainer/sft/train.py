@@ -482,7 +482,11 @@ def train(config: SFTConfig):
                 scaled_loss = local_loss_sum / grad_accum_steps
 
             with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == grad_accum_steps - 1)
+                final_backward = micro_step == grad_accum_steps - 1
+                if final_backward and weight_sender is not None:
+                    # The offloaded optimizer step overlaps the final backward and updates the weights
+                    weight_sender.wait_for_weight_reads()
+                begin_backward(gradient_manager, final_backward=final_backward)
                 scaled_loss.backward()
                 finish_backward(gradient_manager)
 
@@ -692,6 +696,7 @@ def train(config: SFTConfig):
     if weight_sender is not None and not paused:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
+        weight_sender.close()
 
     if gradient_manager is not None:
         gradient_manager.close()
