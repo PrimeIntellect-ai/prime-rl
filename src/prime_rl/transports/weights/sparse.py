@@ -880,13 +880,17 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             if self.world.is_master:
                 self._write_manifest(step_dir, step, None, 0)
                 WeightSender._finish(self, step, step_dir)
-            return
-        if base_step is None:
+        elif base_step is None:
             # A resumed run's first broadcast: a full checkpoint, which the next delta is against
             source = {key: as_bits(shard.reshape(-1).to(encoder.wire_dtypes[key])) for key, _, shard, _, _ in shards}
             torch.cuda.synchronize()
             self._write_full(step, step_dir, encoder.anchor_parts(source))
             self.boot_dir = step_dir
+        if base_step is None:
+            if self.optimizer is not None:
+                # Engines report their layout as they load this broadcast. Take it (and compile the fp8 quantizer)
+                # now, not in the first optimizer step, next to its activations.
+                self._set_fp8_layout()
             return
         self._set_fp8_layout()
         if not encoder.initialized:
@@ -958,12 +962,7 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.encode_queued_at = None
         self._wait(self.snapshot_writes)
         start = time.perf_counter()
-        encoder.wait_for_diffs()
-        streamed_dir, num_parts = (self.streamed_dir, self.num_streamed) if self.optimizer is not None else (None, 0)
-        if self.world.is_master:
-            self._submit(self.writes, self._write_manifest, step_dir, step, base_step, self.world.world_size)
-        if streamed_dir is not None:
-            self._submit(self.writes, self._move_streamed, streamed_dir, step_dir / DELTA_DIR)
+        num_parts = 0
 
         def emit(part: tuple) -> None:
             nonlocal num_parts
@@ -971,7 +970,20 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             self._submit(self.writes, self._write_part, path, part)
             num_parts += 1
 
-        scale_changes = encoder.encode(shards, ready, weights_read, emit)
+        try:
+            encoder.wait_for_diffs()
+            if self.optimizer is not None:
+                num_parts = self.num_streamed
+            if self.world.is_master:
+                self._submit(self.writes, self._write_manifest, step_dir, step, base_step, self.world.world_size)
+            if self.optimizer is not None:
+                self._submit(self.writes, self._move_streamed, self.streamed_dir, step_dir / DELTA_DIR)
+            scale_changes = encoder.encode(shards, ready, weights_read, emit)
+        except BaseException as error:
+            # Recorded before the trainer wakes up, so it fails at its next wait instead of training on
+            self.errors.append(error)
+            weights_read.set()
+            raise
         # Free the gathered fp8 tensors before the anchor copy below, which may overlap the next step's memory peak
         shards.clear()
         encode_time = time.perf_counter() - start
