@@ -216,31 +216,52 @@ def _partition_loads(weights: Sequence[int], partitions: list[list[int]]) -> lis
 def _refine_by_swapping(weights: Sequence[int], partitions: list[list[int]]) -> list[list[int]]:
     partitions = [list(partition) for partition in partitions]
     loads = _partition_loads(weights, partitions)
+    single_microbatch_per_rank = all(len(partition) == 1 for partition in partitions)
 
     while True:
+        max_load, min_load = max(loads), min(loads)
+        if max_load == min_load or single_microbatch_per_rank:
+            return partitions
+
         best_swap = None
-        best_score = (max(loads), max(loads) - min(loads))
+        best_score = (max_load, max_load - min_load)
         for left_rank in range(len(partitions)):
             for right_rank in range(left_rank + 1, len(partitions)):
+                # Unaffected rank loads are shared by every candidate for this pair.
+                other_loads = [load for rank, load in enumerate(loads) if rank != left_rank and rank != right_rank]
+                other_max = max(other_loads, default=None)
+                other_min = min(other_loads, default=None)
+
                 for left_pos, left_idx in enumerate(partitions[left_rank]):
                     for right_pos, right_idx in enumerate(partitions[right_rank]):
-                        new_left = loads[left_rank] - weights[left_idx] + weights[right_idx]
-                        new_right = loads[right_rank] - weights[right_idx] + weights[left_idx]
-                        new_loads = list(loads)
-                        new_loads[left_rank] = new_left
-                        new_loads[right_rank] = new_right
-                        score = (max(new_loads), max(new_loads) - min(new_loads))
+                        delta = weights[right_idx] - weights[left_idx]
+                        if delta == 0:
+                            continue
+
+                        new_left = loads[left_rank] + delta
+                        new_right = loads[right_rank] - delta
+                        
+                        new_max = max(new_left, new_right)
+                        new_min = min(new_left, new_right)
+                        if other_max is not None:
+                            new_max = max(new_max, other_max)
+                        if other_min is not None:
+                            new_min = min(new_min, other_min)
+                        
+                        score = (new_max, new_max - new_min)
                         if score < best_score:
                             best_score = score
-                            best_swap = (left_rank, right_rank, left_pos, right_pos, new_loads)
+                            best_swap = (left_rank, right_rank, left_pos, right_pos, new_left, new_right)
         if best_swap is None:
             return partitions
 
-        left_rank, right_rank, left_pos, right_pos, loads = best_swap
+        left_rank, right_rank, left_pos, right_pos, new_left, new_right = best_swap
         partitions[left_rank][left_pos], partitions[right_rank][right_pos] = (
             partitions[right_rank][right_pos],
             partitions[left_rank][left_pos],
         )
+        loads[left_rank] = new_left
+        loads[right_rank] = new_right
 
 
 def balanced_partition(weights: Sequence[int], num_partitions: int) -> list[list[int]]:
