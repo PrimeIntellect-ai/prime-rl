@@ -7,7 +7,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
 )
-from prime_rl.utils.vlm import get_language_model
+from prime_rl.trainer.vlm import get_language_model
 
 
 @pytest.fixture(params=[False, True], ids=["text", "composite"])
