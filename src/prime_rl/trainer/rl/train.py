@@ -496,7 +496,8 @@ def train(config: TrainerConfig):
             with maybe_record_function("backward"):
                 begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
                 loss.backward()
-                finish_backward(gradient_manager)
+                # Bound GPU gradient storage before admitting the next microbatch.
+                finish_backward(gradient_manager, wait_for_copies=True)
 
             mm_kwargs = None
 
