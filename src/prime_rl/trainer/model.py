@@ -3,7 +3,7 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 # Disable transformers hub kernel interception. Installed hub kernels can otherwise replace
 # modules with implementations that have incompatible CUDA requirements.
@@ -1049,7 +1049,8 @@ def forward(
     # True when seq_lens holds the full pre-CP-shard document boundaries
     # (kept global because documents can straddle the shard cut).
     seq_lens_are_pre_shard: bool = False,
-) -> PrimeLmOutput:
+    hidden_states_fn: Callable[[Tensor], Any] | None = None,
+) -> PrimeLmOutput | Any:
     kwargs = {
         "input_ids": input_ids,
         "labels": labels,
@@ -1076,5 +1077,9 @@ def forward(
 
     if routed_experts is not None:
         kwargs["routed_experts"] = routed_experts
+    if hidden_states_fn is not None:
+        # Called on the backbone's final hidden states inside the forward pass; its result is returned as is.
+        kwargs["hidden_states_fn"] = hidden_states_fn
+        return model(**kwargs)
 
     return cast_float_and_contiguous(model(**kwargs))
