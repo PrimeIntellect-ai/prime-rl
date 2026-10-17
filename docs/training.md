@@ -262,7 +262,7 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 
 | Knob | What it controls |
 |---|---|
-| `data.name` | HF dataset name or local path |
+| `data.name` | HF dataset name (or `hf://datasets/<owner>/<repo>`), local path, or `s3://` / `gs://` URL to a data file or prefix (parquet, jsonl/json, csv, arrow; single `train` split). Object storage auth and endpoint come from the standard env vars, e.g. `AWS_ENDPOINT_URL` for R2/MinIO. |
 | `data.batch_size` | Tokens per trainer step (packed) |
 | `data.seq_len` | Per-sample sequence length |
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |

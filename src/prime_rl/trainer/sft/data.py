@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Literal, TypedDict, cast
 
+import fsspec
 import numpy as np
 import torch
 from datasets import Dataset, interleave_datasets, load_dataset
@@ -623,14 +624,57 @@ def cat_collate(samples: list[Sample]) -> Batch:
     }
 
 
+OBJECT_STORE_SCHEMES = ("s3", "gs")
+_HF_DATASET_PREFIX = "hf://datasets/"
+_DATA_FILE_BUILDERS = {".parquet": "parquet", ".jsonl": "json", ".json": "json", ".csv": "csv", ".arrow": "arrow"}
+
+
+def parse_dataset_name(name: str) -> tuple[str | None, str]:
+    """Split a dataset name into (object-store scheme, name).
+
+    `hf://datasets/<owner>/<repo>` becomes the bare Hub ID; local paths and Hub IDs pass through with scheme None;
+    `s3://` and `gs://` URLs keep their URL and report the scheme. Any other scheme is rejected.
+    """
+    if name.startswith(_HF_DATASET_PREFIX):
+        return None, name.removeprefix(_HF_DATASET_PREFIX)
+    if "://" not in name:
+        return None, name
+    scheme = name.split("://", 1)[0]
+    if scheme not in OBJECT_STORE_SCHEMES:
+        raise ValueError(
+            f"Unsupported dataset URL {name!r}. Supported: a local path, a Hugging Face Hub ID, "
+            "hf://datasets/<owner>/<repo>, s3://<bucket>/<key-or-prefix>, gs://<bucket>/<key-or-prefix>."
+        )
+    return scheme, name
+
+
+def _object_store_data_files(url: str) -> tuple[str, list[str]]:
+    """List the data files at an object or prefix URL and pick the `datasets` builder from their extension."""
+    fs, path = fsspec.core.url_to_fs(url)
+    # Skip markers like `_SUCCESS` and hidden files, same convention as `datasets`' own data file resolution.
+    files = sorted(fs.unstrip_protocol(f) for f in fs.find(path) if not Path(f).name.startswith(("_", ".")))
+    if not files:
+        raise ValueError(f"No data files found at {url}")
+    builders = {_DATA_FILE_BUILDERS.get(Path(f).suffix) for f in files}
+    if None in builders or len(builders) > 1:
+        raise ValueError(
+            f"Data files at {url} must all be one of {sorted(_DATA_FILE_BUILDERS)} "
+            f"(json and jsonl may mix), got: {sorted({Path(f).suffix for f in files})}"
+        )
+    return builders.pop(), files
+
+
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
     if not isinstance(data, SFTDataConfig):
         return
-    if Path(data.name).exists():
-        get_logger().info(f"Data {data.name} found at local path, skipping download")
+    scheme, dataset_name = parse_dataset_name(data.name)
+    if scheme is not None:
+        get_logger().info(f"Data {data.name} is in object storage, the trainer loads it directly")
+        return
+    if Path(dataset_name).exists():
+        get_logger().info(f"Data {dataset_name} found at local path, skipping download")
         return
 
-    dataset_name = data.name
     t0 = time.perf_counter()
     get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
     snapshot = snapshot_download(
@@ -654,10 +698,21 @@ def setup_and_interleave_datasets(
     revision: str | None = None,
 ) -> Dataset:
     logger = get_logger()
+    scheme, dataset_name = parse_dataset_name(dataset_name)
+    path, data_files = dataset_name, None
+    if scheme is not None:
+        # Data files from object storage form a single "train" split with no subsets.
+        if any(subset is not None or split != "train" for subset, split in subsets_and_splits):
+            raise ValueError(
+                f"Dataset {dataset_name} is loaded from data files, which have no subsets and a single 'train' split. "
+                "Unset data.subsets and data.splits (or set data.splits = ['train'])."
+            )
+        path, data_files = _object_store_data_files(dataset_name)
+        revision = None
     datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(dataset_name, subset, split=split, revision=revision))
+        dataset = cast(Dataset, load_dataset(path, subset, split=split, revision=revision, data_files=data_files))
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
