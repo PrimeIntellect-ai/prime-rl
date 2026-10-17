@@ -149,12 +149,12 @@ class TrainEnv(Env):
     ):
         super().__init__(config, address, address_file)
         # Train rollouts are generated from `clients`: the policy, or the frozen
-        # `sampling.source` connected in setup() with the renderer (token-in/out) client.
+        # `algo.rollout_model` connected in setup() with the renderer (token-in/out) client.
         self.clients = clients
         self.renderer_config = renderer_config
         self.connected: InferenceClient | None = None
         self.algorithm = algorithm
-        self.uses_live_policy = config.algo.sampling.source == "policy"
+        self.uses_live_policy = config.algo.rollout_model == "policy"
         self.sampling = vf.SamplingConfig(
             **config.sampling.model_dump(exclude_none=True),
             # Only policy rollouts need sampling logprobs for importance ratios.
@@ -165,7 +165,7 @@ class TrainEnv(Env):
 
     async def setup(self) -> None:
         async def connect_source() -> None:
-            source = self.config.algo.sampling.source
+            source = self.config.algo.rollout_model
             if isinstance(source, FrozenModelConfig):
                 self.connected = await connect_frozen_client(source, renderer_config=self.renderer_config)
                 self.clients = self.connected
