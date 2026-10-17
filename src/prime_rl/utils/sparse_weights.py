@@ -15,22 +15,18 @@ checksums of the new weights catch it if not.
 import itertools
 import json
 import os
-import re
 import threading
 import time
-from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from itertools import groupby
-from math import prod
 from pathlib import Path
 from typing import BinaryIO
 
 import numpy as np
 import pyzstd
 import torch
-from safetensors import safe_open
 from safetensors.numpy import save
 
 DELTA_DIR = "delta"
@@ -302,59 +298,42 @@ def write_anchor_shards(
     write_file(step_dir / f"anchor_rank{rank}.done", str(world_size).encode())
 
 
-def safetensors_index(directory: Path) -> dict[str, list[tuple[int, Path, torch.dtype, int]]]:
-    """Tensor name -> its slices ``(flat start, file, dtype, data offset)`` in the safetensors files in
-    ``directory``: a HF checkpoint (one slice at 0), or an anchor (``"{name}@{start}"`` slices)."""
-    index = defaultdict(list)
-    for path in directory.glob("*.safetensors"):
+def checkpoint_index(directory: Path) -> dict[str, tuple[list[int], torch.dtype, list[tuple[int, int, Path, int]]]]:
+    """Tensor name -> ``(shape, dtype, slices)`` of the safetensors files in ``directory``, with slices
+    ``(flat start, numel, file, data offset)``: a HF checkpoint (one slice at 0), or an anchor
+    (``"{name}@{start}"`` slices, full shapes in the metadata)."""
+    index = {}
+    for path in sorted(directory.glob("*.safetensors")):
         with open(path, "rb") as file:
             header_size = int.from_bytes(file.read(8), "little")
             header = json.loads(file.read(header_size))
-        header.pop("__metadata__", None)
+        shapes = json.loads(header.pop("__metadata__", {}).get("shapes", "{}"))
         for key, info in header.items():
             name, _, start = key.partition("@")
             dtype = getattr(torch, SAFETENSORS_DTYPES[info["dtype"]])
-            index[name].append((int(start or 0), path, dtype, 8 + header_size + info["data_offsets"][0]))
-    return dict(index)
+            _, _, slices = index.setdefault(name, (shapes.get(name, info["shape"]), dtype, []))
+            numel = (info["data_offsets"][1] - info["data_offsets"][0]) // dtype.itemsize
+            slices.append((int(start or 0), numel, path, 8 + header_size + info["data_offsets"][0]))
+    return index
 
 
-def anchor_index(step_dir: Path) -> tuple[dict[str, list[tuple[Path, str, int]]], dict[str, tuple[list[int], str]]]:
-    """Where each tensor's slices are in an anchor written by ``write_anchor_shards``, and its shape and dtype."""
-    slices: dict[str, list[tuple[Path, str, int]]] = defaultdict(list)
-    tensors: dict[str, tuple[list[int], str]] = {}
-    for path in sorted(step_dir.glob("model-rank*.safetensors")):
-        with safe_open(path, framework="pt") as file:
-            shapes = json.loads(file.metadata()["shapes"])
-            for key in file.keys():
-                name, start = key.rsplit("@", 1)
-                slices[name].append((path, key, int(start)))
-                dtype = str(file.get_slice(key).get_dtype())
-                tensors[name] = (shapes[name], SAFETENSORS_DTYPES[dtype])
-    return dict(slices), tensors
-
-
-def _numeric_order(name: str) -> list:
-    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
-
-
-def anchor_tensors(
-    step_dir: Path, names: Iterable[str] | None = None, index=None
-) -> Iterator[tuple[str, torch.Tensor]]:
-    """Assemble the full tensors of an anchor (all, or ``names``)."""
-    slices, tensors = index or anchor_index(step_dir)
-    # Layer by layer (numeric order), so the engine's layerwise reload holds few layers at a time
-    for name in sorted(slices, key=_numeric_order) if names is None else names:
-        shape, dtype = tensors[name]
-        tensor = torch.empty(prod(shape), dtype=getattr(torch, dtype))
-        for path, key, start in slices[name]:
-            with safe_open(path, framework="pt") as file:
-                values = file.get_tensor(key)
-            tensor[start : start + values.numel()] = values
-        yield name, tensor.view(shape)
-    if names is None:
-        for path in step_dir.glob("model-rank*.safetensors"):
-            with open(path, "rb") as file:
-                drop_page_cache(file.fileno())
+def read_checkpoint_range(entry: tuple, begin: int, end: int, out: np.ndarray) -> None:
+    """Read flat elements ``[begin, end)`` of a ``checkpoint_index`` entry into the bytes ``out``, and drop
+    them from the page cache (checkpoints are read once)."""
+    _, dtype, slices = entry
+    itemsize = dtype.itemsize
+    for start, numel, path, data_offset in slices:
+        low, high = max(begin, start), min(end, start + numel)
+        if low >= high:
+            continue
+        with open(path, "rb") as file:
+            done, size, offset = 0, (high - low) * itemsize, data_offset + (low - start) * itemsize
+            target = out[(low - begin) * itemsize : (high - begin) * itemsize]
+            while done < size:
+                read = os.preadv(file.fileno(), [target[done:]], offset + done)
+                assert read > 0, f"short read of {path}"
+                done += read
+            os.posix_fadvise(file.fileno(), offset, size, os.POSIX_FADV_DONTNEED)
 
 
 def anchor_complete(step_dir: Path) -> bool:

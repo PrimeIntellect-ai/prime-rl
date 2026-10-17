@@ -15,7 +15,7 @@ from vllm.model_executor.model_loader.reload.layerwise import (
 from vllm.model_executor.model_loader.reload.meta import restore_layer_on_meta
 from vllm.model_executor.model_loader.reload.utils import get_layer_params_buffers, get_layer_tensors
 
-from prime_rl.utils.sparse_weights import as_bits, quantize_fp8_blocks
+from prime_rl.utils.sparse_weights import FP8_BLOCK, as_bits, quantize_fp8_blocks
 
 logger = init_logger("vllm.inference.vllm.worker_weight_transfer")
 
@@ -85,6 +85,8 @@ class CheckpointIndexMap:
 
         def placeholders():
             for name, (shape, dtype) in tensors.items():
+                if name.endswith("_scale_inv"):
+                    continue  # fp8 block scales of a delta: recorded in fp8_layout
                 # fp8 tensors of a delta are quantized from bf16 checkpoint tensors
                 checkpoint_dtype = torch.bfloat16 if dtype == "float8_e4m3fn" else getattr(torch, dtype)
                 tensor = torch.empty(shape, dtype=checkpoint_dtype, device=device)
@@ -111,6 +113,7 @@ class CheckpointIndexMap:
             if live[name].shape != shapes[name] or not live[name].is_contiguous() or live[name].storage_offset():
                 raise NotImplementedError(f"Sparse weight deltas cannot patch {name}: its layout changes after loading")
         self.params: list[torch.Tensor] = [live[name] for name in used]
+        self.param_names = used
         param_index = {name: index for index, name in enumerate(used)}
         self.records = {
             name: [(*write[:4], param_index[write[4]], *write[5:]) for write in writes]
@@ -119,6 +122,7 @@ class CheckpointIndexMap:
         self.num_cols = {name: (shape[-1] if shape else 1) for name, (shape, _) in tensors.items()}
         self.numel = {name: prod(shape) for name, (shape, _) in tensors.items()}
         self.checksum_plan = None
+        self.fp8: dict[str, str] = {}
         self.unpatchable = unpatchable
         # Checkpoint tensors this worker holds; unpatchable ones too, so a change to them is caught in apply_delta
         self.names = set(self.records) | unpatchable
@@ -186,22 +190,58 @@ class CheckpointIndexMap:
         partial = torch.tensor([h < self.numel[name] for h, name in zip(held, names)], device=device)
         return names, partial, row_ranges, other_writes
 
-    def fp8_layout(self, read_tensor) -> dict[str, str]:
+    def fp8_layout(self, model: Module, read_tensor) -> dict[str, str]:
         """The vLLM per-block quantization (``"fp32"`` or ``"ue8m0"`` scales) that reproduces each
-        fp8 param from the checkpoint, per checkpoint tensor stored in one. Checks one checkpoint
-        tensor per param; ``read_tensor(name)`` returns it."""
+        fp8 param from the checkpoint, per checkpoint tensor stored in one. Also records where each such
+        tensor's block scales (``"{name}_scale_inv"``, one fp32 per 128x128 block) live, so deltas and loads
+        patch them in place. Checks one checkpoint tensor per param (weights and scales); ``read_tensor(name)``
+        returns it."""
         modes: dict[int, str] = {}
-        layout = {}
-        for name, writes in self.records.items():
+        live = dict(model.named_parameters())
+        scale_params: dict[str, int] = {}
+        for name, writes in list(self.records.items()):
             for row0, rows, col0, cols, index, offset, *strides in writes:
-                if self.params[index].dtype != torch.float8_e4m3fn:
+                param = self.params[index]
+                if param.dtype != torch.float8_e4m3fn:
                     continue
+                scale = live.get(f"{self.param_names[index]}_scale_inv")
+                num_rows, num_cols = param.shape[-2:]
+                row, col = offset // num_cols % num_rows, offset % num_cols
+                if (
+                    scale is None
+                    or scale.dtype != torch.float32
+                    or scale.shape[:-2] != param.shape[:-2]
+                    or strides != [num_cols, 1]
+                    or any(x % FP8_BLOCK[0] for x in (row0, col0, row, col))
+                ):
+                    raise NotImplementedError(f"Sparse weight deltas cannot patch the fp8 block scales of {name}")
+                if scale.untyped_storage()._cdata not in scale_params:
+                    scale_params[scale.untyped_storage()._cdata] = len(self.params)
+                    # The whole storage, flat: kernels may keep scales in a strided (e.g. MN-major) layout
+                    self.params.append(scale.data.as_strided((scale.untyped_storage().nbytes() // 4,), (1,), 0))
+                matrix, scale_offset = offset // (num_rows * num_cols), scale.storage_offset()
+                for dim in reversed(range(param.dim() - 2)):
+                    matrix, position = divmod(matrix, param.shape[dim])
+                    scale_offset += position * scale.stride(dim)
+                scale_offset += row // FP8_BLOCK[0] * scale.stride(-2) + col // FP8_BLOCK[1] * scale.stride(-1)
+                block = (row0 // FP8_BLOCK[0], -(-rows // FP8_BLOCK[0]), col0 // FP8_BLOCK[1], -(-cols // FP8_BLOCK[1]))
+                scale_name = f"{name}_scale_inv"
+                self.records.setdefault(scale_name, []).append(
+                    (*block, scale_params[scale.untyped_storage()._cdata], scale_offset, *scale.stride()[-2:])
+                )
+                self.num_cols[scale_name] = -(-self.num_cols[name] // FP8_BLOCK[1])
+                self.numel[scale_name] = (
+                    -(-self.numel[name] // self.num_cols[name] // FP8_BLOCK[0]) * self.num_cols[scale_name]
+                )
                 if index not in modes:
-                    live = as_bits(self.params[index].data).view(-1).as_strided((rows, cols), strides, offset)
-                    weight = read_tensor(name).to(self.params[index].device)
+                    weight = read_tensor(name).to(param.device)
+                    weight = weight.view(-1, self.num_cols[name])
                     for mode in ("ue8m0", "fp32"):
-                        quantized, _ = quantize_fp8_blocks(weight, mode == "ue8m0")
-                        if torch.equal(quantized[row0 : row0 + rows, col0 : col0 + cols], live):
+                        quantized, scales = quantize_fp8_blocks(weight, mode == "ue8m0")
+                        if torch.equal(
+                            quantized[row0 : row0 + rows, col0 : col0 + cols],
+                            self._view(index, rows, cols, offset, strides),
+                        ):
                             modes[index] = mode
                             break
                     else:
@@ -209,9 +249,52 @@ class CheckpointIndexMap:
                             f"Sparse weight deltas cannot patch {name}: the engine's fp8 weights are not vLLM's "
                             "per-block quantization of the checkpoint (e.g. a weight-shuffling kernel)"
                         )
-                if layout.setdefault(name, modes[index]) != modes[index]:
+                    _, block_rows, _, block_cols, scale_index, scale_offset, *scale_strides = self.records[scale_name][
+                        -1
+                    ]
+                    expected = scales[block[0] : block[0] + block_rows, block[2] : block[2] + block_cols]
+                    if not torch.equal(
+                        as_bits(expected), self._view(scale_index, block_rows, block_cols, scale_offset, scale_strides)
+                    ):
+                        raise NotImplementedError(f"Sparse weight deltas cannot patch the fp8 block scales of {name}")
+                if self.fp8.setdefault(name, modes[index]) != modes[index]:
                     raise NotImplementedError(f"Sparse weight deltas cannot patch {name}: mixed fp8 layouts")
-        return layout
+        self.names |= set(self.records)
+        self.checksum_plan = None
+        return self.fp8
+
+    def _view(self, index: int, rows: int, cols: int, offset: int, strides) -> torch.Tensor:
+        """The raw bits of one write of a checkpoint block into param ``index``."""
+        return as_bits(self.params[index].data).view(-1).as_strided((rows, cols), tuple(strides), offset)
+
+    def row_ranges(self) -> dict[str, tuple[int, int]]:
+        """Checkpoint tensor -> the rows ``[begin, end)`` of its ``[rows, num_cols]`` view this worker holds
+        (fp8 tensors: whole 128-row blocks), for ``load_rows``. Tensors the engine casts on load are left out:
+        they never change."""
+        ranges = {}
+        for name, writes in self.records.items():
+            if name.endswith("_scale_inv") or name in self.unpatchable:
+                continue  # scales are set with their weights
+            begin, end = min(write[0] for write in writes), max(write[0] + write[1] for write in writes)
+            if name in self.fp8:
+                num_rows = self.numel[name] // self.num_cols[name]
+                begin, end = begin // FP8_BLOCK[0] * FP8_BLOCK[0], min(-(-end // FP8_BLOCK[0]) * FP8_BLOCK[0], num_rows)
+            ranges[name] = (begin, end)
+        return ranges
+
+    @torch.no_grad()
+    def load_rows(self, name: str, rows: torch.Tensor, begin: int) -> None:
+        """Set the params from rows ``begin:`` of checkpoint tensor ``name`` (the ``row_ranges`` rows, on the
+        params' device): the counterpart of ``apply_delta`` for full checkpoints. fp8 tensors are quantized
+        like the engine does, block scales included."""
+        sources = [(name, rows, begin)]
+        if name in self.fp8:
+            quantized, scales = quantize_fp8_blocks(rows, self.fp8[name] == "ue8m0")
+            sources = [(name, quantized, begin), (f"{name}_scale_inv", scales, begin // FP8_BLOCK[0])]
+        for source_name, source, first in sources:
+            for row0, rows_, col0, cols, index, offset, *strides in self.records[source_name]:
+                block = source[row0 - first : row0 - first + rows_, col0 : col0 + cols]
+                self._view(index, rows_, cols, offset, strides).copy_(as_bits(block))
 
     @torch.no_grad()
     def apply_delta(
