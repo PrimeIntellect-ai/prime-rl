@@ -101,7 +101,41 @@ class LinearLengthPenaltyConfig(BaseConfig):
     """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
 
 
-LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
+class CostLatencyConfig(BaseConfig):
+    """Value of the user's wait and per-request speeds of the deployed model (not the RL inference server)."""
+
+    usd_per_hour: float = Field(ge=0, allow_inf_nan=False)
+    """USD value of one hour of the user waiting."""
+
+    prefill_tokens_per_s: float = Field(gt=0, allow_inf_nan=False)
+    """Per-request prefill speed, in uncached input tokens per second."""
+
+    decode_tokens_per_s: float = Field(gt=0, allow_inf_nan=False)
+    """Per-request decode speed, in output tokens per second."""
+
+
+class CostPenaltyConfig(BaseConfig):
+    """``pass_rate``-scaled penalty on the modelled deployment cost of each rollout, subtracted from its reward before the GRPO baseline: ``reward - pass_rate * reward_per_usd * (token_usd + latency_usd)``. See docs/algorithms.md."""
+
+    type: Literal["cost"] = "cost"
+
+    reward_per_usd: float = Field(gt=0, allow_inf_nan=False)
+    """Reward lost per USD of cost, at pass rate 1."""
+
+    input_usd_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+    """USD per million uncached input tokens."""
+
+    cached_input_usd_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+    """USD per million prefix-cached input tokens."""
+
+    output_usd_per_mtok: float = Field(ge=0, allow_inf_nan=False)
+    """USD per million output tokens."""
+
+    latency: CostLatencyConfig | None = None
+    """Charge for the user's wait. None prices tokens only."""
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[LinearLengthPenaltyConfig | CostPenaltyConfig, Field(discriminator="type")]
 
 
 class EchoRoleConfig(BaseConfig):
@@ -201,7 +235,7 @@ class GRPOAlgoConfig(BaseAlgoConfig):
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: LengthPenaltyConfig | None = None
-    """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
+    """Penalty subtracted from each reward before the GRPO baseline: ``linear`` (``LinearLengthPenaltyConfig``, a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max) or ``cost`` (``CostPenaltyConfig``, a ``pass_rate``-scaled modelled deployment cost). None disables it."""
 
     loss_aggregation: Literal["token", "prompt"] = "token"
     """How the rl loss weights tokens across prompt groups. ``token``: every loss token in the batch weighs the same, so groups with more total tokens dominate the gradient. ``prompt``: prompt-mean (MiMo-V2.6 Eq. 1) — each trainable token of group ``q`` gets rl weight ``1 / T_q`` (``T_q`` = the group's trainable tokens), and the trainer divides the rl loss by the summed weights, i.e. the number of groups. All rl envs of a run must use the same value."""
