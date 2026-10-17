@@ -404,13 +404,7 @@ def train(config: TrainerConfig):
                 )
                 if not defer_vlm_cp_to_model:
                     input_ids, position_ids = setup_cp_params(
-                        input_ids,
-                        position_ids,
-                        cp_rank,
-                        cp_size,
-                        cp_group,
-                        seq_lens=seq_lens,
-                        cp_style=config.model.cp_style,
+                        input_ids, position_ids, cp_rank, cp_size, seq_lens=micro_batch["seq_lens"]
                     )
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)

@@ -12,6 +12,7 @@ from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
+from prime_rl.utils.cp import RingParams
 
 
 class GptOssAttention(nn.Module):
@@ -58,6 +59,7 @@ class GptOssAttention(nn.Module):
         value: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        ring_params: RingParams | None = None,
     ) -> torch.Tensor:
         window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (None, None)
         output, _ = self.flash_attn(
@@ -81,6 +83,7 @@ class GptOssAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.Tensor,
         max_seqlen: int,
+        ring_params: RingParams | None = None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         if self.qkv_proj is None:
@@ -101,7 +104,7 @@ class GptOssAttention(nn.Module):
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
 
-        output = self.compute_attention(query[0], key[0], value[0], cu_seqlens, max_seqlen)
+        output = self.compute_attention(query[0], key[0], value[0], cu_seqlens, max_seqlen, ring_params=ring_params)
         return self.o_proj(output.contiguous().view(batch_size, sequence_length, -1))
 
 
@@ -109,13 +112,11 @@ def substitute_gpt_oss_ring_attention(
     process_group: torch.distributed.ProcessGroup,
     heads_k_stride: int,
 ) -> None:
-    from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
-
     from prime_rl.trainer.distributed.collectives import all_gather
 
-    def ring_attention(self, query, key, value, _cu_seqlens, _max_seqlen):
+    def ring_attention(self, query, key, value, _cu_seqlens, _max_seqlen, ring_params=None):
         key_value_groups = self.num_attention_heads // self.num_key_value_heads
-        local_k_slice = DATA_PARAMS["local_k_slice"]
+        local_k_slice = slice(ring_params.local_k_start, ring_params.local_k_stop)
         window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (None, None)
         outputs = []
 
@@ -130,10 +131,10 @@ def substitute_gpt_oss_ring_attention(
                 query[:, query_head_start:query_head_stop],
                 gathered_key,
                 gathered_value,
-                cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
-                cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
-                max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
-                max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
+                cu_seqlens_q=ring_params.cu_seqlens_q,
+                cu_seqlens_k=ring_params.cu_seqlens_k,
+                max_seqlen_q=ring_params.max_seqlen_q,
+                max_seqlen_k=ring_params.max_seqlen_k,
                 softmax_scale=self.scaling,
                 causal=True,
                 window_size=window_size,
@@ -147,21 +148,21 @@ def substitute_gpt_oss_ring_attention(
 
 
 def substitute_gpt_oss_ulysses_attention(process_group: torch.distributed.ProcessGroup) -> None:
-    from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS, ulysses_flash_attn_varlen_func
+    from prime_rl.trainer.models.layers.ulysses_attn import ulysses_flash_attn_varlen_func
 
     cp_size = torch.distributed.get_world_size(process_group)
 
-    def ulysses_attention(self, query, key, value, _cu_seqlens, _max_seqlen):
+    def ulysses_attention(self, query, key, value, cu_seqlens, max_seqlen, ring_params=None):
         window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (-1, -1)
         return ulysses_flash_attn_varlen_func(
             self.flash_attn,
             query,
             key,
             value,
-            cu_seqlens_q=ULYSSES_PARAMS["cu_seqlens"],
-            cu_seqlens_k=ULYSSES_PARAMS["cu_seqlens"],
-            max_seqlen_q=ULYSSES_PARAMS["max_seqlen"],
-            max_seqlen_k=ULYSSES_PARAMS["max_seqlen"],
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
             causal=True,
             cp_group=process_group,
             cp_size=cp_size,
