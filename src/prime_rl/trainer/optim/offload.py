@@ -1071,7 +1071,7 @@ def _cast_full_offload_compute_parameters(
 
     model.to(dtype=torch.bfloat16)
     for module in fp32_modules:
-        module.to(dtype=torch.float32)
+        module._apply(lambda tensor: tensor.float() if tensor.is_floating_point() else tensor, recurse=False)
     for param_id, snapshot in fp32_snapshots.items():
         floating_params[param_id][1].copy_(snapshot)
     for name, buffer in model.named_buffers():
