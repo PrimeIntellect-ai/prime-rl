@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
-from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
+from prime_rl.trainer.model import compute_expert_load_stats, get_load_balance_stats, is_tt_moe_model
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
@@ -254,3 +254,33 @@ def test_expert_load_stats():
     assert stats.keys() == expected.keys()
     for name, value in expected.items():
         assert stats[name].item() == pytest.approx(value)
+
+
+@pytest.mark.parametrize("learned_selection", [True, False])
+def test_router_replay_agreement_stats(learned_selection):
+    moe = MoE.from_args(MoEArgs(num_experts=4), dim=4, hidden_dim=8, shared_expert=None)
+    moe.router.learned_selection = learned_selection
+    moe.tokens_per_expert.fill_(1.0)
+    # 4 replayed tokens, all checked, 1 shares no expert with the router's own top-k, 3 shared in total
+    moe.replay_agreement.copy_(torch.tensor([4.0, 4.0, 1.0, 3.0]))
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([torch.nn.Module()])
+    model.model.layers[0].mlp = moe
+
+    stats = get_load_balance_stats(model)
+
+    if learned_selection:
+        assert stats["router_replay/agreement"].tolist() == [0.75]
+        assert stats["router_replay/zero_overlap"].tolist() == [0.25]
+    else:
+        assert stats["router_replay/agreement"] is None
+    assert not moe.replay_agreement.any()
+
+
+def test_router_replay_agreement_skips_repeated_rows():
+    moe = MoE.from_args(MoEArgs(num_experts=4, top_k=2), dim=4, hidden_dim=8, shared_expert=None)
+    own = torch.tensor([[0, 1], [2, 3], [2, 3]])
+    # last row: the inference placeholder for a sample's final token, a copy of the previous row
+    routed = torch.tensor([[0, 1], [1, 0], [1, 0]])
+    assert moe._replay_agreement(own, routed).tolist() == [3.0, 2.0, 1.0, 1.0]

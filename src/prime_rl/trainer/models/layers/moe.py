@@ -44,6 +44,16 @@ def _record_moe_routing_statistics_fake(
     return None
 
 
+@torch.library.custom_op("prime_rl::record_router_replay_agreement", mutates_args=("replay_agreement",))
+def record_router_replay_agreement(replay_agreement: torch.Tensor, counts: torch.Tensor) -> None:
+    replay_agreement.add_(counts)
+
+
+@record_router_replay_agreement.register_fake
+def _record_router_replay_agreement_fake(replay_agreement: torch.Tensor, counts: torch.Tensor) -> None:
+    return None
+
+
 @dataclass
 class MoEArgs:
     num_experts: int = 8
@@ -146,6 +156,10 @@ class TokenChoiceTopKRouter(nn.Module):
         topk_sorted (bool): Whether selected experts are returned in descending score order.
     """
 
+    learned_selection = True
+    """Whether inference picks the experts as the top-k of this router's scores (unlike a hash
+    router's token-id lookup), so replayed routes can be checked against the router's own."""
+
     def __init__(
         self,
         dim: int,
@@ -180,14 +194,14 @@ class TokenChoiceTopKRouter(nn.Module):
         self,
         x: torch.Tensor,
         routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
                 - top_scores (torch.Tensor):
                     Routing scores for selected experts with shape ``(bs*slen, top_k)``.
                 - selected_experts_indices (torch.Tensor):
@@ -196,6 +210,9 @@ class TokenChoiceTopKRouter(nn.Module):
                     Number of tokens assigned to each expert with shape ``(num_experts,)``.
                 - routing_confidence_sum (torch.Tensor):
                     Sum over tokens of the selected-expert probability mass before route normalization/scaling.
+                - own_experts (torch.Tensor | None):
+                    With replayed routes and a learned selection, the router's own top-k with shape
+                    ``(bs*slen, top_k)``; otherwise None.
         """
         # scores shape (bs*slen, num_experts)
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
@@ -223,9 +240,14 @@ class TokenChoiceTopKRouter(nn.Module):
         # NOTE: selection biases are only used for routing. The gating value
         #       top_scores is still derived from the original scores/logits.
 
+        own_experts = None
         if routed_experts is not None:
             top_scores = scores.gather(dim=1, index=routed_experts)
             selected_experts_indices = routed_experts
+            if self.learned_selection:
+                with torch.no_grad():
+                    selection_scores = scores if self.selection_bias is None else scores + self.selection_bias
+                    own_experts = selection_scores.topk(self.top_k, dim=1, sorted=False).indices
         elif self.force_balanced:
             num_tokens = scores.shape[0]
             arange = torch.arange(num_tokens * self.top_k, device=scores.device)
@@ -266,7 +288,7 @@ class TokenChoiceTopKRouter(nn.Module):
             max=self.num_experts,
         ).to(torch.int64)
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, own_experts
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
@@ -344,6 +366,10 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
+        # Router replay check: [replayed tokens, of them checked (see ``_replay_agreement``),
+        # checked tokens with no expert in common with the router's own top-k, summed fraction
+        # of shared experts].
+        self.register_buffer("replay_agreement", torch.zeros(4, dtype=torch.float32), persistent=False)
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
@@ -383,6 +409,7 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
+            own_experts,
         ) = self.router(x, routed_experts=routed_experts)
 
         # Accumulate expert usage for selection-bias updates and metrics.
@@ -393,6 +420,10 @@ class MoE(nn.Module):
                 num_tokens_per_expert,
                 routing_confidence_sum,
             )
+            if own_experts is not None:
+                record_router_replay_agreement(
+                    self.replay_agreement, self._replay_agreement(own_experts, routed_experts)
+                )
 
         routed_output = self.token_dispatcher.run(
             self.prepare_expert_input(x),
@@ -415,6 +446,27 @@ class MoE(nn.Module):
 
         return routed_output.reshape(bs, slen, dim)
 
+    def _replay_agreement(self, own: torch.Tensor, routed_experts: torch.Tensor) -> torch.Tensor:
+        """Compare replayed routes with the router's own top-k. Trainer and sampler weights
+        differ slightly, so most tokens share most experts; tokens sharing none point at
+        routes misaligned with their tokens. Rows with a repeated expert id are padding or
+        capture holes (a real top-k has distinct ids) and are skipped. So are rows equal to
+        the previous row: inference never forwards a sample's final token, so its row is a
+        copy of the previous one, which shares no expert with the trainer's in most early layers."""
+        shared = (own.unsqueeze(-1) == routed_experts.unsqueeze(-2)).any(dim=-1).sum(dim=-1)
+        sorted_ids = routed_experts.sort(dim=-1).values
+        valid = (sorted_ids[:, 1:] != sorted_ids[:, :-1]).all(dim=-1)
+        valid[1:] &= (routed_experts[1:] != routed_experts[:-1]).any(dim=-1)
+        top_k = routed_experts.shape[-1]
+        return torch.stack(
+            (
+                torch.full((), valid.numel(), device=valid.device, dtype=torch.float32),
+                valid.sum(),
+                (valid & (shared == 0)).sum(),
+                (shared * valid).sum() / top_k,
+            )
+        ).float()
+
     def init_weights(
         self,
         init_std: float,
@@ -428,5 +480,6 @@ class MoE(nn.Module):
         with torch.device(buffer_device):
             self.tokens_per_expert = torch.zeros(self.experts.num_experts, dtype=torch.float32)
             self.routing_confidence_sum = torch.tensor(0.0, dtype=torch.float32)
+            self.replay_agreement = torch.zeros(4, dtype=torch.float32)
             if self.router.selection_bias is not None:
                 self.router.selection_bias = torch.zeros(self.experts.num_experts, dtype=torch.float32)
