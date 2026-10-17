@@ -96,21 +96,21 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
                 num_experts=moe.experts.num_experts,
-                top_k=moe.router.top_k,
+                top_k=moe.router.dispatch_top_k,
                 token_group_alignment=compute.token_group_alignment,
             )
         elif isinstance(dispatch, TorchMoEDispatchConfig):
             if dispatch.transport == "mxfp8" and isinstance(compute, MXFP8ExpertCompute):
                 token_dispatcher = MXFP8TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
-                    top_k=moe.router.top_k,
+                    top_k=moe.router.dispatch_top_k,
                     token_group_alignment=compute.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )
             else:
                 token_dispatcher = TorchTokenDispatcher(
                     num_experts=moe.experts.num_experts,
-                    top_k=moe.router.top_k,
+                    top_k=moe.router.dispatch_top_k,
                     token_group_alignment=compute.token_group_alignment,
                     group=ep_mesh.get_group(),
                 )

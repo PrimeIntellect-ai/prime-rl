@@ -109,6 +109,12 @@ class Glm4MoeConfig(PretrainedConfig):
             and the final norm.
         hc_lowrank (`int`, *optional*):
             Rank of the Gated Residual read gates; required when `hc_count` is above 1.
+        n_null_experts (`int`, *optional*, defaults to 0):
+            Zero-output experts the router can select next to the routed experts (AdaMoE); a token that selects
+            them uses fewer routed experts.
+        batch_topk_max_k (`int`, *optional*, defaults to 0):
+            Above 0, position-wise batch top-k routing: at every position, the batch's sequences together select
+            their `num_experts_per_tok` x rows highest-scoring (token, expert) pairs, each token at most this many.
     ```python
     >>> from transformers import Glm4MoeModel, Glm4MoeConfig
     >>> # Initializing a Glm4Moe style configuration
@@ -172,6 +178,8 @@ class Glm4MoeConfig(PretrainedConfig):
         use_qk_norm=False,
         hc_count=1,
         hc_lowrank=None,
+        n_null_experts=0,
+        batch_topk_max_k=0,
         pad_token_id=None,
         **kwargs,
     ):
@@ -206,6 +214,8 @@ class Glm4MoeConfig(PretrainedConfig):
         self.use_qk_norm = use_qk_norm
         self.hc_count = hc_count
         self.hc_lowrank = hc_lowrank
+        self.n_null_experts = n_null_experts
+        self.batch_topk_max_k = batch_topk_max_k
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
