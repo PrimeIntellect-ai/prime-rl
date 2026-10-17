@@ -12,21 +12,27 @@ A delta must be applied on top of exactly its ``base_step``; per-tensor
 checksums of the new weights catch it if not.
 """
 
+import itertools
 import json
 import os
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from functools import cache
 from itertools import groupby
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 
 import numpy as np
 import pyzstd
 import torch
 from safetensors.numpy import save
+
+from prime_rl.utils.weight_store import S3Path, StoragePath, read_range, storage_path, upload
 
 DELTA_DIR = "delta"
 MANIFEST = "manifest.json"
@@ -138,7 +144,7 @@ def encode_gaps(indices: torch.Tensor, entry_starts: torch.Tensor) -> torch.Tens
 
 
 def write_rank_file(
-    path: Path,
+    path: StoragePath,
     entries: list[tuple[str, int]],
     gaps: np.ndarray,
     values: np.ndarray,
@@ -198,15 +204,23 @@ def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
     return indices - torch.repeat_interleave(restart, counts)
 
 
+def _safetensors_header(path: StoragePath) -> tuple[dict, int]:
+    """The header of a safetensors file and the offset of its data."""
+    head = read_range(path, 0, 1 << 16)
+    header_size = int.from_bytes(head[:8], "little")
+    if 8 + header_size > len(head):
+        head += read_range(path, len(head), 8 + header_size - len(head))
+    return json.loads(head[8 : 8 + header_size]), 8 + header_size
+
+
 def _rank_file_frames(
-    file: BinaryIO, names: set[str] | None
+    path: StoragePath, names: set[str] | None
 ) -> tuple[list[tuple[list[tuple[str, int]], list[tuple[int, int]]]], dict[str, int]]:
-    """The frames of an open rank file with entries in ``names``: ``(entries, [(offset, size)] of the
+    """The frames of a rank file with entries in ``names``: ``(entries, [(offset, size)] of the
     gaps, escapes and values streams)``, and the file's checksums."""
-    header_size = int.from_bytes(file.read(8), "little")
-    header = json.loads(file.read(header_size))
+    header, data_offset = _safetensors_header(path)
     metadata = header["__metadata__"]
-    offsets = [8 + header_size + header[stream]["data_offsets"][0] for stream in ("gaps", "escapes", "values")]
+    offsets = [data_offset + header[stream]["data_offsets"][0] for stream in ("gaps", "escapes", "values")]
     entries = [tuple(entry) for entry in json.loads(metadata["entries"])]
     frames, start = [], 0
     for num_entries, *sizes in json.loads(metadata["frames"]):
@@ -219,16 +233,16 @@ def _rank_file_frames(
 
 
 def _read_frame(
-    fd: int, frame, tensors: dict, names: set[str] | None
+    path: StoragePath, frame, tensors: dict, names: set[str] | None
 ) -> tuple[list[tuple[str, int]], np.ndarray, np.ndarray]:
     """A frame's kept ``(entries, gaps, value bytes)``."""
     frame_entries, ((gaps_at, gaps_size), (escapes_at, escapes_size), (values_at, values_size)) = frame
-    gaps = np.frombuffer(pyzstd.decompress(os.pread(fd, gaps_size, gaps_at)), np.uint8).astype(np.int32)
-    escapes = np.frombuffer(pyzstd.decompress(os.pread(fd, escapes_size, escapes_at)), np.int32)
+    gaps = np.frombuffer(pyzstd.decompress(read_range(path, gaps_at, gaps_size)), np.uint8).astype(np.int32)
+    escapes = np.frombuffer(pyzstd.decompress(read_range(path, escapes_at, escapes_size)), np.int32)
     gap_escapes = gaps == 255
     num_gap_escapes = int(gap_escapes.sum())
     gaps[gap_escapes] = escapes[:num_gap_escapes]
-    values = np.frombuffer(pyzstd.decompress(os.pread(fd, values_size, values_at)), np.uint8).astype(np.int64)
+    values = np.frombuffer(pyzstd.decompress(read_range(path, values_at, values_size)), np.uint8).astype(np.int64)
     values[values == 255] = escapes[num_gap_escapes:].astype(np.int64) & 0xFFFFFFFF
     values = _pack_values((values >> 1) ^ -(values & 1), frame_entries, tensors)
     if names is None or all(name in names for name, _ in frame_entries):
@@ -245,10 +259,14 @@ def _read_frame(
     return kept, np.concatenate(kept_gaps), np.concatenate(kept_values)
 
 
-def write_file(path: Path, data: bytes | Iterable) -> None:
+def write_file(path: StoragePath, data: bytes | Iterable) -> None:
     """Write ``data`` (bytes, or buffers written back to back) under a temporary name, then rename, so
     readers never see a partial file. Plain file I/O releases the GIL during the (possibly slow) write,
-    so background writes don't stall training."""
+    so background writes don't stall training. On S3, one PUT or a multipart upload (of copies: the
+    buffers may be reused staging chunks)."""
+    if isinstance(path, S3Path):
+        upload(path, [data] if isinstance(data, bytes) else [bytes(memoryview(buffer).cast("B")) for buffer in data])
+        return
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     with open(tmp, "wb") as file:
         for buffer in [data] if isinstance(data, bytes) else data:
@@ -260,7 +278,7 @@ def write_file(path: Path, data: bytes | Iterable) -> None:
 class AnchorWriter:
     """One trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, numel, dtype)`` slices, stored
     as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files whose headers are written first, so slices can
-    be written in any order and from any thread. The files are written next to ``step_dir``; ``close`` moves them
+    be written in any order and from any thread. Local files only. The files are written next to ``step_dir``; ``close`` moves them
     in and writes the ``anchor_rank{rank}.done`` marker (holding the world size)."""
 
     def __init__(self, slices: list[tuple[str, list[int], int, int, torch.dtype]], step_dir: Path, rank: int):
@@ -334,35 +352,57 @@ class AnchorWriter:
 
 def write_anchor_shards(
     parts: list[tuple[str, list[int], int, torch.Tensor]],
-    step_dir: Path,
+    step_dir: StoragePath,
     rank: int,
     world_size: int,
     to_host: Callable[[torch.Tensor], Iterable],
 ) -> None:
-    """Write one trainer rank's share of a full checkpoint from ``AnchorWriter.write_parts`` slices."""
-    writer = AnchorWriter(
-        [(name, shape, start, values.numel(), values.dtype) for name, shape, start, values in parts], step_dir, rank
-    )
-    writer.write_parts(parts, to_host)
-    writer.close(world_size)
+    """Write one trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, flat values)``
+    slices, stored as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files, without collectives.
+    ``to_host`` yields each slice's bytes on the host, each written before the next is taken. The
+    ``anchor_rank{rank}.done`` marker (the world size) comes last."""
+    files, size = [[]], 0
+    for part in parts:
+        if size > 2**30:
+            files.append([])
+            size = 0
+        files[-1].append(part)
+        size += part[3].nbytes
+    for index, file_parts in enumerate(files):
+        header, offset = {"__metadata__": {"shapes": json.dumps({name: shape for name, shape, _, _ in file_parts})}}, 0
+        for name, _, start, values in file_parts:
+            dtype = next(key for key, dtype in SAFETENSORS_DTYPES.items() if getattr(torch, dtype) == values.dtype)
+            header[f"{name}@{start}"] = {
+                "dtype": dtype,
+                "shape": [values.numel()],
+                "data_offsets": [offset, offset + values.nbytes],
+            }
+            offset += values.nbytes
+        encoded = json.dumps(header).encode()
+        encoded += b" " * (-len(encoded) % 8)
+        buffers = itertools.chain(
+            [len(encoded).to_bytes(8, "little") + encoded], (chunk for *_, v in file_parts for chunk in to_host(v))
+        )
+        write_file(step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors", buffers)
+    write_file(step_dir / f"anchor_rank{rank}.done", str(world_size).encode())
 
 
-def checkpoint_index(directory: Path) -> dict[str, tuple[list[int], torch.dtype, list[tuple[int, int, Path, int]]]]:
+def checkpoint_index(
+    directory: StoragePath,
+) -> dict[str, tuple[list[int], torch.dtype, list[tuple[int, int, StoragePath, int]]]]:
     """Tensor name -> ``(shape, dtype, slices)`` of the safetensors files in ``directory``, with slices
     ``(flat start, numel, file, data offset)``: a HF checkpoint (one slice at 0), or an anchor
     (``"{name}@{start}"`` slices, full shapes in the metadata)."""
     index = {}
-    for path in sorted(directory.glob("*.safetensors")):
-        with open(path, "rb") as file:
-            header_size = int.from_bytes(file.read(8), "little")
-            header = json.loads(file.read(header_size))
+    for path in sorted(directory.glob("*.safetensors"), key=lambda path: path.name):
+        header, data_start = _safetensors_header(path)
         shapes = json.loads(header.pop("__metadata__", {}).get("shapes", "{}"))
         for key, info in header.items():
             name, _, start = key.partition("@")
             dtype = getattr(torch, SAFETENSORS_DTYPES[info["dtype"]])
             _, _, slices = index.setdefault(name, (shapes.get(name, info["shape"]), dtype, []))
             numel = (info["data_offsets"][1] - info["data_offsets"][0]) // dtype.itemsize
-            slices.append((int(start or 0), numel, path, 8 + header_size + info["data_offsets"][0]))
+            slices.append((int(start or 0), numel, path, data_start + info["data_offsets"][0]))
     return index
 
 
@@ -375,9 +415,13 @@ def read_checkpoint_range(entry: tuple, begin: int, end: int, out: np.ndarray) -
         low, high = max(begin, start), min(end, start + numel)
         if low >= high:
             continue
+        size, offset = (high - low) * itemsize, data_offset + (low - start) * itemsize
+        target = out[(low - begin) * itemsize : (high - begin) * itemsize]
+        if isinstance(path, S3Path):
+            target[:] = np.frombuffer(read_range(path, offset, size), np.uint8)
+            continue
         with open(path, "rb") as file:
-            done, size, offset = 0, (high - low) * itemsize, data_offset + (low - start) * itemsize
-            target = out[(low - begin) * itemsize : (high - begin) * itemsize]
+            done = 0
             while done < size:
                 read = os.preadv(file.fileno(), [target[done:]], offset + done)
                 assert read > 0, f"short read of {path}"
@@ -385,14 +429,14 @@ def read_checkpoint_range(entry: tuple, begin: int, end: int, out: np.ndarray) -
             os.posix_fadvise(file.fileno(), offset, size, os.POSIX_FADV_DONTNEED)
 
 
-def anchor_complete(step_dir: Path) -> bool:
+def anchor_complete(step_dir: StoragePath) -> bool:
     """Whether every trainer rank has written its share of an anchor in ``step_dir``."""
     revalidate(step_dir)
     markers = list(step_dir.glob("anchor_rank*.done"))
     return bool(markers) and len(markers) == int(markers[0].read_text())
 
 
-def read_engine_layout(broadcast_dir: Path) -> dict[str, str] | None:
+def read_engine_layout(broadcast_dir: StoragePath) -> dict[str, str] | None:
     """Checkpoint tensor -> fp8 scale format (``"fp32"``/``"ue8m0"``) the engines hold it in,
     or None until every engine worker has reported."""
     revalidate(broadcast_dir / ENGINE_LAYOUT)
@@ -407,7 +451,7 @@ def read_engine_layout(broadcast_dir: Path) -> dict[str, str] | None:
     return fp8
 
 
-def read_manifest(step_dir: Path) -> dict:
+def read_manifest(step_dir: StoragePath) -> dict:
     return json.loads((step_dir / DELTA_DIR / MANIFEST).read_text())
 
 
@@ -421,7 +465,7 @@ def rank_parts_marker(rank: int) -> str:
 
 
 def read_delta(
-    step_dir: Path, pool: ThreadPoolExecutor, names: set[str] | None = None
+    step_dir: StoragePath, pool: ThreadPoolExecutor, names: set[str] | None = None
 ) -> tuple[list[tuple[list[tuple[str, int]], np.ndarray, np.ndarray]], dict[str, int]]:
     """Read and decompress a delta into host ``(entries, gaps, value bytes)`` per frame (values: new minus previous
     raw bits, in each entry's bits dtype); ``decode_gaps`` turns the gaps into flat indices. With ``names``, keep
@@ -434,31 +478,78 @@ def read_delta(
     checksums: dict[str, int] = {}
     num_parts: list[int | None] = [None] * manifest["ranks"]
     next_part = [0] * manifest["ranks"]
-    with ExitStack() as stack:
-        files, jobs = [], []
-        while any(count is None or next_part[rank] < count for rank, count in enumerate(num_parts)):
-            found = False
-            revalidate(delta_dir)
-            for rank in range(len(num_parts)):
-                marker = delta_dir / rank_parts_marker(rank)
-                if num_parts[rank] is None and marker.exists():
-                    num_parts[rank] = json.loads(marker.read_text())["parts"]
-                path = delta_dir / rank_part(rank, next_part[rank])
-                if (num_parts[rank] is None or next_part[rank] < num_parts[rank]) and path.exists():
-                    file = stack.enter_context(open(path, "rb"))
-                    files.append(file)
-                    frames, partial = _rank_file_frames(file, names)
-                    jobs.extend(pool.submit(_read_frame, file.fileno(), frame, tensors, names) for frame in frames)
-                    for tensor_name, value in partial.items():
-                        checksums[tensor_name] = add_checksums(checksums.get(tensor_name, 0), value)
-                    next_part[rank] += 1
-                    found = True
-            if not found:
-                time.sleep(0.02)
-        frames = [frame for frame in (job.result() for job in jobs) if frame[0]]
-        for file in files:
-            drop_page_cache(file.fileno())
+    jobs = []
+    while any(count is None or next_part[rank] < count for rank, count in enumerate(num_parts)):
+        found = False
+        revalidate(delta_dir)
+        for rank in range(len(num_parts)):
+            marker = delta_dir / rank_parts_marker(rank)
+            if num_parts[rank] is None and marker.exists():
+                num_parts[rank] = json.loads(marker.read_text())["parts"]
+            path = delta_dir / rank_part(rank, next_part[rank])
+            if (num_parts[rank] is None or next_part[rank] < num_parts[rank]) and path.exists():
+                frames, partial = _rank_file_frames(path, names)
+                jobs.extend(pool.submit(_read_frame, path, frame, tensors, names) for frame in frames)
+                for tensor_name, value in partial.items():
+                    checksums[tensor_name] = add_checksums(checksums.get(tensor_name, 0), value)
+                next_part[rank] += 1
+                found = True
+        if not found:
+            time.sleep(0.02)
+    frames = [frame for frame in (job.result() for job in jobs) if frame[0]]
     return frames, checksums
+
+
+def _read_delta_to_file(
+    step_dir: StoragePath, names: set[str] | None, path: str
+) -> tuple[list[tuple[list[tuple[str, int]], int, int]], dict[str, int]]:
+    with ThreadPoolExecutor(16) as pool:
+        frames, checksums = read_delta(step_dir, pool, names)
+    with open(path, "wb") as file:
+        for _, gaps, _ in frames:
+            file.write(gaps)
+        for _, _, values in frames:
+            file.write(values)
+    return [(entries, len(gaps), len(values)) for entries, gaps, values in frames], checksums
+
+
+@cache
+def _reader_process() -> subprocess.Popen:
+    # Not multiprocessing: vLLM workers are daemonic processes, which may not start multiprocessing children.
+    return subprocess.Popen(
+        [sys.executable, "-m", "prime_rl.utils.sparse_weights"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+
+
+def read_delta_in_subprocess(
+    step_dir: StoragePath, names: set[str] | None = None
+) -> tuple[list[tuple[list[tuple[str, int]], np.ndarray, np.ndarray]], dict[str, int]]:
+    """``read_delta`` in a child process, handed back through a local temporary file. An S3 read releases
+    and retakes the GIL many times per request, which crawls while an engine's main thread serves."""
+    path = os.path.join(tempfile.gettempdir(), f"prime-rl-delta-{os.getpid()}")
+    request = [step_dir.as_posix(), None if names is None else sorted(names)]
+    if _reader_process().poll() is not None:
+        _reader_process.cache_clear()  # the child died (e.g. OOM): start a new one
+    process = _reader_process()
+    process.stdin.write(json.dumps([*request, path]) + "\n")
+    process.stdin.flush()
+    reply = json.loads(process.stdout.readline() or '{"error": "the delta reader process died"}')
+    if "error" in reply:
+        raise RuntimeError(f"Reading sparse weight delta {step_dir} failed: {reply['error']}")
+    size = os.path.getsize(path)
+    data = torch.from_file(path, shared=True, size=size, dtype=torch.uint8).numpy() if size else np.empty(0, np.uint8)
+    os.unlink(path)
+    frames, gaps_at = [], 0
+    values_at = 4 * sum(num_gaps for _, num_gaps, _ in reply["frames"])
+    for entries, num_gaps, num_values in reply["frames"]:
+        gaps = data[gaps_at : gaps_at + 4 * num_gaps].view(np.int32)
+        frames.append(([tuple(entry) for entry in entries], gaps, data[values_at : values_at + num_values]))
+        gaps_at += 4 * num_gaps
+        values_at += num_values
+    return frames, reply["checksums"]
 
 
 def pin(num_bytes: int) -> torch.Tensor:
@@ -480,10 +571,12 @@ def unpin(tensor: torch.Tensor) -> None:
         torch.cuda.cudart().cudaHostUnregister(tensor.data_ptr())
 
 
-def revalidate(directory: Path) -> None:
+def revalidate(directory: StoragePath) -> None:
     """Make an NFS client see files another host just created in ``directory``: opening a dir (and
     the one above, which may hold ``directory`` itself) revalidates it, instead of answering from
     cached "not found" lookups for up to ~30 s."""
+    if isinstance(directory, S3Path):
+        return
     for path in (directory.parent, directory):
         try:
             os.close(os.open(path, os.O_RDONLY | os.O_DIRECTORY))
@@ -507,3 +600,15 @@ def bits_checksum(bits: torch.Tensor, start: int = 0) -> int:
 
 def add_checksums(a: int, b: int) -> int:
     return (a + b + 2**63) % 2**64 - 2**63
+
+
+if __name__ == "__main__":
+    # The child process of read_delta_in_subprocess: one request per line, until stdin closes
+    for line in sys.stdin:
+        location, names, path = json.loads(line)
+        try:
+            frames, checksums = _read_delta_to_file(storage_path(location), None if names is None else set(names), path)
+            reply = {"frames": frames, "checksums": checksums}
+        except Exception as error:
+            reply = {"error": repr(error)}
+        print(json.dumps(reply), flush=True)
