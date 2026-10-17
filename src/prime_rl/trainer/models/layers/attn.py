@@ -1,4 +1,5 @@
 import functools
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -418,6 +419,37 @@ class AttentionConfig:
     output_bias: bool = False
 
 
+def head_blocks(rows: int, head_rows: int, heads_per_block: int) -> tuple[int, ...]:
+    """Split a projection's ``rows`` (``head_rows`` per head) into blocks of ``heads_per_block`` heads."""
+    block_rows = heads_per_block * head_rows
+    if rows % block_rows:
+        raise ValueError(f"optim.heads_per_block = {heads_per_block} does not divide {rows // head_rows} heads")
+    return (block_rows,) * (rows // block_rows)
+
+
+def qkv_head_partitions(attn: nn.Module, heads_per_block: int, q_head_rows: int) -> dict[nn.Parameter, tuple[int, ...]]:
+    """Muon head blocks of an attention module's query, key and value projections, packed in ``qkv_proj`` or
+    separate. ``q_head_rows`` are the query projection's rows per head."""
+    head_rows = (q_head_rows, attn.head_dim, attn.head_dim)
+    blocks = [
+        head_blocks(rows, rows_per_head, heads_per_block) for rows, rows_per_head in zip(attn.qkv_sizes, head_rows)
+    ]
+    if attn.qkv_proj is not None:
+        return {attn.qkv_proj.weight: sum(blocks, ())}
+    return {proj.weight: proj_blocks for proj, proj_blocks in zip((attn.q_proj, attn.k_proj, attn.v_proj), blocks)}
+
+
+def attention_head_partitions(
+    attention_modules: Iterable[nn.Module], heads_per_block: int
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    """The Muon head blocks of all ``attention_modules``."""
+    return {
+        param: blocks
+        for attn in attention_modules
+        for param, blocks in attn.muon_head_partitions(heads_per_block).items()
+    }
+
+
 # TODO: Does torch compile support config._attn_implementation forking?
 # If so, we can combine FlashAttention variants into one class
 # Otherwise, do ABC or something to make the signatures match
@@ -473,6 +505,9 @@ class FlashAttention(nn.Module):
         if self.qkv_proj is None:
             return self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
         return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return qkv_head_partitions(self, heads_per_block, self.head_dim)
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""

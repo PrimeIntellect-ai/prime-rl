@@ -3,7 +3,7 @@ from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
-from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig, attention_head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -238,6 +238,10 @@ class NemotronHForCausalLM(NemotronHPreTrainedModel):
             if isinstance(module, MoE):
                 module.tokens_per_expert.zero_()
                 module.routing_confidence_sum.zero_()
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        attention_layers = (layer for layer in self.model.layers if layer.layer_type == "attention")
+        return attention_head_partitions((layer.self_attn for layer in attention_layers), heads_per_block)
 
 
 __all__ = [

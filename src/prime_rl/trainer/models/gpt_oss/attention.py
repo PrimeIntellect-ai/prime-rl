@@ -10,7 +10,7 @@ from torch import nn
 
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
-from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func
+from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func, qkv_head_partitions
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 
 
@@ -50,6 +50,9 @@ class GptOssAttention(nn.Module):
         self.sinks = nn.Parameter(torch.empty(config.num_attention_heads))
         nn.init.normal_(self.sinks, mean=0.0, std=config.initializer_range)
         self.flash_attn = flash_attn_4_varlen_func
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return qkv_head_partitions(self, heads_per_block, self.head_dim)
 
     def compute_attention(
         self,

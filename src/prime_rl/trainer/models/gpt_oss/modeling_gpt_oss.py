@@ -10,6 +10,7 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
+from prime_rl.trainer.models.layers.attn import attention_head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
@@ -216,6 +217,9 @@ class GptOssForCausalLM(GptOssPreTrainedModel):
             if isinstance(module, MoE):
                 module.tokens_per_expert.zero_()
                 module.routing_confidence_sum.zero_()
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return attention_head_partitions((layer.self_attn for layer in self.model.layers), heads_per_block)
 
 
 __all__ = [

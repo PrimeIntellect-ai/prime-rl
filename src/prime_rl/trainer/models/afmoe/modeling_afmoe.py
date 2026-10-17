@@ -15,9 +15,11 @@ from transformers.utils import TransformersKwargs
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import (
+    attention_head_partitions,
     flash_attn_2_varlen_op,
     flash_attn_3_varlen_op,
     flash_attn_4_varlen_op,
+    head_blocks,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -81,6 +83,10 @@ class AfmoeAttentionBase(nn.Module):
         # QK normalization
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        projections = (self.q_proj, self.k_proj, self.v_proj, self.gate_proj)
+        return {proj.weight: head_blocks(proj.out_features, self.head_dim, heads_per_block) for proj in projections}
 
 
 class AfmoeFlashAttention(AfmoeAttentionBase):
@@ -475,6 +481,9 @@ class AfmoeForCausalLM(AfmoePreTrainedModel, GenerationMixin):
                 rotary_emb.config, rotary_emb.inv_freq.device
             )
             rotary_emb.inv_freq.copy_(inv_freq)
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return attention_head_partitions((layer.self_attn for layer in self.model.layers), heads_per_block)
 
 
 __all__ = [

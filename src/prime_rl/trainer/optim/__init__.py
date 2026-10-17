@@ -242,7 +242,8 @@ def muon_matrix_partitions(
 
     Runtime fusions pack several logical matrices into one physical parameter. Muon orthogonalizes each of them
     separately, so a packed parameter trains exactly as the matrices it replaces would. With ``heads_per_block``,
-    the query, key and value projections are further split into blocks of that many heads.
+    the model's attention head projections are further split into blocks of that many heads
+    (``PreTrainedModelPrimeRL.muon_head_partitions``).
     """
     partitions = {}
     for packed_info in get_model_packed_parameters(model):
@@ -250,45 +251,5 @@ def muon_matrix_partitions(
         if sizes is not None:
             partitions[packed_info.parameter] = sizes
     if heads_per_block is not None:
-        partitions |= _head_block_partitions(model, heads_per_block)
+        partitions |= model.muon_head_partitions(heads_per_block)
     return {param: sizes for param, sizes in partitions.items() if param in muon_params}
-
-
-def _head_block_partitions(model: nn.Module, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
-    """Blocks of ``heads_per_block`` heads in every attention module's q, k and v projections (packed or not)."""
-    partitions = {}
-    for name, module in model.named_modules():
-        if not hasattr(module, "qkv_sizes"):
-            if hasattr(module, "kv_b_proj"):
-                # MLA: per-head blocks of the query and key/value up-projections (GLM-5 "Muon Split")
-                if module.num_heads % heads_per_block:
-                    raise ValueError(
-                        f"optim.heads_per_block = {heads_per_block} does not divide the {module.num_heads} heads of {name}"
-                    )
-                blocks = module.num_heads // heads_per_block
-                kv_head_rows = module.qk_nope_head_dim + module.v_head_dim
-                partitions[module.q_b_proj.weight] = (heads_per_block * module.qk_head_dim,) * blocks
-                partitions[module.kv_b_proj.weight] = (heads_per_block * kv_head_rows,) * blocks
-            continue
-        if module.qkv_sizes[0] != module.o_proj.in_features:
-            raise ValueError(f"optim.heads_per_block does not support {name}: its query projection also holds a gate")
-        if module.qkv_proj is not None:
-            weights = {module.qkv_proj.weight: module.qkv_sizes}
-        else:
-            weights = {
-                proj.weight: (size,)
-                for proj, size in zip((module.q_proj, module.k_proj, module.v_proj), module.qkv_sizes)
-            }
-        block_rows = heads_per_block * module.head_dim
-        for weight, sizes in weights.items():
-            if any(size % block_rows for size in sizes):
-                raise ValueError(
-                    f"optim.heads_per_block = {heads_per_block} does not divide the heads of {name} "
-                    f"(q/k/v rows {sizes}, head_dim {module.head_dim})"
-                )
-            partitions[weight] = tuple(block_rows for size in sizes for _ in range(size // block_rows))
-    if not partitions:
-        raise ValueError(
-            "optim.heads_per_block found no attention modules with q/k/v projections (qkv_sizes) or MLA up-projections"
-        )
-    return partitions
