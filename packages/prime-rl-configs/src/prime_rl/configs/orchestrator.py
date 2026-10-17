@@ -452,6 +452,24 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
+class CircuitBreakerConfig(BaseConfig):
+    """Per-env circuit breaker for train dispatch. An env whose episodes keep
+    failing on infrastructure (sandbox, tool server, model interception, a frozen
+    or external model provider, or the env server itself) stops getting new
+    rollouts, so the other envs keep filling batches; after ``cooldown`` one
+    probe episode tests whether it recovered. Harness, task and env-hook errors
+    and stage timeouts do not count, since the policy's output can cause them."""
+
+    failures: int = Field(8, ge=1)
+    """Consecutive failed groups of one env that open its breaker."""
+
+    cooldown: float = Field(60.0, gt=0)
+    """Seconds an open breaker waits before letting one probe episode through. Doubles after each failed probe."""
+
+    max_cooldown: float = Field(1800.0, gt=0)
+    """Upper bound on the cooldown."""
+
+
 # Top-k injected on truncated policy sampling that has none, and the hard upper
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
@@ -545,6 +563,8 @@ class OrchestratorConfig(BaseConfig):
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
 
+    circuit_breaker: CircuitBreakerConfig | None = CircuitBreakerConfig()
+    """Pause a train env whose episodes keep failing so the other envs keep training. None disables it."""
     control: OrchestratorControlConfig | None = None
     """Serve the orchestrator's control API (pause at a step the trainer accepted). If None, it
     takes no control requests."""

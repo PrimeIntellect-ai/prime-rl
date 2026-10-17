@@ -336,6 +336,7 @@ class Orchestrator:
             run_id=self.run_id,
             run_name=self.run_name,
             on_episode_complete=self.concurrency.record_episode,
+            circuit_breaker=config.circuit_breaker,
         )
         self.concurrency.bind(
             set_limit=self.dispatcher.set_limit,
