@@ -21,9 +21,12 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 
 # Sampling masks for top-p/top-k replay: flat int32 token-id bytes plus an
 # int32 count per token position (0 = no mask); len(ids) == 4 * counts.sum().
+# ``logprobs`` (float32, parallel to ``ids``) is the sampler's renormalized
+# logprob of each kept id, for score centering.
 class SamplingMask(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     ids: bytes
     counts: bytes
+    logprobs: bytes | None = None
 
 
 # Produced by the orchestrator's train sink; consumed in-process by
