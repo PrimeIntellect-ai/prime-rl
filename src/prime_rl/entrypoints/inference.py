@@ -240,6 +240,8 @@ def inference_local(config: InferenceConfig):
 
 
 def inference(config: InferenceConfig):
+    if config.router is not None and config.router.type == "llm-d" and config.deployment.type == "single_node":
+        raise ValueError("The llm-d router backend requires a multi-node or disaggregated SLURM deployment.")
     if config.slurm is not None:
         inference_slurm(config)
     else:

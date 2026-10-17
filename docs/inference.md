@@ -82,6 +82,8 @@ You can also increase the available KV cache memory by enabling `inference.kv_ca
 
 ## Multi-Node
 
+The `rl` entrypoint does not accept `inference.deployment.type = "multi_node"`: set the inference nodes on its top-level deployment instead (`deployment.infer_nodes_per_replica` nodes per replica, `deployment.num_infer_replicas` replicas). The shapes below apply to it the same way.
+
 This deployment shape branches into 2 sub-shapes:
 
 - [Multi-replica](#multi-replica) - Runs the inference server on multiple nodes, but each node runs an independent vLLM replica. You can think of this as a for-loop over single-node deployments.
@@ -149,7 +151,7 @@ num_decode_replicas = 1
 
 Now each prefill replica spans 2 nodes and each decode replica spans 2 nodes. With 2 prefill replicas and 1 decode replica, one inference island spans 6 nodes.
 
-For RL runs, the top-level deployment can multiply that whole inference island by setting `deployment.num_infer_replicas`. `deployment.num_infer_nodes` is inferred from the nested inference deployment when you omit it.
+For RL runs, the top-level deployment can multiply that whole inference island by setting `deployment.num_infer_replicas`. `deployment.infer_nodes_per_replica` is inferred from the nested inference deployment when you omit it.
 
 ```toml
 [deployment] # this is a top-level RL deployment, not inference.deployment!!

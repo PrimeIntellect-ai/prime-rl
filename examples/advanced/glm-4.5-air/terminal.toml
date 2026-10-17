@@ -15,7 +15,7 @@ pre_run_command = 'timeout 120 prime sandbox delete --label "glm45air-terminal" 
 [deployment]
 type = "multi_node"
 num_train_nodes = 2
-num_infer_nodes = 1
+infer_nodes_per_replica = 1
 num_infer_replicas = 4
 
 [monitors.wandb]
