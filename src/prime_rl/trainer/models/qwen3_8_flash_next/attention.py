@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.layers.attn import head_blocks
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import apply_rotary_embedding
@@ -47,6 +48,14 @@ class IndexedGatedAttention(nn.Module):
         self.cp_context = CPContext()
         # Resolve once before torch.compile traces the layer; the loader caches the module.
         self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        # q_proj holds [query; gate] for each head.
+        return {
+            self.q_proj.weight: head_blocks(self.q_proj.out_features, 2 * self.head_dim, heads_per_block),
+            self.k_proj.weight: head_blocks(self.k_proj.out_features, self.head_dim, heads_per_block),
+            self.v_proj.weight: head_blocks(self.v_proj.out_features, self.head_dim, heads_per_block),
+        }
 
     def forward(
         self,

@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, qkv_head_partitions
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5TextConfig
 from prime_rl.trainer.models.qwen3_5.norm import Qwen3_5RMSNorm
@@ -36,6 +36,10 @@ class Qwen3_5Attention(FlashAttention):
         self.q_proj = nn.Linear(config.hidden_size, q_output_size, bias=config.attention_bias)
         self.q_norm = Qwen3_5RMSNorm(self.head_dim, config.rms_norm_eps)
         self.k_norm = Qwen3_5RMSNorm(self.head_dim, config.rms_norm_eps)
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        # With the output gate, q_proj holds [query; gate] for each head.
+        return qkv_head_partitions(self, heads_per_block, self.qkv_sizes[0] // self.num_heads)
 
     def forward(
         self,

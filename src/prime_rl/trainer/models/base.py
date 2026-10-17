@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from torch import Tensor
+from torch import Tensor, nn
 from transformers.modeling_utils import PreTrainedModel
 
 from prime_rl.utils.cp import CPContext
@@ -154,6 +154,11 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         This is called after loading the model from a checkpoint with meta device.
         """
         raise NotImplementedError(f"init_buffers_post_meta is not implemented for {self.__class__.__name__}")
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        """Muon row partitions that split every attention head projection into blocks of ``heads_per_block`` heads
+        (``optim.heads_per_block``). Each model covers all of its attention projections or raises."""
+        raise NotImplementedError(f"optim.heads_per_block is not supported for {self.__class__.__name__}")
 
 
 __all__ = ["ALL_CP_STYLES", "CPStyle", "CPSupport", "PreTrainedModelPrimeRL"]

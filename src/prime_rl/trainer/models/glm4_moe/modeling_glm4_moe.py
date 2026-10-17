@@ -27,7 +27,7 @@ from transformers.utils import TransformersKwargs, auto_docstring
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
 from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
-from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig, attention_head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -341,6 +341,9 @@ class Glm4MoeForCausalLM(Glm4MoePreTrainedModel, GenerationMixin):
 
         # TODO: Init TT MoE buffers
         # I think .to_empty() on gpu by default fills 0 so we are ok but this might not be guaranteed behavior
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return attention_head_partitions((layer.self_attn for layer in self.model.layers), heads_per_block)
 
 
 __all__ = ["Glm4MoeConfig", "Glm4MoePreTrainedModel", "Glm4MoeModel", "Glm4MoeForCausalLM"]

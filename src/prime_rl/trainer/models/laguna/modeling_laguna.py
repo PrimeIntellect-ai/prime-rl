@@ -16,7 +16,7 @@ from transformers.utils.generic import maybe_autocast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
-from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
+from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention, attention_head_partitions
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
@@ -118,6 +118,11 @@ class LagunaFlashAttention(FlashAttention):
             gate_size = num_heads if self.gate_per_head else num_heads * self.head_dim
             self.g_proj = nn.Linear(config.hidden_size, gate_size, bias=False)
         self.o_proj = nn.Linear(num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias)
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        if self.gating:
+            raise NotImplementedError("optim.heads_per_block does not cover Laguna's attention output gate (g_proj)")
+        return super().muon_head_partitions(heads_per_block)
 
     def forward(
         self,
@@ -426,6 +431,9 @@ class LagunaForCausalLM(LagunaPreTrainedModel, GenerationMixin):
                 module.tokens_per_expert.zero_()
                 if module.router.selection_bias is not None:
                     module.router.selection_bias.zero_()
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return attention_head_partitions((layer.self_attn for layer in self.model.layers), heads_per_block)
 
 
 __all__ = [
