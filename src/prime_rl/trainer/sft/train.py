@@ -1,4 +1,4 @@
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
+import prime_rl._compat  # noqa: F401
 
 import math
 import time
@@ -235,7 +235,6 @@ def train(config: SFTConfig):
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
@@ -259,18 +258,14 @@ def train(config: SFTConfig):
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
-            defer_vlm_cp_to_model = (
-                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
-            )
+            defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(
                     input_ids,
                     position_ids,
                     cp_rank,
                     cp_size,
-                    cp_group,
                     seq_lens=seq_lens,
-                    cp_style=config.model.cp_style,
                 )
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)

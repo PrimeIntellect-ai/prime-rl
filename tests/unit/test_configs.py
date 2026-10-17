@@ -761,24 +761,6 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
-def test_trainer_rejects_vlm_cp_with_ring():
-    config = {
-        "model": {
-            "cp": 2,
-            "cp_style": "ring",
-            "optimization_dtype": "bfloat16",
-            "reduce_dtype": "bfloat16",
-            "vlm": {
-                "vision_encoder_attr": "model.visual",
-                "language_model_attr": "model.language_model",
-            },
-        },
-    }
-
-    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
-        TrainerConfig.model_validate(config)
-
-
 def test_ac_none_disables_ac_offloading():
     config = TrainerModelConfig.model_validate({"ac": None})
     assert config.ac is None

@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.qwen3_8_flash_next.attention import IndexedGatedAttention
@@ -119,13 +119,6 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
     supports_gradient_checkpointing = True
     _no_split_modules = ["Qwen3_8FlashNextDecoderLayer"]
     _can_compile_fullgraph = False
-
-    @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(
-            frozenset({"ulysses"}),
-            "DeltaNet, indexed attention, and PLE require contiguous sequence shards",
-        )
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

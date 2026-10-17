@@ -1,4 +1,4 @@
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
+import prime_rl._compat  # noqa: F401
 
 from contextlib import nullcontext
 from functools import partial
@@ -408,9 +408,7 @@ def train(config: TrainerConfig):
                         position_ids,
                         cp_rank,
                         cp_size,
-                        cp_group,
                         seq_lens=seq_lens,
-                        cp_style=config.model.cp_style,
                     )
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
