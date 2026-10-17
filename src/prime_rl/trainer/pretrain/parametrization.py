@@ -68,7 +68,6 @@ def param_groups(
                 params=role_params,
                 algorithm="muon",
                 adjust_lr="rms_norm",
-                nesterov=optim.nesterov,
                 lr=optim.lr * lr,
                 weight_decay=optim.weight_decay * wd,
             )
