@@ -189,6 +189,9 @@ class Dispatcher:
         self.live_dropped = False
         self.live_task: asyncio.Task | None = None
         self.groups: dict[uuid.UUID, GroupState] = {}
+        # Train groups that emitted their last result but may still sit in ``out_q``; the
+        # orchestrator forgets each once the sink has consumed it.
+        self.emitted_train_groups: dict[str, tuple[str, vf.Task]] = {}
         # Policy versions repeat after a resume, with weights that can differ from the
         # previous attempt's, and engines or a KV offload pool may outlive that attempt.
         self.cache_salt_prefix = uuid.uuid4().hex[:8]
@@ -326,6 +329,13 @@ class Dispatcher:
             for meta in self.inflight.values()
             if meta.kind == "train" and self.train_envs.get(meta.env_name).uses_live_policy
         ]
+
+    def open_train_groups(self) -> dict[str, tuple[str, vf.Task]]:
+        """Env and task of each train group the sink may not have in full yet."""
+        open_groups = {
+            str(gid): (group.env_name, group.task) for gid, group in self.groups.items() if group.kind == "train"
+        }
+        return open_groups | self.emitted_train_groups
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -710,6 +720,8 @@ class Dispatcher:
             group.emitted += 1
             if group.emitted >= group.target_episodes:
                 self.groups.pop(meta.group_id, None)
+                if group.kind == "train":
+                    self.emitted_train_groups[str(meta.group_id)] = (group.env_name, group.task)
         return policy_version
 
     async def emit_episode(
