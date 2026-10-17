@@ -437,10 +437,16 @@ class MuonConfig(BaseOptimizerConfig):
     """Nesterov momentum for the Muon updates."""
 
     betas1: float = Field(0.9, ge=0)
-    """β1 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+    """β1 for the AdamW sub-optimizer used on non-Muon params."""
 
     betas2: float = Field(0.95, ge=0)
-    """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+    """β2 for the AdamW sub-optimizer used on non-Muon params."""
+
+    newton_schulz_coefficients: Literal["muon", "deepseek_v4"] = "muon"
+    """Newton-Schulz schedule. ``muon``: 5 steps tuned for speed (Keller Jordan's, as in dion). ``deepseek_v4``: 8 steps of (3.4445, -4.7750, 2.0315), then 2 of (2, -1.5, 0.5) (DeepSeek-V4 report, section 2.4); twice the cost, singular values closer to 1."""
+
+    update_rms: float = Field(0.2, gt=0)
+    """RMS of a Muon update per unit of learning rate: each matrix's update is scaled by ``update_rms * sqrt(max(fan_out, fan_in))`` (Moonlight's matching of AdamW: 0.2; DeepSeek-V4: 0.18)."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):

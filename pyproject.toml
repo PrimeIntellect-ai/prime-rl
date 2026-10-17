@@ -59,7 +59,6 @@ gpu = [
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "ring-flash-attn>=0.1.8 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
-    "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
     # DSA sparse MLA backward kernel (CuTe DSL); >=1.29 matches the pinned CUTLASS DSL 4.7.
     "nvidia-cudnn-frontend>=1.30.0 ; sys_platform == 'linux'",
@@ -252,7 +251,6 @@ renderers = false
 prime-pydantic-config = false
 # Trusted git/URL sources pinned by rev or wheel URL (defensive: belt-and-suspenders)
 vllm-router = false
-dion = false
 deep-ep = false
 deep-gemm = false
 nixl-cu13 = false
@@ -275,7 +273,6 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
-dion = { git = "https://github.com/samsja/dion.git", rev = "0c801b0" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
