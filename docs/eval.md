@@ -8,6 +8,7 @@ This page covers `uv run eval` — evaluating a model in one or more environment
 
 - [Launch](#launch)
 - [Configuration](#configuration)
+- [Live concurrency](#live-concurrency)
 - [Resume](#resume)
 - [Monitors](#monitors)
   - [File](#file)
@@ -79,6 +80,37 @@ Per-source `group_size` and `sampling` override the top-level defaults. The top-
 Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`.
 
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.
+
+## Live concurrency
+
+Change concurrency during a run by atomically replacing `<run_dir>/eval-control.json`
+and sending `SIGHUP` to the eval process. Its log prints the PID and control path once
+the runner is ready. `eval-control.status.json` reports the PID, whether control is
+running, the manual `target` (`null` uses the configured band), the current `cap`, and
+the `inflight` episode count. Status updates after a control request and at each
+periodic progress log.
+
+```bash
+run_dir=outputs/my-eval
+printf '%s\n' '{"target":32,"mode":"drain"}' > "$run_dir/eval-control.json.tmp"
+mv "$run_dir/eval-control.json.tmp" "$run_dir/eval-control.json"
+kill -HUP <eval-pid>
+```
+
+`mode` defaults to `drain`: a reduction blocks new episodes until the running pool
+falls below the new cap, then refills up to it. `hard` immediately requests
+cancellation of excess active episodes, youngest first, and retries those rollouts
+in their original groups at the lower cap. Completed results stay landed; interrupted
+attempts do not reduce the eval's sample count or enter its reward metrics. Remote
+inference and sandbox cleanup is asynchronous. Increases use the dispatcher's normal
+burst smoothing.
+
+A positive integer `target` pins concurrency until another request, even outside the
+launch-time concurrency band. `{"target":null}` restores that band's starting cap
+and adaptive behavior (or its original fixed concurrency). Zero is invalid. Invalid
+requests are logged and ignored. The control file is read only on `SIGHUP`; a resumed
+run starts with its launch configuration. Online eval processes use the same control
+files in their run directory.
 
 ## Resume
 
