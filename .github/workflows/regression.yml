@@ -250,7 +250,7 @@ jobs:
               run: echo "repeats=$(jq -nc "[range(1; $EVAL_REPEATS + 1)]")" >> "$GITHUB_OUTPUT"
 
     eval:
-        name: Eval / Run (${{ matrix.repeat }})
+        name: ${{ strategy.job-total > 1 && format('Eval / Run ({0})', matrix.repeat) || 'Eval / Run' }}
         needs: eval-plan
         runs-on: ubuntu-latest
         timeout-minutes: 60
