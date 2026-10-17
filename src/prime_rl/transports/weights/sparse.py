@@ -92,6 +92,8 @@ class SparseDeltaEncoder:
     PART = 1 << 26
     # Elements per transient chunk of the diff in the optimizer pass, which overlaps the final backward
     HOOK_CHUNK = 1 << 24
+    # Changes per part handed to the writer during the optimizer step
+    HOOK_PART = 1 << 24
     # GPU slots of the optimizer pass's diff thread, each two of the largest parameter shard
     HOOK_SLOTS = 2
 
@@ -418,14 +420,17 @@ class SparseDeltaEncoder:
                 self.write_stream.synchronize()
                 yield chunk.numpy()
 
-    def _to_host(self, tensor: torch.Tensor, host: torch.Tensor | None = None) -> torch.Tensor:
+    def _to_host(
+        self, tensor: torch.Tensor, host: torch.Tensor | None = None, staging: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """Copy a GPU tensor to pageable host memory (``host``, or a new tensor) through the pinned staging
         buffer: a copy straight into pageable memory holds the CUDA driver and stalls the training step's
         own CUDA calls."""
         host = torch.empty(tensor.shape, dtype=tensor.dtype) if host is None else host
+        staging = self.staging if staging is None else staging
         data, host_bytes = tensor.view(torch.uint8), host.view(torch.uint8)
-        for begin in range(0, data.numel(), self.staging.numel()):
-            chunk = self.staging[: min(self.staging.numel(), data.numel() - begin)]
+        for begin in range(0, data.numel(), staging.numel()):
+            chunk = staging[: min(staging.numel(), data.numel() - begin)]
             chunk.copy_(data[begin : begin + chunk.numel()], non_blocking=True)
             torch.cuda.current_stream().synchronize()
             host_bytes[begin : begin + chunk.numel()].copy_(chunk)
@@ -499,21 +504,12 @@ class SparseDeltaEncoder:
         """Diff ``shards`` against the snapshot on the current stream, writing the new bits to the snapshot.
         Shards diffed in the optimizer pass are only checked against the values that pass wrote; their parts
         go first. Copies the delta to the host and hands it to ``emit`` every ``PART`` changes."""
-        for diff in self.diffs:
-            diff.result()
-        self.diffs.clear()
         pending, self.step_parts = self.step_parts, []
         num_pending = sum(len(part[2]) for part in pending)
         checks: list[tuple[str, torch.Tensor, torch.Tensor]] = []
 
         def flush() -> None:
-            names = [name for part in pending for name in part[0]]
-            counts = torch.cat([part[1] for part in pending]).tolist()
-            gaps = self._to_host(torch.cat([part[2] for part in pending]))
-            values = self._to_host(torch.cat([part[3] for part in pending]))
-            checksum_names = [name for part in pending for name in part[4]]
-            checksums = dict(zip(checksum_names, torch.cat([part[5] for part in pending]).tolist()))
-            emit(([(name, count) for name, count in zip(names, counts) if count], gaps, values, checksums))
+            emit(self._host_part(pending))
             pending.clear()
 
         for key, fqn, shard, offset, gathered in shards:
@@ -539,6 +535,27 @@ class SparseDeltaEncoder:
             changed = [key for key, same in zip(keys, torch.cat(expected).eq(torch.cat(live)).tolist()) if not same]
             if changed:
                 raise RuntimeError(f"Trainer weights changed outside the optimizer step, not sent: {changed}")
+
+    def wait_for_diffs(self) -> None:
+        """Wait for the diff thread to finish the optimizer step's delta."""
+        for diff in self.diffs:
+            diff.result()
+        if self.diffs:
+            get_logger().debug(
+                f"Sparse weight delta in the optimizer step: waited {self.slot_wait:.2f}s for GPU slots, "
+                f"diff thread busy {self.diff_time:.2f}s"
+            )
+        self.diffs.clear()
+
+    def _host_part(self, pending: list[tuple], staging: torch.Tensor | None = None) -> tuple:
+        """One part ``(entries, gaps, value bytes, checksums)`` on the host from GPU part entries."""
+        names = [name for part in pending for name in part[0]]
+        counts = torch.cat([part[1] for part in pending]).tolist()
+        gaps = self._to_host(torch.cat([part[2] for part in pending]), staging=staging)
+        values = self._to_host(torch.cat([part[3] for part in pending]), staging=staging)
+        checksum_names = [name for part in pending for name in part[4]]
+        checksums = dict(zip(checksum_names, torch.cat([part[5] for part in pending]).tolist()))
+        return [(name, count) for name, count in zip(names, counts) if count], gaps, values, checksums
 
     def _diff_shard(
         self,
@@ -664,6 +681,7 @@ class SparseDeltaEncoder:
             self.hook_slots.put(torch.empty(slot_bytes, dtype=torch.uint8, device=f"cuda:{self.device}"))
         self.differ = ThreadPoolExecutor(1)
         self.diff_stream = torch.cuda.Stream(self.device)
+        self.diff_staging = torch.empty(1 << 28, dtype=torch.uint8, pin_memory=True)
         num_bytes = sum(numel * self.wire_dtypes[key].itemsize for key, (numel, _) in self.shards.items())
         get_logger().info(
             f"Sparse weight deltas of {len(self.optimizer_keys)} tensors come from the optimizer step, "
@@ -671,9 +689,11 @@ class SparseDeltaEncoder:
         )
         get_logger().debug(f"Diffed against the snapshot: {sorted(self.shards)}")
 
-    def arm(self, anchor: AnchorWriter | None) -> None:
-        """Collect the next optimizer step's delta (and anchor slices, if ``anchor``)."""
-        self.step_parts, self.expected, self.scale_changes, self.anchor = [], {}, 0, anchor
+    def arm(self, anchor: AnchorWriter | None, emit: Callable) -> None:
+        """Collect the next optimizer step's delta, handing it to ``emit`` in parts on the host as the step goes
+        (and write its anchor slices, if ``anchor``)."""
+        self.step_parts, self.expected, self.scale_changes, self.anchor, self.emit = [], {}, 0, anchor, emit
+        self.slot_wait = self.diff_time = 0.0
 
     def anchor_slices(self) -> list[tuple[str, list[int], int, int, torch.dtype]]:
         """Every ``(hf_name, shape, flat start, numel, wire dtype)`` slice of this rank's share of an anchor."""
@@ -701,7 +721,9 @@ class SparseDeltaEncoder:
         if not entries:
             local_param.copy_(source, non_blocking=True)
             return
+        start_wait = time.perf_counter()
         slot = self.hook_slots.get()
+        self.slot_wait += time.perf_counter() - start_wait
         half = slot.numel() // 2
         previous = slot[: source.nbytes].view(source.dtype)
         new = slot[half : half + source.nbytes].view(source.dtype)
@@ -724,7 +746,9 @@ class SparseDeltaEncoder:
 
     @torch.no_grad()
     def _diff_slot(self, entries: list[tuple], slot: torch.Tensor, previous, new, ready: torch.cuda.Event) -> None:
-        """Diff thread: the parts of one parameter's tensors from its slot, then free the slot."""
+        """Diff thread: the parts of one parameter's tensors from its slot, then free the slot. Every ``HOOK_PART``
+        changes, hands the parts so far to the host."""
+        start = time.perf_counter()
         torch.cuda.set_device(self.device)
         try:
             with torch.cuda.stream(self.diff_stream):
@@ -735,12 +759,18 @@ class SparseDeltaEncoder:
                         values.as_strided(size, stride, values.storage_offset() + at).reshape(-1).to(wire)
                         for values in (new, previous)
                     )
-                    parts = self._diff_shard(key, fqn, current, offset, None, as_bits(old), None, self.HOOK_CHUNK)
-                    self.step_parts += parts
+                    self.step_parts += self._diff_shard(
+                        key, fqn, current, offset, None, as_bits(old), None, self.HOOK_CHUNK
+                    )
                     self.expected[key] = self._checksum(as_bits(current))
                 self.diff_stream.synchronize()
         finally:
             self.hook_slots.put(slot)
+        if sum(len(part[2]) for part in self.step_parts) >= self.HOOK_PART:
+            with torch.cuda.stream(self.diff_stream):
+                self.emit(self._host_part(self.step_parts, self.diff_staging))
+            self.step_parts = []
+        self.diff_time += time.perf_counter() - start
 
 
 def _model_dir(model: nn.Module) -> Path:
@@ -792,6 +822,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.optimizer: "FullCPUOffloadOptimizer | None" = None
         self.model: nn.Module | None = None
         self.armed_step: int | None = None
+        self.streamed_dir: Path | None = None
+        self.num_streamed = 0
 
     def diff_in_optimizer(self, optimizer: "FullCPUOffloadOptimizer") -> None:
         """Take the deltas of the optimizer's parameters from its pass (``SparseDeltaEncoder.optimizer_hook``),
@@ -824,9 +856,19 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         if step % self.config.anchor_interval == 0:
             # Written next to the step dir, which the broadcast handshake recreates, and moved in once complete
             anchor = AnchorWriter(encoder.anchor_slices(), self.step_dir(step), self.world.rank)
-        encoder.arm(anchor)
+        # Parts written during the step go next to the step dir too, and are moved in when it is published
+        self.streamed_dir = self.step_dir(step).with_name(f".{self.step_dir(step).name}.delta{self.world.rank}")
+        self.streamed_dir.mkdir(parents=True, exist_ok=True)
+        self.num_streamed = 0
+        encoder.arm(anchor, self._stream_part)
         self.optimizer.weight_hook = encoder.optimizer_hook
         self.armed_step = step
+
+    def _stream_part(self, part: tuple) -> None:
+        """A part of the delta the optimizer step produces, written while the step runs."""
+        path = self.streamed_dir / rank_part(self.world.rank, self.num_streamed)
+        self._submit(self.writes, self._write_part, path, part)
+        self.num_streamed += 1
 
     def _set_fp8_layout(self) -> None:
         if self.encoder.fp8_layout is None:
@@ -966,21 +1008,24 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.encode_queued_at = None
         self._wait(self.snapshot_writes)
         start = time.perf_counter()
-        num_parts = 0
+        # The delta parts the optimizer step already wrote (a fully offloaded optimizer)
+        encoder.wait_for_diffs()
+        streamed_dir, num_parts = (self.streamed_dir, self.num_streamed) if self.optimizer is not None else (None, 0)
+        if self.world.is_master:
+            self._submit(self.writes, self._start_delta, step, base_step, step_dir)
+        if streamed_dir is not None:
+            self._submit(self.writes, self._move_streamed, streamed_dir, step_dir / DELTA_DIR)
 
         def emit(part: tuple) -> None:
             nonlocal num_parts
-            if num_parts == 0 and self.world.is_master:
-                self._submit(self.writes, self._start_delta, step, base_step, step_dir)
-            self._submit(self.writes, self._write_part, step_dir, num_parts, part)
+            path = step_dir / DELTA_DIR / rank_part(self.world.rank, num_parts)
+            self._submit(self.writes, self._write_part, path, part)
             num_parts += 1
 
         scale_changes = encoder.encode(shards, ready, weights_read, emit)
         # Free the gathered fp8 tensors now, not after the anchor copy below, which may overlap the next step's
         # memory peak.
         shards.clear()
-        if num_parts == 0 and self.world.is_master:
-            self._submit(self.writes, self._start_delta, step, base_step, step_dir)
         encode_time = time.perf_counter() - start
         args = (step, base_step, step_dir, num_parts, start, encode_time, scale_changes)
         self._submit(self.writes, self._finish_delta, *args)
@@ -1006,13 +1051,19 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         }
         _write_json(step_dir / DELTA_DIR / MANIFEST, manifest)
 
-    def _write_part(self, step_dir: Path, index: int, part: tuple) -> None:
+    def _write_part(self, path: Path, part: tuple) -> None:
         assert self.encoder is not None
         entries, gaps, values, checksums = part
-        path = step_dir / DELTA_DIR / rank_part(self.world.rank, index)
         self.part_bytes += write_rank_file(
             path, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors, checksums
         )
+
+    @staticmethod
+    def _move_streamed(streamed_dir: Path, delta_dir: Path) -> None:
+        delta_dir.mkdir(parents=True, exist_ok=True)
+        for path in streamed_dir.iterdir():
+            path.rename(delta_dir / path.name)
+        streamed_dir.rmdir()
 
     def _finish_delta(
         self,
