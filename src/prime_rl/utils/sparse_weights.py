@@ -12,7 +12,6 @@ A delta must be applied on top of exactly its ``base_step``; per-tensor
 checksums of the new weights catch it if not.
 """
 
-import itertools
 import json
 import os
 import threading
@@ -22,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from itertools import groupby
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import numpy as np
 import pyzstd
@@ -261,6 +260,70 @@ def write_file(path: Path, data: bytes | Iterable) -> None:
     tmp.rename(path)
 
 
+class AnchorWriter:
+    """One trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, numel, dtype)`` slices,
+    stored as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files whose headers are written first, so
+    slices can be written in any order, from any thread (``write_all``: in parallel). The files are written next to ``step_dir`` and moved
+    into it by ``close``, followed by the ``anchor_rank{rank}.done`` marker (the world size)."""
+
+    def __init__(self, slices: list[tuple[str, list[int], int, int, torch.dtype]], step_dir: Path, rank: int):
+        self.step_dir, self.rank = step_dir, rank
+        self.tmp_dir = step_dir.with_name(f".{step_dir.name}.anchor{rank}")
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        self.files: list[tuple[str, int]] = []
+        self.offsets: dict[tuple[str, int], tuple[int, int]] = {}
+        # Slices go round-robin to the files: a file is written at ~0.5 GiB/s, several at once in parallel
+        num_files = max(1, -(-sum(numel * dtype.itemsize for *_, numel, dtype in slices) // 2**30))
+        groups = [slices[index::num_files] for index in range(num_files)]
+        self.pool = ThreadPoolExecutor(8)
+        for index, group in enumerate(groups):
+            header, offset = {"__metadata__": {"shapes": json.dumps({name: shape for name, shape, *_ in group})}}, 0
+            for name, _, start, numel, dtype in group:
+                safetensors_dtype = next(
+                    key for key, value in SAFETENSORS_DTYPES.items() if getattr(torch, value) == dtype
+                )
+                header[f"{name}@{start}"] = {
+                    "dtype": safetensors_dtype,
+                    "shape": [numel],
+                    "data_offsets": [offset, offset + numel * dtype.itemsize],
+                }
+                offset += numel * dtype.itemsize
+            encoded = json.dumps(header).encode()
+            encoded += b" " * (-len(encoded) % 8)
+            file_name = f"model-rank{rank:05d}-{index:05d}.safetensors"
+            fd = os.open(self.tmp_dir / file_name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            self._pwrite(fd, len(encoded).to_bytes(8, "little") + encoded, 0)
+            for name, _, start, _, _ in group:
+                self.offsets[(name, start)] = (fd, 8 + len(encoded) + header[f"{name}@{start}"]["data_offsets"][0])
+            self.files.append((file_name, fd))
+
+    @staticmethod
+    def _pwrite(fd: int, data, offset: int) -> None:
+        data = memoryview(data).cast("B")
+        while data:
+            written = os.pwrite(fd, data, offset)
+            data, offset = data[written:], offset + written
+
+    def write(self, name: str, start: int, data, at: int = 0) -> None:
+        """Write ``data`` (bytes) at byte ``at`` of the slice ``"{name}@{start}"``."""
+        fd, offset = self.offsets[(name, start)]
+        self._pwrite(fd, data, offset + at)
+
+    def write_all(self, items: list[tuple[str, int, Any]]) -> None:
+        """``write`` each ``(name, start, data)``, in parallel."""
+        for future in [self.pool.submit(self.write, *item) for item in items]:
+            future.result()
+
+    def close(self, world_size: int) -> None:
+        self.pool.shutdown()
+        for name, fd in self.files:
+            drop_page_cache(fd)
+            os.close(fd)
+            (self.tmp_dir / name).rename(self.step_dir / name)
+        self.tmp_dir.rmdir()
+        write_file(self.step_dir / f"anchor_rank{self.rank}.done", str(world_size).encode())
+
+
 def write_anchor_shards(
     parts: list[tuple[str, list[int], int, torch.Tensor]],
     step_dir: Path,
@@ -268,34 +331,18 @@ def write_anchor_shards(
     world_size: int,
     to_host: Callable[[torch.Tensor], Iterable] = lambda values: [values.view(torch.uint8).numpy()],
 ) -> None:
-    """Write one trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, flat values)``
-    slices, stored as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files, without collectives.
-    ``to_host`` yields each slice's bytes on the host, each written before the next is taken. The
-    ``anchor_rank{rank}.done`` marker (the world size) comes last."""
-    files, size = [[]], 0
-    for part in parts:
-        if size > 2**30:
-            files.append([])
-            size = 0
-        files[-1].append(part)
-        size += part[3].nbytes
-    for index, file_parts in enumerate(files):
-        header, offset = {"__metadata__": {"shapes": json.dumps({name: shape for name, shape, _, _ in file_parts})}}, 0
-        for name, _, start, values in file_parts:
-            dtype = next(key for key, dtype in SAFETENSORS_DTYPES.items() if getattr(torch, dtype) == values.dtype)
-            header[f"{name}@{start}"] = {
-                "dtype": dtype,
-                "shape": [values.numel()],
-                "data_offsets": [offset, offset + values.nbytes],
-            }
-            offset += values.nbytes
-        encoded = json.dumps(header).encode()
-        encoded += b" " * (-len(encoded) % 8)
-        buffers = itertools.chain(
-            [len(encoded).to_bytes(8, "little") + encoded], (chunk for *_, v in file_parts for chunk in to_host(v))
-        )
-        write_file(step_dir / f"model-rank{rank:05d}-{index:05d}.safetensors", buffers)
-    write_file(step_dir / f"anchor_rank{rank}.done", str(world_size).encode())
+    """Write one trainer rank's share of a full checkpoint (``AnchorWriter``) from ``(hf_name, shape, flat
+    start, flat values)`` slices. ``to_host`` yields each slice's bytes on the host, each written before the
+    next is taken."""
+    writer = AnchorWriter(
+        [(name, shape, start, values.numel(), values.dtype) for name, shape, start, values in parts], step_dir, rank
+    )
+    for name, _, start, values in parts:
+        written = 0
+        for chunk in to_host(values):
+            writer.write(name, start, chunk, written)
+            written += chunk.nbytes
+    writer.close(world_size)
 
 
 def checkpoint_index(directory: Path) -> dict[str, tuple[list[int], torch.dtype, list[tuple[int, int, Path, int]]]]:

@@ -9,13 +9,14 @@ from datetime import timedelta
 # Import environment before any other imports
 # ruff: noqa: I001
 
-from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
+from prime_rl.transports.weights import SparseFileSystemWeightSender, prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
+from prime_rl.trainer.optim.offload import FullCPUOffloadOptimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch
@@ -193,6 +194,8 @@ def train(config: TrainerConfig):
             config.model.lora,
         )
         logger.debug(f"Initialized weight broadcast in {format_time(time.perf_counter() - t0)}")
+        if isinstance(weight_sender, SparseFileSystemWeightSender) and isinstance(optimizer, FullCPUOffloadOptimizer):
+            weight_sender.diff_in_optimizer(optimizer)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
