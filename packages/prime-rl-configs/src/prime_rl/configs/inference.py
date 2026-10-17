@@ -432,7 +432,7 @@ class InferenceConfig(BaseConfig):
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
     renderer: RendererConfig | None = None
-    """Serve ``/v1/chat/completions`` through this renderer instead of vLLM's chat template, tool parser and reasoning parser. The renderer reads ``vllm.tokenizer`` (or ``vllm.model``); request ``chat_template_kwargs`` over ``vllm.default_chat_template_kwargs`` set its template fields."""
+    """Render the prompts of chat-style routes (chat completions, responses, anthropic messages) with this renderer and parse their completions with it, in place of vLLM's chat template, tool parser and reasoning parser. The renderer reads ``vllm.tokenizer`` (or ``vllm.model``); request ``chat_template_kwargs`` over ``vllm.default_chat_template_kwargs`` set its template fields. A streamed completion arrives as one delta when it finishes."""
 
     @field_validator("renderer")
     @classmethod
