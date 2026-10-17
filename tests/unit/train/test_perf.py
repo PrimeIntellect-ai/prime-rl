@@ -34,7 +34,7 @@ MODELS = {
         6 * 3 * 4 * 8 * 8 * N + FULL,
     ),
     # MLA with qk = 16 nope + 8 rope, v = 16, reading index_topk = 32 tokens; the indexer (2 heads of dim 8)
-    # scores all N tokens on the "full" layer, and the "shared" layer reuses its indices.
+    # scores all N tokens forward only (no_grad) on the "full" layer, and the "shared" layer reuses its indices.
     "glm_moe_dsa": (
         GlmMoeDsaConfig(
             **DIMS,
@@ -52,7 +52,7 @@ MODELS = {
             indexer_types=["full", "shared"],
             use_index_cache=True,
         ),
-        2 * 6 * 4 * (24 + 16) * N * 32 + 6 * 2 * 8 * N * N,
+        2 * 6 * 4 * (24 + 16) * N * 32 + 2 * 2 * 8 * N * N,
     ),
 }
 

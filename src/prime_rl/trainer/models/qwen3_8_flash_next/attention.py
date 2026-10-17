@@ -50,10 +50,10 @@ class IndexedGatedAttention(nn.Module):
         self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
 
     def attention_flops(self, seq_len: int) -> int:
-        # The indexer scores every compressed block; attention reads `token_budget` tokens.
+        # The indexer scores every compressed block, forward only (no_grad); attention reads `token_budget` tokens.
         indexer = self.indexer
         num_blocks = seq_len // indexer.compression_ratio
-        indexer_flops = 6 * indexer.num_query_heads * indexer.head_dim * seq_len * num_blocks
+        indexer_flops = 2 * indexer.num_query_heads * indexer.head_dim * seq_len * num_blocks
         return indexer_flops + quadratic_attention_flops(
             num_heads=self.num_heads,
             qk_head_dim=self.head_dim,

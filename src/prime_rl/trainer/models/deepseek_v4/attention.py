@@ -720,14 +720,14 @@ class DeepseekV4Attention(nn.Module):
 
     def attention_flops(self, seq_len: int) -> int:
         # Each query attends the local window plus the compressed entries (CSA: the indexer scores
-        # all of them, attention reads `index_topk`).
+        # all of them forward only, under no_grad; attention reads `index_topk`).
         attended_tokens = min(seq_len, self.config.sliding_window)
         indexer_flops = 0
         if self.compressor is not None:
             compressed_len = seq_len // self.compressor.compress_rate
             indexer = getattr(self.compressor, "indexer", None)
             if indexer is not None:
-                indexer_flops = 6 * indexer.num_heads * indexer.head_dim * seq_len * compressed_len
+                indexer_flops = 2 * indexer.num_heads * indexer.head_dim * seq_len * compressed_len
                 compressed_len = min(compressed_len, indexer.index_topk)
             attended_tokens += compressed_len
         return indexer_flops + quadratic_attention_flops(
