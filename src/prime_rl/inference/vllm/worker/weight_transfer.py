@@ -63,7 +63,6 @@ class CheckpointIndexMap:
             source_2d = source.view(1, -1) if source.dim() == 1 else source
             destination_2d = destination.view(1, -1) if destination.dim() == 1 else destination
             if name is not None and source.dtype != destination.dtype:
-                # e.g. an fp32 router loaded from a bf16 checkpoint: fine as long as it never changes
                 unpatchable.add(name)
                 return destination
             if (
@@ -307,9 +306,7 @@ class CheckpointIndexMap:
                 self._view(index, rows_, cols, offset, strides).copy_(as_bits(block))
 
     @torch.no_grad()
-    def apply_delta(
-        self, entries: list[tuple[str, int]], indices: torch.Tensor, delta: torch.Tensor, chunk: int = 1 << 25
-    ) -> None:
+    def apply_delta(self, entries: list[tuple[str, int]], indices: torch.Tensor, delta: torch.Tensor) -> None:
         """Add ``delta`` (raw-bit differences, wrapping in the bits dtype) to the params at the checkpoint
         ``indices`` of ``entries``."""
         changed = [name for name, _ in entries if name in self.unpatchable]
@@ -332,6 +329,7 @@ class CheckpointIndexMap:
             for k in range(max_records)
         ]
         entry_ends = torch.tensor([count for _, count in entries], device=device).cumsum(0)
+        chunk = 1 << 25
         for start in range(0, indices.numel(), chunk):
             index = indices[start : start + chunk]
             source = delta[start : start + chunk]

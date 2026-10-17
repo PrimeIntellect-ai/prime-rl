@@ -719,8 +719,8 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
         self.optimizer = optimizer
         self._initialized = False
         self._master_weights = master_weights
-        # Called on the H2D stream with each parameter's local shard and its new values (pinned host) instead of
-        # the copy, which it must do; the shard still holds the previous values
+        # Replaces the H2D copy of each parameter's new values (pinned host) into its local shard, which still
+        # holds the previous values; it must do the copy itself
         self.weight_hook: Callable[[torch.Tensor, torch.Tensor], None] | None = None
         self._chunks = self._build_chunks()
         # Reuse the transfer streams across steps: fresh streams each step land
