@@ -61,6 +61,18 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     ``auto``: on the GPU if they fit next to the first training step's peak memory, else in pinned
     host memory; ``cpu``: always in host memory."""
 
+    storage: str | None = None
+    """With ``sparse``, where the trainer publishes deltas and anchors and engines read them: the
+    broadcast dir (default), another dir, or an S3-compatible bucket (``s3://bucket/prefix``) so
+    engines can run in another region. Endpoint and credentials come from the standard AWS
+    environment variables (e.g. ``AWS_ENDPOINT_URL``). The handshake stays in the broadcast dir."""
+
+    @model_validator(mode="after")
+    def storage_needs_sparse(self):
+        if self.storage is not None and not self.sparse:
+            raise ValueError("weight_broadcast.storage requires weight_broadcast.sparse")
+        return self
+
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
     host: str = "localhost"

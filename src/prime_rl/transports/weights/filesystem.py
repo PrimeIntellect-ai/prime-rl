@@ -10,7 +10,9 @@ from prime_rl.configs.trainer import LoRAConfig
 from prime_rl.orchestrator.clients import load_lora_adapter
 from prime_rl.trainer.lora import get_lora_state, save_lora_config
 from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
+from prime_rl.utils.pathing import get_step_path
 from prime_rl.utils.sparse_weights import DELTA_DIR, MANIFEST, revalidate
+from prime_rl.utils.weight_store import storage_path
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -68,16 +70,17 @@ class FileSystemWeightReceiver(WeightReceiver):
 
     async def receive(self, step: int) -> None:
         weights_dir = self.step_dir(step)
-        manifest, finished = weights_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
+        data_dir = get_step_path(storage_path(self.config.storage), step) if self.config.storage else weights_dir
+        manifest, finished = data_dir / DELTA_DIR / MANIFEST, weights_dir / FINISHED_MARKER
         self._ack(step)
         # A sparse delta's manifest comes first and its part files as the trainer encodes: the engines
         # read and decode them while they keep serving, and the pause only applies the delta.
-        while not (manifest.exists() or finished.exists()):
+        while not (await asyncio.to_thread(manifest.exists) or finished.exists()):
             await asyncio.sleep(0.05)
             revalidate(manifest.parent)
-        if manifest.exists():
+        if await asyncio.to_thread(manifest.exists):
             start = time.perf_counter()
-            await self.admin_plane.prefetch_weights(weights_dir)
+            await self.admin_plane.prefetch_weights(data_dir)
             self.logger.debug(f"Prefetched sparse weight delta v{step} in {time.perf_counter() - start:.2f}s")
         while not finished.exists():
             await asyncio.sleep(0.05)
@@ -85,4 +88,4 @@ class FileSystemWeightReceiver(WeightReceiver):
         if (weights_dir / "adapter_config.json").exists():
             await load_lora_adapter(self.admin_plane, self.model_name, weights_dir)
         else:
-            await self.admin_plane.update_weights(weights_dir, transport="filesystem", step=step)
+            await self.admin_plane.update_weights(data_dir, transport="filesystem", step=step)
