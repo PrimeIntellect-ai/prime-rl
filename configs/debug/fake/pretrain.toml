@@ -1,0 +1,17 @@
+max_steps = 5
+
+[model]
+name = "configs/debug/fake/pretrain-model"
+compile = "None"
+
+[tokenizer]
+name = "PrimeIntellect/Qwen3-0.6B"
+
+[data]
+type = "fake"
+seq_len = 512
+batch_tokens = 2048
+micro_batch_tokens = 512
+
+[optim]
+lr = 1e-3

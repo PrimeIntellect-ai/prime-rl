@@ -62,7 +62,8 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
     moe_layers = [module for module in model.modules() if isinstance(module, MoE)]
     if not moe_layers:
-        if config.moe != MoERuntimeConfig():
+        default = MoERuntimeConfig()
+        if (config.moe.compute, config.moe.dispatch) != (default.compute, default.dispatch):
             raise ValueError("A non-default model.moe runtime was configured, but the model has no custom MoE layers.")
         return
 

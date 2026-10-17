@@ -31,8 +31,10 @@ from prime_rl.configs.trainer import (
     ActivationCheckpointConfig,
     CompileConfig,
     FP8Config,
+    InitConfig,
     ModelConfig,
     MXFP8Config,
+    ParametrizationConfig,
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
@@ -55,6 +57,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
+from prime_rl.trainer.models.init import init_weights, multipliers
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
@@ -328,6 +331,18 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
         return {}
     dist.all_reduce(tokens_per_expert, op=dist.ReduceOp.SUM, group=group)
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
+
+
+@torch.no_grad()
+def update_selection_biases(model: nn.Module, tokens_per_expert: Tensor, rate: float) -> None:
+    """Aux-loss-free load balancing (https://arxiv.org/abs/2408.15664): move each layer's selection bias by
+    ``rate`` towards underloaded experts, given the step's global ``[num_moe_layers, num_experts]`` counts.
+    The update is mean-centred (as in Moonlight and torchtitan), which leaves the selection unchanged but keeps
+    the biases from drifting together."""
+    for moe, load in zip(iter_moe_blocks(model), tokens_per_expert):
+        if moe.router.selection_bias is not None:
+            delta = torch.sign(load.mean() - load)
+            moe.router.selection_bias += rate * (delta - delta.mean())
 
 
 def get_model(
@@ -951,7 +966,12 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    init: InitConfig | None = None,
+    parametrization: ParametrizationConfig | None = None,
 ) -> nn.Module:
+    """Build the sharded model. Its weights come from ``config.name``, or later from a checkpoint
+    (``loading_from_checkpoint_later``); with ``init``, they are initialized from scratch (with the CompleteP
+    multipliers of ``parametrization``) instead."""
     resolve_auto_attn(config)
 
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
@@ -1018,9 +1038,11 @@ def setup_model(
 
     setup_fsdp(model, config, parallel_dims)
 
-    if loading_from_checkpoint_later:
+    if loading_from_checkpoint_later or init is not None:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
+            if init is None
+            else "Initializing the weights from scratch."
         )
         device = "cuda"
         model.to_empty(device=device)
@@ -1030,6 +1052,8 @@ def setup_model(
         load_dcp_from_hf(model, config, parallel_dims)
 
     _reset_runtime_moe_buffers(model)
+    if init is not None:
+        init_weights(model, init, *multipliers(parametrization, model))
     return model
 
 

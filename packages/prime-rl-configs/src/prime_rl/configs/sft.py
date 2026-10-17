@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
@@ -20,6 +20,8 @@ from prime_rl.configs.shared import (
     NCCLWeightBroadcastConfig,
     ResumeConfig,
     RunConfig,
+    SFTDeploymentConfig,
+    SingleNodeDeploymentConfig,
     SlurmConfig,
     TrainerLogConfig,
     WeightBroadcastConfig,
@@ -175,46 +177,6 @@ class SFTValConfig(BaseConfig):
 
 
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
-
-
-class BaseDeploymentConfig(BaseConfig):
-    gpus_per_node: int = 8
-    """GPUs per node."""
-
-
-class SingleNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["single_node"] = "single_node"
-
-    num_train_gpus: int = 1
-    """GPUs allocated to the trainer."""
-
-    num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
-    """GPUs allocated to inference for online evals (alias: ``num_eval_gpus``). Only used when an ``[inference]`` block is configured."""
-
-    @model_validator(mode="after")
-    def validate_gpu_count(self):
-        if self.num_train_gpus > self.gpus_per_node:
-            raise ValueError(f"num_train_gpus ({self.num_train_gpus}) exceeds gpus_per_node ({self.gpus_per_node}).")
-        return self
-
-
-class MultiNodeDeploymentConfig(BaseDeploymentConfig):
-    type: Literal["multi_node"] = "multi_node"
-
-    num_train_nodes: int = Field(2, ge=1)
-    """Training nodes."""
-
-    num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
-    """Inference nodes for online evals (alias: ``num_eval_nodes``). These nodes share
-    one SLURM allocation with the trainer nodes."""
-
-    nodes_per_fsdp_group: int | None = None
-    """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
-
-
-SFTDeploymentConfig: TypeAlias = Annotated[
-    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
-]
 
 
 class SFTConfig(BaseConfig):

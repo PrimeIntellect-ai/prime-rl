@@ -1,0 +1,52 @@
+# GLM-4.5-style MoE (64 routed experts, 6 active, 2 shared) with d = 512 and 8 layers (glm4-moe-d512/config.json), trained from scratch on
+# the Dolma 3 mixture tokenized with the DeepSeek-V4 tokenizer.
+# 4096 steps x 256K tokens = 1.1B tokens. QK-norm and the learning rate follow the MoE QK-norm sweep (optimum 2^-7
+# with QK-norm at d = 512). [parametrization] with this base shape keeps the LR when the width grows.
+#
+#   uv run pretrain @ examples/pretrain/glm4_moe.toml
+
+max_steps = 4096
+
+[model]
+name = "examples/pretrain/glm4-moe-d512"  # the architecture: config.json only, no weights
+ac = "None"
+
+[tokenizer]
+name = "tokenizers/deepseek-v4-flash-base"  # a local copy of deepseek-ai/DeepSeek-V4-Flash-Base without config.json
+
+[data]
+type = "tokens"
+seq_len = 4096
+batch_tokens = 262144
+micro_batch_tokens = 65536
+max_epochs = 3
+
+[data.sources]
+web = { path = "data/dolma3-50b-dsv4/web" }
+pdfs = { path = "data/dolma3-50b-dsv4/pdfs" }
+code = { path = "data/dolma3-50b-dsv4/code" }
+math = { path = "data/dolma3-50b-dsv4/math" }
+reference = { path = "data/dolma3-50b-dsv4/reference" }
+
+[[data.phases]]
+weights = { web = 0.60, pdfs = 0.20, code = 0.12, math = 0.05, reference = 0.03 }
+
+[optim]
+type = "muon"
+lr = 0.0078125
+max_norm = 1.0
+
+[parametrization]
+base_hidden_size = 512
+base_num_layers = 8
+
+[val]
+interval = 512
+
+[val.sources]
+web = { path = "data/dolma3-50b-dsv4/web-val" }
+code = { path = "data/dolma3-50b-dsv4/code-val" }
+math = { path = "data/dolma3-50b-dsv4/math-val" }
+
+[ckpt]
+interval = 1024

@@ -14,6 +14,7 @@ import prime_runs as pr
 from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
+from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
@@ -165,6 +166,20 @@ class PrimeTrainMonitor(Monitor):
                 environments=[],
                 training=pr.TrainingSpec(
                     max_steps=config.max_steps or 0,
+                    batch_size=config.data.batch_size,
+                    seq_len=config.data.seq_len,
+                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
+                ),
+                config=config.model_dump(exclude_none=True, mode="json"),
+            )
+        elif isinstance(config, PretrainConfig):
+            # Pretraining trains on token data from scratch: no environments, the model is its architecture.
+            init_kwargs = dict(
+                name=self.config.name,
+                model=config.model.name,
+                environments=[],
+                training=pr.TrainingSpec(
+                    max_steps=config.max_steps,
                     batch_size=config.data.batch_size,
                     seq_len=config.data.seq_len,
                     wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
