@@ -10,19 +10,18 @@ from torch.distributed.tensor.placement_types import _StridedShard
 from torch.optim import Optimizer
 
 
-@torch.compile(fullgraph=True)
 def newton_schulz(G: Tensor, coefficients: tuple[tuple[float, float, float], ...], eps: float = 1e-8) -> Tensor:
     """Approximately orthogonalize the last two dims of ``G`` in bfloat16; leading dims are a batch."""
-    X = G.to(torch.bfloat16)
+    X = G.to(torch.bfloat16).reshape(-1, *G.shape[-2:])
     if G.size(-2) > G.size(-1):
         X = X.mT
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
+    X = (X / (X.norm(dim=(-2, -1), keepdim=True) + eps)).contiguous()
     for a, b, c in coefficients:
         A = X @ X.mT
-        X = a * X + (b * A + c * (A @ A)) @ X
+        X = torch.baddbmm(X, torch.baddbmm(A, A, A, beta=b, alpha=c), X, beta=a)
     if G.size(-2) > G.size(-1):
         X = X.mT
-    return X
+    return X.reshape(G.shape)
 
 
 def orthogonalize(
