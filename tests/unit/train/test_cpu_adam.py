@@ -1,5 +1,7 @@
 import torch
 
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import get_full_offload_dtype_policy
 from prime_rl.trainer.optim.cpu_adam import (
     adamw_step,
     add_bfloat16_,
@@ -18,7 +20,9 @@ def test_full_offload_preserves_per_parameter_compute_dtypes():
     original_float32 = float32_param.detach().clone()
     model.register_buffer("statistics", torch.tensor([1.0001], dtype=torch.float32))
     original_statistics = model.statistics.detach().clone()
-    policy = {
+    model.keep_in_fp32_for_weight_transfer = lambda name: name == "1.weight"
+    policy = get_full_offload_dtype_policy(model, ModelConfig(moe_router_dtype="bfloat16"))
+    assert policy == {
         id(bfloat16_param): (torch.bfloat16, torch.bfloat16),
         id(float32_param): (torch.float32, torch.float32),
     }

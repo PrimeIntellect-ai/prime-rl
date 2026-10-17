@@ -176,7 +176,12 @@ def get_full_offload_dtype_policy(
 ) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
+    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
+    policy = {}
+    for name, param in model.named_parameters():
+        if param.is_floating_point():
+            dtype = torch.float32 if keep_in_fp32 is not None and keep_in_fp32(name) else torch.bfloat16
+            policy[id(param)] = (dtype, dtype)
     if config.moe_router_dtype != "float32":
         return policy
 
