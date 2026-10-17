@@ -61,7 +61,7 @@ def test_resume_drops_queued_traces_with_missing_payload_files(tmp_path) -> None
     sink.load_state_dict(
         {
             "pending_batch": {"kept": [sample(present)], "read": [sample(tmp_path / "deleted.bin")]},
-            "queued": {"kept": QueuedTrace("env", "e0", 9), "read": QueuedTrace("env", "e1", 9)},
+            "queued": {"kept": QueuedTrace("env", 9), "read": QueuedTrace("env", 9)},
             "open_groups": {},
         }
     )
