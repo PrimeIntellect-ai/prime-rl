@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -112,6 +113,10 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
+    # Phases of the last update_weights: until every engine paused, until the fastest one
+    # paused, the transfer while paused, and the resume. Replaced, never mutated.
+    last_update_times: dict[str, float] = {}
+
     def __init__(self, client_config: ClientConfig):
         self.clients = setup_admin_clients(client_config)
         # When admin URLs bypass a router, also health-check the client-facing
@@ -186,7 +191,9 @@ class AdminPlane:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        await _pause_engines(self.clients, step=step)
+        start = time.perf_counter()
+        pause_times = await _pause_engines(self.clients, step=step)
+        paused = time.perf_counter()
         try:
             if on_paused is not None:
                 on_paused()
@@ -201,8 +208,15 @@ class AdminPlane:
                     for admin_client in self.clients
                 ]
             )
+            updated = time.perf_counter()
         finally:
             await _resume_engines(self.clients)
+        self.last_update_times = {
+            "pause": paused - start,
+            "pause_min": min(pause_times),
+            "transfer": updated - paused,
+            "resume": time.perf_counter() - updated,
+        }
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
@@ -400,14 +414,20 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
-    """Pause all inference engines, waiting for in-flight requests to drain."""
+async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> list[float]:
+    """Pause all inference engines, waiting for in-flight requests to drain.
+    Returns each engine's pause time."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
-    )
-    logger.debug("All inference engines paused")
+
+    async def pause(client: AsyncClient) -> float:
+        start = time.perf_counter()
+        await _admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"})
+        return time.perf_counter() - start
+
+    pause_times = await asyncio.gather(*[pause(client) for client in admin_clients])
+    logger.debug(f"All inference engines paused in {min(pause_times):.2f}-{max(pause_times):.2f}s")
+    return pause_times
 
 
 async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
