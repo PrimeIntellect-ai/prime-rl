@@ -112,6 +112,16 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.
         return None
 
+    def _init_weights(self, module: nn.Module) -> None:
+        super()._init_weights(module)
+        init_std = self.config.initializer_range
+        if isinstance(module, (DeepseekV4Attention, DeepseekV4HyperConnection, DeepseekV4HyperHead)):
+            module.init_weights(init_std)
+        elif isinstance(module, DeepseekV4MoE):
+            module.init_weights(init_std, module.tokens_per_expert.device)
+        elif isinstance(module, DeepseekV4RotaryEmbedding):
+            module.init_buffers_post_meta()
+
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
         return any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
