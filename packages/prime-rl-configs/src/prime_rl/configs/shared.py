@@ -49,18 +49,17 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
     type: Literal["filesystem"] = "filesystem"
 
     sparse: bool = False
-    """Between anchors, publish only the delta of the wire-dtype weights against the previous
-    broadcast. Each trainer rank diffs its own shards; engines decode the delta while serving and
-    patch their weights in place during the pause. Not supported with LoRA."""
+    """Between anchors, publish only the weight elements that changed since the previous broadcast.
+    Engines patch their weights in place and verify every update. Not supported with LoRA."""
 
     anchor_interval: int = Field(25, ge=1)
-    """With ``sparse``, publish a full checkpoint every this many steps (and at the first broadcast).
-    Engines that fall off the delta chain reload the last anchor and replay the deltas since."""
+    """With ``sparse``, publish a full checkpoint every this many steps. Engines that join or fall
+    off the delta chain load the last one and replay the deltas since."""
 
     snapshot: Literal["auto", "cpu"] = "auto"
     """With ``sparse``, where each trainer rank keeps the previous broadcast's weights to diff against.
-    ``auto`` keeps them on the GPU if they fit next to the first training step's peak memory, else in
-    page-locked host memory; ``cpu`` always in host memory."""
+    ``auto``: on the GPU if they fit next to the first training step's peak memory, else in pinned
+    host memory; ``cpu``: always in host memory."""
 
 
 class InMemoryWeightBroadcastConfig(BaseWeightBroadcastConfig):
