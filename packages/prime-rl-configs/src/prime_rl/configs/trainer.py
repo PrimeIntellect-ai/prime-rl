@@ -437,10 +437,25 @@ class MuonConfig(BaseOptimizerConfig):
     """Nesterov momentum for the Muon updates."""
 
     betas1: float = Field(0.9, ge=0)
-    """β1 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+    """β1 for the AdamW sub-optimizer used on non-Muon params."""
 
     betas2: float = Field(0.95, ge=0)
-    """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
+    """β2 for the AdamW sub-optimizer used on non-Muon params."""
+
+    newton_schulz_coefficients: list[tuple[float, float, float]] = Field(
+        [
+            (4.0848, -6.8946, 2.9270),
+            (3.9505, -6.3029, 2.6377),
+            (3.7418, -5.5913, 2.3037),
+            (2.8769, -3.1427, 1.2046),
+            (2.8366, -3.0525, 1.2012),
+        ],
+        min_length=1,
+    )
+    """Quintic Newton-Schulz coefficients (a, b, c), one triple per iteration; the list length is the iteration count. The default is dion's 5-step schedule, used with ``update_rms = 0.2`` (Kimi/Moonlight). DeepSeek-V4 uses 8 x (3.4445, -4.7750, 2.0315) then 2 x (2, -1.5, 0.5) with ``update_rms = 0.18``: about twice the Newton-Schulz time, singular values within 0.998-1.003."""
+
+    update_rms: float = Field(0.2, gt=0)
+    """RMS of a Muon update per unit of learning rate: each matrix's update is scaled by ``update_rms * sqrt(max(fan_out, fan_in))``."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):
