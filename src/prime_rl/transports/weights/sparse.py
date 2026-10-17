@@ -264,7 +264,8 @@ class SparseDeltaEncoder:
         start = time.perf_counter()
         sizes = {key: -(-numel * self.wire_dtypes[key].itemsize // 8) * 8 for key, (numel, _) in self.shards.items()}
         flags = mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | mmap.MAP_POPULATE
-        self.host_buffer = torch.from_numpy(np.frombuffer(mmap.mmap(-1, sum(sizes.values()), flags), np.uint8))
+        # mmap needs a non-empty mapping: a rank may hold no shards
+        self.host_buffer = torch.from_numpy(np.frombuffer(mmap.mmap(-1, max(sum(sizes.values()), 8), flags), np.uint8))
         offset = 0
         for key, (numel, _) in self.shards.items():
             self.host[key] = self.host_buffer[offset : offset + numel * self.wire_dtypes[key].itemsize].view(
