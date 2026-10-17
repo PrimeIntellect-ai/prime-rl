@@ -47,7 +47,7 @@ class FileSystemBatchSender(BatchSender):
 
     def _encode_and_write(self, micro_batch_grid: list[list[MicroBatch]], step_path: Path) -> None:
         for data_rank in range(self.data_world_size):
-            (step_path / f"rank_{data_rank}.bin.tmp").write_bytes(self.encoder.encode(micro_batch_grid[data_rank]))
+            (step_path / f"rank_{data_rank}.bin.tmp").write_bytes(self.encode(micro_batch_grid[data_rank]))
 
     async def _wait_for_requests(self, step_path: Path) -> None:
         """Block until every trainer rank requested the step. The markers hold the trainer world

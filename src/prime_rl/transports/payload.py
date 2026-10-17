@@ -3,6 +3,7 @@ inference server writes a request's rows to a shared file and returns ``PayloadS
 the orchestrator clips and shifts the segments into micro-batch positions, and each
 trainer rank reads the rows of its window."""
 
+import errno
 import math
 import os
 import time
@@ -125,17 +126,22 @@ def _pread(reads: list[tuple[str, int, int]]) -> list[bytes]:
 
 def _pread_file(reads: list[tuple[str, int, int]], attempts: int = 5) -> list[bytes]:
     """The bytes of each ``(file, offset, size)`` of one file. A shared filesystem can briefly
-    serve a short read of a file another node just wrote, so a short read reopens the file
-    and retries with backoff."""
+    serve a stale lookup (``ENOENT``, ``ESTALE``) or a short read of a file another node just
+    wrote, so either reopens the file and retries with backoff."""
     file = reads[0][0]
     for attempt in range(attempts):
         if attempt:
             time.sleep(0.05 * 2**attempt)
-        fd = os.open(file, os.O_RDONLY)
         try:
-            data = [os.pread(fd, size, offset) for _, offset, size in reads]
-        finally:
-            os.close(fd)
+            fd = os.open(file, os.O_RDONLY)
+            try:
+                data = [os.pread(fd, size, offset) for _, offset, size in reads]
+            finally:
+                os.close(fd)
+        except OSError as error:
+            if error.errno not in (errno.ENOENT, errno.ESTALE) or attempt == attempts - 1:
+                raise
+            continue
         short = [(offset, size, len(chunk)) for (_, offset, size), chunk in zip(reads, data) if len(chunk) != size]
         if not short:
             return data
