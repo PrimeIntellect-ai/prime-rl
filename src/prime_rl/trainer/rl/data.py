@@ -303,7 +303,7 @@ class DataLoader:
         )
 
 
-def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, exact: bool) -> None:
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
     """Validate sampler evidence on the CPU before the LM head consumes it."""
     mask = batch["loss_mask"]
     if batch["rl_weights"] is not None:
@@ -325,27 +325,7 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, e
     q = values.exp().masked_fill(~valid, 0.0)
     if (q.sum(-1) > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if exact:
-        replay = batch["sampling_mask"]
-        if replay is None:
-            raise ValueError("IPO score centering requires a sampling mask")
-        replay = replay[mask]
-        width = max(replay.shape[-1], ids.shape[-1])
-        head_sorted = torch.nn.functional.pad(ids, (0, width - ids.shape[-1]), value=-1).sort(-1).values
-        mask_sorted = torch.nn.functional.pad(replay, (0, width - replay.shape[-1]), value=-1).sort(-1).values
-        if not torch.equal(head_sorted, mask_sorted):
-            raise ValueError(
-                "IPO score centering requires every sampling-mask probability; increase sampling.logprobs for ties"
-            )
-        if not torch.allclose(q.sum(-1), torch.ones_like(q[:, 0]), atol=1e-4, rtol=0):
-            raise ValueError("IPO sampler probabilities must normalize over the sampling mask")
-        sampled = ids == batch["input_ids"][mask].unsqueeze(-1)
-        sampled_logp = values.masked_fill(~sampled, 0.0).sum(-1)
-        if not sampled.any(-1).all() or not torch.allclose(
-            sampled_logp, batch["inference_logprobs"][mask], atol=1e-4, rtol=1e-5
-        ):
-            raise ValueError("Sampler head and sampled-token logprob disagree")
-    elif batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
+    if batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
         raise ValueError("Top-k score centering requires untruncated sampling")
 
 

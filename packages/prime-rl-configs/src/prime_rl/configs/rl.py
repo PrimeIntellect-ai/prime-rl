@@ -534,9 +534,7 @@ class RLConfig(BaseConfig):
     @model_validator(mode="after")
     def auto_setup_score_centering(self):
         loss = self.trainer.loss
-        weighted = loss.type in ("ipo", "ipo_tis", "icepop") and loss.score_centering
-        exact = weighted and loss.score_centering_topk is None
-        if loss.type != "score_centering" and not weighted:
+        if loss.type != "icepop" or not loss.score_centering:
             return self
         samplings = [
             env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
@@ -547,13 +545,9 @@ class RLConfig(BaseConfig):
         for sampling in samplings:
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
-            if exact and sampling.top_k is None:
-                raise ValueError("Weighted score centering requires bounded truncated train sampling (top_k)")
-            if not exact and sampling.truncates_distribution():
-                raise ValueError(
-                    "The top-k score_centering loss requires untruncated sampling; use a weighted loss with score_centering for sampling replay"
-                )
-            k = sampling.top_k if exact else (loss.score_centering_topk if weighted else loss.topk)
+            if sampling.truncates_distribution():
+                raise ValueError("IcePop score centering requires untruncated sampling")
+            k = loss.score_centering_topk
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)

@@ -11,10 +11,8 @@ from prime_rl.configs.trainer import (
     CustomLossConfig,
     IcePopLossConfig,
     IPOLossConfig,
-    IPOTISLossConfig,
     LossConfig,
     PPOLossConfig,
-    ScoreCenteringLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
@@ -157,20 +155,13 @@ def _safe_mean(values: Tensor, mask: Tensor) -> Tensor:
 def _mismatch_kl_from_log_ratio(log_importance_ratio: Tensor) -> Tensor:
     # Keep headroom for FP32 reductions across tokens and ranks.
     metric_limit = log_importance_ratio.new_tensor(1e30)
-    bounded_log_ratio = log_importance_ratio.clamp(max=metric_limit.log())
-    mismatch_kl = torch.expm1(bounded_log_ratio) - bounded_log_ratio
+    mismatch_kl = torch.expm1(log_importance_ratio.clamp(max=metric_limit.log())) - log_importance_ratio
     return mismatch_kl.clamp(max=metric_limit)
 
 
 def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> Tensor:
     capped_log_ratio = log_importance_ratio.detach().clamp(max=log_importance_ratio.new_tensor(max_ratio).log())
     return torch.exp(capped_log_ratio + (log_importance_ratio - log_importance_ratio.detach()))
-
-
-def _absolute_probability_difference(logp: Tensor, logq: Tensor) -> Tensor:
-    larger = torch.maximum(logp, logq)
-    smaller = torch.minimum(logp, logq)
-    return larger.exp() * -torch.expm1(smaller - larger)
 
 
 def _centering_head(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor]:
@@ -185,37 +176,13 @@ def _centering_head(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor]:
     return trainer, sampler, valid
 
 
-class ScoreCenteringLoss:
-    """Top-k score centering with the sampler tail proportional to the trainer (arXiv:2609.20807)."""
+class IPOLoss:
+    """IPO loss type: a symmetric trust region (mask tokens whose probability
+    moved more than ``eps`` in absolute terms), policy gradient via
+    and a capped importance ratio."""
 
-    def __init__(self, config: ScoreCenteringLossConfig):
+    def __init__(self, config: IPOLossConfig):
         self.config = config
-
-    def loss(self, inputs: LossInputs) -> LossOutputs:
-        if not bool(inputs.loss_mask.any()):
-            return LossOutputs(loss=inputs.trainer_logprobs[:0].sum(), metrics={})
-        head, sampler, valid = _centering_head(inputs)
-        with torch.no_grad():
-            p = head.exp().masked_fill(~valid, 0.0)
-            q = sampler.exp().masked_fill(~valid, 0.0)
-            rho = (1.0 - q.sum(-1)).clamp_min(0.0) / (1.0 - p.sum(-1)).clamp_min(1e-6)
-            residual = q - rho.unsqueeze(-1) * p
-        correction = (residual * head).sum(-1)
-        mask = inputs.loss_mask
-        per_token = -inputs.advantages[mask].detach() * (inputs.trainer_logprobs[mask] - correction)
-        if inputs.loss_weights is not None:
-            per_token = per_token * inputs.loss_weights[mask]
-        return LossOutputs(
-            loss=per_token.sum(),
-            metrics={"score_centering/head_mass": q.sum(-1).mean(), "score_centering/rho": rho.mean()},
-        )
-
-
-class _ProbabilityMaskedISLoss:
-    def __init__(self, config: IPOLossConfig | IPOTISLossConfig):
-        self.config = config
-        self.track_truncation = isinstance(config, IPOTISLossConfig)
-        self.ratio_cap = config.ratio_cap if isinstance(config, IPOTISLossConfig) else config.max_importance_ratio
 
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
@@ -225,55 +192,21 @@ class _ProbabilityMaskedISLoss:
         weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
 
         log_importance_ratio = trainer_logprobs - inference_logprobs
-        abs_probs_diff = _absolute_probability_difference(trainer_logprobs, inference_logprobs)
+        larger_logprob = torch.maximum(trainer_logprobs, inference_logprobs)
+        smaller_logprob = torch.minimum(trainer_logprobs, inference_logprobs)
+        # |e^logp - e^logq| = e^max(logp, logq) - e^min(logp, logq)
+        # = e^max(logp, logq) * (1 - e^(min(logp, logq) - max(logp, logq)))
+        # = e^max(logp, logq) * -expm1(min(logp, logq) - max(logp, logq)).
+        # expm1 avoids cancellation in 1 - e^x when x is near zero.
+        abs_probs_diff = torch.exp(larger_logprob) * -torch.expm1(smaller_logprob - larger_logprob)
         is_masked = abs_probs_diff > loss_config.eps
         keep_mask = ~is_masked
 
-        importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], self.ratio_cap)
+        importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], loss_config.max_importance_ratio)
         pg_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio
         if weights is not None:
             pg_loss = pg_loss * weights[keep_mask]
         loss = pg_loss.sum()
-        centering_metrics = {}
-        if loss_config.score_centering and trainer_logprobs.numel():
-            head, sampler, valid = _centering_head(inputs)
-            with torch.no_grad():
-                p = head.exp().masked_fill(~valid, 0.0)
-                q = sampler.exp().masked_fill(~valid, 0.0)
-                # q * min(p/q, cap) avoids division by tiny sampler probabilities.
-                mass = torch.minimum(p, q * self.ratio_cap)
-                head_masked = ~valid | (_absolute_probability_difference(head, sampler) > loss_config.eps)
-                mass = mass.masked_fill(head_masked, 0.0)
-                if self.track_truncation:
-                    accepted_mass = p.masked_fill(head_masked, 0.0)
-                    centering_metrics["tis/head_cap_removed_mass"] = (accepted_mass - mass).sum(-1)
-                    centering_metrics["tis/head_mask_removed_mass"] = (p - accepted_mass).sum(-1)
-                if loss_config.score_centering_topk is not None:
-                    p_tail = (1.0 - p.sum(-1)).clamp_min(0.0)
-                    q_tail = (1.0 - q.sum(-1)).clamp_min(0.0)
-                    rho = q_tail / p_tail.clamp_min(1e-6)
-                    # Every modeled tail action obeys |p_v - q_v| <= |1-rho| P_tail.
-                    tail_bound = (1.0 - rho).abs() * p_tail
-                    if bool(((q_tail > 0) & (tail_bound > loss_config.eps)).any()):
-                        raise ValueError(
-                            "IPO score-centering tail may cross the trust region; increase score_centering_topk "
-                            "or use complete sampling-support centering"
-                        )
-                    alpha = (rho * self.ratio_cap).clamp_max(1.0)
-                    mass = mass - alpha.unsqueeze(-1) * p
-                    centering_metrics["score_centering/tail_change_bound"] = tail_bound
-                    centering_metrics["score_centering/tail_scale"] = alpha
-                centering_metrics["score_centering/head_mass"] = q.sum(-1)
-                centering_metrics["score_centering/residual_l1"] = mass.abs().sum(-1)
-                residual_sum = mass.sum(-1)
-                centering_metrics["score_centering/logit_correction_l1"] = (
-                    mass - p * residual_sum.unsqueeze(-1)
-                ).abs().sum(-1) + (1.0 - p.sum(-1)).clamp_min(0.0) * residual_sum.abs()
-            correction = loss_config.adv_tau * advantages.detach() * (mass * head).sum(-1)
-            if weights is not None:
-                correction = correction * weights
-            # Every RL token is centered, including sampled actions outside IPO's trust region.
-            loss = loss + correction.sum()
 
         mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
@@ -281,43 +214,9 @@ class _ProbabilityMaskedISLoss:
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
-            **centering_metrics,
         }
-        if self.track_truncation:
-            kept_log_ratio = log_importance_ratio[keep_mask].detach()
-            metrics["ratio_saturated"] = (kept_log_ratio > kept_log_ratio.new_tensor(self.ratio_cap).log()).sum() / max(
-                kept_log_ratio.numel(), 1
-            )
 
         return LossOutputs(loss=loss, metrics=metrics)
-
-
-class IPOLoss(_ProbabilityMaskedISLoss):
-    """Absolute-probability trust region with an importance-weighted policy gradient."""
-
-
-class IPOTISLoss(_ProbabilityMaskedISLoss):
-    """IPO acceptance with truncated importance coefficients and optional SC.
-
-    IPO's absolute-probability mask can accept large p/q ratios when both
-    probabilities are small. TIS limits their contribution while retaining
-    accepted actions: w_v = 1[|p_v-q_v| <= eps] * min(p_v/q_v, ratio_cap).
-    The default cap of 2 is an algorithmic truncation, not a numerical guard.
-    Above the cap the score coefficient saturates; its gradient is not zeroed.
-    There is no lower floor, which would amplify low-ratio stale actions.
-
-    Truncation and masking break the zero-mean importance-weighted score.
-    Score centering subtracts b = sum_v q_v*w_v*grad(log p_v), giving the
-    ascent update A*(w_a*grad(log p_a) - b). The baseline uses the same mask
-    and cap, and applies even when the sampled action is rejected. This
-    cancels constant-advantage drift but does not restore all signal removed
-    by truncation or guarantee stability. With no masking or active cap,
-    b is zero and SC adds nothing to exact importance sampling.
-
-    Centering is exact over a complete replayed sampling support, or uses
-    a captured head and proportional-tail approximation with the IPO tail
-    acceptance check. All centering coefficients are detached.
-    """
 
 
 class IcePopLoss:
@@ -355,15 +254,14 @@ class IcePopLoss:
                 accepted = valid & (head_log_ratio >= log_ratio_low) & (head_log_ratio <= log_ratio_high)
                 # q * (p/q) * mask = p * mask, without unstable exponentiation.
                 mass = p.masked_fill(~accepted, 0.0)
-                if loss_config.score_centering_topk is not None:
-                    p_tail = (1.0 - p.sum(-1)).clamp_min(1e-6)
-                    q_tail = (1.0 - q.sum(-1)).clamp_min(1e-6)
-                    rho = q_tail / p_tail
-                    tail_log_ratio = -rho.log()
-                    # The proportional tail has one ratio; MIS accepts all or none.
-                    alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
-                    mass = mass - alpha.unsqueeze(-1) * p
-                    centering_metrics["score_centering/tail_scale"] = alpha
+                p_tail = (1.0 - p.sum(-1)).clamp_min(1e-6)
+                q_tail = (1.0 - q.sum(-1)).clamp_min(1e-6)
+                rho = q_tail / p_tail
+                tail_log_ratio = -rho.log()
+                # The proportional tail has one ratio; MIS accepts all or none.
+                alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
+                mass = mass - alpha.unsqueeze(-1) * p
+                centering_metrics["score_centering/tail_scale"] = alpha
                 centering_metrics["score_centering/head_mass"] = q.sum(-1)
                 centering_metrics["score_centering/logit_correction_l1"] = (
                     mass - p * mass.sum(-1, keepdim=True)
@@ -525,16 +423,12 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return CustomLoss(loss_config)
         case IPOLossConfig():
             return IPOLoss(loss_config)
-        case IPOTISLossConfig():
-            return IPOTISLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
         case PPOLossConfig():
             return PPOLoss(loss_config)
         case CISPOLossConfig():
             return CISPOLoss(loss_config)
-        case ScoreCenteringLossConfig():
-            return ScoreCenteringLoss(loss_config)
         case _:
             raise TypeError(f"Unsupported RL loss config: {type(loss_config).__name__}")
 

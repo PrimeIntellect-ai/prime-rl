@@ -42,8 +42,8 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     np.testing.assert_array_equal(np.frombuffer(sample.top_logprobs.counts, np.int32), [0, 0, 2, 1])
 
 
-@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support", "sampled"])
-def test_top_logprobs_validate_only_rl_tokens_and_require_complete_ipo_support(corruption):
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support"])
+def test_top_logprobs_validate_only_rl_tokens_and_reject_truncation(corruption):
     import torch
 
     from prime_rl.trainer.rl.data import validate_score_centering_data
@@ -55,12 +55,12 @@ def test_top_logprobs_validate_only_rl_tokens_and_require_complete_ipo_support(c
         "top_logprobs_ids": torch.tensor([[[-1, -1], [3, 7], [-1, -1]]]),
         "top_logprobs_values": torch.tensor([[[1.0, 1.0], [0.75, 0.25], [1.0, 1.0]]]).log(),
         "inference_logprobs": torch.tensor([[1.0, 0.75, 1.0]]).log(),
-        "sampling_mask": torch.tensor([[[-1, -1], [3, 7], [6, -1]]]),
+        "sampling_mask": torch.tensor([[[-1, -1], [-1, -1], [6, -1]]]),
     }
-    validate_score_centering_data(batch, vocab_size=9, exact=True)
+    validate_score_centering_data(batch, vocab_size=9)
     if corruption is None:
         batch["sampling_mask"][0, 1] = -1
-        validate_score_centering_data(batch, vocab_size=9, exact=False)
+        validate_score_centering_data(batch, vocab_size=9)
         return
     match corruption:
         case "missing":
@@ -72,11 +72,9 @@ def test_top_logprobs_validate_only_rl_tokens_and_require_complete_ipo_support(c
         case "mass":
             batch["top_logprobs_values"][0, 1] = 0
         case "support":
-            batch["sampling_mask"][0, 1, 1] = -1
-        case "sampled":
-            batch["inference_logprobs"][0, 1] = -0.1
+            batch["sampling_mask"][0, 1, 1] = 7
     with pytest.raises(ValueError):
-        validate_score_centering_data(batch, vocab_size=9, exact=True)
+        validate_score_centering_data(batch, vocab_size=9)
 
 
 def _routed_experts(data, dtype=np.uint8):
