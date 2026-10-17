@@ -110,6 +110,13 @@ class Glm4MoeConfig(PretrainedConfig):
         batch_topk_max_k (`int`, *optional*, defaults to 0):
             Above 0, position-wise batch top-k routing: at every position, the batch's sequences together select
             their `num_experts_per_tok` x rows highest-scoring (token, expert) pairs, each token at most this many.
+        scoring_func (`str`, *optional*, defaults to `"sigmoid"`):
+            Router score function: `"sigmoid"` or `"softmax"` (over the experts of each token).
+        batch_topk_sqrt_scale (`bool`, *optional*, defaults to `False`):
+            With batch top-k, scale a token's gates by sqrt(num_experts_per_tok / its selected experts).
+        batch_topk_head (`float`, *optional*, defaults to 0.0):
+            Above 0, with batch top-k, a per-token compute head sets each token's level in the selection, with this
+            weight; it is trained on the token's first-order benefit of a larger routed output.
     ```python
     >>> from transformers import Glm4MoeModel, Glm4MoeConfig
     >>> # Initializing a Glm4Moe style configuration
@@ -173,6 +180,9 @@ class Glm4MoeConfig(PretrainedConfig):
         use_qk_norm=False,
         n_null_experts=0,
         batch_topk_max_k=0,
+        scoring_func="sigmoid",
+        batch_topk_sqrt_scale=False,
+        batch_topk_head=0.0,
         pad_token_id=None,
         **kwargs,
     ):
@@ -207,6 +217,9 @@ class Glm4MoeConfig(PretrainedConfig):
         self.use_qk_norm = use_qk_norm
         self.n_null_experts = n_null_experts
         self.batch_topk_max_k = batch_topk_max_k
+        self.scoring_func = scoring_func
+        self.batch_topk_sqrt_scale = batch_topk_sqrt_scale
+        self.batch_topk_head = batch_topk_head
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,

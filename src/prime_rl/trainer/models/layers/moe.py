@@ -64,6 +64,8 @@ class MoEArgs:
     load_balance_coeff: float | None = 1e-3
     num_null_experts: int = 0
     batch_topk_max_k: int = 0
+    batch_topk_sqrt_scale: bool = False
+    batch_topk_head: float = 0.0
 
     def __post_init__(self) -> None:
         ActivationDispatch[self.activation]
@@ -132,6 +134,24 @@ class GroupedExperts(nn.Module):
                 nn.init.zeros_(bias)
 
 
+class _ComputeHeadTarget(torch.autograd.Function):
+    """Identity on the gates. In backward it regresses the per-token compute score on the token's first-order
+    benefit of scaling up its routed output, ``b_t = -sum_e g_e dL/dg_e`` (z-scored over the forward's tokens,
+    no gradient through the target): the compute score gets ``(c_t - target_t) / num_tokens``."""
+
+    @staticmethod
+    def forward(ctx, gates: torch.Tensor, compute: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(gates, compute)
+        return gates.clone()
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        gates, compute = ctx.saved_tensors
+        benefit = -(grad.float() * gates.float()).sum(dim=-1)
+        target = (benefit - benefit.mean()) / (benefit.std() + 1e-12)
+        return grad, ((compute - target) / compute.numel()).to(compute.dtype)
+
+
 class TokenChoiceTopKRouter(nn.Module):
     """Route each token to its top-k experts.
 
@@ -153,6 +173,12 @@ class TokenChoiceTopKRouter(nn.Module):
             the ``batch_rows`` rows (on every rank of ``batch_group``) select their ``top_k * rows`` highest
             (token, expert) selection scores together, each token from its own ``batch_topk_max_k`` best, so
             ``top_k`` is the mean per token. Unselected slots have index -1 and score 0.
+        batch_topk_sqrt_scale (bool): With batch top-k, scale a token's gates by ``sqrt(top_k / k_t)`` for its
+            ``k_t`` selected experts.
+        batch_topk_head (float): Above 0, with batch top-k, a per-token compute head ``c_t`` (linear, on the
+            detached input) sets the token's level in the batch selection: selection score = expert score minus
+            its per-token mean, plus ``batch_topk_head * c_t``. ``c_t`` is trained on the token's first-order
+            benefit of a larger routed output (``_ComputeHeadTarget``).
     """
 
     def __init__(
@@ -169,6 +195,8 @@ class TokenChoiceTopKRouter(nn.Module):
         topk_sorted: bool = True,
         num_null_experts: int = 0,
         batch_topk_max_k: int = 0,
+        batch_topk_sqrt_scale: bool = False,
+        batch_topk_head: float = 0.0,
     ):
         super().__init__()
         num_experts += num_null_experts
@@ -181,6 +209,9 @@ class TokenChoiceTopKRouter(nn.Module):
         self.top_k = top_k
         self.num_null_experts = num_null_experts
         self.batch_topk_max_k = batch_topk_max_k
+        self.batch_topk_sqrt_scale = batch_topk_sqrt_scale
+        self.batch_topk_head = batch_topk_head
+        self.compute_head = nn.Linear(dim, 1, bias=False) if batch_topk_head else None
         # Set by the training loop: rows per forward, and the data-parallel group whose rows route together.
         self.batch_rows: int | None = None
         self.batch_group: dist.ProcessGroup | None = None
@@ -255,12 +286,18 @@ class TokenChoiceTopKRouter(nn.Module):
             if self.selection_bias is not None:
                 selection_scores = selection_scores + self.selection_bias
             if self.batch_topk_max_k and self.batch_rows is not None:
+                if self.compute_head is not None:
+                    compute = self.compute_head(x.detach()).float().squeeze(-1)
+                    selection_scores = selection_scores - selection_scores.mean(dim=-1, keepdim=True)
+                    selection_scores = selection_scores + self.batch_topk_head * compute.detach()[:, None]
                 candidate_scores, selected_experts_indices = torch.topk(
                     selection_scores, k=self.batch_topk_max_k, dim=1
                 )
                 selected = self.batch_select(candidate_scores.detach())
                 selected_experts_indices = selected_experts_indices.masked_fill(~selected, -1)
                 top_scores = scores.gather(dim=1, index=selected_experts_indices.clamp_min(0)) * selected
+                if self.batch_topk_sqrt_scale:
+                    top_scores = top_scores * (self.top_k / selected.sum(dim=1, keepdim=True).clamp_min(1)).sqrt()
             else:
                 _, selected_experts_indices = torch.topk(
                     selection_scores,
@@ -284,6 +321,8 @@ class TokenChoiceTopKRouter(nn.Module):
             denominator = top_scores.sum(dim=-1, keepdim=True) + 1e-20
             top_scores = top_scores / denominator
         top_scores = top_scores * self.route_scale
+        if self.compute_head is not None and self.batch_rows is not None and torch.is_grad_enabled():
+            top_scores = _ComputeHeadTarget.apply(top_scores, compute)
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         num_tokens_per_expert = torch.histc(
@@ -326,6 +365,8 @@ class TokenChoiceTopKRouter(nn.Module):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
         if self.gate.bias is not None:
             nn.init.zeros_(self.gate.bias)
+        if self.compute_head is not None:
+            nn.init.zeros_(self.compute_head.weight)
 
 
 def sequence_balance(scores: torch.Tensor, selected_experts: torch.Tensor, num_rows: int, top_k: int) -> torch.Tensor:
@@ -377,6 +418,8 @@ class MoE(nn.Module):
             selection_bias=args.load_balance_coeff is not None,
             num_null_experts=args.num_null_experts,
             batch_topk_max_k=args.batch_topk_max_k,
+            batch_topk_sqrt_scale=args.batch_topk_sqrt_scale,
+            batch_topk_head=args.batch_topk_head,
         )
         return cls(
             router=router,

@@ -56,7 +56,7 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             num_experts=config.n_routed_experts,
             expert_type="gated",
             activation=config.hidden_act,
-            score_func="sigmoid",
+            score_func=config.scoring_func,
             route_norm=config.norm_topk_prob,
             route_scale=config.routed_scaling_factor,
             score_before_experts=False,
@@ -64,6 +64,8 @@ class Glm4MoeDecoderLayer(GradientCheckpointingLayer):
             load_balance_coeff=1e-3,
             num_null_experts=config.n_null_experts,
             batch_topk_max_k=config.batch_topk_max_k,
+            batch_topk_sqrt_scale=config.batch_topk_sqrt_scale,
+            batch_topk_head=config.batch_topk_head,
         )
         if layer_idx >= config.first_k_dense_replace:
             shared_expert = None
