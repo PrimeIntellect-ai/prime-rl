@@ -78,12 +78,16 @@ class GRPOAlgorithm(Algorithm):
             )
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
-        baseline = shaped_rewards.mean()
+        # Weight deviations from one reward so that equal rewards give exactly zero advantage:
+        # zero-advantage pruning and the advantage_range gate compare against 0.0.
+        reference = shaped_rewards[0]
+        deviations = shaped_rewards - reference
+        baseline = reference + deviations.mean()
         if self.length_weighted_baseline:
             lengths = torch.tensor(
                 [sum(sum(node.mask) for node in trainable_nodes(trace)) for trace in traces], dtype=rewards.dtype
             )
-            baseline = (lengths * shaped_rewards).sum() / lengths.sum()
+            baseline = reference + (lengths * deviations).sum() / lengths.sum()
         advantages = shaped_rewards - baseline
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
             assign_advantages(trace, advantage)
