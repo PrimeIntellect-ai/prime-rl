@@ -3,8 +3,9 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_config import BaseConfig
+from renderers import CustomRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
 from prime_rl.utils.config import default_output_dir, find_package_resource
@@ -430,6 +431,20 @@ class InferenceConfig(BaseConfig):
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
+    renderer: RendererConfig | None = None
+    """Render the prompts of chat-style routes (chat completions, responses, anthropic messages) with this renderer and parse their completions with it, in place of vLLM's chat template, tool parser and reasoning parser. The renderer reads ``vllm.tokenizer`` (or ``vllm.model``); request ``chat_template_kwargs`` over ``vllm.default_chat_template_kwargs`` set its template fields. A streamed completion arrives as one delta when it finishes."""
+
+    @field_validator("renderer")
+    @classmethod
+    def _resolve_renderer_import_path(cls, renderer: RendererConfig | None) -> RendererConfig | None:
+        # Spawned vLLM processes and other nodes may not share the launch directory.
+        if isinstance(renderer, CustomRendererConfig):
+            module_ref, sep, attr = renderer.import_path.rpartition(":")
+            if sep and (module_ref.endswith(".py") or "/" in module_ref):
+                path = f"{Path(module_ref).expanduser().resolve()}:{attr}"
+                return CustomRendererConfig.model_validate({**renderer.model_dump(), "import_path": path})
+        return renderer
+
     weight_broadcast: WeightBroadcastConfig = WeightBroadcastConfig()
 
     kv_cache_offload: KVCacheOffloadConfig | None = None
@@ -627,5 +642,8 @@ class InferenceConfig(BaseConfig):
         kv_transfer_config = self.build_kv_transfer_config()
         if kv_transfer_config is not None:
             namespace.kv_transfer_config = kv_transfer_config
+
+        if self.renderer is not None:
+            namespace.renderer = self.renderer
 
         return namespace
