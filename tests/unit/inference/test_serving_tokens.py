@@ -14,6 +14,7 @@ deltas here:
 
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 
 import numpy as np
@@ -36,13 +37,15 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
 )
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
 from vllm.logprobs import FlatLogprobs, Logprob
-from vllm.outputs import CompletionOutput, RequestOutput, SamplingMask
+from vllm.outputs import CompletionOutput, RequestOutput
 
+from prime_rl.inference.patches import PackedSamplingMask
 from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
-from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
-    _GenerateOutputCapture,
+    _PackedOutputs,
+    encode_array,
+    pack_sampled_logprobs,
 )
 
 
@@ -73,7 +76,7 @@ def test_serialize_routed_experts_keeps_the_capture_dtype():
         dtype=np.uint16,
     )
 
-    encoded = serialize_routed_experts(routed_experts)
+    encoded = encode_array(routed_experts)
     assert encoded is not None
 
     decoded = _decode_routed_experts(encoded)
@@ -83,8 +86,10 @@ def test_serialize_routed_experts_keeps_the_capture_dtype():
 
 def test_generate_response_post_process_preserves_prompt_metadata():
     compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
-    capture = _GenerateOutputCapture(_empty_request_outputs())
-    capture.routed_experts[0] = compact_routed_experts
+    capture = _PackedOutputs(
+        _empty_request_outputs(), GenerateRequest(model="test", token_ids=[1], sampling_params=SamplingParams())
+    )
+    capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
     response = GenerateResponse(
         request_id="request-id",
@@ -155,7 +160,11 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
             logprobs.append_fast(ids, [logq[i] for i in ids], iter(range(len(ids))), [None] * len(ids))
         else:
             logprobs.append({i: Logprob(logq[i]) for i in ids})
-    support = SamplingMask([[3, 1, 2], [1, 3, 2]]) if replay else None
+    support = (
+        PackedSamplingMask(ids=np.array([3, 1, 2, 1, 3, 2], dtype=np.int32), counts=np.array([3, 3], dtype=np.int32))
+        if replay
+        else None
+    )
     experts = np.array([[[1, 2]], [[3, 4]]], dtype=np.uint8) if routed else None
     output = RequestOutput(
         "test",
@@ -182,7 +191,7 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
     )
 
     async def generate_outputs():
-        yield output
+        yield deepcopy(output)
 
     responses = []
     evidence = []
@@ -221,3 +230,12 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
     assert responses[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 1
     assert responses[1]["kv_transfer_params"] == {"kv": "kept"}
     assert responses[1]["ec_transfer_params"] == {"ec": "kept"}
+
+
+def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
+    logprobs = FlatLogprobs()
+    logprobs.append({5: Logprob(-0.5, 2, None), 7: Logprob(-0.1, 1, None)})  # sampled token first
+    logprobs.append(None)
+    logprobs.append({3: Logprob(float("-inf"), 9, None)})
+
+    np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))

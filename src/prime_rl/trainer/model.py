@@ -47,6 +47,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.base import CPStyle
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
@@ -356,6 +357,8 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -417,6 +420,7 @@ def get_model(
     if config.cp > 1:
         cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
         support = cp_model_cls.cp_support(model_config)
+        resolve_cp_style(config, model_config, support.styles)
         if config.cp_style not in support.styles:
             supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
             raise ValueError(
@@ -589,8 +593,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 reshard_after_forward=config.reshard_after_forward,
                 shard_placement_fn=shard_placement_fn,
             )
-            # Keep the router reduction from waiting for the expert reduction's input buffer.
-            block_mlp.router.set_reduce_scatter_max_input_buffers(2)
 
         fully_shard(
             transformer_block,
@@ -636,6 +638,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
     )
+    model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
     if not parallel_dims.ep_enabled:
         return
@@ -924,6 +927,24 @@ def resolve_auto_attn(config: ModelConfig) -> None:
     logger = get_logger()
     logger.info(f"Auto-resolved attn='auto' to '{resolved}' (SM{major}{minor})")
     config.attn = resolved
+
+
+def resolve_cp_style(config: ModelConfig, model_config: PretrainedConfig, styles: frozenset[CPStyle]) -> None:
+    """Resolve ``cp_style='auto'`` in-place: ulysses if the model supports it and ``cp`` shards its heads, else ring.
+
+    Ulysses balances the causal work across CP ranks; ring gives the last rank the most work.
+    """
+    if config.cp_style != "auto":
+        return
+    text_config = getattr(model_config, "text_config", model_config)
+    q_heads = text_config.num_attention_heads
+    kv_heads = getattr(text_config, "num_key_value_heads", None) or q_heads
+    heads_shard = q_heads % config.cp == 0 and (kv_heads % config.cp == 0 or config.cp % kv_heads == 0)
+    if "ulysses" in styles and (heads_shard or "ring" not in styles):
+        config.cp_style = "ulysses"
+    else:
+        config.cp_style = "ring"
+    get_logger().info(f"Auto-resolved cp_style='auto' to '{config.cp_style}' (cp={config.cp})")
 
 
 def setup_model(
