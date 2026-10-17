@@ -1,5 +1,5 @@
 import math
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -8,19 +8,6 @@ from torch import Tensor
 from torch.distributed.tensor import DTensor, Shard
 from torch.distributed.tensor.placement_types import _StridedShard
 from torch.optim import Optimizer
-
-# Quintic Newton-Schulz coefficients (a, b, c), one triple per iteration
-NEWTON_SCHULZ_COEFFICIENTS = {
-    "muon": (
-        (4.0848, -6.8946, 2.9270),
-        (3.9505, -6.3029, 2.6377),
-        (3.7418, -5.5913, 2.3037),
-        (2.8769, -3.1427, 1.2046),
-        (2.8366, -3.0525, 1.2012),
-    ),
-    # 8 steps that converge fast, then 2 that settle the singular values at 1 (DeepSeek-V4 report, section 2.4)
-    "deepseek_v4": ((3.4445, -4.7750, 2.0315),) * 8 + ((2.0, -1.5, 0.5),) * 2,
-}
 
 
 @torch.compile(fullgraph=True)
@@ -78,13 +65,13 @@ class Muon(Optimizer):
         self,
         param_groups: list[dict],
         lr: float,
+        newton_schulz_coefficients: Sequence[tuple[float, float, float]],
         mu: float = 0.95,
         nesterov: bool = True,
         betas: tuple[float, float] = (0.9, 0.95),
         weight_decay: float = 0.0,
         epsilon: float = 1e-8,
         matrix_partitions: dict[Tensor, tuple[int, ...]] | None = None,
-        newton_schulz_coefficients: str = "muon",
         update_rms: float = 0.2,
         max_in_flight: int = 3,
     ):
@@ -104,7 +91,7 @@ class Muon(Optimizer):
         for param, partitions in self.matrix_partitions.items():
             if sum(partitions) != param.size(-2):
                 raise ValueError(f"Matrix partitions {partitions} do not sum to dim -2 of a {tuple(param.shape)} param")
-        self.coefficients = NEWTON_SCHULZ_COEFFICIENTS[newton_schulz_coefficients]
+        self.coefficients = tuple(map(tuple, newton_schulz_coefficients))
         self.update_rms = update_rms
         self.max_in_flight = max_in_flight
         self._row_scales: dict[Tensor, Tensor] = {}
