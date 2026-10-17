@@ -1,7 +1,30 @@
+import pytest
 import torch
 
 from prime_rl.trainer.models.deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
+from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
+
+
+@pytest.mark.parametrize("meta", [False, True])
+def test_rotary_buffers_preserve_fp32_through_dtype_conversion(meta):
+    config = DeepseekV4Config(max_position_embeddings=4096)
+    reference = DeepseekV4RotaryEmbedding(config)
+    with torch.device("meta" if meta else "cpu"):
+        rotary = DeepseekV4RotaryEmbedding(config)
+    rotary.bfloat16()
+    if meta:
+        rotary.to_empty(device="cpu")
+        rotary.init_buffers_post_meta()
+    for name, buffer in rotary.named_buffers():
+        assert buffer.dtype == torch.float32
+        torch.testing.assert_close(buffer, dict(reference.named_buffers())[name], rtol=0, atol=0)
+    positions = torch.tensor([[65535, 524287, 1048575]])
+    for layer_type in rotary.layer_types:
+        actual = rotary(positions, layer_type, dtype=torch.float32)
+        expected = reference(positions, layer_type, dtype=torch.float32)
+        for left, right in zip(actual, expected):
+            torch.testing.assert_close(left, right, rtol=0, atol=0)
 
 
 def test_deepseek_v4_config_translates_legacy_compress_ratios():

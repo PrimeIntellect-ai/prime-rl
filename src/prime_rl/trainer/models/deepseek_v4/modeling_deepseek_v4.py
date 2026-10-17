@@ -127,7 +127,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
+        return name.endswith(".router.gate.weight") or any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

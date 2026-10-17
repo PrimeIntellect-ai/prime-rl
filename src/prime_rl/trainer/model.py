@@ -177,14 +177,26 @@ def get_full_offload_dtype_policy(
 ) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
-    if config.moe_router_dtype != "float32":
-        return policy
-
-    for moe in iter_moe_blocks(model):
-        for param in moe.router.parameters():
-            if param.is_floating_point():
-                policy[id(param)] = (torch.float32, torch.float32)
+    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
+    policy = {}
+    for name, param in model.named_parameters():
+        if param.is_floating_point():
+            dtype = torch.float32 if keep_in_fp32 is not None and keep_in_fp32(name) else torch.bfloat16
+            policy[id(param)] = (dtype, dtype)
+    if config.moe_router_dtype == "float32":
+        for moe in iter_moe_blocks(model):
+            for param in moe.router.parameters():
+                if param.is_floating_point():
+                    policy[id(param)] = (torch.float32, torch.float32)
+    # FSDP requires one persistent dtype per communication group, even when its
+    # forward mixed-precision policy casts all of those parameters to BF16.
+    for module in model.modules():
+        if isinstance(module, FSDPModule):
+            for group in module._get_fsdp_state()._fsdp_param_groups:
+                param_ids = [id(param.sharded_param) for param in group.fsdp_params]
+                if any(policy[param_id][0] == torch.float32 for param_id in param_ids):
+                    for param_id in param_ids:
+                        policy[param_id] = (torch.float32, torch.float32)
     return policy
 
 
