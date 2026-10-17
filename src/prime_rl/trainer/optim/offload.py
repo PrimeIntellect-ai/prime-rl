@@ -1,6 +1,7 @@
 # This file is fully AI-generated.
 
 import copy
+import faulthandler
 import queue
 import threading
 import time
@@ -297,6 +298,7 @@ class GradientOffloadManager:
                 self._raise_worker_error()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    faulthandler.dump_traceback()
                     raise TimeoutError(f"Timed out waiting for {description} ({self._diagnostics()})")
                 self._condition.wait(timeout=min(1.0, remaining))
             self._raise_worker_error()
