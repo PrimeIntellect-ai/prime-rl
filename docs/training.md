@@ -268,6 +268,9 @@ The shared script passes the trainer rank-0 hostname directly to the online-eval
 | `loss_mask.*` | Which roles contribute to loss (system / user / assistant / tool). |
 | `val.interval` | Run validation every N steps; `val.data` mirrors `data` |
 | `eval.interval` | Run online evals every N steps; see [Online Evals](#online-evals) |
+| `model.implementation` | The model class to build instead of prime-rl's own for the checkpoint's architecture, e.g. one with an added head |
+
+**Custom model class.** `model.implementation` is the import path of a subclass of prime-rl's class for the architecture (e.g. `prime_rl.trainer.models.qwen3.modeling_qwen3.Qwen3ForCausalLM`). It keeps the base class's module names, so the checkpoint at `model.name` loads as usual, and the checkpoint must also hold the weights of every module the class adds (loading fails on a missing key). With LoRA, train an added module in full with `model.lora.modules_to_save`. prime-rl replaces the model's `forward` with its own, so the class changes what the model holds, not the loss. Only the trainer builds the class: inference runs the registered architecture, which rejects the added modules, so `model.implementation` is refused with weight broadcasts (RL, online evals), and a checkpoint exported with added modules loads with the same class.
 
 ### Important Metrics
 
@@ -366,7 +369,7 @@ uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 ```
 
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer, unless the run used `model.implementation`: the export then rebuilds that class (its package must be importable), holds its added modules, which vLLM rejects, and names the base architecture in `config.json`, so loading it for training again takes the same `model.implementation`. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 

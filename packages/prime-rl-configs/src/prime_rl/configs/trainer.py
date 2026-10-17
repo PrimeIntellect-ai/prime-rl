@@ -231,7 +231,18 @@ class MoERuntimeConfig(BaseConfig):
     dispatch: MoEDispatchConfig = TorchMoEDispatchConfig()
 
 
+IMPLEMENTATION_NOT_SERVED = (
+    "model.implementation cannot be served: inference loads the broadcast weights into the checkpoint's registered "
+    "architecture, which rejects the modules the class adds"
+)
+
+
 class ModelConfig(BaseModelConfig):
+    implementation: str | None = None
+    """Import path of the model class to build from the checkpoint at ``name``, for a model that extends a supported one
+    (e.g. an added head). Must subclass prime-rl's class for the checkpoint's architecture, which is used if None. Only
+    the trainer builds it, so it is refused with weight broadcasts to inference (RL, online evals)."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
@@ -305,6 +316,12 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def implementation_without_vlm(self):
+        if self.implementation is not None and self.vlm is not None:
+            raise ValueError("model.implementation is not supported with model.vlm")
+        return self
 
     @model_validator(mode="after")
     def vlm_cp_requires_ulysses(self):
@@ -721,6 +738,12 @@ class TrainerConfig(BaseConfig):
                 "model.lora.modules_to_save cannot be served: the weight broadcast ships only the "
                 "adapter tensors, so fully-trained modules would silently diverge from inference."
             )
+        return self
+
+    @model_validator(mode="after")
+    def implementation_is_not_served(self):
+        if self.model.implementation is not None and self.data.fake is None:
+            raise ValueError(IMPLEMENTATION_NOT_SERVED)
         return self
 
     @model_validator(mode="after")

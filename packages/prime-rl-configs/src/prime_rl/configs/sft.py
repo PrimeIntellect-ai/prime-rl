@@ -25,6 +25,7 @@ from prime_rl.configs.shared import (
     WeightBroadcastConfig,
 )
 from prime_rl.configs.trainer import (
+    IMPLEMENTATION_NOT_SERVED,
     AdamWConfig,
     CheckpointConfig,
     ConstantSchedulerConfig,
@@ -412,6 +413,13 @@ class SFTConfig(BaseConfig):
     def validate_deployment(self):
         if self.deployment.type == "multi_node" and self.slurm is None:
             raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
+
+    @model_validator(mode="after")
+    def implementation_is_not_served(self):
+        # Online evals broadcast the trainer's weights to inference.
+        if self.model.implementation is not None and self.eval is not None:
+            raise ValueError(IMPLEMENTATION_NOT_SERVED)
         return self
 
     @model_validator(mode="after")
