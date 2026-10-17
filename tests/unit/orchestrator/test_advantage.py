@@ -184,6 +184,11 @@ def test_grpo_singleton_group_is_zero():
     assert _grpo([_build_episode(0.7, sampled_lengths=[2])]) == pytest.approx([0.0], abs=1e-6)
 
 
+def test_grpo_equal_rewards_are_exactly_zero():
+    # Zero-advantage pruning compares against 0.0, so the weighted baseline must not leave rounding residue.
+    assert _grpo(_make_group(rewards=[0.1, 0.1, 0.1], completion_lengths=[3, 7, 11])) == [0.0, 0.0, 0.0]
+
+
 def test_grpo_length_weighted_baseline():
     # L = [10 + 20 (two turns, observation excluded), 10]: b = (30 * 1 + 10 * 0) / 40 = 0.75
     group = [
