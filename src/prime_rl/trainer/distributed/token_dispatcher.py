@@ -28,8 +28,6 @@ class TokenDispatcher(Protocol):
         score_before_experts: bool,
     ) -> torch.Tensor: ...
 
-    def synchronize(self) -> None: ...
-
 
 DispatchState = TypeVar("DispatchState")
 
@@ -69,9 +67,6 @@ class TokenDispatcherBase(ABC, Generic[DispatchState]):
         )
         routed_output = experts(routed_input, num_tokens_per_expert)
         return self.combine(routed_output, state)
-
-    def synchronize(self) -> None:
-        return None
 
 
 @dataclass(frozen=True)

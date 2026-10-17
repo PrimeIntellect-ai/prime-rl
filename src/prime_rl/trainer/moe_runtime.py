@@ -121,7 +121,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 token_group_alignment=compute.token_group_alignment,
                 group=ep_mesh.get_group(),
                 num_sms=dispatch.num_sms,
-                token_chunk_size=dispatch.token_chunk_size,
+                hidden_size=moe.experts.down_proj.shape[1],
             )
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
