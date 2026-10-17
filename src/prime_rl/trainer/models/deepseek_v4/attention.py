@@ -700,7 +700,8 @@ class DeepseekV4Attention(nn.Module):
         self.rotary_emb = rotary_emb
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
-        self.dsa_backend = getattr(config, "dsa_backend", "tilelang")
+        backend = getattr(config, "dsa_backend", "tilelang")
+        self.dsa_backend = "tilelang" if backend == "auto" else backend
         if dsv4_sparse_attn is not None and self.dsa_backend not in FORWARD_BACKENDS:
             raise ValueError(
                 f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
