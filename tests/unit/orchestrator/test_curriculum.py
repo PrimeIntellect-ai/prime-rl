@@ -194,3 +194,56 @@ def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
 
     positive_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=0.5, reject_max=0.5))
     assert positive_gate.admit(make_rollout(task, advantages=[0.5])) is False
+
+
+def test_train_source_quarantines_tasks_that_fail_in_task_code() -> None:
+    tasks = [make_task(i) for i in range(2)]
+    config = SimpleNamespace(ratio=1.0, curriculum=None)
+
+    def source() -> TrainSource:
+        return TrainSource([SimpleNamespace(name="test", tasks=iter(tasks), num_tasks=2, config=config)], 1)
+
+    bad, good = tasks
+
+    def errored(task: vf.Task, error_type: str) -> list[vf.Episode]:
+        group = make_rollout(task) + make_rollout(task)
+        for episode in group:
+            episode.ok = False
+            episode.traces[0].errors.append(vf.Error(type=error_type, message="setup failed"))
+        return group
+
+    # Neither the start nor the end of an env-wide outage quarantines a task.
+    for before, after in (("ok", "failed"), ("failed", "ok")):
+        outage = source()
+        for state in (before, after):
+            if state == "failed":
+                groups = [errored(good, "TaskError") for _ in range(4)]
+            else:
+                groups = [make_rollout(good) for _ in range(4)]
+            for group in groups:
+                outage.on_result(group)
+            if state == before:
+                outage.on_result(errored(bad, "TaskError"))
+        assert outage.quarantined == {"test": {}}
+
+    healthy = source()
+    timed_out = make_rollout(good)
+    timed_out[0].traces[0].is_timeout = True
+    for group in (timed_out, make_rollout(good), make_rollout(good), make_rollout(good)):
+        healthy.on_result(group)
+    healthy.on_result(errored(bad, "SandboxError"))  # infra errors say nothing about the task
+    for _ in range(4):
+        healthy.on_result(make_rollout(good))
+    assert healthy.quarantined == {"test": {}}
+
+    healthy.on_result(errored(bad, "TaskError"))
+    for _ in range(3):
+        healthy.on_result(make_rollout(good))
+    assert healthy.quarantined == {"test": {}}
+    healthy.on_result(make_rollout(good))
+    assert healthy.quarantined == {"test": {bad.key: "TaskError: setup failed"}}
+    assert {healthy.next_task(step=1).task.key for _ in range(4)} == {good.key}
+
+    restored = source()
+    restored.load_state_dict(healthy.state_dict())
+    assert restored.quarantined == healthy.quarantined

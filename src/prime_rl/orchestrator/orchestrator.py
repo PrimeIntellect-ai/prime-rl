@@ -273,7 +273,7 @@ class Orchestrator:
             await self.eval_envs.start()
             get_logger().success(f"Eval environments ready in {format_time(time.perf_counter() - t0)}")
 
-        self.train_source = TrainSource(self.train_envs)
+        self.train_source = TrainSource(self.train_envs, config.quarantine_after)
         if self.resume_step is not None:
             resume = self.config.resume
             resume_path = resume.dir / "orchestrator" if resume is not None and resume.dir is not None else None
