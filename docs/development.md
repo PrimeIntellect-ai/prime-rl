@@ -15,6 +15,7 @@ This page covers workflows for developing on `prime-rl` itself — running the t
   - [Register a Mini Preset](#register-a-mini-preset)
   - [Run the Smoke Test](#run-the-smoke-test)
 - [Adding a Custom VLM Implementation](#adding-a-custom-vlm-implementation)
+- [Fault Injection](#fault-injection)
 
 ## Test Suite
 
@@ -149,3 +150,23 @@ VLM training (any run with `[model.vlm]` set, SFT or RL) is custom-implementatio
 5. **Registration.** Register the composite `model_type` in `_CUSTOM_VLM_MAPPING` (`models/__init__.py`) so `get_model` dispatches to the custom class, and describe the family in `VLM_REGISTRY` (`utils/vlm.py`).
 6. **Context parallelism (optional).** CP-capable VLMs hold a `CPContext` on all modules which need to be CP-aware and shard embeds/positions inside the model after the vision merge; the trainers defer sharding to the model for MRoPE batches under ulysses.
 7. **Validation.** Same bar as text models: the KL-mismatch table for the text path, plus an SFT run and an RL run on a real multimodal dataset (the `color-codeword` environment is the reference task).
+
+## Fault Injection
+
+`PRIME_FAULT` injects named faults at fixed points, to exercise the restart and recovery paths. It is a comma-separated list of `<fault>@<key>` entries, read once at import; when it is unset nothing happens.
+
+```bash
+PRIME_FAULT="trainer_crash@5,ckpt_write_fail@10" PRIME_FAULT_DIR=/shared/faults uv run rl @ rl.toml
+```
+
+| Fault | Key | Where | Effect |
+|---|---|---|---|
+| `engine_crash` | step | vLLM worker, entering the NCCL weight receive for policy v{step} | worker exits with code 1, so the engine dies mid-broadcast |
+| `broadcast_hang` | step | same point | worker sleeps forever, so the trainer's NCCL broadcast blocks |
+| `trainer_crash` | step | trainer, start of step {step} | raises `InjectedFault` |
+| `orchestrator_crash` | step | orchestrator, before shipping batch {step} | raises `InjectedFault` |
+| `ckpt_write_fail` | step | trainer, checkpoint save of step {step} | raises `OSError(ENOSPC)` after `step_{step}/` is created |
+| `env_error` | env name | orchestrator, every request to that env | fails after 1 s with `InjectedFault` (a sandbox API or env-server error) |
+| `env_hang` | env name | orchestrator, every request to that env | never returns (a stuck env-server request) |
+
+Step faults are one-shot when `PRIME_FAULT_DIR` is set: the first process to reach one creates a marker file there, so exactly one rank or engine fires it, and a resumed or requeued run does not fire it again. Use a directory every node can see. Without `PRIME_FAULT_DIR`, every matching process fires every time.

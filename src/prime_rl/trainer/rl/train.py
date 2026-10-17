@@ -67,6 +67,7 @@ from prime_rl.trainer.utils import (
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
+from prime_rl.utils import fault
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -268,6 +269,7 @@ def train(config: TrainerConfig):
             is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
+        fault.inject("trainer_crash", progress.step)
         step_start_time = time.perf_counter()
 
         # Broadcast the incoming policy (v{progress.step-1}) before waiting for its

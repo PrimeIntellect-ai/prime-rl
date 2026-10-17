@@ -1,4 +1,5 @@
 import pickle
+from pathlib import Path
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
@@ -8,6 +9,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
+from prime_rl.utils import fault
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
@@ -133,6 +135,9 @@ class NCCLWeightUpdateWorker(Worker):
 
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
+        step = Path(weight_dir).name.removeprefix("step_")
+        fault.inject("engine_crash", step)
+        fault.inject("broadcast_hang", step)
         model_runner = self.model_runner
         if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
