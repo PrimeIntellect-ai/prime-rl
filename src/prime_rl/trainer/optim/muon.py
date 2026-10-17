@@ -44,6 +44,7 @@ class Chunk:
 
     group: dict
     params: list[Tensor]
+    first_owner: int = 0
 
 
 class Muon(Optimizer):
@@ -99,6 +100,7 @@ class Muon(Optimizer):
     def chunks(self) -> list[Chunk]:
         """Every parameter with a gradient, exactly once, in a fixed order that is the same on every rank."""
         chunks = []
+        next_owner: dict[dist.ProcessGroup | None, int] = {}
         for group in self.param_groups:
             params = [p for p in group["params"] if p.grad is not None]
             if group["algorithm"] == "adamw":
@@ -110,8 +112,12 @@ class Muon(Optimizer):
                 placements = p.placements if isinstance(p, DTensor) else None
                 batches.setdefault((p.shape, placements, p.dtype, self.matrix_partitions.get(p)), []).append(p)
             for batch in batches.values():
-                size = shard_group(batch[0])[2]
-                chunks.extend(Chunk(group, batch[i : i + size]) for i in range(0, len(batch), size))
+                _, process_group, size, _ = shard_group(batch[0])
+                for i in range(0, len(batch), size):
+                    # Owners continue round-robin across batches, so short batches do not all land on the first ranks
+                    chunk = Chunk(group, batch[i : i + size], next_owner.get(process_group, 0))
+                    next_owner[process_group] = (chunk.first_owner + len(chunk.params)) % size
+                    chunks.append(chunk)
         return chunks
 
     def step_chunk(self, chunk: Chunk) -> None:
@@ -140,13 +146,15 @@ class Muon(Optimizer):
         X = [_local(p) for p in params]
         M = [_local(self._state(p, "momentum")) for p in params]
         U = _update_momentum(M, [_local(p.grad) for p in params], torch.tensor(group["mu"]), group["nesterov"])
-        O = yield from self.orthogonalize_chunk(params, U)
+        O = yield from self.orthogonalize_chunk(params, U, chunk.first_owner)
         shard_dim, _, size, rank = shard_group(params[0])
         scale = self._update_scale(params[0], shard_dim, size, rank)
         decay = torch.tensor(1 - group["lr"] * group["weight_decay"])
         _apply_update(X, O, decay, scale * group["lr"])
 
-    def orthogonalize_chunk(self, params: list[Tensor], U: list[Tensor]) -> Generator[None, None, list[Tensor]]:
+    def orthogonalize_chunk(
+        self, params: list[Tensor], U: list[Tensor], first_owner: int = 0
+    ) -> Generator[None, None, list[Tensor]]:
         """Newton-Schulz of the chunk's local bfloat16 momentum shards ``U``, returned in the same layout. Yields while
         its all-to-alls are in flight."""
         partitions = self.matrix_partitions.get(params[0])
@@ -154,13 +162,15 @@ class Muon(Optimizer):
         if process_group is None:
             O = [orthogonalize(u, partitions, self.coefficients) for u in U]
         else:
-            # Rank j owns params[j]: it gathers every rank's shard of it, orthogonalizes, and sends the shards back.
-            # FSDP shards like torch.chunk, so trailing ranks may hold fewer (or no) rows.
+            # Rank (first_owner + j) % size owns params[j]: it gathers every rank's shard of it, orthogonalizes, and
+            # sends the shards back. FSDP shards like torch.chunk, so trailing ranks may hold fewer (or no) rows.
             full = params[0].size(shard_dim)
             step = math.ceil(full / size)
             sizes = [max(0, min(step, full - i * step)) for i in range(size)]
-            owned = rank < len(params)
-            send = U + [U[0].narrow(shard_dim, 0, 0)] * (size - len(U))
+            owned_index = [(r - first_owner) % size for r in range(size)]
+            owned = owned_index[rank] < len(params)
+            empty = U[0].narrow(shard_dim, 0, 0)
+            send = [U[j] if j < len(U) else empty for j in owned_index]
             recv = [U[0].new_empty(_resize(U[0].shape, shard_dim, n if owned else 0)) for n in sizes]
             work = dist.all_to_all(recv, send, group=process_group, async_op=True)
             yield
@@ -171,7 +181,7 @@ class Muon(Optimizer):
             else:
                 send = recv
             O = [torch.empty_like(u) for u in U]
-            recv = O + [U[0].narrow(shard_dim, 0, 0)] * (size - len(U))
+            recv = [O[j] if j < len(O) else empty for j in owned_index]
             work = dist.all_to_all(recv, send, group=process_group, async_op=True)
             yield
             work.wait()
