@@ -151,11 +151,16 @@ class CheckpointIndexMap:
                 )
             )
             totals.index_add_(0, ids, num_cols * by_row + firsts * plain + by_col)
-        for name_id, num_cols, first, rows, cols, index, offset, *strides in other_writes:
-            view = as_bits(self.params[index].data).view(-1).as_strided((rows, cols), strides, offset)
-            row_weights = first + num_cols * torch.arange(rows, device=view.device)
-            totals[name_id] += (row_weights * view.sum(1, dtype=torch.int64)).sum()
-            totals[name_id] += (torch.arange(cols, device=view.device) * view.sum(0, dtype=torch.int64)).sum()
+        # Writes of one shape into one param at once, e.g. the block scales of every expert
+        for (index, rows, cols, row_stride, col_stride), (ids, num_cols, firsts, offsets) in other_writes.items():
+            flat = as_bits(self.params[index].data).view(-1)
+            row = torch.arange(rows, device=flat.device)[:, None]
+            col = torch.arange(cols, device=flat.device)
+            for batch in range(0, len(ids), max(1, (1 << 24) // (rows * cols))):
+                part = slice(batch, batch + max(1, (1 << 24) // (rows * cols)))
+                values = flat[offsets[part, None, None] + row * row_stride + col * col_stride].long()
+                weights = firsts[part, None, None] + num_cols[part, None, None] * row + col
+                totals.index_add_(0, ids[part], (values * weights).sum((1, 2)))
         return names, totals, partial
 
     def _plan_checksums(self):
@@ -169,7 +174,7 @@ class CheckpointIndexMap:
         ]
         device = self.params[0].device
         ranges: dict[int, list[list[int]]] = defaultdict(lambda: [[], [], [], [], []])
-        other_writes = []
+        other_writes: dict[tuple, list[list[int]]] = defaultdict(lambda: [[], [], [], []])
         for name_id, name in enumerate(names):
             num_cols = self.num_cols[name]
             for row0, rows, col0, cols, index, offset, row_stride, col_stride in self.records[name]:
@@ -181,13 +186,18 @@ class CheckpointIndexMap:
                     ):
                         values.append(value)
                 else:
-                    first = row0 * num_cols + col0 + 1
-                    other_writes.append((name_id, num_cols, first, rows, cols, index, offset, row_stride, col_stride))
+                    batch = other_writes[(index, rows, cols, row_stride, col_stride)]
+                    for values, value in zip(batch, (name_id, num_cols, row0 * num_cols + col0 + 1, offset)):
+                        values.append(value)
         row_ranges = {
             index: tuple(torch.tensor(values, device=device) for values in lists) for index, lists in ranges.items()
         }
         held = [sum(rows * cols for _, rows, _, cols, *_ in self.records[name]) for name in names]
         partial = torch.tensor([h < self.numel[name] for h, name in zip(held, names)], device=device)
+        other_writes = {
+            shape: tuple(torch.tensor(values, device=device) for values in lists)
+            for shape, lists in other_writes.items()
+        }
         return names, partial, row_ranges, other_writes
 
     def fp8_layout(self, model: Module, read_tensor) -> dict[str, str]:
