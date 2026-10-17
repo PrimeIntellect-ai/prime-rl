@@ -727,14 +727,16 @@ class Orchestrator:
 
         await asyncio.to_thread(self.log_train_batch, batch, step=step, step_time=step_time)
 
-        if config.max_steps is not None and step >= config.max_steps:
-            await self.wait_for_version(step, reason="before shutdown")
         # Drain right after shipping the final batch. Waiting for a further
         # batch to fill would burn inference on data that can never train —
         # and with a tight ``max_off_policy_steps`` it never fills at all (the
-        # versions it would need are never broadcast).
+        # versions it would need are never broadcast). Drain before waiting for
+        # the final policy: this loop is not reading ``out_q`` meanwhile, so
+        # train work left running fills it, and the watcher's stale-group drop
+        # then blocks on ``out_q`` before it acknowledges the final broadcast.
         if config.max_steps is not None and step >= config.max_steps:
             await self.start_draining("Shipped the final batch")
+            await self.wait_for_version(step, reason="before shutdown")
         # Shielded so cancelling the loop does not cancel the release, which teardown still awaits.
         if self.release_future is not None:
             await asyncio.shield(self.release_future)
