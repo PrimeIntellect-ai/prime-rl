@@ -84,6 +84,17 @@ def get_model(config, device="cuda"):
 
 
 @pytest.mark.gpu
+@pytest.mark.parametrize("is_vlm", [False, True], ids=["text", "vlm"])
+@pytest.mark.parametrize("tie_word_embeddings", [False, True], ids=["untied", "tied"])
+def test_tied_word_embeddings(text_config, is_vlm, tie_word_embeddings):
+    config = get_vlm_config(text_config) if is_vlm else text_config
+    config.tie_word_embeddings = tie_word_embeddings
+    model = get_model(config, device="meta")
+
+    assert (model.lm_head.weight is model.get_input_embeddings().weight) == tie_word_embeddings
+
+
+@pytest.mark.gpu
 def test_context_parallel_setup_chain_text_and_vlm(text_config):
     cp_group = MagicMock()
 
