@@ -155,7 +155,7 @@ class MultiLoRALinear(MultiLoRAModule):
 
         # Apply per-token scaling
         per_token_scaling = torch.repeat_interleave(self._scaling_factors, self._lora_num_tokens).unsqueeze(-1)
-        return (base_out + per_token_scaling * lora_out).view(new_shape)
+        return torch.addcmul(base_out, per_token_scaling, lora_out).view(new_shape)
 
     def __repr__(self) -> str:
         return (
