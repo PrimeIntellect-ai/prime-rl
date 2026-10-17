@@ -1,5 +1,4 @@
 import json
-import os
 import threading
 import time
 from bisect import bisect_left, bisect_right
@@ -28,15 +27,16 @@ from prime_rl.utils.sparse_weights import (
     anchor_complete,
     as_bits,
     bits_dtype,
+    checkpoint_index,
     compile_fp8_quantizer,
     encode_gaps,
     page_lock,
     quantize_fp8_blocks,
     rank_part,
     rank_parts_marker,
+    read_checkpoint_range,
     read_engine_layout,
     revalidate,
-    safetensors_index,
     write_anchor_shards,
     write_file,
     write_rank_file,
@@ -69,8 +69,9 @@ class SparseDeltaEncoder:
     previous and current weights alike, and diffed as fp8 bytes. Their 128-row
     blocks must not straddle trainer ranks, else the trainer tensor is gathered.
     The quantizer is compiled ahead of time, so it can run on the encode thread
-    (columns a multiple of 128). A step that changes any block scale is
-    published as a full checkpoint.
+    (columns a multiple of 128). Their block scales are diffed too, as tensors
+    ``"{hf_name}_scale_inv"`` (fp32, one element per 128x128 block) in the same
+    delta, so engines patch scales in place.
     """
 
     # Elements per transient chunk of the diff (bf16: 128 MiB per temporary)
@@ -104,7 +105,9 @@ class SparseDeltaEncoder:
         self.fp8: dict[str, tuple[bool, int]] = {}
         self.fp8_layout: dict[str, str] | None = None
         self.compiled_fp8 = None
-        self.scales_changed = False
+        # fqn -> segments of its fp8 block scales, like ``segments``
+        self.scale_segments: dict[str, list[tuple[int, str]]] = {}
+        self.scale_changes = 0
         self.gather: set[str] = set()
         self.segment_starts: dict[str, torch.Tensor] = {}
         self.shard_segments: dict[str, tuple[list[str], list[int], list[int], list[int]]] = {}
@@ -116,8 +119,8 @@ class SparseDeltaEncoder:
         self.on_gpu: bool | None = None  # None until placed, at the first broadcast after a training step
         self.host_buffer: torch.Tensor | None = None
         self.write_staging: torch.Tensor | None = None
-        # HF name -> (file, dtype, data offset) in the boot checkpoint, and keys whose v0 is still to read from it
-        self.boot_files: dict[str, list[tuple[int, Path, torch.dtype, int]]] = {}
+        # The boot checkpoint's ``checkpoint_index``, and keys whose v0 is still to read from it
+        self.boot_files: dict[str, tuple] = {}
         self.boot_pending: set[str] = set()
         self.host: dict[str, torch.Tensor] = {}
         self.pinned = False
@@ -146,8 +149,12 @@ class SparseDeltaEncoder:
             ):
                 raise NotImplementedError(f"Sparse weight broadcast cannot quantize {fqn} to fp8 as one matrix")
             self.fp8[fqn] = (modes.pop() == "ue8m0", num_cols)
-            for _, name in segs:
-                self.hf_tensors[name] = (self.hf_tensors[name][0], "float8_e4m3fn")
+            scale_cols = num_cols // FP8_BLOCK[1]
+            self.scale_segments[fqn] = []
+            for (start, name), shape in zip(segs, shapes):
+                self.hf_tensors[name] = (shape, "float8_e4m3fn")
+                self.hf_tensors[f"{name}_scale_inv"] = ([-(-shape[0] // FP8_BLOCK[0]), scale_cols], "float32")
+                self.scale_segments[fqn].append((start // num_cols // FP8_BLOCK[0] * scale_cols, f"{name}_scale_inv"))
         self.gather = self._find_gathered(model, is_master)
         if self.fp8:
             start = time.perf_counter()
@@ -302,7 +309,7 @@ class SparseDeltaEncoder:
             self._allocate_host()
             self._page_lock()
             self.snapshot = dict(self.host)
-        self.boot_files = safetensors_index(boot_dir)
+        self.boot_files = checkpoint_index(boot_dir)
         self.boot_pending = set(self.shards) - self.gather
         # The snapshot was just allocated on this stream, whose earlier work may still use that memory
         self.stream.wait_stream(torch.cuda.current_stream())
@@ -322,18 +329,15 @@ class SparseDeltaEncoder:
             begin, end = max(start, offset), min(start + prod(self.hf_tensors[name][0]), offset + numel)
             if begin >= end:
                 continue
-            first, path, dtype, data_start = max(s for s in self.boot_files[name] if s[0] <= begin - start)
-            itemsize = dtype.itemsize
-            with open(path, "rb") as file:
-                for chunk in range(begin, end, self.staging.numel() // itemsize):
-                    count = min(self.staging.numel() // itemsize, end - chunk)
-                    file_offset = data_start + (chunk - start - first) * itemsize
-                    assert os.preadv(file.fileno(), [staging[: count * itemsize]], file_offset) == count * itemsize
-                    os.posix_fadvise(file.fileno(), file_offset, count * itemsize, os.POSIX_FADV_DONTNEED)
-                    out[chunk - offset : chunk - offset + count].copy_(
-                        self.staging[: count * itemsize].view(dtype), non_blocking=True
-                    )
-                    torch.cuda.current_stream().synchronize()
+            dtype = self.boot_files[name][1]
+            step = self.staging.numel() // dtype.itemsize
+            for chunk in range(begin, end, step):
+                count = min(step, end - chunk)
+                read_checkpoint_range(self.boot_files[name], chunk - start, chunk - start + count, staging)
+                out[chunk - offset : chunk - offset + count].copy_(
+                    self.staging[: count * dtype.itemsize].view(dtype), non_blocking=True
+                )
+                torch.cuda.current_stream().synchronize()
 
     @torch.no_grad()
     def encode(
@@ -342,12 +346,12 @@ class SparseDeltaEncoder:
         """Diff the shards against the snapshot and advance it, on the side stream once ``ready`` (recorded
         after the optimizer step) has passed. Hands the delta to ``emit`` in parts ``(entries, gaps, value
         bytes, new-weight checksum per HF tensor part)`` on the host as they are encoded. Sets ``weights_read``
-        once done reading the weights. ``scales_changed``: whether an fp8 block scale changed on this rank."""
+        once done reading the weights."""
         torch.cuda.set_device(self.device)
         try:
             with torch.cuda.stream(self.stream):
                 self.stream.wait_event(ready)
-                self.scales_changed = self._diff(shards, emit)
+                self._diff(shards, emit)
                 self.stream.synchronize()
         finally:
             weights_read.set()
@@ -383,21 +387,21 @@ class SparseDeltaEncoder:
         return host
 
     def _segments(
-        self, key: str, fqn: str, offset: int, numel: int
+        self, cache_key, segments: list[tuple[int, str]], offset: int, numel: int
     ) -> tuple[list[str], list[int], list[int], list[int]]:
-        """The HF tensor parts in this rank's shard of ``key``: names, begin/end in the shard, and the shift
-        from a shard position to the HF flat index."""
-        if key not in self.shard_segments:
+        """The HF tensor parts of ``segments`` in this rank's ``numel`` elements from ``offset``: names,
+        begin/end in the shard, and the shift from a shard position to the HF flat index."""
+        if cache_key not in self.shard_segments:
             names, begins, ends, shifts = [], [], [], []
-            for start, name in self.segments[fqn]:
+            for start, name in segments:
                 hf_numel = prod(self.hf_tensors[name][0])
                 if start < offset + numel and start + hf_numel > offset:
                     names.append(name)
                     begins.append(max(start - offset, 0))
                     ends.append(min(start - offset + hf_numel, numel))
                     shifts.append(offset - start)
-            self.shard_segments[key] = (names, begins, ends, shifts)
-        return self.shard_segments[key]
+            self.shard_segments[cache_key] = (names, begins, ends, shifts)
+        return self.shard_segments[cache_key]
 
     @staticmethod
     def _segment_sums(bits: torch.Tensor, begins: list[int], ends: list[int], firsts: list[int]) -> torch.Tensor:
@@ -418,14 +422,42 @@ class SparseDeltaEncoder:
             i = j
         return torch.cat(sums)
 
-    def _diff(self, shards: list[tuple], emit: Callable) -> bool:
-        """Diff ``shards`` against ``self.previous`` on the current stream, writing the new bits to the
-        snapshot, in chunks of ``CHUNK`` elements (fp8: whole 128-row blocks). Copies the delta to the
-        host and hands it to ``emit`` every ``PART`` changes. Returns whether an fp8 block scale changed."""
+    def _part(self, cache_key, segments: list[tuple[int, str]], position, values, checksums) -> tuple:
+        """A part entry for the changes at global flat ``position`` of a trainer tensor made of ``segments``:
+        ``(names, counts, gaps, value bytes, checksum names, checksums)``."""
+        if cache_key not in self.segment_starts:
+            self.segment_starts[cache_key] = torch.tensor([start for start, _ in segments], device=position.device)
+        starts = self.segment_starts[cache_key]
+        segment = torch.searchsorted(starts, position, right=True) - 1
+        entry_starts = torch.ones_like(segment, dtype=torch.bool)
+        entry_starts[1:] = segment[1:] != segment[:-1]
+        gaps = encode_gaps(position - starts[segment], entry_starts)
+        counts = torch.bincount(segment, minlength=len(starts))
+        return [name for _, name in segments], counts, gaps, values.view(torch.uint8), *checksums
+
+    def _scale_part(self, fqn: str, first_block: int, previous: torch.Tensor, current: torch.Tensor) -> tuple:
+        """The part entry of an fp8 tensor's changed block scales: block rows from ``first_block`` on."""
+        scale_cols = current.shape[1]
+        delta = as_bits(current).reshape(-1) - as_bits(previous).reshape(-1)
+        index = delta.nonzero().squeeze(1)
+        self.scale_changes += len(index)
+        offset = first_block * scale_cols
+        names, begins, ends, shifts = self._segments((fqn, "scales"), self.scale_segments[fqn], offset, current.numel())
+        sums = self._segment_sums(
+            as_bits(current).reshape(-1), begins, ends, [begin + shift for begin, shift in zip(begins, shifts)]
+        )
+        return self._part(
+            (fqn, "scales"), self.scale_segments[fqn], index + offset, zigzag(delta[index]), (names, sums)
+        )
+
+    def _diff(self, shards: list[tuple], emit: Callable) -> None:
+        """Diff ``shards`` against the snapshot on the current stream, writing the new bits to the
+        snapshot, in chunks of ``CHUNK`` elements (fp8: whole 128-row blocks, and their block scales).
+        Copies the delta to the host and hands it to ``emit`` every ``PART`` changes."""
         device = torch.device(f"cuda:{self.device}")
         pending: list[tuple] = []
         num_pending = 0
-        scales_changed = False
+        self.scale_changes = 0
 
         def flush() -> None:
             names = [name for part in pending for name in part[0]]
@@ -444,9 +476,9 @@ class SparseDeltaEncoder:
                 self.boot_pending.discard(key)
             previous = out = self.snapshot[key]
             wire = self.wire_dtypes[key]
-            segment_names, begins, ends, shifts = self._segments(key, fqn, offset, shard.numel())
+            segment_names, begins, ends, shifts = self._segments(key, self.segments[fqn], offset, shard.numel())
             sums = torch.zeros(len(segment_names), dtype=torch.int64, device=device)
-            changed, changed_values = [], []
+            changed, changed_values, scales = [], [], []
             if fqn in self.fp8:
                 ue8m0, num_cols = self.fp8[fqn]
                 if gathered is not None:
@@ -472,7 +504,7 @@ class SparseDeltaEncoder:
                         quantize_fp8_blocks(weights.reshape(-1, num_cols), ue8m0, self.compiled_fp8)
                         for weights in (previous_weights, current_weights)
                     )
-                    scales_changed |= not torch.equal(previous_scales, current_scales)
+                    scales.append((previous_scales, current_scales))
                     if gathered is not None:
                         previous_fp8 = previous_fp8.view(-1)[offset : offset + shard.numel()]
                         current_fp8 = current_fp8.view(-1)[offset : offset + shard.numel()]
@@ -493,33 +525,36 @@ class SparseDeltaEncoder:
                         [min(stop, end) - start for stop in ends[first:last]],
                         [max(begin, start) + shift for begin, shift in zip(begins[first:last], shifts[first:last])],
                     )
-            changed, changed_values = torch.cat(changed), torch.cat(changed_values)
-            if fqn not in self.segment_starts:
-                self.segment_starts[fqn] = torch.tensor([start for start, _ in self.segments[fqn]], device=device)
-            starts = self.segment_starts[fqn]
-            position = changed + offset
-            segment = torch.searchsorted(starts, position, right=True) - 1
-            entry_starts = torch.ones_like(segment, dtype=torch.bool)
-            entry_starts[1:] = segment[1:] != segment[:-1]
-            gaps = encode_gaps(position - starts[segment], entry_starts)
-            counts = torch.bincount(segment, minlength=len(starts))
             pending.append(
-                (
-                    [name for _, name in self.segments[fqn]],
-                    counts,
-                    gaps,
-                    changed_values.view(torch.uint8),
-                    segment_names,
-                    sums,
+                self._part(
+                    fqn,
+                    self.segments[fqn],
+                    torch.cat(changed) + offset,
+                    torch.cat(changed_values),
+                    (segment_names, sums),
                 )
             )
-            num_pending += len(gaps)
+            num_pending += len(pending[-1][2])
+            if scales:
+                # This rank sends the scales of the blocks that start in its rows
+                first_row = offset // num_cols
+                first_block, end_block = (
+                    -(-row // FP8_BLOCK[0]) for row in (first_row, first_row + len(shard) // num_cols)
+                )
+                previous_scales, current_scales = (torch.cat(side) for side in zip(*scales))
+                if gathered is None:
+                    first_block = first_row // FP8_BLOCK[0]
+                else:
+                    previous_scales, current_scales = (
+                        s[first_block:end_block] for s in (previous_scales, current_scales)
+                    )
+                if current_scales.numel():
+                    pending.append(self._scale_part(fqn, first_block, previous_scales, current_scales))
             if num_pending >= self.PART:
                 flush()
                 num_pending = 0
         if pending:
             flush()
-        return bool(scales_changed)
 
 
 def _model_dir(model: nn.Module) -> Path:
@@ -652,20 +687,19 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             write.exception()
         writes.clear()
 
-    def _write_from_snapshot(self, pool: ThreadPoolExecutor, write, step: int, step_dir: Path, full: bool) -> None:
-        """Write this rank's slices of the last broadcast's full checkpoint in the background. A periodic anchor
-        of a GPU snapshot goes through the host buffer, so the next encode does not wait for the write; other
-        writes read the snapshot itself (a CPU snapshot, or a GPU one through pinned staging chunks), and the
-        next encode waits for them."""
+    def _write_periodic_anchor(self, step: int, step_dir: Path) -> None:
+        """Write this rank's slices of the last broadcast's full checkpoint in the background. A GPU snapshot
+        goes through the host buffer, so the next encode does not wait for the write; a CPU snapshot is
+        written from itself, and the next encode waits for that."""
         encoder = self.encoder
         assert encoder is not None
-        if encoder.on_gpu and not full:
+        if encoder.on_gpu:
             self._wait(self.anchor_writes)
             encoder.copy_snapshot_to_host()
             parts, writes = encoder.anchor_parts(encoder.host), self.anchor_writes
         else:
             parts, writes = encoder.anchor_parts(encoder.snapshot), self.snapshot_writes
-        writes.append(self._submit(pool, write, step, step_dir, parts))
+        writes.append(self._submit(self.anchors, self._write_anchor, step, step_dir, parts))
 
     def _encode(
         self,
@@ -677,14 +711,11 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         weights_read: threading.Event,
         anchor: bool,
     ) -> None:
-        """Encode thread: diff v{step}, handing the delta to the writer in parts as it is encoded. With fp8
-        deltas, the parts are held until the ranks agree that no block scale changed, else the step is a
-        full checkpoint."""
+        """Encode thread: diff v{step}, handing the delta to the writer in parts as it is encoded."""
         encoder = self.encoder
         assert encoder is not None
         self._wait(self.snapshot_writes)
         start = time.perf_counter()
-        held: list[tuple] = []
         num_parts = 0
 
         def emit(part: tuple) -> None:
@@ -694,34 +725,17 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             self._submit(self.writes, self._write_part, step_dir, num_parts, part)
             num_parts += 1
 
-        encoder.encode(shards, ready, weights_read, held.append if encoder.fp8 else emit)
+        encoder.encode(shards, ready, weights_read, emit)
         # Free the gathered fp8 tensors now, not after the anchor copy below, which may overlap the next step's
         # memory peak.
         shards.clear()
-        if encoder.fp8:
-            if self._scales_changed_anywhere(step_dir, encoder.scales_changed):
-                self.logger.info(f"fp8 block scales changed at v{step}: publishing a full checkpoint")
-                self._write_from_snapshot(self.writes, self._write_full, step, step_dir, full=True)
-                return
-            for part in held:
-                emit(part)
         if num_parts == 0 and self.world.is_master:
             self._submit(self.writes, self._start_delta, step, base_step, step_dir)
-        self._submit(self.writes, self._finish_delta, step, base_step, step_dir, num_parts, time.perf_counter() - start)
+        encode_time = time.perf_counter() - start
+        args = (step, base_step, step_dir, num_parts, encode_time, encoder.scale_changes)
+        self._submit(self.writes, self._finish_delta, *args)
         if anchor:
-            self._write_from_snapshot(self.anchors, self._write_anchor, step, step_dir, full=False)
-
-    def _scales_changed_anywhere(self, step_dir: Path, changed: bool) -> bool:
-        """Agree through the step dir whether any rank's fp8 block scales changed: the encode thread runs no
-        collectives, and the training thread may be waiting for a batch that needs this step."""
-        delta_dir = step_dir / DELTA_DIR
-        delta_dir.mkdir(exist_ok=True)
-        _write_json(delta_dir / f"rank_{self.world.rank}.scales", int(changed))
-        flags = [delta_dir / f"rank_{rank}.scales" for rank in range(self.world.world_size)]
-        while not all(flag.exists() for flag in flags):
-            time.sleep(0.05)
-            revalidate(delta_dir)
-        return any(flag.read_text() == "1" for flag in flags)
+            self._write_periodic_anchor(step, step_dir)
 
     def _start_delta(self, step: int, base_step: int, step_dir: Path) -> None:
         """The manifest comes first, so engines can read part files as they appear."""
@@ -742,11 +756,16 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             path, entries, gaps.numpy(), values.numpy(), self.encoder.hf_tensors, checksums
         )
 
-    def _finish_delta(self, step: int, base_step: int, step_dir: Path, num_parts: int, encode_time: float) -> None:
+    def _finish_delta(
+        self, step: int, base_step: int, step_dir: Path, num_parts: int, encode_time: float, scale_changes: int
+    ) -> None:
         """After this rank's last part: its parts marker. The master then waits for every rank's marker and
         commits the step. Runs on the writer thread, without collectives."""
         delta_dir = step_dir / DELTA_DIR
-        _write_json(delta_dir / rank_parts_marker(self.world.rank), {"parts": num_parts, "bytes": self.part_bytes})
+        _write_json(
+            delta_dir / rank_parts_marker(self.world.rank),
+            {"parts": num_parts, "bytes": self.part_bytes, "scale_changes": scale_changes},
+        )
         self.part_bytes = 0
         if not self.world.is_master:
             return
@@ -755,10 +774,16 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             time.sleep(0.05)
             revalidate(delta_dir)
         WeightSender._finish(self, step, step_dir)
-        num_bytes = sum(json.loads(marker.read_text())["bytes"] for marker in markers)
+        written = [json.loads(marker.read_text()) for marker in markers]
+        num_bytes = sum(marker["bytes"] for marker in written)
+        scales = (
+            f", {sum(marker['scale_changes'] for marker in written)} fp8 block scales changed"
+            if self.encoder.fp8
+            else ""
+        )
         self.logger.info(
             f"Sparse weight delta v{step} (base v{base_step}): {num_bytes / 2**20:.1f} MiB, "
-            f"encode {encode_time:.2f}s (parts written as encoded)"
+            f"encode {encode_time:.2f}s (parts written as encoded){scales}"
         )
 
     def _write_full(self, step: int, step_dir: Path, parts: list) -> None:

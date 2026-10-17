@@ -2,12 +2,12 @@ import itertools
 import json
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from math import prod
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
-from safetensors import safe_open
 from torch.nn import Module
 from vllm.distributed.parallel_state import get_ep_group, get_tp_group, get_world_group
 from vllm.logger import init_logger
@@ -22,13 +22,12 @@ from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     ENGINE_LAYOUT,
     MANIFEST,
-    SAFETENSORS_DTYPES,
     anchor_complete,
-    anchor_index,
-    anchor_tensors,
     bits_dtype,
+    checkpoint_index,
     decode_gaps,
     pin,
+    read_checkpoint_range,
     read_delta,
     read_manifest,
     unpin,
@@ -146,20 +145,19 @@ class FileSystemWeightUpdateWorker(Worker):
         """Move to the broadcast step in ``weight_path`` (a full HF checkpoint and/or a sparse delta)."""
         step_dir = Path(weight_path)
         step = int(step_dir.name.removeprefix("step_"))
+        has_delta = (step_dir / DELTA_DIR / MANIFEST).exists()
+        if has_delta or anchor_complete(step_dir):
+            self._build_index_map(step_dir)
         # Unknown until this update succeeds: after a failure, the next update reloads and replays
         held_step, self.weight_step = self.weight_step, -1
-        if not (step_dir / DELTA_DIR / MANIFEST).exists():
+        if not has_delta:
             self._load_checkpoint(step_dir)
-            if anchor_complete(step_dir):
-                # A sparse run's full checkpoint
-                self._write_engine_layout(step_dir, step_dir)
         else:
             base_step = read_manifest(step_dir)["base_step"]
             if base_step is None:
                 # The run's first broadcast: the weights the engine booted with.
                 if held_step is not None:
                     self._load_checkpoint(self._boot_dir())
-                self._write_engine_layout(step_dir, self._boot_dir())
             elif base_step == held_step:
                 self._apply_delta(step_dir)
             else:
@@ -194,46 +192,37 @@ class FileSystemWeightUpdateWorker(Worker):
             offset += num_changes
             num_bytes += num_changes * itemsize
 
-    def _write_engine_layout(self, step_dir: Path, checkpoint_dir: Path) -> None:
-        """Tell the trainer which checkpoint tensors this engine holds in fp8 (and with which
-        scales), so it can send their deltas in the fp8 domain. Once per engine, while its weights
-        are those of ``checkpoint_dir`` (an anchor or the boot checkpoint): it reads one checkpoint
-        tensor per fp8 param from there."""
-        if self.wrote_layout:
+    def _build_index_map(self, step_dir: Path) -> None:
+        """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint
+        tensors to the params, and tell the trainer which ones this engine holds in fp8 (and with which
+        scales), so it can send their deltas in the fp8 domain. Reads one boot checkpoint tensor per fp8
+        param."""
+        if self.index_map is not None:
             return
-        self.wrote_layout = True
-        if anchor_complete(checkpoint_dir):
-            index = anchor_index(checkpoint_dir)
-            tensors = index[1]
-
-            def read_tensor(name: str) -> torch.Tensor:
-                return next(anchor_tensors(checkpoint_dir, [name], index))[1]
-
-        else:
-            files = {}
-            tensors = {}
-            for path in checkpoint_dir.glob("*.safetensors"):
-                with safe_open(path, framework="pt") as f:
-                    for name in f.keys():
-                        tensor_slice = f.get_slice(name)
-                        files[name] = path
-                        tensors[name] = (tensor_slice.get_shape(), SAFETENSORS_DTYPES[tensor_slice.get_dtype()])
-
-            def read_tensor(name: str) -> torch.Tensor:
-                with safe_open(files[name], framework="pt") as f:
-                    return f.get_tensor(name)
-
         if (step_dir / DELTA_DIR / MANIFEST).exists():
             tensors = read_manifest(step_dir)["tensors"]
-        if self.index_map is None:
-            self.index_map = CheckpointIndexMap(self._model(), tensors)
+        else:
+            tensors = {
+                name: (shape, str(dtype).removeprefix("torch."))
+                for name, (shape, dtype, _) in checkpoint_index(step_dir).items()
+            }
+        model = self._model()
+        index_map = CheckpointIndexMap(model, tensors)
+        boot = checkpoint_index(self._boot_dir())
+
+        def read_tensor(name: str) -> torch.Tensor:
+            shape, dtype, _ = boot[name]
+            data = np.empty(prod(shape) * dtype.itemsize, np.uint8)
+            read_checkpoint_range(boot[name], 0, prod(shape), data)
+            return torch.from_numpy(data).view(dtype).view(shape)
 
         # Each worker reports the tensors it holds; the trainer waits for all of them.
         if self.vllm_config.parallel_config.enable_expert_parallel:
             group = get_ep_group()
         else:
             group = get_world_group()
-        layout = {"world_size": group.world_size, "fp8": self.index_map.fp8_layout(read_tensor)}
+        layout = {"world_size": group.world_size, "fp8": index_map.fp8_layout(model, read_tensor)}
+        self.index_map = index_map
         path = step_dir.parent / ENGINE_LAYOUT / f"rank_{group.rank_in_group}.json"
         path.parent.mkdir(exist_ok=True)
         write_file(path, json.dumps(layout).encode())
@@ -250,9 +239,7 @@ class FileSystemWeightUpdateWorker(Worker):
             chain.append(source)
             source = source.parent / f"step_{base_step}"
         logger.info(f"Replaying {len(chain)} sparse weight deltas on top of {source.name}")
-        source = source if anchor_complete(source) else self._boot_dir()
-        self._load_checkpoint(source)
-        self._write_engine_layout(step_dir, source)
+        self._load_checkpoint(source if anchor_complete(source) else self._boot_dir())
         for delta_dir in reversed(chain):
             self._apply_delta(delta_dir)
 
@@ -268,9 +255,6 @@ class FileSystemWeightUpdateWorker(Worker):
         tensors = read_manifest(step_dir)["tensors"]
         model = self._model()
         device = next(model.parameters()).device
-        if self.index_map is None:
-            self.index_map = CheckpointIndexMap(model, tensors)
-            logger.info(f"Built the checkpoint index map in {time.perf_counter() - start - read_time:.2f}s")
         for entries, gaps, values in delta:
             self._apply_chunk(entries, gaps, values, tensors, device)
         update_mla_absorbed_weights(model)
@@ -305,11 +289,10 @@ class FileSystemWeightUpdateWorker(Worker):
             raise RuntimeError(f"Sparse weight delta {step_dir.name} diverged from the trainer: {mismatched[:8]}")
 
     def _load_checkpoint(self, step_dir: Path) -> None:
-        """Reload every weight from the HF-compatible checkpoint (or sparse-run anchor) in ``step_dir``."""
+        """Reload every weight from the HF-compatible checkpoint (or sparse-run anchor) in ``step_dir``. In a
+        sparse run, each worker reads only the rows it holds, straight into its params."""
         model = self._model()
-        if anchor_complete(step_dir):
-            weights_iterator = anchor_tensors(step_dir)
-        else:
+        if self.index_map is None:
             model_loader = get_model_loader(self.load_config)
             assert isinstance(model_loader, DefaultModelLoader)
             local_source = DefaultModelLoader.Source(
@@ -320,9 +303,28 @@ class FileSystemWeightUpdateWorker(Worker):
                 allow_patterns_overrides=getattr(model, "allow_patterns_overrides", None),
             )
             weights_iterator = model_loader._get_weights_iterator(local_source)
-        load_weights_checkpoint_layerwise(
-            model,
-            weights_iterator,
-            self.model_runner.model_config,
-            self.vllm_config,
+            load_weights_checkpoint_layerwise(model, weights_iterator, self.model_runner.model_config, self.vllm_config)
+            return
+        start = time.perf_counter()
+        index_map, index = self.index_map, checkpoint_index(step_dir)
+        device = next(model.parameters()).device
+
+        def read(name: str, begin: int, end: int) -> torch.Tensor:
+            num_cols, dtype = index_map.num_cols[name], index[name][1]
+            data = np.empty((end - begin) * num_cols * dtype.itemsize, np.uint8)
+            read_checkpoint_range(index[name], begin * num_cols, end * num_cols, data)
+            return torch.from_numpy(data).view(dtype).view(end - begin, num_cols)
+
+        ranges = list(index_map.row_ranges().items())
+        num_bytes = 0
+        with ThreadPoolExecutor(16) as pool:
+            # A bounded window of reads ahead of the GPU writes
+            for window in itertools.batched(ranges, 64):
+                for (name, (begin, _)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
+                    index_map.load_rows(name, rows.to(device), begin)
+                    num_bytes += rows.nbytes
+        update_mla_absorbed_weights(model)
+        torch.cuda.synchronize()
+        logger.info(
+            f"Loaded this worker's {num_bytes / 2**30:.2f} GiB of {step_dir.name} in {time.perf_counter() - start:.1f}s"
         )
