@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -199,6 +200,34 @@ class MasterCastProbe:
             f"Master-cast probe ({self.kind} training cast) on {len(self.params)} weights "
             f"({start_bytes / 1024**3:.1f} GiB of local bf16 starts), {len(batches)} micro-batches per rank"
         )
+
+    def _start_layout(self) -> dict:
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        offsets = [
+            list(compute_local_shape_and_global_offset(p.shape, p.device_mesh, p.placements)[1])
+            if isinstance(p, DTensor)
+            else [0] * p.dim()
+            for p in self.params
+        ]
+        shapes = [list(start.shape) for start in self.start]
+        return {"world_size": world_size, "rank": rank, "names": self.names, "shapes": shapes, "offsets": offsets}
+
+    def save_start(self, path: Path) -> None:
+        """Write this rank's local start shards, so a resumed run measures displacement from the same start."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        torch.save({"layout": self._start_layout(), "start": [start.cpu() for start in self.start]}, tmp)
+        tmp.replace(path)
+
+    def load_start(self, path: Path) -> None:
+        """Replace the start with the one ``save_start`` wrote for this rank at step 0 of the run."""
+        assert path.exists(), f"resuming a probe run needs its start shards at {path}"
+        state = torch.load(path, map_location="cpu", mmap=True)
+        assert state["layout"] == self._start_layout(), f"{path} was written with a different layout"
+        for current, saved in zip(self.start, state["start"]):
+            current.copy_(saved)
+        get_logger().info(f"Master-cast probe resumed with the start shards in {path}")
 
     def _seed_tensor(self, step: int) -> torch.Tensor:
         return torch.tensor(seed_for_step(self.rounding.base_seed, step), device="cuda", dtype=torch.int64)
@@ -401,16 +430,18 @@ class FP8FlipRate:
     def step(self, step: int) -> dict[str, float]:
         """Call after ``set_fp8_rounding_step(model, step)`` and before the forward of ``step``."""
         seed = self.probe.forward_seed(step)
-        first = self.first_forward is None
+        first = self.previous_forward is None
         if first:
-            self.first_forward, self.previous_forward, self.previous_master = [], [], []
+            # The first training step's forward casts the start, also when a resumed run gets here later.
+            first_seed = self.probe.forward_seed(1)
+            self.first_forward = [self._forward_value(i, start, first_seed) for i, start in enumerate(self.probe.start)]
+            self.previous_forward, self.previous_master = [], []
         counts = torch.zeros(5, dtype=torch.float64, device="cuda")
         for i, param in enumerate(self.probe.params):
             master = _local(param).detach().to(torch.bfloat16, copy=True)
             forward = self._forward_value(i, master, seed)
             values = self._values(forward, master.shape)
             if first:
-                self.first_forward.append(forward)
                 self.previous_forward.append(forward)
                 self.previous_master.append(master)
             counts[0] += (values != self._values(self.previous_forward[i], master.shape)).sum()

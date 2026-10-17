@@ -362,3 +362,45 @@ def test_on_grid_start_has_zero_gap():
     assert metrics["master_cast_probe/displacement_norm"] == 0
     assert metrics["master_cast_probe/cast_changed_fraction"] == 0
     assert "master_cast_probe/descent_master" not in metrics
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_resumed_probe_and_flip_rate_match_the_uninterrupted_run(kind, tmp_path):
+    model = make_model(kind)
+    batches = make_batches(2, seed=3)
+    probe = MasterCastProbe(model, batches, lambda batch: compute_loss(model, batch), None, 1)
+    flip = FP8FlipRate(probe)
+    probe.save_start(tmp_path / "rank0.pt")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+    for step, batch in enumerate(make_batches(3, seed=4), start=1):
+        set_fp8_rounding_step(model, step)
+        flip.step(step)
+        train_step(model, optimizer, batch)
+
+    resumed = MasterCastProbe(model, batches, lambda batch: compute_loss(model, batch), None, 1)
+    assert not all(torch.equal(a, b) for a, b in zip(resumed.start, probe.start))
+    resumed.load_start(tmp_path / "rank0.pt")
+    assert all(torch.equal(a, b) for a, b in zip(resumed.start, probe.start))
+    expected, actual = probe.measure(3), resumed.measure(3)
+    del expected["master_cast_probe/time"], actual["master_cast_probe/time"]
+    assert actual == pytest.approx(expected, rel=1e-6, abs=1e-9)
+
+    resumed_flip = FP8FlipRate(resumed)
+    set_fp8_rounding_step(model, 4)
+    uninterrupted, after_resume = flip.step(4), resumed_flip.step(4)
+    for key in ("fp8_flip/forward_changed_vs_first", "fp8_flip/master_changed_vs_start"):
+        assert after_resume[key] == uninterrupted[key], key
+    assert "fp8_flip/forward_changed_vs_prev" not in after_resume
+
+
+def test_load_start_rejects_another_layout(tmp_path):
+    model = make_model("rtn")
+    probe = MasterCastProbe(model, make_batches(1, seed=3), lambda batch: compute_loss(model, batch), None, 1)
+    probe.save_start(tmp_path / "rank0.pt")
+    state = torch.load(tmp_path / "rank0.pt")
+    state["layout"]["world_size"] = 8
+    torch.save(state, tmp_path / "other.pt")
+    with pytest.raises(AssertionError, match="different layout"):
+        probe.load_start(tmp_path / "other.pt")
+    with pytest.raises(AssertionError, match="needs its start shards"):
+        probe.load_start(tmp_path / "missing.pt")

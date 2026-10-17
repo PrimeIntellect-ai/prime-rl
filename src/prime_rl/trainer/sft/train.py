@@ -241,7 +241,6 @@ def train(config: SFTConfig):
     # Load the probe's fixed batches before the training loader forks its worker.
     probe_batches = None
     if os.environ.get("PRIME_RL_MASTER_CAST_PROBE") == "1":
-        assert checkpoint_step is None, "the master-cast probe measures displacement from the weights it starts with"
         probe_seq_len = int(os.environ.get("PRIME_RL_MASTER_CAST_PROBE_SEQ_LEN", "8192"))
         probe_data = probe_data_config(config.data, os.environ["PRIME_RL_MASTER_CAST_PROBE_DATA"], probe_seq_len)
         # A non-data-parallel size of the whole world gives every rank every row.
@@ -442,6 +441,11 @@ def train(config: SFTConfig):
         if os.environ.get("PRIME_RL_WEIGHT_DYNAMICS") == "1" and world.is_master
         else None
     )
+    weight_update_tracker_file = "weight_dynamics.pt"
+    if checkpoint_step is not None and (weight_update_tracker is not None or probe_batches is not None):
+        assert config.resume.dir is None, "the weight tracker and probe resume only from this run's checkpoints"
+    if weight_update_tracker is not None and checkpoint_step is not None:
+        weight_update_tracker.load(ckpt_manager.get_ckpt_path(checkpoint_step).parent / weight_update_tracker_file)
     master_cast_probe = None
     master_cast_probe_interval = int(os.environ.get("PRIME_RL_MASTER_CAST_PROBE_INTERVAL", "50"))
     if probe_batches is not None:
@@ -452,7 +456,12 @@ def train(config: SFTConfig):
             dp_cp_group,
             parallel_dims.fsdp_gradient_divide_factor,
         )
-        asyncio.run(monitors.log({**master_cast_probe.measure(0), "step": 0}, step=0))
+        probe_start_path = config.run_dir / "probe_state" / f"rank{world.rank}.pt"
+        if checkpoint_step is None:
+            master_cast_probe.save_start(probe_start_path)
+            asyncio.run(monitors.log({**master_cast_probe.measure(0), "step": 0}, step=0))
+        else:
+            master_cast_probe.load_start(probe_start_path)
     fp8_flip_rate = None
     if os.environ.get("PRIME_RL_FP8_FLIP_RATE") == "1":
         assert master_cast_probe is not None, "PRIME_RL_FP8_FLIP_RATE needs PRIME_RL_MASTER_CAST_PROBE"
@@ -596,6 +605,10 @@ def train(config: SFTConfig):
         if ckpt_manager is not None and is_ckpt_step and not is_last_step:
             logger.info(f"Saving checkpoint at step {progress.step}")
             save_ckpt_start_time = time.perf_counter()
+            if weight_update_tracker is not None:
+                weight_update_tracker.save(
+                    ckpt_manager.get_ckpt_path(progress.step).parent / weight_update_tracker_file
+                )
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             save_ckpt_time += time.perf_counter() - save_ckpt_start_time
 
@@ -740,6 +753,8 @@ def train(config: SFTConfig):
     # Write final checkpoint
     if config.ckpt is not None:
         logger.info(f"Saving final checkpoint at step {progress.step}")
+        if weight_update_tracker is not None:
+            weight_update_tracker.save(ckpt_manager.get_ckpt_path(progress.step).parent / weight_update_tracker_file)
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
         ckpt_manager.maybe_clean()
 

@@ -101,6 +101,35 @@ class WeightUpdateTracker:
         self.num_updates = 0
         get_logger().info(f"Tracking weight updates for {self.tags}")
 
+    def _layout(self) -> dict:
+        world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        return {"world_size": world_size, "local_numel": [_local(param).numel() for param in self.params]}
+
+    def save(self, path: Path) -> None:
+        """Write the start sample, update history and update count, so a resumed run continues every lag."""
+        state = {
+            "layout": self._layout(),
+            "tags": self.tags,
+            "start": [start.cpu() for start in self.start],
+            "history": [history.cpu() for history in self.history],
+            "num_updates": self.num_updates,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        torch.save(state, tmp)
+        tmp.replace(path)
+
+    def load(self, path: Path) -> None:
+        """Restore what ``save`` wrote; ``previous`` is already the loaded weights' sample from construction."""
+        state = torch.load(path, map_location="cpu")
+        assert state["layout"] == self._layout(), f"{path} was written with a different layout"
+        assert state["tags"] == self.tags, (state["tags"], self.tags)
+        self.start = [start.to(current.device) for start, current in zip(state["start"], self.start)]
+        self.history = [history.to(current.device) for history, current in zip(state["history"], self.history)]
+        assert [h.shape for h in self.history] == [torch.Size([UPDATE_LAGS[-1], s.numel()]) for s in self.start]
+        self.num_updates = state["num_updates"]
+        get_logger().info(f"Resumed weight-update tracking after {self.num_updates} updates from {path}")
+
     def _sample(self, i: int) -> torch.Tensor:
         return _local(self.params[i]).detach().reshape(-1)[self.indices[i]].float()
 

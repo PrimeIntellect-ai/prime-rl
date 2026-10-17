@@ -157,3 +157,26 @@ def test_probe_data_config_does_not_depend_on_the_training_data_config():
 def test_probe_packs_must_split_evenly_over_data_ranks(monkeypatch, dummy_renderer):
     with pytest.raises(AssertionError, match="do not split evenly"):
         _rank_batches(monkeypatch, dummy_renderer, 8, 1, 12)
+
+
+def test_resumed_tracker_logs_exactly_what_the_uninterrupted_tracker_logs(tmp_path):
+    torch.manual_seed(1)
+    model = Model()
+    tracker = WeightUpdateTracker(model, NUM_LAYERS, num_elements=64)
+    drift = [torch.randn_like(param) for param in tracker.params]
+    resume_after = UPDATE_LAGS[-1] + 10
+    uninterrupted, resumed = [], []
+    resumed_tracker = None
+    for t in range(resume_after + 60):
+        with torch.no_grad():
+            for i, param in enumerate(tracker.params):
+                param.add_(0.3 * drift[i] + torch.randn_like(param))
+        uninterrupted.append(tracker.step())
+        if resumed_tracker is not None:
+            resumed.append(resumed_tracker.step())
+        if t + 1 == resume_after:
+            tracker.save(tmp_path / "step" / "weight_dynamics.pt")
+            resumed_tracker = WeightUpdateTracker(model, NUM_LAYERS, num_elements=64)
+            resumed_tracker.load(tmp_path / "step" / "weight_dynamics.pt")
+    assert resumed == uninterrupted[resume_after:]
+    assert f"weight_dynamics/{tracker.tags[0]}/update_cos_lag{UPDATE_LAGS[-1]}" in resumed[0]
