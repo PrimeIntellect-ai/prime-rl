@@ -12,6 +12,7 @@ from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.sandboxes import ENV_LABEL_PREFIX
 
 
 def get_log_dir(output_dir: Path) -> Path:
@@ -240,6 +241,7 @@ def write_env_server_config(config_dir: Path, split: str, source: EnvConfig, log
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
+        "sandbox_labels": [f"{ENV_LABEL_PREFIX}{source.resolved_name}"],
     }
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(server_config, indent=2))
