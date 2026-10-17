@@ -193,6 +193,10 @@ def cudnn_flashmla_forward(
     if sm_scale is None:
         sm_scale = dim**-0.5
     flat_indices, topk_length = flat_cudnn_flashmla_indices(indices, n_positions)
+    # The pinned flash-mla wheel's SM90 kernel rejects `topk_length`. Slots past each query's valid
+    # prefix are -1, which FlashMLA masks, so SM90 reads the whole width to the same result.
+    if torch.cuda.get_device_capability(q.device)[0] == 9:
+        topk_length = None
     sink_logits = sinks.float().contiguous()
     out, _max_logits, sinkless_lse = flash_mla_sparse_fwd(
         q.view(batch * seq_len, heads, dim),
