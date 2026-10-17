@@ -488,14 +488,21 @@ class IPOLossConfig(BaseConfig):
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
 
-    ratio_low: float = Field(0.2, gt=0)
+    ratio_low: float = Field(0.2, gt=0, allow_inf_nan=False)
     """Lower accepted trainer-to-inference probability ratio."""
 
-    ratio_high: float = Field(5.0, gt=0)
+    ratio_high: float = Field(5.0, gt=0, allow_inf_nan=False)
     """Upper accepted trainer-to-inference probability ratio."""
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
+
+    score_centering: bool = False
+    """Center the ratio-masked importance-weighted score under the sampler."""
+
+    score_centering_topk: int = Field(128, ge=1)
+    """Captured head size for an untruncated sampler with a proportional tail.
+    Probabilities retain full-vocabulary normalization; sampling is not truncated."""
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
@@ -550,7 +557,8 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
