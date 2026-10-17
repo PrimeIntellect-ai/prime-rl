@@ -239,7 +239,7 @@ class ModelConfig(BaseModelConfig):
     """Sequence length the model is trained on."""
 
     attn: AttnImplementation = "auto"
-    """Attention implementation. ``auto`` selects FA3 on Hopper (SM90) and FA4 on Blackwell (SM100+). With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
+    """Attention implementation. ``auto`` selects FA3 on Hopper (SM90) and FA4 on Blackwell (SM100+)."""
 
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
@@ -270,9 +270,6 @@ class ModelConfig(BaseModelConfig):
 
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
-
-    cp_style: Literal["auto", "ring", "ulysses"] = "auto"
-    """CP communication style. ``auto`` (default) resolves to ``ulysses`` when the model supports it and the CP degree shards its attention heads, else ``ring`` (e.g. DeepSeek-V4). ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
 
     optimization_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for model optimization."""
@@ -305,12 +302,6 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
-
-    @model_validator(mode="after")
-    def vlm_cp_requires_ulysses(self):
-        if self.vlm is not None and self.cp > 1 and self.cp_style not in ("auto", "ulysses"):
-            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
-        return self
 
     @model_validator(mode="after")
     def validate_cp(self):

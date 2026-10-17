@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
     from prime_rl.orchestrator.ckpt import CheckpointManager
     from prime_rl.transports.batch.base import BatchSender
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before transitive imports
+import prime_rl._compat  # noqa: F401
 from prime_rl import monitors
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.control.controller import Controller

@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import ALL_CP_STYLES, CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
@@ -118,17 +118,6 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Qwen3_5TextConfig
-
-    @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        # VLM configs nest the layer schedule under `text_config`.
-        text_config = getattr(config, "text_config", config)
-        if "linear_attention" in (getattr(text_config, "layer_types", None) or ()):
-            return CPSupport(
-                frozenset({"ulysses"}),
-                "DeltaNet layers require Ulysses sequence sharding with FLA boundary-state exchange",
-            )
-        return CPSupport(ALL_CP_STYLES)
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -287,12 +276,7 @@ class Qwen3_5VLMModel(nn.Module):
         )
         if image_grid_thw is not None and self.cp_context.cp_enabled:
             rank, world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
-            setup_cp_attention_params(
-                position_ids,
-                cp_group=self.cp_context.cp_group,
-                cp_style=self.cp_context.cp_style,
-                seq_lens=seq_lens,
-            )
+            setup_cp_attention_params(position_ids, seq_lens=seq_lens)
             inputs_embeds = shard_for_cp(inputs_embeds, cp_rank=rank, cp_world_size=world_size)
             position_ids = shard_position_ids_for_cp(position_ids, cp_rank=rank, cp_world_size=world_size)
             if routed_experts is not None:
