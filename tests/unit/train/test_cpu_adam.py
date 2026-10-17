@@ -18,13 +18,16 @@ def test_full_offload_preserves_per_parameter_compute_dtypes():
     bfloat16_param, float32_param = model.parameters()
     float32_param.data.fill_(1.0001)
     original_float32 = float32_param.detach().clone()
+    model.register_parameter("scale", torch.nn.Parameter(torch.tensor([1.0001], dtype=torch.float32)))
+    original_scale = model.scale.detach().clone()
     model.register_buffer("statistics", torch.tensor([1.0001], dtype=torch.float32))
     original_statistics = model.statistics.detach().clone()
-    model.keep_in_fp32_for_weight_transfer = lambda name: name == "1.weight"
+    model.keep_in_fp32_for_weight_transfer = lambda name: name in {"scale", "1.weight"}
     policy = get_full_offload_dtype_policy(model, ModelConfig(moe_router_dtype="bfloat16"))
     assert policy == {
         id(bfloat16_param): (torch.bfloat16, torch.bfloat16),
         id(float32_param): (torch.float32, torch.float32),
+        id(model.scale): (torch.float32, torch.float32),
     }
 
     _cast_full_offload_compute_parameters(model, policy)
@@ -32,6 +35,7 @@ def test_full_offload_preserves_per_parameter_compute_dtypes():
     assert bfloat16_param.dtype == torch.bfloat16
     assert float32_param.dtype == torch.float32
     torch.testing.assert_close(float32_param, original_float32, rtol=0, atol=0)
+    torch.testing.assert_close(model.scale, original_scale, rtol=0, atol=0)
     torch.testing.assert_close(model.statistics, original_statistics, rtol=0, atol=0)
 
 
