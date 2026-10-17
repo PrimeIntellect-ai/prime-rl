@@ -136,6 +136,8 @@ class TrainBatch:
 
     cohort: TrainEpisodes
     samples: list[TrainingSample]
+    # By-handle payload files of every selected trace, shipped or pruned.
+    payload_files: set[str] = field(default_factory=set)
 
 
 @dataclass
