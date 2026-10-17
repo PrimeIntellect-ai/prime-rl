@@ -1,4 +1,6 @@
 import pickle
+import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Generator, cast
 
 import torch
@@ -8,7 +10,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 
 from prime_rl.inference.vllm.worker.weight_transfer import load_weights_checkpoint_layerwise
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.nccl import abort_communicator, disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 
 # This is to get type hints for the Worker class but not actually extend it at runtime as this is required by vLLM worker extension
 if TYPE_CHECKING:
@@ -74,6 +76,7 @@ class NCCLWeightBroadcastReceiver:
 
         pg = StatelessProcessGroup.create(host=host, port=port, rank=rank, world_size=world_size, store_timeout=timeout)
         self.communicator = PyNcclCommunicator(pg, device=device)
+        self.port = port
 
     @torch.no_grad()
     def receive_state_dict(self):
@@ -118,6 +121,12 @@ class NCCLWeightUpdateWorker(Worker):
             f"-> [global_rank={global_rank_inference} inference_world_size={inference_world_size}]"
         )
 
+        # Re-initialization (a restarted trainer/orchestrator, or a regrouped broadcast after an
+        # engine was evicted or re-added): drop the previous communicator first (abort-based,
+        # safe without the old peers).
+        previous = getattr(self, "nccl_broadcast_receiver", None)
+        if previous is not None:
+            previous.communicator.destroy()
         self.nccl_broadcast_receiver = NCCLWeightBroadcastReceiver(
             host=host,
             port=port,
@@ -140,10 +149,32 @@ class NCCLWeightUpdateWorker(Worker):
             model = model_runner.model
         assert isinstance(model, Module)
 
-        state_iter = self.nccl_broadcast_receiver.receive_state_dict()
-        load_weights_checkpoint_layerwise(
-            model,
-            state_iter,
-            self.model_runner.model_config,
-            self.vllm_config,
-        )
+        receiver = self.nccl_broadcast_receiver
+        # The orchestrator writes this marker when another engine dies during the transfer;
+        # aborting unblocks the collective so the survivors can regroup and receive again.
+        abort_marker = Path(weight_dir) / f".abort_{receiver.port}"
+        done = threading.Event()
+
+        def abort_on_marker() -> None:
+            while not done.wait(0.5):
+                if abort_marker.exists():
+                    logger.warning("Aborting the NCCL weight receive: another engine died")
+                    abort_communicator(receiver.communicator)
+                    return
+
+        threading.Thread(target=abort_on_marker, daemon=True).start()
+        try:
+            load_weights_checkpoint_layerwise(
+                model,
+                receiver.receive_state_dict(),
+                self.model_runner.model_config,
+                self.vllm_config,
+            )
+        except Exception:
+            # An abort can surface as an NCCL error, or as garbage from the no-op receives after it
+            if not receiver.communicator.disabled:
+                raise
+        finally:
+            done.set()
+        if receiver.communicator.disabled:
+            raise RuntimeError("The weight transfer was aborted")

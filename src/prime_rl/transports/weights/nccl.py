@@ -1,20 +1,29 @@
+import asyncio
+import json
 import pickle
+import threading
+import time
 from pathlib import Path
 from typing import Callable, Generator
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
+from httpx import AsyncClient
 from torch import Tensor
 from torch.distributed.tensor import DTensor
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
+from prime_rl.orchestrator.clients import ADMIN_TIMEOUT_S
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
 from prime_rl.trainer.utils import get_world
-from prime_rl.transports.weights.base import WeightReceiver, WeightSender
+from prime_rl.trainer.world import wait_for_master
+from prime_rl.transports.weights.base import FINISHED_MARKER, WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.nccl import abort_communicator, disable_nccl_p2p_if_unavailable, iter_tensor_buckets
+from prime_rl.utils.pathing import get_broadcast_dir
 from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import resolve_wire_dtype
 
@@ -135,6 +144,7 @@ class NCCLBroadcaster:
         self.logger = get_logger()
         self.world = get_world()
         self.dtype = torch.bfloat16
+        self.port = port
 
         if self.world.is_master:
             disable_nccl_p2p_if_unavailable()
@@ -148,15 +158,41 @@ class NCCLBroadcaster:
             self.logger.debug("Initialized NCCL broadcast on non-master rank (no communicator)")
 
     @torch.no_grad()
-    def send(self, model: nn.Module) -> None:
-        """Broadcast the state dict of a model into the inference pool using NCCL."""
+    def send(self, model: nn.Module, abort_marker: Path | None = None) -> bool:
+        """Broadcast the state dict of a model into the inference pool using NCCL. On the master,
+        a thread aborts the communicator once ``abort_marker`` appears (an engine died during
+        the transfer); later broadcasts are then no-ops, but every rank still walks all layers,
+        since the DTensor gathers are trainer-wide collectives. Returns whether it aborted."""
+        done = threading.Event()
+        watchdog = None
+        if self.world.is_master and abort_marker is not None:
+            watchdog = threading.Thread(target=self._abort_on, args=(abort_marker, done), daemon=True)
+            watchdog.start()
+        try:
+            self._send(model)
+            # The broadcasts run asynchronously: wait for them while the watchdog can still abort
+            torch.cuda.current_stream().synchronize()
+        finally:
+            done.set()
+            if watchdog is not None:
+                watchdog.join()
+        return self.world.is_master and self.communicator.disabled
+
+    def _abort_on(self, marker: Path, done: threading.Event) -> None:
+        while not done.wait(0.5):
+            if marker.exists():
+                self.logger.warning("Aborting the NCCL weight broadcast: an inference engine died")
+                abort_communicator(self.communicator)
+                return
+
+    def _send(self, model: nn.Module) -> None:
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
 
         if self.world.is_master:
-            broadcast_integer(num_state_dict_to_send, self.communicator)
+            self._unless_aborted(broadcast_integer, num_state_dict_to_send)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
@@ -164,7 +200,21 @@ class NCCLBroadcaster:
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
             if self.world.is_master:
-                broadcast_state_dict(layer_state_dict, self.communicator)
+                self._unless_aborted(broadcast_state_dict, layer_state_dict)
+
+    def _unless_aborted(self, broadcast: Callable, payload) -> None:
+        """The watchdog's abort can land while ``broadcast`` is inside a collective; that error
+        is expected, and the master keeps walking the layers for the other ranks' gathers."""
+        try:
+            broadcast(payload, self.communicator)
+        except RuntimeError:
+            if not self.communicator.disabled:
+                raise
+
+
+def nccl_group_file(broadcast_dir: Path) -> Path:
+    """Where the orchestrator publishes a new NCCL group after evicting or re-adding an engine."""
+    return broadcast_dir / "nccl_group.json"
 
 
 class NCCLWeightSender(WeightSender):
@@ -177,6 +227,9 @@ class NCCLWeightSender(WeightSender):
         device: int | str | torch.device,
     ):
         super().__init__(output_dir, config.timeout)
+        self.config = config
+        self.device = device
+        self.generation = 0
         self.nccl_broadcast_sender = NCCLBroadcaster(
             config.host,
             config.port,
@@ -188,7 +241,55 @@ class NCCLWeightSender(WeightSender):
 
     @torch.no_grad()
     def _broadcast(self, model: nn.Module, step: int, step_dir: Path) -> None:
-        self.nccl_broadcast_sender.send(model)
+        attempt = 0
+        while True:
+            abort_marker = step_dir / f".abort_{self.nccl_broadcast_sender.port}" if self.world.is_master else None
+            aborted = torch.tensor([self.nccl_broadcast_sender.send(model, abort_marker)], device="cuda")
+            if self.world.world_size > 1:
+                dist.broadcast(aborted, src=0)
+            if not aborted.item():
+                return
+            if self.world.is_master:
+                # Tell the orchestrator, then join the group it rebuilds from the survivors
+                abort_marker.with_name(f".aborted_{self.nccl_broadcast_sender.port}").touch()
+                deadline = time.monotonic() + self.timeout
+                while not self._maybe_rebuild():
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"No NCCL group to resend v{step} to within {self.timeout}s")
+                    time.sleep(0.1)
+            # Hold the other ranks on the store while the master waits for the new group
+            attempt += 1
+            wait_for_master(f"weight_broadcast/{step}/resend/{attempt}", self.timeout)
+            self.logger.info(f"Resending policy v{step} to the remaining inference engines")
+
+    def _wait_hook(self) -> None:
+        self._maybe_rebuild()
+
+    def _maybe_rebuild(self) -> bool:
+        """Join the group the orchestrator published after evicting or re-adding an engine. It
+        writes the group before acknowledging the version and then initializes the engines, so
+        this runs while waiting for the receiver. Returns whether it rebuilt."""
+        group_file = nccl_group_file(get_broadcast_dir(self.output_dir))
+        if not group_file.exists():
+            return False
+        group = json.loads(group_file.read_text())
+        if group["generation"] <= self.generation:
+            return False
+        self.logger.info(
+            f"Rebuilding the NCCL weight broadcast group (generation {group['generation']}, "
+            f"{group['inference_world_size']} inference ranks)"
+        )
+        self.nccl_broadcast_sender.communicator.destroy()
+        self.nccl_broadcast_sender = NCCLBroadcaster(
+            self.config.host,
+            group["port"],
+            0,
+            group["inference_world_size"] + 1,
+            self.device,
+            self.config.timeout,
+        )
+        self.generation = group["generation"]
+        return True
 
 
 class NCCLWeightReceiver(WeightReceiver):
@@ -198,12 +299,16 @@ class NCCLWeightReceiver(WeightReceiver):
     marker."""
 
     async def initialize(self) -> None:
+        # A group left by a previous run must not steer the new trainer off generation 0
+        nccl_group_file(self.broadcast_dir).unlink(missing_ok=True)
         await self.admin_plane.initialize_nccl(
             host=self.config.host,
             port=self.config.port,
             timeout=self.config.timeout,
             inference_world_size=self.config.inference_world_size,
         )
+        self.gpus_per_server = self.config.inference_world_size // len(self.admin_plane.clients)
+        self.port = self.config.port
 
     async def receive(self, step: int) -> None:
         await self.admin_plane.update_weights(
@@ -211,4 +316,55 @@ class NCCLWeightReceiver(WeightReceiver):
             transport="nccl",
             step=step,
             on_paused=lambda: self._ack(step),
+            on_membership_change=self.on_membership_change,
+            abort=lambda client: (self.step_dir(step) / f".abort_{self.port}").touch(),
+            resend=lambda: self._resend(step),
+        )
+
+    async def _resend(self, step: int) -> bool:
+        """After an abort, wait for the trainer's verdict: it either aborted too and will resend
+        once the group is rebuilt, or it had already finished the transfer."""
+        aborted = self.step_dir(step) / f".aborted_{self.port}"
+        finished = self.step_dir(step) / FINISHED_MARKER
+        deadline = time.monotonic() + self.config.timeout
+        while not (aborted.exists() or finished.exists()):
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"The trainer neither aborted nor finished v{step} within {self.config.timeout}s")
+            await asyncio.sleep(0.1)
+        return aborted.exists()
+
+    async def on_membership_change(self, members: list[AsyncClient], generation: int) -> None:
+        """Rebuild the communicator over ``members`` on a fresh port: publish the group for the
+        trainer, which joins it while it waits for this version's acknowledgement (or for a
+        resend after an abort), and initialize the engines' side."""
+        self.port = self.config.port + generation
+        inference_world_size = self.gpus_per_server * len(members)
+        self.logger.info(
+            f"Rebuilding the NCCL weight broadcast group (generation {generation}): {len(members)} engines"
+        )
+        group_file = nccl_group_file(self.broadcast_dir)
+        tmp = group_file.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({"generation": generation, "port": self.port, "inference_world_size": inference_world_size})
+        )
+        tmp.replace(group_file)
+
+        # Not evicting: an engine missing from the rendezvous would hang it, so a failure is fatal.
+        # One attempt: a retry would destroy a communicator the trainer may already have joined.
+        async def init_broadcaster(client: AsyncClient, rank_offset: int) -> None:
+            response = await client.post(
+                "/init_broadcaster",
+                timeout=max(ADMIN_TIMEOUT_S, self.config.timeout),
+                json={
+                    "host": self.config.host,
+                    "port": self.port,
+                    "rank_offset": rank_offset,
+                    "inference_world_size": inference_world_size,
+                    "timeout": self.config.timeout,
+                },
+            )
+            response.raise_for_status()
+
+        await asyncio.gather(
+            *(init_broadcaster(client, index * self.gpus_per_server) for index, client in enumerate(members))
         )
