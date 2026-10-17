@@ -81,7 +81,7 @@ class FileSystemWeightUpdateWorker(Worker):
         self, step_dir: Path
     ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
         """Read this worker's part of a delta into a pinned host buffer that is reused across steps
-        (allocating pinned memory every step is slow on a loaded host), in chunks of up to 2^26 changes
+        (pinning memory is slow on a loaded host), in chunks of up to 2^26 changes
         of consecutive frames."""
         global _reader_pool
         if _reader_pool is None:
@@ -103,9 +103,16 @@ class FileSystemWeightUpdateWorker(Worker):
             layout.append((num_bytes, num_bytes + gaps_bytes))
             num_bytes += gaps_bytes + values_bytes
         if self.host_buffer is None or self.host_buffer.numel() < num_bytes:
+            # Twice the delta, so later deltas (within ~20% of each other) fit: pinning stalls for tens of
+            # seconds on a host that must reclaim page cache first, and this read is the update's critical path
             if self.host_buffer is not None:
                 unpin(self.host_buffer)
-            self.host_buffer = pin(num_bytes * 5 // 4)
+            pin_start = time.perf_counter()
+            self.host_buffer = pin(num_bytes * 2)
+            logger.info(
+                f"Pinned a {self.host_buffer.numel() / 2**30:.2f} GiB host buffer for sparse deltas in "
+                f"{time.perf_counter() - pin_start:.2f}s"
+            )
         buffer = self.host_buffer.numpy()
         copies, pinned = [], []
         for chunk, (gaps_at, values_at) in zip(chunks, layout):
