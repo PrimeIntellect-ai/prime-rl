@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import uuid
@@ -36,6 +38,7 @@ from prime_rl.utils.process import (
     set_proc_title,
     torchrun_cmd,
 )
+from prime_rl.utils.resume import check_resume_config
 
 RL_CONFIG = "rl.json"
 RL_SBATCH = "rl.sbatch"
@@ -105,7 +108,7 @@ def rl_local(config: RLConfig):
     )
 
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_artifacts(config_dir, "rl")
+    write_launch_artifacts(config_dir, "rl", config)
     write_subconfigs(config, config_dir)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'rl', rl_config_components(config, config_dir))}")
 
@@ -413,6 +416,10 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             **modelexpress_vars,
         )
 
+    # Record execution before the first command, preserving the #SBATCH header.
+    marker = shlex.quote(str(config.slurm.project_dir / config_dir / "launcher.started"))
+    script = re.sub(r"(?m)^(?=[ \t]*[^#\s])", lambda _: f"touch {marker} || exit $?\n", script, count=1)
+
     script_path.parent.mkdir(parents=True, exist_ok=True)
     get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
@@ -426,7 +433,7 @@ def rl_slurm(config: RLConfig):
     )
 
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
-    write_launch_artifacts(config_dir, "rl")
+    write_launch_artifacts(config_dir, "rl", config)
 
     if config.deployment.type == "single_node":
         write_config(config, config_dir, exclude={"slurm", "dry_run", "clean"})
@@ -490,6 +497,11 @@ def rl(config: RLConfig):
     os.environ["PRL_RUN_NAME"] = config.run.name
 
     resuming = config.resume is not None
+    # SLURM child launchers inherit an attempt already checked at submission.
+    if resuming and "PRL_ATTEMPT_CONFIG_DIR" not in os.environ:
+        source_dir = config.resume.dir.parent.parent if config.resume.dir is not None else config.run_dir
+        snapshots = [path / "resolved" / "launcher.json" for path in sorted((source_dir / "configs").glob("attempt_*"))]
+        check_resume_config(config, snapshots or [source_dir / "configs" / "latest" / "resolved" / "launcher.json"])
     clean = config.clean and not os.environ.get("NEVER_CLEAN")
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
     validate_run_dir(

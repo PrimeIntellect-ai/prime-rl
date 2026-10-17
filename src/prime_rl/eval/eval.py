@@ -4,7 +4,7 @@ server currently serves.
 Every episode streams through the monitors as it arrives; a finished epoch also goes to
 the platform when ``monitors.prime`` is set. An interrupted run resumes with
 ``--resume`` from its trace stream: the landed episodes rejoin the epoch and only the
-rollouts still owed run (``prime_rl.eval.resume``)."""
+rollouts still owed run (``prime_rl.utils.resume``)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import verifiers.v1 as vf
 
 from prime_rl import monitors
 from prime_rl.configs.eval import EvalConfig
-from prime_rl.eval import resume
 from prime_rl.eval.runner import EvalRunner
+from prime_rl.utils import resume
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import clean_exit

@@ -103,7 +103,12 @@ class ControlConfig(BaseConfig):
     """Port the control API listens on."""
 
 
-class ResumeConfig(BaseConfig):
+class BaseResumeConfig(BaseConfig):
+    skip_checks: bool = False
+    """Reuse saved state even when resolved configs differ or snapshots are missing."""
+
+
+class ResumeConfig(BaseResumeConfig):
     """Resume the run from a checkpoint. A bare ``--resume`` (or empty ``[resume]`` block)
     resumes from the latest checkpoint."""
 
