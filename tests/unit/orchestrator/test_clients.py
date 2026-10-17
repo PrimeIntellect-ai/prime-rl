@@ -160,6 +160,37 @@ def test_setup_client_preserves_chat_client_defaults():
     )
 
 
+def test_engine_group_is_evicted_and_readmitted_as_one():
+    config = ClientConfig(
+        admin_base_url=["http://a:8100/v1", "http://b:8100/v1", "http://c:8100/v1"], admin_engine_groups=[0, 0, 1]
+    )
+    admin_plane = AdminPlane(config)
+    admin_plane._router_clients = []
+    a, b, c = admin_plane.clients
+    asyncio.run(admin_plane._evict(a, "test"))
+    assert admin_plane.clients == [c] and admin_plane.evicted == [a, b]
+
+    admin_plane.recovered = {a}
+    assert admin_plane._rejoining() == []
+    admin_plane.recovered = {a, b}
+    admin_plane.evicting = True
+
+    async def post(client, op, **kwargs):
+        if client is a:
+            raise httpx.ConnectError("down")
+
+    # A rejoining engine that fails an admin op keeps the rest of its group out of the update
+    with patch("prime_rl.orchestrator.clients._admin_post", side_effect=post):
+        assert asyncio.run(admin_plane._each([c, a, b], "/pause")) == [c]
+    assert not admin_plane.recovered
+
+    admin_plane.recovered = {a, b}
+    asyncio.run(admin_plane._readmit([a, b], [a], step=5))
+    assert admin_plane.clients == [c]
+    asyncio.run(admin_plane._readmit([a, b], [a, b], step=5))
+    assert admin_plane.clients == [c, a, b] and not admin_plane.evicted
+
+
 def test_hung_engine_is_dropped_from_a_transfer_the_others_wait_behind():
     """All engines in a transfer hit the deadline together; only the one whose server does not
     answer is dropped, and the others then finish."""
@@ -178,6 +209,7 @@ def test_hung_engine_is_dropped_from_a_transfer_the_others_wait_behind():
     admin_plane = AdminPlane(ClientConfig())
     admin_plane._router_clients = []
     admin_plane.clients = [hung, waiting]
+    admin_plane.group_of = {hung: (hung,), waiting: (waiting,)}
     admin_plane.evicting = True
     aborted = []
 

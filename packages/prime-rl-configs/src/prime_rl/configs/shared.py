@@ -232,6 +232,15 @@ class ClientConfig(BaseClientConfig):
     admin_base_url: list[str] | None = None
     """Separate base URLs for admin operations (weight updates, health checks). When set, admin clients bypass routers and hit each server directly — used in multi-replica or disaggregated P/D deployments where the router must not handle admin traffic."""
 
+    admin_engine_groups: list[int] | None = None
+    """Engine group of each ``admin_base_url`` entry, in the same order. An engine group is the engines that fail together, e.g. the DP ranks of one multi-node expert-parallel replica or of one P/D role replica. A dead or hung engine gets its whole group evicted, and the group rejoins only when all its engines answer again. Defaults to one group per URL. The multi-node SLURM launcher sets it."""
+
+    @model_validator(mode="after")
+    def check_admin_engine_groups(self):
+        if self.admin_engine_groups is not None and len(self.admin_engine_groups) != len(self.admin_base_url or []):
+            raise ValueError("admin_engine_groups needs one entry per admin_base_url entry")
+        return self
+
 
 class VLLMClientConfig(ClientConfig):
     """Client defaults for the live inference deployment managed by training."""

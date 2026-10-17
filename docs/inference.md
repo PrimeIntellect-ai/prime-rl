@@ -206,21 +206,26 @@ With more than one engine behind the router and NCCL (the default) or NIXL weigh
   - three `/liveness` probes in a row fail (10 s apart). The probe is a worker RPC, so a stuck engine core fails it even when the API server answers;
   - it has running requests but generates no token for 300 s;
   - a weight-update call to it fails.
+- **Engine groups.** Engines that fail together are evicted together: the DP ranks of a multi-node expert-parallel replica, or of a P/D role replica. `orchestrator.model.client.admin_engine_groups` gives the group of each `admin_base_url` entry. The multi-node SLURM launcher sets it, and the default is one group per engine.
 - **After eviction:**
-  - the engine leaves the router and the weight updates;
-  - its in-flight requests fail. Requests stuck on a hung engine are cancelled once their group falls `max_off_policy_steps` behind.
+  - the group's engines leave the router and the weight updates;
+  - their in-flight requests fail. Requests stuck on a hung engine are cancelled once their group falls `max_off_policy_steps` behind.
 - **Next weight update.** The orchestrator publishes the remaining engines in the broadcast directory before it acknowledges the version:
   - NCCL: the broadcast group is rebuilt over them on a new port (`nccl_group.json`);
   - NIXL: the trainer reads `nixl_group.json` and stops waiting for the evicted engines' inference ranks.
 - **Death mid-transfer.** If an engine dies during the transfer, or its `/update_weights` call times out:
   - NCCL: the orchestrator writes an abort marker into the step's broadcast directory, the trainer and the other engines abort the collective (`ncclCommAbort`), the group is rebuilt and the trainer sends the version again;
-  - NIXL: the orchestrator writes a drop marker per inference rank of the engine. The trainer stops waiting for those ranks, the engine's workers stop pulling, and the other engines finish their pulls. Nothing is resent.
+  - NIXL: the orchestrator writes a drop marker per inference rank of the group. The trainer stops waiting for those ranks, the group's workers stop pulling, and the other engines finish their pulls. Nothing is resent.
   - The inference nodes must see the run's output directory for this.
-- **Rejoin.** An evicted engine that answers again (for example after you relaunch it on the same port) gets the next weight update. It returns to the router only after that update succeeds. An engine evicted for a stall rejoins only once its requests finish or progress again, or after a restart.
-  - NCCL: the group is rebuilt with the engine.
-  - NIXL: the orchestrator calls `/init_broadcaster` on the engine first. It publishes a fresh NIXL agent to ModelExpress under its old inference ranks, the trainer connects to it, and the engine pulls the full weights.
+- **Rejoin.** An evicted group whose engines all answer again (for example after you relaunch them on the same ports) gets the next weight update. It returns to the router only after that update succeeds on every engine of the group. While engines are evicted, `/pause`, `/resume` and `/update_weights` get one attempt, so a retry never reaches a relaunched engine that has neither the weights nor the broadcast group. An engine evicted for a stall rejoins only once its requests finish or progress again, or after a restart.
+  - NCCL: the group is rebuilt with the engines.
+  - NIXL: the orchestrator calls `/init_broadcaster` on the group's engines first. Each publishes a fresh NIXL agent to ModelExpress under its old inference ranks, the trainer connects to it, and the engine pulls the full weights.
 - **Router.** A `vllm-router` that crashes is restarted in place by the launcher, with the same port and worker list.
-- **Still fatal:** the last engine dying.
+- **SLURM.** Each engine group runs as its own SLURM step, so an engine exit does not end the job. An engine group is the set of engines that fail together: one engine, or one multi-rank DP/EP group (a P/D role replica, or a replica with expert parallelism). When one engine in a group exits, its whole group is torn down and restarted 10 s later. The trainer, orchestrator and router still end the job when they fail.
+- **P/D.** `vllm-router` cannot re-add a prefill or decode worker through its API. So a restarted P/D group receives the weight updates again, but it takes traffic only after the router restarts.
+- **Still fatal:**
+  - the last engine dying;
+  - on SLURM, an engine exit with filesystem broadcast or with a single engine: it ends the job.
 
 ## Adaptive Concurrency
 

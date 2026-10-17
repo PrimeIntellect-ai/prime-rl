@@ -125,9 +125,16 @@ class AdminPlane:
         )
         self._skip_model_check = client_config.skip_model_check
         self._wait_for_ready_timeout = client_config.wait_for_ready_timeout
-        self._init_membership()
+        self._init_membership(client_config.admin_engine_groups)
 
-    def _init_membership(self) -> None:
+    def _init_membership(self, engine_groups: list[int] | None = None) -> None:
+        # Engines that fail together (one multi-node EP or P/D role replica) are evicted and
+        # readmitted as a block. Each client maps to the clients of its group.
+        group_ids = engine_groups or list(range(len(self.clients)))
+        self.group_of = {
+            client: tuple(other for other, other_id in zip(self.clients, group_ids) if other_id == group_id)
+            for client, group_id in zip(self.clients, group_ids)
+        }
         # Engine eviction (``monitor_health``): engines that failed a health check or an
         # admin op leave ``clients`` for ``evicted``; ``recovered`` are evicted engines that
         # answer again and rejoin at the next weight update.
@@ -243,17 +250,21 @@ class AdminPlane:
         await self._readmit(rejoining, resumed, step)
 
     def _rejoining(self) -> list[AsyncClient]:
-        return [client for client in self.evicted if client in self.recovered]
+        """Evicted engines whose whole group answers again."""
+        return [client for client in self.evicted if all(other in self.recovered for other in self.group_of[client])]
 
     async def _readmit(self, rejoining: list[AsyncClient], updated: list[AsyncClient], step: int) -> None:
-        """Put the rejoining engines that took the new weights back into ``clients`` and the router."""
-        for client in rejoining:
-            if client in updated:
+        """Put the rejoining groups whose engines all took the new weights back into ``clients``
+        and the router."""
+        for group in {self.group_of[client] for client in rejoining}:
+            if not all(client in updated for client in group):
+                continue
+            for client in group:
                 self.evicted.remove(client)
                 self.recovered.discard(client)
                 self.clients.append(client)
                 await self._set_routed(client, True)
-                get_logger().info(f"Inference engine {client.base_url} rejoined at policy v{step}")
+            get_logger().info(f"Inference engines {_urls(group)} rejoined at policy v{step}")
 
     async def _transfer(
         self,
@@ -345,7 +356,7 @@ class AdminPlane:
                 continue
             await self._sync_router()
             clients = self.clients + self.evicted
-            live = await asyncio.gather(*(_is_live(client) for client in clients))
+            live = dict(zip(clients, await asyncio.gather(*(_is_live(client) for client in clients))))
             probed = self.clients + [client for client in stalled if client in self.evicted]
             counters = dict(zip(probed, await asyncio.gather(*(_generation_counters(client) for client in probed))))
             now = time.monotonic()
@@ -361,16 +372,21 @@ class AdminPlane:
                     await self._evict(
                         client, f"no token generated for {now - last[0]:.0f}s with {running:.0f} running requests"
                     )
-            for client, ok in zip(clients, live):
+            for client in clients:
+                ok = live[client]
                 if client in self.evicted:
+                    if not ok:
+                        stalled.pop(client, None)  # it restarted (or died)
+                    # A group recovers only once all its engines answer
+                    ok = all(live.get(other, False) for other in self.group_of[client])
                     if ok and client in stalled:
                         running, tokens = counters[client]
                         if running and tokens == stalled[client]:
                             continue
-                    stalled.pop(client, None)
+                        stalled.pop(client)
                     if ok and client not in self.recovered:
                         get_logger().info(
-                            f"Evicted inference engine {client.base_url} answers again; it rejoins at the next weight update"
+                            f"Evicted inference engine {client.base_url} answers again; its group rejoins at the next weight update"
                         )
                         self.recovered.add(client)
                     elif not ok:
@@ -382,15 +398,23 @@ class AdminPlane:
                     await self._evict(client, f"{failures} failed /liveness probes")
 
     async def _evict(self, client: AsyncClient, reason: str) -> None:
-        self.recovered.discard(client)  # a rejoining engine that fails waits for the next recovery
-        if client not in self.clients:
+        """Evict ``client`` together with the rest of its engine group."""
+        group = self.group_of[client]
+        self.recovered.difference_update(group)  # a rejoining group that fails waits for the next recovery
+        evicted = [other for other in group if other in self.clients]
+        if not evicted:
             return
-        self.clients.remove(client)
-        self.evicted.append(client)
-        get_logger().warning(f"Evicted inference engine {client.base_url} ({reason}); {len(self.clients)} engines left")
+        for other in evicted:
+            self.clients.remove(other)
+            self.evicted.append(other)
+        get_logger().warning(
+            f"Evicted inference engines {_urls(evicted)} ({reason} on {client.base_url}); "
+            f"{len(self.clients)} engines left"
+        )
         if not self.clients:
             raise RuntimeError("Every inference engine was evicted")
-        await self._set_routed(client, False)
+        for other in evicted:
+            await self._set_routed(other, False)
 
     async def _sync_router(self) -> None:
         """Drop evicted engines that the router lists again, e.g. after it was restarted with
@@ -425,19 +449,20 @@ class AdminPlane:
         if not self.evicting:
             await asyncio.gather(*(_admin_post(client, op, **kwargs) for client in clients))
             return list(clients)
+        # One attempt: an engine that fails is evicted and rejoins once it answers again. Retrying
+        # could reach a relaunched engine on the same port that has neither the weights nor the
+        # weight broadcast group.
         results = await asyncio.gather(
-            *(_admin_post(client, op, **kwargs) for client in clients), return_exceptions=True
+            *(_admin_post(client, op, attempts=1, **kwargs) for client in clients), return_exceptions=True
         )
         succeeded = []
         for client, result in zip(clients, results):
             if isinstance(result, Exception):
-                if client in self.clients:
-                    await self._evict(client, f"{op} failed: {result!r}")
-                else:
-                    self.recovered.discard(client)
+                await self._evict(client, f"{op} failed: {result!r}")
             else:
                 succeeded.append(client)
-        return succeeded
+        # A failure evicts the whole engine group, including engines that succeeded
+        return self._standing(succeeded)
 
     async def aclose(self) -> None:
         for client in self.clients + self.evicted + self._router_clients:
@@ -607,6 +632,10 @@ async def _generation_counters(client: AsyncClient) -> tuple[float, float]:
     return running, tokens
 
 
+def _urls(clients) -> str:
+    return ", ".join(str(client.base_url) for client in clients)
+
+
 async def _answers(client: AsyncClient) -> bool:
     try:
         response = await client.get("/health", timeout=10.0)
@@ -649,14 +678,16 @@ ADMIN_TIMEOUT_S = 300.0
 UPDATE_WEIGHTS_TIMEOUT_S = 720.0
 
 
-async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, **kwargs) -> None:
+async def _admin_post(
+    client: AsyncClient, path: str, *, timeout_s: float = ADMIN_TIMEOUT_S, attempts: int = 10, **kwargs
+) -> None:
     """POST an admin op with a bounded per-attempt timeout, retrying transient errors.
 
     The total wall-clock budget across all retries is twice the per-attempt timeout.
     """
     async for attempt in AsyncRetrying(
         retry=retry_if_exception(_is_retryable_admin_error),
-        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(10),
+        stop=stop_after_delay(2 * timeout_s) | stop_after_attempt(attempts),
         wait=wait_exponential(multiplier=1, min=1, max=10),
         reraise=True,
     ):

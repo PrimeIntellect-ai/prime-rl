@@ -31,9 +31,12 @@ launch_inference_rank() {
         printf '%s' "$extra" > "$rpcbase/vllm-overrides.json"
         cmd+=(--vllm @ "$rpcbase/vllm-overrides.json")
     fi
+    # Output goes through a process substitution, not a pipe, so the background job is the
+    # server itself and its exit ends `wait -n` even if orphaned engine processes keep the
+    # log pipe open.
     if [ -n "$nixl" ]; then
-        CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
+        CUDA_VISIBLE_DEVICES="$gpus" VLLM_NIXL_SIDE_CHANNEL_PORT="$nixl" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" > >(tee -a "$log") 2>&1 &
     else
-        CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" 2>&1 | tee -a "$log" &
+        CUDA_VISIBLE_DEVICES="$gpus" VLLM_RPC_BASE_PATH="$rpcbase" "${cmd[@]}" > >(tee -a "$log") 2>&1 &
     fi
 }
