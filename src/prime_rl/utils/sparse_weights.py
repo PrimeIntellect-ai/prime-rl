@@ -49,11 +49,10 @@ def bits_dtype(dtype: str) -> torch.dtype:
 
 
 def quantize_fp8_blocks(weight: torch.Tensor, ue8m0: bool, compiled=None) -> tuple[torch.Tensor, torch.Tensor]:
-    """vLLM's online ``fp8_per_block`` quantization of a 2-D weight: fp8 bits (uint8) and fp32 block
-    scales. With ``ue8m0``, also DeepGEMM's requantization to power-of-two scales. Uses vLLM's own
-    compiled kernels: a reimplementation rounds differently on a few elements. ``compiled``: the
-    ahead-of-time compiled kernels from ``compile_fp8_quantizer`` (columns a multiple of 128), which,
-    unlike vLLM's torch.compile'd function, may run on a thread next to a compiled training step."""
+    """vLLM's online ``fp8_per_block`` quantization of a 2-D weight: fp8 bits (uint8) and fp32 block scales; with
+    ``ue8m0``, also DeepGEMM's requantization to power-of-two scales. Uses vLLM's own kernels, as a reimplementation
+    rounds differently on a few elements. ``compiled`` (from ``compile_fp8_quantizer``) may, unlike vLLM's
+    torch.compile'd function, run on a thread next to a compiled training step."""
     from vllm.model_executor.layers.quantization.utils.fp8_utils import requant_weight_ue8m0_inplace
     from vllm.utils.deep_gemm import per_block_cast_to_fp8
 
@@ -73,10 +72,9 @@ def quantize_fp8_blocks(weight: torch.Tensor, ue8m0: bool, compiled=None) -> tup
 
 
 def compile_fp8_quantizer() -> tuple:
-    """vLLM's ``per_block_cast_to_fp8`` compiled ahead of time with AOTInductor for any shape (bf16 input;
-    and fp32 input with ue8m0 scales, for the requantization). Matches vLLM's compiled function bit for
-    bit for columns a multiple of 128. Compile on the thread that trains: compiling next to a compiled
-    training step breaks activation checkpointing there."""
+    """vLLM's ``per_block_cast_to_fp8`` compiled with AOTInductor for any shape (bf16 input, and fp32 input with
+    ue8m0 scales for the requantization). Bit-identical to vLLM's for columns a multiple of 128. Compile on the
+    training thread: compiling next to a compiled training step breaks its activation checkpointing."""
     import tempfile
 
     from torch.export import Dim
@@ -148,11 +146,10 @@ def write_rank_file(
     checksums: dict[str, int],
     frame_size: int = 1 << 20,
 ) -> int:
-    """Write a rank's delta as zstd frames of about ``frame_size`` changes each (whole entries), so
-    readers can skip frames without entries they hold. ``values`` holds each entry's ``zigzag``
-    differences in its bits dtype. Gaps and values are stored as uint8; those of 255 or more go to
-    the int32 escape stream (gaps first). ``checksums`` (HF name -> ``bits_checksum`` of the new weights
-    this rank holds) let engines verify every step. Returns the file size."""
+    """Write a rank's delta as zstd frames of about ``frame_size`` changes (whole entries), so readers can skip
+    frames without entries they hold. ``values`` holds each entry's ``zigzag`` differences in its bits dtype;
+    ``checksums`` maps HF names to the ``bits_checksum`` of the new weights this rank holds. Returns the file
+    size."""
     options = {pyzstd.CParameter.compressionLevel: 1, pyzstd.CParameter.checksumFlag: 1}
     frames, size = [[]], 0
     for index, (_, count) in enumerate(entries):
@@ -202,7 +199,7 @@ def decode_gaps(gaps: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
 
 
 def _rank_file_frames(
-    file: BinaryIO, tensors: dict, names: set[str] | None
+    file: BinaryIO, names: set[str] | None
 ) -> tuple[list[tuple[list[tuple[str, int]], list[tuple[int, int]]]], dict[str, int]]:
     """The frames of an open rank file with entries in ``names``: ``(entries, [(offset, size)] of the
     gaps, escapes and values streams)``, and the file's checksums."""
@@ -261,10 +258,10 @@ def write_file(path: Path, data: bytes | Iterable) -> None:
 
 
 class AnchorWriter:
-    """One trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, numel, dtype)`` slices,
-    stored as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files whose headers are written first, so
-    slices can be written in any order, from any thread (``write_all``: in parallel). The files are written next to ``step_dir`` and moved
-    into it by ``close``, followed by the ``anchor_rank{rank}.done`` marker (the world size)."""
+    """One trainer rank's share of a full checkpoint: ``(hf_name, shape, flat start, numel, dtype)`` slices, stored
+    as tensors ``"{hf_name}@{start}"`` in ~1 GiB safetensors files whose headers are written first, so slices can
+    be written in any order and from any thread. The files are written next to ``step_dir``; ``close`` moves them
+    in and writes the ``anchor_rank{rank}.done`` marker (holding the world size)."""
 
     def __init__(self, slices: list[tuple[str, list[int], int, int, torch.dtype]], step_dir: Path, rank: int):
         self.step_dir, self.rank = step_dir, rank
@@ -272,7 +269,7 @@ class AnchorWriter:
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.files: list[tuple[str, int]] = []
         self.offsets: dict[tuple[str, int], tuple[int, int]] = {}
-        # Slices go round-robin to the files: a file is written at ~0.5 GiB/s, several at once in parallel
+        # Round-robin over the files, which are written in parallel
         num_files = max(1, -(-sum(numel * dtype.itemsize for *_, numel, dtype in slices) // 2**30))
         groups = [slices[index::num_files] for index in range(num_files)]
         self.pool = ThreadPoolExecutor(8)
@@ -309,6 +306,17 @@ class AnchorWriter:
         fd, offset = self.offsets[(name, start)]
         self._pwrite(fd, data, offset + at)
 
+    def write_parts(
+        self, parts: list[tuple[str, list[int], int, torch.Tensor]], to_host: Callable[[torch.Tensor], Iterable]
+    ) -> None:
+        """Write ``(hf_name, shape, flat start, flat values)`` slices; ``to_host`` yields each slice's bytes, each
+        written before the next is taken."""
+        for name, _, start, values in parts:
+            written = 0
+            for chunk in to_host(values):
+                self.write(name, start, chunk, written)
+                written += chunk.nbytes
+
     def write_all(self, items: list[tuple[str, int, Any]]) -> None:
         """``write`` each ``(name, start, data)``, in parallel."""
         for future in [self.pool.submit(self.write, *item) for item in items]:
@@ -329,19 +337,13 @@ def write_anchor_shards(
     step_dir: Path,
     rank: int,
     world_size: int,
-    to_host: Callable[[torch.Tensor], Iterable] = lambda values: [values.view(torch.uint8).numpy()],
+    to_host: Callable[[torch.Tensor], Iterable],
 ) -> None:
-    """Write one trainer rank's share of a full checkpoint (``AnchorWriter``) from ``(hf_name, shape, flat
-    start, flat values)`` slices. ``to_host`` yields each slice's bytes on the host, each written before the
-    next is taken."""
+    """Write one trainer rank's share of a full checkpoint from ``AnchorWriter.write_parts`` slices."""
     writer = AnchorWriter(
         [(name, shape, start, values.numel(), values.dtype) for name, shape, start, values in parts], step_dir, rank
     )
-    for name, _, start, values in parts:
-        written = 0
-        for chunk in to_host(values):
-            writer.write(name, start, chunk, written)
-            written += chunk.nbytes
+    writer.write_parts(parts, to_host)
     writer.close(world_size)
 
 
@@ -384,7 +386,7 @@ def read_checkpoint_range(entry: tuple, begin: int, end: int, out: np.ndarray) -
 
 
 def anchor_complete(step_dir: Path) -> bool:
-    """Whether ``step_dir`` holds a complete full checkpoint written by ``write_anchor_shards``."""
+    """Whether every trainer rank has written its share of an anchor in ``step_dir``."""
     revalidate(step_dir)
     markers = list(step_dir.glob("anchor_rank*.done"))
     return bool(markers) and len(markers) == int(markers[0].read_text())
@@ -421,12 +423,11 @@ def rank_parts_marker(rank: int) -> str:
 def read_delta(
     step_dir: Path, pool: ThreadPoolExecutor, names: set[str] | None = None
 ) -> tuple[list[tuple[list[tuple[str, int]], np.ndarray, np.ndarray]], dict[str, int]]:
-    """Read and decompress a delta step dir into ``(entries, gaps, value bytes)`` per frame in host
-    memory (values: new minus previous raw bits, in each entry's bits dtype) on ``pool``; ``decode_gaps``
-    turns the gaps into flat indices on the device that applies them. With ``names``, keep only those
-    tensors (frames without any are not read). Part files are read as the trainer writes them, until
-    every rank has written its parts marker. Also returns the new weights' ``bits_checksum`` per HF
-    tensor, summed over ranks."""
+    """Read and decompress a delta into host ``(entries, gaps, value bytes)`` per frame (values: new minus previous
+    raw bits, in each entry's bits dtype); ``decode_gaps`` turns the gaps into flat indices. With ``names``, keep
+    only those tensors and skip frames without any. Part files are read as the trainer writes them, until every
+    rank's parts marker exists. Also returns the new weights' ``bits_checksum`` per HF tensor, summed over
+    ranks."""
     manifest = read_manifest(step_dir)
     tensors = manifest["tensors"]
     delta_dir = step_dir / DELTA_DIR
@@ -446,7 +447,7 @@ def read_delta(
                 if (num_parts[rank] is None or next_part[rank] < num_parts[rank]) and path.exists():
                     file = stack.enter_context(open(path, "rb"))
                     files.append(file)
-                    frames, partial = _rank_file_frames(file, tensors, names)
+                    frames, partial = _rank_file_frames(file, names)
                     jobs.extend(pool.submit(_read_frame, file.fileno(), frame, tensors, names) for frame in frames)
                     for tensor_name, value in partial.items():
                         checksums[tensor_name] = add_checksums(checksums.get(tensor_name, 0), value)
@@ -461,8 +462,8 @@ def read_delta(
 
 
 def pin(num_bytes: int) -> torch.Tensor:
-    """Page-locked host memory of exactly ``num_bytes``, outside torch's caching host allocator
-    (which rounds sizes up and keeps freed blocks). Release it with ``unpin``."""
+    """Page-locked host memory of exactly ``num_bytes``, outside torch's caching host allocator (which rounds sizes
+    up and keeps freed blocks). Release it with ``unpin``."""
     return page_lock(torch.from_numpy(np.empty(num_bytes, np.uint8)))
 
 

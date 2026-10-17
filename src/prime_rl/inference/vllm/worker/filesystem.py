@@ -80,9 +80,8 @@ class FileSystemWeightUpdateWorker(Worker):
     def _read_delta(
         self, step_dir: Path
     ) -> tuple[list[tuple[list[tuple[str, int]], torch.Tensor, torch.Tensor]], dict[str, int]]:
-        """Read this worker's part of a delta into a pinned host buffer that is reused across steps
-        (pinning memory is slow on a loaded host), in chunks of up to 2^26 changes
-        of consecutive frames."""
+        """Read this worker's part of a delta into a pinned host buffer reused across steps, in chunks of up to 2^26
+        changes of consecutive frames."""
         global _reader_pool
         if _reader_pool is None:
             _reader_pool = ThreadPoolExecutor(16)
@@ -103,8 +102,8 @@ class FileSystemWeightUpdateWorker(Worker):
             layout.append((num_bytes, num_bytes + gaps_bytes))
             num_bytes += gaps_bytes + values_bytes
         if self.host_buffer is None or self.host_buffer.numel() < num_bytes:
-            # Twice the delta, so later deltas (within ~20% of each other) fit: pinning stalls for tens of
-            # seconds on a host that must reclaim page cache first, and this read is the update's critical path
+            # Twice the delta, so later deltas fit: pinning can stall for tens of seconds on a host that must
+            # reclaim page cache first, and this read is on the update's critical path
             if self.host_buffer is not None:
                 unpin(self.host_buffer)
             pin_start = time.perf_counter()
@@ -140,7 +139,7 @@ class FileSystemWeightUpdateWorker(Worker):
             copy.result()
         logger.info(
             f"Read sparse weight delta {step_dir.name}: {num_bytes / 2**30:.2f} GiB, "
-            f"read+decompress {read_time:.2f}s, pin {time.perf_counter() - start - read_time:.2f}s"
+            f"read+decompress {read_time:.2f}s, copy {time.perf_counter() - start - read_time:.2f}s"
         )
         return pinned, checksums
 
@@ -161,7 +160,7 @@ class FileSystemWeightUpdateWorker(Worker):
         else:
             base_step = read_manifest(step_dir)["base_step"]
             if base_step is None:
-                # The run's first broadcast: the weights the engine booted with.
+                # The run's first broadcast: the weights the engine booted with
                 if held_step is not None:
                     self._load_checkpoint(self._boot_dir())
             elif base_step == held_step:
@@ -192,17 +191,16 @@ class FileSystemWeightUpdateWorker(Worker):
             num_changes = sum(count for _, count in run)
             itemsize = bits.itemsize
             delta = values[num_bytes : num_bytes + num_changes * itemsize]
-            # A run after an odd number of narrower values is misaligned for its dtype view.
+            # A run after an odd number of narrower values is misaligned for its dtype view
             delta = delta.view(bits) if num_bytes % itemsize == 0 else delta.clone().view(bits)
             self.index_map.apply_delta(run, indices[offset : offset + num_changes], delta)
             offset += num_changes
             num_bytes += num_changes * itemsize
 
     def _build_index_map(self, step_dir: Path) -> None:
-        """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint
-        tensors to the params, and tell the trainer which ones this engine holds in fp8 (and with which
-        scales), so it can send their deltas in the fp8 domain. Reads one boot checkpoint tensor per fp8
-        param."""
+        """At a sparse run's first update, while the engine still holds its boot weights: map checkpoint tensors to
+        the params, and report which ones this worker holds in fp8 (and their scale format), so the trainer sends
+        their deltas as fp8."""
         if self.index_map is not None:
             return
         if (step_dir / DELTA_DIR / MANIFEST).exists():
@@ -222,7 +220,7 @@ class FileSystemWeightUpdateWorker(Worker):
             read_checkpoint_range(boot[name], 0, prod(shape), data)
             return torch.from_numpy(data).view(dtype).view(shape)
 
-        # Each worker reports the tensors it holds; the trainer waits for all of them.
+        # The trainer waits for every worker's layout
         if self.vllm_config.parallel_config.enable_expert_parallel:
             group = get_ep_group()
         else:
@@ -252,7 +250,7 @@ class FileSystemWeightUpdateWorker(Worker):
     def _apply_delta(self, step_dir: Path) -> None:
         start = time.perf_counter()
         prefetched, self.prefetched = self.prefetched, None
-        # Always wait: a running prefetch writes into the same host buffer.
+        # Always wait: a running prefetch writes into the same host buffer
         delta = prefetched[1].result() if prefetched is not None else None
         if prefetched is None or prefetched[0] != step_dir.as_posix():
             delta = self._read_delta(step_dir)
@@ -295,8 +293,8 @@ class FileSystemWeightUpdateWorker(Worker):
             raise RuntimeError(f"Sparse weight delta {step_dir.name} diverged from the trainer: {mismatched[:8]}")
 
     def _load_checkpoint(self, step_dir: Path) -> None:
-        """Reload every weight from the HF-compatible checkpoint (or sparse-run anchor) in ``step_dir``. In a
-        sparse run, each worker reads only the rows it holds, straight into its params."""
+        """Reload every weight from the HF checkpoint (or anchor) in ``step_dir``. In a sparse run, each worker reads
+        only the rows it holds, straight into its params."""
         model = self._model()
         if self.index_map is None:
             model_loader = get_model_loader(self.load_config)
