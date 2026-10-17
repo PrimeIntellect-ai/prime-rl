@@ -26,6 +26,7 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.pathing import get_broadcast_dir, get_step_path
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
+    ENGINE_LAYOUT,
     FP8_BLOCK,
     MANIFEST,
     AnchorWriter,
@@ -781,8 +782,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.boot_dir: StoragePath | None = None
         self.storage = storage_path(config.storage) if config.storage else get_broadcast_dir(output_dir)
         if config.storage and self.world.is_master:
-            # Leftovers of an earlier run would look like anchors and deltas of this one
-            for path in self.storage.glob("step_*"):
+            # Leftovers of an earlier run would look like anchors, deltas and engine layouts of this one
+            for path in [*self.storage.glob("step_*"), self.storage / ENGINE_LAYOUT]:
                 remove(path)
         self.optimizer: "FullCPUOffloadOptimizer | None" = None
         self.model: nn.Module | None = None
