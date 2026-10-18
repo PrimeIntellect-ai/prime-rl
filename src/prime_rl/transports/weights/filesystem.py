@@ -78,6 +78,7 @@ class FileSystemWeightReceiver(WeightReceiver):
         while not (await asyncio.to_thread(manifest.exists) or finished.exists()):
             await asyncio.sleep(0.05)
             revalidate(manifest.parent)
+            revalidate(weights_dir)
         if await asyncio.to_thread(manifest.exists):
             start = time.perf_counter()
             await self.admin_plane.prefetch_weights(data_dir)

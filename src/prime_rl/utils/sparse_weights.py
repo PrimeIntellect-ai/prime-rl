@@ -367,11 +367,12 @@ class AnchorWriter:
         if missing:
             raise RuntimeError(f"Anchor {self.step_dir.name} is missing data of {len(missing)} slices: {missing[:8]}")
         for name, fd in self.files:
-            drop_page_cache(fd)
-            os.close(fd)
             if isinstance(self.step_dir, S3Path):
                 with open(self.tmp_dir / name, "rb") as file:
                     write_file(self.step_dir / name, iter(lambda: file.read(1 << 26), b""))
+            drop_page_cache(fd)
+            os.close(fd)
+            if isinstance(self.step_dir, S3Path):
                 (self.tmp_dir / name).unlink()
             else:
                 (self.tmp_dir / name).rename(self.step_dir / name)

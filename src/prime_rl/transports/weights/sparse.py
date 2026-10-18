@@ -1026,8 +1026,12 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.part_bytes = 0
         self.storage = storage_path(config.storage) if config.storage else get_broadcast_dir(output_dir)
         if config.storage and self.world.is_master:
-            # Leftovers of an earlier run would look like anchors, deltas and engine layouts of this one
-            for path in [*self.storage.glob("step_*"), self.storage / ENGINE_LAYOUT]:
+            # Leftovers of an earlier run would look like anchors and deltas of this one. A new run's engines report
+            # their layout again; a resumed trainer (its broadcast dir has steps) keeps the running engines' one.
+            stale = list(self.storage.glob("step_*"))
+            if not any(get_broadcast_dir(output_dir).glob("step_*")):
+                stale.append(self.storage / ENGINE_LAYOUT)
+            for path in stale:
                 remove(path)
         self.optimizer: "OptimizerLike | None" = None
         self.model: nn.Module | None = None

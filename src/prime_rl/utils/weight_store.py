@@ -133,7 +133,7 @@ def upload(path: S3Path, buffers: list) -> None:
         return
     upload_id = client.create_multipart_upload(Bucket=path.bucket, Key=path.key)["UploadId"]
 
-    def upload(number: int) -> dict:
+    def upload_part(number: int) -> dict:
         body = b"".join(parts[number - 1])
         response = client.upload_part(
             Bucket=path.bucket, Key=path.key, UploadId=upload_id, PartNumber=number, Body=body
@@ -142,7 +142,7 @@ def upload(path: S3Path, buffers: list) -> None:
 
     try:
         with ThreadPoolExecutor(8) as pool:
-            uploaded = list(pool.map(upload, range(1, len(parts) + 1)))
+            uploaded = list(pool.map(upload_part, range(1, len(parts) + 1)))
         client.complete_multipart_upload(
             Bucket=path.bucket, Key=path.key, UploadId=upload_id, MultipartUpload={"Parts": uploaded}
         )
