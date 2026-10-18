@@ -31,7 +31,7 @@ def dispatch_failure_metrics(failures: list[DispatchFailure], *, prefix: str, to
 @dataclass(frozen=True)
 class TraceRecord:
     """A trace joined with its episode and training selection state.
-    ``cancelled`` marks episodes the pipeline voided (stale drop) — a
+    ``cancelled`` marks episodes the pipeline voided (stale or shutdown) — a
     selection verdict disjoint from trace errors."""
 
     episode: vf.Episode
@@ -614,7 +614,7 @@ class RolloutWindow:
         self.attempts += attempts
         discarded = [episode for episode in episodes if not any(t.id in queued_trace_ids for t in episode.traces)]
         self.discarded += len(discarded) + len(failures) + cancelled
-        if cancellation is not None and cancellation.reason != "stale":
+        if cancellation is not None:
             self.cancelled += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled
         else:
             self.stale += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled
