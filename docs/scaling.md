@@ -282,7 +282,7 @@ With `[weight_broadcast] type = "filesystem"` and `sparse = true`, the trainer p
 [weight_broadcast]
 type = "filesystem"
 sparse = true
-anchor_interval = 25  # full checkpoint every N steps
+anchor_interval = 50  # full checkpoint every N steps
 ```
 
 - RL: deltas come from the optimizer step, with every optimizer and offload mode. Right before the step updates a chunk of parameters, their shards still hold the previous broadcast's weights; the trainer diffs the old and new values of each chunk as the step goes and writes the delta out. No copy of the weights is kept, except of the few tensors that are not optimizer parameters (buffers, frozen parameters, fp8 tensors whose 128-row blocks straddle trainer ranks). The trainer checks that no weight changed outside the optimizer step.
