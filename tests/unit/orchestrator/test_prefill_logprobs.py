@@ -1,16 +1,10 @@
 import asyncio
-import json
-
-import httpx
 
 from prime_rl.orchestrator.clients import prefill_logprobs
 
 
 class _FakeOpenAIClient:
-    """Stand-in for ``AsyncOpenAI`` that captures the sole ``.post()`` call and
-    returns a synthesized ``httpx.Response`` so ``cast_to=httpx.Response`` is
-    handed back verbatim, mirroring the real SDK's short-circuit at
-    ``AsyncAPIClient._process_response``."""
+    """Capture the scoring request and return its decoded JSON response."""
 
     def __init__(self, payload: dict):
         # Match what AsyncOpenAI exposes — prefill_logprobs reads ``str(openai.base_url)``.
@@ -20,12 +14,7 @@ class _FakeOpenAIClient:
 
     async def post(self, url, *, cast_to, body):
         self.calls.append({"url": url, "cast_to": cast_to, "body": body})
-        request = httpx.Request("POST", url, json=body)
-        return httpx.Response(
-            status_code=200,
-            content=json.dumps(self._payload).encode(),
-            request=request,
-        )
+        return self._payload
 
 
 def test_prefill_logprobs_uses_inference_generate():
@@ -45,7 +34,7 @@ def test_prefill_logprobs_uses_inference_generate():
         assert fake_openai.calls == [
             {
                 "url": "http://fake-host:8000/inference/v1/generate",
-                "cast_to": httpx.Response,
+                "cast_to": dict,
                 "body": {
                     "model": "ref-model",
                     "token_ids": [1, 2, 3],

@@ -115,6 +115,7 @@ members = [
     "pi-terminalbench2-1",
     "pinchbench",
     "prime-rl",
+    "prime-rl-configs",
     "prolog",
     "proofnet",
     "proposer-solver",
@@ -5353,12 +5354,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "prime-pydantic-config", specifier = ">=0.4.3" },
+    { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "pydantic", specifier = ">=1.10.13" },
-    { name = "renderers", specifier = ">=0.1.11" },
+    { name = "renderers", editable = "deps/renderers" },
     { name = "tomli", specifier = ">=2.2.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "verifiers", specifier = ">=0.3.2.dev158" },
+    { name = "verifiers", editable = "deps/verifiers" },
 ]
 
 [[package]]

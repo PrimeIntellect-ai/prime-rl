@@ -26,7 +26,6 @@ def apply_shared_vllm_patches():
     monkey_patch_online_fp8_parameter_cast()
     monkey_patch_deepseek_v4_allowed_layer_types()
     monkey_patch_tokenize_params_validation()
-    monkey_patch_strip_routed_experts_from_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
     monkey_patch_packed_sampling_masks()
@@ -478,44 +477,6 @@ def _is_pd_decode_request(request) -> bool:
     """A request on a P/D decode instance (NIXL clears ``do_remote_prefill`` once scheduled, not ``remote_engine_id``)."""
     params = request.kv_transfer_params or {}
     return bool(params.get("remote_engine_id")) and not params.get("do_remote_decode")
-
-
-def monkey_patch_strip_routed_experts_from_chat():
-    """Drop routed_experts from chat-completions responses.
-
-    routed_experts are only consumed via the serialized ``/generate``
-    (serving_tokens) path used for router-replay training, which encodes them as a
-    ``{data, shape, start}`` object the PD router can merge. The stock
-    chat-completions path instead encodes them as a base64 ``np.save`` *string*,
-    which the PD router rejects ("prefill routed_experts must be an object with
-    base64 data and shape") and fails every eval rollout (evals go through chat
-    completions). ``enable_return_routed_experts`` is a server-wide model-config
-    flag with no per-request toggle, so strip the field on the chat path here.
-    """
-    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
-    from vllm.logger import init_logger
-
-    logger = init_logger(__name__)
-
-    if getattr(OpenAIServingChat.chat_completion_full_generator, "_prime_rl_strips_routed_experts", False):
-        return
-
-    _original = OpenAIServingChat.chat_completion_full_generator
-
-    async def _strip(result_generator):
-        async for res in result_generator:
-            for output in res.outputs:
-                output.routed_experts = None
-            yield res
-
-    async def _patched(self, request, result_generator, *args, **kwargs):
-        return await _original(self, request, _strip(result_generator), *args, **kwargs)
-
-    _patched._prime_rl_strips_routed_experts = True
-    OpenAIServingChat.chat_completion_full_generator = _patched
-    logger.info(
-        "Stripped routed_experts from chat-completions responses (PD router merges only the /generate object form)."
-    )
 
 
 def _patch_qwen35_moe_lora_format():
