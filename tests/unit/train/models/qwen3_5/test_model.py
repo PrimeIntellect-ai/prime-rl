@@ -83,6 +83,16 @@ def get_model(config, device="cuda"):
     return model
 
 
+@pytest.mark.parametrize("vlm", [False, True], ids=["text", "vlm"])
+def test_tied_word_embeddings_share_lm_head(vlm):
+    text_config = get_text_config()
+    text_config.tie_word_embeddings = True
+    config = get_vlm_config(text_config) if vlm else text_config
+    config.tie_word_embeddings = True
+    model = get_model(config, device="meta")
+    assert model.lm_head.weight is model.get_input_embeddings().weight
+
+
 @pytest.mark.gpu
 def test_context_parallel_setup_chain_text_and_vlm(text_config):
     cp_group = MagicMock()
