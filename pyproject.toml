@@ -12,7 +12,7 @@ dependencies = [
     "jaxtyping>=0.3.2",
     "loguru>=0.7.3",
     "numpy>=2.2.6",
-    "transformers==5.6.2",
+    "transformers==5.19.0",
     "wandb>=0.26.1",
     "wandb-workspaces>=0.4.3",
     "prime>=0.8.0",
@@ -55,7 +55,7 @@ gpu = [
     "torchvision ; sys_platform == 'linux'",
     "torchaudio ; sys_platform == 'linux'",
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
-    "vllm>=0.31.0 ; sys_platform == 'linux'",
+    "vllm>=0.32.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
     "ring-flash-attn>=0.1.8 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
@@ -149,10 +149,9 @@ override-dependencies = [
     # Shared by vLLM, TileLang, and the pinned FlashAttention 4 runtime.
     "apache-tvm-ffi==0.1.11",
     "nvidia-cudnn-cu13>=9.15 ; sys_platform == 'linux'",
-    # vLLM 0.31.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
+    # vLLM 0.32.0 requires this exact CUTLASS DSL version and quack-kernels 0.6.5.
     # Keep this pin aligned with quack-kernels and the flash-attn-4 revision below.
-    "nvidia-cutlass-dsl==4.7.1",
-    "transformers==5.6.2",
+    "nvidia-cutlass-dsl==4.8.0",
     "torch>=2.13.0",
     "openenv-core",
 ]
@@ -176,9 +175,11 @@ members = [
 ]
 # Tau tasksets require litellm<1.82.7, while Harbor requires litellm>=1.92.0.
 # Apex pins a verifiers git revision instead of the editable workspace member.
-# ALE CLI requires numpy>=2.4.4, while vLLM 0.31.0 (via mistral-common) requires numpy<2.4.
+# ALE CLI requires numpy>=2.4.4, while vLLM 0.32.0 (via mistral-common) requires numpy<2.4.
+# IFBench requires setuptools<78, while vLLM 0.32.0 requires setuptools>=78.1.1.
 # A workspace shares one lock, so these packages need separate environments.
 exclude = [
+    "deps/prime-envs/environments/if/ifbench",
     "deps/prime-envs/environments/office/ale_cli",
     "deps/prime-envs/environments/tool_use/tau2_bench",
     "deps/prime-envs/environments/tool_use/tau2_synth",
@@ -222,10 +223,10 @@ requires-dist = ["nixl-cu13==0.10.1"]
 # so resolve that variant without installing both runtime packages.
 [[tool.uv.dependency-metadata]]
 name = "nvidia-cutlass-dsl"
-version = "4.7.1"
+version = "4.8.0"
 requires-dist = [
-    "nvidia-cutlass-dsl-libs-base==4.7.1",
-    "nvidia-cutlass-dsl-libs-cu13==4.7.1",
+    "nvidia-cutlass-dsl-libs-base==4.8.0",
+    "nvidia-cutlass-dsl-libs-cu13==4.8.0",
 ]
 
 [tool.uv.exclude-newer-package]
@@ -233,8 +234,11 @@ requires-dist = [
 # bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
 harbor = "2026-10-08T00:00:00Z"
 tokenspeed-mla = false
-# vLLM 0.31.0 pins flashinfer-python 0.7.0.post1, published inside the rolling window
+# vLLM 0.32.0 pins flashinfer-python 0.7.0.post1, published inside the rolling window
 flashinfer-python = false
+# vLLM 0.32.0 pins these, published inside the rolling window
+instanttensor = false
+humming-kernels = false
 fastokens = false
 flash_attn_3 = false
 # PrimeIntellect-published packages in this project's dependency closure —
@@ -284,8 +288,8 @@ vllm-router = [
     { url = "https://github.com/PrimeIntellect-ai/router/releases/download/v0.2.3/vllm_router-0.2.3-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 vllm = [
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.31.0/vllm-0.31.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
-    { url = "https://github.com/vllm-project/vllm/releases/download/v0.31.0/vllm-0.31.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0-cp38-abi3-manylinux_2_28_x86_64.whl", marker = "platform_machine == 'x86_64'" },
+    { url = "https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0-cp38-abi3-manylinux_2_28_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 deep-ep = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/deep_ep-1.2.1+29d31c0-cp312-cp312-linux_x86_64.whl", marker = "platform_machine == 'x86_64'" },
