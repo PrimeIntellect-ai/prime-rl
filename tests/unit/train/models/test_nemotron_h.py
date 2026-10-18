@@ -92,7 +92,7 @@ def test_nemotron_h_weight_conversion_roundtrip():
 
 
 def test_nemotron_h_layer_types():
-    expected = ["mamba", "moe", "attention", "moe"]
+    expected = ["linear_attention", "moe", "full_attention", "moe"]
     pattern_config = NemotronHConfig(**_BASE, hybrid_override_pattern="ME*E")
     list_config = NemotronHConfig(**_BASE, layers_block_type=expected)
 
