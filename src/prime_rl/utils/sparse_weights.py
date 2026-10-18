@@ -133,7 +133,7 @@ def encode_gaps(indices: torch.Tensor, entry_starts: torch.Tensor) -> torch.Tens
     ``entry_starts`` position (where the gap is the index itself)."""
     previous = torch.empty_like(indices)
     previous[1:] = indices[:-1]
-    previous[entry_starts] = -1
+    previous.masked_fill_(entry_starts, -1)
     return (indices - previous - 1).to(torch.int32)
 
 
@@ -332,21 +332,6 @@ class AnchorWriter:
         write_file(self.step_dir / f"anchor_rank{self.rank}.done", str(world_size).encode())
 
 
-def write_anchor_shards(
-    parts: list[tuple[str, list[int], int, torch.Tensor]],
-    step_dir: Path,
-    rank: int,
-    world_size: int,
-    to_host: Callable[[torch.Tensor], Iterable],
-) -> None:
-    """Write one trainer rank's share of a full checkpoint from ``AnchorWriter.write_parts`` slices."""
-    writer = AnchorWriter(
-        [(name, shape, start, values.numel(), values.dtype) for name, shape, start, values in parts], step_dir, rank
-    )
-    writer.write_parts(parts, to_host)
-    writer.close(world_size)
-
-
 def checkpoint_index(directory: Path) -> dict[str, tuple[list[int], torch.dtype, list[tuple[int, int, Path, int]]]]:
     """Tensor name -> ``(shape, dtype, slices)`` of the safetensors files in ``directory``, with slices
     ``(flat start, numel, file, data offset)``: a HF checkpoint (one slice at 0), or an anchor
@@ -463,12 +448,8 @@ def read_delta(
 
 def pin(num_bytes: int) -> torch.Tensor:
     """Page-locked host memory of exactly ``num_bytes``, outside torch's caching host allocator (which rounds sizes
-    up and keeps freed blocks). Release it with ``unpin``."""
-    return page_lock(torch.from_numpy(np.empty(num_bytes, np.uint8)))
-
-
-def page_lock(tensor: torch.Tensor) -> torch.Tensor:
-    """Page-lock a host tensor in place with one ``cudaHostRegister`` (a copy may not span two)."""
+    up and keeps freed blocks), with one ``cudaHostRegister`` (a copy may not span two). Release it with ``unpin``."""
+    tensor = torch.from_numpy(np.empty(num_bytes, np.uint8))
     if tensor.numel():
         error = torch.cuda.cudart().cudaHostRegister(tensor.data_ptr(), tensor.nbytes, 0)
         assert error == 0, f"cudaHostRegister failed: {error}"

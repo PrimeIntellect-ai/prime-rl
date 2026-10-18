@@ -283,12 +283,11 @@ With `[weight_broadcast] type = "filesystem"` and `sparse = true`, the trainer p
 type = "filesystem"
 sparse = true
 anchor_interval = 25  # full checkpoint every N steps
-snapshot = "auto"     # previous weights on the GPU if they fit, else in pinned host memory
 ```
 
-- With `model.offload = "full"`, deltas come from the optimizer step: no snapshot of the weights is kept, except a small one for tensors that are not optimizer parameters.
-- Otherwise each trainer rank diffs its own shards against a snapshot of the previous broadcast (2 B per parameter) while the next step trains; the trainer only waits before its next final backward. Each rank also allocates a host buffer of the same size before training, so trainer hosts need that much free memory.
-- Anchors (full checkpoints) are written every `anchor_interval` steps. An engine that joins, restarts or fails an update loads the latest complete anchor, reading only the rows it holds, and replays the deltas since. An anchor whose copy holds back the next step's diff for more than 30 s is skipped. Anchors written in the optimizer step slow that step down, so prefer a larger `anchor_interval` there.
+- RL: deltas come from the optimizer step, with every optimizer and offload mode. Right before the step updates a chunk of parameters, their shards still hold the previous broadcast's weights; the trainer diffs the old and new values of each chunk as the step goes and writes the delta out. No copy of the weights is kept, except of the few tensors that are not optimizer parameters (buffers, frozen parameters, fp8 tensors whose 128-row blocks straddle trainer ranks). The trainer checks that no weight changed outside the optimizer step.
+- A broadcast that does not follow every optimizer step (the startup broadcast of a resumed run, SFT online evals) publishes a full checkpoint.
+- Anchors (full checkpoints) are written every `anchor_interval` steps, from the optimizer step. They slow that step down, so prefer a larger `anchor_interval`. An engine that joins, restarts or fails an update loads the latest complete anchor, reading only the rows it holds, and replays the deltas since.
 - Not supported: LoRA, fp8 tensors whose columns are not a multiple of 128, and engines that transform weights after loading other than online `fp8_per_block` (e.g. FlashInfer TRTLLM/CUTLASS MoE, Marlin). fp8 deltas need the same vLLM and torch versions on the trainer and the engines.
 
 ### Custom Templates
