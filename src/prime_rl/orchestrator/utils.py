@@ -48,9 +48,8 @@ def min_fresh_version(step: int, max_off_policy_steps: int) -> int:
 def node_policy_versions(node: vf.MessageNode, fallback: int) -> Iterator[tuple[int, int, int]]:
     """``(start, end, version)`` runs over a node's sampled tokens, indexed into
     ``node.token_ids``: the policy step whose weights sampled them, from the
-    engine's ``weight_versions`` labels. Tokens without a step label (sampled by
-    the weights an engine booted with, or by engines that never label, e.g.
-    Dynamo) get ``fallback``."""
+    engine's ``weight_versions`` labels. Tokens without a step label (engines
+    whose updates bypass ``/update_weights``, e.g. Dynamo) get ``fallback``."""
     sampled = sum(node.mask)
     offset = len(node.mask) - sampled
     if not node.weight_versions:
