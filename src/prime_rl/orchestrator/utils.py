@@ -64,8 +64,8 @@ def token_policy_ages(trace: vf.Trace, training_step: int) -> tuple[int, int, in
     """``(sum, count, max)`` of per-token policy age over the trace's sampled
     tokens: the version batch ``training_step`` trains on (v{step-1}) minus the
     policy step whose weights sampled the token, from the engines'
-    ``weight_versions`` labels. Tokens without a step label (sampled by the
-    weights an engine booted with) are not counted."""
+    ``weight_versions`` labels. Unlabelled tokens (``"default"``: Dynamo
+    engines, which update weights outside ``/update_weights``) are not counted."""
     total = count = oldest = 0
     for node in trace.nodes:
         for span in node.weight_versions or ():
