@@ -11,6 +11,7 @@ from math import prod
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -21,6 +22,7 @@ from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
 from prime_rl.trainer.models.fusions import get_model_packed_parameters, join_module_path
 from prime_rl.transports.weights.base import WeightSender
 from prime_rl.transports.weights.filesystem import FileSystemWeightSender
+from prime_rl.transports.weights.sparse_kernels import Pieces, build_pieces, count_changes, write_changes
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
@@ -69,12 +71,13 @@ class SparseDeltaEncoder:
     """Rank-local deltas of the trainer's weight shards, in HF coordinates.
 
     The deltas of the optimizer's parameters come from its step (``bind``): right before the step updates a chunk of
-    parameters, their shards still hold the previous broadcast's weights. ``update_hook`` (optimizers on the GPU)
-    copies the chunk's old wire bits, ``optimizer_hook`` (``FullCPUOffloadOptimizer``) receives the new values next
-    to the old ones; a diff thread compares the old and new wire bits and streams the changes out as the step goes.
-    No copy of the weights is kept. The other tensors (the residual: buffers, frozen parameters, state-dict copies,
-    fp8 tensors whose 128-row blocks straddle ranks) are diffed in ``encode`` against a copy of their previous wire
-    bits, which also checks that the optimizer's tensors still hold what its step wrote.
+    parameters, their shards still hold the previous broadcast's weights. ``update_hook`` (optimizers on the GPU) and
+    ``optimizer_hook`` (``FullCPUOffloadOptimizer``) copy the chunk's old wire bits; right after the update,
+    ``sparse_kernels`` compare them with the new bits in place and write the changes to pinned memory without a host
+    sync (bf16; fp8 and fp32 tensors are diffed on the diff thread), and the diff thread streams them out as the step
+    goes. No copy of the weights is kept. The other tensors (the residual: buffers, frozen parameters, fp8 tensors
+    whose 128-row blocks straddle ranks) are diffed in ``encode`` against a copy of their previous wire bits, which
+    also checks that the optimizer's tensors still hold what its step wrote.
 
     The prime->HF conversion is replayed once on meta tensors: every HF tensor must be a contiguous view of one trainer
     tensor, which maps a changed trainer element to its HF name and flat index. Tensors the engines hold in fp8 are
@@ -88,10 +91,13 @@ class SparseDeltaEncoder:
     PART = 1 << 26
     HOOK_CHUNK = 1 << 24
     HOOK_PART = 1 << 24
-    # GPU slots of ``optimizer_hook``, each twice the largest parameter shard; bytes of old values that
-    # ``update_hook`` holds for the diff thread (at least one update's)
+    # Updates in flight: GPU slots of their old bf16 bits (full offload: each the size of the largest parameter
+    # shard) and pinned regions of their changes; bytes of other old values that ``update_hook`` holds for the diff
+    # thread (at least one update's)
     HOOK_SLOTS = 2
     UPDATE_BYTES = 1 << 32
+    # Changes per pinned region of the kernels (more take further rounds)
+    REGION = 1 << 24
 
     def __init__(self, model: nn.Module):
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
@@ -448,15 +454,17 @@ class SparseDeltaEncoder:
 
         for key, fqn, shard, offset, gathered in shards:
             shard = shard.reshape(-1)
-            if key in self.checksums:
-                bits = as_bits(shard.to(self.wire_dtypes[key]))
-                checks.append((key, self._checksum(key, offset, bits)))
+            if key in self.fast or key in self.checksums:
                 if key not in self.stepped:
-                    # Not updated in this step (e.g. no gradient): an empty part carries its checksums, and its anchor
-                    # slices come from the live weights
-                    pending += self._diff_shard(key, fqn, shard, offset, None, bits, None)
+                    # Not updated in this step (e.g. no gradient): its anchor slices come from the live weights, and
+                    # an empty part carries its checksums (the bf16 tensors' come with the last part)
+                    bits = as_bits(shard.to(self.wire_dtypes[key]))
+                    if key in self.checksums:
+                        pending += self._diff_shard(key, fqn, shard, offset, None, bits, None)
                     if self.anchor is not None:
                         self._write_anchor_slices(key, fqn, len(bits), offset, bits)
+                if key in self.checksums:
+                    checks.append((key, self._checksum(key, offset, as_bits(shard.to(self.wire_dtypes[key])))))
                 continue
             parts = self._diff_shard(key, fqn, shard, offset, gathered, self.previous[key], self.previous[key])
             pending += parts
@@ -466,12 +474,17 @@ class SparseDeltaEncoder:
                 num_pending = 0
         if pending:
             flush()
+        names = [name for pieces in self.all_pieces for name in pieces.names]
+        ids = [self.name_ids[name] for name in names]
+        sums, live = self.sums[ids].tolist(), self._live_sums()[ids].tolist()
+        self._emit_host_parts(emit, dict(zip(names, sums)))
+        changed = {name for name, expected, value in zip(names, sums, live) if expected != value}
         if checks:
             keys, live = zip(*checks)
             expected = torch.cat([self.checksums[key] for key in keys])
-            changed = [key for key, same in zip(keys, expected.eq(torch.cat(live)).tolist()) if not same]
-            if changed:
-                raise RuntimeError(f"Trainer weights changed outside the optimizer step, not sent: {changed}")
+            changed |= {key for key, same in zip(keys, expected.eq(torch.cat(live)).tolist()) if not same}
+        if changed:
+            raise RuntimeError(f"Trainer weights changed outside the optimizer step, not sent: {sorted(changed)}")
 
     def _host_part(self, pending: list[tuple], staging: torch.Tensor | None = None) -> tuple:
         """One part ``(entries, gaps, value bytes, checksums)`` on the host from GPU part entries."""
@@ -620,12 +633,33 @@ class SparseDeltaEncoder:
             else:
                 residual.append(key)
         self.residual = set(residual)
+        # Diffed by ``sparse_kernels``: the tensors of parameters that are all bf16 on the wire. The others (fp8,
+        # fp32) by ``_diff_slot``
+        self.fast = {
+            key
+            for entries in self.param_keys.values()
+            if all(self.wire_dtypes[key] == torch.bfloat16 and fqn not in self.fp8 for key, fqn, *_ in entries)
+            for key, *_ in entries
+        }
+        self.params = params
+        self.pieces: dict[tuple, Pieces] = {}
+        self.name_ids = {name: index for index, name in enumerate(self.hf_tensors)}
         device = f"cuda:{self.device}"
-        if full_offload:
-            slot_bytes = 2 * -(-max(param.nbytes for param in params) // 256) * 256
-            self.hook_slots = queue.SimpleQueue()
-            for _ in range(self.HOOK_SLOTS):
-                self.hook_slots.put(torch.empty(slot_bytes, dtype=torch.uint8, device=device))
+        # The bf16 tensors' checksums of their last written bits, by ``name_ids``
+        self.sums = torch.zeros(len(self.name_ids), dtype=torch.int64, device=device)
+        # Old values of the updates in flight (full offload: one parameter each; grown as needed otherwise), and
+        # the pinned regions the kernels write the changes to
+        slot_bytes = -(-max(param.nbytes for param in params) // 256) * 256 if full_offload else 0
+        self.slots, self.regions = queue.SimpleQueue(), queue.SimpleQueue()
+        for _ in range(self.HOOK_SLOTS):
+            self.slots.put(torch.empty(slot_bytes, dtype=torch.uint8, device=device))
+            self.regions.put(
+                (
+                    torch.empty(self.REGION, dtype=torch.int32, pin_memory=True),
+                    torch.empty(self.REGION, dtype=torch.int16, pin_memory=True),
+                    torch.empty(0, dtype=torch.int32, pin_memory=True),
+                )
+            )
         self.update_bytes = threading.Condition()
         self.held_bytes = 0
         self.differ = ThreadPoolExecutor(1)
@@ -642,18 +676,30 @@ class SparseDeltaEncoder:
             if key in self.residual:
                 self.previous[key] = self._bits(key, shard)
                 self.shards[key] = (shard.numel(), offset)
-            else:
+            elif key not in self.fast:
                 self.checksums[key] = self._checksum(key, offset, as_bits(shard.reshape(-1).to(self.wire_dtypes[key])))
+        self.all_pieces = self._group_pieces(
+            [(param, [entry for entry in self._entries(param) if entry[0] in self.fast], 0) for param in self.params]
+        )
+        self.sums = self._live_sums()
         num_bytes = sum(bits.nbytes for bits in self.previous.values())
         get_logger().info(
-            f"Sparse weight deltas of {len(self.checksums)} tensors come from the optimizer step, "
+            f"Sparse weight deltas of {len(self.checksums) + len(self.fast)} tensors come from the optimizer step, "
             f"{len(self.previous)} tensors ({num_bytes / 2**30:.2f} GiB) are diffed against a copy"
         )
+
+    def _live_sums(self) -> torch.Tensor:
+        """The checksums of the bf16 optimizer tensors' live bits, by ``name_ids``."""
+        sums = torch.zeros_like(self.sums)
+        for pieces in self.all_pieces:
+            count_changes(pieces, None, torch.empty_like(pieces.tables[5]), sums)
+        return sums
 
     def arm(self, anchor: AnchorWriter | None, emit: Callable) -> None:
         """Collect the next optimizer step's delta, handing host parts to ``emit`` as the step goes, and write its
         anchor slices if ``anchor``."""
         self.step_parts, self.scale_changes, self.anchor, self.emit = [], 0, anchor, emit
+        self.host_parts: list[tuple] = []
         # Optimizer tensors the step updated (and wrote the anchor slices of)
         self.stepped: set[str] = set()
         self.hook_wait = self.diff_busy = 0.0
@@ -685,26 +731,151 @@ class SparseDeltaEncoder:
             if start <= at < start + local_param.numel()
         ]
 
+    def _group_pieces(self, items: list[tuple]) -> list[Pieces]:
+        """The ``Pieces`` of ``items`` (``(local parameter, entries, position of its old bits)``), one per
+        parameter dtype; cached."""
+        cache_key = tuple((local.data_ptr(), position) for local, _, position in items)
+        if cache_key not in self.pieces:
+            rows = defaultdict(list)
+            for local, entries, position in items:
+                for key, fqn, numel, offset, (size, stride, at) in entries:
+                    names, begins, ends, shifts = self._segments(key, self.segments[fqn], offset, numel)
+                    for name, begin, end, shift in zip(names, begins, ends, shifts):
+                        # A segment is contiguous in the parameter, also in a strided view
+                        first, last = (
+                            at + sum(i * s for i, s in zip(np.unravel_index(j, size), stride)) for j in (begin, end - 1)
+                        )
+                        assert last - first == end - 1 - begin
+                        rows[local.dtype].append(
+                            (
+                                name,
+                                position + first,
+                                local.data_ptr() + first * local.element_size(),
+                                end - begin,
+                                begin + shift,
+                                self.name_ids[name],
+                            )
+                        )
+            self.pieces[cache_key] = [
+                build_pieces(group, dtype == torch.float32, local.device) for dtype, group in rows.items()
+            ]
+        return self.pieces[cache_key]
+
+    def _launch(self, items: list[tuple], old: torch.Tensor, release: Callable, written: list[tuple]) -> None:
+        """Right after the update of ``items`` (``(local parameter, entries, position of its old bits in old``),
+        on the current stream: count and write its changes to pinned regions and record the new bits' checksums;
+        the diff thread collects them, writes the anchor slices of ``written`` and then calls ``release``."""
+        launches = []
+        for pieces in self._group_pieces(items):
+            indices, values, counts_host = self.regions.get()
+            num_blocks = len(pieces.tables[5])
+            if len(counts_host) < num_blocks:
+                counts_host = torch.empty(num_blocks, dtype=torch.int32, pin_memory=True)
+            counts = torch.empty(num_blocks, dtype=torch.int32, device=old.device)
+            self.sums.index_fill_(0, pieces.segments, 0)
+            count_changes(pieces, old, counts, self.sums)
+            ends = counts.cumsum(0)
+            write_changes(pieces, old, ends, indices, values, 0)
+            counts_host[:num_blocks].copy_(counts, non_blocking=True)
+            launches.append((pieces, ends, (indices, values, counts_host)))
+        ready = torch.cuda.Event()
+        ready.record()
+        keys = [key for _, entries, _ in items for key, *_ in entries]
+        self.diffs.append(self.differ.submit(self._collect, launches, keys, old, ready, release, written))
+
+    @torch.no_grad()
+    def _collect(self, launches: list[tuple], keys: list[str], old: torch.Tensor, ready, release, written) -> None:
+        """Diff thread: the host parts of ``_launch``'s changes to ``keys`` (writing the changes past a region's
+        capacity in further rounds), and the anchor slices of ``written``; then ``release`` the old values."""
+        torch.cuda.set_device(self.device)
+        ready.synchronize()
+        start = time.perf_counter()
+        try:
+            with torch.cuda.stream(self.diff_stream):
+                for pieces, ends, region in launches:
+                    indices, values, counts = region
+                    block_counts = counts[: len(pieces.tables[5])].numpy()
+                    total = int(block_counts.sum())
+                    changed, changed_values = [], []
+                    for skip in range(0, total, len(indices)):
+                        if skip:
+                            write_changes(pieces, old, ends, indices, values, skip)
+                            self.diff_stream.synchronize()
+                        num = min(len(indices), total - skip)
+                        changed.append(indices[:num].numpy().copy())
+                        changed_values.append(values[:num].numpy().copy())
+                    self.regions.put(region)
+                    if not total:
+                        continue
+                    piece_counts = np.add.reduceat(block_counts, pieces.first_blocks)
+                    index = np.concatenate(changed)
+                    previous = np.empty_like(index)
+                    previous[1:] = index[:-1]
+                    previous[(np.cumsum(piece_counts) - piece_counts)[piece_counts > 0]] = -1
+                    entries = [(name, int(count)) for name, count in zip(pieces.names, piece_counts) if count]
+                    self.host_parts.append((entries, index - previous - 1, np.concatenate(changed_values)))
+                if self.anchor is not None:
+                    for key, fqn, numel, offset, view in written:
+                        self._write_anchor_slices(key, fqn, numel, offset, view.reshape(-1).to(self.wire_dtypes[key]))
+                    if not written:  # written by optimizer_hook
+                        for pieces, *_ in launches:
+                            self.anchor.add_sums(pieces.names, self.sums[pieces.segments])
+                    self.diff_stream.synchronize()
+                self.stepped.update(keys)
+        finally:
+            release()
+            self.diff_busy += time.perf_counter() - start
+        if sum(len(part[1]) for part in self.host_parts) >= self.HOOK_PART:
+            self._emit_host_parts(self.emit)
+
+    def _emit_host_parts(self, emit: Callable, checksums: dict[str, int] | None = None) -> None:
+        parts, self.host_parts = self.host_parts, []
+        gaps = np.concatenate([part[1] for part in parts]) if parts else np.empty(0, np.int32)
+        values = np.concatenate([part[2] for part in parts]) if parts else np.empty(0, np.int16)
+        entries = [entry for part in parts for entry in part[0]]
+        emit((entries, torch.from_numpy(gaps), torch.from_numpy(values.view(np.uint8)), checksums or {}))
+
     @torch.no_grad()
     def update_hook(self, params: list[torch.Tensor]) -> Callable[[], None]:
         """``update_hook`` of the optimizers on the GPU, right before they update ``params`` on the current stream:
-        copy the old wire bits of their shards, and diff them against the updated shards on the diff thread."""
+        copy the old wire bits of their shards, and diff them against the updated shards (bf16: right after the
+        update, with ``sparse_kernels``; others on the diff thread)."""
         if not self.armed:
             return lambda: None
-        locals_ = [param.to_local() if isinstance(param, DTensor) else param for param in params]
-        num_bytes = sum(local.numel() for local in locals_) * 2
-        start = time.perf_counter()
-        with self.update_bytes:
-            self.update_bytes.wait_for(lambda: self.held_bytes == 0 or self.held_bytes + num_bytes <= self.UPDATE_BYTES)
-            self.held_bytes += num_bytes
-        self.hook_wait += time.perf_counter() - start
-        items = []
-        for local in locals_:
+        fast, other = [], []
+        for param in params:
+            local = param.to_local() if isinstance(param, DTensor) else param
             entries = self._entries(local)
             if entries:
-                dtypes = {self.wire_dtypes[key] for key, *_ in entries}
-                dtype = dtypes.pop() if len(dtypes) == 1 else local.dtype
-                items.append((entries, local.to(dtype, copy=True), local))
+                (fast if entries[0][0] in self.fast else other).append((local, entries))
+        start = time.perf_counter()
+        num_bytes = sum(local.numel() for local, _ in other) * 2
+        if other:
+            with self.update_bytes:
+                self.update_bytes.wait_for(
+                    lambda: self.held_bytes == 0 or self.held_bytes + num_bytes <= self.UPDATE_BYTES
+                )
+                self.held_bytes += num_bytes
+        if fast:
+            slot = self.slots.get()
+            numel = sum(local.numel() for local, _ in fast)
+            if slot.numel() < 2 * numel:
+                slot = torch.empty(2 * numel, dtype=torch.uint8, device=slot.device)
+            old, items, written, position = slot.view(torch.bfloat16), [], [], 0
+            for local, entries in fast:
+                old[position : position + local.numel()].view(local.shape).copy_(local)
+                items.append((local, entries, position))
+                written += [
+                    (key, fqn, numel, offset, local.as_strided(size, stride, local.storage_offset() + at))
+                    for key, fqn, numel, offset, (size, stride, at) in entries
+                ]
+                position += local.numel()
+        self.hook_wait += time.perf_counter() - start
+        items_other = []
+        for local, entries in other:
+            dtypes = {self.wire_dtypes[key] for key, *_ in entries}
+            dtype = dtypes.pop() if len(dtypes) == 1 else local.dtype
+            items_other.append((entries, local.to(dtype, copy=True), local))
 
         def release() -> None:
             with self.update_bytes:
@@ -712,31 +883,31 @@ class SparseDeltaEncoder:
                 self.update_bytes.notify_all()
 
         def finish() -> None:
-            ready = torch.cuda.Event()
-            ready.record()
-            self.diffs.append(self.differ.submit(self._diff_slot, items, ready, release, True))
+            if fast:
+                self._launch(items, slot.view(torch.int16), partial(self.slots.put, slot), written)
+            if other:
+                ready = torch.cuda.Event()
+                ready.record()
+                self.diffs.append(self.differ.submit(self._diff_slot, items_other, ready, release, True))
 
         return finish
 
     @torch.no_grad()
     def optimizer_hook(self, local_param: torch.Tensor, source: torch.Tensor) -> None:
         """``FullCPUOffloadOptimizer.weight_hook``, on its H2D stream: copy the shard (still the previous
-        broadcast's weights) and its new values ``source`` (pinned host) into a GPU slot, write the new values and
-        diff the slot on the diff thread. At anchor steps, also writes the new values to the anchor from the
-        host."""
+        broadcast's weights) into a GPU slot, write the new values ``source`` (pinned host) and diff the shard
+        against the slot (bf16: right away, with ``sparse_kernels``; others on the diff thread). At anchor steps,
+        also writes the new values to the anchor from the host."""
         entries = self._entries(local_param) if self.armed else []
         if not entries:
             local_param.copy_(source, non_blocking=True)
             return
-        slot = self.hook_slots.get()
-        half = slot.numel() // 2
-        previous = slot[: source.nbytes].view(source.dtype)
-        new = slot[half : half + source.nbytes].view(source.dtype)
-        previous.copy_(local_param.reshape(-1))
-        new.copy_(source.reshape(-1), non_blocking=True)
-        local_param.copy_(new.view(local_param.shape))
-        ready = torch.cuda.Event()
-        ready.record()
+        slot = self.slots.get()
+        fast = entries[0][0] in self.fast
+        previous = slot[: local_param.numel() * (2 if fast else local_param.element_size())]
+        previous = previous.view(torch.bfloat16 if fast else local_param.dtype)
+        previous.view(local_param.shape).copy_(local_param)
+        local_param.copy_(source, non_blocking=True)
         if self.anchor is not None:
             for key, fqn, numel, offset, (size, stride, at) in entries:
                 host = source.as_strided(size, stride, source.storage_offset() + at).reshape(-1)
@@ -747,71 +918,41 @@ class SparseDeltaEncoder:
                         for name, _, hf_start, begin, end in self._slices(fqn, numel, offset)
                     ]
                 )
-        release = partial(self.hook_slots.put, slot)
-        self.diffs.append(self.differ.submit(self._diff_slot, [(entries, previous, new)], ready, release, False))
+        release = partial(self.slots.put, slot)
+        if fast:
+            self._launch([(local_param, entries, 0)], previous.view(torch.int16), release, [])
+            return
+        ready = torch.cuda.Event()
+        ready.record()
+        # The shard holds the new values until the next step, which waits for the diffs
+        items = [(entries, previous, local_param.reshape(-1))]
+        self.diffs.append(self.differ.submit(self._diff_slot, items, ready, release, False))
 
     @torch.no_grad()
     def _diff_slot(self, items: list[tuple], ready: torch.cuda.Event, release: Callable, on_gpu: bool) -> None:
         """Diff thread: the parts of the trainer tensors in ``items`` (``(entries, old values, new values)`` of
-        parameter shards), and their anchor slices if the optimizer is ``on_gpu``; then ``release`` the old values.
-        The bf16 tensors are diffed together, as one flat tensor. Hands the parts so far to ``emit`` every
-        ``HOOK_PART`` changes."""
+        parameter shards that are not all bf16), and their anchor slices if the optimizer is ``on_gpu``; then
+        ``release`` the old values. Hands the parts so far to ``emit`` every ``HOOK_PART`` changes."""
         torch.cuda.set_device(self.device)
         ready.synchronize()
         start = time.perf_counter()
         chunk = self.CHUNK if on_gpu else self.HOOK_CHUNK
         try:
             with torch.cuda.stream(self.diff_stream):
-                batch, written = [], []
                 for entries, previous, new in items:
                     for key, fqn, numel, offset, (size, stride, at) in entries:
                         current, old = (
                             values.as_strided(size, stride, values.storage_offset() + at) for values in (new, previous)
                         )
-                        if fqn in self.fp8 or self.wire_dtypes[key] != torch.bfloat16:
-                            current = current.reshape(-1).to(self.wire_dtypes[key])
-                            old = as_bits(old.reshape(-1).to(self.wire_dtypes[key]))
-                            self.step_parts += self._diff_shard(key, fqn, current, offset, None, old, None, chunk)
-                            self.checksums[key] = self._checksum(key, offset, as_bits(current))
-                            written.append((key, fqn, numel, offset, current))
-                        else:
-                            batch.append((key, fqn, numel, offset, current, old))
-                if batch:
-                    total = sum(numel for _, _, numel, *_ in batch)
-                    current_bits, previous_bits = (
-                        torch.empty(total, dtype=torch.bfloat16, device=f"cuda:{self.device}") for _ in range(2)
-                    )
-                    names, begins, ends, shifts, ranges, position = [], [], [], [], [], 0
-                    for key, fqn, numel, offset, current, old in batch:
-                        current_bits[position : position + numel].view(current.shape).copy_(current)
-                        previous_bits[position : position + numel].view(old.shape).copy_(old)
-                        segment_names, *segments = self._segments(key, self.segments[fqn], offset, numel)
-                        ranges.append((key, len(names), len(names) + len(segment_names)))
-                        names += segment_names
-                        begins += [begin + position for begin in segments[0]]
-                        ends += [end + position for end in segments[1]]
-                        shifts += [shift - position for shift in segments[2]]
-                        written.append((key, fqn, numel, offset, current_bits[position : position + numel]))
-                        position += numel
-                    part = self._diff_flat(
-                        tuple(key for key, *_ in batch),
-                        names,
-                        begins,
-                        ends,
-                        shifts,
-                        as_bits(current_bits),
-                        as_bits(previous_bits),
-                        chunk,
-                    )
-                    self.step_parts.append(part)
-                    for key, first, last in ranges:
-                        self.checksums[key] = part[5][first:last].sum(0, keepdim=True)
-                for key, fqn, numel, offset, values in written if self.anchor is not None else []:
-                    if on_gpu:
-                        self._write_anchor_slices(key, fqn, numel, offset, values)
-                    else:  # written by optimizer_hook
-                        self.anchor.add_sums(*self._value_sums(key, offset, as_bits(values)))
-                self.stepped.update(key for key, *_ in written)
+                        current = current.reshape(-1).to(self.wire_dtypes[key])
+                        old = as_bits(old.reshape(-1).to(self.wire_dtypes[key]))
+                        self.step_parts += self._diff_shard(key, fqn, current, offset, None, old, None, chunk)
+                        self.checksums[key] = self._checksum(key, offset, as_bits(current))
+                        if self.anchor is not None and on_gpu:
+                            self._write_anchor_slices(key, fqn, numel, offset, current)
+                        elif self.anchor is not None:  # written by optimizer_hook
+                            self.anchor.add_sums(*self._value_sums(key, offset, as_bits(current)))
+                        self.stepped.add(key)
                 self.diff_stream.synchronize()
         finally:
             release()

@@ -15,7 +15,7 @@ class ChunkedUpdates:
     """Optimizer mixin: with ``update_hook`` set, ``step`` updates the parameters a chunk of up to ``CHUNK_NUMEL``
     local elements at a time and calls the hook around each chunk's update."""
 
-    CHUNK_NUMEL = 1 << 28
+    CHUNK_NUMEL = 1 << 26
     update_hook: UpdateHook | None = None
 
     def step(self, closure=None):
