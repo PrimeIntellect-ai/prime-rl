@@ -190,7 +190,7 @@ def substitute_ulysses_attn(
             cu_seqlens_k=cu_seqlens,
             max_seqlen_q=max_seqlen,
             max_seqlen_k=max_seqlen,
-            causal=True,
+            causal=getattr(self, "is_causal", True),
             cp_group=process_group,
             cp_size=cp_size,
             flash_attn_version=flash_attn_version,

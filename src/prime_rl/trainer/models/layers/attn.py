@@ -509,7 +509,7 @@ class FlashAttention(nn.Module):
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""
-        kwargs: dict = {"causal": True}
+        kwargs: dict = {"causal": self.is_causal}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
             kwargs["window_size"] = (sliding_window - 1, 0)
