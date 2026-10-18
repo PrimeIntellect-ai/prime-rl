@@ -802,14 +802,14 @@ class SparseDeltaEncoder:
     @torch.no_grad()
     def _collect(self, launches: list[tuple], keys: list[str], old: torch.Tensor, ready, release, written) -> None:
         """Diff thread: the host parts of ``_launch``'s changes to ``keys`` (writing the changes past a region's
-        capacity in further rounds), and the anchor slices of ``written``; then ``release`` the old values."""
+        capacity in further rounds); then ``release`` the old values and the regions, and write the anchor slices
+        of ``written``."""
         torch.cuda.set_device(self.device)
         ready.synchronize()
         start = time.perf_counter()
         try:
             with torch.cuda.stream(self.diff_stream):
-                for pieces, ends, region in launches:
-                    indices, values, counts = region
+                for pieces, ends, (indices, values, counts) in launches:
                     block_counts = counts[: len(pieces.tables[5])].numpy()
                     total = int(block_counts.sum())
                     changed, changed_values = [], []
@@ -820,7 +820,6 @@ class SparseDeltaEncoder:
                         num = min(len(indices), total - skip)
                         changed.append(indices[:num].numpy().copy())
                         changed_values.append(values[:num].numpy().copy())
-                    self.regions.put(region)
                     if not total:
                         continue
                     piece_counts = np.add.reduceat(block_counts, pieces.first_blocks)
@@ -830,13 +829,20 @@ class SparseDeltaEncoder:
                     previous[(np.cumsum(piece_counts) - piece_counts)[piece_counts > 0]] = -1
                     entries = [(name, int(count)) for name, count in zip(pieces.names, piece_counts) if count]
                     self.host_parts.append((entries, index - previous - 1, np.concatenate(changed_values)))
-                if self.anchor is not None:
-                    for key, fqn, numel, offset, view in written:
-                        self._write_anchor_slices(key, fqn, numel, offset, view.reshape(-1).to(self.wire_dtypes[key]))
-                    self.diff_stream.synchronize()
-                self.stepped.update(keys)
         finally:
+            # Before the anchor writes, which read the live weights: the next updates wait for these
+            for _, _, region in launches:
+                self.regions.put(region)
             release()
+        try:
+            if self.anchor is not None:
+                with torch.cuda.stream(self.diff_stream):
+                    for key, fqn, numel, offset, view in written:
+                        values = view.reshape(-1).to(self.wire_dtypes[key])
+                        self._write_anchor_slices(key, fqn, numel, offset, values)
+                    self.diff_stream.synchronize()
+            self.stepped.update(keys)
+        finally:
             self.diff_busy += time.perf_counter() - start
         if sum(len(part[1]) for part in self.host_parts) >= self.HOOK_PART:
             self._emit_host_parts(self.emit)
