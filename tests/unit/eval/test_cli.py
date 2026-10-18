@@ -1,8 +1,24 @@
 import json
+from unittest.mock import Mock
 
 import pytest
 
 from prime_rl.entrypoints.eval import expand_shorthands
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_gsm8k_eval_requires_credentials(monkeypatch, tmp_path, configured) -> None:
+    from tests.integration import test_gsm8k_eval
+
+    monkeypatch.setattr(test_gsm8k_eval, "resolve_api_key", lambda config: "test-key" if configured else "EMPTY")
+    run_process = Mock(return_value=object())
+    if configured:
+        assert test_gsm8k_eval.eval_process.__wrapped__(run_process, tmp_path) is run_process.return_value
+        run_process.assert_called_once()
+    else:
+        with pytest.raises(pytest.skip.Exception, match="PRIME_API_KEY"):
+            test_gsm8k_eval.eval_process.__wrapped__(run_process, tmp_path)
+        run_process.assert_not_called()
 
 
 def test_expand_shorthands_folds_taskset_and_env_into_one_source() -> None:
