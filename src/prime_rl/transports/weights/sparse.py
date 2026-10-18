@@ -420,7 +420,11 @@ class SparseDeltaEncoder:
         for key, fqn, shard, offset, gathered in shards:
             shard = shard.reshape(-1)
             if key in self.checksums:
-                checks.append((key, self._checksum(key, offset, as_bits(shard.to(self.wire_dtypes[key])))))
+                bits = as_bits(shard.to(self.wire_dtypes[key]))
+                checks.append((key, self._checksum(key, offset, bits)))
+                if self.anchor is not None and key not in self.anchored:
+                    # Not updated in this step (e.g. no gradient): its anchor slices come from the live weights
+                    self._write_anchor_slices(fqn, len(bits), offset, bits)
                 continue
             parts = self._diff_shard(key, fqn, shard, offset, gathered, self.previous[key], self.previous[key])
             pending += parts
@@ -613,6 +617,8 @@ class SparseDeltaEncoder:
         """Collect the next optimizer step's delta, handing host parts to ``emit`` as the step goes, and write its
         anchor slices if ``anchor``."""
         self.step_parts, self.scale_changes, self.anchor, self.emit = [], 0, anchor, emit
+        # Optimizer tensors whose anchor slices the step wrote
+        self.anchored: set[str] = set()
         self.hook_wait = self.diff_busy = 0.0
         self.armed = True
 
@@ -698,6 +704,7 @@ class SparseDeltaEncoder:
             for key, fqn, numel, offset, (size, stride, at) in entries:
                 host = source.as_strided(size, stride, source.storage_offset() + at).reshape(-1)
                 host = host.to(self.wire_dtypes[key])
+                self.anchored.add(key)
                 self.anchor.write_all(
                     [
                         (name, hf_start, host[begin:end].view(torch.uint8).numpy())
@@ -730,7 +737,7 @@ class SparseDeltaEncoder:
                             old = as_bits(old.reshape(-1).to(self.wire_dtypes[key]))
                             self.step_parts += self._diff_shard(key, fqn, current, offset, None, old, None, chunk)
                             self.checksums[key] = self._checksum(key, offset, as_bits(current))
-                            written.append((fqn, numel, offset, current))
+                            written.append((key, fqn, numel, offset, current))
                         else:
                             batch.append((key, fqn, numel, offset, current, old))
                 if batch:
@@ -748,7 +755,7 @@ class SparseDeltaEncoder:
                         begins += [begin + position for begin in segments[0]]
                         ends += [end + position for end in segments[1]]
                         shifts += [shift - position for shift in segments[2]]
-                        written.append((fqn, numel, offset, current_bits[position : position + numel]))
+                        written.append((key, fqn, numel, offset, current_bits[position : position + numel]))
                         position += numel
                     part = self._diff_flat(
                         tuple(key for key, *_ in batch),
@@ -764,8 +771,9 @@ class SparseDeltaEncoder:
                     for key, first, last in ranges:
                         self.checksums[key] = part[5][first:last].sum(0, keepdim=True)
                 if on_gpu and self.anchor is not None:
-                    for fqn, numel, offset, values in written:
+                    for key, fqn, numel, offset, values in written:
                         self._write_anchor_slices(fqn, numel, offset, values)
+                        self.anchored.add(key)
                 self.diff_stream.synchronize()
         finally:
             release()
@@ -787,7 +795,7 @@ class SparseDeltaEncoder:
         for at in range(0, data.numel(), window):
             count = min(window, data.numel() - at)
             self.diff_staging[:count].copy_(data[at : at + count], non_blocking=True)
-            self.diff_stream.synchronize()
+            torch.cuda.current_stream().synchronize()
             staged = self.diff_staging[:count].numpy()
             items = []
             for name, start, begin, end in slices:

@@ -269,6 +269,9 @@ class AnchorWriter:
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.files: list[tuple[str, int]] = []
         self.offsets: dict[tuple[str, int], tuple[int, int]] = {}
+        self.sizes = {(name, start): numel * dtype.itemsize for name, _, start, numel, dtype in slices}
+        # (slice, bytes) of every write, from any thread
+        self.written: list[tuple[tuple[str, int], int]] = []
         # Round-robin over the files, which are written in parallel
         num_files = max(1, -(-sum(numel * dtype.itemsize for *_, numel, dtype in slices) // 2**30))
         groups = [slices[index::num_files] for index in range(num_files)]
@@ -305,6 +308,7 @@ class AnchorWriter:
         """Write ``data`` (bytes) at byte ``at`` of the slice ``"{name}@{start}"``."""
         fd, offset = self.offsets[(name, start)]
         self._pwrite(fd, data, offset + at)
+        self.written.append(((name, start), memoryview(data).nbytes))
 
     def write_parts(
         self, parts: list[tuple[str, list[int], int, torch.Tensor]], to_host: Callable[[torch.Tensor], Iterable]
@@ -323,7 +327,14 @@ class AnchorWriter:
             future.result()
 
     def close(self, world_size: int) -> None:
+        """Publish the files and the marker; raises if a slice was not written in full."""
         self.pool.shutdown()
+        written = dict.fromkeys(self.sizes, 0)
+        for key, num_bytes in self.written:
+            written[key] += num_bytes
+        missing = [f"{name}@{start}" for (name, start), size in self.sizes.items() if written[(name, start)] != size]
+        if missing:
+            raise RuntimeError(f"Anchor {self.step_dir.name} is missing data of {len(missing)} slices: {missing[:8]}")
         for name, fd in self.files:
             drop_page_cache(fd)
             os.close(fd)

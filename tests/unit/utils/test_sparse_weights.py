@@ -1,11 +1,14 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 import torch
 
 from prime_rl.utils.sparse_weights import (
     DELTA_DIR,
     MANIFEST,
+    AnchorWriter,
+    anchor_complete,
     as_bits,
     bits_checksum,
     decode_gaps,
@@ -73,3 +76,14 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
     patched = apply({"a"})
     assert torch.equal(patched["a"], as_bits(current["a"]).view(-1))
     assert torch.equal(patched["b"], as_bits(previous["b"]).view(-1))
+
+
+def test_anchor_with_an_unwritten_slice_is_not_published(tmp_path):
+    step_dir = tmp_path / "step_5"
+    step_dir.mkdir()
+    values = torch.arange(6, dtype=torch.bfloat16)
+    writer = AnchorWriter([("a", [6], 0, 6, torch.bfloat16), ("b", [6], 0, 6, torch.bfloat16)], step_dir, 0)
+    writer.write_parts([("a", [6], 0, values)], lambda tensor: [tensor.view(torch.uint8).numpy()])
+    with pytest.raises(RuntimeError, match="b@0"):
+        writer.close(1)
+    assert not anchor_complete(step_dir)
