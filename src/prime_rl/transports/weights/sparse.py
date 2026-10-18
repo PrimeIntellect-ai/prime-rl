@@ -18,6 +18,7 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.shared import FileSystemWeightBroadcastConfig
+from prime_rl.trainer.models.fusions import get_model_packed_parameters, join_module_path
 from prime_rl.transports.weights.base import WeightSender
 from prime_rl.transports.weights.filesystem import FileSystemWeightSender
 from prime_rl.utils.logger import get_logger
@@ -43,6 +44,25 @@ from prime_rl.utils.weights import convert_state_dict_to_hf, resolve_fqn, resolv
 
 if TYPE_CHECKING:
     from prime_rl.trainer.optim import OptimizerLike
+
+
+def trainer_tensors(model: nn.Module) -> dict[str, torch.Tensor]:
+    """The model's state-dict entries without running its state-dict hooks (no collectives). A packed parameter
+    (``fusions``) whose packing dimension is sharded stays packed: its checkpoint entries would be gathered copies."""
+    tensors = dict(model.named_parameters(remove_duplicate=False))
+    for name, module in model.named_modules(remove_duplicate=False):
+        for buffer_name, buffer in module.named_buffers(recurse=False):
+            if buffer_name not in module._non_persistent_buffers_set:
+                tensors[join_module_path(name, buffer_name)] = buffer
+    keys = {id(tensor): key for key, tensor in tensors.items()}
+    for packed in get_model_packed_parameters(model):
+        param, spec = packed.parameter, packed.spec
+        if isinstance(param, DTensor) and any(placement.is_shard(spec.dim) for placement in param.placements):
+            continue
+        prefix = keys[id(param)].removesuffix(spec.name)
+        del tensors[keys[id(param)]]
+        tensors.update(zip([prefix + name for name in spec.logical_names], spec.split_into_logical_views(param)))
+    return tensors
 
 
 class SparseDeltaEncoder:
@@ -78,16 +98,23 @@ class SparseDeltaEncoder:
         self.wire_dtypes: dict[str, torch.dtype] = {}
         self.key_fqn: dict[str, str] = {}
         meta: dict[str, torch.Tensor] = {}
-        for key, value in model.state_dict().items():
+        for key, value in trainer_tensors(model).items():
             dtype = resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16) if isinstance(value, DTensor) else value.dtype
             self.wire_dtypes[key] = dtype
             self.key_fqn[key] = resolve_fqn(model, key)
             meta[self.key_fqn[key]] = torch.empty(value.shape, dtype=dtype, device="meta")
         owner = {id(tensor): fqn for fqn, tensor in meta.items()}
+        # The checkpoint names of packed parameters are views of them
+        canonical = dict(meta)
+        for packed in get_model_packed_parameters(model):
+            if packed.fqn not in meta:
+                continue
+            views = packed.spec.split_into_logical_views(canonical.pop(packed.fqn))
+            canonical.update(zip(packed.logical_fqns, views))
 
         segments = defaultdict(list)
         self.hf_tensors: dict[str, tuple[list[int], str]] = {}
-        for name, tensor in convert_state_dict_to_hf(model, dict(meta)).items():
+        for name, tensor in convert_state_dict_to_hf(model, canonical).items():
             base = tensor if tensor._base is None else tensor._base
             if id(base) not in owner or not tensor.is_contiguous():
                 raise NotImplementedError(f"Sparse weight broadcast cannot map {name} to a contiguous trainer slice")
@@ -176,7 +203,7 @@ class SparseDeltaEncoder:
     def _find_gathered(self, model: nn.Module, is_master: bool) -> set[str]:
         """fp8 trainer tensors whose 128-row blocks straddle ranks on some rank."""
         keys, straddles = [], []
-        for key, value in model.state_dict().items():
+        for key, value in trainer_tensors(model).items():
             fqn = resolve_fqn(model, key)
             if fqn not in self.fp8:
                 continue
@@ -201,7 +228,7 @@ class SparseDeltaEncoder:
         ``(previous, current)`` full bf16 tensors of fp8 tensors whose blocks straddle ranks, all-gathered here
         because ``encode`` runs no collectives."""
         shards = []
-        for key, value in model.state_dict().items():
+        for key, value in trainer_tensors(model).items():
             fqn = self.key_fqn[key]
             if fqn not in self.segments:
                 continue
