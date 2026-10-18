@@ -23,13 +23,16 @@ from prime_rl.utils.sparse_weights import (
     ENGINE_LAYOUT,
     MANIFEST,
     anchor_complete,
+    as_bits,
     bits_dtype,
     checkpoint_index,
     decode_gaps,
     pin,
+    read_anchor_checksums,
     read_checkpoint_range,
     read_delta,
     read_manifest,
+    rows_checksum,
     unpin,
     write_file,
 )
@@ -292,6 +295,35 @@ class FileSystemWeightUpdateWorker(Worker):
         if mismatched:
             raise RuntimeError(f"Sparse weight delta {step_dir.name} diverged from the trainer: {mismatched[:8]}")
 
+    def _verify_rows(
+        self, step_dir: Path, sums: dict[str, torch.Tensor], partial: dict[str, bool], expected: dict[str, int]
+    ) -> None:
+        """Check the rows read from an anchor or full checkpoint against the trainer's checksums. Tensors this
+        worker read only some rows of are summed over the TP group first (not for fp8 tensors, read in whole
+        128-row blocks that TP workers may share); without TP they are not checked."""
+        if not sums:
+            return
+        index_map, tp_group = self.index_map, get_tp_group()
+        names = sorted(sums)
+        totals = torch.stack([sums[name] for name in names])
+        partial = torch.tensor([partial[name] for name in names], device=totals.device)
+        if tp_group.world_size > 1 and partial.any():
+            reduced = totals[partial]
+            torch.distributed.all_reduce(reduced, group=tp_group.device_group)
+            totals[partial] = reduced
+        skip = (
+            partial
+            if tp_group.world_size == 1
+            else partial & torch.tensor([name in index_map.fp8 for name in names], device=totals.device)
+        )
+        mismatched = [
+            name
+            for name, value, skipped in zip(names, totals.tolist(), skip.tolist())
+            if not skipped and value != expected[name]
+        ]
+        if mismatched:
+            raise RuntimeError(f"Sparse weight checkpoint {step_dir.name} diverged from the trainer: {mismatched[:8]}")
+
     def _load_checkpoint(self, step_dir: Path) -> None:
         """Reload every weight from the HF checkpoint (or anchor) in ``step_dir``. In a sparse run, each worker reads
         only the rows it holds, straight into its params."""
@@ -312,6 +344,10 @@ class FileSystemWeightUpdateWorker(Worker):
         start = time.perf_counter()
         index_map, index = self.index_map, checkpoint_index(step_dir)
         device = next(model.parameters()).device
+        # Checksums of anchors and full checkpoints written by the trainer (none for the boot checkpoint)
+        expected = read_anchor_checksums(step_dir)
+        sums: dict[str, torch.Tensor] = {}
+        partial: dict[str, bool] = {}
 
         def read(name: str, begin: int, end: int) -> torch.Tensor:
             num_cols, dtype = index_map.num_cols[name], index[name][1]
@@ -324,11 +360,17 @@ class FileSystemWeightUpdateWorker(Worker):
         with ThreadPoolExecutor(16) as pool:
             # A bounded window of reads ahead of the GPU writes
             for window in itertools.batched(ranges, 64):
-                for (name, (begin, _)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
-                    index_map.load_rows(name, rows.to(device), begin)
+                for (name, (begin, end)), rows in zip(window, pool.map(lambda item: read(item[0], *item[1]), window)):
+                    rows = rows.to(device)
+                    index_map.load_rows(name, rows, begin)
+                    if name in expected:
+                        num_cols = index_map.num_cols[name]
+                        sums[name] = rows_checksum(as_bits(rows).reshape(-1), begin * num_cols)
+                        partial[name] = (end - begin) * num_cols != index_map.numel[name]
                     num_bytes += rows.nbytes
         update_mla_absorbed_weights(model)
         torch.cuda.synchronize()
+        self._verify_rows(step_dir, sums, partial, expected)
         logger.info(
             f"Loaded this worker's {num_bytes / 2**30:.2f} GiB of {step_dir.name} in {time.perf_counter() - start:.1f}s"
         )

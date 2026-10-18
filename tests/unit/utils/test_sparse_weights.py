@@ -15,7 +15,9 @@ from prime_rl.utils.sparse_weights import (
     encode_gaps,
     rank_part,
     rank_parts_marker,
+    read_anchor_checksums,
     read_delta,
+    rows_checksum,
     write_rank_file,
     zigzag,
 )
@@ -78,12 +80,22 @@ def test_sparse_delta_roundtrip_is_exact(tmp_path):
     assert torch.equal(patched["b"], as_bits(previous["b"]).view(-1))
 
 
-def test_anchor_with_an_unwritten_slice_is_not_published(tmp_path):
-    step_dir = tmp_path / "step_5"
-    step_dir.mkdir()
-    values = torch.arange(6, dtype=torch.bfloat16)
-    writer = AnchorWriter([("a", [6], 0, 6, torch.bfloat16), ("b", [6], 0, 6, torch.bfloat16)], step_dir, 0)
-    writer.write_parts([("a", [6], 0, values)], lambda tensor: [tensor.view(torch.uint8).numpy()])
-    with pytest.raises(RuntimeError, match="b@0"):
-        writer.close(1)
-    assert not anchor_complete(step_dir)
+def test_anchor_checksums_and_unwritten_slices(tmp_path):
+    values = torch.randn(12, dtype=torch.bfloat16)
+    slices = [("a", [12], 0, 6, torch.bfloat16), ("a", [12], 6, 6, torch.bfloat16)]
+    for step, written in (("step_5", slices), ("step_6", slices[:1])):
+        step_dir = tmp_path / step
+        step_dir.mkdir()
+        writer = AnchorWriter(slices, step_dir, 0)
+        for name, _, start, numel, _ in written:
+            part = values[start : start + numel]
+            writer.write_parts([(name, [12], start, part)], lambda tensor: [tensor.view(torch.uint8).numpy()])
+            writer.add_sums([name], rows_checksum(as_bits(part), start).view(1))
+        if written == slices:
+            writer.close(1)
+            assert anchor_complete(step_dir)
+            assert read_anchor_checksums(step_dir) == {"a": bits_checksum(as_bits(values))}
+        else:
+            with pytest.raises(RuntimeError, match="a@6"):
+                writer.close(1)
+            assert not anchor_complete(step_dir)

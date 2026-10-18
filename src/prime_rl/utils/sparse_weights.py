@@ -272,6 +272,8 @@ class AnchorWriter:
         self.sizes = {(name, start): numel * dtype.itemsize for name, _, start, numel, dtype in slices}
         # (slice, bytes) of every write, from any thread
         self.written: list[tuple[tuple[str, int], int]] = []
+        # (HF names, their checksums) of the written values
+        self.sums: list[tuple[list[str], torch.Tensor]] = []
         # Round-robin over the files, which are written in parallel
         num_files = max(1, -(-sum(numel * dtype.itemsize for *_, numel, dtype in slices) // 2**30))
         groups = [slices[index::num_files] for index in range(num_files)]
@@ -326,8 +328,13 @@ class AnchorWriter:
         for future in [self.pool.submit(self.write, *item) for item in items]:
             future.result()
 
+    def add_sums(self, names: list[str], sums: torch.Tensor) -> None:
+        """Record the ``bits_checksum``s of the values written for ``names`` (partial sums add up)."""
+        self.sums.append((names, sums))
+
     def close(self, world_size: int) -> None:
-        """Publish the files and the marker; raises if a slice was not written in full."""
+        """Publish the files, the checksums of this rank's values and the marker; raises if a slice was not written
+        in full."""
         self.pool.shutdown()
         written = dict.fromkeys(self.sizes, 0)
         for key, num_bytes in self.written:
@@ -340,6 +347,11 @@ class AnchorWriter:
             os.close(fd)
             (self.tmp_dir / name).rename(self.step_dir / name)
         self.tmp_dir.rmdir()
+        checksums: dict[str, int] = {}
+        for names, sums in self.sums:
+            for name, value in zip(names, sums.tolist()):
+                checksums[name] = add_checksums(checksums.get(name, 0), value)
+        write_file(self.step_dir / anchor_checksums_file(self.rank), json.dumps(checksums).encode())
         write_file(self.step_dir / f"anchor_rank{self.rank}.done", str(world_size).encode())
 
 
@@ -379,6 +391,19 @@ def read_checkpoint_range(entry: tuple, begin: int, end: int, out: np.ndarray) -
                 assert read > 0, f"short read of {path}"
                 done += read
             os.posix_fadvise(file.fileno(), offset, size, os.POSIX_FADV_DONTNEED)
+
+
+def anchor_checksums_file(rank: int) -> str:
+    return f"anchor_rank{rank}.checksums"
+
+
+def read_anchor_checksums(step_dir: Path) -> dict[str, int]:
+    """The ``bits_checksum`` per HF tensor of a complete anchor (or full checkpoint), summed over trainer ranks."""
+    checksums: dict[str, int] = {}
+    for path in step_dir.glob("anchor_rank*.checksums"):
+        for name, value in json.loads(path.read_text()).items():
+            checksums[name] = add_checksums(checksums.get(name, 0), value)
+    return checksums
 
 
 def anchor_complete(step_dir: Path) -> bool:
@@ -493,8 +518,17 @@ def bits_checksum(bits: torch.Tensor, start: int = 0) -> int:
     in the full tensor (the slice starts at ``start``): additive over any split of a tensor, so
     trainer ranks and engine workers can each sum the part they hold, and a change written at a
     wrong position is caught."""
-    positions = torch.arange(start + 1, start + 1 + bits.numel(), device=bits.device)
-    return int((bits.reshape(-1).long() * positions).sum())
+    return int(rows_checksum(bits.reshape(-1), start))
+
+
+def rows_checksum(bits: torch.Tensor, start: int = 0, chunk: int = 1 << 24) -> torch.Tensor:
+    """``bits_checksum`` of a flat tensor slice as a tensor on its device, in chunks of ``chunk`` elements."""
+    total = torch.zeros((), dtype=torch.int64, device=bits.device)
+    for first in range(0, bits.numel(), chunk):
+        part = bits[first : first + chunk]
+        positions = torch.arange(start + first + 1, start + first + 1 + part.numel(), device=bits.device)
+        total += (part.long() * positions).sum()
+    return total
 
 
 def add_checksums(a: int, b: int) -> int:

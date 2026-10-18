@@ -121,6 +121,7 @@ class SparseDeltaEncoder:
         self.step_parts: list[tuple] = []
         self.diffs: list[Future] = []
         self.anchor: AnchorWriter | None = None
+        self.stepped: set[str] = set()
         self.write_staging: torch.Tensor | None = None
         self.device = torch.cuda.current_device()
         self.stream = torch.cuda.Stream()
@@ -253,20 +254,21 @@ class SparseDeltaEncoder:
     def write_full_checkpoint(self, model: nn.Module, is_master: bool, step_dir: Path, rank: int, world_size: int):
         """Write this rank's slices of a full HF checkpoint of the live weights, one tensor at a time."""
         shards = [
-            (key, shard, self._slices(fqn, shard.numel(), offset))
+            (key, shard, offset, self._slices(fqn, shard.numel(), offset))
             for key, fqn, shard, offset, _ in self.local_shards(model, is_master)
         ]
         writer = AnchorWriter(
             [
                 (name, shape, start, end - begin, self.wire_dtypes[key])
-                for key, _, slices in shards
+                for key, _, _, slices in shards
                 for name, shape, start, begin, end in slices
             ],
             step_dir,
             rank,
         )
-        for key, shard, slices in shards:
+        for key, shard, offset, slices in shards:
             values = shard.reshape(-1).to(self.wire_dtypes[key])
+            writer.add_sums(*self._value_sums(key, offset, as_bits(values)))
             parts = [(name, shape, start, values[begin:end]) for name, shape, start, begin, end in slices]
             writer.write_parts(parts, self.stream_to_host)
         writer.close(world_size)
@@ -422,9 +424,12 @@ class SparseDeltaEncoder:
             if key in self.checksums:
                 bits = as_bits(shard.to(self.wire_dtypes[key]))
                 checks.append((key, self._checksum(key, offset, bits)))
-                if self.anchor is not None and key not in self.anchored:
-                    # Not updated in this step (e.g. no gradient): its anchor slices come from the live weights
-                    self._write_anchor_slices(fqn, len(bits), offset, bits)
+                if key not in self.stepped:
+                    # Not updated in this step (e.g. no gradient): an empty part carries its checksums, and its anchor
+                    # slices come from the live weights
+                    pending += self._diff_shard(key, fqn, shard, offset, None, bits, None)
+                    if self.anchor is not None:
+                        self._write_anchor_slices(key, fqn, len(bits), offset, bits)
                 continue
             parts = self._diff_shard(key, fqn, shard, offset, gathered, self.previous[key], self.previous[key])
             pending += parts
@@ -558,15 +563,20 @@ class SparseDeltaEncoder:
             )
         return sums
 
-    def _checksum(self, key: str, offset: int, bits: torch.Tensor) -> torch.Tensor:
-        """The sum of the ``bits_checksum``s of the HF tensors in a key's flat shard bits, in chunks of
-        ``HOOK_CHUNK`` elements: what the optimizer step records for the tensors it writes."""
-        _, begins, ends, shifts = self._segments(key, self.segments[self.key_fqn[key]], offset, bits.numel())
-        total = torch.zeros(1, dtype=torch.int64, device=bits.device)
+    def _value_sums(self, key: str, offset: int, bits: torch.Tensor) -> tuple[list[str], torch.Tensor]:
+        """The ``bits_checksum`` of each HF tensor in a key's flat shard bits, in chunks of ``HOOK_CHUNK``
+        elements."""
+        names, begins, ends, shifts = self._segments(key, self.segments[self.key_fqn[key]], offset, bits.numel())
+        sums = torch.zeros(len(names), dtype=torch.int64, device=bits.device)
         for start in range(0, bits.numel(), self.HOOK_CHUNK):
             end = min(start + self.HOOK_CHUNK, bits.numel())
-            total += self._window_sums(bits[start:end], start, end, begins, ends, shifts).sum()
-        return total
+            sums += self._window_sums(bits[start:end], start, end, begins, ends, shifts)
+        return names, sums
+
+    def _checksum(self, key: str, offset: int, bits: torch.Tensor) -> torch.Tensor:
+        """The sum of the ``bits_checksum``s of the HF tensors in a key's flat shard bits: what the optimizer step
+        records for the tensors it writes."""
+        return self._value_sums(key, offset, bits)[1].sum(0, keepdim=True)
 
     def bind(self, model: nn.Module, is_master: bool, params: list[torch.Tensor], full_offload: bool) -> None:
         """Diff the trainer tensors stored in ``params`` (the optimizer's local parameter shards, contiguous) in its
@@ -617,8 +627,8 @@ class SparseDeltaEncoder:
         """Collect the next optimizer step's delta, handing host parts to ``emit`` as the step goes, and write its
         anchor slices if ``anchor``."""
         self.step_parts, self.scale_changes, self.anchor, self.emit = [], 0, anchor, emit
-        # Optimizer tensors whose anchor slices the step wrote
-        self.anchored: set[str] = set()
+        # Optimizer tensors the step updated (and wrote the anchor slices of)
+        self.stepped: set[str] = set()
         self.hook_wait = self.diff_busy = 0.0
         self.armed = True
 
@@ -704,7 +714,6 @@ class SparseDeltaEncoder:
             for key, fqn, numel, offset, (size, stride, at) in entries:
                 host = source.as_strided(size, stride, source.storage_offset() + at).reshape(-1)
                 host = host.to(self.wire_dtypes[key])
-                self.anchored.add(key)
                 self.anchor.write_all(
                     [
                         (name, hf_start, host[begin:end].view(torch.uint8).numpy())
@@ -770,10 +779,12 @@ class SparseDeltaEncoder:
                     self.step_parts.append(part)
                     for key, first, last in ranges:
                         self.checksums[key] = part[5][first:last].sum(0, keepdim=True)
-                if on_gpu and self.anchor is not None:
-                    for key, fqn, numel, offset, values in written:
-                        self._write_anchor_slices(fqn, numel, offset, values)
-                        self.anchored.add(key)
+                for key, fqn, numel, offset, values in written if self.anchor is not None else []:
+                    if on_gpu:
+                        self._write_anchor_slices(key, fqn, numel, offset, values)
+                    else:  # written by optimizer_hook
+                        self.anchor.add_sums(*self._value_sums(key, offset, as_bits(values)))
+                self.stepped.update(key for key, *_ in written)
                 self.diff_stream.synchronize()
         finally:
             release()
@@ -783,9 +794,10 @@ class SparseDeltaEncoder:
                 self.emit(self._host_part(self.step_parts, self.diff_staging))
             self.step_parts = []
 
-    def _write_anchor_slices(self, fqn: str, numel: int, offset: int, values: torch.Tensor) -> None:
-        """Write a GPU shard's anchor slices through the pinned staging buffer: the slices in each staged window in
-        parallel, in pieces of up to 32 MiB."""
+    def _write_anchor_slices(self, key: str, fqn: str, numel: int, offset: int, values: torch.Tensor) -> None:
+        """Write a GPU shard's anchor slices, and their checksums, through the pinned staging buffer: the slices in
+        each staged window in parallel, in pieces of up to 32 MiB."""
+        self.anchor.add_sums(*self._value_sums(key, offset, as_bits(values)))
         data, itemsize = values.view(torch.uint8), values.element_size()
         slices = [
             (name, start, begin * itemsize, end * itemsize)
@@ -1017,6 +1029,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         if anchor is not None:
             # The residual's previous bits hold v{step} until the next encode, which runs on this thread
             source = {key: (self.encoder.shards[key][1], bits) for key, bits in encoder.previous.items()}
+            for key, (offset, bits) in source.items():
+                anchor.add_sums(*encoder._value_sums(key, offset, bits))
             anchor.write_parts(encoder.anchor_parts(source), encoder.stream_to_host)
             self._submit(self.anchors, self._close_anchor, step, step_dir, anchor)
 
