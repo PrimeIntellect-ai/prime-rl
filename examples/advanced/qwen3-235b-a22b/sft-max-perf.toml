@@ -44,10 +44,12 @@ type = "torch"
 force_balanced_routing = true
 
 [data]
-name = "PrimeIntellect/Reverse-Text-SFT"
 seq_len = 16384
 batch_size = 32
 micro_batch_size = 1
+
+[[data.source]]
+dataset = "PrimeIntellect/Reverse-Text-SFT"
 
 [optim]
 type = "adamw"
