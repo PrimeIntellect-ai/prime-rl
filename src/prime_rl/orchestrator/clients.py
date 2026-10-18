@@ -195,7 +195,7 @@ class AdminPlane:
                     _admin_post(
                         admin_client,
                         "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
+                        json={"weight_dir": weight_dir_posix, "policy_version": step},
                         timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
                     )
                     for admin_client in self.clients

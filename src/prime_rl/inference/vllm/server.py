@@ -44,20 +44,37 @@ WORKER_EXTENSION_CLS = {
 async def pause(request: Request):
     logger.debug("Received /pause request (mode=keep, clear_cache=False)")
     await engine_client(request).pause_generation(mode="keep", clear_cache=False)
+    if recorder := getattr(request.app.state, "kl_debug", None):
+        recorder.event("paused", mode="keep", clear_cache=False)
     return {"status": "paused"}
 
 
 @router.post("/resume")
 async def resume(request: Request):
     await engine_client(request).resume_generation()
+    if recorder := getattr(request.app.state, "kl_debug", None):
+        recorder.event("resumed", policy=recorder.policy())
     return {"status": "resumed"}
 
 
 @router.post("/update_weights")
 async def update_weights(request: Request):
     data = await request.json()
+    recorder = getattr(request.app.state, "kl_debug", None)
+    if recorder is not None:
+        recorder.set_policy(None, status="updating")
     await engine_client(request).collective_rpc("update_weights_from_path", args=(data.get("weight_dir"),))
+    if recorder is not None:
+        recorder.set_policy(data.get("policy_version"), status="installed")
     return {"status": "ok"}
+
+
+@router.get("/kl_debug/status")
+async def kl_debug_status(request: Request):
+    recorder = getattr(request.app.state, "kl_debug", None)
+    if recorder is None:
+        return JSONResponse({"enabled": False}, status_code=404)
+    return {"enabled": True, "policy": recorder.policy()}
 
 
 @router.post("/load_lora_adapter")
@@ -138,6 +155,43 @@ async def custom_init_app_state(
     await init_app_state(engine_client, state, args, supported_tasks)
 
     state.liveness_timeout_seconds = args.liveness_timeout_seconds
+    state.kl_debug = None
+    if getattr(args, "kl_debug_dir", None):
+        from pathlib import Path
+
+        from prime_rl.inference.kl_debug import InferenceKLRecorder
+
+        debug_options = (
+            "model",
+            "revision",
+            "tokenizer",
+            "tokenizer_revision",
+            "dtype",
+            "quantization",
+            "logprobs_mode",
+            "tensor_parallel_size",
+            "data_parallel_size",
+            "enable_expert_parallel",
+            "enable_return_routed_experts",
+            "enable_prefix_caching",
+            "mamba_cache_dtype",
+            "kv_cache_dtype",
+            "mm_processor_kwargs",
+            "mm_encoder_tp_mode",
+            "mm_processor_cache_gb",
+            "mm_processor_cache_type",
+            "max_model_len",
+        )
+        state.kl_debug = InferenceKLRecorder(
+            Path(args.kl_debug_dir),
+            port=args.port,
+            max_captures=args.kl_debug_max_captures,
+            max_capture_mb=args.kl_debug_max_capture_mb,
+            max_events=args.kl_debug_max_events,
+            request_every=args.kl_debug_request_every,
+            engine_id=args.kl_debug_engine_id,
+            metadata={"launch_options": {key: getattr(args, key, None) for key in debug_options}},
+        )
 
     # Swap in our ServingTokens subclass for /inference/v1/generate so the
     # X-data-parallel-rank header and routed_experts response field — both
@@ -148,6 +202,7 @@ async def custom_init_app_state(
         upstream = state.serving_tokens
         prime_serving = object.__new__(PrimeRlServingTokens)
         prime_serving.__dict__.update(upstream.__dict__)
+        prime_serving.kl_debug = state.kl_debug
         state.serving_tokens = prime_serving
 
     # Under RL load the API server holds millions of live objects, and CPython's

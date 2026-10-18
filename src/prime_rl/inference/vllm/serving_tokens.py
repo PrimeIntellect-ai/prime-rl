@@ -121,6 +121,12 @@ class _PackedOutputs:
 class PrimeRlServingTokens(ServingTokens):
     """ServingTokens with packed per-token payloads."""
 
+    def _log_inputs(self, request_id, inputs, params, lora_request):
+        super()._log_inputs(request_id, inputs, params, lora_request)
+        recorder = getattr(self, "kl_debug", None)
+        if recorder is not None:
+            recorder.engine_input(request_id, inputs)
+
     async def serve_tokens(
         self,
         request: GenerateRequest,
@@ -132,7 +138,21 @@ class PrimeRlServingTokens(ServingTokens):
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
             if not sampling_params.stop:
                 sampling_params.detokenize = False
-        return await super().serve_tokens(request, raw_request)
+        recorder = getattr(self, "kl_debug", None)
+        if recorder is None or request.stream:
+            return await super().serve_tokens(request, raw_request)
+        from prime_rl.inference.kl_debug import active_request
+
+        state = recorder.begin(request)
+        if state is None:
+            return await super().serve_tokens(request, raw_request)
+        token = active_request.set(state)
+        try:
+            response = await super().serve_tokens(request, raw_request)
+            recorder.finish(state, response)
+            return response
+        finally:
+            active_request.reset(token)
 
     async def serve_tokens_full_generator(  # type: ignore[override]
         self,

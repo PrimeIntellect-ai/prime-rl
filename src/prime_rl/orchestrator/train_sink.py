@@ -245,9 +245,17 @@ class TrainSink:
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.config.sampling.temperature
+        policy_by_trace = (
+            {trace.id: train_work(episode).policy for episode, trace in iter_trainable_traces(group)}
+            if self.config.kl_debug
+            else {}
+        )
         for trace in survivors:
-            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name, kl_debug=self.config.kl_debug)
             for sample in samples:
+                if sample.kl_debug is not None:
+                    policy = policy_by_trace[trace.id]
+                    sample.kl_debug["episode_policy_span"] = policy.model_dump() if policy else None
                 sample.temperatures = [temperature] * len(sample.token_ids)
                 if env.requires_sampling_masks and sample.sampling_mask is None:
                     # Rollout logprobs are mask-renormalized; training without the masks

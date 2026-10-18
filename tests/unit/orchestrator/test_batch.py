@@ -136,6 +136,7 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
         example = make_training_example()
         example.trace_id = f"trace-{i}"
         example.branch_index = i
+        example.kl_debug = {"turns": [{"turn": 1, "start": 2, "end": 4}], "original_tokens": 4}
         examples.append(example)
     examples.append(make_training_example())  # no identity -> sentinels
 
@@ -152,8 +153,13 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
         if not _has_loss_tokens(batch):
             # Dummies are copies of real batches; identity must not survive the copy.
             assert batch.trace_ids is None and batch.branch_indices is None
+            assert batch.kl_debug is None
             continue
         assert len(batch.trace_ids) == len(batch.branch_indices) == len(batch.sequence_lengths)
+        if batch.kl_debug is not None:
+            assert len(batch.kl_debug) == len(batch.sequence_lengths)
+            for trace_id, info in zip(batch.trace_ids, batch.kl_debug, strict=True):
+                assert (info is not None) == bool(trace_id)
         seen.update(zip(batch.trace_ids, batch.branch_indices))
     assert seen == {(f"trace-{i}", i) for i in range(5)} | {("", -1)}
 
@@ -162,10 +168,14 @@ def test_prepare_sample_truncation_keeps_identity():
     sample = make_sized_training_example(10)
     sample.trace_id = "trace-x"
     sample.branch_index = 2
+    sample.kl_debug = {"original_tokens": 10, "turns": [{"turn": 1, "start": 8, "end": 10}]}
     micro_batch = prepare_sample(sample, seq_len=4)
     assert len(micro_batch.input_ids) == 4
     assert micro_batch.trace_ids == ["trace-x"]
     assert micro_batch.branch_indices == [2]
+    assert micro_batch.kl_debug == [
+        sample.kl_debug
+    ]  # Preserve original bounds; diagnostics clips them to retained tokens.
 
 
 def test_randomized_packing_invariants():

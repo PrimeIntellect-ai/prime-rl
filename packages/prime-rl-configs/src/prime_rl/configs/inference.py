@@ -441,6 +441,23 @@ class InferenceConfig(BaseConfig):
     enable_return_sampling_mask: bool = False
     """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
 
+    kl_debug: bool = False
+    """Record request/cache/update provenance and bounded processed-input captures for the native vLLM token endpoint."""
+
+    kl_debug_output_dir: Path | None = None
+    """Defaults to output_dir/kl_debug/inference. The RL launcher uses its run directory."""
+
+    kl_debug_max_captures: int = Field(4, ge=0)
+    """Initial processed-input captures per API process (separate from trainer spike captures)."""
+
+    kl_debug_max_capture_mb: int = Field(256, ge=1)
+
+    kl_debug_max_events: int = Field(20000, ge=1)
+    """Maximum request/update journal events per API process."""
+
+    kl_debug_request_every: int = Field(100, ge=1)
+    """After initial captures, journal every Nth request so diagnostics span long runs."""
+
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 
@@ -569,10 +586,20 @@ class InferenceConfig(BaseConfig):
 
     def to_namespace(self) -> Namespace:
         """Dump the server + vllm sections into a vLLM-compatible Namespace."""
+        import uuid
+
         namespace = Namespace(
             host=self.server.host,
             port=self.server.port,
             liveness_timeout_seconds=self.server.liveness_timeout_seconds,
+            kl_debug_dir=str(self.kl_debug_output_dir or self.output_dir / "kl_debug" / "inference")
+            if self.kl_debug
+            else None,
+            kl_debug_engine_id=uuid.uuid4().hex if self.kl_debug else None,
+            kl_debug_max_captures=self.kl_debug_max_captures,
+            kl_debug_max_capture_mb=self.kl_debug_max_capture_mb,
+            kl_debug_max_events=self.kl_debug_max_events,
+            kl_debug_request_every=self.kl_debug_request_every,
         )
 
         extra_fields = self.vllm.model_extra or {}

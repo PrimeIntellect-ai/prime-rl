@@ -39,6 +39,7 @@ from prime_rl.trainer.rl.loss import (
 )
 from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.trainer.rl.annotations import AnnotationWriter
+from prime_rl.trainer.rl.kl_debug import KLDebugRecorder
 from prime_rl.trainer.model import (
     forward,
     get_full_offload_dtype_policy,
@@ -150,7 +151,9 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+    prepare = partial(
+        prepare_micro_batch, processor=processor, mm_adapter=mm_adapter, retain_mm_refs=config.kl_debug is not None
+    )
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
@@ -243,6 +246,29 @@ def train(config: TrainerConfig):
         parallel_dims, world, config.monitors.file.float_decimals if config.monitors.file else None
     )
 
+    freeze_weights = config.kl_debug is not None and config.kl_debug.freeze_weights
+    kl_recorder = None
+    if config.kl_debug is not None and not annotation_writer.is_duplicate_rank:
+        kl_recorder = KLDebugRecorder(
+            config.kl_debug,
+            config.output_dir,
+            world.rank,
+            {
+                "model_config": config.model.model_dump(mode="json"),
+                "tokenizer_config": config.tokenizer.model_dump(mode="json"),
+                "matmul_precision": config.matmul_precision,
+                "enable_router_replay": config.enable_router_replay,
+                "world_size": world.world_size,
+                "rank": world.rank,
+                "initial_policy_version": progress.step - 1,
+                "torch_version": str(torch.__version__),
+                "kl_debug": config.kl_debug.model_dump(mode="json"),
+            },
+        )
+    debug_checkpoint_saved = False
+    if freeze_weights:
+        logger.warning("KL diagnostic mode: weights are frozen; backward and optimizer updates are disabled")
+
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
 
     logger.info(f"Starting training loop (max_steps={config.max_steps or 'infinite'})")
@@ -333,11 +359,12 @@ def train(config: TrainerConfig):
         dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
         dist.all_reduce(global_scales, op=dist.ReduceOp.SUM, group=dp_cp_group)
         rl_scale, ce_scale, ref_kl_scale = (scale if scale > 0 else 1 for scale in global_scales.tolist())
-        prepare_gradient_offload(
-            gradient_manager,
-            parallel_dims.fsdp_gradient_divide_factor,
-            overlap_optimizer=True,
-        )
+        if not freeze_weights:
+            prepare_gradient_offload(
+                gradient_manager,
+                parallel_dims.fsdp_gradient_divide_factor,
+                overlap_optimizer=True,
+            )
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")
         tensors = Tensors()  # Used to accumulate tensor statistics across micro-batches and ranks for logging
@@ -378,10 +405,12 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
-            mm_kwargs = micro_batch.pop("mm_kwargs")
+            mm_kwargs = micro_batch.get("mm_kwargs") if config.kl_debug else micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
                 mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
-            mm_forward_policy = micro_batch.pop("mm_forward_policy")
+            mm_forward_policy = (
+                micro_batch.get("mm_forward_policy") if config.kl_debug else micro_batch.pop("mm_forward_policy")
+            )
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -446,7 +475,11 @@ def train(config: TrainerConfig):
                 )
 
             # Forward pass with per-token temperatures
-            with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
+            with (
+                maybe_record_function("forward"),
+                maybe_activation_offloading(config.model.ac_offloading),
+                torch.no_grad() if freeze_weights else nullcontext(),
+            ):
                 out = forward(
                     model,
                     input_ids,
@@ -488,6 +521,50 @@ def train(config: TrainerConfig):
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
 
+            # Capture before backward, including nonfinite outputs that can fail in backward.
+            debug_spike = False
+            if kl_recorder is not None:
+                debug_spike = kl_recorder.observe(
+                    micro_batch, out, step=progress.step, micro_step=micro_step, processor=processor
+                )
+            if config.kl_debug is not None:
+                micro_batch.pop("mm_kwargs", None)
+                micro_batch.pop("mm_forward_policy", None)
+                micro_batch["mm_refs"] = None
+            if config.kl_debug and config.kl_debug.save_checkpoint_on_spike and not debug_checkpoint_saved:
+                spike_flag = torch.tensor(int(debug_spike), device="cuda")
+                dist.all_reduce(spike_flag, op=dist.ReduceOp.MAX)
+                if spike_flag.item():
+                    from prime_rl.utils.kl_debug import append_json
+
+                    paths = [
+                        str(config.output_dir / "kl_debug" / f"checkpoint-{time.time_ns()}" / "trainer")
+                        if world.is_master
+                        else None
+                    ]
+                    dist.broadcast_object_list(paths, src=0)
+                    from pathlib import Path
+
+                    debug_checkpoint = Path(paths[0])
+                    logger.warning(f"Retaining policy v{progress.step - 1} before backward at {debug_checkpoint}")
+                    ckpt_manager.save_to_path(debug_checkpoint, model, [], None, None)
+                    debug_checkpoint_saved = True
+                    if world.is_master:
+                        import json
+
+                        (debug_checkpoint.parent / "manifest.json").write_text(
+                            json.dumps(
+                                {
+                                    "policy_version": progress.step - 1,
+                                    "model_config": config.model.model_dump(mode="json"),
+                                }
+                            )
+                        )
+                        append_json(
+                            config.output_dir / "kl_debug" / "checkpoints.jsonl",
+                            {"policy_version": progress.step - 1, "step": progress.step, "path": str(debug_checkpoint)},
+                        )
+
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
             loss, loss_tensors = compute_loss(
@@ -506,10 +583,11 @@ def train(config: TrainerConfig):
             )
 
             # Backward pass
-            with maybe_record_function("backward"):
-                begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
-                loss.backward()
-                finish_backward(gradient_manager)
+            if not freeze_weights:
+                with maybe_record_function("backward"):
+                    begin_backward(gradient_manager, final_backward=micro_step == len(micro_batches) - 1)
+                    loss.backward()
+                    finish_backward(gradient_manager)
 
             mm_kwargs = None
 
@@ -578,20 +656,19 @@ def train(config: TrainerConfig):
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
-        if gradient_manager is None:
+        if gradient_manager is None and not freeze_weights:
             scale_gradients_(None, model, parallel_dims.fsdp_gradient_divide_factor)
 
         # Optionally, clip the gradients
         grad_norm: torch.Tensor | None = None
-        if config.optim.max_norm is not None:
+        if config.optim.max_norm is not None and not freeze_weights:
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
 
         # Update the model parameters
-        optimizer.step()
-        optimizer.zero_grad()
-
-        # Update learning rate scheduler
-        scheduler.step()
+        if not freeze_weights:
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler.step()
 
         current_lr = optimizer.param_groups[0]["lr"]
         forward_backward_time = time.perf_counter() - forward_backward_start_time

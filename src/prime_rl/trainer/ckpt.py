@@ -178,8 +178,8 @@ class CheckpointManager:
         path: Path,
         model: nn.Module,
         optimizers: list[OptimizerLike],
-        scheduler: LRScheduler,
-        progress: Progress,
+        scheduler: LRScheduler | None,
+        progress: Progress | None,
         dataloader: StatefulDataLoader | None = None,
     ):
         """Save the trainer checkpoint to a given path."""

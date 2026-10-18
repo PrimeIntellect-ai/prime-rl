@@ -1,3 +1,5 @@
+from typing import Any
+
 import msgspec
 
 
@@ -79,6 +81,8 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
 
+    kl_debug: dict[str, Any] | None = None
+
 
 # Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -115,3 +119,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # (e.g. a dummy micro batch). ``None`` when no packed sample carried one.
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
+
+    # Per-sequence metadata, with offsets relative to that sequence, not the packed batch.
+    kl_debug: list[dict[str, Any] | None] | None = None

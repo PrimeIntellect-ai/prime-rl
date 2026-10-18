@@ -164,11 +164,17 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
 def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
     async def run():
         s = sink(constant=False, batch_size=2)
+        s.config.kl_debug = True
         zero, kept, sibling, another = trace(advantage=0), trace(), trace(), trace()
         ep = episode([zero, kept, sibling, another])
         ep_id = ep.id
         batch = await s.add(ep)
         assert len(batch.samples) == 1 and batch.samples[0].trace_id == kept.id
+        info = batch.samples[0].kl_debug
+        assert info["original_tokens"] == 4
+        assert info["episode_policy_span"] == {"start": 0, "end": 0}
+        assert info["turns"][0]["start"] == 2 and info["turns"][0]["end"] == 4
+        assert info["turns"][0]["call_start"] == kept.calls[0].time.start
         assert len(batch.cohort) == 1 and batch.cohort.episodes[0].id == ep_id
         assert sibling.id in s.pending_batch
         assert zero.nodes[2].token_ids == [3, 4]

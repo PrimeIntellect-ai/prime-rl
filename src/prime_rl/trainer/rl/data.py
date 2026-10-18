@@ -37,6 +37,7 @@ class TensorMicroBatch(TypedDict):
     # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
     trace_ids: list[str] | None
     branch_indices: list[int] | None
+    kl_debug: NotRequired[list[dict[str, Any] | None] | None]
 
     # Batch level
     lora_num_tokens: Int[Tensor, "n_loras"]
@@ -178,7 +179,11 @@ class FakeDataLoader:
 
 
 def prepare_micro_batch(
-    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+    micro_batch: TensorMicroBatch,
+    processor: Any | None,
+    mm_adapter: MultimodalAdapter | None,
+    *,
+    retain_mm_refs: bool = False,
 ) -> TensorMicroBatch:
     """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
     micro_batch["mm_kwargs"] = None
@@ -190,7 +195,8 @@ def prepare_micro_batch(
         materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
         micro_batch["mm_kwargs"] = materialized.kwargs
         micro_batch["mm_forward_policy"] = materialized.forward_policy
-        micro_batch["mm_refs"] = None
+        if not retain_mm_refs:
+            micro_batch["mm_refs"] = None
     return micro_batch
 
 
@@ -263,6 +269,7 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
+            kl_debug=micro_batch.kl_debug,
             # Single adapter: every token in the batch belongs to it (padding included).
             lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),

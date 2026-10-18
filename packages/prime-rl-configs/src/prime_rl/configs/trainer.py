@@ -570,12 +570,41 @@ class DataLoaderConfig(BaseConfig):
     """Number of background threads that prepare micro batches ahead of the training loop, analogous to torch DataLoader's ``num_workers`` but with threads instead of processes. 0 prepares them on the main thread."""
 
 
+class KLDebugConfig(BaseConfig):
+    every: int = Field(1, ge=1)
+    """Record diagnostics every N trainer steps, including step 1."""
+
+    abs_logprob_threshold: float = Field(1.0, gt=0, allow_inf_nan=False)
+    """Capture when any sampled token exceeds this absolute logprob difference."""
+
+    max_captures: int = Field(3, ge=0)
+    """Maximum spike captures per data-parallel rank for this process lifetime."""
+
+    baseline_captures: int = Field(1, ge=0)
+    """Additional initial captures per data-parallel rank, regardless of mismatch."""
+
+    max_capture_mb: int = Field(256, ge=1)
+    """Per-capture payload budget. Oversized captures are reported and skipped."""
+
+    first_tokens_after_image: int = Field(32, ge=1)
+    """Number of sampled tokens after each image boundary to summarize separately."""
+
+    save_checkpoint_on_spike: bool = False
+    """Retain model-only weights before backward on the first observed spike. All ranks participate; this can be expensive."""
+
+    freeze_weights: bool = False
+    """Diagnostic experiment: forward only, with no backward, optimizer, or scheduler updates."""
+
+
 class TrainerConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
 
     tokenizer: TokenizerConfig = TokenizerConfig()
 
     data: DataLoaderConfig = DataLoaderConfig()
+
+    kl_debug: KLDebugConfig | None = None
+    """Opt-in mismatch diagnostics and bounded replay captures under output_dir/kl_debug."""
 
     loss: LossConfig = IPOLossConfig()
     """Loss config for the rl loss component (see ``setup_rl_loss_fn``). The ce / ref_kl components are fixed and do not read this."""
@@ -634,6 +663,15 @@ class TrainerConfig(BaseConfig):
 
     env_vars: EnvVars = {}
     """Extra environment variables for the trainer process(es). Merged on top of the launcher defaults."""
+
+    @model_validator(mode="after")
+    def validate_kl_debug_offload(self):
+        if self.kl_debug is not None and self.model.offload == "full":
+            if self.kl_debug.freeze_weights or self.kl_debug.save_checkpoint_on_spike:
+                raise ValueError(
+                    "KL freeze/checkpoint diagnostics require model.offload != 'full' (optimizer-in-backward)"
+                )
+        return self
 
     @model_validator(mode="after")
     def resolve_moe_router_dtype_auto(self):

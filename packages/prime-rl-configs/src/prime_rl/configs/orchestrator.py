@@ -524,6 +524,9 @@ class OrchestratorConfig(BaseConfig):
     constant_trainer_batch_size: bool = True
     """Require each batch to reach its effective sample target."""
 
+    kl_debug: bool = False
+    """Carry turn boundaries, call timestamps, and episode policy bounds to the trainer for mismatch diagnostics."""
+
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
 

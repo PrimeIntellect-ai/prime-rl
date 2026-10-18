@@ -802,6 +802,22 @@ def test_shared_model_name_propagates_to_subconfigs():
     assert config.orchestrator.tokenizer.name == model_name
 
 
+def test_kl_debug_is_opt_in_and_propagates_to_components():
+    default = RLConfig(trainer={}, orchestrator={}, inference={})
+    assert default.trainer.kl_debug is None
+    assert not default.orchestrator.kl_debug and not default.inference.kl_debug
+    enabled = RLConfig(trainer={"kl_debug": {}}, orchestrator={}, inference={})
+    assert enabled.orchestrator.kl_debug and enabled.inference.kl_debug
+    namespace = enabled.inference.to_namespace()
+    assert Path(namespace.kl_debug_dir) == enabled.run_dir / "kl_debug" / "inference"
+    assert namespace.kl_debug_engine_id != enabled.inference.to_namespace().kl_debug_engine_id
+    assert not enabled.trainer.kl_debug.freeze_weights
+    assert enabled.trainer.model.optimization_dtype == default.trainer.model.optimization_dtype
+    assert enabled.trainer.model.reduce_dtype == default.trainer.model.reduce_dtype
+    with pytest.raises(ValidationError, match="optimizer-in-backward"):
+        TrainerConfig(model={"offload": "full"}, kl_debug={"freeze_weights": True})
+
+
 def test_shared_tokenizer_propagates_when_subconfigs_unset():
     config = RLConfig.model_validate(
         {

@@ -147,7 +147,29 @@ def _loss_weights(branch: vf.Branch, name: str, trained_nodes: set[int]) -> list
     return weights if any(weights) else None
 
 
-def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSample]:
+def branch_debug_metadata(trace: vf.Trace, branch: vf.Branch) -> dict:
+    calls = {id(trace.nodes[call.node]): call for call in branch.calls if call.node is not None}
+    turns = []
+    offset = 0
+    for node in branch.nodes:
+        end = offset + len(node.token_ids)
+        if node.sampled:
+            call = calls.get(id(node))
+            turns.append(
+                {
+                    "turn": len(turns) + 1,
+                    "start": offset,
+                    "end": end,
+                    "call_start": call.time.start if call else None,
+                    "call_end": call.time.end if call else None,
+                    "sampling": call.sampling.model_dump(mode="json") if call and call.sampling else None,
+                }
+            )
+        offset = end
+    return {"turns": turns, "original_tokens": offset}
+
+
+def trace_to_samples(trace: vf.Trace, *, env_name: str = "", kl_debug: bool = False) -> list[TrainingSample]:
     """Convert a v1 `Trace` into `TrainingSample`s — one per branch.
 
     Each `trace.branches` entry is already a flat token sequence (`branch.token_ids` /
@@ -187,6 +209,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 sampling_mask=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
                 trace_id=trace.id,
                 branch_index=branch.index,
+                kl_debug=branch_debug_metadata(trace, branch) if kl_debug else None,
             )
         )
     if not samples:

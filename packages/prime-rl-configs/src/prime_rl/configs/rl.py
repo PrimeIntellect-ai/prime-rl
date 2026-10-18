@@ -167,6 +167,14 @@ class RLConfig(BaseConfig):
     inference: InferenceConfig | None = None
     """Inference server configuration. If None, the rl entrypoint will not start an inference server (useful for manually started servers)."""
 
+    @model_validator(mode="after")
+    def propagate_kl_debug(self):
+        if self.trainer.kl_debug is not None:
+            self.orchestrator.kl_debug = True
+            if self.inference is not None:
+                self.inference.kl_debug = True
+        return self
+
     env_vars: EnvVars = {}
     """Extra environment variables for every launched RL component. Component-specific env_vars override these."""
 
@@ -323,6 +331,8 @@ class RLConfig(BaseConfig):
                     "output_dir / run.name — set those instead."
                 )
             sub.output_dir = run_dir
+        if self.inference is not None and self.inference.kl_debug and self.inference.kl_debug_output_dir is None:
+            self.inference.kl_debug_output_dir = run_dir / "kl_debug" / "inference"
         return self
 
     @model_validator(mode="after")

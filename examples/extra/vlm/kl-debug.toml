@@ -1,0 +1,85 @@
+# Diagnostic fragment: merge these settings into an existing RL config.
+# This does not choose a model, environment, GPU layout, or sequence length.
+# With the rl entrypoint, trainer.kl_debug also enables orchestrator/inference
+# diagnostics. For separately launched components, enable all three explicitly.
+
+[trainer.kl_debug]
+every = 1
+abs_logprob_threshold = 1.0
+baseline_captures = 1
+max_captures = 3
+max_capture_mb = 256
+first_tokens_after_image = 32
+
+# Optional, expensive: retain one model-only checkpoint before backward on the
+# first spike across any rank. Stored separately from resume checkpoints; it
+# is not subject to the normal checkpoint retention policy. Needs disk for a
+# full model in addition to the bounded input captures. Excludes full offload.
+save_checkpoint_on_spike = false
+
+# Set true for a dedicated frozen-checkpoint parity experiment. This disables
+# backward, optimizer and scheduler updates. Logical policy versions still
+# advance as batches are consumed; the manifest marks weights as frozen.
+freeze_weights = false
+
+[orchestrator]
+kl_debug = true
+
+[inference]
+kl_debug = true
+kl_debug_max_captures = 4
+kl_debug_max_capture_mb = 256
+kl_debug_max_events = 20000
+kl_debug_request_every = 100
+
+# Artifacts:
+#   trainer output_dir/kl_debug/rank-*/metrics.jsonl
+#     per-sequence / per-turn signed gaps, absolute p95/p99, nonfinite counts,
+#     context length, preceding image count, first sampled tokens after images;
+#     only sampled loss tokens are measured, excluding packed boundaries.
+#   rank-*/step-*-micro-*.pt
+#     exact CPU inputs, processed pixels, image URLs, masks, routing, sampling,
+#     trainer/rollout logprobs, model config and code/dependency provenance.
+#   run_dir/kl_debug/inference/HOST-PORT/ENGINE-ID/events-*.jsonl
+#     request IDs/hashes/times, cache salts/usage, pause/resume/update events.
+#     Initial captured requests plus every 100th subsequent request by default.
+#   inference .../input-*.pt
+#     initial actual vLLM engine inputs including processed multimodal tensors.
+#   trainer output_dir/kl_debug/checkpoints.jsonl
+#     paths and policy versions of retained model-only spike checkpoints.
+# Captures have per-file and per-process limits; JSON metric files grow with
+# observed steps. No images/base64 are written to metrics or event journals.
+# API processes each have their own capture/event budgets; CP duplicate ranks
+# do not write trainer captures. The trigger is absolute logprob gap, not KL.
+
+# Inspection (from the repo, with dependencies installed):
+# uv run python tools/compare_kl_capture.py CAPTURE.pt
+# uv run python tools/compare_kl_capture.py CAPTURE.pt --inference-input INPUT.pt
+# uv run torchrun --nproc-per-node 8 tools/replay_kl_batch.py CAPTURE.pt CHECKPOINT/trainer
+# Use the original WORLD_SIZE/parallel layout for trainer replay, including
+# multi-node torchrun arguments if applicable. Base policy v0 needs no checkpoint
+# argument. Later weights require the matching retained checkpoint + manifest.
+
+# Fresh-cache prefill on a separately frozen server holding matching weights:
+# uv run python tools/compare_kl_capture.py CAPTURE.pt --url http://HOST:8000 --model MODEL --sequence 0 --turn 1
+# The probe enforces temperature=1, unrestricted sampling, and no penalties;
+# verifies exact expanded token IDs and checks policy state before/after.
+# An unknown/mismatched policy is rejected unless --allow-unverified-policy is
+# explicit; that result is labeled unverified. New cache salt isolates KV prefix
+# reuse; it does not disable the image processor cache. One extra token is generated.
+# Version numbers identify policies within a run; they cannot establish that two
+# separate runs/servers have identical weights. Supply the capture's checkpoint.
+
+# Caveats:
+# - Episode spans are bounds, not exact per-token serving versions. The API
+#   journal records submission/completion bounds; updates can cross generation.
+# - Version tracking covers successful native vLLM /update_weights calls. An
+#   initial cache-loaded model has unknown version until an update is observed.
+#   LoRA, Dynamo, streaming, and external serving paths are not tracked here.
+# - Actual worker-internal MRoPE IDs are not intercepted. Captures retain image
+#   grids, token types, packing/CP settings, and nominal position IDs; trainer
+#   replay recomputes internal positions through the same model code.
+# - Processor cache hits may omit inference image tensors; reported as unavailable.
+# - Diagnostics are off by default. Thresholds are capture triggers, not evidence
+#   that a measured mismatch is a bug. Keep dtype/optimizer settings unchanged
+#   between the text and image experiments.

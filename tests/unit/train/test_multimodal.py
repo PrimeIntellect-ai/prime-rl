@@ -7,6 +7,7 @@ from prime_rl.multimodal import get_multimodal_adapter
 from prime_rl.multimodal.kimi_k25 import KimiK25Adapter
 from prime_rl.multimodal.qwen_vl import QwenVLAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
+from prime_rl.trainer.rl.data import prepare_micro_batch
 from prime_rl.transports.batch import MMImageRef, MMRefs
 
 _IMAGE_URL = (
@@ -37,6 +38,11 @@ def test_qwen_adapter_materializes_and_validates_expansion():
     assert materialized.forward_policy == QwenVLAdapter.forward_policy
     with pytest.raises(ValueError, match="placeholder lengths differ"):
         materialize_mm_refs(_refs(1), processor, adapter)
+    batch = {"mm_refs": _refs(2)}
+    prepared = prepare_micro_batch(batch, processor, adapter, retain_mm_refs=True)
+    assert prepared["mm_refs"] is not None
+    assert prepared["mm_kwargs"]["image_grid_thw"].tolist() == [[1, 1, 2]]
+    assert prepare_micro_batch({"mm_refs": _refs(2)}, processor, adapter)["mm_refs"] is None
 
 
 def test_kimi_adapter_materializes_sparse_image_position():
