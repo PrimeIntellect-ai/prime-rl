@@ -567,6 +567,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     transformer_layers = language_model.layers
 
     fullgraph = config.compile is not None and config.compile.fullgraph
+    replicated_router_params: set[nn.Parameter] = set()
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
             if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
@@ -593,21 +594,28 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
             }
 
         if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
-            if fullgraph:
-                raise ValueError(
-                    "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16': the fp32 router is "
-                    "its own FSDP unit inside the compiled block, and dynamo cannot trace FSDP hooks."
+            if config.moe_router_fsdp == "replicated":
+                # Left out of FSDP, so no FSDP hooks run inside the (checkpointed, compiled) block.
+                router_params = set(block_mlp.router.parameters())
+                replicated_router_params |= router_params
+                block_fsdp_config = {**block_fsdp_config, "ignored_params": router_params}
+            else:
+                if fullgraph:
+                    raise ValueError(
+                        "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16' or "
+                        "model.moe_router_fsdp='replicated': the fp32 router is its own FSDP unit inside the compiled "
+                        "block, and dynamo cannot trace FSDP hooks."
+                    )
+                # Own FSDP unit with an fp32 policy so the gate weight is not cast to
+                # bf16 for forward and its gradients reduce in fp32.
+                fully_shard(
+                    block_mlp.router,
+                    mesh=hsdp_mesh,
+                    mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
+                    offload_policy=offload_policy,
+                    reshard_after_forward=config.reshard_after_forward,
+                    shard_placement_fn=shard_placement_fn,
                 )
-            # Own FSDP unit with an fp32 policy so the gate weight is not cast to
-            # bf16 for forward and its gradients reduce in fp32.
-            fully_shard(
-                block_mlp.router,
-                mesh=hsdp_mesh,
-                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
-                reshard_after_forward=config.reshard_after_forward,
-                shard_placement_fn=shard_placement_fn,
-            )
 
         fully_shard(
             transformer_block,
@@ -652,6 +660,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         offload_policy=offload_policy,
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
+        ignored_params=replicated_router_params,
     )
     model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
@@ -849,13 +858,20 @@ def mark_dynamic_int_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig):
+def apply_compile(model: nn.Module, compile_config: CompileConfig, inside_checkpoint: bool = False):
+    """Compile every transformer block. With ``inside_checkpoint``, compile the block inside its activation
+    checkpoint wrapper instead of the checkpointed block: a graph break inside a compiled checkpoint (the EP
+    all-to-all, FSDP hooks) makes dynamo run the whole block eagerly, while inside an eager checkpoint it only
+    splits the graph."""
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
+        layer = language_model.layers[layer_id]
+        if inside_checkpoint:
+            layer = getattr(layer, "_checkpoint_wrapped_module", layer)
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -968,10 +984,12 @@ def setup_model(
     loading_from_checkpoint_later: bool = False,
     init: InitConfig | None = None,
     parametrization: ParametrizationConfig | None = None,
+    compile_inside_full_checkpoint: bool = False,
 ) -> nn.Module:
     """Build the sharded model. Its weights come from ``config.name``, or later from a checkpoint
     (``loading_from_checkpoint_later``); with ``init``, they are initialized from scratch (with the CompleteP
-    multipliers of ``parametrization``) instead."""
+    multipliers of ``parametrization``) instead. ``compile_inside_full_checkpoint`` compiles blocks inside their
+    full activation checkpoints (see ``apply_compile``)."""
     resolve_auto_attn(config)
 
     if config.attn == "flash_attention_3" and not is_flash_attn_3_available():
@@ -1034,7 +1052,8 @@ def setup_model(
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile is not None:
-        apply_compile(model, config.compile)
+        inside_checkpoint = compile_inside_full_checkpoint and config.ac is not None and config.ac.mode == "full"
+        apply_compile(model, config.compile, inside_checkpoint=inside_checkpoint)
 
     setup_fsdp(model, config, parallel_dims)
 

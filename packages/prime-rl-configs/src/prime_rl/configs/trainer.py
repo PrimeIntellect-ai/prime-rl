@@ -307,6 +307,9 @@ class ModelConfig(BaseModelConfig):
     moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
     """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
 
+    moe_router_fsdp: Literal["unit", "replicated"] = "unit"
+    """How FSDP holds fp32 MoE router gates (``moe_router_dtype = "float32"``). ``unit``: each router is its own FSDP unit inside its transformer block, so its hooks run inside the block's activation checkpoint and compiled graph: the checkpoint recompute can fail ("... not found in storage") and the compiled graph breaks there. ``replicated``: the router gates stay out of FSDP, as full fp32 copies on every rank; the training loop must average their gradients over the data-parallel ranks (the pretrain loop does)."""
+
     reduce_scatter_max_input_buffers: int = Field(1, ge=1)
     """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
 

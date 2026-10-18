@@ -61,6 +61,8 @@ class PretrainModelConfig(ModelConfig):
 
     moe: PretrainMoEConfig = PretrainMoEConfig()
 
+    moe_router_fsdp: Literal["unit", "replicated"] = "replicated"
+
     offload: Literal["none"] = "none"
     """CPU offloading is not supported: pretraining's per-role parameter groups need ``none``."""
 

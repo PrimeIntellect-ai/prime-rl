@@ -151,6 +151,7 @@ def train(config: PretrainConfig):
         loading_from_checkpoint_later=checkpoint_step is not None,
         init=config.model.init if checkpoint_step is None else None,
         parametrization=config.parametrization,
+        compile_inside_full_checkpoint=True,
     )
     m_n, m_l = multipliers(config.parametrization, model)
     if parallel_dims.cp_enabled:
