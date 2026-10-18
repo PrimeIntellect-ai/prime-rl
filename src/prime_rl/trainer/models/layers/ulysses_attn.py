@@ -177,8 +177,11 @@ def substitute_ulysses_attn(
     def _ulysses_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
         # cu_seqlens / max_seqlen cover the full sequence, which each rank holds after the all-to-all.
         window_size = (-1, -1)
+        is_causal = getattr(self, "is_causal", True)
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
+            if not is_causal:
+                raise NotImplementedError("Sliding-window attention supports causal attention only")
             window_size = (sliding_window - 1, 0)
 
         return ulysses_flash_attn_varlen_func(
@@ -190,7 +193,7 @@ def substitute_ulysses_attn(
             cu_seqlens_k=cu_seqlens,
             max_seqlen_q=max_seqlen,
             max_seqlen_k=max_seqlen,
-            causal=getattr(self, "is_causal", True),
+            causal=is_causal,
             cp_group=process_group,
             cp_size=cp_size,
             flash_attn_version=flash_attn_version,

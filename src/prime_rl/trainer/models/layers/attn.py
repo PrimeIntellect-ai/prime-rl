@@ -512,6 +512,8 @@ class FlashAttention(nn.Module):
         kwargs: dict = {"causal": self.is_causal}
         sliding_window = getattr(self, "sliding_window", None)
         if sliding_window is not None:
+            if not self.is_causal:
+                raise NotImplementedError("Sliding-window attention supports causal attention only")
             kwargs["window_size"] = (sliding_window - 1, 0)
         if self._flash_attn_version == 4:
             # FA4's flash_attn_varlen_func has qv as the 4th positional arg,
