@@ -1,20 +1,5 @@
-from prime_rl.trainer.models.layers.lora.base import (
-    MultiLoRAModule,
-    get_lora_num_tokens,
-    get_multilora_scaling,
-    set_lora_num_tokens,
-    set_multilora_scaling,
-)
-from prime_rl.trainer.models.layers.lora.multi_linear import MultiLoRALinear
-from prime_rl.trainer.models.layers.lora.multi_moe import MultiLoRAGroupedExperts, MultiLoRANonGatedGroupedExperts
+from prime_rl.trainer.models.layers.lora.base import LoRAModule
+from prime_rl.trainer.models.layers.lora.experts import LoRAGptOssGroupedExperts, LoRAGroupedExperts
+from prime_rl.trainer.models.layers.lora.linear import LoRALinear
 
-__all__ = [
-    "MultiLoRAModule",
-    "MultiLoRALinear",
-    "MultiLoRAGroupedExperts",
-    "MultiLoRANonGatedGroupedExperts",
-    "set_lora_num_tokens",
-    "get_lora_num_tokens",
-    "set_multilora_scaling",
-    "get_multilora_scaling",
-]
+__all__ = ["LoRAModule", "LoRALinear", "LoRAGroupedExperts", "LoRAGptOssGroupedExperts"]

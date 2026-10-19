@@ -40,3 +40,18 @@ class FeedForward(nn.Module):
         for linear in (self.gate_proj, self.up_proj, self.down_proj):
             if linear is not None and linear.bias is not None:
                 nn.init.zeros_(linear.bias)
+
+
+class SigmoidGatedFeedForward(FeedForward):
+    """Gated feed-forward layer scaled by a per-token sigmoid output gate (Qwen3.5 shared expert)."""
+
+    def __init__(self, dim: int, hidden_dim: int, activation: ActivationType) -> None:
+        super().__init__(dim=dim, hidden_dim=hidden_dim, expert_type="gated", activation=activation)
+        self.output_gate = nn.Linear(dim, 1, bias=False)
+
+    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+        return super().forward(x, routed_experts) * self.output_gate(x).sigmoid()
+
+    def init_weights(self, init_std: float = 0.02) -> None:
+        super().init_weights(init_std)
+        nn.init.trunc_normal_(self.output_gate.weight, mean=0.0, std=init_std)

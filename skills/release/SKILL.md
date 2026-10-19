@@ -5,14 +5,14 @@ description: How to prepare and publish GitHub releases for prime-rl. Use when d
 
 # Releases
 
-Releases are driven by [`.github/workflows/tag-and-release.yaml`](../../.github/workflows/tag-and-release.yaml). The flow:
+Releases are driven by [`.github/workflows/release.yml`](../../.github/workflows/release.yml). The flow:
 
 1. You create a **draft GitHub Release** with the notes inline (`gh release create --draft`).
 2. You open a **draft PR** that bumps `version` in `pyproject.toml`.
 3. Maintainer merges. The workflow tags the commit, builds the `prime-kernels` wheels and
    attaches them to the draft, then promotes it.
 
-Release notes live on the GitHub Release, not in the repo. Prime-rl is **not** on PyPI. `.dev` tags are handled separately by `devx_tag.yaml`; `tag-and-release.yaml` ignores them.
+Release notes live on the GitHub Release, not in the repo. Prime-rl is **not** on PyPI. `.dev` tags are handled separately by `prerelease.yml`; `release.yml` ignores them.
 
 ## 1. Decide the version
 

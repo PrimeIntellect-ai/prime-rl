@@ -5,6 +5,7 @@ import torch.distributed as dist
 from torch import nn
 
 from prime_rl.configs.trainer import DSABackend
+from prime_rl.trainer.models.kernels import cudnn_flashmla_error
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
@@ -146,6 +147,12 @@ class GlmMoeDsaAttention(nn.Module):
         self.use_index_cache = args.use_index_cache
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
+        if args.dsa_backend == "cudnn_flashmla" and (
+            error := cudnn_flashmla_error(self.num_heads, 1, self.kv_lora_rank)
+        ):
+            raise ValueError(
+                f'GLM DSA sparse attention cannot run the cudnn_flashmla backend: {error}. Set `model.dsa_backend = "tilelang"` to use the TileLang kernels instead.'
+            )
 
         self.cp_context = CPContext()
 
