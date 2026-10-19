@@ -116,10 +116,14 @@ class SFTDataConfig(BaseDataConfig):
     """Dataset to load: a local path, an HF Hub ID (optionally as `hf://datasets/<owner>/<repo>`), or an
     `s3://` / `gs://` URL to a data file or a prefix of data files (parquet, jsonl/json, csv or arrow). Object
     storage credentials and endpoints come from the standard env vars (e.g. `AWS_ENDPOINT_URL` for R2 or MinIO,
-    `GOOGLE_APPLICATION_CREDENTIALS` for GCS). Object storage datasets have no subsets and a single 'train' split."""
+    `GOOGLE_APPLICATION_CREDENTIALS` for a GCS credential file, or `GCS_SERVICE_ACCOUNT_JSON` for inline
+    service-account JSON supplied as a run secret). Object storage datasets have no subsets and a single 'train' split."""
 
     revision: str | None = None
     """HF dataset revision to load. Ignored for a local path or object storage URL."""
+
+    cache_dir: Path | None = None
+    """Persistent directory for dataset snapshots, downloads, and processed Arrow files."""
 
     subsets: list[str] | None = None
     """Subsets to load from the HF dataset."""

@@ -1,20 +1,113 @@
+import hashlib
 import json
 import shutil
 import socket
 import subprocess
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
 
 import pytest
 import s3fs
 from datasets import Dataset
 
 from prime_rl.configs.sft import SFTDataConfig
-from prime_rl.trainer.sft.data import load_sft_dataset, parse_dataset_name
+from prime_rl.trainer.sft.data import load_sft_dataset, parse_dataset_name, pre_download_data
 
 S3_SERVER_IMAGE = "versity/versitygw:v1.8.0"
 ACCESS_KEY, SECRET_KEY = "testkey", "testsecret"
 ROWS = [{"messages": [{"role": "assistant", "content": f"row {i}"}]} for i in range(4)]
+
+
+@pytest.fixture
+def hf_dataset_server():
+    state = {"commit": "a" * 40, "rows": ROWS, "downloads": 0}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.respond(head=True)
+
+        def do_GET(self):
+            self.respond(head=False)
+
+        def log_message(self, *_args):
+            pass
+
+        def respond(self, *, head):
+            if self.path.startswith("/api/datasets/test/selected/revision/"):
+                body = json.dumps(
+                    {
+                        "id": "test/selected",
+                        "sha": state["commit"],
+                        "siblings": [{"rfilename": "train.jsonl"}],
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+            elif self.path.endswith("/train.jsonl"):
+                body = "".join(json.dumps(row) + "\n" for row in state["rows"]).encode()
+                self.send_response(200)
+                self.send_header("X-Repo-Commit", state["commit"])
+                self.send_header("ETag", hashlib.sha256(body).hexdigest())
+                if not head:
+                    state["downloads"] += 1
+            else:
+                self.send_error(404)
+                return
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    state["endpoint"] = f"http://127.0.0.1:{server.server_port}"
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_hf_dataset_is_cached_on_volume_across_runs(hf_dataset_server, tmp_path, monkeypatch):
+    from huggingface_hub import constants
+
+    volume = tmp_path / "volume"
+    cache = volume / ".cache" / "datasets"
+    monkeypatch.setenv("HF_ENDPOINT", hf_dataset_server["endpoint"])
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "model-cache"))
+    monkeypatch.setenv("HF_TOKEN", "")
+    monkeypatch.setenv("HF_HUB_DISABLE_XET", "1")
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    config = SFTDataConfig(name="hf://datasets/test/selected", cache_dir=cache)
+
+    first = load_sft_dataset(config)
+    second = load_sft_dataset(config.model_copy(update={"name": "test/selected"}))
+
+    assert first["messages"] == second["messages"] == [row["messages"] for row in ROWS]
+    assert hf_dataset_server["downloads"] == 1
+    assert list(cache.rglob("train.jsonl"))
+    assert list(cache.rglob("*.arrow"))
+    assert not any(p.is_symlink() for p in cache.rglob("*"))
+    assert constants.HF_HUB_OFFLINE
+
+    hf_dataset_server["commit"] = "b" * 40
+    hf_dataset_server["rows"] = ROWS[:1]
+    updated = load_sft_dataset(config)
+
+    assert updated["messages"] == [ROWS[0]["messages"]]
+    assert hf_dataset_server["downloads"] == 2
+
+    launcher_config = config.model_copy()
+    pre_download_data(launcher_config, {})
+    assert Path(launcher_config.name).is_relative_to(cache)
+    assert load_sft_dataset(launcher_config)["messages"] == updated["messages"]
+    assert hf_dataset_server["downloads"] == 2
 
 
 def test_parse_dataset_name():

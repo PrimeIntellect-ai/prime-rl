@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import time
 import uuid
 from collections import defaultdict
@@ -8,7 +11,7 @@ from typing import Any, Callable, Literal, TypedDict, cast
 import fsspec
 import numpy as np
 import torch
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, DownloadConfig, interleave_datasets, load_dataset
 from huggingface_hub import snapshot_download
 from jaxtyping import Bool, Int
 from renderers import AutoRendererConfig, RendererConfig, merge_chat_template_kwargs
@@ -648,9 +651,9 @@ def parse_dataset_name(name: str) -> tuple[str | None, str]:
     return scheme, name
 
 
-def _object_store_data_files(url: str) -> tuple[str, list[str]]:
+def _object_store_data_files(url: str, storage_options: dict) -> tuple[str, list[str]]:
     """List the data files at an object or prefix URL and pick the `datasets` builder from their extension."""
-    fs, path = fsspec.core.url_to_fs(url)
+    fs, path = fsspec.core.url_to_fs(url, **storage_options)
     # Skip markers like `_SUCCESS` and hidden files, same convention as `datasets`' own data file resolution.
     files = sorted(fs.unstrip_protocol(f) for f in fs.find(path) if not Path(f).name.startswith(("_", ".")))
     if not files:
@@ -662,6 +665,18 @@ def _object_store_data_files(url: str) -> tuple[str, list[str]]:
             f"(json and jsonl may mix), got: {sorted({Path(f).suffix for f in files})}"
         )
     return builders.pop(), files
+
+
+def _download_hf_dataset(repo_id: str, revision: str | None, cache_dir: Path, env_vars: dict[str, str]) -> str:
+    # Only this child can contact the Hub when the model cache is offline.
+    command = [sys.executable, "-m", "prime_rl.utils.dataset_download", repo_id, str(cache_dir)]
+    if revision:
+        command.extend(["--revision", revision])
+    return subprocess.check_output(
+        command,
+        env={**os.environ, **env_vars, "HF_HUB_OFFLINE": "0", "HF_DATASETS_OFFLINE": "0"},
+        text=True,
+    ).strip()
 
 
 def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
@@ -677,11 +692,15 @@ def pre_download_data(data: DataConfig, env_vars: dict[str, str]) -> None:
 
     t0 = time.perf_counter()
     get_logger().info(f"Pre-downloading data {dataset_name} at revision {data.revision or 'main'}")
-    snapshot = snapshot_download(
-        repo_id=dataset_name,
-        repo_type="dataset",
-        revision=data.revision,
-        cache_dir=env_vars.get("HF_HUB_CACHE"),
+    snapshot = (
+        _download_hf_dataset(dataset_name, data.revision, data.cache_dir, env_vars)
+        if data.cache_dir
+        else snapshot_download(
+            repo_id=dataset_name,
+            repo_type="dataset",
+            revision=data.revision,
+            cache_dir=env_vars.get("HF_HUB_CACHE"),
+        )
     )
     data.name = snapshot
     get_logger().debug(
@@ -696,10 +715,15 @@ def setup_and_interleave_datasets(
     stopping_strategy: Literal["first_exhausted", "all_exhausted"],
     seed: int = 0,
     revision: str | None = None,
+    cache_dir: Path | None = None,
 ) -> Dataset:
     logger = get_logger()
     scheme, dataset_name = parse_dataset_name(dataset_name)
     path, data_files = dataset_name, None
+    storage_options = {}
+    if cache_dir and scheme is None and not Path(dataset_name).exists():
+        path = _download_hf_dataset(dataset_name, revision, cache_dir, {})
+        revision = None
     if scheme is not None:
         # Data files from object storage form a single "train" split with no subsets.
         if any(subset is not None or split != "train" for subset, split in subsets_and_splits):
@@ -707,12 +731,26 @@ def setup_and_interleave_datasets(
                 f"Dataset {dataset_name} is loaded from data files, which have no subsets and a single 'train' split. "
                 "Unset data.subsets and data.splits (or set data.splits = ['train'])."
             )
-        path, data_files = _object_store_data_files(dataset_name)
+        if scheme == "gs" and (credentials := os.environ.get("GCS_SERVICE_ACCOUNT_JSON")):
+            storage_options = {"token": json.loads(credentials)}
+        path, data_files = _object_store_data_files(dataset_name, storage_options)
         revision = None
     datasets = []
     for subset, split in subsets_and_splits:
         logger.debug(f"Loading dataset {dataset_name} with {subset=} and {split=}")
-        dataset = cast(Dataset, load_dataset(path, subset, split=split, revision=revision, data_files=data_files))
+        dataset = cast(
+            Dataset,
+            load_dataset(
+                path,
+                subset,
+                split=split,
+                revision=revision,
+                data_files=data_files,
+                cache_dir=str(cache_dir / "processed") if cache_dir else None,
+                download_config=DownloadConfig(cache_dir=str(cache_dir / "downloads")) if cache_dir else None,
+                storage_options=storage_options or None,
+            ),
+        )
         num_examples = len(dataset)
         dataset = dataset.add_column("__subset", [subset] * num_examples, new_fingerprint=str(uuid.uuid4()))
         dataset = dataset.add_column("__split", [split] * num_examples, new_fingerprint=str(uuid.uuid4()))
@@ -742,6 +780,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            cache_dir=config.cache_dir,
         )
     elif config.subsets is not None and config.splits is None:
         logger.debug(f"Loading datasets for subsets {config.subsets} with default split 'train'")
@@ -751,6 +790,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            cache_dir=config.cache_dir,
         )
     elif config.subsets is None and config.splits is not None:
         logger.debug(f"Loading datasets for splits {config.splits} with default subset 'None'")
@@ -760,6 +800,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            cache_dir=config.cache_dir,
         )
     else:
         assert config.subsets is not None and config.splits is not None
@@ -770,6 +811,7 @@ def load_sft_dataset(config: SFTDataConfig) -> Dataset:
             probabilities=config.probabilities,
             stopping_strategy=config.stopping_strategy,
             revision=config.revision,
+            cache_dir=config.cache_dir,
         )
 
 
