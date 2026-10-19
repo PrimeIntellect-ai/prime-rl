@@ -47,6 +47,7 @@ class HyperConnection(nn.Module):
         read_count: int = 1,
         write_count: int = 1,
         conv_kernel_size: int = 0,
+        write_mode: str | None = None,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -68,12 +69,19 @@ class HyperConnection(nn.Module):
         self.read_conv_weight = (
             nn.Parameter(torch.empty(3 * hidden_size, conv_kernel_size)) if conv_kernel_size else None
         )
+        # Write variants (sequential blocks, full-width streams): `norm` RMS-normalizes the block output before the write;
+        # `output` adds a term from the normalized block output to the write logits (zero-initialized, so it starts as
+        # GR); `channel` replaces the scalar per stream by a gate per stream and channel from the read's bottleneck.
+        self.write_mode = write_mode
+        self.write_norm = ExpandedRMSNorm(hidden_size, 1, norm_eps) if write_mode else None
+        self.write_output_weight = nn.Linear(hidden_size, stream_count, bias=False) if write_mode == "output" else None
+        self.write_gate_weight_up = nn.Linear(low_rank, expanded_size, bias=False) if write_mode == "channel" else None
 
     def read(self, expanded_states: torch.Tensor) -> tuple[list[torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
         """The ``read_count`` block inputs, and the state ``combine`` needs."""
         normalized_states = self.hc_norm(expanded_states)
-        mixing_weights = F.silu(self.input_mix_weight_down(normalized_states) / self.stream_count)
-        mixing_weights = torch.sigmoid(self.input_mix_weight_up(mixing_weights))
+        bottleneck = F.silu(self.input_mix_weight_down(normalized_states) / self.stream_count)
+        mixing_weights = torch.sigmoid(self.input_mix_weight_up(bottleneck))
         normalized_streams = normalized_states.unflatten(-1, (self.stream_count, self.stream_width))
         chunks = [
             (gate.unflatten(-1, (self.stream_count, self.stream_width)) * normalized_streams).mean(dim=-2)
@@ -83,6 +91,8 @@ class HyperConnection(nn.Module):
             torch.cat(chunks[start : start + self.chunk_count], dim=-1).to(expanded_states.dtype)
             for start in range(0, len(chunks), self.chunk_count)
         ]
+        if self.write_mode == "channel":
+            return block_inputs, (expanded_states, normalized_states, bottleneck)
         return block_inputs, (expanded_states, normalized_states)
 
     def attention_inputs(
@@ -107,12 +117,21 @@ class HyperConnection(nn.Module):
     def combine(
         self,
         block_output: torch.Tensor | tuple[torch.Tensor, ...],
-        residual_state: tuple[torch.Tensor, torch.Tensor],
+        residual_state: tuple[torch.Tensor, ...],
     ) -> torch.Tensor:
-        expanded_states, normalized_states = residual_state
-        injection_weights = 2.0 * torch.sigmoid(self.block_inject_weight(normalized_states) / self.stream_count)
-        injection_weights = injection_weights.unflatten(-1, (self.write_count, self.stream_count, self.chunk_count))
+        expanded_states, normalized_states = residual_state[:2]
         residual_streams = expanded_states.unflatten(-1, (self.stream_count, self.stream_width))
+        if self.write_norm is not None:
+            block_output = self.write_norm(block_output)
+        if self.write_mode == "channel":
+            gates = 2.0 * torch.sigmoid(self.write_gate_weight_up(residual_state[2]))
+            gates = gates.unflatten(-1, (self.stream_count, self.stream_width))
+            return (residual_streams + block_output.unsqueeze(-2) * gates).flatten(-2)
+        logits = self.block_inject_weight(normalized_states)
+        if self.write_mode == "output":
+            logits = logits + self.write_output_weight(block_output)
+        injection_weights = 2.0 * torch.sigmoid(logits / self.stream_count)
+        injection_weights = injection_weights.unflatten(-1, (self.write_count, self.stream_count, self.chunk_count))
         block_outputs = block_output if isinstance(block_output, tuple) else (block_output,)
         for output_index, output in enumerate(block_outputs):
             for chunk_index, chunk in enumerate(output.chunk(self.chunk_count, dim=-1)):

@@ -42,6 +42,9 @@ class PrimeMoeConfig(PretrainedConfig):
             read then assembles from `hidden_size / hc_stream_width` chunks. Defaults to `hidden_size`.
         hc_qkv_reads (`bool`): Separate Gated Residual reads (gates) for the attention's query, key and value inputs.
         hc_moe_reads (`bool`): Separate reads for the MoE router and the experts (routed and shared).
+        hc_write (`str`, *optional*): Gated Residual write variant of sequential blocks: `norm` (RMS-normalize the block
+            output before the write), `output` (write scalars also from the normalized block output) or `channel` (a
+            gate per stream and channel instead of one scalar per stream). None for the plain write.
         hc_parallel_block (`str`, *optional*): Parallel attention and MLP with Gated Residual: `shared_read` (both
             take the same read; the MLP the query read with `hc_qkv_reads`) or `separate_reads` (an own read for the
             MLP); both outputs are written to all streams with their own scalars. None for sequential blocks.
@@ -107,6 +110,7 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_qkv_reads=False,
         hc_moe_reads=False,
         hc_qkv_conv=0,
+        hc_write=None,
         hc_parallel_block=None,
         hc_stream_inputs="copy",
         hc_byte_add=None,
@@ -160,6 +164,7 @@ class PrimeMoeConfig(PretrainedConfig):
         self.hc_qkv_reads = hc_qkv_reads
         self.hc_moe_reads = hc_moe_reads
         self.hc_qkv_conv = hc_qkv_conv
+        self.hc_write = hc_write
         self.hc_parallel_block = hc_parallel_block
         self.hc_stream_inputs = hc_stream_inputs
         self.hc_byte_add = hc_byte_add
