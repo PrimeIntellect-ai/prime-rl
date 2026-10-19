@@ -88,3 +88,16 @@ def test_native_constructor_errors_are_not_schema_unavailable(gpt2_config):
     with pytest.raises(ValueError, match="divisible") as caught:
         expected_hf_schema({**gpt2_config, "n_embd": 7})
     assert not isinstance(caught.value, ModelSchemaUnavailable)
+
+
+def test_schema_details_records_expected_state_dtypes(gpt2_config):
+    import torch
+
+    from prime_rl.utils.hf_export_schema import hf_schema_details
+
+    schema, aliases, dtypes = hf_schema_details(gpt2_config)
+    assert dtypes.keys() == schema.keys()
+    assert dtypes["transformer.wte.weight"].is_floating_point
+    assert dtypes["lm_head.weight"] == dtypes["transformer.wte.weight"]
+    assert all(isinstance(dtype, torch.dtype) for dtype in dtypes.values())
+    assert aliases["lm_head.weight"] == "transformer.wte.weight"

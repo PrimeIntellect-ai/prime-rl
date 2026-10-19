@@ -303,6 +303,7 @@ def _streaming_case(family):
             hf[f"{layer}.linear_attn.A_log"] = torch.tensor([0.1234567, -0.7654321])
             hf[f"{layer}.linear_attn.norm.weight"] = torch.tensor([0.1234567, -0.7654321])
         else:
+            hf.pop(f"{prefix}.norm.weight")
             config = {
                 "model_type": "qwen4_exp_text",
                 "num_hidden_layers": 1,

@@ -15,8 +15,10 @@ class ModelSchemaUnavailable(ValueError):
     """Transformers has no config or model mapping for this architecture."""
 
 
-def hf_schema_metadata(config: dict, model_config: dict | None = None) -> tuple[dict[str, Shape], dict[str, str]]:
-    """Return state shapes and tied aliases, retaining no model or tensor objects.
+def hf_schema_details(
+    config: dict, model_config: dict | None = None
+) -> tuple[dict[str, Shape], dict[str, str], dict[str, torch.dtype]]:
+    """Return state shapes, tied aliases and dtypes, retaining no tensors.
 
     Aliases map duplicate parameter names to the first canonical parameter name.
     Native classes never fetch repository files. Custom config/model code is
@@ -67,6 +69,7 @@ def hf_schema_metadata(config: dict, model_config: dict | None = None) -> tuple[
         if any(tensor.device.type != "meta" for tensor in state.values()):
             raise ValueError(f"Native model_type={model_type!r} allocates non-meta state during schema construction")
         schema = {name: tuple(tensor.shape) for name, tensor in state.items()}
+        dtypes = {name: tensor.dtype for name, tensor in state.items()}
         aliases = {}
         canonical = {}
         for name, parameter in model.named_parameters(remove_duplicate=False):
@@ -77,9 +80,15 @@ def hf_schema_metadata(config: dict, model_config: dict | None = None) -> tuple[
                 aliases[name] = canonical[identity]
             else:
                 canonical[identity] = name
-        return schema, aliases
+        return schema, aliases, dtypes
     finally:
         del model
+
+
+def hf_schema_metadata(config: dict, model_config: dict | None = None) -> tuple[dict[str, Shape], dict[str, str]]:
+    """Return state shapes and tied aliases from one weight-free model build."""
+    schema, aliases, _ = hf_schema_details(config, model_config)
+    return schema, aliases
 
 
 def expected_hf_schema(config: dict, model_config: dict | None = None) -> dict[str, Shape]:

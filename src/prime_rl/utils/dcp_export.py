@@ -14,8 +14,8 @@ from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
 from torch.distributed.checkpoint.metadata import TensorStorageMetadata
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
-from prime_rl.utils.conversion_ops import apply_prime_to_hf
-from prime_rl.utils.hf_export_schema import ModelSchemaUnavailable, hf_schema_metadata, matches_hf_schema
+from prime_rl.utils.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.utils.hf_export_schema import ModelSchemaUnavailable, hf_schema_details, matches_hf_schema
 from prime_rl.utils.weight_conversion import CUSTOM_MODEL_TYPES, conversion_chain, keep_in_fp32, resolve_config
 
 _LAYER = re.compile(r"^(.*?\b(?:layers|h|blocks|block)\.\d+)\.")
@@ -148,7 +148,9 @@ def validate_model_layout(entries: dict[str, TensorStorageMetadata], config: dic
     text_config = getattr(resolved, "text_config", resolved)
     names = {name.removeprefix(_PREFIX) for name in entries}
     prefix = "model.language_model" if hasattr(resolved, "text_config") else "model"
-    required = {f"{prefix}.embed_tokens.weight", f"{prefix}.norm.weight"}
+    required = {f"{prefix}.embed_tokens.weight"}
+    if config["model_type"] not in {"qwen4_exp", "qwen4_exp_text"}:
+        required.add(f"{prefix}.norm.weight")
     if not getattr(text_config, "tie_word_embeddings", False):
         required.add("lm_head.weight")
     if missing := required - names:
@@ -168,7 +170,7 @@ def _export_layout(
     model_type = config.get("model_type")
     # A meta model validates HF-native keys/shapes without allocating weight storage.
     try:
-        schema, aliases = hf_schema_metadata(config, model_config)
+        schema, aliases, expected_dtypes = hf_schema_details(config, model_config)
     except ModelSchemaUnavailable:
         if model_type not in CUSTOM_MODEL_TYPES:
             raise
@@ -177,6 +179,10 @@ def _export_layout(
             raise
     else:
         if matches_hf_schema(shapes, schema, aliases):
+            for name in shapes:
+                actual = entries[_PREFIX + name].properties.dtype
+                if expected_dtypes[name].is_floating_point and not actual.is_floating_point:
+                    raise ValueError(f"Quantized/nonfloating checkpoint payload for floating model tensor: {name}")
             return [], set(aliases) & shapes.keys()
         if model_type not in CUSTOM_MODEL_TYPES:
             missing = schema.keys() - shapes.keys() - aliases.keys()
@@ -187,10 +193,41 @@ def _export_layout(
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}, shapes={sorted(mismatched)}"
             )
     validate_model_layout(entries, config)
+    for name, entry in entries.items():
+        if name.endswith(
+            (
+                ".weight",
+                ".bias",
+                ".gate_proj",
+                ".up_proj",
+                ".down_proj",
+                ".gate_proj_bias",
+                ".up_proj_bias",
+                ".down_proj_bias",
+                ".selection_bias",
+            )
+        ):
+            if not entry.properties.dtype.is_floating_point:
+                raise ValueError(f"Quantized/nonfloating checkpoint model weight: {name}")
     resolved = resolve_config(config)
     text_config = getattr(resolved, "text_config", resolved)
     aliases = {"lm_head.weight"} if getattr(text_config, "tie_word_embeddings", False) else set()
     return conversion_chain(resolved), aliases
+
+
+def _identity_fp32_names(entries: dict[str, TensorStorageMetadata], config: dict) -> set[str]:
+    """Apply the shared forward names on meta tensors to resolve transfer dtype policy."""
+    model_type = config.get("model_type", "")
+    if model_type not in CUSTOM_MODEL_TYPES:
+        return set()
+    state = {name.removeprefix(_PREFIX): torch.empty(entry.size, device="meta") for name, entry in entries.items()}
+    original_names = {id(tensor): name for name, tensor in state.items()}
+    canonical = apply_hf_to_prime(state, conversion_chain(resolve_config(config)))
+    return {
+        original_names[id(tensor)]
+        for name, tensor in canonical.items()
+        if id(tensor) in original_names and keep_in_fp32(model_type, name)
+    }
 
 
 def iter_cpu_hf_groups(
@@ -200,6 +237,7 @@ def iter_cpu_hf_groups(
     reader = FileSystemReader(dcp_dir)
     entries = _model_entries(reader)
     operations, tied_aliases = _export_layout(entries, config, model_config)
+    identity_fp32 = _identity_fp32_names(entries, config) if not operations else set()
     grouped: dict[str, list[str]] = {}
     for name in sorted(entries):
         logical = name.removeprefix(_PREFIX)
@@ -227,7 +265,8 @@ def iter_cpu_hf_groups(
             _validate_glm_group(group, resolve_config(config).to_dict())
         for name in group:
             if group[name].is_floating_point():
-                dtype = torch.float32 if keep_in_fp32(model_type, name) else torch.bfloat16
+                preserve = name in identity_fp32 or keep_in_fp32(model_type, name)
+                dtype = torch.float32 if preserve else torch.bfloat16
                 group[name] = group[name].to(dtype)
         yield apply_prime_to_hf(group, operations)
         del group
