@@ -15,6 +15,12 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
+from prime_rl.trainer.bf16_rounding import (
+    bf16_rounding_disabled,
+    install_bf16_stochastic_rounding,
+    pop_cast_elements,
+    set_bf16_rounding_step,
+)
 from prime_rl.trainer.models.fp8_rounding import set_fp8_rounding_step
 from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.configs.sft import SFTConfig
@@ -238,6 +244,17 @@ def train(config: SFTConfig):
     else:
         logger.info("Starting from scratch")
 
+    bf16_sr = os.environ.get("PRIME_RL_BF16_SR") == "1"
+    if bf16_sr:
+        install_bf16_stochastic_rounding(model, int(os.environ.get("PRIME_RL_BF16_SR_SEED", "0")))
+    probe_rounding = bf16_rounding_disabled if bf16_sr else nullcontext
+
+    def probe(step: int) -> dict[str, float]:
+        """Probe with the RTN bf16 cast; its own-cast keys assume that cast is the training forward, false under SR."""
+        with probe_rounding():
+            metrics = master_cast_probe.measure(step)
+        return {key: value for key, value in metrics.items() if not (bf16_sr and "/own/" in key)}
+
     # Load the probe's fixed batches before the training loader forks its worker.
     probe_batches = None
     if os.environ.get("PRIME_RL_MASTER_CAST_PROBE") == "1":
@@ -459,7 +476,7 @@ def train(config: SFTConfig):
         probe_start_path = config.run_dir / "probe_state" / f"rank{world.rank}.pt"
         if checkpoint_step is None:
             master_cast_probe.save_start(probe_start_path)
-            asyncio.run(monitors.log({**master_cast_probe.measure(0), "step": 0}, step=0))
+            asyncio.run(monitors.log({**probe(0), "step": 0}, step=0))
         else:
             master_cast_probe.load_start(probe_start_path)
     fp8_flip_rate = None
@@ -479,6 +496,8 @@ def train(config: SFTConfig):
 
         step_start_time = time.perf_counter()
         set_fp8_rounding_step(model, progress.step)
+        if bf16_sr:
+            set_bf16_rounding_step(progress.step)
         fp8_flip_metrics = fp8_flip_rate.step(progress.step) if fp8_flip_rate is not None else {}
         forward_backward_start_time = time.perf_counter()
 
@@ -591,7 +610,14 @@ def train(config: SFTConfig):
         optimizer.step()
         optimizer.zero_grad()
         weight_dynamics_metrics = weight_update_tracker.step() if weight_update_tracker is not None else {}
-        weight_dynamics_metrics |= fp8_flip_metrics
+        # Under bf16 SR the training forward is not the RTN bf16 cast these forward metrics assume.
+        weight_dynamics_metrics |= {
+            key: value
+            for key, value in fp8_flip_metrics.items()
+            if not (bf16_sr and key.startswith("fp8_flip/forward"))
+        }
+        if bf16_sr:
+            weight_dynamics_metrics |= {f"bf16_sr/cast_elements_{kind}": n for kind, n in pop_cast_elements().items()}
 
         # Update learning rate scheduler
         current_lr = optimizer.param_groups[0]["lr"]
@@ -643,7 +669,7 @@ def train(config: SFTConfig):
         max_peak_memory = max(max_peak_memory, peak_memory)
         # After the step's timing and memory readings, so probe steps keep comparable perf metrics.
         if master_cast_probe is not None and progress.step % master_cast_probe_interval == 0:
-            weight_dynamics_metrics |= master_cast_probe.measure(progress.step)
+            weight_dynamics_metrics |= probe(progress.step)
 
         # Log step metrics
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
