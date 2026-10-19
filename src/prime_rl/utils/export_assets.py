@@ -55,7 +55,6 @@ def prepare_export_config(config: dict, model_config: dict) -> dict:
     if hasattr(resolved_text, "num_hidden_layers"):
         text_config["num_hidden_layers"] = resolved_text.num_hidden_layers
     if "dsa_backend" in model_config:
-        text_config["dsa_backend"] = model_config["dsa_backend"]
         result["dsa_backend"] = model_config["dsa_backend"]
     indexer_types = text_config.get("indexer_types")
     if indexer_types and "shared" in indexer_types:
@@ -158,4 +157,5 @@ def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, 
     native_config = resolve_config(exported_config)
     if not isinstance(native_config, PretrainedConfig):
         native_config = PretrainedConfig.from_dict(exported_config)
+    native_config.use_cache = False
     native_config.to_json_file(output_dir / "config.json", use_diff=True)

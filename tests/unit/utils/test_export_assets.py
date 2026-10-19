@@ -95,7 +95,8 @@ def test_prepare_export_config_preserves_vlm_and_normalizes_quantization(caplog)
     assert result["auto_map"] == config["auto_map"]
     assert result["text_config"]["num_hidden_layers"] == 2
     assert result["text_config"]["use_index_cache"] is True
-    assert result["text_config"]["dsa_backend"] == "test"
+    assert result["dsa_backend"] == "test"
+    assert "dsa_backend" not in result["text_config"]
     assert result["vision_config"]["depth"] == 4
     for value in (result, result["text_config"], result["vision_config"]):
         assert value["dtype"] == "bfloat16"
@@ -145,9 +146,9 @@ def test_save_model_assets_handles_nested_text_generation(local_assets, tmp_path
     generation = GenerationConfig.from_pretrained(output)
     assert generation.use_cache is True
     assert generation.eos_token_id == 1
-    assert json.loads((output / "config.json").read_text()) == json.loads(
-        resolve_config(prepared).to_json_string(use_diff=True)
-    )
+    expected = resolve_config(prepared)
+    expected.use_cache = False
+    assert json.loads((output / "config.json").read_text()) == json.loads(expected.to_json_string(use_diff=True))
 
 
 def test_saved_config_matches_native_bf16_meta_model_serialization(local_assets, tmp_path):
