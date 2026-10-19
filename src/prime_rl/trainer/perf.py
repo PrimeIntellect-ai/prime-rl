@@ -5,7 +5,7 @@ from torch import nn
 from transformers import PretrainedConfig
 
 from prime_rl.trainer.lora import has_lora_layers
-from prime_rl.trainer.models.layers.lora import MultiLoRAModule
+from prime_rl.trainer.models.layers.lora import LoRAModule
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
@@ -204,16 +204,9 @@ class PerfCounter:
         if has_lora_layers(self.model):
             # LoRA case:
             # - Frozen base matmuls still incur dX in backward: 2×, plus forward: 2× => 4× active_mm
-            # - Fully trainable non-LoRA params (modules_to_save) cost 6×
             # - LoRA adapter params cost 6×
-            # Combined (to avoid double counting): 4*active_mm + 2*fully_trainable + 6*lora_adapters + attention
-            active_mm_params = self.get_active_mm_params(model_config)
-            lora_adapter_params = self._count_lora_adapter_params()
-            fully_trainable_params = self._count_fully_trainable_params_excluding_lora()
-
-            flop_per_token = (
-                4 * active_mm_params + 2 * fully_trainable_params + 6 * lora_adapter_params + attention_flops
-            )
+            flop_per_token = 4 * self.get_active_mm_params(model_config) + 6 * self._count_lora_adapter_params()
+            flop_per_token += attention_flops
         else:
             # standard case: full fine-tuning, all params participate in forward (2×) and backward (4×)
             flop_per_token = 6 * self.get_active_mm_params(model_config) + attention_flops
@@ -221,25 +214,12 @@ class PerfCounter:
         return flop_per_token
 
     def _count_lora_adapter_params(self) -> int:
-        """Count LoRA adapter parameters (sum of lora_A and lora_B across all MultiLoRAModules)."""
-        params = 0
-        for module in self.model.modules():
-            if isinstance(module, MultiLoRAModule):
-                adapter_params, _ = module.get_lora_param_counts()
-                params += adapter_params
-        return params
-
-    def _count_fully_trainable_params_excluding_lora(self) -> int:
-        """Count trainable parameters excluding LoRA adapter tensors.
-
-        Approximates trainable matmul params in modules_to_save by subtracting LoRA adapter params
-        from all trainable params.
-        """
-        total_trainable = 0
-        for name, param in self.model.named_parameters():
-            if param.requires_grad and ("lora_A" not in name and "lora_B" not in name):
-                total_trainable += param.numel()
-        return total_trainable
+        return sum(
+            p.numel()
+            for module in self.model.modules()
+            if isinstance(module, LoRAModule)
+            for p in module.parameters(recurse=False)
+        )
 
 
 _PERF_COUNTER: PerfCounter | None = None
