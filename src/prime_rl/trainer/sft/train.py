@@ -45,6 +45,7 @@ from prime_rl.trainer.sft.data import (
     setup_dataset,
 )
 from prime_rl.trainer.utils import (
+    get_grad_accum_steps,
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
@@ -116,13 +117,9 @@ def train(config: SFTConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
-    total_micro_batches = config.data.batch_size * config.model.cp
-    micro_batches_per_step = world.world_size * config.data.micro_batch_size
-    assert total_micro_batches % micro_batches_per_step == 0, (
-        f"batch_size * cp ({total_micro_batches}) must be divisible by "
-        f"world_size * micro_batch_size ({micro_batches_per_step})"
+    grad_accum_steps = get_grad_accum_steps(
+        config.data.batch_size, config.data.micro_batch_size, config.model.cp, world.world_size
     )
-    grad_accum_steps = total_micro_batches // micro_batches_per_step
 
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"

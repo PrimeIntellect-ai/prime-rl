@@ -63,6 +63,7 @@ from prime_rl.trainer.pretrain.metrics import (
 from prime_rl.trainer.sft.data import get_dataset_state
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.utils import (
+    get_grad_accum_steps,
     get_dcp_group,
     GarbageCollection,
     clip_grad_norm_,
@@ -156,13 +157,9 @@ def train(config: PretrainConfig):
     resolve_ep(config.model)
     parallel_dims = get_parallel_dims(config.model)
 
-    total_micro_batches = config.data.batch_size * config.model.cp
-    micro_batches_per_step = world.world_size * config.data.micro_batch_size
-    assert total_micro_batches % micro_batches_per_step == 0, (
-        f"batch_size * cp ({total_micro_batches}) must be divisible by "
-        f"world_size * micro_batch_size ({micro_batches_per_step})"
+    grad_accum_steps = get_grad_accum_steps(
+        config.data.batch_size, config.data.micro_batch_size, config.model.cp, world.world_size
     )
-    grad_accum_steps = total_micro_batches // micro_batches_per_step
 
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
     checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)

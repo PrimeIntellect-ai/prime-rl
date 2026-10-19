@@ -363,3 +363,15 @@ class MemoryProfiler:
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
         self.step_num += 1
+
+
+def get_grad_accum_steps(batch_size: int, micro_batch_size: int, cp: int, world_size: int) -> int:
+    """Micro-batches each rank runs per optimizer step: ``batch_size`` samples, each split over ``cp`` ranks, in
+    micro-batches of ``micro_batch_size`` on ``world_size`` ranks."""
+    total_micro_batches = batch_size * cp
+    micro_batches_per_step = world_size * micro_batch_size
+    assert total_micro_batches % micro_batches_per_step == 0, (
+        f"batch_size * cp ({total_micro_batches}) must be divisible by "
+        f"world_size * micro_batch_size ({micro_batches_per_step})"
+    )
+    return total_micro_batches // micro_batches_per_step
