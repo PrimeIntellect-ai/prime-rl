@@ -136,5 +136,9 @@ class WeightWatcher:
             "watcher/update_count": float(self.update_count),
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,
-            **{f"watcher/{name}": t for name, t in self.receiver.admin_plane.last_update_times.items()},
+            **{
+                f"watcher/{phase}/{stat}": value
+                for phase, times in self.receiver.admin_plane.update_times.items()
+                for stat, value in (("min", min(times)), ("mean", sum(times) / len(times)), ("max", max(times)))
+            },
         }
