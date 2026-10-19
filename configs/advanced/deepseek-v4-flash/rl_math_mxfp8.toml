@@ -6,8 +6,6 @@
 # drifts away from inference step by step; quantizing the trainer's forward identically keeps
 # both on the same weights.
 #
-# Needs a prime-kernels build with `mxfp8_moe` (prime-kernels #16).
-#
 #   uv run rl @ configs/advanced/deepseek-v4-flash/rl_math_mxfp8.toml
 
 max_steps = 60
