@@ -157,8 +157,8 @@ class PrimeTrainMonitor(Monitor):
             # attached run's failure/completion marking; a clean finish() is
             # delivered best-effort and does not by itself mark it completed.
             init_kwargs = {"id": run_id}
-        elif isinstance(config, SFTConfig):
-            # SFT trains on a dataset, not on environments, and has no rollouts - the
+        elif isinstance(config, SFTConfig | PretrainConfig):
+            # SFT and pretraining train on data, not on environments, and have no rollouts - the
             # platform run is registered without both.
             init_kwargs = dict(
                 name=self.config.name,
@@ -166,20 +166,6 @@ class PrimeTrainMonitor(Monitor):
                 environments=[],
                 training=pr.TrainingSpec(
                     max_steps=config.max_steps or 0,
-                    batch_size=config.data.batch_size,
-                    seq_len=config.data.seq_len,
-                    wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
-                ),
-                config=config.model_dump(exclude_none=True, mode="json"),
-            )
-        elif isinstance(config, PretrainConfig):
-            # Pretraining trains on token data from scratch: no environments, the model is its architecture.
-            init_kwargs = dict(
-                name=self.config.name,
-                model=config.model.name,
-                environments=[],
-                training=pr.TrainingSpec(
-                    max_steps=config.max_steps,
                     batch_size=config.data.batch_size,
                     seq_len=config.data.seq_len,
                     wandb_project=config.monitors.wandb.project if config.monitors.wandb else None,
