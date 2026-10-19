@@ -58,11 +58,15 @@ def monkey_patch_sampling_mask_logprobs():
 
     from_logits = SamplingMaskTensors.from_logits.__func__
 
-    def from_logits_with_logprobs(cls, logits, num_sampled_tokens, max_num_kept):
-        tensors = from_logits(cls, logits, num_sampled_tokens, max_num_kept)
-        # Slots past each row's count are uninitialized and never read; clamp so the gather stays in range.
+    def from_logits_with_logprobs(cls, logits, cu_num_logits, num_sampled_tokens, max_num_kept, rows_per_request=1):
+        tensors = from_logits(cls, logits, cu_num_logits, num_sampled_tokens, max_num_kept, rows_per_request)
+        # Output rows are request-major slots; slot j of request r reads logits row cu_num_logits[r] + j.
+        # Unused slots and slots past each row's count are never read; clamp so the gathers stay in range.
+        rows = torch.arange(tensors.token_ids.shape[0], device=logits.device)
+        source_rows = (cu_num_logits[rows // rows_per_request] + rows % rows_per_request).clamp(max=logits.shape[0] - 1)
         ids = tensors.token_ids.long().clamp(0, logits.shape[1] - 1)
-        logprobs = (logits.gather(1, ids) - logits.logsumexp(-1, keepdim=True)).float()
+        logz = logits.logsumexp(-1)[source_rows]
+        logprobs = (logits[source_rows.unsqueeze(1), ids] - logz.unsqueeze(1)).float()
         bits = logprobs.view(torch.int32) ^ NEG_INF_BITS
         return tensors._replace(token_ids=(bits.long() << 32) | tensors.token_ids.long())
 
