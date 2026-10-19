@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+import torch
 
 from tests.conftest import ProcessResult
 
@@ -37,6 +38,8 @@ def step_metrics(output_dir: Path, step: int) -> dict:
 def layout_metrics(run_process: Callable[..., ProcessResult], output_dir: Path) -> dict[str, dict]:
     metrics = {}
     for name, (num_gpus, extra) in LAYOUTS.items():
+        if num_gpus > torch.cuda.device_count():
+            continue
         run_dir = output_dir / "parallel-invariance" / name
         cmd = [
             "uv",
@@ -66,6 +69,8 @@ def layout_metrics(run_process: Callable[..., ProcessResult], output_dir: Path) 
 
 @pytest.mark.parametrize("layout", [name for name in LAYOUTS if name != "base"])
 def test_layout_matches_single_gpu(layout_metrics: dict[str, dict], layout: str):
+    if layout not in layout_metrics:
+        pytest.skip(f"{layout} needs {LAYOUTS[layout][0]} GPUs")
     base, other = layout_metrics["base"], layout_metrics[layout]
     for metric, rel_tol in METRICS.items():
         assert other[metric] == pytest.approx(base[metric], rel=rel_tol), metric

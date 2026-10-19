@@ -2,10 +2,12 @@ name: Regression
 
 # Scheduled regression suites, one job group per suite. Dispatch with `suite`
 # to run one of them.
-#   rl:   every configs/rl/*.toml as a hosted RL run
-#   eval: every configs/eval/*.toml through `uv run eval` against Prime
-#         Inference, compared against baselines/eval/. reports/eval/ holds the
-#         error bars of each baseline. Also runs on PRs that touch the suite.
+#   rl:       every configs/rl/*.toml as a hosted RL run
+#   parallel: test_parallel_invariance.py on the 2xH200 runners
+#   eval:     every configs/eval/*.toml through `uv run eval` against Prime
+#             Inference, compared against baselines/eval/. reports/eval/ holds
+#             the error bars of each baseline. Also runs on PRs that touch the
+#             suite.
 # All paths are relative to tests/regression/.
 
 on:
@@ -14,7 +16,7 @@ on:
             suite:
                 description: "Suite to run"
                 type: choice
-                options: [all, rl, eval]
+                options: [all, rl, parallel, eval]
                 default: all
             rl_config_file:
                 description: "rl: config to dispatch (e.g. tests/regression/configs/rl/wordle.toml). Leave empty to run all."
@@ -238,6 +240,52 @@ jobs:
                       -e WANDB_API_KEY \
                       -e HF_TOKEN \
                       --yes --output json
+
+    parallel:
+        name: Parallel / Invariance
+        if: ${{ github.event_name != 'pull_request' && (!inputs.suite || inputs.suite == 'all' || inputs.suite == 'parallel') }}
+        runs-on: prime-rl-2xh200
+        container:
+            image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+            options: --gpus all
+        timeout-minutes: 60
+        steps:
+            - name: Install Git
+              run: |
+                  apt-get update
+                  apt-get install -y git
+                  git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+            - parallel:
+                  - name: Init public submodules
+                    run: |
+                        git config --global url."https://github.com/".insteadOf "git@github.com:"
+                        git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+                  - name: Install uv
+                    uses: astral-sh/setup-uv@v10.0.1
+                    with:
+                        enable-cache: true
+                        cache-dependency-glob: "uv.lock"
+            - name: Install dependencies
+              run: uv sync --all-extras --all-packages --locked
+            - name: Run invariance test
+              env:
+                  USERNAME_CI: CI_RUNNER
+                  WANDB_MODE: offline
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+                  PYTEST_OUTPUT_DIR: /tmp/outputs
+              run: uv run pytest -vvs tests/regression/test_parallel_invariance.py
+            - name: Upload run logs on failure
+              if: failure()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: parallel-invariance-logs
+                  path: /tmp/outputs/**/*.log
+                  retention-days: 7
+                  if-no-files-found: ignore
 
     eval-plan:
         name: Eval / Plan
