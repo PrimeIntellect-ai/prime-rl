@@ -376,7 +376,7 @@ jobs:
                   tee -a "$GITHUB_STEP_SUMMARY" < summary.md
                   exit $status
             - name: Open baseline PR
-              if: ${{ !cancelled() && inputs.eval_set_baseline }}
+              if: ${{ !cancelled() && inputs.eval_set_baseline && needs.eval.result == 'success' }}
               env:
                   GH_TOKEN: ${{ github.token }}
               run: |
