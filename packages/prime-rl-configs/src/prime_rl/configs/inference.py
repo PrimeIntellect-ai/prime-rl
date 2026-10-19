@@ -3,7 +3,7 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_config import BaseConfig
 
 from prime_rl.configs.shared import EnvVars, LogConfig, SlurmConfig
@@ -446,6 +446,9 @@ class InferenceConfig(BaseConfig):
     env_vars: EnvVars = {}
     """Extra environment variables for the inference server process(es). Merged on top of the launcher defaults."""
 
+    chat_encoding: Path | None = None
+    """A local DeepSeek-style chat encoding, the ``encoding/encoding_*.py`` file that DeepSeek models ship. Its ``encode_messages`` renders chat prompts in place of vLLM's bundled copy for the ``deepseek_v32``, ``deepseek_v4`` and ``deepseek_v41`` tokenizer modes. vLLM picks the mode from the model architecture; set ``vllm.tokenizer_mode`` for other models."""
+
     use_deep_gemm: bool = False
     """Enable vLLM DeepGEMM FP8 kernels ``VLLM_USE_DEEP_GEMM=1``. Only works with block-wise FP8 quantization (e.g. GLM-5-FP8)."""
 
@@ -481,6 +484,16 @@ class InferenceConfig(BaseConfig):
 
     dry_run: bool = False
     """Only validate and dump resolved configs, then exit early."""
+
+    @field_validator("chat_encoding")
+    @classmethod
+    def resolve_chat_encoding(cls, path: Path | None) -> Path | None:
+        """vLLM processes may start in another directory, so they get an absolute path."""
+        if path is None:
+            return None
+        if not path.is_file():
+            raise ValueError(f"Chat encoding {path} is not a file.")
+        return path.resolve()
 
     @model_validator(mode="after")
     def validate_multi_node_requires_slurm(self):
