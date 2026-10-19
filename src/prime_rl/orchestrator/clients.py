@@ -535,6 +535,7 @@ class AdminPlane:
         self.draining[group_id] = time.monotonic()
         for client in group:
             self.clients.remove(client)
+        for client in group:
             await self._set_routed(client, False)
         get_logger().info(
             f"Draining engine group {group_id}: out of the router and the weight updates, "

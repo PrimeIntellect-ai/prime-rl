@@ -211,6 +211,23 @@ def test_engine_group_is_evicted_and_readmitted_as_one():
     assert admin_plane.clients == [c, a, b] and not admin_plane.evicted
 
 
+def test_draining_group_leaves_the_clients_before_any_await():
+    config = ClientConfig(
+        admin_base_url=["http://a:8100/v1", "http://b:8100/v1", "http://c:8100/v1"], admin_engine_groups=[0, 0, 1]
+    )
+    admin_plane = AdminPlane(config)
+    a, b, c = admin_plane.clients
+    admin_plane.registered = {"g": (a, b)}
+    seen = []
+
+    async def set_routed(client, routed):
+        seen.append(list(admin_plane.clients))
+
+    admin_plane._set_routed = set_routed
+    asyncio.run(admin_plane._drain("g"))
+    assert seen == [[c], [c]]
+
+
 def test_hung_engine_is_dropped_from_a_transfer_the_others_wait_behind():
     """All engines in a transfer hit the deadline together; only the one whose server does not
     answer is dropped, and the others then finish."""
