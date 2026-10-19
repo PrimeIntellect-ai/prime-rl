@@ -45,6 +45,7 @@ from prime_rl.trainer.sft.data import (
     setup_dataloader,
     setup_dataset,
 )
+from prime_rl.trainer.sft.objective import load_objective, objective_loss
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -182,6 +183,11 @@ def train(config: SFTConfig):
     logger.info(f"Initializing scheduler with {scheduler_steps} steps ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
+    objective = None
+    if config.objective is not None:
+        logger.info(f"Loading objective ({config.objective})")
+        objective = load_objective(config.objective)
+
     # Set up the dataset and dataloader
     logger.info(f"Initializing data ({config.data})")
     multimodal = config.model.vlm is not None
@@ -192,6 +198,7 @@ def train(config: SFTConfig):
         renderer_config=config.renderer,
         processor=processor,
         multimodal=multimodal,
+        objective=objective,
     )
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
@@ -239,8 +246,10 @@ def train(config: SFTConfig):
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
 
-    def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
+    def compute_loss(micro_batch: dict, metrics: dict | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens, or the objective's (loss, count).
+
+        With ``metrics``, the objective's metric sums for this micro-batch are added to it."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
         position_ids = micro_batch["position_ids"].to("cuda", non_blocking=True)
         target_ids = micro_batch["target_ids"].to("cuda", non_blocking=True)
@@ -274,6 +283,36 @@ def train(config: SFTConfig):
         if config.model.lora is not None:
             set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
+        if objective is not None:
+            batch = {
+                **micro_batch,
+                "input_ids": input_ids,
+                "position_ids": position_ids,
+                "target_ids": target_ids,
+                "loss_mask": loss_mask,
+                "seq_lens": seq_lens,
+            }
+            with maybe_activation_offloading(config.model.ac_offloading):
+                outputs = objective_loss(objective, model, batch)
+            count = torch.as_tensor(outputs.count, device="cuda")
+            if count.ndim != 0 or count.is_floating_point():
+                raise TypeError(f"objective count must be an integer, got {outputs.count!r}")
+            if metrics is not None:
+                # A NaN micro-batch is left out of the metrics, as it is of the loss; masked on the device, without a sync.
+                nan_loss = torch.isnan(outputs.loss.detach())
+                if metrics and outputs.metrics.keys() != metrics.keys():
+                    raise ValueError(
+                        f"objective metrics must have the same names on every call: {sorted(outputs.metrics)}"
+                    )
+                for name, value in outputs.metrics.items():
+                    if value.ndim != 0:
+                        raise ValueError(
+                            f"objective metric {name!r} must be a scalar tensor, got shape {tuple(value.shape)}"
+                        )
+                    value = value.detach().float().to("cuda")
+                    metrics[name] = metrics.get(name, 0.0) + torch.where(nan_loss, 0.0, value)
+            return outputs.loss, count.to(torch.int64)
+
         token_count = loss_mask.sum(dtype=torch.int64)
 
         # Labels without a temperature make the LM head return the summed cross-entropy directly.
@@ -302,6 +341,7 @@ def train(config: SFTConfig):
         total_loss_sum = torch.tensor(0.0, device="cuda")
         total_token_count = torch.tensor(0, dtype=torch.int64, device="cuda")
         nan_count = torch.tensor(0, device="cuda")
+        metrics: dict[str, torch.Tensor] = {}
 
         # Variable-length packing yields different per-rank batch counts. Under FSDP
         # every forward is a collective, so all ranks must agree on when to stop —
@@ -316,7 +356,7 @@ def train(config: SFTConfig):
                 dist.all_reduce(has_data, op=dist.ReduceOp.MIN)
                 if has_data.item() == 0:
                     break
-                loss_sum, token_count = compute_loss(micro_batch)
+                loss_sum, token_count = compute_loss(micro_batch, metrics)
                 if not torch.isnan(loss_sum.detach()):
                     total_loss_sum += loss_sum.detach()
                     total_token_count += token_count
@@ -327,8 +367,13 @@ def train(config: SFTConfig):
         dist.all_reduce(total_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
         dist.all_reduce(nan_count, op=dist.ReduceOp.SUM)
 
+        # Every rank reports the same metric names, since one objective computes them all; reduce them in one order.
+        for name in sorted(metrics):
+            dist.all_reduce(metrics[name], op=dist.ReduceOp.SUM, group=dp_cp_group)
+
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
-        return mean_loss, nan_count.item()
+        mean_metrics = {name: (value / total_token_count).item() for name, value in metrics.items()}
+        return mean_loss, nan_count.item(), mean_metrics
 
     def run_validation(step: int) -> None:
         val_dataset = setup_dataset(
@@ -340,11 +385,12 @@ def train(config: SFTConfig):
             renderer_config=config.renderer,
             processor=processor,
             multimodal=multimodal,
+            objective=objective,
         )
         val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
 
         # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
+        mean_loss, nan_count, mean_metrics = run_eval_loop(val_dataloader)
         if is_tt_moe_model(model):
             # Keep validation routing out of the next training step's statistics.
             get_load_balance_stats(model)
@@ -356,7 +402,14 @@ def train(config: SFTConfig):
             logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
         asyncio.run(
             monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+                {
+                    "val/loss": mean_loss,
+                    # perplexity is exp(cross-entropy); an objective's loss need not be one
+                    **({} if objective is not None else {"val/perplexity": math.exp(min(mean_loss, 20))}),
+                    **{f"val/{name}": value for name, value in mean_metrics.items()},
+                    "step": step,
+                },
+                step=step,
             )
         )
 
@@ -418,6 +471,7 @@ def train(config: SFTConfig):
         forward_backward_start_time = time.perf_counter()
 
         step_loss_sum = torch.tensor(0.0, device="cuda")
+        step_metrics: dict[str, torch.Tensor] = {}
         nan_loss_count = torch.tensor(0, device="cuda")
         is_moe_model = is_tt_moe_model(model)
         moe_stats = (
@@ -463,7 +517,7 @@ def train(config: SFTConfig):
                 )
 
             with maybe_record_function("forward"):
-                local_loss_sum, batch_token_count = compute_loss(micro_batch)
+                local_loss_sum, batch_token_count = compute_loss(micro_batch, step_metrics)
 
             if gradient_manager is None:
                 step_local_token_count += batch_token_count
@@ -496,9 +550,13 @@ def train(config: SFTConfig):
             global_step_token_count = step_local_token_count.clone()
             dist.all_reduce(global_step_token_count, op=dist.ReduceOp.SUM, group=dp_cp_group)
             global_token_count_val = global_step_token_count.item()
-            if global_token_count_val > 0:
-                grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+            # With nothing to average over, the gradients are zeroed: an objective may return a loss with a count of 0.
+            grad_scale = (
+                parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
+                if global_token_count_val > 0
+                else 0.0
+            )
+            scale_gradients_(None, model, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -517,6 +575,12 @@ def train(config: SFTConfig):
         else:
             batch_loss = 0.0
         nan_loss_count = nan_loss_count.item()
+        for name in sorted(step_metrics):
+            dist.all_reduce(step_metrics[name], op=dist.ReduceOp.SUM, group=dp_cp_group)
+        objective_metrics = {
+            f"loss/{name}": (value / global_token_count_val).item() if global_token_count_val > 0 else 0.0
+            for name, value in step_metrics.items()
+        }
 
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
@@ -629,8 +693,9 @@ def train(config: SFTConfig):
 
         loss_log_metrics = {
             "loss/mean": batch_loss,
-            "loss/perplexity": math.exp(min(batch_loss, 20)),
+            **({} if objective is not None else {"loss/perplexity": math.exp(min(batch_loss, 20))}),
             "loss/nan_count": nan_loss_count,
+            **objective_metrics,
             "step": progress.step,
         }
         # Log tensor stats
