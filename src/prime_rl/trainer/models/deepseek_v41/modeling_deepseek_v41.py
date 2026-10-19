@@ -215,7 +215,9 @@ class DeepseekV41Model(nn.Module):
             if str(layer_idx) in self.engrams:
                 engram = self.engrams[str(layer_idx)]
                 mhc_states = engram(mhc_states, hash_ids[:, engram.engram_idx])
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = (
+                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+            )
             mhc_states, pre_mix, *shared = decoder_layer(
                 mhc_states, pre_mix, *shared, routed_experts_layer, packed=packed
             )
