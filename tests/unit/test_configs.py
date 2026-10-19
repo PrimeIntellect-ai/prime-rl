@@ -731,21 +731,6 @@ def test_disaggregated_inference_inherits_deployment_gpus_per_node():
         RLConfig.model_validate(config)
 
 
-def test_trainer_rejects_vlm_cp_with_ring():
-    config = {
-        "model": {
-            "cp": 2,
-            "cp_style": "ring",
-            "optimization_dtype": "bfloat16",
-            "reduce_dtype": "bfloat16",
-            "vlm": {},
-        },
-    }
-
-    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
-        TrainerConfig.model_validate(config)
-
-
 def test_trainer_vlm_requires_bf16():
     with pytest.raises(ValidationError, match="optimization_dtype='bfloat16'"):
         TrainerConfig.model_validate({"model": {"vlm": {}}})
@@ -1152,6 +1137,17 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+def test_pd_role_connectors():
+    mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
+    deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
+    config = InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake)
+    prefill = config.for_pd_role("prefill").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
 
 
 CUSTOM_RENDERER_SOURCE = """

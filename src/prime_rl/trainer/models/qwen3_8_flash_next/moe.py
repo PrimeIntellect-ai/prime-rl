@@ -1,29 +1,6 @@
-import torch
-from torch import nn
-
 from prime_rl.trainer.models.layers.activations import ActivationType
-from prime_rl.trainer.models.layers.mlp import FeedForward
+from prime_rl.trainer.models.layers.mlp import SigmoidGatedFeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
-
-
-class SigmoidOutputGatedFeedForward(FeedForward):
-    """Gated feed-forward layer with a sigmoid output gate."""
-
-    def __init__(self, dim: int, hidden_dim: int, activation: ActivationType) -> None:
-        super().__init__(
-            dim=dim,
-            hidden_dim=hidden_dim,
-            expert_type="gated",
-            activation=activation,
-        )
-        self.output_gate = nn.Linear(dim, 1, bias=False)
-
-    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
-        return torch.sigmoid(self.output_gate(x)) * super().forward(x, routed_experts)
-
-    def init_weights(self, init_std: float = 0.02) -> None:
-        super().init_weights(init_std)
-        nn.init.trunc_normal_(self.output_gate.weight, mean=0.0, std=init_std)
 
 
 class SigmoidOutputGatedMoE(MoE):
@@ -58,7 +35,7 @@ class SigmoidOutputGatedMoE(MoE):
             route_scale=1.0,
             selection_bias=load_balance_coeff is not None,
         )
-        shared_expert = SigmoidOutputGatedFeedForward(
+        shared_expert = SigmoidGatedFeedForward(
             dim=dim,
             hidden_dim=shared_expert_hidden_dim,
             activation=activation,
@@ -72,4 +49,4 @@ class SigmoidOutputGatedMoE(MoE):
         )
 
 
-__all__ = ["SigmoidOutputGatedFeedForward", "SigmoidOutputGatedMoE"]
+__all__ = ["SigmoidOutputGatedMoE"]

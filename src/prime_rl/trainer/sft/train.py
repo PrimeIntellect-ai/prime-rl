@@ -1,4 +1,4 @@
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
+import prime_rl._compat  # noqa: F401
 
 import math
 import time
@@ -20,7 +20,6 @@ from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_se
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -235,7 +234,6 @@ def train(config: SFTConfig):
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
@@ -267,16 +265,11 @@ def train(config: SFTConfig):
                     position_ids,
                     cp_rank,
                     cp_size,
-                    cp_group,
                     seq_lens=seq_lens,
-                    cp_style=config.model.cp_style,
                 )
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-        if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
