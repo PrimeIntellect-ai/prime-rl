@@ -21,9 +21,6 @@ max_inflight = 82
 env.taskset.id = "pi-terminalbench2-1"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
-# A sandbox idles while its turn waits on the model; the default 1 h idle limit
-# would delete it under a slow or backlogged endpoint.
-env.agent.runtime.idle_timeout = 21600
 env.agent.retries.rules = [
   {type = "ProviderError", max_retries = 2},
   {type = "SandboxError", max_retries = 2},
