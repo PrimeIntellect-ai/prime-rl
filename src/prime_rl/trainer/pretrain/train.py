@@ -13,7 +13,8 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import numpy as np
 import torch
 import torch.distributed as dist
-from torch import nn
+from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
 
 from prime_rl import monitors
 from prime_rl.configs.pretrain import PretrainConfig
@@ -26,7 +27,6 @@ from prime_rl.trainer.model import (
     reshard_module,
     setup_model,
     setup_tokenizer,
-    update_selection_biases,
 )
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
@@ -58,6 +58,7 @@ from prime_rl.trainer.pretrain.metrics import (
     SpikeDetector,
     grad_norms_by_group,
     reduce_stats,
+    routed_k_metrics,
     take_routing_counts,
 )
 from prime_rl.trainer.sft.data import get_dataset_state
@@ -78,6 +79,21 @@ from prime_rl.utils.pathing import resolve_latest_ckpt_step
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 from prime_rl.utils.weights import resolve_fqn
+
+
+MOE_TRACE_INTERVAL = 32
+
+
+@torch.no_grad()
+def update_selection_biases(model: nn.Module, tokens_per_expert: Tensor, rate: float) -> None:
+    """Aux-loss-free load balancing (https://arxiv.org/abs/2408.15664): move each layer's selection bias by
+    ``rate`` towards underloaded experts, given the step's global ``[num_moe_layers, num_experts]`` counts.
+    The update is mean-centred (as in Moonlight and torchtitan), which leaves the selection unchanged but keeps
+    the biases from drifting together."""
+    for moe, load in zip(iter_moe_blocks(model), tokens_per_expert):
+        if moe.router.selection_bias is not None:
+            delta = torch.sign(load.mean() - load)
+            moe.router.selection_bias += rate * (delta - delta.mean())
 
 
 def count_parameters(model: nn.Module) -> dict[str, int]:
@@ -247,7 +263,13 @@ def train(config: PretrainConfig):
     cp_size = parallel_dims.cp
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     is_moe_model = is_tt_moe_model(model)
+    if is_moe_model and model.config.model_type != "prime_moe":
+        raise ValueError(f"Pretraining MoE models use model_type 'prime_moe', got {model.config.model_type!r}")
     balance = config.model.moe.balance
+    for moe in iter_moe_blocks(model):
+        if moe.routed_k_counts is not None:
+            # Allocated uninitialized with the rest of the model.
+            moe.routed_k_counts.zero_()
     moes_with_seq_balance = list(iter_moe_blocks(model)) if balance.seq_aux_coeff > 0 else []
     for moe in moes_with_seq_balance:
         # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
@@ -361,6 +383,8 @@ def train(config: PretrainConfig):
     dead_experts = DeadExperts()
     loss_spikes, grad_norm_spikes = SpikeDetector(), SpikeDetector()
     last_bias_moves = None
+    # Per-expert selection bias, router-row norm and load of every MoE layer, every MOE_TRACE_INTERVAL steps.
+    moe_trace: dict[str, list] = {"step": [], "bias": [], "router_norm": [], "load": []}
     update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
     while True:
@@ -401,6 +425,20 @@ def train(config: PretrainConfig):
                 stacked = torch.stack(biases)
                 moe_metrics["router/bias/absmax"] = stacked.abs().max().item()
                 moe_metrics["router/bias/std"] = stacked.std(dim=1).mean().item()
+                if progress.step % MOE_TRACE_INTERVAL == 0:
+                    gates = [
+                        moe.router.gate.weight
+                        for moe in iter_moe_blocks(model)
+                        if moe.router.selection_bias is not None
+                    ]
+                    gates = [gate.full_tensor() if isinstance(gate, DTensor) else gate for gate in gates]
+                    moe_trace["step"].append(progress.step)
+                    moe_trace["bias"].append(stacked.float().cpu().numpy())
+                    moe_trace["router_norm"].append(
+                        torch.stack([gate.detach().float().norm(dim=1) for gate in gates]).cpu().numpy()
+                    )
+                    moe_trace["load"].append(result.tokens_per_expert.float().cpu().numpy())
+            moe_metrics |= routed_k_metrics(model, dp_cp_group)
 
         group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(None, model, config.optim.max_norm) if config.optim.max_norm else None
@@ -498,6 +536,8 @@ def train(config: PretrainConfig):
 
         if heart is not None:
             heart.beat()
+        if moe_trace["step"] and world.rank == 0 and (is_last_step or progress.step % (16 * MOE_TRACE_INTERVAL) == 0):
+            np.savez(config.run_dir / "moe_trace.npz", **{name: np.array(values) for name, values in moe_trace.items()})
         if is_last_step:
             break
         progress.step += 1

@@ -1,14 +1,14 @@
-# GLM-4.5-style MoE (64 routed experts, 6 active, 2 shared) with d = 512 and 8 layers (glm4-moe-d512/config.json), trained from scratch on
+# GLM-4.5-style MoE (64 routed experts, 6 active, 2 shared) with d = 512 and 8 layers (moe-d512/config.json), trained from scratch on
 # the Dolma 3 mixture tokenized with the DeepSeek-V4 tokenizer.
 # 4096 steps x 256K tokens = 1.1B tokens. QK-norm and the learning rate follow the MoE QK-norm sweep (optimum 2^-7
 # with QK-norm at d = 512). [parametrization] with this base shape keeps the LR when the width grows.
 #
-#   uv run pretrain @ examples/pretrain/glm4_moe.toml
+#   uv run pretrain @ examples/pretrain/prime_moe.toml
 
 max_steps = 4096
 
 [model]
-name = "examples/pretrain/glm4-moe-d512"  # the architecture: config.json only, no weights
+name = "examples/pretrain/moe-d512"  # the architecture: config.json only, no weights
 ac = "None"
 
 [tokenizer]

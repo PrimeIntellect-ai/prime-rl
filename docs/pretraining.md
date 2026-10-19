@@ -3,22 +3,26 @@
 `uv run pretrain` trains a model from scratch on pre-tokenized token shards. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, checkpointing and monitors as the SFT trainer. It runs locally on one node or, with `[slurm]`, as a SLURM job on one or more nodes (see [Multi-node](#multi-node)).
 
 ```bash
-uv run pretrain @ examples/pretrain/glm4_moe.toml
+uv run pretrain @ examples/pretrain/prime_moe.toml
 ```
 
 ## Model
 
-The model is set up as in SFT and RL: `model.name` is an HF model id or a local model directory with a `config.json`. Its weights are not loaded. The model starts from a random init (below) or from a checkpoint. A new architecture is a directory with only a `config.json` for a model type in `prime_rl.trainer.models`; [`examples/pretrain/glm4-moe-d512`](../examples/pretrain/glm4-moe-d512/config.json) is the one in the example. `vocab_size` and the BOS, EOS and pad ids in the config must fit the tokenizer. The checked-in configs round `len(tokenizer)` up to a multiple of 128 and use the tokenizer's special ids, with EOS as the pad id if the tokenizer has none.
+The model is set up as in SFT and RL: `model.name` is an HF model id or a local model directory with a `config.json`. Its weights are not loaded. The model starts from a random init (below) or from a checkpoint. A new architecture is a directory with only a `config.json` for a model type in `prime_rl.trainer.models`; [`examples/pretrain/moe-d512`](../examples/pretrain/moe-d512/config.json) is the one in the example. `vocab_size` and the BOS, EOS and pad ids in the config must fit the tokenizer. The checked-in configs round `len(tokenizer)` up to a multiple of 128 and use the tokenizer's special ids, with EOS as the pad id if the tokenizer has none.
 
 ```toml
 [model]
-name = "examples/pretrain/glm4-moe-d512"
+name = "examples/pretrain/moe-d512"
 
 [tokenizer]
 name = "tokenizers/deepseek-v4-flash-base"  # defaults to model.name
 ```
 
-The trainer, the HF export (`tools/convert_dcp_to_bf16.py`) and vLLM all read the same model directory and tokenizer. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
+MoE models use `prime_moe`, pretraining's own model (`prime_rl.trainer.models.prime_moe`), so architecture work does not touch the `glm4_moe` that SFT and RL use. It is GLM-4.5's architecture with the same config fields and state-dict layout, plus:
+- Gated Residual connections (Qwen3.8-Next): `hc_count` residual streams (above 1) with read gates of rank `hc_lowrank` replace the pre-norms and the final norm. Their projections train with AdamW.
+- Null experts (AdaMoE): `n_null_experts` zero-output experts the router can select next to the routed ones, so tokens use between 0 and `num_experts_per_tok` routed experts. Only the (token, routed expert) pairs are dispatched. The metrics are `router/k/*`.
+
+The trainer and the HF export (`tools/convert_dcp_to_bf16.py`) read the same model directory and tokenizer; vLLM does not support `prime_moe` yet. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
 
 ## Initialization
 
@@ -73,7 +77,7 @@ The schedule scales every param group's own learning rate, so ratios between gro
 
 ## MoE load balancing
 
-`[model.moe.balance]` balances the routed experts as in DeepSeek-V3, for every MoE family whose router has a selection bias (e.g. `glm4_moe`):
+`[model.moe.balance]` balances the routed experts of `prime_moe` as in DeepSeek-V3:
 
 | Field | Meaning |
 |---|---|
@@ -81,7 +85,7 @@ The schedule scales every param group's own learning rate, so ratios between gro
 | `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
 | `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |
 
-The metrics are `expert_load/*` (global balance of the step), `loss/seq_balance` (1 is balanced) and `router/bias/*`.
+The metrics are `expert_load/*` (global balance of the step), `loss/seq_balance` (1 is balanced) and `router/bias/*`. Every 32 steps the trainer also records each layer's per-expert selection bias, router-row norm and load in `moe_trace.npz` in the run directory.
 
 ## Data
 
