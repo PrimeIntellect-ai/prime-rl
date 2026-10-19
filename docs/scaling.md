@@ -285,10 +285,10 @@ sparse = true
 anchor_interval = 50  # full checkpoint every N steps
 ```
 
-- RL: deltas come from the optimizer step, with every optimizer and offload mode. Right before the step updates a chunk of parameters, their shards still hold the previous broadcast's weights; the trainer diffs the old and new values of each chunk as the step goes and writes the delta out. No copy of the weights is kept, except of the few tensors that are not optimizer parameters (buffers, frozen parameters, fp8 tensors whose 128-row blocks straddle trainer ranks). The trainer checks that no weight changed outside the optimizer step.
+- RL: deltas come from the optimizer step, with AdamW and SignSGD in every offload mode. Right before the step updates a chunk of parameters, their shards still hold the previous broadcast's weights; the trainer diffs the old and new values of each chunk as the step goes and writes the delta out. No copy of the weights is kept, except of the few tensors that are not optimizer parameters (buffers, frozen parameters, fp8 tensors whose 128-row blocks straddle trainer ranks). The trainer checks that no weight changed outside the optimizer step.
 - A broadcast that does not follow every optimizer step (the startup broadcast of a resumed run, SFT online evals) publishes a full checkpoint.
 - Anchors (full checkpoints) are written every `anchor_interval` steps, from the optimizer step. They slow that step down, so prefer a larger `anchor_interval`. An engine that joins, restarts or fails an update loads the latest complete anchor, reading only the rows it holds, and replays the deltas since.
-- Not supported: LoRA, fp8 tensors whose columns are not a multiple of 128, and engines that transform weights after loading other than online `fp8_per_block` (e.g. FlashInfer TRTLLM/CUTLASS MoE, Marlin). fp8 deltas need the same vLLM and torch versions on the trainer and the engines.
+- Not supported: Muon (yet), LoRA, fp8 tensors whose columns are not a multiple of 128, and engines that transform weights after loading other than online `fp8_per_block` (e.g. FlashInfer TRTLLM/CUTLASS MoE, Marlin). fp8 deltas need the same vLLM and torch versions on the trainer and the engines.
 
 ### Custom Templates
 

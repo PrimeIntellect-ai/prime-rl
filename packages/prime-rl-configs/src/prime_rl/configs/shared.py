@@ -50,7 +50,7 @@ class FileSystemWeightBroadcastConfig(BaseWeightBroadcastConfig):
 
     sparse: bool = False
     """Between anchors, publish only the weight elements that changed since the previous broadcast.
-    Engines patch their weights in place and verify every update. Not supported with LoRA."""
+    Engines patch their weights in place and verify every update. Not supported with LoRA or Muon."""
 
     anchor_interval: int = Field(50, ge=1)
     """With ``sparse``, publish a full checkpoint every this many steps. Engines that join or fall
