@@ -5158,7 +5158,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.4.3"
+version = "0.4.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5170,9 +5170,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/1b/01e02c9d2346956f5ed77d269f836905a017ad796a4b4c719debd8942dc4/prime_sandboxes-0.4.3.tar.gz", hash = "sha256:a2169182f74307485c73f897e224c978eba3276133ddb40715be4d346594c487", size = 140588, upload-time = "2026-10-08T00:24:03.668Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/63/95f7b0e0e99566c0889125e5eca90bfc1beaafa8de4d2e6d3d8367bebe06/prime_sandboxes-0.4.7.tar.gz", hash = "sha256:72382facabe083b5f9618bfcc057cf1b0211fe103d66cad06d0310567b416adb", size = 150626, upload-time = "2026-10-18T21:44:11.863Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/5f/d0b5cd1dabdb6e5cb1ab5d84c8ba9a96e2a9a0be8913ec9db9177c9645fb/prime_sandboxes-0.4.3-py3-none-any.whl", hash = "sha256:dd26007838c25b5d38a8b7af0514c07027b783406c0ea5b9fcf0eb74a45139bd", size = 75515, upload-time = "2026-10-08T00:24:02.208Z" },
+    { url = "https://files.pythonhosted.org/packages/17/4a/7b6c90fb950ce5d9d4e8e2493fd461e2abd78595a0c49526d02b68440794/prime_sandboxes-0.4.7-py3-none-any.whl", hash = "sha256:309600da3ee596ce36ed75a7b0956d7883f3e4fc385f026e80c9df887ea1a948", size = 81661, upload-time = "2026-10-18T21:44:10.272Z" },
 ]
 
 [[package]]
@@ -7623,7 +7623,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-runs", specifier = ">=0.1.4" },
-    { name = "prime-sandboxes", specifier = ">=0.4.2" },
+    { name = "prime-sandboxes", specifier = ">=0.4.7" },
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
