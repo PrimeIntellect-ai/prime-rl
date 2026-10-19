@@ -1329,7 +1329,7 @@ def test_context_parallel_shards_reproduce_the_whole_row(layer_idx, cp_world_siz
             lambda tensor, group_size, group_name: gather(tensor.movedim(0, 1), None).movedim(1, 0).contiguous(),
         )
         monkeypatch.setattr(dsv4_attention.funcol, "wait_tensor", lambda tensor: tensor)
-        module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size, "ring")
+        module.cp_context = CPContext(MagicMock(), cp_rank, cp_world_size)
 
         packed = _packed_context(doc_lens, torch.float32, V4FLASH_CONFIG, cp_rank=cp_rank, cp_world_size=cp_world_size)
         out_rank, _ = module(chunk, packed=packed)
