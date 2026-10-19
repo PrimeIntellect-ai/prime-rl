@@ -15,7 +15,7 @@ from transformers.generation import GenerationMixin
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
@@ -108,12 +108,9 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
 
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(
-            frozenset({"ring"}),
-            "currently only supporting the minimal ring strategy where all keys, or tensors "
-            "required to form the keys are all-gathered in the CP region.",
-        )
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.
+        return None
 
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)
