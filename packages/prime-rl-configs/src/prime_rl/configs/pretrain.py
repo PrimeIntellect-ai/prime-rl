@@ -24,12 +24,12 @@ class MoEBalanceConfig(BaseConfig):
     """MoE load balancing as in DeepSeek-V3: an aux-loss-free selection bias plus a small sequence-wise balance
     loss."""
 
-    bias_update: Literal["sign", "quantile"] = "sign"
-    """``sign``: every step, each layer's bias moves by ``bias_update_rate`` towards underloaded experts.
-    ``quantile``: quantile balancing (Su 2026; Kimi K3, Marin): every step, each layer's bias is set to the value
-    with which every expert would have been selected by ``top_k / num_experts`` of the step's tokens (null experts
-    included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Marin found it works
-    best on the router logits (``router_bias_on_logits`` in the model config)."""
+    bias_update: Literal["sign", "quantile"] = "quantile"
+    """``quantile`` (default): quantile balancing (Su 2026; Kimi K3, Marin): every step, each layer's bias is set to
+    the value with which every expert would have been selected by ``top_k / num_experts`` of the step's tokens (null
+    experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Marin found it
+    works best on the router logits (``router_bias_on_logits`` in the model config, on by default). ``sign``: every
+    step, each layer's bias moves by ``bias_update_rate`` towards underloaded experts."""
 
     bias_update_rate: float = Field(3e-3, ge=0)
     """Step size of the sign update (gamma): every step, each layer's bias moves by this towards underloaded experts,

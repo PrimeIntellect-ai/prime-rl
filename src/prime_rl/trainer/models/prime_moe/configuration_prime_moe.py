@@ -51,7 +51,7 @@ class PrimeMoeConfig(PretrainedConfig):
         expert_activation (`str`, *optional*): Activation of the routed and shared experts: `"situ_glu"` (Kimi K3's
             soft-capped SwiGLU). Defaults to `hidden_act`.
         router_bias_on_logits (`bool`): Add the selection bias to the router logits instead of the sigmoid scores
-            (the space quantile balancing works best in).
+            (the space quantile balancing, the default, works best in).
         pad_token_id (`int`, *optional*): Padding token id, the input embedding's `padding_idx`.
     """
 
@@ -91,7 +91,7 @@ class PrimeMoeConfig(PretrainedConfig):
         latent_dim=None,
         latent_norm="input",
         expert_activation=None,
-        router_bias_on_logits=False,
+        router_bias_on_logits=True,
         pad_token_id=None,
         **kwargs,
     ):

@@ -43,7 +43,7 @@ MoE models use `prime_moe`, pretraining's own model (`prime_rl.trainer.models.pr
 - Gated attention (Qwen3-Next): `attn_output_gate` multiplies the attention output elementwise by `sigmoid(g_proj(x))`, computed from the block input, before `o_proj` (after XSA).
 - LatentMoE: with `latent_dim`, the routed experts work in that width (projection down and RMS norm before the dispatch, projection up after the combine). The router and the shared experts stay full width. With `latent_dim = d/2`, doubling the routed experts, the null experts and `num_experts_per_tok` (and `routed_scaling_factor`, which keeps each expert's gate) keeps the expert parameters and routed FLOPs per token (Kimi K3, NVIDIA LatentMoE). `latent_norm` puts its RMS norm on the expert input (`"input"`, Marin) or on the combined expert output before the up-projection (`"output"`, Kimi K3's Stable LatentMoE).
 - `expert_activation = "situ_glu"`: Kimi K3's SiTU-GLU in the routed and shared experts, SwiGLU with both factors soft-capped (`4 tanh(g/4) sigmoid(g) * 25 tanh(u/25)`).
-- `router_bias_on_logits` adds the selection bias to the router logits instead of the sigmoid scores (for quantile balancing).
+- `router_bias_on_logits` (default true) adds the selection bias to the router logits instead of the sigmoid scores (for quantile balancing).
 
 The trainer and the HF export (`tools/convert_dcp_to_bf16.py`) read the same model directory and tokenizer; vLLM does not support `prime_moe` yet. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
 
@@ -104,8 +104,8 @@ The schedule scales every param group's own learning rate, so ratios between gro
 
 | Field | Meaning |
 |---|---|
-| `bias_update` | `sign` (default): the update below. `quantile`: quantile balancing. Every step, each layer's bias is set so that every expert would have been selected by `num_experts_per_tok / num_experts` of the step's tokens (null experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Best with `router_bias_on_logits`. |
-| `bias_update_rate` | Every step, each layer's selection bias moves by this step size (gamma) towards underloaded experts, using the step's global expert counts. The update is mean-centred. Default 3e-3; 0 turns it off. The bias starts at 0. |
+| `bias_update` | `quantile` (default): quantile balancing. Every step, each layer's bias is set so that every expert would have been selected by `num_experts_per_tok / num_experts` of the step's tokens (null experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Best with `router_bias_on_logits` (on by default). `sign`: the update below. The bias starts at 0. |
+| `bias_update_rate` | With `sign`: every step, each layer's selection bias moves by this step size (gamma) towards underloaded experts, using the step's global expert counts. The update is mean-centred. Default 3e-3; 0 turns it off. |
 | `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
 | `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |
 
