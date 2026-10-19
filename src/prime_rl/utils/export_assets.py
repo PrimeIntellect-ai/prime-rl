@@ -56,6 +56,8 @@ def prepare_export_config(config: dict, model_config: dict) -> dict:
         text_config["num_hidden_layers"] = resolved_text.num_hidden_layers
     if "dsa_backend" in model_config:
         result["dsa_backend"] = model_config["dsa_backend"]
+    if result.get("model_type") == "deepseek_v4" and "dsv4_kv_precision" in model_config:
+        result["kv_precision"] = model_config["dsv4_kv_precision"]
     indexer_types = text_config.get("indexer_types")
     if indexer_types and "shared" in indexer_types:
         text_config["use_index_cache"] = True

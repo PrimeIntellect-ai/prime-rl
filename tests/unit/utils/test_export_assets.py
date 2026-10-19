@@ -59,6 +59,13 @@ def test_prepare_export_config_applies_debug_depth_and_pad_without_mutating(dept
     assert prepare_export_config({**config, "pad_token_id": 9}, {})["pad_token_id"] == 9
 
 
+def test_prepare_export_config_matches_deepseek_kv_precision_override():
+    config = {"model_type": "deepseek_v4", "num_hidden_layers": 1, "kv_precision": "bf16"}
+    result = prepare_export_config(config, {"dsv4_kv_precision": "fp8"})
+    assert result["kv_precision"] == "fp8"
+    assert config["kv_precision"] == "bf16"
+
+
 def test_prepare_export_config_rejects_lora():
     with pytest.raises(ValueError, match="LoRA"):
         prepare_export_config({"num_hidden_layers": 1}, {"lora": {"rank": 4}})
