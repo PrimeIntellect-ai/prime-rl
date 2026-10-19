@@ -1,0 +1,27 @@
+# Eval regression suite: PI-TerminalBench2.1 (82 reviewed Terminal-Bench 2
+# tasks), one rollout each, with the bash harness in prime sandboxes against
+# Prime Inference. PRIME_API_KEY authenticates both the model calls and the
+# sandboxes. The regression workflow runs it once per night and compares the
+# result against tests/regression/baselines/eval/pi-terminalbench2-1.json.
+# Refresh the baseline after you change this config or the model.
+#
+#   uv run eval @ tests/regression/configs/eval/pi-terminalbench2-1.toml
+
+model = "internal/glm-5.3-high-throughput"
+group_size = 1
+dashboard = false
+
+# Every task in flight at once: a run takes as long as its slowest rollout.
+[concurrency]
+min_inflight = 82
+max_inflight = 82
+
+[[source]]
+env.taskset.id = "pi-terminalbench2-1"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "prime"
+env.agent.timeout.rollout = 3600
+env.agent.retries.rules = [
+  {type = "ProviderError", max_retries = 2},
+  {type = "SandboxError", max_retries = 2},
+]

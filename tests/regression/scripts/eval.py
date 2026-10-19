@@ -1,7 +1,7 @@
 """Collect, summarize and gate runs of the eval suite in the regression workflow.
 
     python tests/regression/scripts/eval.py collect <run_dir> --repeat 1 --wall-s 312 --out result.json
-    python tests/regression/scripts/eval.py summarize results/*.json --baseline baselines/eval/gsm8k.json
+    python tests/regression/scripts/eval.py summarize results/*.json --name gsm8k --baseline baselines/eval/gsm8k.json
     python tests/regression/scripts/eval.py baseline results/*.json \
         --out baselines/eval/gsm8k.json --report reports/eval/gsm8k.md
 
@@ -185,9 +185,11 @@ def per_repeat(results: list[dict]) -> list[str]:
     return lines
 
 
-def summarize(results: list[dict], expected: int | None, baseline: dict | None) -> tuple[str, bool]:
+def summarize(
+    results: list[dict], expected: int | None, baseline: dict | None, name: str | None = None
+) -> tuple[str, bool]:
     """Render the Markdown summary. Returns (markdown, regressed)."""
-    lines = ["## Eval regression", ""]
+    lines = [f"## Eval regression: {name}" if name else "## Eval regression", ""]
     if not results:
         lines.append("❌ No repeat finished. Check the job logs.")
         return "\n".join(lines) + "\n", True
@@ -275,6 +277,7 @@ def main() -> None:
     p_summarize.add_argument("results", type=Path, nargs="*")
     p_summarize.add_argument("--expected", type=int, default=None, help="Number of repeats launched.")
     p_summarize.add_argument("--baseline", type=Path, default=None, help="Baseline file to compare against.")
+    p_summarize.add_argument("--name", default=None, help="Config name for the heading.")
 
     p_baseline = sub.add_parser("baseline", help="Turn 2+ result JSONs into a baseline and its report.")
     p_baseline.add_argument("results", type=Path, nargs="+")
@@ -298,7 +301,7 @@ def main() -> None:
         return
 
     baseline = json.loads(args.baseline.read_text()) if args.baseline and args.baseline.exists() else None
-    markdown, regressed = summarize(results, args.expected, baseline)
+    markdown, regressed = summarize(results, args.expected, baseline, args.name)
     sys.stdout.write(markdown)
     sys.exit(1 if regressed else 0)
 
