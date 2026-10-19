@@ -267,6 +267,8 @@ def iter_cpu_hf_groups(
             if group[name].is_floating_point():
                 preserve = name in identity_fp32 or keep_in_fp32(model_type, name)
                 dtype = torch.float32 if preserve else torch.bfloat16
+                if model_type == "afmoe" and preserve:
+                    dtype = group[name].dtype
                 group[name] = group[name].to(dtype)
         yield apply_prime_to_hf(group, operations)
         del group

@@ -397,6 +397,19 @@ def test_custom_family_streaming_cpu_dcp_export(tmp_path, family):
         torch.testing.assert_close(exported[name], tensor.to(dtype), rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_afmoe_selection_buffer_preserves_checkpoint_dtype(tmp_path, dtype):
+    config, hf = _streaming_case("afmoe")
+    name = "model.layers.0.mlp.expert_bias"
+    hf[name] = hf[name].to(dtype)
+    prime = apply_hf_to_prime(dict(hf), conversion_chain(config))
+    checkpoint = tmp_path / "checkpoint"
+    dcp.save({"app": {"model": prime}}, checkpoint_id=checkpoint, no_dist=True)
+    output = {name: tensor for group in iter_cpu_hf_groups(checkpoint, config) for name, tensor in group.items()}
+    assert output[name].dtype == dtype
+    torch.testing.assert_close(output[name], hf[name], rtol=0, atol=0)
+
+
 def test_generic_hf_gpt2_streaming_export_loads_and_runs(tmp_path):
     from transformers import GPT2Config, GPT2LMHeadModel
 
