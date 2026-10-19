@@ -333,6 +333,11 @@ name = "custom"
 import_path = "/path/to/renderer.py:CustomRenderer"
 ```
 
+Training rollouts use the orchestrator's renderer client and the token-in/out API;
+they do not require this server adapter. Online evals use the chat-completions
+client. For a model whose format is implemented only by a Python renderer, this
+setting gives those evals the same prompt format and response parsing as training.
+
 Renderer-specific fields belong in both renderer blocks. Request
 `chat_template_kwargs` override supported template fields. The handler supports
 returned token IDs and OpenAI logprobs. Streaming sends the completed response
