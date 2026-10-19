@@ -21,6 +21,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    launcher_attempt_env,
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -141,6 +142,7 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
     }
+    attempt_env = launcher_attempt_env(config_dir, log_dir)
 
     # Validate client port matches inference server port
     if config.inference is not None:
@@ -218,6 +220,7 @@ def rl_local(config: RLConfig):
                 **config.env_vars,
                 **config.orchestrator.env_vars,
                 **wandb_shared_env,
+                **attempt_env,
                 "WANDB_SHARED_LABEL": "orchestrator",
             },
             log_path=log_dir / "orchestrator.log",
@@ -243,6 +246,7 @@ def rl_local(config: RLConfig):
                 **config.env_vars,
                 **config.trainer.env_vars,
                 **wandb_shared_env,
+                **attempt_env,
                 "WANDB_SHARED_LABEL": "trainer",
                 "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
             },

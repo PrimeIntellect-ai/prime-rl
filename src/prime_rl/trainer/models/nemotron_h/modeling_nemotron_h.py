@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -130,13 +130,6 @@ class NemotronHDecoderLayer(nn.Module):
 
 class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     config: NemotronHConfig
-
-    @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(
-            frozenset({"ulysses"}),
-            "Mamba layers require Ulysses to reconstruct full sequences while sharding Mamba heads",
-        )
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

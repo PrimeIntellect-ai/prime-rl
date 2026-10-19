@@ -304,7 +304,13 @@ def run_meta(run_dir: Path) -> dict:
     resolved = resolved_config_dir(run_dir)
 
     def envs(split: str) -> list[str]:
-        return sorted(p.stem for p in (resolved / "envs" / split).glob("*.json"))
+        sources = (config.get(split) or {}).get("source") or []
+        names = {p.stem for p in (resolved / "envs" / split).glob("*.json")}
+        for source in sources:
+            env = source.get("env") or {}
+            env_id = "+".join(filter(None, (env.get("id"), (env.get("taskset") or {}).get("id"))))
+            names.add(source.get("name") or env_id)
+        return sorted(name for name in names if name)
 
     steps = step_numbers(run_dir)
     metrics_path = metrics_file(run_dir)
