@@ -122,6 +122,47 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
     _no_split_modules = ["Qwen3_8FlashNextDecoderLayer"]
     _can_compile_fullgraph = False
 
+    muon_params = (
+        "*.self_attn.q_proj.weight",
+        "*.self_attn.k_proj.weight",
+        "*.self_attn.v_proj.weight",
+        "*.self_attn.o_proj.weight",
+        "*.linear_attn.in_proj_qkv.weight",
+        "*.linear_attn.in_proj_z.weight",
+        "*.linear_attn.in_proj_b.weight",
+        "*.linear_attn.in_proj_a.weight",
+        "*.linear_attn.conv1d.weight",
+        "*.linear_attn.out_proj.weight",
+        "*.mlp.shared_expert.gate_proj.weight",
+        "*.mlp.shared_expert.up_proj.weight",
+        "*.mlp.shared_expert.down_proj.weight",
+        "*.mlp.shared_expert.output_gate.weight",
+        "*.mlp.router.gate.weight",
+        "*.mlp.experts.gate_proj",
+        "*.mlp.experts.up_proj",
+        "*.mlp.experts.down_proj",
+        "*.input_mix_weight_down.weight",
+        "*.input_mix_weight_up.weight",
+        "*.block_inject_weight.weight",
+        "*.ple.key_proj.weight",
+        "*.ple.value_proj.weight",
+        "*.ple.conv1d.weight",
+    )
+    non_muon_params = (
+        "*.embed_tokens.weight",
+        "*.self_attn.q_norm.weight",
+        "*.self_attn.k_norm.weight",
+        "*.linear_attn.A_log",
+        "*.linear_attn.dt_bias",
+        "*.linear_attn.norm.weight",
+        "*.hc_norm.weight",
+        "*.ple.ple_embedding.ngram_embedding.weight",
+        "*.ple.norm_key.weight",
+        "*.ple.norm_query.weight",
+        "*.ple.norm_conv.weight",
+        "lm_head.weight",
+    )
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return is_hf_state_dict(state_dict)

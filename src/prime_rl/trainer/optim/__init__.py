@@ -6,7 +6,10 @@ from torch.distributed.device_mesh import DeviceMesh
 from torch.optim import AdamW, Optimizer
 
 from prime_rl.configs.trainer import OffloadMode, OptimizerConfig
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.fusions import get_model_packed_parameters
+from prime_rl.trainer.models.layers.lora import LoRAModule
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.optim.base import OffloadOptimizer as OffloadOptimizer
 from prime_rl.trainer.optim.base import OptimizerLike
 from prime_rl.trainer.optim.offload import (
@@ -124,6 +127,8 @@ def _create_optimizer(
                 fused=fused_adamw,
             )
         case "muon":
+            if model is None:
+                raise ValueError("Muon requires the model, which lists the parameters Muon updates")
             return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
         case "sign_sgd":
             return SignSGD(
@@ -137,39 +142,47 @@ def _create_muon_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
-    model: nn.Module | None,
+    model: PreTrainedModelPrimeRL,
     lr: float | None = None,
 ) -> Optimizer:
-    def muon_enabled(n, p):
-        if p.ndim < 2:
-            return False
-        if "lm_head" in n:
-            return False
-        if "embed_tokens" in n:
-            return False
-        if "ngram_embedding" in n:
-            return False
-        # Expert biases should not go to Muon (and would also raise under EP).
-        if "mlp.experts" in n and n.endswith("_bias"):
-            return False
-        return True
+    packed_infos = {packed_info.parameter: packed_info for packed_info in get_model_packed_parameters(model)}
+    lora_adapters = {
+        param
+        for module in model.modules()
+        if isinstance(module, LoRAModule)
+        for param in module.parameters(recurse=False)
+    }
+    moe_blocks = [module for module in model.modules() if isinstance(module, MoE)]
+    moe_experts = {param for moe in moe_blocks for param in moe.experts.parameters()}
+    moe_routers = {param for moe in moe_blocks for param in moe.router.parameters()}
+
+    def uses_muon(name: str, param: nn.Parameter) -> bool:
+        # LoRA adapters are low-rank matrices that the model does not list.
+        if param in lora_adapters:
+            return True
+        # A packed parameter is updated like the parameters it packs.
+        packed_info = packed_infos.get(param)
+        logical_names = packed_info.logical_fqns if packed_info is not None else (name,)
+        decisions = {model.is_muon_param(logical_name) for logical_name in logical_names}
+        if len(decisions) > 1:
+            raise ValueError(f"{name!r} packs parameters that {type(model).__name__} splits between Muon and AdamW")
+        return decisions.pop()
 
     muon_params = []
     expert_params = []
     router_params = []
     adamw_params = []
-    for n, p in named_params:
-        if p.requires_grad and muon_enabled(n, p):
-            if "mlp.experts" in n:
-                expert_params.append(p)
-            elif "mlp.router" in n:
-                router_params.append(p)
-            else:
-                muon_params.append(p)
-        elif p.requires_grad:
-            adamw_params.append(p)
+    for name, param in named_params:
+        if not param.requires_grad:
+            continue
+        if not uses_muon(name, param):
+            adamw_params.append(param)
+        elif param in moe_experts:
+            expert_params.append(param)
+        elif param in moe_routers:
+            router_params.append(param)
         else:
-            pass
+            muon_params.append(param)
 
     param_groups = []
 
@@ -212,12 +225,11 @@ def _create_muon_optimizer(
     # orthogonalizes each of them separately, so a packed parameter trains exactly as the
     # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
     matrix_partitions = {}
-    if model is not None:
-        muon_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-        for packed_info in get_model_packed_parameters(model):
-            partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
-            if partitions is not None and packed_info.parameter in muon_params:
-                matrix_partitions[packed_info.parameter] = partitions
+    muon_group_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
+    for packed_info in packed_infos.values():
+        partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
+        if partitions is not None and packed_info.parameter in muon_group_params:
+            matrix_partitions[packed_info.parameter] = partitions
 
     optimizer = Muon(
         params=param_groups,

@@ -1,3 +1,5 @@
+from fnmatch import fnmatchcase
+
 from torch import Tensor
 from transformers.modeling_utils import PreTrainedModel
 
@@ -14,6 +16,21 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
     """
 
     cp_context: CPContext = CPContext()
+
+    muon_params: tuple[str, ...] = ()
+    """``fnmatch`` patterns of the parameters Muon updates, by their names in the model's state dict."""
+
+    non_muon_params: tuple[str, ...] = ()
+    """``fnmatch`` patterns of the parameters Muon leaves to its AdamW update, such as embeddings, norms and biases."""
+
+    @classmethod
+    def is_muon_param(cls, name: str) -> bool:
+        """Whether Muon updates the parameter named ``name``, which must match exactly one of the two lists."""
+        in_muon_params = any(fnmatchcase(name, pattern) for pattern in cls.muon_params)
+        in_non_muon_params = any(fnmatchcase(name, pattern) for pattern in cls.non_muon_params)
+        if in_muon_params == in_non_muon_params:
+            raise ValueError(f"{name!r} must match exactly one of {cls.__name__}.muon_params and .non_muon_params")
+        return in_muon_params
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:

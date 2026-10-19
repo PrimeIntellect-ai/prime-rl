@@ -130,6 +130,34 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
 
+    muon_params = (
+        "*.self_attn.q_a_proj.weight",
+        "*.self_attn.q_b_proj.weight",
+        "*.self_attn.kv_a_proj_with_mqa.weight",
+        "*.self_attn.kv_b_proj.weight",
+        "*.self_attn.o_proj.weight",
+        "*.mlp.gate_proj.weight",
+        "*.mlp.up_proj.weight",
+        "*.mlp.down_proj.weight",
+        "*.mlp.shared_expert.gate_proj.weight",
+        "*.mlp.shared_expert.up_proj.weight",
+        "*.mlp.shared_expert.down_proj.weight",
+        "*.mlp.router.gate.weight",
+        "*.mlp.experts.gate_proj",
+        "*.mlp.experts.up_proj",
+        "*.mlp.experts.down_proj",
+    )
+    non_muon_params = (
+        "*.embed_tokens.weight",
+        "*.input_layernorm.weight",
+        "*.post_attention_layernorm.weight",
+        "*.self_attn.q_a_layernorm.weight",
+        "*.self_attn.kv_a_layernorm.weight",
+        "*.norm.weight",
+        "*.bias",
+        "lm_head.weight",
+    )
+
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
         # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.

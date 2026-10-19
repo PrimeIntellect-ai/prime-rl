@@ -268,6 +268,34 @@ class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": LagunaDecoderLayer,
     }
 
+    muon_params = (
+        "*.self_attn.q_proj.weight",
+        "*.self_attn.k_proj.weight",
+        "*.self_attn.v_proj.weight",
+        "*.self_attn.o_proj.weight",
+        "*.self_attn.g_proj.weight",
+        "*.mlp.gate_proj.weight",
+        "*.mlp.up_proj.weight",
+        "*.mlp.down_proj.weight",
+        "*.mlp.shared_expert.gate_proj.weight",
+        "*.mlp.shared_expert.up_proj.weight",
+        "*.mlp.shared_expert.down_proj.weight",
+        "*.mlp.router.gate.weight",
+        "*.mlp.experts.gate_proj",
+        "*.mlp.experts.up_proj",
+        "*.mlp.experts.down_proj",
+    )
+    non_muon_params = (
+        "*.embed_tokens.weight",
+        "*.input_layernorm.weight",
+        "*.post_attention_layernorm.weight",
+        "*.self_attn.q_norm.weight",
+        "*.self_attn.k_norm.weight",
+        "*.norm.weight",
+        "*.bias",
+        "lm_head.weight",
+    )
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any(

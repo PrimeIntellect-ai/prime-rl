@@ -131,6 +131,34 @@ class NemotronHDecoderLayer(nn.Module):
 class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     config: NemotronHConfig
 
+    muon_params = (
+        "*.mamba.in_proj.weight",
+        "*.mamba.conv1d.weight",
+        "*.mamba.out_proj.weight",
+        "*.self_attn.q_proj.weight",
+        "*.self_attn.k_proj.weight",
+        "*.self_attn.v_proj.weight",
+        "*.self_attn.o_proj.weight",
+        "*.mlp.router.gate.weight",
+        "*.mlp.experts.up_proj",
+        "*.mlp.experts.down_proj",
+        "*.mlp.shared_expert.up_proj.weight",
+        "*.mlp.shared_expert.down_proj.weight",
+        "*.mlp.fc1_latent_proj.weight",
+        "*.mlp.fc2_latent_proj.weight",
+    )
+    non_muon_params = (
+        "*.embed_tokens.weight",
+        "*.mamba.A_log",
+        "*.mamba.D",
+        "*.mamba.dt_bias",
+        "*.mlp.experts.up_proj_bias",
+        "*.mlp.experts.down_proj_bias",
+        "*.norm.weight",
+        "*.bias",
+        "lm_head.weight",
+    )
+
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
         return name.endswith(("mamba.A_log", "mamba.D", "mlp.router.selection_bias"))

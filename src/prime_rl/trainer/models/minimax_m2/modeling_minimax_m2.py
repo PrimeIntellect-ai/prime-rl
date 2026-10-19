@@ -102,6 +102,27 @@ class MiniMaxM2PreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": MiniMaxM2DecoderLayer,
     }
 
+    muon_params = (
+        "*.self_attn.q_proj.weight",
+        "*.self_attn.k_proj.weight",
+        "*.self_attn.v_proj.weight",
+        "*.self_attn.o_proj.weight",
+        "*.mlp.router.gate.weight",
+        "*.mlp.experts.gate_proj",
+        "*.mlp.experts.up_proj",
+        "*.mlp.experts.down_proj",
+    )
+    non_muon_params = (
+        "*.embed_tokens.weight",
+        "*.input_layernorm.weight",
+        "*.post_attention_layernorm.weight",
+        "*.self_attn.q_norm.weight",
+        "*.self_attn.k_norm.weight",
+        "*.norm.weight",
+        "*.bias",
+        "lm_head.weight",
+    )
+
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         return any("block_sparse_moe.experts.1.w1" in name for name in state_dict.keys())
