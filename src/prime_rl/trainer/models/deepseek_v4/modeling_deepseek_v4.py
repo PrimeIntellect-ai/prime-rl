@@ -127,6 +127,11 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
         return name.endswith(".router.gate.weight") or any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
 
     @classmethod
+    def mxfp8_ignore_patterns(cls) -> tuple[str, ...]:
+        # vLLM builds every compressor's projections, including the indexer's own, with `quant_config=None`.
+        return (r"compressor\.(kv_proj|gate_proj)$",)
+
+    @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:
         # The published checkpoint's `ffn.*` naming, the only unconverted naming that exists --
         # see `converting_deepseek_v4.py`'s module docstring.

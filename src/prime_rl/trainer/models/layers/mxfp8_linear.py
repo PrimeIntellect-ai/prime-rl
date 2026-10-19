@@ -9,6 +9,7 @@ from torchao.prototype.mx_formats import ScaleCalculationMode
 from torchao.quantization.quantize_.common import KernelPreference
 
 from prime_rl.configs.trainer import MXFP8Recipe
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.logger import get_logger
 
 
@@ -72,11 +73,17 @@ def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, igno
     replaced_modules: list[str] = []
     skipped_modules: list[str] = []
     skipped_unaligned: list[str] = []
+    skipped_grouped: list[str] = []
     for name, module in dict(model.named_modules()).items():
         if not isinstance(module, nn.Linear):
             continue
         if any(re.search(pattern, name) for pattern in ignore_modules):
             skipped_modules.append(name)
+            continue
+        # Matches vLLM 0.31, which has no working MXFP8 path for block-diagonal grouped projections
+        # (DeepSeek V4 `wo_a` asserts in DeepGEMM), so serving configs keep them BF16.
+        if isinstance(module, GroupedLinear):
+            skipped_grouped.append(name)
             continue
         if (module.in_features & 31) != 0 or (module.out_features & 31) != 0:
             skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
@@ -92,7 +99,8 @@ def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, igno
 
     logger.info(
         f"Replaced {len(replaced_modules)} linear layers with MXFP8 linear "
-        f"(skipped {len(skipped_modules)} by name, {len(skipped_unaligned)} by 32-div); "
+        f"(skipped {len(skipped_modules)} by name, {len(skipped_unaligned)} by 32-div, "
+        f"{len(skipped_grouped)} grouped); "
         f"first replaced={replaced_modules[:3]}, "
         f"first skipped(name)={skipped_modules[:3]}, "
         f"first skipped(unaligned)={skipped_unaligned[:3]}"

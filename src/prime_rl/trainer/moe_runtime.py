@@ -51,6 +51,11 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
     if isinstance(compute, MXFP8MoEComputeConfig):
         import prime_kernels
 
+        if "mxfp8_moe" not in prime_kernels.KERNELS:
+            raise RuntimeError(
+                "MXFP8 expert compute requires the prime-kernels mxfp8_moe kernel, but this prime-kernels "
+                f"install only ships {', '.join(prime_kernels.KERNELS) or 'no kernels'}."
+            )
         kernel = prime_kernels.load("mxfp8_moe")
         return MXFP8ExpertCompute(
             kernel=kernel,

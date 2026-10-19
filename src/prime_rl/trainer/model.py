@@ -47,6 +47,7 @@ from prime_rl.trainer.models import (
     get_custom_vlm_cls,
     supports_custom_impl,
 )
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Indexer
 from prime_rl.trainer.models.fusions import (
     apply_model_fusions,
@@ -850,6 +851,8 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
             raise ValueError(
                 f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
+        if isinstance(model, PreTrainedModelPrimeRL):
+            ignore_modules = ignore_modules + list(model.mxfp8_ignore_patterns())
         replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
 
 

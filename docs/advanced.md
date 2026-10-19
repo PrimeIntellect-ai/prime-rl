@@ -44,6 +44,8 @@ Dense linear precision and routed-expert precision are configured independently.
 
 Both skip `lm_head`, the router and a few gate/projection modules by default (`ignore_patterns`). Add model-specific modules with `extra_ignore_patterns`, which keeps the defaults; setting `ignore_patterns` replaces them.
 
+MXFP8 always keeps grouped linears such as DeepSeek V4's `o_a_proj` in BF16, since vLLM's online MXFP8 cannot serve them, plus the modules vLLM always builds in BF16 for that architecture (for DeepSeek V4, the compressors' projections). Everything else follows the ignore lists, which should mirror the serving `quantization_config.ignore` list: if vLLM ignores the DeepSeek V4 indexer (`re:.*indexer.*`), add `indexer\.` to `extra_ignore_patterns` so the trainer keeps it in BF16 too.
+
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.

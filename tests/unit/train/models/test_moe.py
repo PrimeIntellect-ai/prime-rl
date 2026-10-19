@@ -59,6 +59,21 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
     assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
 
 
+def test_mxfp8_compute_without_the_kernel_fails_at_setup(monkeypatch):
+    import prime_kernels
+
+    monkeypatch.setattr(prime_kernels, "KERNELS", ("flash_moe", "indexed_attention"))
+    moe = MoE.from_args(MoEArgs(num_experts=2), dim=4, hidden_dim=8, shared_expert=None)
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([moe])
+    config = ModelConfig.model_validate({"moe": {"compute": {"type": "mxfp8"}}})
+    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+
+    with pytest.raises(RuntimeError, match="only ships flash_moe, indexed_attention"):
+        configure_moe_runtime(model, config, dims)
+
+
 @pytest.mark.parametrize(
     ("expert_cls", "kwargs", "fused", "error"),
     [
