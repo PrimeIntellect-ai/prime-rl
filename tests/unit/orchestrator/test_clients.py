@@ -86,6 +86,26 @@ def test_admin_plane_initializes_nccl():
     asyncio.run(admin_plane.aclose())
 
 
+def test_pause_engines_pauses_prefill_before_decode():
+    events = []
+
+    def engine(name):
+        async def post(path, **kwargs):
+            events.append(f"{name} start")
+            await asyncio.sleep(0.01 if name == "prefill" else 0)
+            events.append(f"{name} done")
+            return MagicMock()
+
+        return MagicMock(post=post)
+
+    decode, prefill = engine("decode"), engine("prefill")
+    admin_plane = AdminPlane(ClientConfig())
+    admin_plane.prefill = {prefill}
+    asyncio.run(admin_plane._pause([decode, prefill], step=1, times=[]))
+
+    assert events == ["prefill start", "prefill done", "decode start", "decode done"]
+
+
 def test_setup_client_creates_renderer_client():
     from renderers import Qwen3VLRendererConfig
 
@@ -186,7 +206,7 @@ def test_hung_engine_is_dropped_from_a_transfer_the_others_wait_behind():
         dropped.set()
 
     with patch("prime_rl.orchestrator.clients.UPDATE_WEIGHTS_TIMEOUT_S", 0.1):
-        standing, retry = asyncio.run(admin_plane._transfer([hung, waiting], None, abort, None))
+        standing, retry = asyncio.run(admin_plane._transfer([hung, waiting], None, abort, None, []))
 
     assert aborted == [hung] and standing == [waiting] and not retry
     assert admin_plane.evicted == [hung]

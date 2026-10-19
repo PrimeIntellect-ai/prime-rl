@@ -338,7 +338,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {%- endfor %}
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
-    # NIXL/RDMA registers pinned host memory (KV offload pools).
+    # NIXL/RDMA registers pinned host memory (KV offload pools, the HiSparse host pool).
     ulimit -l unlimited
 {%- if mooncake_offloads %}
 {% include "_mooncake_store.sh.j2" %}
@@ -405,7 +405,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
-        export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
