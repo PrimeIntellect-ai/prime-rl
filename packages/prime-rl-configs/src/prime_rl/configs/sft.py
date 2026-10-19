@@ -12,6 +12,7 @@ from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
 from prime_rl.configs.monitors import TrainMonitorsConfig
+from prime_rl.configs.orchestrator import inherit_renderer_template_kwargs
 from prime_rl.configs.shared import (
     ControlConfig,
     EnvVars,
@@ -276,6 +277,14 @@ class SFTConfig(BaseConfig):
     def run_dir(self) -> Path:
         assert self.run.dir is not None  # resolved at construction
         return self.output_dir / self.run.dir
+
+    @model_validator(mode="after")
+    def inherit_renderer_template_kwargs_for_eval(self):
+        """SFT renders its samples through ``renderer``; online evals are rendered by the
+        inference server. Carry the renderer's template controls (e.g. ``enable_thinking``)
+        over as ``chat_template_kwargs`` so both see the same prompt."""
+        inherit_renderer_template_kwargs(self.renderer, self.eval)
+        return self
 
     @model_validator(mode="after")
     def resolve_moe_router_dtype_auto(self):

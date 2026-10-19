@@ -174,6 +174,8 @@ name = "qwen3"
 enable_thinking = false
 ```
 
+Online evals (`[eval]`) are rendered by the inference server, which receives these controls as `chat_template_kwargs` (see [Eval](eval.md#configuration)).
+
 Dataset columns can set renderer template controls per row, on top of the `[renderer]` config. `[data.columns.renderer]` maps renderer fields to columns and defaults to `reasoning_effort = "reasoning_effort"`, so a `reasoning_effort` column sets that field on renderers that have it (for example `gpt-oss`, `qwen3.8`, `deepseek-v4`). Rows with a null value use the configured renderer unchanged. This lets one run mix reasoning efforts, with the `[renderer]` value as the default for rows that do not set one:
 
 ```toml
