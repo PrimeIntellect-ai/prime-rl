@@ -39,7 +39,6 @@ class TensorMicroBatch(TypedDict):
     branch_indices: list[int] | None
 
     # Batch level
-    lora_num_tokens: Int[Tensor, "n_loras"]
     seq_lens: Int[Tensor, "segments"]
 
     # MoE router replay
@@ -86,10 +85,11 @@ class FakeDataLoader:
         else:
             get_micro_batch_fn = self._get_sample_micro_batch
 
-        # This is a pretty ugly hack to ensure that all CP ranks in a data parallel group receive the same micro batch.
+        # Seeded by the global micro batch index, so every DP layout trains the same batch and
+        # all CP ranks of a data parallel group receive the same micro batch.
         micro_batches = []
         for micro_batch_idx in range(self.num_micro_batches):
-            seed = self.dp_rank * 1000000 + self.batch_counter * 1000 + micro_batch_idx
+            seed = self.batch_counter * 1000000 + self.dp_rank * self.num_micro_batches + micro_batch_idx
             generator = torch.Generator().manual_seed(seed)
             micro_batches.append(get_micro_batch_fn(generator))
 
@@ -133,7 +133,6 @@ class FakeDataLoader:
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
-            "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
@@ -165,7 +164,6 @@ class FakeDataLoader:
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
-            "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
@@ -209,7 +207,14 @@ class DataLoader:
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
 
-        self.receiver: BatchReceiver = setup_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.receiver: BatchReceiver = setup_batch_receiver(
+            output_dir,
+            data_rank=dp_rank,
+            rank=self.world.rank,
+            world_size=self.world.world_size,
+            current_step=start_step,
+            transport=config,
+        )
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
@@ -256,8 +261,6 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
-            # Single adapter: every token in the batch belongs to it (padding included).
-            lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
