@@ -193,10 +193,8 @@ class BaseAlgoConfig(BaseConfig):
 
 class GRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["grpo"] = "grpo"
-    """GRPO: scalar advantage = reward minus the per-group token-length-weighted mean
-    ``sum_i(L_i * r_i) / sum_i(L_i)``, where ``L_i`` counts trainable (mask-True,
-    policy-sampled) tokens across all turns. Consumed by the ``rl`` loss component
-    on the rollout's action tokens."""
+    """GRPO: scalar advantage = reward minus the per-group mean baseline,
+    consumed by the ``rl`` loss component on the rollout's action tokens."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 

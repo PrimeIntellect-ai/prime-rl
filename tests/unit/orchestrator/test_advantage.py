@@ -171,12 +171,13 @@ def _max_rl(group: list[vf.Episode]) -> list[float]:
 # --------------------------------------------------------------------------
 
 
-def test_grpo_token_mean_is_zero():
-    lengths = [10, 12, 8]
-    advs = _grpo(_make_group(rewards=[1.0, 0.5, 0.8], completion_lengths=lengths))
+def test_grpo_plain_mean():
+    rewards = [1.0, 0.5, 0.8]
+    advs = _grpo(_make_group(rewards=rewards, completion_lengths=[10, 12, 8]))
+    baseline = sum(rewards) / len(rewards)
     assert len(advs) == 3
-    assert advs == pytest.approx([1.0 - 22.4 / 30, 0.5 - 22.4 / 30, 0.8 - 22.4 / 30])
-    assert sum(length * adv for length, adv in zip(lengths, advs)) / sum(lengths) == pytest.approx(0.0, abs=1e-6)
+    assert advs == pytest.approx([reward - baseline for reward in rewards])
+    assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_grpo_singleton_group_is_zero():
@@ -184,25 +185,21 @@ def test_grpo_singleton_group_is_zero():
     assert _grpo([_build_episode(0.7, sampled_lengths=[2])]) == pytest.approx([0.0], abs=1e-6)
 
 
-def test_grpo_length_weighted_baseline():
-    # L = [10 + 20 (two turns, observation excluded), 10]: b = (30 * 1 + 10 * 0) / 40 = 0.75
+def test_grpo_plain_mean_with_multiple_turns():
     group = [
         _build_episode(1.0, sampled_lengths=[10, 20], obs_lengths=[5]),
         _build_episode(0.0, sampled_lengths=[10]),
     ]
     advs = _grpo(group)
-    assert advs == pytest.approx([0.25, -0.75])
-    # per-token advantage is zero-mean across the group's trainable tokens
-    assert 30 * advs[0] + 10 * advs[1] == pytest.approx(0.0, abs=1e-6)
-    # with a length penalty, the weighted baseline applies to the shaped rewards:
-    # penalty = mean(r) * 0.5 * L / max(L) = [0.25, 1/12], shaped = [0.75, -1/12], b = (30 * 0.75 - 10 / 12) / 40
+    assert advs == pytest.approx([0.5, -0.5])
+    # Length shaping changes rewards to [0.75, -1/12]; their arithmetic mean is 1/3.
     cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.5, num_input_tokens_weight=0.0, num_turns_weight=0.0)
     group = [
         _build_episode(1.0, sampled_lengths=[10, 20], obs_lengths=[5]),
         _build_episode(0.0, sampled_lengths=[10]),
     ]
     advs = _grpo(group, length_penalty=cfg)
-    assert advs == pytest.approx([0.75 - 65 / 120, -1 / 12 - 65 / 120])
+    assert advs == pytest.approx([5 / 12, -5 / 12])
 
 
 def test_max_rl_mean_normalized():
@@ -243,12 +240,11 @@ def test_linear_equal_lengths_reduce_to_plain_grpo():
 
 def test_linear_completion_term_penalizes_longer():
     """With only the completion term, longer completions get a larger penalty and a
-    lower advantage; advantages stay zero-mean across trainable tokens."""
+    lower advantage; advantages stay zero-mean."""
     cfg = LinearLengthPenaltyConfig(num_output_tokens_weight=0.25, num_input_tokens_weight=0.0, num_turns_weight=0.0)
-    lengths = [10, 20, 30]
-    advs = _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=lengths), length_penalty=cfg)
+    advs = _grpo(_make_group(rewards=[1.0, 1.0, 1.0], completion_lengths=[10, 20, 30]), length_penalty=cfg)
     assert advs[0] > advs[1] > advs[2]
-    assert sum(length * adv for length, adv in zip(lengths, advs)) / sum(lengths) == pytest.approx(0.0, abs=1e-6)
+    assert sum(advs) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_linear_context_term_penalizes_more_context():

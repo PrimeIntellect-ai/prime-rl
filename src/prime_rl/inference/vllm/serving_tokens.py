@@ -42,12 +42,15 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
+from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
+
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
 
 
 class PrimeRlGenerateResponseChoice(GenerateTokensChoice):
     routed_experts: dict[str, Any] | None = None  # type: ignore[assignment]
+    compact_logprobs: dict[str, Any] | None = None
     completion_logprobs: dict[str, Any] | None = None
     sampling_mask: dict[str, Any] | None = None  # type: ignore[assignment]
 
@@ -82,6 +85,8 @@ class _PackedOutputs:
     def __init__(self, generator: AsyncIterator[RequestOutput], request: GenerateRequest):
         self._generator = generator
         self._request = request
+        self._num_top_logprobs = request.sampling_params.logprobs
+        self._compact = (request.sampling_params.extra_args or {}).get("prl_compact_logprobs", False)
         self.fields: dict[int, dict[str, Any]] = {}
 
     async def __aiter__(self):
@@ -97,7 +102,14 @@ class _PackedOutputs:
                         "start": num_tokens - 1 - len(output.routed_experts),
                     }
                     output.routed_experts = None
-                if isinstance(output.logprobs, FlatLogprobs):
+                if self._compact:
+                    assert output.logprobs is not None, "Did not output logprobs"
+                    assert self._num_top_logprobs is not None
+                    assert len(output.logprobs) == len(output.token_ids), "Logprob count does not match token count"
+                    fields["compact_logprobs"] = serialize_compact_logprobs(output.logprobs, self._num_top_logprobs)
+                    output.logprobs = None
+                    self._request.sampling_params.logprobs = None
+                elif isinstance(output.logprobs, FlatLogprobs) and (self._num_top_logprobs or 0) <= 1:
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
                     output.logprobs = None
                     # Upstream would build ``logprobs.content`` from the logprobs we took.
@@ -128,6 +140,11 @@ class PrimeRlServingTokens(ServingTokens):
         raw_request: Request | None = None,
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
+        if (sampling_params.extra_args or {}).get("prl_compact_logprobs", False):
+            if request.stream or sampling_params.logprobs is None:
+                return self.create_error_response(
+                    "Compact logprobs require a non-streaming request with logprobs enabled"
+                )
         if not request.stream:
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None

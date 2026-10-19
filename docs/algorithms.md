@@ -14,6 +14,7 @@ This page covers the math and the configurable algorithmic components: the algor
 - [Loss](#loss)
   - [Loss Components](#loss-components)
   - [IPO Loss](#ipo-loss)
+  - [Score Centering](#score-centering)
   - [Custom Loss](#custom-loss)
 - [Advantage](#advantage)
   - [Default Advantage](#default-advantage)
@@ -202,16 +203,144 @@ $$
 
 $\mu$ is the policy that generated the rollout. $\pi$ is the current trainer policy. $\hat{A}_t$ is the token-level advantage. The trust region uses the sampled token probabilities, not their ratio.
 
+The implementation also caps the accepted token's importance weight at `max_importance_ratio` (default 10,000). The detached surrogate preserves a policy-gradient coefficient of `min(pi / mu, max_importance_ratio)`, including above the cap; it does not zero gradients above the cap. The equation above describes the uncapped regime.
+
 The knobs under `[trainer.loss]` are:
 
 | Knob | Default | What it does |
 |---|---|---|
 | `eps` | 0.3 | Maximum absolute probability change before a token is masked. |
+| `max_importance_ratio` | 10000 | Maximum accepted-token importance weight, with a preserved policy-gradient coefficient. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
 
 See [IPO](ipo.md) for why IPO masks by probability instead of ratio, and the GLM-4.5-Air ablation against IcePop behind `eps = 0.3`.
+
+#### Conditional score centering with the sampled-word mask
+
+IPO supports conditional SC without an algorithmic importance-ratio cap:
+
+```toml
+[trainer.loss]
+type = "ipo"
+eps = 0.2
+score_centering = true
+score_centering_gate = "sample"
+score_centering_topk = 1024
+```
+
+Only the chosen word decides whether the position contributes. A rejected position
+has zero sampled loss and zero correction. With $s_v=\nabla\log p_v$,
+$m_v=\mathbf1\{|p_v-q_v|\le\epsilon\}$ and $t_v=\min(p_v/q_v,10000)$, the ascent update is:
+
+$$
+Z=\sum_vq_vm_v,\qquad B=\sum_vq_vm_vt_vs_v,\qquad
+g_y=A_y m_y\left(t_y s_y-\frac{B}{Z}\right).
+$$
+
+The existing `max_importance_ratio` numerical guard applies to both terms. When
+it is inactive, $B=\sum_v m_vp_vs_v$, which need not vanish after selecting accepted
+words. If all words pass, the exact baseline is zero. The default
+`score_centering_min_acceptance=1e-4` skips both terms below that acceptance mass;
+admitted prefixes use their actual $Z$. Masks and baseline coefficients are detached.
+
+The head contains full-vocabulary-normalized probabilities; it does not truncate
+sampling. Uncaptured sampler probabilities use a proportional-tail model, with
+individual modeled tail rejections included in $B$ and $Z$. Cancellation is exact
+for that model, and approximate for the unknown real tail. This mode shares the
+conditional-centering implementation with `ipo_tis`, while retaining IPO's numerical
+guard instead of its algorithmic cap. Ordinary IPO keeps SC disabled by default.
+
+### IPO with Truncated Importance Sampling
+
+`ipo_tis` retains IPO's absolute-probability acceptance mask and truncates the
+importance coefficient of accepted actions. A small absolute probability change
+can still have a large importance ratio, so the cap limits these contributions
+without rejecting the actions. It defaults to epsilon 0.2 and an upper cap of 2,
+with no lower ratio floor. The gradient coefficient remains nonzero above the cap.
+
+```toml
+[trainer.loss]
+type = "ipo_tis"
+eps = 0.2
+ratio_cap = 2.0
+score_centering = true
+score_centering_topk = 128
+```
+
+Score centering is optional and disabled by default. When enabled, it centers
+the masked, truncated score using the same coefficient in the sampled term and
+the baseline:
+
+$$
+w_v=\mathbf1\{|p_v-q_v|\le\epsilon\}\min(p_v/q_v,C),\qquad
+g(a)=A_a\left[w_a\nabla\log p_a-\sum_vq_vw_v\nabla\log p_v\right].
+$$
+
+Masking and truncation can introduce a nonzero expected weighted score. SC cancels
+the resulting constant-advantage drift, but does not recover every contribution
+removed by truncation or guarantee stable training. A lower ratio floor would
+increase contributions from actions with small trainer probability; this loss
+does not apply one.
+
+The example uses untruncated sampling with a captured head and proportional tail.
+Omit `score_centering_topk` to integrate over complete bounded sampling support
+with sampling replay, as described below. SC's capture, transport, and tail
+validation rules apply to both `ipo` and `ipo_tis`. `ratio_saturated` reports the
+fraction of accepted sampled tokens above the cap. With SC enabled,
+`tis/head_cap_removed_mass` and `tis/head_mask_removed_mass` separately report
+trainer probability mass removed from the captured head by truncation and masking.
+These are full-support masses only when the head covers the complete replay support.
+
+#### Position gates for IPO+TIS+SC
+
+`score_centering_gate` selects how the IPO mask interacts with centering:
+
+| Value | Acceptance and correction |
+|---|---|
+| `"weighted"` (default) | Mask each candidate's importance coefficient; subtract its expected score on every sampled position. |
+| `"sample"` | Accept the chosen word using IPO's bound; subtract the score conditional on acceptance. Both terms vanish on rejected positions. |
+| `"head"` | Accept a position only if every captured head word passes IPO's bound; apply TIS+SC to the whole accepted position. |
+
+For the head gate, let $H$ be the captured sampler head,
+$M=\mathbf{1}\{\max_{v\in H}|p_v-q_v|\le\epsilon\}$, and
+$t_v=\min(p_v/q_v,C)$. The ascent update is
+
+$$
+g(y)=A_y M\left(t_y s_y-\sum_vq_vt_vs_v\right),\qquad
+s_v=\nabla_\theta\log p_v.
+$$
+
+The head is selected independently of the sampled word, so $M$ is fixed at a
+given prefix. The baseline includes the full modeled distribution, including
+the tail; the acceptance gate checks only the captured head. There is no
+additional chosen-word or tail IPO mask. For constant advantage and exact
+sampler probabilities, $\mathbb{E}_{y\sim q}[g(y)]=0$. With captured probabilities,
+this cancellation is exact for the proportional-tail model and approximate for
+the real sampler. If no importance coefficient is capped, the exact baseline
+vanishes because $\sum_vp_vs_v=0$.
+
+Enable this mode explicitly:
+
+```toml
+[trainer.loss]
+type = "ipo_tis"
+eps = 0.2
+ratio_cap = 2.0
+score_centering = true
+score_centering_topk = 1024
+score_centering_gate = "head"
+```
+
+`score_centering_topk` controls probability capture, not the sampling support.
+With untruncated sampling, both sides normalize over the full vocabulary.
+The head gate does not divide by an acceptance probability. The `"sample"`
+gate instead uses the conditional baseline $B/Z$ described above, with
+$B=\sum_vq_vm_vt_vs_v$ and $Z=\sum_vq_vm_v$; it skips the whole position when
+$Z$ is below `score_centering_min_acceptance` (default `1e-4`). This avoids
+division by zero without changing the denominator for admitted positions.
+Plain `ipo` supports `"weighted"` and `"sample"`; `"head"` requires `ipo_tis`.
 
 ### IcePop Loss
 
@@ -241,6 +370,88 @@ ratio_high = 5.0
 | `ratio_low` | 0.2 | Lower accepted trainer-to-inference probability ratio. |
 | `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
+
+#### IcePop with TIS and score centering
+
+`icepop_tis` separates the acceptance band from the upper importance coefficient
+cap. Accepted words retain coefficient `min(p / q, ratio_cap)`; rejected words
+have zero sampled contribution. A cap at or above `ratio_high` is inactive on
+every accepted word. There is no lower ratio floor.
+
+```toml
+[trainer.loss]
+type = "icepop_tis"
+ratio_low = 0.2
+ratio_high = 5.0
+ratio_cap = 2.0
+score_centering = true
+score_centering_gate = "sample"
+score_centering_topk = 256
+```
+
+Weighted, conditional (`"sample"`), and head gating use the same centering
+formulas as `ipo_tis`, with the ratio-band acceptance indicator replacing the
+probability-difference indicator. Conditional centering uses the same acceptance
+mass guard. Under the proportional-tail model, every omitted word has ratio
+`P_tail / Q_tail`, so all modeled tail words share acceptance. Complete sampling
+replay instead uses each recorded candidate's probability directly.
+
+### Score Centering
+
+[Score centering](https://arxiv.org/abs/2609.20807) subtracts the sampler-expected score from the policy-gradient update to reduce training/inference drift. To use the paper's top-k estimator with untruncated sampling:
+
+```toml
+[trainer.loss]
+type = "score_centering"
+topk = 128
+```
+
+The sampler records its top-k probabilities without renormalizing the head. The trainer models the remaining sampler mass as proportional to its own tail, flooring the trainer-tail mass denominator at `1e-6` for stability. The correction's coefficients are detached; the trainer head logprobs remain differentiable. Metrics `score_centering/head_mass` and `score_centering/rho` report captured sampler mass and the tail rescaling factor. This is an approximation to full-distribution centering.
+
+IPO supports score centering with untruncated sampling:
+
+```toml
+[trainer.loss]
+type = "ipo"
+score_centering = true
+score_centering_topk = 128
+```
+
+This centers the IPO-weighted score, using the exact head and a proportional sampler tail. Let `P_tail` and `Q_tail` be the remaining masses and `rho = Q_tail / max(P_tail, 1e-6)`. The loss checks that `abs(1-rho) * P_tail <= eps`, which proves every modeled tail action passes IPO's absolute-probability mask. Its tail scale is then `min(1, rho * max_importance_ratio)`. If that sufficient condition fails for a nonzero sampler tail, training raises an error; increase the head size or use complete sampling-support centering. No tail restriction is needed when sampler tail mass is zero. This is an approximation to the unknown sampler tail, not a change to sampling. Metrics report `score_centering/head_mass`, `score_centering/residual_l1`, `score_centering/tail_change_bound`, and `score_centering/tail_scale`. `score_centering/logit_correction_l1` reports the full-vocabulary L1 norm of the centering baseline's gradient with respect to the softmax logits, before advantage scaling.
+
+For a fixed prefix, let p be the trainer distribution, q the sampler distribution, and s the trainer score. The centered ascent update uses detached coefficients:
+
+$$
+s_v = \nabla_\theta\log p_v,\qquad
+w_v = \mathbf{1}\{|p_v-q_v|\le\epsilon\}\min(p_v/q_v,C),\qquad
+b = \sum_v q_v w_v s_v,\qquad
+g(a) = A_a(w_a s_a-b).
+$$
+
+If **every action** passes the probability mask and no ratio is capped, then b is zero because
+
+$$
+b = \sum_v p_v\nabla_\theta\log p_v = \nabla_\theta\sum_v p_v = 0.
+$$
+
+Exact IPO+SC then has the same per-sample gradient as IPO, even when p differs from q. Acceptance of the sampled action alone does not imply this: rejected or capped alternatives can produce a nonzero baseline. Each candidate is masked separately; one rejected alternative does not disable the whole position. If the sampled action is rejected, its direct IPO term vanishes but the SC correction can still contribute. The proportional-tail estimator also reduces to IPO when every head action is accepted and uncapped and its tail scale is one. The unweighted baseline in standalone SC generally does not vanish when p differs from q.
+
+Omitting `score_centering_topk` selects exact centering over a bounded sampling mask:
+
+```toml
+[trainer.loss]
+type = "ipo"
+score_centering = true
+
+[orchestrator.train.sampling]
+top_k = 128
+```
+
+The correction integrates IPO's capped importance weight and absolute-probability trust region over every action in the sampling mask. It applies to every RL token, including tokens whose sampled action IPO rejects. Both trainer and sampler probabilities use the replayed support. All support probabilities must be present; incomplete evidence fails explicitly. The renderer selects the complete recorded support, including top-k cutoff ties. If ties widen the support beyond the capture budget, increase `orchestrator.train.sampling.logprobs` to cover it. Sampling replay needs only support IDs; exact score centering additionally requires all sampler probabilities on that support. No proportional-tail approximation is used in this mode.
+
+The `rl` entrypoint configures probability capture and the inference `max_logprobs` limit automatically. Standalone servers must use `processed_logprobs` and allow at least `sampling.logprobs + 2` entries. The renderer requests two extra candidates because vLLM lists the sampled action first. For untruncated sampling, it recovers the top k+1 and excludes ties at the head boundary, keeping the head independent of the sampled action. If ties leave an empty head, increase `sampling.logprobs`. Stochastic sampling (`temperature > 0`) is required. With exact sampling-support IPO centering, evals sharing the server must also use positive temperature and bounded top-k sampling, as required by sampling replay.
+
+SC probability-head requests opt into compact HTTP logprobs on `/inference/v1/generate`. The server packs uint32 token IDs and float32 logprobs into base64 buffers with row offsets, avoiding per-candidate JSON objects. The renderer applies the same head and support validation to compact and native responses. Plain IPO, including sampling replay without SC, keeps sampled-only logprobs and the native HTTP path unless probability-head capture is explicitly requested. Sampling masks retain their native representation. To compare SC with native JSON, set `extra_body.extra_args.prl_compact_logprobs = false` on the applicable train sampling configuration. Clients also accept native responses from servers without compact-logprob support.
 
 ### Custom Loss
 
@@ -313,7 +524,7 @@ The per-token training signal is set by `algo.type` and the [algorithm](#the-alg
 
 ### Default Advantage
 
-The default advantage is per-group reward minus a length-weighted baseline, without std normalization. For each prompt's group of `group_size` rollouts, every trainable token in rollout $i$ receives advantage $s_i - b$, where $b = \sum_i L_i s_i / \sum_i L_i$ and $L_i$ counts trainable (policy-sampled, loss-masked) tokens across all turns of rollout $i$.
+The default advantage is per-group reward minus per-group baseline (DR-GRPO without std normalization). For each prompt's group of `group_size` rollouts, every token in rollout $i$ receives advantage $s_i - \bar{s}$ where $\bar{s}$ is the group mean.
 
 This is intentionally simple — it does the right thing for most envs. Write a named algorithm class when you need group-aware shaping that depends on trajectory metadata (sub-agent rollouts, relative-rank shaping, …) — see [Authoring an Algorithm](#authoring-an-algorithm).
 
@@ -326,8 +537,6 @@ type = "grpo"
 [orchestrator.train.algo.length_penalty]
 type = "linear"
 ```
-
-`grpo` and `echo` always use the **length-weighted baseline**, computed after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's trainable tokens.
 
 **Prompt-mean loss aggregation** (`loss_aggregation = "prompt"` on `grpo` and `echo`; default `"token"`). By default every `rl` token in the batch weighs the same, so prompts whose groups produce long trajectories dominate the gradient. With `"prompt"`, the loss is MiMo-V2.6's prompt-mean (Eq. 1): the mean over prompt groups $q$ of $\frac{1}{T_q}\sum_{t \in q} \mathcal{L}_{rl,t}$, where $T_q$ is the group's total trainable tokens. MiMo uses it to keep response length from growing too fast. `score_group` gives each trainable token of the group the `rl` weight $1/T_q$, so each group's weights sum to 1 and $N_{rl}$ (the summed weights) is the number of groups in the step. Zero-advantage tokens are still dropped from the `rl` component, so a group with a zero-advantage rollout keeps less than its full weight of 1. All envs with an `rl` loss in a run must use the same `loss_aggregation`.
 

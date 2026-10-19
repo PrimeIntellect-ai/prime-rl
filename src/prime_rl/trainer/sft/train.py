@@ -1,5 +1,3 @@
-import prime_rl._compat  # noqa: F401
-
 import math
 import time
 import asyncio

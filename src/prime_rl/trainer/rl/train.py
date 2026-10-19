@@ -1,5 +1,3 @@
-import prime_rl._compat  # noqa: F401
-
 from contextlib import nullcontext
 from functools import partial
 import time
@@ -18,7 +16,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch, validate_score_centering_data
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -33,6 +31,7 @@ from prime_rl.trainer.rl.loss import (
     _mismatch_kl_from_log_ratio,
     selective_log_softmax,
     selective_log_softmax_with_sampling_mask,
+    selective_topk_log_softmax,
     setup_rl_loss_fn,
     shift_tensor_left,
     shift_tensor_right,
@@ -66,6 +65,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
+from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -160,6 +160,7 @@ def train(config: TrainerConfig):
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
+    tail_topk = getattr(rl_loss_fn, "tail_topk", None)
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
@@ -351,6 +352,15 @@ def train(config: TrainerConfig):
         step_local_num_tokens = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
+            score_centering = config.loss.type == "score_centering" or (
+                config.loss.type in ("ipo", "ipo_tis", "icepop_tis") and config.loss.score_centering
+            )
+            if score_centering:
+                vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
+                exact_centering = (
+                    config.loss.type in ("ipo", "ipo_tis", "icepop_tis") and config.loss.score_centering_topk is None
+                )
+                validate_score_centering_data(micro_batch, vocab_size=vocab_size, exact=exact_centering)
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -379,6 +389,12 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
+            topk_ids = micro_batch["top_logprobs_ids"] if score_centering else None
+            sampler_topk = micro_batch["top_logprobs_values"].to("cuda") if topk_ids is not None else None
+            topk_valid = (topk_ids >= 0).to("cuda") if topk_ids is not None else None
+            if topk_ids is not None:
+                topk_ids = topk_ids.to("cuda")
+
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:
                 mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
@@ -392,6 +408,8 @@ def train(config: TrainerConfig):
             seq_lens = micro_batch["seq_lens"].to("cuda")
 
             labels = shift_tensor_left(input_ids)
+            if topk_ids is not None:
+                topk_ids = shift_tensor_left(topk_ids, pad_value=-1)
             if sampling_mask is not None:
                 # Sampling masks ride at the sampled token's own position (like inference
                 # logprobs); shift to align with the label each position predicts.
@@ -413,6 +431,8 @@ def train(config: TrainerConfig):
                     )
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
+                if topk_ids is not None:
+                    topk_ids = shard_for_cp(topk_ids, cp_rank=cp_rank, cp_world_size=cp_size)
                 if routed_experts is not None and not defer_vlm_cp_to_model:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
                 if sampling_mask is not None:
@@ -447,6 +467,8 @@ def train(config: TrainerConfig):
                     seq_lens_are_pre_shard=seq_lens_are_pre_shard,
                     routed_experts=routed_experts,
                     sampling_mask=sampling_mask,
+                    topk_ids=topk_ids,
+                    tail_topk=tail_topk,
                 )
 
             if out.get("logprobs") is None:
@@ -460,11 +482,23 @@ def train(config: TrainerConfig):
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
+                if topk_ids is not None:
+                    out["topk_logprobs"] = selective_topk_log_softmax(scaled_logits, topk_ids, sampling_mask, labels)
+                    if tail_topk is not None:
+                        out["tail_logprobs"], out["tail_log_mass"] = tail_log_softmax(
+                            scaled_logits, topk_ids, tail_topk
+                        )
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
                 out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                if out.get("topk_logprobs") is not None:
+                    out["topk_logprobs"] = gather_for_cp(out["topk_logprobs"], cp_group)
+                if out.get("tail_logprobs") is not None:
+                    out["tail_logprobs"] = gather_for_cp(out["tail_logprobs"], cp_group)
+                if out.get("tail_log_mass") is not None:
+                    out["tail_log_mass"] = gather_for_cp_wo_grad(out["tail_log_mass"], cp_size, cp_group)
 
             vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
             # This is not really necessary as the first token should be masked out, but we do it anyway to be sure
@@ -474,6 +508,18 @@ def train(config: TrainerConfig):
             out["entropy"] = shift_tensor_right(
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
+
+            trainer_topk = out.get("topk_logprobs")
+            if trainer_topk is not None:
+                trainer_topk = torch.cat([torch.zeros_like(trainer_topk[:, :1]), trainer_topk[:, :-1]], dim=1)
+            trainer_tail = out.get("tail_logprobs")
+            if trainer_tail is not None:
+                trainer_tail = torch.cat(
+                    [torch.full_like(trainer_tail[:, :1], -torch.inf), trainer_tail[:, :-1]], dim=1
+                )
+            trainer_tail_mass = out.get("tail_log_mass")
+            if trainer_tail_mass is not None:
+                trainer_tail_mass = shift_tensor_right(trainer_tail_mass, pad_value=-torch.inf)
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
@@ -490,6 +536,19 @@ def train(config: TrainerConfig):
                 rl_scale=rl_scale,
                 ce_scale=ce_scale,
                 ref_kl_scale=ref_kl_scale,
+                trainer_topk_logprobs=trainer_topk.squeeze(0).split(sequence_lengths)
+                if trainer_topk is not None
+                else None,
+                sampler_topk_logprobs=sampler_topk.squeeze(0).split(sequence_lengths)
+                if sampler_topk is not None
+                else None,
+                topk_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
+                trainer_tail_logprobs=trainer_tail.squeeze(0).split(sequence_lengths)
+                if trainer_tail is not None
+                else None,
+                trainer_tail_log_mass=trainer_tail_mass.squeeze(0).split(sequence_lengths)
+                if trainer_tail_mass is not None
+                else None,
             )
 
             # Backward pass

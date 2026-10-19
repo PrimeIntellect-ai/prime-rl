@@ -451,6 +451,9 @@ class CheckpointConfig(BaseConfig):
     keep_interval: int | None = Field(None, ge=1)
     """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
 
+    prune_before_save: bool = False
+    """Remove the oldest checkpoint before writing a new one to avoid needing space for an extra copy."""
+
     skip_scheduler: bool = False
     """Skip loading the scheduler from checkpoint."""
 
@@ -459,6 +462,12 @@ class CheckpointConfig(BaseConfig):
 
     skip_optimizer: bool = False
     """Skip loading the optimizer state from checkpoint."""
+
+    @model_validator(mode="after")
+    def validate_prune_before_save(self):
+        if self.prune_before_save and (self.keep_last is None or self.keep_last < 2 or self.keep_interval is not None):
+            raise ValueError("prune_before_save requires keep_last >= 2 and keep_interval = None")
+        return self
 
 
 class IPOLossConfig(BaseConfig):
@@ -471,6 +480,71 @@ class IPOLossConfig(BaseConfig):
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
+
+    score_centering: bool = False
+    """Center the IPO-weighted score. Without score_centering_topk, integrate exactly
+    over the complete bounded sampling mask."""
+
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Use an untruncated sampler head and proportional tail for IPO centering.
+    Weighted centering requires the modeled tail to remain inside IPO's trust region;
+    sample gating accounts for individual rejected tail candidates."""
+
+    score_centering_gate: Literal["weighted", "sample"] = "weighted"
+    """weighted centers all draws; sample skips rejected positions and centers
+    conditional on the sampled word passing IPO's probability-difference mask."""
+
+    score_centering_min_acceptance: float = Field(1e-4, gt=0, le=1, allow_inf_nan=False)
+    """Skip both sampled loss and conditional correction below this acceptance mass."""
+
+    @model_validator(mode="after")
+    def validate_score_centering_topk(self):
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        if self.score_centering_gate != "weighted" and not self.score_centering:
+            raise ValueError("score_centering_gate requires score_centering = true")
+        if self.score_centering_gate == "sample" and self.score_centering_topk is not None and self.eps == 0:
+            raise ValueError("Sample-gated proportional-tail centering requires eps > 0")
+        return self
+
+
+class IPOTISLossConfig(BaseConfig):
+    type: Literal["ipo_tis"] = "ipo_tis"
+
+    eps: float = Field(0.2, ge=0, allow_inf_nan=False)
+    """Maximum absolute probability change before a token is masked."""
+
+    ratio_cap: float = Field(2.0, ge=1, allow_inf_nan=False)
+    """Upper policy-gradient coefficient for accepted tokens; no lower ratio floor."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    score_centering: bool = False
+    """Center the masked, truncated importance-weighted score under the sampler."""
+
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Approximate an untruncated sampler with a captured head and proportional tail.
+    None selects exact centering over the complete replayed sampling support."""
+
+    score_centering_gate: Literal["weighted", "sample", "head"] = "weighted"
+    """weighted centers the masked score, including rejected draws. sample gates the
+    entire update by the sampled action and centers conditional on acceptance.
+    head gates TIS+SC by whether every captured candidate passes the IPO bound."""
+
+    score_centering_min_acceptance: float = Field(1e-4, gt=0, le=1, allow_inf_nan=False)
+    """For the sample gate, skip the entire position below this modeled acceptance mass.
+    The same prefix-wide skip applies to the sampled term and centering correction."""
+
+    @model_validator(mode="after")
+    def validate_score_centering_topk(self):
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        if self.score_centering_gate != "weighted" and not self.score_centering:
+            raise ValueError("score_centering_gate requires score_centering = true")
+        if self.score_centering_gate == "sample" and self.score_centering_topk is not None and self.eps == 0:
+            raise ValueError("Sample-gated proportional-tail centering requires eps > 0")
+        return self
 
 
 class IcePopLossConfig(BaseConfig):
@@ -489,6 +563,41 @@ class IcePopLossConfig(BaseConfig):
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
             raise ValueError("ratio_low must not exceed ratio_high")
+        return self
+
+
+class IcePopTISLossConfig(BaseConfig):
+    type: Literal["icepop_tis"] = "icepop_tis"
+
+    ratio_low: float = Field(0.2, gt=0, allow_inf_nan=False)
+    """Lower accepted trainer-to-sampler probability ratio."""
+
+    ratio_high: float = Field(5.0, gt=0, allow_inf_nan=False)
+    """Upper accepted ratio; rejected positions have no sampled loss."""
+
+    ratio_cap: float = Field(2.0, ge=1, allow_inf_nan=False)
+    """Upper score coefficient for accepted tokens; independent of the acceptance band."""
+
+    adv_tau: float = Field(1.0, ge=0)
+    score_centering: bool = False
+    score_centering_topk: int | None = Field(None, ge=1)
+    """Captured full-vocabulary head with a proportional sampler tail; None uses complete replay support."""
+
+    score_centering_gate: Literal["weighted", "sample", "head"] = "weighted"
+    """weighted centers all draws; sample conditions on ratio-band acceptance;
+    head gates the whole update on every captured candidate passing the band."""
+
+    score_centering_min_acceptance: float = Field(1e-4, gt=0, le=1, allow_inf_nan=False)
+    """Skip both conditional terms below this modeled acceptance mass."""
+
+    @model_validator(mode="after")
+    def validate_score_centering(self):
+        if self.ratio_low > self.ratio_high:
+            raise ValueError("ratio_low must not exceed ratio_high")
+        if self.score_centering_topk is not None and not self.score_centering:
+            raise ValueError("score_centering_topk requires score_centering = true")
+        if self.score_centering_gate != "weighted" and not self.score_centering:
+            raise ValueError("score_centering_gate requires score_centering = true")
         return self
 
 
@@ -527,6 +636,13 @@ class CISPOLossConfig(BaseConfig):
     """Temperature for the advantage term."""
 
 
+class ScoreCenteringLossConfig(BaseConfig):
+    type: Literal["score_centering"] = "score_centering"
+
+    topk: int = Field(128, ge=1)
+    """Number of sampler top-k probabilities to retain, without renormalizing the head."""
+
+
 class CustomLossConfig(BaseConfig):
     type: Literal["custom"] = "custom"
 
@@ -538,7 +654,15 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig
+    | IPOTISLossConfig
+    | IcePopTISLossConfig
+    | IcePopLossConfig
+    | PPOLossConfig
+    | CISPOLossConfig
+    | ScoreCenteringLossConfig
+    | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 

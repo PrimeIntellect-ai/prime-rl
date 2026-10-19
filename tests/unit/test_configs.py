@@ -122,6 +122,39 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+@pytest.mark.parametrize("loss_type", ["score_centering", "ipo", "ipo_tis", "icepop_tis"])
+def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
+    from prime_rl.entrypoints.rl import write_config
+    from prime_rl.orchestrator.envs import TrainEnv
+
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "examples/basic/reverse-text/rl.toml",
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--run.name",
+            "roundtrip",
+            "--trainer.loss.type",
+            loss_type,
+            *(["--trainer.loss.score-centering"] if loss_type != "score_centering" else []),
+            "--trainer.loss.topk" if loss_type == "score_centering" else "--trainer.loss.score-centering-topk",
+            "4",
+        ],
+    )
+    write_config(config, tmp_path, exclude={"slurm", "dry_run", "clean"})
+    reloaded = cli(RLConfig, args=["@", str(tmp_path / "rl.json")])
+    assert reloaded.run_dir == config.run_dir
+    assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
+    assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
+    assert reloaded.inference.vllm.max_logprobs >= 6
+    assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+    env = TrainEnv(reloaded.orchestrator.train.source[0], None, tmp_path / "address", None, None, None)
+    assert env.requires_top_logprobs
+    assert env.sampling.logprobs == 4
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})
@@ -202,6 +235,49 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     assert TrainerConfig.model_validate({"loss": {"type": "ppo"}}).loss.type == "ppo"
     assert TrainerConfig.model_validate({"loss": {"type": "cispo"}}).loss.type == "cispo"
+    ipo_tis = TrainerConfig.model_validate({"loss": {"type": "ipo_tis"}}).loss
+    assert ipo_tis.eps == 0.2
+    assert ipo_tis.ratio_cap == 2.0
+    assert not ipo_tis.score_centering
+    icepop_tis = TrainerConfig.model_validate({"loss": {"type": "icepop_tis"}}).loss
+    assert (icepop_tis.ratio_low, icepop_tis.ratio_high, icepop_tis.ratio_cap) == (0.2, 5.0, 2.0)
+    assert not icepop_tis.score_centering
+    with pytest.raises(ValidationError, match="ratio_low must not exceed ratio_high"):
+        TrainerConfig.model_validate({"loss": {"type": "icepop_tis", "ratio_low": 6.0}})
+    assert default_config.loss.eps == 0.3
+    assert default_config.loss.max_importance_ratio == 1e4
+    for cap in (0.5, float("inf"), float("nan")):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "ratio_cap": cap}})
+    with pytest.raises(ValidationError, match="score_centering_topk requires"):
+        TrainerConfig.model_validate({"loss": {"type": "ipo_tis", "score_centering_topk": 128}})
+    for loss_type, gate in (
+        ("ipo", "sample"),
+        ("ipo_tis", "sample"),
+        ("ipo_tis", "head"),
+        ("icepop_tis", "sample"),
+        ("icepop_tis", "head"),
+    ):
+        with pytest.raises(ValidationError, match="score_centering_gate requires"):
+            TrainerConfig.model_validate({"loss": {"type": loss_type, "score_centering_gate": gate}})
+        gated = {"type": loss_type, "score_centering": True, "score_centering_gate": gate}
+        assert TrainerConfig.model_validate({"loss": gated}).loss.score_centering_gate == gate
+        for minimum in (0.0, -0.1, 1.1, float("nan")):
+            with pytest.raises(ValidationError):
+                TrainerConfig.model_validate({"loss": {**gated, "score_centering_min_acceptance": minimum}})
+    for loss_type in ("ipo", "ipo_tis"):
+        with pytest.raises(ValidationError, match="requires eps > 0"):
+            TrainerConfig.model_validate(
+                {
+                    "loss": {
+                        "type": loss_type,
+                        "score_centering": True,
+                        "score_centering_gate": "sample",
+                        "score_centering_topk": 128,
+                        "eps": 0.0,
+                    }
+                }
+            )
 
     with pytest.raises(ValidationError, match="max_importance_ratio must be at least ratio_high"):
         TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
