@@ -20,7 +20,6 @@ class GRPOAlgorithm(Algorithm):
     def __init__(self, config: GRPOAlgoConfig, clients: InferenceClient):
         super().__init__(config, clients)
         self.length_penalty = config.length_penalty
-        self.length_weighted_baseline = config.length_weighted_baseline
         self.loss_aggregation = config.loss_aggregation
 
     async def score_group(self, episodes: list[vf.Episode]) -> None:
@@ -44,11 +43,6 @@ class GRPOAlgorithm(Algorithm):
             penalty = rewards.mean() * penalty_frac
             shaped_rewards = rewards - penalty
         baseline = shaped_rewards.mean()
-        if self.length_weighted_baseline:
-            lengths = torch.tensor(
-                [sum(sum(node.mask) for node in trainable_nodes(trace)) for trace in traces], dtype=rewards.dtype
-            )
-            baseline = (lengths * shaped_rewards).sum() / lengths.sum()
         advantages = shaped_rewards - baseline
         for trace, advantage in zip(traces, advantages.tolist(), strict=True):
             assign_advantages(trace, advantage)
