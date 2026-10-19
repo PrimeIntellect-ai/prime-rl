@@ -1,10 +1,28 @@
 # Pretraining
 
-`uv run pretrain` trains a model from scratch on pre-tokenized token shards. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, checkpointing and monitors as the SFT trainer. It runs locally on one node or, with `[slurm]`, as a SLURM job on one or more nodes (see [Multi-node](#multi-node)).
+`uv run pretrain` trains a model from scratch on pre-tokenized token shards. It has its own config (`PretrainConfig`) and training loop, built from the same model setup, FSDP/EP/CP, optimizer, checkpointing and monitors as the SFT trainer.
+
+## Table of Contents
+
+- [Launch](#launch)
+- [Model](#model)
+- [Initialization](#initialization)
+- [Parametrization](#parametrization)
+- [Learning-Rate Schedule](#learning-rate-schedule)
+- [MoE Load Balancing](#moe-load-balancing)
+- [Data](#data)
+- [Monitoring](#monitoring)
+- [Evals](#evals)
+- [Multi-Node](#multi-node)
+
+## Launch
 
 ```bash
-uv run pretrain @ examples/pretrain/prime_moe.toml
+uv run pretrain @ examples/pretrain/prime_moe.toml        # MoE example on token shards
+uv run pretrain @ configs/debug/fake/pretrain.toml        # 5-step smoke test on random tokens
 ```
+
+It runs locally on one node or, with `[slurm]`, as a SLURM job on one or more nodes (see [Multi-Node](#multi-node)).
 
 ## Model
 
@@ -66,7 +84,7 @@ In MoE models, the expert matrices follow the hidden and `down_proj` rules per e
 
 Use QK-norm (`"use_qk_norm": true` in the model config) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
 
-## Learning-rate schedule
+## Learning-Rate Schedule
 
 Pretraining uses the shared `[scheduler]`. Its default here is the `linear` scheduler with a warmup over 10% of the steps and a linear decay to `min_lr = 0` over the remaining 90%. Warmup and decay take a number of steps or a fraction of `max_steps` (rounded down), and `decay_shape` is `linear`, `cosine` or `1-sqrt`:
 
@@ -80,7 +98,7 @@ decay_shape = "1-sqrt"
 
 The schedule scales every param group's own learning rate, so ratios between groups hold. AdamW and Muon apply weight decay as `lr * weight_decay`, so the schedule also scales the decay. The scheduler state is checkpointed; resuming with `ckpt.skip_scheduler = true` rebuilds the schedule over the remaining steps.
 
-## MoE load balancing
+## MoE Load Balancing
 
 `[model.moe.balance]` balances the routed experts of `prime_moe` as in DeepSeek-V3:
 
@@ -149,7 +167,7 @@ sets = ["fwedu-holdout", "lambada", "math"]
 seq_lens = [2048, 4096, 16384]
 ```
 
-## Multi-node
+## Multi-Node
 
 `uv run pretrain` takes the same `[deployment]` and `[slurm]` blocks as `uv run sft` (see [Scaling § SLURM](scaling.md#slurm)) and submits the same bundled templates. The launcher writes the model dir on the submitting node, then submits one job in which every node runs `torchrun` on the pretrain trainer:
 
