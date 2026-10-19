@@ -78,6 +78,7 @@ def _resolve_mega_moe_compute(
         intermediate_hidden=moe.experts.hidden_dim,
         group=group,
         max_tokens_per_rank=dispatch.max_tokens_per_rank,
+        num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms),
         precision=dispatch.precision,
     )
 
@@ -112,7 +113,6 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             raise ValueError(
                 "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
             )
-        reserve_sms_for_comm(dispatch.num_reserved_sms)
         # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
         selected_moes = set(moe_layers)
         selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group())

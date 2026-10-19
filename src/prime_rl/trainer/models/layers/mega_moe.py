@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
 
@@ -61,12 +62,8 @@ def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
         )
 
 
-def reserve_sms_for_comm(num_reserved_sms: int) -> None:
-    """Cap the Mega MoE grids at ``total - num_reserved_sms`` SMs. The grids are persistent and
-    synchronize across ranks, so a concurrent NCCL kernel must fit in the reserved SMs or the two
-    deadlock; ``NCCL_MAX_CTAS`` (one CTA per SM) bounds how many a NCCL kernel takes."""
-    import deep_gemm
-
+def reserve_sms_for_comm(num_reserved_sms: int) -> int:
+    """SMs the Mega MoE grids run on: ``total - num_reserved_sms``"""
     nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
     if nccl_max_ctas is None or int(nccl_max_ctas) > num_reserved_sms:
         raise ValueError(
@@ -74,7 +71,20 @@ def reserve_sms_for_comm(num_reserved_sms: int) -> None:
             f"{num_reserved_sms} (got {nccl_max_ctas!r}); set it in `env_vars` or raise `num_reserved_sms`."
         )
     total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-    deep_gemm.set_num_sms(max(total - num_reserved_sms, 1))
+    return max(total - num_reserved_sms, 1)
+
+
+@contextmanager
+def _deep_gemm_num_sms(num_sms: int):
+    """``deep_gemm.set_num_sms`` is process-wide and read at launch"""
+    import deep_gemm
+
+    previous = deep_gemm.get_num_sms()
+    deep_gemm.set_num_sms(num_sms)
+    try:
+        yield
+    finally:
+        deep_gemm.set_num_sms(previous)
 
 
 @dataclass(frozen=True)
@@ -108,12 +118,12 @@ def build_mega_moe_buffers(
 
 
 # Custom ops take an int key: the buffers are not tensors
-_BUFFER_REGISTRY: dict[int, tuple[MegaMoePrecision, MegaMoeBuffers]] = {}
+_BUFFER_REGISTRY: dict[int, tuple[MegaMoePrecision, MegaMoeBuffers, int]] = {}
 
 
-def register_mega_moe_buffers(buffers: MegaMoeBuffers, precision: MegaMoePrecision) -> int:
+def register_mega_moe_buffers(buffers: MegaMoeBuffers, precision: MegaMoePrecision, num_sms: int) -> int:
     key = id(buffers)
-    _BUFFER_REGISTRY[key] = (precision, buffers)
+    _BUFFER_REGISTRY[key] = (precision, buffers, num_sms)
     return key
 
 
@@ -339,17 +349,18 @@ def mega_moe_forward_op(
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> torch.Tensor:
-    precision, buffers = _BUFFER_REGISTRY[buffer_key]
+    precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
     forward, _ = MEGA_MOE_IMPLS[precision]
-    y = forward(
-        x.to(torch.bfloat16).contiguous(),
-        topk_idx,
-        topk_weights,
-        gate_up_proj,
-        down_proj,
-        buffers.forward,
-        activation_clamp,
-    )
+    with _deep_gemm_num_sms(num_sms):
+        y = forward(
+            x.to(torch.bfloat16).contiguous(),
+            topk_idx,
+            topk_weights,
+            gate_up_proj,
+            down_proj,
+            buffers.forward,
+            activation_clamp,
+        )
     return y.to(x.dtype)
 
 
@@ -377,19 +388,20 @@ def mega_moe_backward_op(
     buffer_key: int,
     activation_clamp: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    precision, buffers = _BUFFER_REGISTRY[buffer_key]
+    precision, buffers, num_sms = _BUFFER_REGISTRY[buffer_key]
     _, backward = MEGA_MOE_IMPLS[precision]
-    dx, dw1, dw2, dtopk = backward(
-        dy.to(torch.bfloat16).contiguous(),
-        x.to(torch.bfloat16).contiguous(),
-        topk_idx,
-        topk_weights,
-        gate_up_proj,
-        down_proj,
-        buffers.backward,
-        _dw_dtype(gate_up_proj),
-        activation_clamp,
-    )
+    with _deep_gemm_num_sms(num_sms):
+        dx, dw1, dw2, dtopk = backward(
+            dy.to(torch.bfloat16).contiguous(),
+            x.to(torch.bfloat16).contiguous(),
+            topk_idx,
+            topk_weights,
+            gate_up_proj,
+            down_proj,
+            buffers.backward,
+            _dw_dtype(gate_up_proj),
+            activation_clamp,
+        )
     return dx.to(x.dtype), dw1.to(gate_up_proj.dtype), dw2.to(down_proj.dtype), dtopk
 
 
@@ -440,8 +452,8 @@ def _activation_clamp(activation: type[Activation] | Activation) -> float | None
 
 class MegaMoEExpertCompute:
     """One instance serves every MoE layer: the symmetric buffers are sized once from the shared
-    expert shapes and routing, and ``validate`` checks each layer against them. Call
-    ``reserve_sms_for_comm`` once before running it."""
+    expert shapes and routing, and ``validate`` checks each layer against them. Its kernels run on
+    ``num_sms`` SMs (see ``reserve_sms_for_comm``)."""
 
     def __init__(
         self,
@@ -451,6 +463,7 @@ class MegaMoEExpertCompute:
         intermediate_hidden: int,
         group: ProcessGroup,
         max_tokens_per_rank: int,
+        num_sms: int,
         precision: MegaMoePrecision = "bf16",
     ) -> None:
         if not mega_moe_available(precision):
@@ -469,7 +482,7 @@ class MegaMoEExpertCompute:
             group, num_experts, max_tokens_per_rank, top_k, hidden, intermediate_hidden, precision
         )
         # Registered once here: a registry write inside the compiled, checkpointed block is a side effect dynamo rejects.
-        self.buffer_key = register_mega_moe_buffers(buffers, precision)
+        self.buffer_key = register_mega_moe_buffers(buffers, precision, num_sms)
 
     def validate(self, experts: "GroupedExperts") -> None:
         if experts.gate_proj is None and experts.gate_up_proj is None:
@@ -486,7 +499,7 @@ class MegaMoEExpertCompute:
             )
 
     def destroy(self) -> None:
-        _, buffers = _BUFFER_REGISTRY.pop(self.buffer_key)
+        _, buffers, _ = _BUFFER_REGISTRY.pop(self.buffer_key)
         if buffers.forward is not buffers.backward:
             buffers.forward.destroy()
         buffers.backward.destroy()

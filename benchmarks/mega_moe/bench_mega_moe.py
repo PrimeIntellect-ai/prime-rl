@@ -101,7 +101,6 @@ def main() -> None:
         ),
         bf16_compute,
     )
-    reserve_sms_for_comm(16)
     mega_compute = MegaMoEExpertCompute(
         num_experts=args.num_experts,
         top_k=args.top_k,
@@ -109,6 +108,7 @@ def main() -> None:
         intermediate_hidden=args.intermediate,
         group=group,
         max_tokens_per_rank=args.tokens_per_rank,
+        num_sms=reserve_sms_for_comm(16),
     )
     mega = (FusedTokenDispatcher(), mega_compute)
 
