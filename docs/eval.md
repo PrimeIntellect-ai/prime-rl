@@ -76,6 +76,23 @@ select.include.idx = ["0:30"]
 
 Per-source `group_size` and `sampling` override the top-level defaults. The top-level `[env]` block holds the env knobs that every source inherits (see [Environments](configuration.md#environments)); a source's own `env` values win.
 
+Eval rollouts are chat completions rendered by the inference server, not by the renderer that renders train samples. Template controls the renderer sets explicitly, such as `enable_thinking`, are copied into each eval source's `chat_template_kwargs` so train and eval see the same prompt. A source that sets the key itself wins:
+
+```toml
+[orchestrator.renderer]
+name = "qwen3"
+enable_thinking = false        # train rollouts and, by inheritance, every eval below
+
+[[orchestrator.eval.source]]
+env.taskset.id = "gsm8k"       # inherits enable_thinking = false
+
+[[orchestrator.eval.source]]
+env.taskset.id = "aime25"
+sampling.extra_body.chat_template_kwargs = { enable_thinking = true }   # this eval thinks
+```
+
+A standalone `uv run eval` has no renderer; set `chat_template_kwargs` under `[sampling]` directly.
+
 Each field a source sets in its `select` overrides the same field of the top-level `[select]`. `select` picks which tasks of the taskset run: `include`/`exclude` by task `idx`/`ids`/`keys`/`names`, then `shuffle`, `skip` and `limit` (see verifiers' [Selecting tasks](../deps/verifiers/docs/v1/tasksets.md#selecting-tasks)). Train sources take the same `select`.
 
 Every source's env server is spawned by the eval process unless the source sets `serve.address`, in which case the server is externally managed. A spawned server binds an OS-assigned loopback port and publishes it to `configs/attempt_N/resolved/envs/eval/<name>.address`, which the eval process reads, so concurrent runs on one host never collide on a port.

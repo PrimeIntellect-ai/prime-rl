@@ -1256,3 +1256,80 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 
     with pytest.raises(ConfigFileError, match="depth"):
         cli(SFTConfig, args=["@", str(config_file)])
+
+
+def _orchestrator_with_eval(renderer: dict, *sources: dict) -> OrchestratorConfig:
+    return OrchestratorConfig.model_validate(
+        {
+            "renderer": renderer,
+            "train": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+            "eval": {"source": [{"env": {"taskset": {"id": "reverse-text"}}, **source} for source in sources]},
+        }
+    )
+
+
+def test_eval_sources_inherit_renderer_template_kwargs():
+    """Eval rollouts are chat completions rendered by the inference server, so the
+    renderer's template controls must travel as ``chat_template_kwargs`` (#3532)."""
+    config = _orchestrator_with_eval(
+        {"name": "qwen3", "enable_thinking": False},
+        {"name": "inherits"},
+        {"name": "overrides", "sampling": {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}},
+        {"name": "merges", "sampling": {"extra_body": {"chat_template_kwargs": {"other": 1}}}},
+    )
+    inherits, overrides, merges = config.eval.source
+    assert inherits.sampling.chat_template_kwargs == {"enable_thinking": False}
+    assert overrides.sampling.chat_template_kwargs == {"enable_thinking": True}
+    assert merges.sampling.chat_template_kwargs == {"enable_thinking": False, "other": 1}
+    assert config.eval.sampling.chat_template_kwargs == {"enable_thinking": False}
+    # The key rides on the sampling dump that the chat dialect overlays onto each request.
+    assert inherits.sampling.model_dump(exclude_none=True) == {"chat_template_kwargs": {"enable_thinking": False}}
+    # Train rollouts render client-side through the renderer; their sampling is untouched.
+    assert "chat_template_kwargs" not in config.train.source[0].sampling.extra_body
+    # Resolved configs round-trip without re-merging.
+    reloaded = OrchestratorConfig.model_validate(config.model_dump(mode="json"))
+    assert reloaded.model_dump() == config.model_dump()
+
+
+@pytest.mark.parametrize(
+    "renderer",
+    [
+        {"name": "auto"},
+        {"name": "qwen3"},  # enable_thinking left at its default
+        {"name": "qwen3.5", "enable_thinking": None},  # None defers to the template's default
+        {"name": "default"},
+    ],
+    ids=["auto", "unset", "none", "default"],
+)
+def test_eval_sources_get_no_template_kwargs_without_renderer_controls(renderer):
+    config = _orchestrator_with_eval(renderer, {"name": "a"})
+    assert not config.eval.source[0].sampling.model_extra
+    assert not config.eval.sampling.model_extra
+
+
+@pytest.mark.parametrize(
+    "renderer,expected",
+    [
+        ({"name": "qwen3.5", "add_vision_id": True}, {"add_vision_id": True}),
+        (
+            {"name": "qwen3.5", "enable_thinking": False, "add_vision_id": True},
+            {"add_vision_id": True, "enable_thinking": False},
+        ),
+        ({"name": "default", "enable_thinking": False}, {"enable_thinking": False}),
+    ],
+    ids=["typed-field", "two-fields", "default-renderer-extras"],
+)
+def test_eval_sources_inherit_every_set_renderer_template_field(renderer, expected):
+    config = _orchestrator_with_eval(renderer, {"name": "a"})
+    assert config.eval.source[0].sampling.chat_template_kwargs == expected
+
+
+def test_sft_online_eval_inherits_renderer_template_kwargs():
+    config = SFTConfig.model_validate(
+        {
+            "model": {"name": "PrimeIntellect/Qwen3-0.6B"},
+            "renderer": {"name": "qwen3", "enable_thinking": False},
+            "eval": {"source": [{"env": {"taskset": {"id": "reverse-text"}}}]},
+        }
+    )
+    assert config.eval.source[0].sampling.chat_template_kwargs == {"enable_thinking": False}

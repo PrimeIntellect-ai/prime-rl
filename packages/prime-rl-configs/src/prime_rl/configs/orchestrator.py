@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal, TypeAlias, get_args
 import verifiers.v1 as vf
 from pydantic import AliasChoices, BaseModel, Field, SerializeAsAny, TypeAdapter, ValidationError, model_validator
 from pydantic.fields import FieldInfo
-from renderers import AutoRendererConfig, RendererConfig
+from renderers import AutoRendererConfig, CustomRendererConfig, DefaultRendererConfig, RendererConfig
 from verifiers.v1.configs.agent import agent_config_fields
 
 from prime_rl.configs.algorithm import (
@@ -394,6 +394,48 @@ class EvalSourcesConfig(SourceGroupConfig):
         return self
 
 
+def renderer_template_kwargs(renderer: RendererConfig) -> dict[str, Any]:
+    """The chat-template kwargs a renderer bakes into the prompts it renders.
+
+    A renderer's template fields mirror the model's chat-template kwargs
+    (``enable_thinking``, ``add_vision_id``, ...). Only fields the config sets explicitly
+    count: an unset field, or one set to ``None``, leaves the template's own default in
+    charge on the renderer and on the inference server alike. The default renderer
+    forwards its extra fields to ``apply_chat_template`` verbatim, so those count too.
+    ``auto`` resolves at runtime and a custom renderer's fields belong to its own class,
+    so neither contributes."""
+    if isinstance(renderer, CustomRendererConfig):
+        return {}
+    kwargs = {
+        name: getattr(renderer, name)
+        for name in sorted(type(renderer).template_field_names())
+        if name in renderer.model_fields_set and getattr(renderer, name) is not None
+    }
+    if isinstance(renderer, DefaultRendererConfig):
+        kwargs.update(renderer.model_extra or {})
+    return kwargs
+
+
+def inherit_renderer_template_kwargs(renderer: RendererConfig, evals: EvalSourcesConfig | None) -> None:
+    """Eval rollouts go out as chat completions that the inference server renders with the
+    model's own chat template, so the renderer's template controls reach them only as
+    ``chat_template_kwargs``. Give the group sampling and every eval source the renderer's
+    kwargs for each key they do not set themselves; an explicit
+    ``sampling.extra_body.chat_template_kwargs`` wins key by key."""
+    if evals is None:
+        return
+    defaults = renderer_template_kwargs(renderer)
+    if not defaults:
+        return
+    for owner in (evals, *evals.source):
+        explicit = getattr(owner.sampling, "chat_template_kwargs", None) or {}
+        if not isinstance(explicit, dict):
+            raise ValueError(f"chat_template_kwargs must be a table, got {type(explicit).__name__}: {explicit!r}")
+        merged = {**defaults, **explicit}
+        if merged != explicit:
+            owner.sampling = owner.sampling.model_copy(update={"chat_template_kwargs": merged})
+
+
 class ScheduledEvalConfig(EvalSourcesConfig):
     """Eval sources evaluated on a step interval next to training."""
 
@@ -565,6 +607,14 @@ class OrchestratorConfig(BaseConfig):
             return self
         if self.monitors.wandb is not None and self.monitors.wandb.name:
             self.monitors.prime.name = self.monitors.wandb.name
+        return self
+
+    @model_validator(mode="after")
+    def inherit_renderer_template_kwargs_for_eval(self):
+        """Train rollouts render through ``renderer``; eval rollouts are rendered by the
+        inference server. Carry the renderer's template controls (e.g. ``enable_thinking``)
+        over as ``chat_template_kwargs`` so both see the same prompt."""
+        inherit_renderer_template_kwargs(self.renderer, self.eval)
         return self
 
     @model_validator(mode="after")
