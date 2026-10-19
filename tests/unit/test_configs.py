@@ -1172,6 +1172,21 @@ def test_pd_role_connectors():
     assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
     assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
 
+    with pytest.raises(ValidationError, match="decode_kv_cache_offload"):
+        InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake, hisparse={"host_pool_gib": 160})
+    deployment["decode_kv_cache_offload"] = None
+    config = InferenceConfig(
+        deployment=deployment, slurm={}, kv_cache_offload=mooncake, hisparse={"host_pool_gib": 160}
+    )
+    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    assert [c["kv_connector"] for c in decode] == ["NixlConnector", "HiSparseConnector"]
+    assert config.for_pd_role("prefill").hisparse is None
+
+    with pytest.raises(ValidationError, match="native KV cache offload"):
+        InferenceConfig(
+            kv_cache_offload={"type": "native", "cpu": {"num_bytes": 1000}}, hisparse={"host_pool_gib": 160}
+        )
+
 
 CUSTOM_RENDERER_SOURCE = """
 from typing import Literal
