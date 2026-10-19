@@ -1,6 +1,5 @@
 import uuid
 import warnings
-from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
@@ -11,19 +10,13 @@ from renderers.base import MODEL_RENDERER_MAP
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
-from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
-    ResumeConfig,
-    RunConfig,
-    SFTDeploymentConfig,
-    SingleNodeDeploymentConfig,
-    SlurmConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import BaseTrainerConfig
-from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
+from prime_rl.configs.trainer import TrainerLaunchConfig
+from prime_rl.utils.config import BaseConfig
 
 
 class BaseDataConfig(BaseConfig):
@@ -165,7 +158,7 @@ class SFTValConfig(BaseConfig):
 DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
 
 
-class SFTConfig(BaseTrainerConfig):
+class SFTConfig(TrainerLaunchConfig):
     # bf16 routing skips the fp32 gate GEMM and its fp32 FSDP unit.
     auto_moe_router_dtype = "bfloat16"
     auto_freeze_moe_router = False
@@ -192,68 +185,18 @@ class SFTConfig(BaseTrainerConfig):
     """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
     LoRA and external inference use filesystem broadcast."""
 
-    resume: ResumeConfig | None = None
-    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
-
-    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
-
-    run: RunConfig = Field(default_factory=RunConfig)
-    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
-
-    output_dir: Path = Field(default_factory=default_output_dir)
-    """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
-
-    clean: bool = False
-    """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
-
-    @property
-    def run_dir(self) -> Path:
-        assert self.run.dir is not None  # resolved at construction
-        return self.output_dir / self.run.dir
-
-    @model_validator(mode="after")
-    def auto_setup_run_identity(self):
-        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
-        default the run directory, W&B run name and platform run name to it when not
-        set explicitly."""
-        if self.run.name is None:
-            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
-            model = self.model.name.split("/")[-1]
-            parts = [part for part in (dataset, model) if part]
-            self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
-        if self.run.dir is None:
-            self.run.dir = self.run.name
-        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
-            self.monitors.wandb.name = self.run.name
-        if self.monitors.prime is not None and self.monitors.prime.name is None:
-            self.monitors.prime.name = self.run.name
-        return self
-
-    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
-
-    slurm: SlurmConfig | None = None
-    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
+    def default_run_name(self) -> str:
+        """``<dataset>--<model>--<short-id>``."""
+        dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+        model = self.model.name.split("/")[-1]
+        parts = [part for part in (dataset, model) if part]
+        return "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
 
     dashboard: bool = True
     """Make sure a local dashboard daemon serves this run's output dir (started on
     demand in interactive sessions; an already-running daemon's URL is logged)."""
 
-    dry_run: bool = False
-    """Only validate and dump resolved configs, then exit early."""
-
     ### Pre-validation normalization
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_deployment(cls, data):
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_train_gpus", "num_infer_gpus"):
-                deployment.pop(key, None)
-        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -272,12 +215,6 @@ class SFTConfig(BaseTrainerConfig):
         return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
-
-    @model_validator(mode="after")
-    def validate_deployment(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
-        return self
 
     @model_validator(mode="after")
     def auto_setup_online_eval(self):
@@ -462,31 +399,4 @@ class SFTConfig(BaseTrainerConfig):
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
         if self.val is not None and self.val.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires val.data.micro_batch_size = 1.")
-        return self
-
-    ### Auto-setup and validate shared configs
-
-    @model_validator(mode="after")
-    def auto_setup_deployment(self):
-        if self.deployment.type == "multi_node":
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_slurm_template(self):
-        if self.slurm is not None and self.slurm.job_name is None:
-            self.slurm.job_name = self.run.name
-        if self.slurm is not None and self.slurm.template_path is None:
-            templates_dir = find_package_resource("templates")
-            if templates_dir is not None:
-                if self.deployment.type == "single_node":
-                    self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
-                else:
-                    self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
         return self
