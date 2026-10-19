@@ -7,7 +7,6 @@ from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import resolve_auto_attn
 from prime_rl.trainer.models import AutoModelForCausalLMPrimeRL
 from prime_rl.trainer.models.fusions import apply_model_fusions
-from prime_rl.trainer.models.layers.attn import FlashAttention, substitute_ring_attn
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -16,7 +15,6 @@ from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5TextConfig,
     Qwen3_5VisionConfig,
 )
-from prime_rl.trainer.models.qwen3_5.attention import Qwen3_5Attention
 from prime_rl.utils.cp import CPContext
 
 
@@ -91,7 +89,7 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     linear_layer = text_model.model.layers[0]
     text_model.model.layers[0] = torch.nn.Sequential(linear_layer)
 
-    text_cp_context = CPContext(cp_group, 1, 2, "ulysses")
+    text_cp_context = CPContext(cp_group, 1, 2)
     for module in text_model.modules():
         if hasattr(module, "cp_context"):
             module.cp_context = text_cp_context
@@ -99,33 +97,18 @@ def test_context_parallel_setup_chain_text_and_vlm(text_config):
     assert text_model.model.cp_context is text_cp_context
     assert text_model.model.cp_context.cp_rank == 1
     assert text_model.model.cp_context.cp_world_size == 2
-    assert text_model.model.cp_context.cp_style == "ulysses"
     assert linear_layer.linear_attn.cp_context is text_cp_context
 
     vlm_model = get_model(get_vlm_config(text_config), device="meta")
 
-    vlm_cp_context = CPContext(cp_group, 0, 2, "ulysses")
+    vlm_cp_context = CPContext(cp_group, 0, 2)
     for module in vlm_model.modules():
         if hasattr(module, "cp_context"):
             module.cp_context = vlm_cp_context
 
     assert vlm_model.model.cp_context is vlm_cp_context
     assert vlm_model.model.language_model.cp_context is vlm_cp_context
-    assert vlm_model.model.language_model.cp_context.cp_style == "ulysses"
     assert vlm_model.model.language_model.layers[0].linear_attn.cp_context is vlm_cp_context
-
-
-def test_ring_patches_flash_attention():
-    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
-
-    originals = {cls: cls._compute_attention for cls in (FlashAttention, AfmoeFlashAttention)}
-    try:
-        substitute_ring_attn(process_group=MagicMock(), heads_k_stride=1)
-        assert Qwen3_5Attention._compute_attention is FlashAttention._compute_attention
-        assert Qwen3_5Attention._compute_attention is not originals[FlashAttention]
-    finally:
-        for cls, method in originals.items():
-            cls._compute_attention = method
 
 
 @pytest.mark.gpu
