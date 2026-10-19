@@ -10,6 +10,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import msgspec
 import numpy as np
@@ -48,32 +49,67 @@ def clip_segments(segments: Iterable[PayloadSegment], lo: int, hi: int) -> list[
 
 
 RAGGED_FIELDS = frozenset({"sampling_mask"})
-"""Fields whose rows vary in width (a few kept ids per sampled token), stored as CSR
-(``ragged_bytes``): the segment's rows are the uint32 file offsets where each row's int32
-values start, followed in the file by one more offset where the last row's values end, so
-clipping a segment needs no knowledge of the row widths. Other fields store the rows
-themselves."""
+"""Fields whose rows vary in width (a few kept token ids per sampled token), stored as CSR
+(``ragged_bytes``): the segment's rows are uint32 start indices, one per row plus one where the
+last row ends, of the row's ids in the file. The ids are packed at ``bits`` bits each (see
+``id_bits``), and a start index counts ``bits``-bit slots from byte 0 of the file, so clipping
+a segment needs no knowledge of the row widths. Other fields store the rows themselves."""
 
 
-def ragged_bytes(counts: np.ndarray, values: np.ndarray, offset: int) -> bytes:
+def id_bits(vocab_size: int) -> int:
+    """Bits per packed sampling-mask token id: ``ceil(log2(vocab_size))``."""
+    return max(1, (vocab_size - 1).bit_length())
+
+
+def ragged_bytes(counts: np.ndarray, values: np.ndarray, offset: int, bits: int) -> bytes:
     """CSR rows (``counts[i]`` values for token ``i``) laid out to be written at byte ``offset``
-    of a file: ``len(counts) + 1`` uint32 start offsets, then the int32 values."""
-    values = np.ascontiguousarray(values, dtype=np.int32)
-    starts = offset + 4 * (len(counts) + 1) + values.itemsize * np.concatenate([[0], np.cumsum(counts)])
+    of a file: ``len(counts) + 1`` uint32 start indices, zero padding up to a byte offset that is
+    a multiple of ``bits`` (so slot indices are whole numbers), then the values packed
+    little-endian at ``bits`` bits each."""
+    values = np.asarray(values, dtype=np.int64)
+    assert values.size == 0 or (values.min() >= 0 and values.max() < 1 << bits)
+    values_offset = offset + 4 * (len(counts) + 1)
+    padding = -values_offset % bits
+    first = (values_offset + padding) * 8 // bits
+    starts = first + np.concatenate([[0], np.cumsum(counts, dtype=np.int64)])
     assert starts[-1] <= np.iinfo(np.uint32).max
-    return starts.astype(np.uint32).tobytes() + values.tobytes()
+    packed = np.packbits((values[:, None] >> np.arange(bits)) & 1, axis=None, bitorder="little")
+    return starts.astype(np.uint32).tobytes() + bytes(padding) + packed.tobytes()
+
+
+def _unpack_ids(data: bytes, first_bit: int, count: int, bits: int) -> np.ndarray:
+    """``count`` ``bits``-bit values starting at bit ``first_bit`` of ``data``."""
+    flat = np.unpackbits(np.frombuffer(data, dtype=np.uint8), bitorder="little")
+    slots = flat[first_bit : first_bit + count * bits].reshape(count, bits).astype(np.int32)
+    return slots @ (1 << np.arange(bits, dtype=np.int32))
+
+
+def routed_layers(config: Any) -> list[int]:
+    """The layers whose experts a learned router picks, from a model's HF config: the only layers
+    router replay needs rows for. Dense MLP, Mamba, attention-only (Nemotron-H's
+    ``hybrid_override_pattern``) and hash-routed (DeepSeek-V4 ``num_hash_layers``) layers are left
+    out. The inference server writes only these layers' rows, and the trainer scatters them back."""
+    config = config.get_text_config()
+    if (block_types := getattr(config, "layers_block_type", None)) is not None:
+        return [i for i, block in enumerate(block_types) if block == "moe"]
+    if (pattern := getattr(config, "hybrid_override_pattern", None)) is not None:
+        return [i for i, block in enumerate(pattern) if block == "E"]
+    if (mlp_types := getattr(config, "mlp_layer_types", None)) is not None:
+        return [i for i, mlp in enumerate(mlp_types) if mlp in ("sparse", "moe")]
+    first = max(
+        getattr(config, name, 0) or 0 for name in ("first_k_dense_replace", "num_dense_layers", "num_hash_layers")
+    )
+    dense = set(getattr(config, "mlp_only_layers", None) or ())
+    step = getattr(config, "decoder_sparse_step", None) or 1
+    return [i for i in range(first, config.num_hidden_layers) if i not in dense and (i + 1) % step == 0]
 
 
 def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int, fill: int) -> np.ndarray | None:
-    """Rows ``[lo, hi)`` of ``field`` as int32, ``fill`` where no segment covers a position;
-    None when no segment carries ``field``. Ragged rows are padded to the widest row of all of
-    the field's segments, as inline masks are padded to the micro batch's widest row, so every
-    CP rank gets the same width. Later segments win."""
+    """Rows ``[lo, hi)`` of fixed-width ``field`` as int32, ``fill`` where no segment covers a
+    position; None when no segment carries ``field``. Later segments win."""
     field_segments = [segment for segment in segments if segment.field == field]
     if not field_segments:
         return None
-    if field in RAGGED_FIELDS:
-        return _read_ragged(field_segments, lo, hi, fill)
     shape = [max(dims) for dims in zip(*(segment.shape for segment in field_segments))]
     out = np.full((hi - lo, *shape), fill, dtype=np.int32)
     segments = clip_segments(field_segments, lo, hi)
@@ -83,26 +119,38 @@ def read_field(segments: list[PayloadSegment], field: str, lo: int, hi: int, fil
     return out
 
 
-def _read_ragged(segments: list[PayloadSegment], lo: int, hi: int, fill: int) -> np.ndarray:
+def read_ragged(
+    segments: list[PayloadSegment], field: str, lo: int, hi: int, fill: int, bits: int
+) -> np.ndarray | None:
+    """Like ``read_field`` for a ragged field packed at ``bits`` bits per id. Rows are padded to
+    the widest row of all of the field's segments, as inline masks are padded to the micro
+    batch's widest row, so every CP rank gets the same width."""
+    segments = [segment for segment in segments if segment.field == field]
+    if not segments:
+        return None
     segments = [segment for segment in segments if segment.rows]
-    # Every segment's offsets (4 bytes per row) set the width; only the window's values are read.
+    # Every segment's start indices (4 bytes per row) set the width; only the window's ids are read.
     starts = [
         np.frombuffer(data, dtype=np.uint32).astype(np.int64)
         for data in _pread([(s.file, s.offset, 4 * (s.rows + 1)) for s in segments])
     ]
-    width = max([int(np.diff(s).max()) // 4 for s in starts] + [1])
+    width = max([int(np.diff(s).max()) for s in starts] + [1])
     out = np.full((hi - lo, width), fill, dtype=np.int32)
     window = []
     for segment, segment_starts in zip(segments, starts):
         a, b = max(segment.pos, lo) - segment.pos, min(segment.end, hi) - segment.pos
         if a < b:
             window.append((segment.file, segment.pos + a - lo, segment_starts[a : b + 1]))
-    values = _pread([(file, int(w[0]), int(w[-1] - w[0])) for file, _, w in window])
-    for (_, row, w), data in zip(window, values):
-        counts = np.diff(w) // 4
+    first_bytes = [int(w[0]) * bits // 8 for _, _, w in window]
+    values = _pread(
+        [(file, byte, -(-int(w[-1]) * bits // 8) - byte) for (file, _, w), byte in zip(window, first_bytes)]
+    )
+    for (_, row, w), byte, data in zip(window, first_bytes, values):
+        counts = np.diff(w)
         rows = out[row : row + len(counts)]
         rows[:] = fill
-        rows[np.arange(width) < counts[:, None]] = np.frombuffer(data, dtype=np.int32)
+        ids = _unpack_ids(data, int(w[0]) * bits - 8 * byte, int(counts.sum()), bits)
+        rows[np.arange(width) < counts[:, None]] = ids
     return out
 
 

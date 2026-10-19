@@ -30,7 +30,7 @@ from prime_rl.inference.vllm.serving_tokens import (
     _PackedOutputs,
     pack_sampled_logprobs,
 )
-from prime_rl.transports.payload import PayloadSegment, read_field
+from prime_rl.transports.payload import PayloadSegment, read_field, read_ragged
 
 
 async def _empty_request_outputs():
@@ -48,6 +48,8 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     capture = _PackedOutputs(
         _empty_request_outputs(),
         SimpleNamespace(sampling_params=SimpleNamespace(routed_experts_prompt_start=0, extra_args=None)),
+        None,
+        32,
     )
     capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
@@ -98,7 +100,8 @@ def test_payload_dir_writes_routing_and_masks_by_handle(tmp_path):
         yield SimpleNamespace(prompt_token_ids=[0] * 4, outputs=[output])
 
     sampling_params = SimpleNamespace(routed_experts_prompt_start=2, extra_args={"payload_dir": str(tmp_path / "v3")})
-    capture = _PackedOutputs(request_outputs(), SimpleNamespace(sampling_params=sampling_params))
+    # Layer 0 has no learned routing; mask ids are below 2**4.
+    capture = _PackedOutputs(request_outputs(), SimpleNamespace(sampling_params=sampling_params), [1], 4)
     response = GenerateTokensResponse(choices=[GenerateTokensChoice(index=0, token_ids=[1, 2, 3])])
 
     async def run():
@@ -113,10 +116,10 @@ def test_payload_dir_writes_routing_and_masks_by_handle(tmp_path):
     assert choice.routed_experts is None and choice.sampling_mask is None
     routing, mask_segment = choice.payload
     # 4 prompt + 3 completion tokens; the last token is never forwarded, so rows end at position 6.
-    assert (routing["field"], routing["pos"], routing["rows"], routing["shape"]) == ("routed_experts", 2, 4, [2, 3])
+    assert (routing["field"], routing["pos"], routing["rows"], routing["shape"]) == ("routed_experts", 2, 4, [1, 3])
     assert (mask_segment["field"], mask_segment["pos"], mask_segment["rows"]) == ("sampling_mask", 4, 3)
     segments = [PayloadSegment(**routing), PayloadSegment(**mask_segment)]
-    np.testing.assert_array_equal(read_field(segments, "routed_experts", 2, 6, 0), routed_experts)
+    np.testing.assert_array_equal(read_field(segments, "routed_experts", 2, 6, 0), routed_experts[:, [1]])
     np.testing.assert_array_equal(
-        read_field(segments, "sampling_mask", 4, 7, -1), [[7, -1, -1], [8, 9, 10], [-1, -1, -1]]
+        read_ragged(segments, "sampling_mask", 4, 7, -1, 4), [[7, -1, -1], [8, 9, 10], [-1, -1, -1]]
     )

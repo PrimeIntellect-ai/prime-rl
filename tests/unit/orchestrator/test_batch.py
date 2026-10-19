@@ -602,7 +602,7 @@ def test_payload_by_handle_matches_inline(tmp_path):
             offset = _write_rows(path, experts[lo:hi])
             segments.append(PayloadSegment("routed_experts", path, offset, lo, hi - lo, "uint8", [3, 2]))
         path = str(tmp_path / f"{i}-mask.bin")
-        _write_bytes(path, ragged_bytes(counts, mask_rows[mask_rows >= 0], 0))
+        _write_bytes(path, ragged_bytes(counts, mask_rows[mask_rows >= 0], 0, 10))
         whole = PayloadSegment("sampling_mask", path, 0, 0, n, "uint32", [])
         segments += clip_segments([whole], 0, cut) + clip_segments([whole], cut, n)
         by_handle.append(TrainingSample(**sample, payload=segments))
@@ -617,7 +617,7 @@ def test_payload_by_handle_matches_inline(tmp_path):
                 _flatten_batches(inline_batches), _flatten_batches(handle_batches), strict=True
             ):
                 expected = loader._micro_batch_to_tensor(expected_mb)
-                actual = prepare_micro_batch(loader._micro_batch_to_tensor(actual_mb), None, None, cp_rank, cp_size)
+                actual = prepare_micro_batch(loader._micro_batch_to_tensor(actual_mb), None, None, cp_rank, cp_size, 10)
                 assert actual["payload_cp_window"]
                 routed = shard_for_cp(expected["routed_experts"], cp_rank, cp_size)
                 sampling = expected["sampling_mask"]
@@ -639,7 +639,7 @@ def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
 
     row = np.array([5, 6], dtype=np.int32)
     path = str(tmp_path / "mask.bin")
-    _write_bytes(path, ragged_bytes(np.int32([2]), row, 0))
+    _write_bytes(path, ragged_bytes(np.int32([2]), row, 0, 3))
     sample = dict(token_ids=[1, 2, 3], mask=[False, True, True], logprobs=[0.0] * 3, temperatures=[1.0] * 3)
     sample.update(advantages=[1.0] * 3, env_name="test-env")
     inline = TrainingSample(
@@ -650,7 +650,9 @@ def test_inline_and_by_handle_samples_keep_their_masks(tmp_path):
     loader = object.__new__(DataLoader)
     batches = _flatten_batches(prepare_batch([inline, by_handle], 32, 1, build_bin_cost(None)))
     masks = {
-        mb.payload is None: prepare_micro_batch(loader._micro_batch_to_tensor(mb), None, None, 0, 1)["sampling_mask"][0]
+        mb.payload is None: prepare_micro_batch(loader._micro_batch_to_tensor(mb), None, None, 0, 1, 3)[
+            "sampling_mask"
+        ][0]
         for mb in batches
     }
     # Inline masks sit at the sampled position; by-handle ones are read shifted onto the labels.

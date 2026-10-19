@@ -18,7 +18,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, expand_routed_layers, prepare_micro_batch
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -65,6 +65,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.transports.payload import id_bits, routed_layers
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
@@ -157,7 +158,11 @@ def train(config: TrainerConfig):
         mm_adapter=mm_adapter,
         cp_rank=parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0,
         cp_size=parallel_dims.cp,
+        mask_bits=id_bits(model.config.get_text_config().vocab_size),
     )
+    # The inference server sends routing rows only for these layers; the model indexes all layers.
+    num_layers = model.config.get_text_config().num_hidden_layers
+    routed_layer_ids = torch.tensor(routed_layers(model.config), device="cuda")
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
@@ -380,6 +385,9 @@ def train(config: TrainerConfig):
             if routed_experts is not None and not config.enable_router_replay:
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
+
+            if routed_experts is not None and routed_experts.shape[2] != num_layers:
+                routed_experts = expand_routed_layers(routed_experts, routed_layer_ids, num_layers)
 
             sampling_mask = (
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
