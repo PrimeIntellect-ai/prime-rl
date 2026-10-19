@@ -63,17 +63,16 @@ class S3Path:
         return keys, prefixes
 
     def exists(self) -> bool:
+        """Whether this object exists (the transport only probes files)."""
         from botocore.exceptions import ClientError
 
         try:
             _client().head_object(Bucket=self.bucket, Key=self.key)
             return True
-        except ClientError:
-            return self.is_dir()
-
-    def is_dir(self) -> bool:
-        response = _client().list_objects_v2(Bucket=self.bucket, Prefix=self._prefix, MaxKeys=1)
-        return response.get("KeyCount", 0) > 0
+        except ClientError as error:
+            if error.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+                return False
+            raise
 
     def glob(self, pattern: str) -> list["S3Path"]:
         keys, prefixes = self._list()
@@ -106,7 +105,12 @@ def read_range(path: StoragePath, offset: int, size: int) -> bytes:
         response = _client().get_object(Bucket=path.bucket, Key=path.key, Range=f"bytes={offset}-{offset + size - 1}")
         return response["Body"].read()
     with open(path, "rb") as file:
-        data = os.pread(file.fileno(), size, offset)
+        # pread may return fewer bytes than asked (e.g. on NFS); read on until ``size`` or EOF
+        chunks, read = [], 0
+        while read < size and (chunk := os.pread(file.fileno(), size - read, offset + read)):
+            chunks.append(chunk)
+            read += len(chunk)
+        data = b"".join(chunks)
         # Broadcast data is read once; don't let it fill the inference host's page cache.
         os.posix_fadvise(file.fileno(), offset, size, os.POSIX_FADV_DONTNEED)
     return data

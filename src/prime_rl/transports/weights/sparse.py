@@ -1040,7 +1040,7 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.streamed_dir: Path | None = None
         self.num_streamed = 0
         # The delta dir of the step being encoded, where a failed encode or write leaves this rank's failure marker
-        self.delta_dir: Path | None = None
+        self.delta_dir: StoragePath | None = None
 
     def diff_in_optimizer(self, optimizer: "OptimizerLike") -> None:
         """Take the deltas of the optimizer's parameters from its steps, which must each be followed by a broadcast."""
