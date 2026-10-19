@@ -92,9 +92,6 @@ class LoRAConfig(BaseConfig):
     ]
     """Module names or regex patterns to apply LoRA to. Simple names (e.g. ``q_proj``) match any component in the module path; regex patterns match anywhere in the name. Names unknown to the current model are silently ignored, so defaults cover multiple architectures. NemotronH note: ``experts`` matches the ReLU² grouped experts; ``fc1_latent_proj``/``fc2_latent_proj`` adapt the latent projections. Add ``in_proj``/``out_proj`` to also LoRA Mamba."""
 
-    modules_to_save: list[str] = []
-    """Module names or regex patterns to keep fully trainable (not freeze). Same matching rules as ``target_modules``."""
-
 
 class DebugModelConfig(BaseConfig):
     num_layers: int | None = None
@@ -239,7 +236,7 @@ class ModelConfig(BaseModelConfig):
     """Sequence length the model is trained on."""
 
     attn: AttnImplementation = "auto"
-    """Attention implementation. ``auto`` selects FA3 on Hopper (SM90) and FA4 on Blackwell (SM100+). With CP enabled, ring attention uses the matching kernel family (FA2/FA3/FA4)."""
+    """Attention implementation. ``auto`` selects FA3 on Hopper (SM90) and FA4 on Blackwell (SM100+)."""
 
     compile: CompileConfig | None = CompileConfig()
     """Compile the model with ``torch.compile``."""
@@ -270,9 +267,6 @@ class ModelConfig(BaseModelConfig):
 
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
-
-    cp_style: Literal["ring", "ulysses"] = "ring"
-    """CP communication style. ``ring`` uses ring-attention all-gather/reduce-scatter (requires custom kernels per attention type). ``ulysses`` uses all-to-all to redistribute Q/K/V from sequence-sharded to head-sharded, runs vanilla attention locally on the full sequence, then all-to-all back — works out-of-the-box with any attention kernel (softmax FA, linear attention, mamba, etc.)."""
 
     optimization_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for model optimization."""
@@ -305,12 +299,6 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
-
-    @model_validator(mode="after")
-    def vlm_cp_requires_ulysses(self):
-        if self.vlm is not None and self.cp > 1 and self.cp_style != "ulysses":
-            raise ValueError("VLM models require cp_style='ulysses' for context parallelism")
-        return self
 
     @model_validator(mode="after")
     def validate_cp(self):
@@ -432,6 +420,9 @@ class MuonConfig(BaseOptimizerConfig):
 
     mu: float = Field(0.95, ge=0)
     """Momentum factor for the Muon algorithm."""
+
+    nesterov: bool = True
+    """Nesterov momentum for the Muon updates."""
 
     betas1: float = Field(0.9, ge=0)
     """β1 for the AdamW/Lion sub-optimizer used on non-Muon params."""
@@ -723,10 +714,5 @@ class TrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
-            )
-        if self.model.lora is not None and self.model.lora.modules_to_save and self.data.fake is None:
-            raise ValueError(
-                "model.lora.modules_to_save cannot be served: the weight broadcast ships only the "
-                "adapter tensors, so fully-trained modules would silently diverge from inference."
             )
         return self

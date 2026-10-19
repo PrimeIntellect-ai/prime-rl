@@ -57,7 +57,6 @@ gpu = [
     "torchdata>=0.11.0 ; sys_platform == 'linux'",
     "vllm>=0.31.0 ; sys_platform == 'linux'",
     "mooncake-transfer-engine>=0.3.10.post2 ; sys_platform == 'linux'",
-    "ring-flash-attn>=0.1.8 ; sys_platform == 'linux'",
     "torchtitan ; sys_platform == 'linux'",
     "dion ; sys_platform == 'linux'",
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
