@@ -31,6 +31,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,7 @@ from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
-from prime_rl.transports.payload import RAGGED_FIELDS, ragged_bytes
+from prime_rl.transports.payload import RAGGED_FIELDS, id_bits, ragged_bytes, routed_layers
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
@@ -90,9 +91,18 @@ class _PackedOutputs:
     output (so upstream builds no per-token objects) and keeps them packed, or
     collects them for a by-handle file when the request has a ``payload_dir``."""
 
-    def __init__(self, generator: AsyncIterator[RequestOutput], request: GenerateRequest):
+    def __init__(
+        self,
+        generator: AsyncIterator[RequestOutput],
+        request: GenerateRequest,
+        layers: list[int] | None,
+        bits: int,
+    ):
         self._generator = generator
         self._request = request
+        # Routing rows keep only these layers (None: all); mask ids are packed at ``bits`` bits.
+        self._layers = layers
+        self._bits = bits
         payload_dir = (request.sampling_params.extra_args or {}).get("payload_dir")
         self._payload_dir = Path(payload_dir) if payload_dir is not None else None
         self.fields: dict[int, dict[str, Any]] = {}
@@ -109,11 +119,14 @@ class _PackedOutputs:
                 if output.routed_experts is not None:
                     # vLLM's capturer picks uint8 or uint16 from the model's expert count. Rows end at the
                     # last forwarded token; a P/D decode instance's rows begin at its first forward.
-                    start = prompt_len + len(output.token_ids) - 1 - len(output.routed_experts)
+                    rows = output.routed_experts
+                    start = prompt_len + len(output.token_ids) - 1 - len(rows)
+                    if self._layers is not None:
+                        rows = rows[:, self._layers]
                     if self._payload_dir is None:
-                        fields["routed_experts"] = {**encode_array(output.routed_experts), "start": start}
+                        fields["routed_experts"] = {**encode_array(rows), "start": start}
                     else:
-                        arrays.append(("routed_experts", start, np.ascontiguousarray(output.routed_experts)))
+                        arrays.append(("routed_experts", start, np.ascontiguousarray(rows)))
                     output.routed_experts = None
                 if isinstance(output.logprobs, FlatLogprobs):
                     fields["completion_logprobs"] = encode_array(pack_sampled_logprobs(output.logprobs))
@@ -135,7 +148,7 @@ class _PackedOutputs:
         for choice in response.choices:
             fields = self.fields.get(choice.index, {})
             if arrays := self.arrays.get(choice.index):
-                fields["payload"] = await asyncio.to_thread(_write_payload, self._payload_dir, arrays)
+                fields["payload"] = await asyncio.to_thread(_write_payload, self._payload_dir, arrays, self._bits)
             choices.append(
                 PrimeRlGenerateResponseChoice(
                     **choice.model_dump(exclude={"routed_experts", "sampling_mask"}), **fields
@@ -144,7 +157,7 @@ class _PackedOutputs:
         return PrimeRlGenerateResponse(**{**response.model_dump(exclude={"choices"}), "choices": choices})
 
 
-def _write_payload(directory: Path, arrays: list[tuple[str, int, Any]]) -> list[dict[str, Any]]:
+def _write_payload(directory: Path, arrays: list[tuple[str, int, Any]], bits: int) -> list[dict[str, Any]]:
     """Write ``(field, first position, rows)`` arrays back to back into one new file and return
     their segments. The file is synced and closed before the response, so readers on other
     nodes see it; so is the directory when this call creates it."""
@@ -157,7 +170,7 @@ def _write_payload(directory: Path, arrays: list[tuple[str, int, Any]]) -> list[
         for field, pos, rows in arrays:
             if field in RAGGED_FIELDS:
                 counts, values = rows
-                data = ragged_bytes(counts, values, offset)
+                data = ragged_bytes(counts, values, offset, bits)
                 segment = dict(rows=len(counts), dtype="uint32", shape=[])
             else:
                 data = memoryview(rows).cast("B")
@@ -177,6 +190,15 @@ def _write_payload(directory: Path, arrays: list[tuple[str, int, Any]]) -> list[
 
 class PrimeRlServingTokens(ServingTokens):
     """ServingTokens with packed or by-handle per-token payloads."""
+
+    @cached_property
+    def _payload_layout(self) -> tuple[list[int] | None, int]:
+        """Routing rows' layers (None when every layer is routed) and mask id bits."""
+        config = self.model_config.hf_text_config
+        layers = routed_layers(config)
+        return (None if len(layers) == config.num_hidden_layers else layers), id_bits(
+            self.model_config.get_vocab_size()
+        )
 
     async def serve_tokens(
         self,
@@ -199,7 +221,7 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
-        packed = _PackedOutputs(result_generator, request)
+        packed = _PackedOutputs(result_generator, request, *self._payload_layout)
         response = await super().serve_tokens_full_generator(
             request,
             packed,

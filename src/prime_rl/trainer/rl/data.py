@@ -17,7 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.payload import PayloadSegment, read_field
+from prime_rl.transports.payload import PayloadSegment, read_field, read_ragged
 
 
 class TensorMicroBatch(TypedDict):
@@ -185,7 +185,16 @@ class FakeDataLoader:
         }
 
 
-def _read_payload(micro_batch: TensorMicroBatch, segments: list[PayloadSegment], cp_rank: int, cp_size: int) -> None:
+def expand_routed_layers(routed_experts: Tensor, layer_ids: Tensor, num_layers: int) -> Tensor:
+    """Scatter rows sent for ``layer_ids`` only back to all ``num_layers`` layers. The others get
+    the zero rows the inference engine leaves for layers without learned routing."""
+    batch, seq, _, top_k = routed_experts.shape
+    return routed_experts.new_zeros(batch, seq, num_layers, top_k).index_copy_(2, layer_ids, routed_experts)
+
+
+def _read_payload(
+    micro_batch: TensorMicroBatch, segments: list[PayloadSegment], cp_rank: int, cp_size: int, mask_bits: int
+) -> None:
     """Read the by-handle rows into the micro batch. Text micro batches read only this rank's CP
     chunk, with the sampling mask taken one position ahead so it lands on the labels; multimodal
     ones read the full sequence because the model may defer CP sharding."""
@@ -195,7 +204,7 @@ def _read_payload(micro_batch: TensorMicroBatch, segments: list[PayloadSegment],
         chunk = hi // cp_size
         lo, hi, shift = chunk * cp_rank, chunk * (cp_rank + 1), 1
     routed_experts = read_field(segments, "routed_experts", lo, hi, 0)
-    sampling_mask = read_field(segments, "sampling_mask", lo + shift, hi + shift, -1)
+    sampling_mask = read_ragged(segments, "sampling_mask", lo + shift, hi + shift, -1, mask_bits)
     if routed_experts is not None:
         micro_batch["routed_experts"] = torch.from_numpy(routed_experts).unsqueeze(0)
     if sampling_mask is not None:
@@ -209,11 +218,13 @@ def prepare_micro_batch(
     mm_adapter: MultimodalAdapter | None,
     cp_rank: int,
     cp_size: int,
+    mask_bits: int,
 ) -> TensorMicroBatch:
-    """Prepare a micro batch for the training loop: read its by-handle payload and materialize its images."""
+    """Prepare a micro batch for the training loop: read its by-handle payload (sampling-mask ids
+    packed at ``mask_bits`` bits) and materialize its images."""
     segments = micro_batch.pop("payload", None)
     if segments:
-        _read_payload(micro_batch, segments, cp_rank, cp_size)
+        _read_payload(micro_batch, segments, cp_rank, cp_size, mask_bits)
     micro_batch["mm_kwargs"] = None
     micro_batch["mm_forward_policy"] = None
     mm_refs = micro_batch.get("mm_refs")
