@@ -101,3 +101,27 @@ def test_schema_details_records_expected_state_dtypes(gpt2_config):
     assert dtypes["lm_head.weight"] == dtypes["transformer.wte.weight"]
     assert all(isinstance(dtype, torch.dtype) for dtype in dtypes.values())
     assert aliases["lm_head.weight"] == "transformer.wte.weight"
+
+
+def test_native_schema_ignores_trainer_config_registration():
+    from transformers import AutoConfig
+    from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
+
+    from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig as PrimeQwen3MoeConfig
+
+    config = Qwen3MoeConfig(
+        vocab_size=16,
+        hidden_size=8,
+        intermediate_size=16,
+        moe_intermediate_size=4,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=4,
+        num_experts=2,
+        num_experts_per_tok=1,
+    ).to_dict()
+    assert isinstance(AutoConfig.for_model("qwen3_moe"), PrimeQwen3MoeConfig)
+    schema = expected_hf_schema(config)
+    assert schema["model.layers.0.mlp.experts.gate_up_proj"] == (2, 8, 8)
+    assert is_hf_identity_layout(schema, config)

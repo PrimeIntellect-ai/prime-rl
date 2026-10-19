@@ -2,11 +2,12 @@
 
 from collections.abc import Mapping
 from copy import deepcopy
+from importlib import import_module
 
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForImageTextToText
+from transformers import AutoModelForCausalLM, AutoModelForImageTextToText
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
-from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES, model_type_to_module_name
 
 Shape = tuple[int, ...]
 
@@ -42,12 +43,15 @@ def hf_schema_details(
         config_class = get_class_from_dynamic_module(auto_map["AutoConfig"], source, **code_options)
         hf_config = config_class.from_dict(deepcopy(config))
     else:
-        if model_type not in CONFIG_MAPPING:
+        if model_type not in CONFIG_MAPPING_NAMES:
             raise ModelSchemaUnavailable(
                 f"No native Transformers config for model_type={model_type!r}; "
                 "custom code requires explicit model_config.name and trust_remote_code=True"
             )
-        hf_config = AutoConfig.for_model(model_type, **attributes)
+        # Trainer registration overrides AutoConfig; the schema must use HF's native class.
+        module = import_module(f"transformers.models.{model_type_to_module_name(model_type)}")
+        config_class = getattr(module, CONFIG_MAPPING_NAMES[model_type])
+        hf_config = config_class(**attributes)
     config_class = type(hf_config)
     remote_auto = next(
         (name for name in ("AutoModelForImageTextToText", "AutoModelForCausalLM") if name in auto_map), None
