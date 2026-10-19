@@ -37,6 +37,10 @@ class BaseDataConfig(BaseConfig):
     num_workers: int = Field(1, ge=1)
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
 
+    pad_to_seq_len: bool = False
+    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
+    one shape, so torch.compile never recompiles on a new row length."""
+
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.micro_batch_size != 0:

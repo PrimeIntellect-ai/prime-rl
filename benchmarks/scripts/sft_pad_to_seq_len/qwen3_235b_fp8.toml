@@ -1,0 +1,54 @@
+# Qwen3-235B-A22B SFT on 8x8 H200: vanilla prime-rl FP8 (DeepGEMM FP8 dense + deepgemm_fp8 experts, torch all-to-all),
+# torch.compile fullgraph, full AC, no offload, 64 x 16k tokens/step, 30 steps.
+# Run once as is (rows padded to a multiple of cp) and once with `--data.pad_to_seq_len true`.
+dist_timeout_seconds = 14400
+max_steps = 30
+
+[model]
+name = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+ep = 8
+seq_len = 16384
+ac_offloading = "None"
+offload = "none"
+fused_lm_head_token_chunk_size = 8192
+
+[model.compile]
+fullgraph = true
+
+[model.ac]
+mode = "full"
+
+[model.quantization]
+type = "fp8"
+
+[model.moe.compute]
+type = "deepgemm_fp8"
+
+[model.moe.dispatch]
+type = "torch"
+
+[renderer]
+name = "qwen3"
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+splits = ["math"]
+seq_len = 16384
+batch_size = 64
+micro_batch_size = 1
+
+[optim]
+lr = 1e-6
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 8
+
+[slurm]
+partition = "all"
+
+[env_vars]
+NCCL_MAX_CTAS = "16"
+CUDA_HOME = "/usr/local/cuda-13.0"
+PATH = "/usr/local/cuda-13.0/bin:${PATH}"
