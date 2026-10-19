@@ -710,6 +710,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
+        init_weights(model, InitConfig())
         return
 
     if not Path(config.name).exists():
