@@ -1,7 +1,6 @@
 """Convert a DCP trainer checkpoint into bf16 HF-format weights offline.
 
-GPU fallback for model families not yet supported by the CPU exporter and for
-FP8 export. It mirrors the trainer's broadcast save path: build the model, DCP-load
+Legacy GPU export path retained for direct FP8 export and parity checks. It mirrors the trainer's broadcast save path: build the model, DCP-load
 the checkpoint's model state, gather rank-parallel, convert to HF format, and
 write sharded safetensors plus config/tokenizer assets.
 
@@ -30,6 +29,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
+from transformers import GenerationConfig
 
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
@@ -119,12 +119,15 @@ def setup_single_process_env() -> None:
 def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
     model.config.save_pretrained(output_dir)
-    if model.generation_config:
-        # training sets use_cache=False which can conflict with cache_implementation —
-        # save with use_cache=True without mutating the model's config
-        gen_config = deepcopy(model.generation_config)
-        gen_config.use_cache = True
-        gen_config.save_pretrained(output_dir)
+    gen_config = getattr(model, "generation_config", None)
+    if gen_config is None:
+        generation_source = deepcopy(model.config)
+        generation_source.use_cache = True
+        gen_config = GenerationConfig.from_model_config(generation_source)
+    else:
+        gen_config = deepcopy(gen_config)
+    gen_config.use_cache = True
+    gen_config.save_pretrained(output_dir)
     # Processor first: it saves its own (unmodified) tokenizer, which the configured
     # tokenizer (pad token, custom chat template) must override.
     processor = setup_processor(model_config)
@@ -166,7 +169,7 @@ def load_and_convert(ckpt_dir: Path):
     logger.info("Gathering and converting weights")
     state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
     if getattr(model.config, "tie_word_embeddings", False):
-        for key in getattr(model, "_tied_weights_keys", []):
+        for key in getattr(model, "_tied_weights_keys", None) or []:
             state_dict.pop(key, None)
     state_dict = convert_state_dict_to_hf(model, state_dict)
     return model, model_config, tokenizer_config, state_dict, step_dir
