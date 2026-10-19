@@ -167,6 +167,36 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
     return torch.exp(capped_log_ratio + (log_importance_ratio - log_importance_ratio.detach()))
 
 
+def score_centering_loss(
+    weight: Callable[[Tensor, Tensor], tuple[Tensor, Tensor]],
+    inputs: LossInputs,
+    advantages: Tensor,
+    weights: Tensor | None,
+) -> tuple[Tensor, dict[str, Tensor]]:
+    """Score centering (arXiv:2609.20807), exact over the sampling mask S:
+    ``A * sum_{v in S} sg[q_v w_v] log p_v`` per loss token, with ``w`` the loss's own
+    sampled-token weight evaluated at every mask id, so ``E_q[w_a grad log p_a]`` cancels.
+    Tokens without a finite sampler logprob get no centering. Also returns the mean total
+    variation between p and q on S and the fraction of loss tokens without centering."""
+    trainer = inputs.trainer_mask_logprobs[inputs.loss_mask]
+    sampler = inputs.inference_mask_logprobs[inputs.loss_mask]
+    with torch.no_grad():
+        q, p = sampler.exp(), trainer.exp()
+        in_mask = sampler.isfinite()
+        keep, ratio = weight(trainer, sampler)
+        coef = torch.where(in_mask & keep, q * ratio, 0.0)
+        tv = 0.5 * torch.where(in_mask, (p - q).abs(), 0.0).sum(-1)
+        centered = in_mask.any(-1)
+    per_token_loss = advantages * (coef * trainer).sum(-1)
+    if weights is not None:
+        per_token_loss = per_token_loss * weights
+    metrics = {
+        "mask_tv": _safe_mean(tv, centered),
+        "uncentered": (~centered).sum() / max(centered.numel(), 1),
+    }
+    return per_token_loss.sum(), metrics
+
+
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
@@ -175,14 +205,8 @@ class IPOLoss:
     def __init__(self, config: IPOLossConfig):
         self.config = config
 
-    def loss(self, inputs: LossInputs) -> LossOutputs:
-        loss_config = self.config
-        trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
-        inference_logprobs = inputs.inference_logprobs[inputs.loss_mask]
-        advantages = inputs.advantages[inputs.loss_mask]
-        weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
-
-        log_importance_ratio = trainer_logprobs - inference_logprobs
+    def weight(self, trainer_logprobs: Tensor, inference_logprobs: Tensor) -> tuple[Tensor, Tensor]:
+        """Trust-region keep mask and capped importance ratio (straight-through gradient)."""
         larger_logprob = torch.maximum(trainer_logprobs, inference_logprobs)
         smaller_logprob = torch.minimum(trainer_logprobs, inference_logprobs)
         # |e^logp - e^logq| = e^max(logp, logq) - e^min(logp, logq)
@@ -190,16 +214,25 @@ class IPOLoss:
         # = e^max(logp, logq) * -expm1(min(logp, logq) - max(logp, logq)).
         # expm1 avoids cancellation in 1 - e^x when x is near zero.
         abs_probs_diff = torch.exp(larger_logprob) * -torch.expm1(smaller_logprob - larger_logprob)
-        is_masked = abs_probs_diff > loss_config.eps
-        keep_mask = ~is_masked
+        keep = abs_probs_diff.detach() <= self.config.eps
+        ratio = _capped_importance_ratio(trainer_logprobs - inference_logprobs, self.config.max_importance_ratio)
+        return keep, ratio
 
-        importance_ratio = _capped_importance_ratio(log_importance_ratio[keep_mask], loss_config.max_importance_ratio)
-        pg_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        loss_config = self.config
+        trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
+        inference_logprobs = inputs.inference_logprobs[inputs.loss_mask]
+        advantages = inputs.advantages[inputs.loss_mask]
+        weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
+
+        keep_mask, importance_ratio = self.weight(trainer_logprobs, inference_logprobs)
+        is_masked = ~keep_mask
+        pg_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio[keep_mask]
         if weights is not None:
             pg_loss = pg_loss * weights[keep_mask]
         loss = pg_loss.sum()
 
-        mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
+        mismatch_kl = _mismatch_kl_from_log_ratio(trainer_logprobs - inference_logprobs)
 
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
@@ -207,31 +240,11 @@ class IPOLoss:
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
         }
         if loss_config.score_centering and inputs.inference_mask_logprobs is not None:
-            centering_loss, metrics["mask_tv"] = self.score_centering_loss(inputs, advantages, weights)
+            centering_loss, centering_metrics = score_centering_loss(self.weight, inputs, advantages, weights)
             loss = loss + loss_config.adv_tau * centering_loss
+            metrics.update(centering_metrics)
 
         return LossOutputs(loss=loss, metrics=metrics)
-
-    def score_centering_loss(
-        self, inputs: LossInputs, advantages: Tensor, weights: Tensor | None
-    ) -> tuple[Tensor, Tensor]:
-        """Score centering (arXiv:2609.20807) with the IPO weight, exact over the sampling mask S:
-        ``A * sum_{v in S} sg[q_v w_v] log p_v`` per loss token, with w the capped ratio inside
-        the trust region and 0 outside. Also returns the mean total variation between p and q on S
-        over tokens with sampler logprobs (-inf marks a missing one)."""
-        trainer = inputs.trainer_mask_logprobs[inputs.loss_mask]
-        sampler = inputs.inference_mask_logprobs[inputs.loss_mask]
-        with torch.no_grad():
-            q, p = sampler.exp(), trainer.exp()
-            in_mask = sampler.isfinite()
-            ratio = (trainer - sampler).clamp(max=math.log(self.config.max_importance_ratio)).exp()
-            coef = torch.where(in_mask & ((p - q).abs() <= self.config.eps), q * ratio, 0.0)
-            tv = 0.5 * torch.where(in_mask, (p - q).abs(), 0.0).sum(-1)
-            has_logprobs = in_mask.any(-1)
-        per_token_loss = advantages * (coef * trainer).sum(-1)
-        if weights is not None:
-            per_token_loss = per_token_loss * weights
-        return per_token_loss.sum(), _safe_mean(tv, has_logprobs)
 
 
 class IcePopLoss:
@@ -241,31 +254,42 @@ class IcePopLoss:
     def __init__(self, config: IcePopLossConfig):
         self.config = config
 
+    def weight(self, trainer_logprobs: Tensor, inference_logprobs: Tensor) -> tuple[Tensor, Tensor]:
+        """Acceptance-band keep mask and the plain importance ratio."""
+        log_importance_ratio = trainer_logprobs - inference_logprobs
+        detached_log_ratio = log_importance_ratio.detach()
+        keep = (detached_log_ratio >= math.log(self.config.ratio_low)) & (
+            detached_log_ratio <= math.log(self.config.ratio_high)
+        )
+        return keep, torch.exp(log_importance_ratio)
+
     def loss(self, inputs: LossInputs) -> LossOutputs:
         loss_config = self.config
-        log_importance_ratio = inputs.trainer_logprobs[inputs.loss_mask] - inputs.inference_logprobs[inputs.loss_mask]
+        trainer_logprobs = inputs.trainer_logprobs[inputs.loss_mask]
+        inference_logprobs = inputs.inference_logprobs[inputs.loss_mask]
         advantages = inputs.advantages[inputs.loss_mask]
         weights = inputs.loss_weights[inputs.loss_mask] if inputs.loss_weights is not None else None
 
-        log_ratio_low = log_importance_ratio.new_tensor(loss_config.ratio_low).log()
-        log_ratio_high = log_importance_ratio.new_tensor(loss_config.ratio_high).log()
-        detached_log_ratio = log_importance_ratio.detach()
-        is_masked = (detached_log_ratio < log_ratio_low) | (detached_log_ratio > log_ratio_high)
-        keep_mask = ~is_masked
-
-        importance_ratio = torch.exp(log_importance_ratio[keep_mask])
-        per_token_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio
+        keep_mask, importance_ratio = self.weight(trainer_logprobs, inference_logprobs)
+        is_masked = ~keep_mask
+        per_token_loss = -loss_config.adv_tau * advantages[keep_mask] * importance_ratio[keep_mask]
         if weights is not None:
             per_token_loss = per_token_loss * weights[keep_mask]
+        loss = per_token_loss.sum()
 
-        mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
+        mismatch_kl = _mismatch_kl_from_log_ratio(trainer_logprobs - inference_logprobs)
 
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
         }
-        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+        if loss_config.score_centering and inputs.inference_mask_logprobs is not None:
+            centering_loss, centering_metrics = score_centering_loss(self.weight, inputs, advantages, weights)
+            loss = loss + loss_config.adv_tau * centering_loss
+            metrics.update(centering_metrics)
+
+        return LossOutputs(loss=loss, metrics=metrics)
 
 
 class PPOLoss:

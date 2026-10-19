@@ -540,7 +540,7 @@ class RLConfig(BaseConfig):
         so eval sampling against the same server must set both. Score centering reads the
         sampler's logprobs at the mask ids, so it needs truncation on every policy env."""
         policy_samplings = self.orchestrator.policy_samplings
-        score_centering = self.trainer.loss.type == "ipo" and self.trainer.loss.score_centering
+        score_centering = getattr(self.trainer.loss, "score_centering", False)
         if score_centering and not all(sampling.truncates_distribution() for sampling in policy_samplings):
             raise ValueError(
                 "trainer.loss.score_centering requires truncated train sampling (top_p < 1 or top_k) on "

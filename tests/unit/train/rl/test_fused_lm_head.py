@@ -2,11 +2,12 @@ import pytest
 import torch
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from prime_rl.configs.trainer import IPOLossConfig
+from prime_rl.configs.trainer import IcePopLossConfig, IPOLossConfig
 from prime_rl.trainer.models import cast_float_and_contiguous
 from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, VanillaOutputLinear, inject_prime_lm_head
 from prime_rl.trainer.models.qwen3 import Qwen3ForCausalLM
 from prime_rl.trainer.rl.loss import (
+    IcePopLoss,
     IPOLoss,
     LossInputs,
     compute_entropy,
@@ -100,11 +101,19 @@ def test_fused_lm_head_mask_logprobs_match_reference_forward_and_backward_cpu():
     torch.testing.assert_close(lm.weight.grad, weight0.grad, rtol=0, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    "loss_cls,loss_config",
+    [
+        (IPOLoss, IPOLossConfig(eps=0.1, score_centering=True)),
+        (IcePopLoss, IcePopLossConfig(ratio_low=0.7, ratio_high=1.4, score_centering=True)),
+    ],
+)
 @pytest.mark.parametrize("score_centering", [False, True])
-def test_score_centering_cancels_sampler_expected_gradient_cpu(score_centering):
-    """With a constant advantage, the sampler-expected IPO gradient at a prefix is pure
-    mismatch drift; score centering cancels it exactly. One row per candidate y in S, all
-    with the same hidden state, weighted by the sampler probability q(y) via the advantage."""
+def test_score_centering_cancels_sampler_expected_gradient_cpu(loss_cls, loss_config, score_centering):
+    """With a constant advantage, the sampler-expected policy gradient at a prefix is pure
+    mismatch drift; score centering with the loss's own weight cancels it exactly. One row per
+    candidate y in S, all with the same hidden state, weighted by the sampler probability q(y)
+    via the advantage."""
     torch.manual_seed(0)
     h, v, k = 8, 37, 6
     support = torch.randperm(v)[:k]
@@ -117,8 +126,9 @@ def test_score_centering_cancels_sampler_expected_gradient_cpu(score_centering):
 
     p = out["mask_logprobs"][0, 0].detach().exp()
     q = torch.softmax(p.log() + 0.8 * torch.randn(k), dim=-1)  # mismatched sampler
-    eps = 0.1
-    assert 0 < int(((p - q).abs() > eps).sum()) < k  # IPO masks some candidates
+    loss_fn = loss_cls(loss_config.model_copy(update={"score_centering": score_centering}))
+    keep, _ = loss_fn.weight(p.log(), q.log())
+    assert 0 < int(keep.sum()) < k  # the loss masks some candidates
     inputs = LossInputs(
         trainer_logprobs=out["logprobs"][0],
         inference_logprobs=q.log(),
@@ -128,8 +138,7 @@ def test_score_centering_cancels_sampler_expected_gradient_cpu(score_centering):
         trainer_mask_logprobs=out["mask_logprobs"][0],
         inference_mask_logprobs=q.log().expand(k, k),
     )
-    loss = IPOLoss(IPOLossConfig(eps=eps, score_centering=score_centering)).loss(inputs).loss
-    loss.backward()
+    loss_fn.loss(inputs).loss.backward()
 
     # Every row is the same prefix: the drift is the gradient summed over rows.
     drift = torch.cat([hidden.grad.sum(1).flatten(), lm.weight.grad.flatten()]).norm()

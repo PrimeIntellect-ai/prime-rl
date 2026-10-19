@@ -17,7 +17,7 @@ from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
-from prime_rl.configs.trainer import IPOLossConfig, TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch
 from prime_rl.utils.cp import (
     gather_for_cp,
@@ -67,7 +67,7 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
-from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear
+from prime_rl.trainer.models.layers.lm_head import FusedOutputLinear, sampling_replay_mask
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -162,7 +162,7 @@ def train(config: TrainerConfig):
     # Set up the loss function for the RL loss type (ce / ref_kl are fixed)
     logger.info(f"Initializing loss function ({config.loss})")
     rl_loss_fn = setup_rl_loss_fn(config.loss)
-    score_centering = isinstance(config.loss, IPOLossConfig) and config.loss.score_centering
+    score_centering = getattr(config.loss, "score_centering", False)
     if score_centering:
         for module in model.modules():
             if isinstance(module, FusedOutputLinear):
@@ -387,7 +387,15 @@ def train(config: TrainerConfig):
             )
             inference_mask_logprobs = None
             if score_centering and micro_batch["sampling_mask_logprobs"] is not None:
+                # Both ride at the sampled token's own position. Rows the trainer can't replay get
+                # no centering (-inf), and the main term takes mu_a from the mask so both terms
+                # see the same sampler distribution (exact zero mean, also with float16 transport).
+                is_label = sampling_mask == input_ids.unsqueeze(-1)
+                replay = sampling_replay_mask(sampling_mask, input_ids).unsqueeze(-1)
                 inference_mask_logprobs = micro_batch["sampling_mask_logprobs"].to("cuda")
+                inference_mask_logprobs = inference_mask_logprobs.masked_fill(~replay, float("-inf"))
+                label_logprobs = inference_mask_logprobs.masked_fill(~is_label, float("-inf")).amax(-1)
+                inference_logprobs = torch.where(label_logprobs.isfinite(), label_logprobs, inference_logprobs)
 
             mm_kwargs = micro_batch.pop("mm_kwargs")
             if mm_kwargs is not None:

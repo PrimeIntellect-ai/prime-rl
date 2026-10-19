@@ -8,13 +8,17 @@ deltas here:
     * ``post_process`` swaps in the packed payloads while preserving
       the rest of the upstream response (``usage`` included).
     * The sampled-token logprobs pack from vLLM's flat logprobs.
+    * Sampler mask logprobs split off packed int64 mask ids, in the configured dtype.
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateTokensChoice,
     GenerateTokensResponse,
@@ -23,6 +27,7 @@ from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
 from vllm.logprobs import FlatLogprobs, Logprob
 
+from prime_rl.inference.patches import NEG_INF_BITS
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
     _PackedOutputs,
@@ -81,3 +86,31 @@ def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
     logprobs.append({3: Logprob(float("-inf"), 9, None)})
 
     np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float16"])
+def test_sampling_mask_logprobs_split_round_trip(monkeypatch, dtype):
+    monkeypatch.setenv("PRIME_RETURN_SAMPLING_MASK_LOGPROBS", dtype)
+    ids = np.array([4, 7, 9, 151000], np.int32)
+    logprobs = np.array([-0.0123, -4.56, 0.0, -np.inf], np.float32)  # -inf: an id without a value
+    packed = (logprobs.view(np.int32) ^ np.int32(NEG_INF_BITS)).astype(np.int64) << 32 | ids
+    counts = np.array([3, 1], np.int32)
+    output = SimpleNamespace(
+        index=0, routed_experts=None, logprobs=None, sampling_mask=SimpleNamespace(ids=packed, counts=counts)
+    )
+
+    async def outputs():
+        yield SimpleNamespace(outputs=[output])
+
+    capture = _PackedOutputs(outputs(), SimpleNamespace())
+
+    async def drain():
+        async for _ in capture:
+            pass
+
+    asyncio.run(drain())
+    fields = capture.fields[0]
+    decode = lambda packed: np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])  # noqa: E731
+    np.testing.assert_array_equal(decode(fields["sampling_mask"]["ids"]), ids)
+    assert fields["sampling_mask_logprobs"]["dtype"] == dtype
+    np.testing.assert_allclose(decode(fields["sampling_mask_logprobs"]).astype(np.float32), logprobs, rtol=1e-3)

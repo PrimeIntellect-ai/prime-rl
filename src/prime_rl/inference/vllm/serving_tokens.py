@@ -26,6 +26,7 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 
@@ -121,7 +122,8 @@ class _PackedOutputs:
                     ids = mask.ids
                     if ids.dtype == np.int64:
                         ids, logprobs = unpack_sampling_mask_logprobs(ids)
-                        fields["sampling_mask_logprobs"] = encode_array(logprobs)
+                        dtype = os.environ.get("PRIME_RETURN_SAMPLING_MASK_LOGPROBS", "float32")
+                        fields["sampling_mask_logprobs"] = encode_array(logprobs.astype(dtype, copy=False))
                     fields["sampling_mask"] = {"ids": encode_array(ids), "counts": encode_array(mask.counts)}
                     output.sampling_mask = None
             yield request_output

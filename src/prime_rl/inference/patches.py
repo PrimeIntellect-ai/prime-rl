@@ -33,7 +33,7 @@ def apply_shared_vllm_patches():
         monkey_patch_no_moe_lora()
     monkey_patch_deepseek_v4_c128_boundary()
     monkey_patch_deepseek_v4_attn_sink_loading()
-    if os.environ.get("PRIME_RETURN_SAMPLING_MASK_LOGPROBS") == "1":
+    if os.environ.get("PRIME_RETURN_SAMPLING_MASK_LOGPROBS"):
         monkey_patch_sampling_mask_logprobs()
 
 
