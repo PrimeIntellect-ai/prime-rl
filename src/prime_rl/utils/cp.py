@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-# ruff: noqa: I001 — `prime_rl._compat` must run before `ring_flash_attn` imports below.
-import prime_rl._compat  # noqa: F401
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from ring_flash_attn import update_ring_flash_attn_params
 
 from prime_rl.trainer.distributed.collectives import all_gather
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 if TYPE_CHECKING:
-    # `prime_rl.trainer.models` imports this module, so importing the model base eagerly would
-    # cycle. `from __future__ import annotations` keeps CPStyle out of the runtime path.
     from prime_rl.configs.trainer import ModelConfig
-    from prime_rl.trainer.models.base import CPStyle
     from prime_rl.trainer.parallel_dims import ParallelDims
 
 
@@ -30,7 +23,6 @@ class CPContext:
     cp_group: dist.ProcessGroup | None = None
     cp_rank: int = 0
     cp_world_size: int = 1
-    cp_style: CPStyle | None = None
 
     @property
     def cp_enabled(self) -> bool:
@@ -41,20 +33,13 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
     cp_group = parallel_dims.world_mesh["cp"].get_group()
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
-    if config.cp_style == "ring":
-        # Delayed imports: both modules live under trainer.models, which imports back into
-        # prime_rl.utils — a top-level import would deadlock at startup.
-        from prime_rl.trainer.models.layers.attn import substitute_ring_attn
+    # Delayed import: ulysses_attn lives under trainer.models, which imports back into
+    # prime_rl.utils — a top-level import would deadlock at startup.
+    from prime_rl.trainer.models.layers.ulysses_attn import substitute_ulysses_attn
 
-        substitute_ring_attn(cp_group, heads_k_stride=1, attn_impl=config.attn)
-    elif config.cp_style == "ulysses":
-        from prime_rl.trainer.models.layers.ulysses_attn import substitute_ulysses_attn
+    substitute_ulysses_attn(cp_group, attn_impl=config.attn)
 
-        substitute_ulysses_attn(cp_group, attn_impl=config.attn)
-    else:
-        raise ValueError(f"Unknown cp_style: {config.cp_style}")
-
-    cp_context = CPContext(cp_group, cp_rank, parallel_dims.cp, config.cp_style)
+    cp_context = CPContext(cp_group, cp_rank, parallel_dims.cp)
     for module in model.modules():
         if not hasattr(module, "cp_context"):
             continue
@@ -65,7 +50,7 @@ def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims:
             )
         module.cp_context = cp_context
 
-    get_logger().info(f"Configured {config.cp_style} context parallelism (cp={parallel_dims.cp})")
+    get_logger().info(f"Configured context parallelism (cp={parallel_dims.cp})")
 
 
 def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int, seq_dim: int = 1) -> torch.Tensor:
@@ -114,49 +99,32 @@ def setup_cp_params(
     position_ids: torch.Tensor,
     cp_rank: int,
     cp_world_size: int,
-    cp_group: dist.ProcessGroup,
     *,
     seq_lens: torch.Tensor,
-    cp_style: CPStyle = "ring",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Prepare the input for context parallelism and set required attention params.
 
-    Both ring and ulysses styles need cu_seqlens computed from the full,
-    unsharded sequence lengths, then publish them to the patched attention layer:
-      - ring: via ring_flash_attn's DATA_PARAMS (with local_k_slice).
-      - ulysses: via ULYSSES_PARAMS (just the full cu_seqlens / max_seqlen).
+    Ulysses attention needs cu_seqlens computed from the full, unsharded sequence
+    lengths, published via ULYSSES_PARAMS.
 
     Returns the sequence-sharded input_ids and position_ids — the rest of the
     model still runs sequence-sharded; only attention sees the full sequence.
     """
-    setup_cp_attention_params(position_ids, cp_group=cp_group, cp_style=cp_style, seq_lens=seq_lens)
+    setup_cp_attention_params(position_ids, seq_lens=seq_lens)
 
     input_ids = shard_for_cp(input_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     position_ids = shard_position_ids_for_cp(position_ids, cp_rank=cp_rank, cp_world_size=cp_world_size)
     return input_ids, position_ids
 
 
-def setup_cp_attention_params(
-    position_ids: torch.Tensor,
-    cp_group: dist.ProcessGroup,
-    *,
-    seq_lens: torch.Tensor,
-    cp_style: CPStyle = "ring",
-) -> None:
-    total_tokens = position_ids.shape[-1]
+def setup_cp_attention_params(position_ids: torch.Tensor, *, seq_lens: torch.Tensor) -> None:
+    # Delayed import: ulysses_attn lives under trainer.models, which imports
+    # back into prime_rl.utils — top-level import would deadlock at startup.
+    from prime_rl.trainer.models.layers.ulysses_attn import update_ulysses_params
+
     cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
         seq_lens.to(device=position_ids.device),
-        total_tokens=total_tokens,
+        total_tokens=position_ids.shape[-1],
     )
-
-    if cp_style == "ring":
-        update_ring_flash_attn_params(cu_seqlens, cp_group)
-    elif cp_style == "ulysses":
-        # Delayed import: ulysses_attn lives under trainer.models, which imports
-        # back into prime_rl.utils — top-level import would deadlock at startup.
-        from prime_rl.trainer.models.layers.ulysses_attn import update_ulysses_params
-
-        update_ulysses_params(cu_seqlens, max_seqlen)
-    else:
-        raise ValueError(f"Unknown cp_style: {cp_style}")
+    update_ulysses_params(cu_seqlens, max_seqlen)

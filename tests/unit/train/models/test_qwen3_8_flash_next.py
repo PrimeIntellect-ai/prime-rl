@@ -46,7 +46,6 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     model = Qwen3_8FlashNextForCausalLM(restored)
     model.init_buffers_post_meta()
     assert len(get_language_model(model).layers) == 1
-    assert model.cp_support(restored).styles == frozenset({"ulysses"})
     original = {
         name: torch.randn_like(value) if value.is_floating_point() else value.clone()
         for name, value in model.state_dict().items()
