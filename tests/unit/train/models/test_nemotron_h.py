@@ -115,7 +115,7 @@ def test_nemotron_h_context_parallel_setup_finds_wrapped_mamba_layer():
 
     cp_group = MagicMock()
 
-    cp_context = CPContext(cp_group, 1, 2, "ulysses")
+    cp_context = CPContext(cp_group, 1, 2)
     for module in model.modules():
         if hasattr(module, "cp_context"):
             module.cp_context = cp_context
