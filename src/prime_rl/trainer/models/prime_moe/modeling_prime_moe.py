@@ -180,12 +180,13 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         # Per-stream inputs: the first stream is the token embedding, the others extra token tables, and with
-        # `ngram` / `bytes` the last one hashed token n-grams / the token's preceding bytes.
+        # `ngram` / `bytes` / `ngram_bytes` the last one(s) hashed token n-grams and / or the token's preceding bytes.
         extra_tables = {
             "copy": 0,
             "tables": config.hc_count - 1,
             "ngram": config.hc_count - 2,
             "bytes": config.hc_count - 2,
+            "ngram_bytes": config.hc_count - 3,
         }
         self.extra_embed_tokens = (
             nn.Embedding(config.vocab_size, extra_tables[config.hc_stream_inputs] * config.hidden_size)
@@ -203,12 +204,12 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
                 vocab_size_divisor=128,
                 ngram_layer_index=0,
             )
-            if config.hc_stream_inputs == "ngram"
+            if config.hc_stream_inputs in ("ngram", "ngram_bytes")
             else None
         )
         self.byte_embed_tokens = (
             ByteWindowEmbedding(dim=config.hidden_size, window=config.hc_byte_window, table_path=config.hc_byte_table)
-            if config.hc_stream_inputs == "bytes"
+            if config.hc_stream_inputs in ("bytes", "ngram_bytes")
             else None
         )
         self.layers = nn.ModuleList(
