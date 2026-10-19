@@ -34,6 +34,7 @@ def test_resolve_wire_dtype():
         (Glm4MoeForCausalLM, "model.layers.0.mlp.router.selection_bias", "model.layers.0.self_attn.q_proj.weight"),
         (GlmMoeDsaForCausalLM, "model.layers.0.mlp.router.selection_bias", "model.layers.0.self_attn.q_proj.weight"),
         (DeepseekV4ForCausalLM, "model.layers.0.attn_hc.fn", "model.layers.0.self_attn.q_b_proj.weight"),
+        (DeepseekV4ForCausalLM, "model.layers.0.mlp.router.gate.weight", "model.layers.0.mlp.experts.gate_proj"),
     ],
 )
 def test_declared_keys_travel_in_fp32(model_cls, fp32_key, ordinary_key):

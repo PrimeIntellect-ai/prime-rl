@@ -50,6 +50,8 @@ Both backward products use BF16 regardless of `recipe`. Routed experts retain th
 `mxfp8_moe` backend and require BF16 token transport. Without `qat = true`, the native
 MXFP8 backward and its recipe selection apply.
 
+Both skip `lm_head`, the router and a few gate/projection modules by default (`ignore_patterns`). Add model-specific modules with `extra_ignore_patterns`, which keeps the defaults; setting `ignore_patterns` replaces them.
+
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
