@@ -16,7 +16,7 @@ broadcast, whose output vLLM's own loader reads back under the published names.
 
 from __future__ import annotations
 
-from prime_rl.utils.conversion_ops import (
+from prime_rl.trainer.models.conversion_ops import (
     ConvOp,
     Drop,
     PrefixRename,
@@ -107,22 +107,3 @@ def conversion_chain(config) -> list[ConvOp]:
         PrefixRename("layers.", "model.layers."),
     ]
     return ops
-
-
-KEEP_IN_FP32_MODULES = (
-    "attn_hc",
-    "ffn_hc",
-    "hc_head",
-    "sinks",
-    "position_bias",
-    "selection_bias",
-    "q_a_norm",
-    "kv_norm",
-    "input_layernorm",
-    "post_attention_layernorm",
-    "norm",
-)
-
-
-def keep_in_fp32(key: str) -> bool:
-    return any(module_name in key for module_name in KEEP_IN_FP32_MODULES)

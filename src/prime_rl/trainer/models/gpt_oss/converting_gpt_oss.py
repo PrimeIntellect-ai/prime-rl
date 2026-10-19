@@ -2,7 +2,7 @@
 
 from torch import Tensor
 
-from prime_rl.utils.conversion_ops import ConvOp, Rename
+from prime_rl.trainer.models.conversion_ops import ConvOp, Rename
 
 
 class GptOssExperts(ConvOp):
@@ -62,7 +62,3 @@ def conversion_chain(config) -> list[ConvOp]:
             ]
         )
     return operations
-
-
-def keep_in_fp32(key: str) -> bool:
-    return False

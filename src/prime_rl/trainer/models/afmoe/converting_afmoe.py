@@ -15,7 +15,7 @@ AFMoE specifics:
 
 from __future__ import annotations
 
-from prime_rl.utils.conversion_ops import GATE_DOWN_UP, ConvOp, Drop, Rename, Stack
+from prime_rl.trainer.models.conversion_ops import GATE_DOWN_UP, ConvOp, Drop, Rename, Stack
 
 
 def conversion_chain(config) -> list[ConvOp]:
@@ -30,7 +30,3 @@ def conversion_chain(config) -> list[ConvOp]:
         ops.append(Drop(f"{p}.tokens_per_expert"))
         ops.append(Drop(f"{p}.reorderer", is_prefix=True))
     return ops
-
-
-def keep_in_fp32(key: str) -> bool:
-    return False

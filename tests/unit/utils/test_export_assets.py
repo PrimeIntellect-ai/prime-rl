@@ -12,7 +12,7 @@ from tokenizers.models import WordLevel
 from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizerFast
 
 from prime_rl.utils.export_assets import prepare_export_config, save_model_assets
-from prime_rl.utils.weight_conversion import resolve_config
+from prime_rl.utils.export_conversion import resolve_config
 
 
 @pytest.fixture

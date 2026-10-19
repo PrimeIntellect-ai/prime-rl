@@ -1,13 +1,7 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 from torch import Tensor
 
-from prime_rl.utils.conversion_ops import ConvOp, Drop, PrefixRename, Rename, Stack
-
-if TYPE_CHECKING:
-    from prime_rl.utils.weight_conversion.configs.nemotron_h import NemotronHConfig
+from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, PrefixRename, Rename, Stack
+from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
@@ -58,8 +52,4 @@ def conversion_chain(config: NemotronHConfig) -> list[ConvOp]:
     return ops
 
 
-__all__ = ["conversion_chain", "is_hf_state_dict", "is_prime_state_dict", "keep_in_fp32"]
-
-
-def keep_in_fp32(key: str) -> bool:
-    return key.endswith(("mamba.A_log", "mamba.D", "mlp.router.selection_bias"))
+__all__ = ["conversion_chain", "is_hf_state_dict", "is_prime_state_dict"]

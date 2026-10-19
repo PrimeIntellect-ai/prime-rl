@@ -5,9 +5,9 @@ import torch
 import torch.distributed.checkpoint as dcp
 from safetensors.torch import load_file
 
-from prime_rl.utils.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
-from prime_rl.utils.weight_conversion import conversion_chain
+from prime_rl.utils.export_conversion import conversion_chain
 
 
 def _tensor(offset=0, shape=(2, 3)):

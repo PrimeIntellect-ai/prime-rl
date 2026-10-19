@@ -358,12 +358,12 @@ Once paused, both keep serving the API until the run is stopped, so its owner ca
 
 Trainer checkpoints are DCP-sharded. Export full fine-tunes to HF-format safetensors with `tools/convert_dcp_to_bf16.py`; LoRA checkpoints are rejected. The script reads `trainer.json` or `sft.json` from the run's resolved configs and the base model's `config.json`. It writes weights, model/generation configs, and tokenizer assets to `<step_dir>/weights` (or a second positional argument).
 
-All bf16 exports use **one CPU process**. No CUDA, distributed setup, training environment, or base-model weight download is needed. Custom PrimeRL layouts use import-safe conversion code. Other HF-compatible checkpoints must match the complete tensor schema of a meta-device HF model; meta construction allocates no model weights. Run the standalone script with its pinned dependencies:
+All bf16 exports use **one CPU process** in the normal prime-rl environment (`uv sync --all-extras`). No GPU hardware, distributed setup, or base-model weight download is needed. Custom PrimeRL layouts use the existing model conversion code. Other HF-compatible checkpoints must match the complete tensor schema of a meta-device HF model; meta construction allocates no model weights:
 
 ```bash
-uv run --script tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 # Optional explicit output directory; the trainer/ subdirectory is also accepted
-uv run --script tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10/trainer exported-model
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10/trainer exported-model
 ```
 
 CPU export reads only model tensors, one decoder layer at a time, and writes sharded safetensors. Floating weights and exported config dtype are bf16, except model-declared fp32 buffers; training dtype settings are not changed. Host memory must fit a full decoder layer (including all routed experts), its conversion buffers, the largest saved DCP tensor chunk read from disk, and an output shard; it need not fit the full model or optimizer. The 5 GB shard target is not a RAM limit, and a single larger tensor is written in an oversized shard. The output directory must not exist and must not have concurrent writers. Assets and weights are staged in a unique sibling directory and renamed only after success. Failures remove only that staging directory; source checkpoints are never changed.

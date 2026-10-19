@@ -29,9 +29,9 @@ from prime_rl.trainer.models.layers.rotary_emb import (
     apply_rotary_pos_emb,
 )
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
-from prime_rl.utils.weight_conversion.afmoe import conversion_chain
 
 from .configuration_afmoe import AfmoeConfig
+from .converting_afmoe import conversion_chain
 
 
 @dataclass

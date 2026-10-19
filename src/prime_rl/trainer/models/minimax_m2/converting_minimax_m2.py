@@ -8,7 +8,7 @@ buffer ``mlp.tokens_per_expert`` is dropped on the way to HF.
 
 from __future__ import annotations
 
-from prime_rl.utils.conversion_ops import ConvOp, Drop, Rename, routed_experts_op
+from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, routed_experts_op
 
 # HF stores per-expert projections under the literal names w1/w2/w3 (nn.Linear,
 # so each carries a `.weight` suffix); PrimeRL uses canonical projection names.
@@ -31,7 +31,3 @@ def conversion_chain(config) -> list[ConvOp]:
         )
         ops.append(Drop(f"{p}.mlp.tokens_per_expert"))
     return ops
-
-
-def keep_in_fp32(key: str) -> bool:
-    return False

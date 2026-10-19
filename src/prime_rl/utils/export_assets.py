@@ -9,7 +9,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 from transformers import AutoProcessor, AutoTokenizer, GenerationConfig, PretrainedConfig
 
-from prime_rl.utils.weight_conversion import resolve_config
+from prime_rl.utils.export_conversion import resolve_config
 
 logger = logging.getLogger(__name__)
 

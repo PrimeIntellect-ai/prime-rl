@@ -1,29 +1,11 @@
-# /// script
-# requires-python = ">=3.12,<3.15"
-# dependencies = [
-#     "torch==2.13.0",
-#     "torchvision==0.28.0",
-#     "pillow",
-#     "transformers==5.19.0",
-#     "safetensors",
-#     "huggingface-hub",
-# ]
-# [tool.uv.sources]
-# torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
-# torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
-# [[tool.uv.index]]
-# name = "pytorch-cpu"
-# url = "https://download.pytorch.org/whl/cpu"
-# explicit = true
-# ///
 """Convert a DCP trainer checkpoint into bf16 HF-format weights offline.
 
-Export uses a single CPU process without training dependencies or loading
-base-model weights. Custom PrimeRL layouts use their model's conversion chain;
+Export uses a single CPU process in the normal prime-rl environment without
+loading base-model weights. Custom PrimeRL layouts use their model's conversion chain;
 other HF-compatible layouts are validated against a meta-device HF model.
 
 Usage:
-    uv run --script tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
+    uv run python tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
 
 Writes to <step_dir>/weights by default. CPU output must not already exist.
 """
@@ -33,15 +15,12 @@ import json
 import logging
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
-# The script environment intentionally does not install the training project.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_assets import prepare_export_config, read_model_config, save_model_assets
+from prime_rl.utils.pathing import get_config_dir
 
 logger = logging.getLogger(__name__)
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
@@ -57,14 +36,8 @@ def resolve_dcp_dir(ckpt_dir: Path) -> Path:
 
 
 def resolve_run_configs(step_dir: Path) -> tuple[dict, dict]:
-    """Read run configs without importing the training configuration package."""
-    if override := os.environ.get("PRL_ATTEMPT_CONFIG_DIR"):
-        config_dir = Path(override)
-    else:
-        configs_dir = step_dir.parent.parent / "configs"
-        latest = configs_dir / "latest" / "resolved"
-        legacy = configs_dir / "resolved"
-        config_dir = legacy if legacy.is_dir() and not latest.exists() else latest
+    """Read the model and tokenizer config for this run."""
+    config_dir = get_config_dir(step_dir.parent.parent)
     for name in RUN_CONFIG_NAMES:
         path = config_dir / name
         if path.exists():

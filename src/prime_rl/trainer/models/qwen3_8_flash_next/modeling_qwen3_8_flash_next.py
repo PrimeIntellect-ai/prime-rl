@@ -12,17 +12,17 @@ from prime_rl.trainer.models.qwen3_8_flash_next.configuration_qwen3_8_flash_next
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextTextConfig,
 )
+from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import (
+    conversion_chain,
+    is_hf_state_dict,
+    is_prime_state_dict,
+)
 from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm, HyperConnection
 from prime_rl.trainer.models.qwen3_8_flash_next.moe import SigmoidOutputGatedMoE
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
-from prime_rl.utils.weight_conversion.qwen3_8_flash_next import (
-    conversion_chain,
-    is_hf_state_dict,
-    is_prime_state_dict,
-)
 
 
 class Qwen3_8FlashNextDecoderLayer(nn.Module):

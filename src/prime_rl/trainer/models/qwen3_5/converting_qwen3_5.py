@@ -1,6 +1,7 @@
 from torch import Tensor
 
-from prime_rl.utils.conversion_ops import ConvOp, Drop, Rename, SplitConcat
+from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitConcat
+from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5MoeTextConfig
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
@@ -18,7 +19,7 @@ def is_prime_state_dict(state_dict: dict[str, Tensor]) -> bool:
 def conversion_chain(config) -> list[ConvOp]:
     operations: list[ConvOp] = [Drop("mtp.", is_prefix=True)]
     text_config = getattr(config, "text_config", config)
-    if getattr(text_config, "model_type", None) != "qwen3_5_moe_text":
+    if not isinstance(text_config, Qwen3_5MoeTextConfig):
         return operations
 
     model_prefix = "model.language_model" if hasattr(config, "vision_config") else "model"
@@ -44,8 +45,4 @@ def conversion_chain(config) -> list[ConvOp]:
     return operations
 
 
-__all__ = ["conversion_chain", "is_hf_state_dict", "is_prime_state_dict", "keep_in_fp32"]
-
-
-def keep_in_fp32(key: str) -> bool:
-    return key.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+__all__ = ["conversion_chain", "is_hf_state_dict", "is_prime_state_dict"]

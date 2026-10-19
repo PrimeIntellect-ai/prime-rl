@@ -12,7 +12,7 @@ GLM-4 MoE specifics:
 * Shared experts: HF ``mlp.shared_experts.{gate,down,up}_proj.weight`` map to
   prime ``mlp.shared_expert.{gate,down,up}_proj.weight``. On the way back to HF,
   GLM strips a leading singleton dim from each shared-expert tensor when present
-  (:class:`~prime_rl.utils.conversion_ops.SqueezeLeading`,
+  (:class:`~prime_rl.trainer.models.conversion_ops.SqueezeLeading`,
   backward-only).
 * Prime-only runtime buffer ``mlp.tokens_per_expert`` is dropped on the way
   back to HF.
@@ -23,7 +23,7 @@ with GLM-MoE-DSA, whose attention/MLA weights pass through untouched.
 
 from __future__ import annotations
 
-from prime_rl.utils.conversion_ops import (
+from prime_rl.trainer.models.conversion_ops import (
     GATE_DOWN_UP,
     ConvOp,
     Drop,
@@ -64,8 +64,3 @@ def conversion_chain(config) -> list[ConvOp]:
     for i in range(config.num_hidden_layers):
         ops.extend(glm_moe_layer_ops(i))
     return ops
-
-
-def keep_in_fp32(key: str) -> bool:
-    """Keep GLM router selection biases in FP32 during weight transfer."""
-    return key.endswith("mlp.router.selection_bias")

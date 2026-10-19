@@ -5,15 +5,15 @@ from transformers.modeling_outputs import BaseModelOutput
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.gpt_oss.attention import GptOssAttention
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
-from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
-from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
-from prime_rl.utils.weight_conversion.gpt_oss import (
+from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     conversion_chain,
     is_hf_state_dict,
     is_prime_state_dict,
 )
+from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 class GptOssRMSNorm(nn.Module):

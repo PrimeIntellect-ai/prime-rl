@@ -26,13 +26,13 @@ from transformers.utils import TransformersKwargs, auto_docstring
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
+from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.glm_weight_conversion import conversion_chain, keep_in_fp32
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -133,7 +133,7 @@ class Glm4MoePreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return keep_in_fp32(name)
+        return name.endswith("mlp.router.selection_bias")
 
     def _init_weights(self, module):
         super()._init_weights(module)

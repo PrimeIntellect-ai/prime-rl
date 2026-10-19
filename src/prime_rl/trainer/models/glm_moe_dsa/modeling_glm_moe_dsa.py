@@ -13,13 +13,13 @@ from transformers.utils import TransformersKwargs, auto_docstring
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
+from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
-from prime_rl.utils.glm_weight_conversion import conversion_chain, keep_in_fp32
 
 
 def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> SparseMlaAttentionArgs:
@@ -140,7 +140,7 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return keep_in_fp32(name)
+        return name.endswith("mlp.router.selection_bias")
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

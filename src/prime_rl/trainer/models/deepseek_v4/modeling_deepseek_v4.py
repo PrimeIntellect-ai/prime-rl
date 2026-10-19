@@ -18,6 +18,7 @@ from transformers.modeling_outputs import MoeModelOutputWithPast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
     DeepseekV4HyperConnection,
@@ -28,7 +29,6 @@ from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
-from prime_rl.utils.weight_conversion.deepseek_v4 import conversion_chain, keep_in_fp32
 
 
 class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
@@ -76,6 +76,21 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
 # Mirrors HF's `_keep_in_fp32_modules_strict`, with `e_score_correction_bias` renamed to
 # the `selection_bias` prime-rl's router keeps it under. The bare `norm` entry subsumes the
 # named norms; both are kept so the list stays a one-to-one image of HF's.
+KEEP_IN_FP32_MODULES = (
+    "attn_hc",
+    "ffn_hc",
+    "hc_head",
+    "sinks",
+    "position_bias",
+    "selection_bias",
+    "q_a_norm",
+    "kv_norm",
+    "input_layernorm",
+    "post_attention_layernorm",
+    "norm",
+)
+
+
 class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     config: DeepseekV4Config
     config_class = DeepseekV4Config
@@ -109,7 +124,7 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return keep_in_fp32(name)
+        return any(module_name in name for module_name in KEEP_IN_FP32_MODULES)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

@@ -8,7 +8,7 @@ DCP loading path can consume either format directly, so this module turns both b
 plain `bfloat16` tensors before the checkpoint's state dict reaches the model.
 
 This is intentionally a one-way, plain preprocessing pass, not a `ConvOp`
-(`prime_rl.utils.conversion_ops`): that framework is for two-way *structural*
+(`prime_rl.trainer.models.conversion_ops`): that framework is for two-way *structural*
 conversions between per-key HF and PrimeRL names, whereas dequantization merges two source
 keys (`*.weight`, `*.scale`) into one output key and is never reversed.
 """
@@ -18,7 +18,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from prime_rl.utils.conversion_ops import StateDict
+from prime_rl.trainer.models.conversion_ops import StateDict
 
 FP4_E2M1_LUT = torch.tensor(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],

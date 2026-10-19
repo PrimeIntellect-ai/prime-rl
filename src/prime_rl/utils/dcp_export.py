@@ -14,9 +14,9 @@ from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
 from torch.distributed.checkpoint.metadata import TensorStorageMetadata
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
-from prime_rl.utils.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
+from prime_rl.utils.export_conversion import CUSTOM_MODEL_TYPES, conversion_chain, keep_in_fp32, resolve_config
 from prime_rl.utils.hf_export_schema import ModelSchemaUnavailable, hf_schema_details, matches_hf_schema
-from prime_rl.utils.weight_conversion import CUSTOM_MODEL_TYPES, conversion_chain, keep_in_fp32, resolve_config
 
 _LAYER = re.compile(r"^(.*?\b(?:layers|h|blocks|block)\.\d+)\.")
 _PREFIX = "app.model."
