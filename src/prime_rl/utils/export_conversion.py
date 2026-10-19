@@ -2,12 +2,15 @@
 
 from types import SimpleNamespace
 
+import torch
 from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
-from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE
+from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE, get_custom_causal_lm_cls
 
 CUSTOM_MODEL_TYPES = frozenset(_CUSTOM_CAUSAL_LM_BY_MODEL_TYPE)
+
+Shape = tuple[int, ...]
 
 
 def _namespace(value):
@@ -32,6 +35,37 @@ def resolve_config(config):
     return _namespace(config)
 
 
+def prime_schema_details(config) -> tuple[dict[str, Shape], dict[str, str], dict[str, torch.dtype]]:
+    """Canonical PrimeRL state names, tied aliases and dtypes from a meta-model build."""
+    resolved = resolve_config(config)
+    model_cls = get_custom_causal_lm_cls(resolved)
+    with torch.device("meta"):
+        model = model_cls._from_config(resolved)
+    try:
+        state = model.state_dict()
+        nonmeta = [name for name, tensor in state.items() if tensor.device.type != "meta"]
+        if nonmeta:
+            raise ValueError(
+                f"Custom model_type={resolved.model_type!r} allocates non-meta state "
+                f"during schema construction: {nonmeta[:5]}"
+            )
+        schema = {name: tuple(tensor.shape) for name, tensor in state.items()}
+        dtypes = {name: tensor.dtype for name, tensor in state.items()}
+        aliases: dict[str, str] = {}
+        canonical: dict[int, str] = {}
+        for name, parameter in model.named_parameters(remove_duplicate=False):
+            if name not in schema:
+                continue
+            identity = id(parameter)
+            if identity in canonical:
+                aliases[name] = canonical[identity]
+            else:
+                canonical[identity] = name
+        return schema, aliases, dtypes
+    finally:
+        del model
+
+
 def conversion_chain(config) -> list:
     """The trainer's HF <-> PrimeRL conversion ops for this config."""
     config = resolve_config(config)
@@ -45,4 +79,4 @@ def keep_in_fp32(model_type: str, key: str) -> bool:
     return bool(model_cls and model_cls.keep_in_fp32_for_weight_transfer(key))
 
 
-__all__ = ["CUSTOM_MODEL_TYPES", "conversion_chain", "keep_in_fp32", "resolve_config"]
+__all__ = ["CUSTOM_MODEL_TYPES", "conversion_chain", "keep_in_fp32", "prime_schema_details", "resolve_config"]

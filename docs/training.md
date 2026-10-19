@@ -356,25 +356,22 @@ Once paused, both keep serving the API until the run is stopped, so its owner ca
 
 ### Exporting Checkpoints
 
-Trainer checkpoints are DCP-sharded. Export full fine-tunes to HF-format safetensors with `tools/convert_dcp_to_bf16.py`; LoRA checkpoints are rejected. The script reads `trainer.json` or `sft.json` from the run's resolved configs and the base model's `config.json`. It writes weights, model/generation configs, and tokenizer assets to `<step_dir>/weights` (or a second positional argument).
-
-All bf16 exports use **one CPU process** in the normal prime-rl environment (`uv sync --all-extras`). No GPU hardware, distributed setup, or base-model weight download is needed. Custom PrimeRL layouts use the existing model conversion code. Other HF-compatible checkpoints must match the complete tensor schema of a meta-device HF model; meta construction allocates no model weights:
+Export full trainer DCP checkpoints to HF-format safetensors with one CPU process in the normal environment (`uv sync --all-extras`):
 
 ```bash
 uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
-# Optional explicit output directory; the trainer/ subdirectory is also accepted
-uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10/trainer exported-model
+uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10
+# Both accept the nested trainer/ directory and an optional output directory.
+uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10/trainer exported-model --block-size 128
 ```
 
-CPU export reads only model tensors, one decoder layer at a time, and writes sharded safetensors. Floating weights and exported config dtype are bf16, except model-declared fp32 buffers; training dtype settings are not changed. Host memory must fit a full decoder layer (including all routed experts), its conversion buffers, the largest saved DCP tensor chunk read from disk, and an output shard; it need not fit the full model or optimizer. The 5 GB shard target is not a RAM limit, and a single larger tensor is written in an oversized shard. The output directory must not exist and must not have concurrent writers. Assets and weights are staged in a unique sibling directory and renamed only after success. Failures remove only that staging directory; source checkpoints are never changed.
+BF16 writes `<step_dir>/weights`; FP8 writes `<step_dir>/weights-FP8` without an intermediate BF16 export. FP8 uses the same blockwise e4m3 quantization, FP32 scales and skip-module rules as `tools/convert_bf16_to_fp8.py`. Both save model/generation configs, tokenizer assets and explicitly trusted custom code. The output directory must not exist. Failed exports remove only their staging directory; source checkpoints are never changed.
 
-Custom conversion covers Llama, Qwen3, Qwen3-MoE, GLM-4 MoE, GLM-MoE-DSA, AFMoE, DeepSeek V4, GPT-OSS, Laguna, MiniMax M2, Nemotron-H, Qwen3.5 dense/MoE (text and VLM), and Qwen4 experimental text/VLM. Other model types are not excluded by name: HF-native identity layouts are accepted only after exact key and shape validation against a meta-device model, with supported checkpoint dtype validation. A missing conversion or an incompatible schema produces an explicit error, not a CUDA fallback.
+No GPU hardware, distributed setup or base-model weight download is needed. The exporter reads model tensors one decoder layer at a time, not optimizer state. Host memory must fit a layer (including its experts), conversion/quantization buffers, the largest DCP storage chunk and an output shard. The 5 GB shard target is not a RAM limit; one larger tensor may exceed it.
 
-Model and tokenizer config attributes, VLM subconfigs, recorded DSA settings, `model.debug.num_layers`, configured chat templates, and pad-token-to-EOS behavior are preserved. Export config dtype is normalized to bf16. Stale `quantization_config` metadata is removed from the model and its subconfigs with a log message because output weights are not quantized. Actual quantized checkpoint tensors are rejected; this is not an FP8 dequantizer. Custom config, model, tokenizer, and processor code is trusted only when explicitly enabled in the resolved run config. The generic model-schema check uses native HF implementations by default; explicitly trusted custom implementations are constructed only on the meta device. Unavailable or incompatible model code raises an explicit error. Explicitly trusted `auto_map` Python modules and their relative imports are copied into the export, and repository-qualified references are localized so the export can load offline. Config/tokenizer/processor/code files may be fetched from the Hub, but model weights are not.
+The checkpoint must match its resolved run config and a supported model schema. LoRA and already-quantized checkpoint tensors are rejected. Run without multi-rank `torchrun`; `WORLD_SIZE > 1` is rejected. BF16 export removes stale base quantization metadata; FP8 writes metadata for the new quantized weights. Normal FP32 model buffers retain the model's policy and stored selection-buffer dtype; training dtype settings are not changed.
 
-LoRA checkpoints and direct FP8 export are not supported by this CPU bf16 exporter. CPU export rejects `WORLD_SIZE > 1`; run without multi-rank `torchrun`.
-
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any compatible HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (CUDA; each rank quantizes its gathered slice and writes only `<ckpt_dir>/weights-FP8`, without an intermediate bf16 export). Dequantize an fp8-only release for training with `tools/convert_fp8_to_bf16.py <dir>`.
+The output loads into a compatible HF consumer or `uv run inference --vllm.model <dir>`. To quantize an existing HF directory, use `tools/convert_bf16_to_fp8.py <dir>`. To dequantize an FP8-only release for training, use `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 

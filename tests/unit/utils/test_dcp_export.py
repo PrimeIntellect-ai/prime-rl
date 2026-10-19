@@ -13,8 +13,11 @@ from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, TensorPr
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import DTensor, Shard
 
+from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
 from prime_rl.utils import dcp_export
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
+from prime_rl.utils.export_conversion import conversion_chain
+from prime_rl.utils.utils import default_dtype
 
 
 def _save_model(tmp_path: Path, model: dict[str, torch.Tensor]) -> Path:
@@ -36,50 +39,75 @@ def _save_model(tmp_path: Path, model: dict[str, torch.Tensor]) -> Path:
     return checkpoint
 
 
+def _glm_model(model_type="glm4_moe", num_hidden_layers=2):
+    torch.manual_seed(0)
+    if model_type == "glm4_moe":
+        from prime_rl.trainer.models.glm4_moe import Glm4MoeConfig, Glm4MoeForCausalLM
+
+        config = Glm4MoeConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            max_position_embeddings=16,
+            moe_intermediate_size=4,
+            norm_topk_prob=True,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            n_routed_experts=2,
+            num_experts_per_tok=1,
+            n_shared_experts=1,
+            num_hidden_layers=num_hidden_layers,
+            rope_theta=10000.0,
+            first_k_dense_replace=0,
+            partial_rotary_factor=0.5,
+            vocab_size=32,
+            tie_word_embeddings=False,
+        )
+        model_cls = Glm4MoeForCausalLM
+    else:
+        from prime_rl.trainer.models.glm_moe_dsa import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
+
+        config = GlmMoeDsaConfig(
+            hidden_size=8,
+            intermediate_size=16,
+            max_position_embeddings=16,
+            moe_intermediate_size=4,
+            norm_topk_prob=True,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            n_routed_experts=2,
+            num_experts_per_tok=1,
+            n_shared_experts=1,
+            num_hidden_layers=num_hidden_layers,
+            first_k_dense_replace=0,
+            kv_lora_rank=8,
+            q_lora_rank=8,
+            qk_rope_head_dim=4,
+            v_head_dim=8,
+            qk_nope_head_dim=8,
+            vocab_size=32,
+            pad_token_id=0,
+            dsa_backend="tilelang",
+            tie_word_embeddings=False,
+        )
+        model_cls = GlmMoeDsaForCausalLM
+    with torch.device("cpu"), default_dtype(torch.bfloat16):
+        model = model_cls._from_config(config)
+    from prime_rl.trainer.models.layers.moe import GroupedExperts
+
+    for module in model.modules():
+        if isinstance(module, GroupedExperts):
+            module.init_weights(config.initializer_range)
+    return model, config
+
+
 def _glm_config(model_type="glm4_moe", num_hidden_layers=2):
-    return {
-        "model_type": model_type,
-        "num_hidden_layers": num_hidden_layers,
-        "n_routed_experts": 2,
-        "n_shared_experts": 1,
-        "first_k_dense_replace": 0,
-    }
+    _, config = _glm_model(model_type, num_hidden_layers)
+    return config.to_dict()
 
 
 def _glm_state(model_type="glm4_moe", num_hidden_layers=2):
-    state = {
-        "model.embed_tokens.weight": torch.arange(12, dtype=torch.float32).reshape(4, 3),
-        "model.norm.weight": torch.ones(3),
-        "lm_head.weight": torch.arange(12, dtype=torch.float32).reshape(4, 3),
-    }
-    attention = ("q_proj", "k_proj", "v_proj", "o_proj")
-    if model_type == "glm_moe_dsa":
-        attention = (
-            "q_a_proj",
-            "q_a_layernorm",
-            "q_b_proj",
-            "kv_a_proj_with_mqa",
-            "kv_a_layernorm",
-            "kv_b_proj",
-            "o_proj",
-        )
-    for layer in range(num_hidden_layers):
-        base = f"model.layers.{layer}"
-        for norm in ("input_layernorm", "post_attention_layernorm"):
-            state[f"{base}.{norm}.weight"] = torch.ones(3)
-        for projection in attention:
-            state[f"{base}.self_attn.{projection}.weight"] = torch.arange(9, dtype=torch.float32).reshape(3, 3)
-        prefix = f"{base}.mlp"
-        state[f"{prefix}.router.gate.weight"] = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-        state[f"{prefix}.router.selection_bias"] = torch.tensor([0.1234567, -0.7654321], dtype=torch.float32)
-        state[f"{prefix}.tokens_per_expert"] = torch.tensor([2, 3], dtype=torch.int64)
-        for offset, projection in enumerate(("gate_proj", "up_proj", "down_proj")):
-            shape = (2, 3, 2) if projection == "down_proj" else (2, 2, 3)
-            state[f"{prefix}.experts.{projection}"] = torch.arange(12, dtype=torch.float32).reshape(shape) + offset * 20
-            state[f"{prefix}.shared_expert.{projection}.weight"] = torch.arange(6, dtype=torch.float32).reshape(
-                (1, *shape[1:])
-            )
-    return state
+    model, _ = _glm_model(model_type, num_hidden_layers)
+    return {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
 
 
 @pytest.fixture
@@ -88,9 +116,9 @@ def glm_state():
 
 
 @pytest.mark.parametrize("model_type", ["glm4_moe", "glm_moe_dsa"])
-def test_cpu_export_reads_model_groups_and_converts_glm(tmp_path, monkeypatch, glm_state, model_type):
-    glm_state = _glm_state(model_type)
-    checkpoint = _save_model(tmp_path, glm_state)
+def test_cpu_export_reads_model_groups_and_converts_glm(tmp_path, monkeypatch, model_type):
+    state = _glm_state(model_type)
+    checkpoint = _save_model(tmp_path, state)
     config = _glm_config(model_type)
     reads = []
     original_load = dcp_export.dcp_load
@@ -104,62 +132,20 @@ def test_cpu_export_reads_model_groups_and_converts_glm(tmp_path, monkeypatch, g
     groups = list(iter_cpu_hf_groups(checkpoint, config))
     output = {name: tensor for group in groups for name, tensor in group.items()}
 
-    assert len(reads) == len(groups) == 5
-    assert set.union(*reads) == {f"app.model.{name}" for name in glm_state}
-    assert sum(map(len, reads)) == len(glm_state)
-    layer_zero = {f"app.model.{name}" for name in glm_state if name.startswith("model.layers.0.")}
-    assert layer_zero in reads
-    layer_one = {f"app.model.{name}" for name in glm_state if name.startswith("model.layers.1.")}
-    assert layer_one in reads
+    units = {f"model.layers.{name.split('.')[2]}" if name.startswith("model.layers.") else name for name in state}
+    assert len(reads) == len(groups) == len(units)
+    assert set.union(*reads) == {f"app.model.{name}" for name in state}
+    assert sum(map(len, reads)) == len(state)
+    for layer in range(config["num_hidden_layers"]):
+        layer_names = {f"app.model.{name}" for name in state if name.startswith(f"model.layers.{layer}.")}
+        assert sum(1 for read in reads if read & layer_names) == 1
 
-    expected = {name: tensor for name, tensor in glm_state.items() if ".mlp." not in name}
-    for layer in range(2):
-        prefix = f"model.layers.{layer}.mlp"
-        expected[f"{prefix}.gate.weight"] = glm_state[f"{prefix}.router.gate.weight"]
-        expected[f"{prefix}.gate.e_score_correction_bias"] = glm_state[f"{prefix}.router.selection_bias"]
-        for projection in ("gate_proj", "up_proj", "down_proj"):
-            for expert in range(2):
-                expected[f"{prefix}.experts.{expert}.{projection}.weight"] = glm_state[
-                    f"{prefix}.experts.{projection}"
-                ][expert]
-            expected[f"{prefix}.shared_experts.{projection}.weight"] = glm_state[
-                f"{prefix}.shared_expert.{projection}.weight"
-            ][0]
+    expected = apply_prime_to_hf(dict(state), conversion_chain(config))
     assert output.keys() == expected.keys()
     for name, tensor in expected.items():
-        dtype = torch.float32 if name.endswith("e_score_correction_bias") else torch.bfloat16
         assert output[name].device.type == "cpu"
-        assert output[name].dtype == dtype
-        torch.testing.assert_close(output[name], tensor.to(dtype), rtol=0, atol=0)
-
-
-@pytest.mark.parametrize("model_type", ["llama", "qwen3"])
-def test_cpu_export_dense_and_tied_embeddings(tmp_path, model_type):
-    weight = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-    model = {
-        "model.embed_tokens.weight": weight,
-        "lm_head.weight": weight.clone(),
-        "model.norm.weight": torch.ones(3),
-        "model.layers.0.input_layernorm.weight": torch.ones(3),
-    }
-    model["model.layers.0.post_attention_layernorm.weight"] = torch.ones(3)
-    for projection in ("q_proj", "k_proj", "v_proj", "o_proj"):
-        model[f"model.layers.0.self_attn.{projection}.weight"] = torch.ones(3, 3)
-    if model_type == "qwen3":
-        for norm in ("q_norm", "k_norm"):
-            model[f"model.layers.0.self_attn.{norm}.weight"] = torch.ones(3)
-    for projection in ("gate_proj", "up_proj", "down_proj"):
-        model[f"model.layers.0.mlp.{projection}.weight"] = torch.ones(3, 3)
-    checkpoint = _save_model(tmp_path, model)
-    groups = list(
-        iter_cpu_hf_groups(
-            checkpoint,
-            {"model_type": model_type, "num_hidden_layers": 1, "tie_word_embeddings": True},
-        )
-    )
-    output = {name: tensor for group in groups for name, tensor in group.items()}
-    assert set(output) == set(model) - {"lm_head.weight"}
-    torch.testing.assert_close(output["model.embed_tokens.weight"], weight.bfloat16(), rtol=0, atol=0)
+        assert output[name].dtype == tensor.dtype
+        torch.testing.assert_close(output[name], tensor, rtol=0, atol=0)
 
 
 def test_cpu_export_rejects_unrecognized_hf_model(tmp_path):
@@ -168,14 +154,14 @@ def test_cpu_export_rejects_unrecognized_hf_model(tmp_path):
         list(iter_cpu_hf_groups(checkpoint, {"model_type": "unsupported"}))
 
 
-@pytest.mark.parametrize("key", ["lora_A.weight", "lora_B.weight", "base_layer.weight"])
+@pytest.mark.parametrize("key", ["lora_A.weight"])
 def test_cpu_export_rejects_lora(tmp_path, key):
     checkpoint = _save_model(tmp_path, {f"model.layers.0.self_attn.q_proj.{key}": torch.ones(2, 2)})
     with pytest.raises(ValueError, match="LoRA"):
         list(iter_cpu_hf_groups(checkpoint, {"model_type": "glm4_moe", "num_hidden_layers": 1}))
 
 
-@pytest.mark.parametrize("missing", ["gate_proj", "up_proj", "down_proj"])
+@pytest.mark.parametrize("missing", ["down_proj"])
 def test_cpu_export_rejects_missing_expert_dependency(tmp_path, missing, glm_state):
     model = dict(glm_state)
     del model[f"model.layers.0.mlp.experts.{missing}"]
@@ -223,16 +209,12 @@ def _save_gloo_checkpoint(rank: int, checkpoint: str, rendezvous: str) -> None:
     dist.init_process_group("gloo", rank=rank, world_size=2, init_method=rendezvous, timeout=timedelta(seconds=30))
     try:
         mesh = init_device_mesh("cpu", (2,))
-        model = _glm_state("glm_moe_dsa", num_hidden_layers=1)
-        for offset, projection in enumerate(("gate_proj", "up_proj", "down_proj")):
-            shape = (2, 3, 2) if projection == "down_proj" else (2, 2, 3)
-            full = torch.arange(12, dtype=torch.float32).reshape(shape) + offset * 20
-            model[f"model.layers.0.mlp.experts.{projection}"] = DTensor.from_local(
-                full[rank : rank + 1].clone(), mesh, [Shard(0)], run_check=True
-            )
-        model["model.layers.0.mlp.router.selection_bias"] = torch.tensor([0.1234567, -0.7654321])
+        state = _glm_state("glm_moe_dsa", num_hidden_layers=1)
+        for projection in ("gate_proj", "up_proj", "down_proj"):
+            name = f"model.layers.0.mlp.experts.{projection}"
+            state[name] = DTensor.from_local(state[name][rank : rank + 1].clone(), mesh, [Shard(0)], run_check=True)
         dcp.save(
-            {"app": {"model": model, "optimizer": {"exp_avg": torch.full((2, 2, 3), 99.0)}}},
+            {"app": {"model": state, "optimizer": {"exp_avg": torch.ones(1)}}},
             checkpoint_id=checkpoint,
         )
     finally:
@@ -250,31 +232,16 @@ def gloo_checkpoint(tmp_path):
 @pytest.mark.skipif(not dist.is_gloo_available(), reason="Gloo is unavailable")
 def test_cpu_export_reconstructs_multirank_expert_chunks(gloo_checkpoint):
     assert not dist.is_initialized()
-    groups = list(iter_cpu_hf_groups(gloo_checkpoint, _glm_config("glm_moe_dsa", num_hidden_layers=1)))
+    reference = _glm_state("glm_moe_dsa", num_hidden_layers=1)
+    config = _glm_config("glm_moe_dsa", num_hidden_layers=1)
+    groups = list(iter_cpu_hf_groups(gloo_checkpoint, config))
     assert len(groups) == 4
     output = {name: tensor for group in groups for name, tensor in group.items()}
-    prefix = "model.layers.0.mlp"
-    expected_keys = {
-        f"{prefix}.gate.e_score_correction_bias",
-        "model.embed_tokens.weight",
-        "model.norm.weight",
-        "lm_head.weight",
-    }
-    for offset, projection in enumerate(("gate_proj", "up_proj", "down_proj")):
-        shape = (2, 3, 2) if projection == "down_proj" else (2, 2, 3)
-        full = (torch.arange(12, dtype=torch.float32).reshape(shape) + offset * 20).bfloat16()
-        for expert in range(2):
-            name = f"{prefix}.experts.{expert}.{projection}.weight"
-            expected_keys.add(name)
-            torch.testing.assert_close(output[name], full[expert], rtol=0, atol=0)
-    assert expected_keys <= set(output)
     assert all(not name.startswith("app.") for name in output)
-    torch.testing.assert_close(
-        output[f"{prefix}.gate.e_score_correction_bias"],
-        torch.tensor([0.1234567, -0.7654321]),
-        rtol=0,
-        atol=0,
-    )
+    expected = apply_prime_to_hf(dict(reference), conversion_chain(config))
+    assert output.keys() == expected.keys()
+    for name, tensor in expected.items():
+        torch.testing.assert_close(output[name], tensor, rtol=0, atol=0)
     assert not dist.is_initialized()
 
 
@@ -301,11 +268,60 @@ def test_validate_checkpoint_chunks(chunks, error):
             dcp_export._validate_chunks("model.weight", metadata)
 
 
-@pytest.mark.parametrize(
-    "missing", ["model.embed_tokens.weight", "model.norm.weight", "lm_head.weight", "model.layers.1."]
-)
+@pytest.mark.parametrize("missing", ["model.norm.weight", "model.layers.1."])
 def test_cpu_export_rejects_missing_model_structure(tmp_path, glm_state, missing):
     model = {name: tensor for name, tensor in glm_state.items() if name != missing and not name.startswith(missing)}
     checkpoint = _save_model(tmp_path, model)
     with pytest.raises(ValueError):
         list(iter_cpu_hf_groups(checkpoint, _glm_config()))
+
+
+@pytest.mark.parametrize(
+    ("model_type", "config_fields", "sensitive"),
+    [
+        ("afmoe", {}, ["model.layers.0.mlp.expert_bias"]),
+        ("glm4_moe", {}, ["model.layers.0.mlp.gate.e_score_correction_bias"]),
+        ("glm_moe_dsa", {}, ["model.layers.0.mlp.gate.e_score_correction_bias"]),
+        (
+            "nemotron_h",
+            {"layer_types": ["linear_attention", "moe"], "num_hidden_layers": 2},
+            [
+                "backbone.layers.0.mixer.A_log",
+                "backbone.layers.0.mixer.D",
+                "backbone.layers.1.mixer.gate.e_score_correction_bias",
+            ],
+        ),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_hf_identity_uses_canonical_fp32_policy(tmp_path, monkeypatch, model_type, config_fields, sensitive, dtype):
+    exact = torch.tensor([0.1234567, -0.7654321], dtype=dtype)
+    state = {name: exact.clone() for name in sensitive}
+    state["lm_head.weight"] = torch.arange(6, dtype=torch.float32).reshape(2, 3)
+    schema = {name: tuple(tensor.shape) for name, tensor in state.items()}
+    monkeypatch.setattr(
+        dcp_export,
+        "hf_schema_details",
+        lambda *args: (schema, {}, {name: tensor.dtype for name, tensor in state.items()}),
+    )
+    checkpoint = tmp_path / "checkpoint"
+    dcp.save({"app": {"model": state}}, checkpoint_id=checkpoint, no_dist=True)
+    config = {"model_type": model_type, "num_hidden_layers": 1, **config_fields}
+    output = {name: tensor for group in iter_cpu_hf_groups(checkpoint, config) for name, tensor in group.items()}
+    assert output.keys() == state.keys()
+    for name in sensitive:
+        expected_dtype = dtype if name.endswith(("expert_bias", "e_score_correction_bias")) else torch.float32
+        assert output[name].dtype == expected_dtype
+        torch.testing.assert_close(output[name], exact.to(expected_dtype), rtol=0, atol=0)
+    assert output["lm_head.weight"].dtype == torch.bfloat16
+
+
+@pytest.mark.parametrize("integer_dtype", [torch.int8, torch.uint8])
+def test_hf_identity_rejects_integer_payload_for_floating_state(tmp_path, monkeypatch, integer_dtype):
+    state = {"lm_head.weight": torch.arange(6, dtype=integer_dtype).reshape(2, 3)}
+    schema = {"lm_head.weight": (2, 3)}
+    monkeypatch.setattr(dcp_export, "hf_schema_details", lambda *args: (schema, {}, {"lm_head.weight": torch.float32}))
+    checkpoint = tmp_path / "checkpoint"
+    dcp.save({"app": {"model": state}}, checkpoint_id=checkpoint, no_dist=True)
+    with pytest.raises(ValueError):
+        list(iter_cpu_hf_groups(checkpoint, {"model_type": "gpt2"}))

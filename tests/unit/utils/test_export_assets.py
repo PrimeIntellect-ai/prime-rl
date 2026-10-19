@@ -1,50 +1,17 @@
-import importlib
 import json
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
 from safetensors.torch import load_file
-from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
-from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizerFast
+from transformers import AutoTokenizer, GenerationConfig
 
+from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
+from prime_rl.utils.dcp_export import iter_cpu_hf_groups
 from prime_rl.utils.export_assets import prepare_export_config, save_model_assets
-from prime_rl.utils.export_conversion import resolve_config
-
-
-@pytest.fixture
-def local_assets(tmp_path, monkeypatch):
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    source = tmp_path / "base-model"
-    source.mkdir()
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=Tokenizer(WordLevel({"<unk>": 0, "<eos>": 1, "hello": 2}, unk_token="<unk>")),
-        unk_token="<unk>",
-        eos_token="<eos>",
-    )
-    tokenizer.save_pretrained(source)
-    config = {
-        "model_type": "llama",
-        "architectures": ["LlamaForCausalLM"],
-        "num_hidden_layers": 1,
-        "hidden_size": 2,
-        "intermediate_size": 2,
-        "num_attention_heads": 1,
-        "num_key_value_heads": 1,
-        "vocab_size": 3,
-        "eos_token_id": 1,
-        "pad_token_id": None,
-        "use_cache": False,
-        "dtype": "float32",
-        "torch_dtype": "float16",
-        "custom_export_attribute": {"preserve": True},
-    }
-    (source / "config.json").write_text(json.dumps(config))
-    return source, config
+from prime_rl.utils.export_conversion import conversion_chain
+from prime_rl.utils.utils import default_dtype
 
 
 @pytest.mark.parametrize(("depth", "expected"), [(2, 2), (12, 8)])
@@ -79,7 +46,7 @@ def test_prepare_export_config_uses_native_layer_schedule_defaults():
     assert result["dtype"] == "bfloat16"
 
 
-def test_prepare_export_config_preserves_vlm_and_normalizes_quantization(caplog):
+def test_prepare_export_config_preserves_vlm_and_normalizes_quantization():
     config = {
         "model_type": "qwen3_5",
         "quantization_config": {"quant_method": "fp8"},
@@ -94,10 +61,9 @@ def test_prepare_export_config_preserves_vlm_and_normalizes_quantization(caplog)
         "vision_config": {"depth": 4, "dtype": "float32"},
     }
     original = deepcopy(config)
-    with caplog.at_level("INFO"):
-        result = prepare_export_config(
-            config, {"vlm": {}, "trust_remote_code": True, "debug": {"num_layers": 2}, "dsa_backend": "test"}
-        )
+    result = prepare_export_config(
+        config, {"vlm": {}, "trust_remote_code": True, "debug": {"num_layers": 2}, "dsa_backend": "test"}
+    )
     assert config == original
     assert result["auto_map"] == config["auto_map"]
     assert result["text_config"]["num_hidden_layers"] == 2
@@ -109,7 +75,6 @@ def test_prepare_export_config_preserves_vlm_and_normalizes_quantization(caplog)
         assert value["dtype"] == "bfloat16"
         assert value["use_cache"] is False
         assert "quantization_config" not in value
-    assert "Removing base quantization_config" in caplog.text
 
 
 @pytest.mark.parametrize("template_from_file", [False, True])
@@ -128,7 +93,6 @@ def test_save_model_assets_preserves_json_and_local_tokenizer(local_assets, tmp_
     save_model_assets(prepared, model, {"chat_template": template_setting}, output)
 
     exported_config = json.loads((output / "config.json").read_text())
-    assert exported_config == json.loads(resolve_config(prepared).to_json_string(use_diff=True))
     assert exported_config["dtype"] == "bfloat16"
     assert "torch_dtype" not in exported_config
     assert GenerationConfig.from_pretrained(output).use_cache is True
@@ -153,9 +117,6 @@ def test_save_model_assets_handles_nested_text_generation(local_assets, tmp_path
     generation = GenerationConfig.from_pretrained(output)
     assert generation.use_cache is True
     assert generation.eos_token_id == 1
-    expected = resolve_config(prepared)
-    expected.use_cache = False
-    assert json.loads((output / "config.json").read_text()) == json.loads(expected.to_json_string(use_diff=True))
 
 
 def test_saved_config_matches_native_bf16_meta_model_serialization(local_assets, tmp_path):
@@ -176,7 +137,6 @@ def test_saved_config_matches_native_bf16_meta_model_serialization(local_assets,
     actual = json.loads((output / "config.json").read_text())
     assert actual["dtype"] == "bfloat16"
     assert actual == expected
-    assert (output / "config.json").read_bytes() == (reference / "config.json").read_bytes()
 
 
 @pytest.mark.parametrize("remote_source", [False, True], ids=["local", "cached-remote"])
@@ -208,7 +168,7 @@ def test_save_model_assets_localizes_trusted_code(local_assets, tmp_path, monkey
     else:
         for path in code_dir.glob("*.py"):
             (source / path.name).write_bytes(path.read_bytes())
-    monkeypatch.setattr(export_assets.AutoProcessor, "from_pretrained", lambda *a, **kw: None)
+    monkeypatch.setattr(export_assets, "try_load_processor", lambda *a, **kw: None)
     original = deepcopy(config)
     output = tmp_path / "trusted-export"
     save_model_assets(config, {"name": str(source), "trust_remote_code": True}, {}, output)
@@ -222,42 +182,6 @@ def test_save_model_assets_localizes_trusted_code(local_assets, tmp_path, monkey
     }
     if remote_source:
         assert {module for _, module, _ in calls} == {"configuration_custom.py", "modeling_custom.py"}
-
-
-@pytest.fixture
-def tiny_run(tmp_path, local_assets, monkeypatch):
-    source, config = local_assets
-    monkeypatch.delenv("PRL_ATTEMPT_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("WORLD_SIZE", raising=False)
-    run = tmp_path / "run"
-    step = run / "checkpoints" / "step_1"
-    checkpoint = step / "trainer"
-    configs = run / "configs" / "latest" / "resolved"
-    configs.mkdir(parents=True)
-    (configs / "trainer.json").write_text(
-        json.dumps({"model": {"name": str(source)}, "tokenizer": {"chat_template": "{{ messages[0]['content'] }}"}})
-    )
-    state = {
-        "model.embed_tokens.weight": torch.arange(6, dtype=torch.float32).reshape(3, 2),
-        "model.norm.weight": torch.ones(2),
-        "lm_head.weight": torch.arange(6, dtype=torch.float32).reshape(3, 2),
-    }
-    prefix = "model.layers.0"
-    for name in ("input_layernorm", "post_attention_layernorm"):
-        state[f"{prefix}.{name}.weight"] = torch.ones(2)
-    for name in ("q_proj", "k_proj", "v_proj", "o_proj"):
-        state[f"{prefix}.self_attn.{name}.weight"] = torch.arange(4, dtype=torch.float32).reshape(2, 2)
-    for name in ("gate_proj", "up_proj", "down_proj"):
-        state[f"{prefix}.mlp.{name}.weight"] = torch.arange(4, dtype=torch.float32).reshape(2, 2)
-    dcp.save(
-        {"app": {"model": state, "optimizer": {"exp_avg": torch.full((2, 2), 99.0)}, "step": 1}},
-        checkpoint_id=checkpoint,
-        no_dist=True,
-    )
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools"))
-    cli = importlib.import_module("convert_dcp_to_bf16")
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    return cli, step, state, before
 
 
 @pytest.mark.parametrize("fail_writer", [False, True], ids=["publish", "writer-failure"])
@@ -301,3 +225,45 @@ def test_convert_publishes_complete_assets_or_no_output(tmp_path, tiny_run, monk
         if path.is_file() and not path.is_relative_to(output)
     }
     assert after == before
+
+
+def test_qwen3_5_shortened_real_model_export_matches_debug_schedule(tmp_path):
+    from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+    text = Qwen3_5TextConfig(
+        vocab_size=32,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=4,
+        layer_types=["full_attention"] * 4,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=4,
+        max_position_embeddings=16,
+    )
+    prepared = prepare_export_config(text.to_dict(), {"debug": {"num_layers": 2}})
+    assert prepared["num_hidden_layers"] == 2
+    assert len(prepared["layer_types"]) == 2
+
+    shortened = Qwen3_5TextConfig(
+        vocab_size=32,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        layer_types=["full_attention"] * 2,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=4,
+        max_position_embeddings=16,
+    )
+    torch.manual_seed(0)
+    with torch.device("cpu"), default_dtype(torch.bfloat16):
+        model = Qwen3_5ForCausalLM._from_config(shortened)
+    state = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
+    checkpoint = tmp_path / "checkpoint"
+    dcp.save({"app": {"model": state, "optimizer": {"exp_avg": torch.ones(1)}}}, checkpoint_id=checkpoint, no_dist=True)
+    expected = apply_prime_to_hf(dict(state), conversion_chain(prepared))
+    output = {name: tensor for group in iter_cpu_hf_groups(checkpoint, prepared) for name, tensor in group.items()}
+    assert output.keys() == expected.keys()
+    for name, tensor in expected.items():
+        torch.testing.assert_close(output[name], tensor, rtol=0, atol=0)

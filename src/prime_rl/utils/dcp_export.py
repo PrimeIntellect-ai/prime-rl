@@ -15,7 +15,13 @@ from torch.distributed.checkpoint.metadata import TensorStorageMetadata
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
-from prime_rl.utils.export_conversion import CUSTOM_MODEL_TYPES, conversion_chain, keep_in_fp32, resolve_config
+from prime_rl.utils.export_conversion import (
+    CUSTOM_MODEL_TYPES,
+    conversion_chain,
+    keep_in_fp32,
+    prime_schema_details,
+    resolve_config,
+)
 from prime_rl.utils.hf_export_schema import ModelSchemaUnavailable, hf_schema_details, matches_hf_schema
 
 _LAYER = re.compile(r"^(.*?\b(?:layers|h|blocks|block)\.\d+)\.")
@@ -76,91 +82,30 @@ def _model_entries(reader: FileSystemReader) -> dict[str, TensorStorageMetadata]
     return entries
 
 
-def _validate_baseline_layout(entries: dict[str, TensorStorageMetadata], config: dict) -> None:
-    """Require the canonical core weights of dense/GLM PrimeRL layouts."""
-    model_type = config["model_type"]
-    is_glm = model_type in {"glm4_moe", "glm_moe_dsa"}
-    names = {name.removeprefix(_PREFIX) for name in entries}
-    layer_ids = {int(match.group(1).rsplit(".", 1)[1]) for name in names if (match := _LAYER.match(name))}
-    if layer_ids != set(range(config["num_hidden_layers"])):
-        raise ValueError("Checkpoint decoder layers do not match configured depth")
-    required = {"model.embed_tokens.weight", "model.norm.weight"}
-    if not config.get("tie_word_embeddings", False):
-        required.add("lm_head.weight")
-    for i in range(config["num_hidden_layers"]):
-        prefix = f"model.layers.{i}"
-        required.update(f"{prefix}.{norm}.weight" for norm in ("input_layernorm", "post_attention_layernorm"))
-        attention = ["o_proj"]
-        if model_type == "glm_moe_dsa":
-            attention.extend(
-                ["q_a_proj", "q_a_layernorm", "q_b_proj", "kv_a_proj_with_mqa", "kv_a_layernorm", "kv_b_proj"]
-            )
-        else:
-            attention.extend(["q_proj", "k_proj", "v_proj"])
-            if model_type == "qwen3" or (model_type == "glm4_moe" and config.get("use_qk_norm", False)):
-                attention.extend(["q_norm", "k_norm"])
-        required.update(f"{prefix}.self_attn.{projection}.weight" for projection in attention)
-        if is_glm and i >= config["first_k_dense_replace"]:
-            required.update(
-                f"{prefix}.mlp.experts.{projection}" for projection in ("gate_proj", "up_proj", "down_proj")
-            )
-            required.update([f"{prefix}.mlp.router.gate.weight", f"{prefix}.mlp.router.selection_bias"])
-            if config["n_shared_experts"] > 0:
-                required.update(
-                    f"{prefix}.mlp.shared_expert.{projection}.weight"
-                    for projection in ("gate_proj", "up_proj", "down_proj")
-                )
-        else:
-            required.update(f"{prefix}.mlp.{projection}.weight" for projection in ("gate_proj", "up_proj", "down_proj"))
-    if missing := required - names:
-        raise ValueError(f"Missing model tensors: {sorted(missing)}")
+def _validate_custom_layout(
+    entries: dict[str, TensorStorageMetadata], shapes: dict[str, tuple[int, ...]], config: dict
+) -> set[str]:
+    """Validate checkpoint keys/shapes/dtypes against the custom model's meta state.
 
-
-def _validate_glm_group(group: dict[str, torch.Tensor], config: dict) -> None:
-    for name, tensor in group.items():
-        if name.endswith(".experts.gate_proj"):
-            prefix = name.removesuffix("gate_proj")
-            required = [prefix + projection for projection in ("gate_proj", "up_proj", "down_proj")]
-            if any(key not in group for key in required):
-                raise ValueError(f"Incomplete expert projections at {prefix}")
-            if any(group[key].ndim != 3 for key in required):
-                raise ValueError(f"Expected stacked three-dimensional experts at {prefix}")
-            experts = tensor.shape[0]
-            if any(group[key].shape[0] != experts for key in required):
-                raise ValueError(f"Inconsistent expert count at {prefix}")
-            if experts != config.get("n_routed_experts", experts):
-                raise ValueError(f"Expert count differs from config at {prefix}")
-            gate, up, down = (group[key] for key in required)
-            if gate.shape != up.shape or gate.shape[1:] != down.shape[1:][::-1]:
-                raise ValueError(f"Inconsistent expert projection shapes at {prefix}")
-        elif name.endswith((".experts.up_proj", ".experts.down_proj")):
-            if name.rsplit(".", 1)[0] + ".gate_proj" not in group:
-                raise ValueError(f"Incomplete expert projections at {name}")
-
-
-def validate_model_layout(entries: dict[str, TensorStorageMetadata], config: dict) -> None:
-    """Validate a canonical PrimeRL checkpoint using shared config definitions."""
-    resolved = resolve_config(config)
-    config = resolved.to_dict()
-    if config["model_type"] in {"glm4_moe", "glm_moe_dsa", "llama", "qwen3"}:
-        _validate_baseline_layout(entries, config)
-        return
-    text_config = getattr(resolved, "text_config", resolved)
-    names = {name.removeprefix(_PREFIX) for name in entries}
-    prefix = "model.language_model" if hasattr(resolved, "text_config") else "model"
-    required = {f"{prefix}.embed_tokens.weight"}
-    if config["model_type"] not in {"qwen4_exp", "qwen4_exp_text"}:
-        required.add(f"{prefix}.norm.weight")
-    if not getattr(text_config, "tie_word_embeddings", False):
-        required.add("lm_head.weight")
-    if missing := required - names:
-        raise ValueError(f"Missing model tensors: {sorted(missing)}")
-    layer_prefix = prefix + ".layers."
-    layer_ids = {
-        int(name.removeprefix(layer_prefix).split(".", 1)[0]) for name in names if name.startswith(layer_prefix)
-    }
-    if layer_ids != set(range(text_config.num_hidden_layers)):
-        raise ValueError("Checkpoint decoder layers do not match configured depth")
+    Tied aliases are the only optional names; returns them.
+    """
+    schema, aliases, dtypes = prime_schema_details(config)
+    missing = schema.keys() - shapes.keys() - aliases.keys()
+    unexpected = shapes.keys() - schema.keys()
+    mismatched = {name for name in shapes.keys() & schema.keys() if shapes[name] != schema[name]}
+    if missing or unexpected or mismatched:
+        raise ValueError(
+            "Checkpoint does not match the custom PrimeRL model schema: "
+            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}, shapes={sorted(mismatched)}"
+        )
+    for name in shapes.keys() & schema.keys():
+        actual = entries[_PREFIX + name].properties.dtype
+        if dtypes[name].is_floating_point:
+            if not actual.is_floating_point:
+                raise ValueError(f"Quantized/nonfloating checkpoint payload for floating model tensor: {name}")
+        elif actual != dtypes[name]:
+            raise ValueError(f"Checkpoint dtype {actual} does not match model buffer dtype for {name}")
+    return set(aliases)
 
 
 def _export_layout(
@@ -192,27 +137,8 @@ def _export_layout(
                 "Checkpoint does not match HF model schema: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}, shapes={sorted(mismatched)}"
             )
-    validate_model_layout(entries, config)
-    for name, entry in entries.items():
-        if name.endswith(
-            (
-                ".weight",
-                ".bias",
-                ".gate_proj",
-                ".up_proj",
-                ".down_proj",
-                ".gate_proj_bias",
-                ".up_proj_bias",
-                ".down_proj_bias",
-                ".selection_bias",
-            )
-        ):
-            if not entry.properties.dtype.is_floating_point:
-                raise ValueError(f"Quantized/nonfloating checkpoint model weight: {name}")
-    resolved = resolve_config(config)
-    text_config = getattr(resolved, "text_config", resolved)
-    aliases = {"lm_head.weight"} if getattr(text_config, "tie_word_embeddings", False) else set()
-    return conversion_chain(resolved), aliases
+    aliases = _validate_custom_layout(entries, shapes, config)
+    return conversion_chain(resolve_config(config)), aliases
 
 
 def _identity_canonical_names(entries: dict[str, TensorStorageMetadata], config: dict) -> dict[str, str]:
@@ -257,8 +183,6 @@ def iter_cpu_hf_groups(
         )
         group = {name.removeprefix(_PREFIX): tensor for name, tensor in targets.items()}
         del targets
-        if model_type in {"glm4_moe", "glm_moe_dsa"} and operations:
-            _validate_glm_group(group, resolve_config(config).to_dict())
         for name in group:
             if group[name].is_floating_point():
                 canonical_name = identity_names.get(name, name)

@@ -1,17 +1,23 @@
 """Configuration and tokenizer assets for model-free HF checkpoint export."""
 
 import json
-import logging
 import shutil
 from copy import deepcopy
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download
-from transformers import AutoProcessor, AutoTokenizer, GenerationConfig, PretrainedConfig
+from transformers import GenerationConfig, PretrainedConfig
 
 from prime_rl.utils.export_conversion import resolve_config
+from prime_rl.utils.logger import get_logger
+from prime_rl.utils.model_config import (
+    is_multimodal_processor,
+    load_tokenizer,
+    truncate_model_depth,
+    try_load_processor,
+)
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 
 def read_model_config(model_config: dict) -> dict:
@@ -46,11 +52,18 @@ def prepare_export_config(config: dict, model_config: dict) -> dict:
     resolved = resolve_config(result)
     resolved_text = getattr(resolved, "text_config", resolved)
     layers = (model_config.get("debug") or {}).get("num_layers")
-    if layers is not None:
-        resolved_text.num_hidden_layers = min(layers, resolved_text.num_hidden_layers)
+    # The trainer auto-enables IndexShare from the pre-trim indexer schedule.
+    pre_trim_indexer_types = getattr(resolved_text, "indexer_types", None)
+    if layers is not None and hasattr(resolved_text, "num_hidden_layers"):
+        # Trim the per-layer schedules with the depth on the resolved config, before any
+        # strict HF rebuild, so the shortened config keeps the trainer's first-N-layer layout.
+        truncate_model_depth(resolved_text, layers)
     if hasattr(resolved, "to_dict"):
         result = resolved.to_dict()
         normalize(result)
+    elif layers is not None and hasattr(resolved_text, "num_hidden_layers"):
+        # Custom and unknown model types stay opaque: trim their dict schedules too.
+        truncate_model_depth(result.get("text_config", result), layers)
     text_config = result.get("text_config", result)
     if hasattr(resolved_text, "num_hidden_layers"):
         text_config["num_hidden_layers"] = resolved_text.num_hidden_layers
@@ -58,7 +71,7 @@ def prepare_export_config(config: dict, model_config: dict) -> dict:
         result["dsa_backend"] = model_config["dsa_backend"]
     if result.get("model_type") == "deepseek_v4" and "dsv4_kv_precision" in model_config:
         result["kv_precision"] = model_config["dsv4_kv_precision"]
-    indexer_types = text_config.get("indexer_types")
+    indexer_types = pre_trim_indexer_types if layers is not None else text_config.get("indexer_types")
     if indexer_types and "shared" in indexer_types:
         text_config["use_index_cache"] = True
     pad = result.get("pad_token_id")
@@ -128,26 +141,15 @@ def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, 
     name = model_config["name"]
     trust_remote_code = model_config.get("trust_remote_code", False)
     # AutoProcessor is optional for text-only models and may resolve to a tokenizer.
-    try:
-        processor = AutoProcessor.from_pretrained(name, trust_remote_code=trust_remote_code)
-    except (ValueError, OSError, KeyError) as exc:
-        logger.debug("No optional AutoProcessor for %s: %s", name, exc)
-        processor = None
-    if processor is not None and (
-        getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)
-    ):
+    processor = try_load_processor(name, trust_remote_code=trust_remote_code)
+    if is_multimodal_processor(processor):
         processor.save_pretrained(output_dir)
 
-    tokenizer = AutoTokenizer.from_pretrained(
+    load_tokenizer(
         tokenizer_config.get("name") or name,
         trust_remote_code=tokenizer_config.get("trust_remote_code", False),
-    )
-    chat_template = tokenizer_config.get("chat_template")
-    if chat_template is not None:
-        path = Path(chat_template)
-        tokenizer.chat_template = path.read_text() if path.is_file() else chat_template
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    tokenizer.save_pretrained(output_dir)
+        chat_template=tokenizer_config.get("chat_template"),
+    ).save_pretrained(output_dir)
     source_dir = Path(name)
     if source_dir.is_dir():
         for path in source_dir.glob("*.py"):
@@ -157,7 +159,11 @@ def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, 
     if trust_remote_code:
         _save_trusted_code(exported_config, model_config, output_dir)
     native_config = resolve_config(exported_config)
-    if not isinstance(native_config, PretrainedConfig):
-        native_config = PretrainedConfig.from_dict(exported_config)
-    native_config.use_cache = False
-    native_config.to_json_file(output_dir / "config.json", use_diff=True)
+    if isinstance(native_config, PretrainedConfig):
+        native_config.use_cache = False
+        native_config.to_json_file(output_dir / "config.json", use_diff=True)
+    else:
+        # Unknown trusted model types have no config class: generic PretrainedConfig diff
+        # serialization drops their explicit model_type, so write the prepared dict as-is.
+        exported_config["use_cache"] = False
+        (output_dir / "config.json").write_text(json.dumps(exported_config, indent=2, sort_keys=True) + "\n")

@@ -125,3 +125,11 @@ def test_native_schema_ignores_trainer_config_registration():
     schema = expected_hf_schema(config)
     assert schema["model.layers.0.mlp.experts.gate_up_proj"] == (2, 8, 8)
     assert is_hf_identity_layout(schema, config)
+
+
+def test_native_gpt_sw3_alias_schema(gpt2_config):
+    schema = expected_hf_schema({**gpt2_config, "model_type": "gpt-sw3"})
+    assert schema["transformer.wte.weight"] == (32, 8)
+    assert schema["transformer.h.0.attn.c_attn.weight"] == (8, 24)
+    assert schema["lm_head.weight"] == (32, 8)
+    assert is_hf_identity_layout(schema, {**gpt2_config, "model_type": "gpt-sw3"})

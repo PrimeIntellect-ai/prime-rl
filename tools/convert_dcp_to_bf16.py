@@ -12,7 +12,6 @@ Writes to <step_dir>/weights by default. CPU output must not already exist.
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import tempfile
@@ -20,9 +19,10 @@ from pathlib import Path
 
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_assets import prepare_export_config, read_model_config, save_model_assets
+from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
 
 
@@ -41,7 +41,7 @@ def resolve_run_configs(step_dir: Path) -> tuple[dict, dict]:
     for name in RUN_CONFIG_NAMES:
         path = config_dir / name
         if path.exists():
-            logger.info("Reading model config from %s", path)
+            logger.info(f"Reading model config from {path}")
             run_config = json.loads(path.read_text())
             return run_config["model"], run_config["tokenizer"]
     raise FileNotFoundError(
@@ -66,9 +66,9 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-", dir=output_dir.parent))
     try:
-        logger.info("Saving model assets to %s", staging_dir)
+        logger.info(f"Saving model assets to {staging_dir}")
         save_model_assets(config, model_config, tokenizer_config, staging_dir)
-        logger.info("Reading model tensors from %s on CPU", dcp_dir)
+        logger.info(f"Reading model tensors from {dcp_dir} on CPU")
         write_hf_shards(iter_cpu_hf_groups(dcp_dir, config, model_config=model_config), staging_dir)
         if output_dir.exists() or output_dir.is_symlink():
             raise FileExistsError(f"CPU export output already exists: {output_dir}")
@@ -76,7 +76,7 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
     except BaseException:
         shutil.rmtree(staging_dir)
         raise
-    logger.info("Done: %s", output_dir)
+    logger.info(f"Done: {output_dir}")
     return output_dir
 
 
@@ -87,7 +87,7 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    setup_logger("info")
     convert(args.ckpt_dir, args.output_dir)
 
 
