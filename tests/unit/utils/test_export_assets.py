@@ -12,6 +12,7 @@ from tokenizers.models import WordLevel
 from transformers import AutoTokenizer, GenerationConfig, PreTrainedTokenizerFast
 
 from prime_rl.utils.export_assets import prepare_export_config, save_model_assets
+from prime_rl.utils.weight_conversion import resolve_config
 
 
 @pytest.fixture
@@ -119,7 +120,7 @@ def test_save_model_assets_preserves_json_and_local_tokenizer(local_assets, tmp_
     save_model_assets(prepared, model, {"chat_template": template_setting}, output)
 
     exported_config = json.loads((output / "config.json").read_text())
-    assert exported_config == json.loads(json.dumps(prepared))
+    assert exported_config == json.loads(resolve_config(prepared).to_json_string(use_diff=True))
     assert exported_config["dtype"] == "bfloat16"
     assert "torch_dtype" not in exported_config
     assert GenerationConfig.from_pretrained(output).use_cache is True
@@ -144,7 +145,30 @@ def test_save_model_assets_handles_nested_text_generation(local_assets, tmp_path
     generation = GenerationConfig.from_pretrained(output)
     assert generation.use_cache is True
     assert generation.eos_token_id == 1
-    assert json.loads((output / "config.json").read_text()) == json.loads(json.dumps(prepared))
+    assert json.loads((output / "config.json").read_text()) == json.loads(
+        resolve_config(prepared).to_json_string(use_diff=True)
+    )
+
+
+def test_saved_config_matches_native_bf16_meta_model_serialization(local_assets, tmp_path):
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    source, config = local_assets
+    native = AutoConfig.for_model("llama", **{key: value for key, value in config.items() if key != "model_type"})
+    native.use_cache = False
+    native.pad_token_id = 1
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(native, dtype=torch.bfloat16, attn_implementation="eager")
+    reference = tmp_path / "reference"
+    model.config.save_pretrained(reference)
+    output = tmp_path / "serialized"
+    prepared = prepare_export_config(config, {"optimization_dtype": "float32"})
+    save_model_assets(prepared, {"name": str(source)}, {}, output)
+    expected = json.loads((reference / "config.json").read_text())
+    actual = json.loads((output / "config.json").read_text())
+    assert actual["dtype"] == "bfloat16"
+    assert actual == expected
+    assert (output / "config.json").read_bytes() == (reference / "config.json").read_bytes()
 
 
 @pytest.mark.parametrize("remote_source", [False, True], ids=["local", "cached-remote"])

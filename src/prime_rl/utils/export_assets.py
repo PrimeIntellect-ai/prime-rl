@@ -155,4 +155,7 @@ def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, 
     exported_config = deepcopy(config)
     if trust_remote_code:
         _save_trusted_code(exported_config, model_config, output_dir)
-    (output_dir / "config.json").write_text(json.dumps(exported_config, indent=2) + "\n")
+    native_config = resolve_config(exported_config)
+    if not isinstance(native_config, PretrainedConfig):
+        native_config = PretrainedConfig.from_dict(exported_config)
+    native_config.to_json_file(output_dir / "config.json", use_diff=True)
