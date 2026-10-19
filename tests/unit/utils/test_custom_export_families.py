@@ -387,7 +387,7 @@ def test_custom_family_streaming_cpu_dcp_export(tmp_path, family):
     for name, tensor in hf.items():
         fp32 = (
             (family == "afmoe" and name.endswith("expert_bias"))
-            or (family in {"glm4_moe", "glm_moe_dsa"} and name.endswith("e_score_correction_bias"))
+            or name.endswith("e_score_correction_bias")
             or (family == "nemotron_h" and name.endswith("A_log"))
             or (family == "deepseek_v4" and name in {"norm.weight", "layers.0.ffn.gate.bias"})
             or (family == "qwen3_5" and name.endswith(("linear_attn.A_log", "linear_attn.norm.weight")))
@@ -398,9 +398,17 @@ def test_custom_family_streaming_cpu_dcp_export(tmp_path, family):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-def test_afmoe_selection_buffer_preserves_checkpoint_dtype(tmp_path, dtype):
-    config, hf = _streaming_case("afmoe")
-    name = "model.layers.0.mlp.expert_bias"
+@pytest.mark.parametrize(
+    ("family", "bias"),
+    [
+        ("afmoe", "mlp.expert_bias"),
+        ("minimax_m2", "block_sparse_moe.e_score_correction_bias"),
+        ("laguna", "mlp.experts.e_score_correction_bias"),
+    ],
+)
+def test_selection_buffer_preserves_checkpoint_dtype(tmp_path, dtype, family, bias):
+    config, hf = _streaming_case(family)
+    name = f"model.layers.0.{bias}"
     hf[name] = hf[name].to(dtype)
     prime = apply_hf_to_prime(dict(hf), conversion_chain(config))
     checkpoint = tmp_path / "checkpoint"

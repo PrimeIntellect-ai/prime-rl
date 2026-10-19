@@ -215,19 +215,15 @@ def _export_layout(
     return conversion_chain(resolved), aliases
 
 
-def _identity_fp32_names(entries: dict[str, TensorStorageMetadata], config: dict) -> set[str]:
-    """Apply the shared forward names on meta tensors to resolve transfer dtype policy."""
+def _identity_canonical_names(entries: dict[str, TensorStorageMetadata], config: dict) -> dict[str, str]:
+    """Resolve HF buffer and parameter names through the shared forward conversion."""
     model_type = config.get("model_type", "")
     if model_type not in CUSTOM_MODEL_TYPES:
-        return set()
+        return {}
     state = {name.removeprefix(_PREFIX): torch.empty(entry.size, device="meta") for name, entry in entries.items()}
     original_names = {id(tensor): name for name, tensor in state.items()}
     canonical = apply_hf_to_prime(state, conversion_chain(resolve_config(config)))
-    return {
-        original_names[id(tensor)]
-        for name, tensor in canonical.items()
-        if id(tensor) in original_names and keep_in_fp32(model_type, name)
-    }
+    return {original_names[id(tensor)]: name for name, tensor in canonical.items() if id(tensor) in original_names}
 
 
 def iter_cpu_hf_groups(
@@ -237,7 +233,7 @@ def iter_cpu_hf_groups(
     reader = FileSystemReader(dcp_dir)
     entries = _model_entries(reader)
     operations, tied_aliases = _export_layout(entries, config, model_config)
-    identity_fp32 = _identity_fp32_names(entries, config) if not operations else set()
+    identity_names = _identity_canonical_names(entries, config) if not operations else {}
     grouped: dict[str, list[str]] = {}
     for name in sorted(entries):
         logical = name.removeprefix(_PREFIX)
@@ -265,9 +261,10 @@ def iter_cpu_hf_groups(
             _validate_glm_group(group, resolve_config(config).to_dict())
         for name in group:
             if group[name].is_floating_point():
-                preserve = name in identity_fp32 or keep_in_fp32(model_type, name)
+                canonical_name = identity_names.get(name, name)
+                preserve = keep_in_fp32(model_type, canonical_name)
                 dtype = torch.float32 if preserve else torch.bfloat16
-                if model_type == "afmoe" and preserve:
+                if canonical_name.endswith(".router.selection_bias"):
                     dtype = group[name].dtype
                 group[name] = group[name].to(dtype)
         yield apply_prime_to_hf(group, operations)

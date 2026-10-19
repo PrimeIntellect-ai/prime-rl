@@ -33,4 +33,4 @@ def conversion_chain(config) -> list[ConvOp]:
 
 
 def keep_in_fp32(key: str) -> bool:
-    return key.endswith(".router.selection_bias")
+    return False

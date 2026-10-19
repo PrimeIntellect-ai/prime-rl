@@ -23,8 +23,9 @@ from prime_rl.utils.dcp_export import iter_cpu_hf_groups
         ),
     ],
 )
-def test_hf_identity_uses_canonical_fp32_policy(tmp_path, monkeypatch, model_type, config_fields, sensitive):
-    exact = torch.tensor([0.1234567, -0.7654321], dtype=torch.float32)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_hf_identity_uses_canonical_fp32_policy(tmp_path, monkeypatch, model_type, config_fields, sensitive, dtype):
+    exact = torch.tensor([0.1234567, -0.7654321], dtype=dtype)
     state = {name: exact.clone() for name in sensitive}
     state["lm_head.weight"] = torch.arange(6, dtype=torch.float32).reshape(2, 3)
     schema = {name: tuple(tensor.shape) for name, tensor in state.items()}
@@ -39,8 +40,9 @@ def test_hf_identity_uses_canonical_fp32_policy(tmp_path, monkeypatch, model_typ
     output = {name: tensor for group in iter_cpu_hf_groups(checkpoint, config) for name, tensor in group.items()}
     assert output.keys() == state.keys()
     for name in sensitive:
-        assert output[name].dtype == torch.float32
-        torch.testing.assert_close(output[name], exact, rtol=0, atol=0)
+        expected_dtype = dtype if name.endswith(("expert_bias", "e_score_correction_bias")) else torch.float32
+        assert output[name].dtype == expected_dtype
+        torch.testing.assert_close(output[name], exact.to(expected_dtype), rtol=0, atol=0)
     assert output["lm_head.weight"].dtype == torch.bfloat16
 
 
