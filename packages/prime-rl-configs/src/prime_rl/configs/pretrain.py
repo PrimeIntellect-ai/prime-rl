@@ -171,6 +171,10 @@ class EvalsConfig(BaseConfig):
     ``ctxcont`` sets. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g. ``bpb@4k``). Requests that are the
     same at several lengths are scored once."""
 
+    micro_batch_tokens: int | None = Field(None, ge=1)
+    """Tokens per packed eval row (one forward pass on one GPU). Defaults to ``data.micro_batch_tokens`` or the
+    longest of ``seq_lens``, whichever is larger; must be at least the longest of ``seq_lens``."""
+
     save_arrays: bool = False
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
 
@@ -247,6 +251,16 @@ class PretrainConfig(TrainerLaunchConfig):
                 raise ValueError("data.micro_batch_tokens must equal data.seq_len with context parallelism")
             if self.evals is not None:
                 raise ValueError("[evals] does not support context parallelism yet")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_eval_micro_batch_tokens(self):
+        if self.evals is not None:
+            longest = max(self.evals.seq_lens)
+            if self.evals.micro_batch_tokens is None:
+                self.evals.micro_batch_tokens = max(self.data.micro_batch_tokens, longest)
+            elif self.evals.micro_batch_tokens < longest:
+                raise ValueError(f"evals.micro_batch_tokens must be at least the longest of evals.seq_lens ({longest})")
         return self
 
     @model_validator(mode="after")
