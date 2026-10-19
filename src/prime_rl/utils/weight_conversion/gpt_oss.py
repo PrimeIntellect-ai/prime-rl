@@ -62,3 +62,7 @@ def conversion_chain(config) -> list[ConvOp]:
             ]
         )
     return operations
+
+
+def keep_in_fp32(key: str) -> bool:
+    return False

@@ -30,3 +30,7 @@ def conversion_chain(config) -> list[ConvOp]:
         ops.append(Drop(f"{p}.tokens_per_expert"))
         ops.append(Drop(f"{p}.reorderer", is_prefix=True))
     return ops
+
+
+def keep_in_fp32(key: str) -> bool:
+    return False

@@ -12,3 +12,7 @@ def conversion_chain(config) -> list[ConvOp]:
         ops.append(Rename(f"{prefix}.mlp.gate.weight", f"{prefix}.mlp.router.gate.weight"))
         ops.append(routed_experts_op(prefix, hf_experts="mlp.experts", prime_experts="mlp.experts", fused=True))
     return ops
+
+
+def keep_in_fp32(key: str) -> bool:
+    return False

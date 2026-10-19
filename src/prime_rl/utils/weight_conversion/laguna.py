@@ -75,3 +75,7 @@ def conversion_chain(config) -> list[ConvOp]:
         # Prime-only runtime buffer.
         ops.append(Drop(f"{p}.mlp.tokens_per_expert"))
     return ops
+
+
+def keep_in_fp32(key: str) -> bool:
+    return False

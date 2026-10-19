@@ -15,9 +15,9 @@
 # ///
 """Convert a DCP trainer checkpoint into bf16 HF-format weights offline.
 
-Llama, Qwen3, GLM-4 MoE and GLM-MoE-DSA use a single CPU process, without
-training dependencies or loading base-model weights. Other model families use
-the CUDA exporter and require the training environment.
+Export uses a single CPU process without training dependencies or loading
+base-model weights. Custom PrimeRL layouts use their model's conversion chain;
+other HF-compatible layouts are validated against a meta-device HF model.
 
 Usage:
     uv run --script tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
@@ -37,7 +37,7 @@ from pathlib import Path
 # The script environment intentionally does not install the training project.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prime_rl.utils.dcp_export import CPU_MODEL_TYPES, iter_cpu_hf_groups, write_hf_shards
+from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_assets import prepare_export_config, read_model_config, save_model_assets
 
 logger = logging.getLogger(__name__)
@@ -75,21 +75,12 @@ def resolve_run_configs(step_dir: Path) -> tuple[dict, dict]:
 
 
 def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
-    """Export supported families on CPU, otherwise delegate to the CUDA exporter."""
+    """Export a full trainer checkpoint on CPU without loading base-model weights."""
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
     model_config, tokenizer_config = resolve_run_configs(step_dir)
     config = read_model_config(model_config)
-    if config.get("model_type") not in CPU_MODEL_TYPES:
-        logger.warning(
-            "model_type=%r has no CPU exporter; using CUDA with the training environment dependencies",
-            config.get("model_type"),
-        )
-        # Keep CUDA kernels, model construction and distributed setup off the CPU path.
-        import convert_dcp_to_bf16_gpu
-
-        return convert_dcp_to_bf16_gpu.convert(ckpt_dir, output_dir)
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         raise ValueError("CPU export requires one process; run without torchrun (WORLD_SIZE must be 1)")
     config = prepare_export_config(config, model_config)
@@ -102,7 +93,7 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
         logger.info("Saving model assets to %s", staging_dir)
         save_model_assets(config, model_config, tokenizer_config, staging_dir)
         logger.info("Reading model tensors from %s on CPU", dcp_dir)
-        write_hf_shards(iter_cpu_hf_groups(dcp_dir, config), staging_dir)
+        write_hf_shards(iter_cpu_hf_groups(dcp_dir, config, model_config=model_config), staging_dir)
         if output_dir.exists() or output_dir.is_symlink():
             raise FileExistsError(f"CPU export output already exists: {output_dir}")
         staging_dir.rename(output_dir)
@@ -122,11 +113,6 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     convert(args.ckpt_dir, args.output_dir)
-    if "convert_dcp_to_bf16_gpu" in sys.modules:
-        import torch.distributed as dist
-
-        if dist.is_initialized():
-            dist.destroy_process_group()
 
 
 if __name__ == "__main__":

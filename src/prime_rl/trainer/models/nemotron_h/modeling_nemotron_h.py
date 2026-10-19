@@ -9,13 +9,14 @@ from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
-from prime_rl.trainer.models.nemotron_h.converting_nemotron_h import (
+from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
+from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.weight_conversion.nemotron_h import (
     conversion_chain,
     is_hf_state_dict,
     is_prime_state_dict,
+    keep_in_fp32,
 )
-from prime_rl.trainer.models.nemotron_h.mamba import NemotronHMamba2
-from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
 class NemotronHMoE(MoE):
@@ -133,7 +134,7 @@ class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("mamba.A_log", "mamba.D", "mlp.router.selection_bias"))
+        return keep_in_fp32(name)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

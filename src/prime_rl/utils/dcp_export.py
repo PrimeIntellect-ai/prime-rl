@@ -6,7 +6,6 @@ import math
 import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from types import SimpleNamespace
 
 import torch
 from safetensors.torch import save_file
@@ -16,10 +15,10 @@ from torch.distributed.checkpoint.metadata import TensorStorageMetadata
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
 from prime_rl.utils.conversion_ops import apply_prime_to_hf
-from prime_rl.utils.glm_weight_conversion import conversion_chain, keep_in_fp32
+from prime_rl.utils.hf_export_schema import ModelSchemaUnavailable, hf_schema_metadata, matches_hf_schema
+from prime_rl.utils.weight_conversion import CUSTOM_MODEL_TYPES, conversion_chain, keep_in_fp32, resolve_config
 
-CPU_MODEL_TYPES = {"glm4_moe", "glm_moe_dsa", "llama", "qwen3"}
-_LAYER = re.compile(r"^(.*?\blayers\.\d+)\.")
+_LAYER = re.compile(r"^(.*?\b(?:layers|h|blocks|block)\.\d+)\.")
 _PREFIX = "app.model."
 
 
@@ -58,16 +57,18 @@ def _model_entries(reader: FileSystemReader) -> dict[str, TensorStorageMetadata]
         if entry.properties.layout != torch.strided:
             raise ValueError(f"Unsupported checkpoint tensor layout: {name}")
         if entry.properties.dtype not in (
+            torch.float64,
             torch.float32,
             torch.bfloat16,
             torch.float16,
             torch.int64,
             torch.int32,
+            torch.int16,
+            torch.int8,
+            torch.uint8,
             torch.bool,
         ):
             raise ValueError(f"Unsupported checkpoint tensor dtype: {name}: {entry.properties.dtype}")
-        if ".qkv_proj." in logical or logical.endswith(".experts.gate_up_proj"):
-            raise ValueError(f"Expected canonical unfused checkpoint keys, found {logical}")
         _validate_chunks(name, entry)
         entries[name] = entry
     if not entries:
@@ -75,17 +76,10 @@ def _model_entries(reader: FileSystemReader) -> dict[str, TensorStorageMetadata]
     return entries
 
 
-def validate_model_layout(entries: dict[str, TensorStorageMetadata], config: dict) -> None:
-    """Require canonical core weights without constructing a training model."""
+def _validate_baseline_layout(entries: dict[str, TensorStorageMetadata], config: dict) -> None:
+    """Require the canonical core weights of dense/GLM PrimeRL layouts."""
     model_type = config["model_type"]
     is_glm = model_type in {"glm4_moe", "glm_moe_dsa"}
-    if is_glm:
-        missing_config = {"first_k_dense_replace", "n_shared_experts", "n_routed_experts"} - config.keys()
-        if missing_config:
-            raise ValueError(
-                f"Missing GLM layout config fields: {sorted(missing_config)}; "
-                "provide an unquantized base config.json with explicit GLM layout fields"
-            )
     names = {name.removeprefix(_PREFIX) for name in entries}
     layer_ids = {int(match.group(1).rsplit(".", 1)[1]) for name in names if (match := _LAYER.match(name))}
     if layer_ids != set(range(config["num_hidden_layers"])):
@@ -144,25 +138,77 @@ def _validate_glm_group(group: dict[str, torch.Tensor], config: dict) -> None:
                 raise ValueError(f"Incomplete expert projections at {name}")
 
 
-def iter_cpu_hf_groups(dcp_dir: Path, config: dict) -> Iterator[dict[str, torch.Tensor]]:
-    """Read full decoder layers individually, never optimizer state or a full model."""
+def validate_model_layout(entries: dict[str, TensorStorageMetadata], config: dict) -> None:
+    """Validate a canonical PrimeRL checkpoint using shared config definitions."""
+    resolved = resolve_config(config)
+    config = resolved.to_dict()
+    if config["model_type"] in {"glm4_moe", "glm_moe_dsa", "llama", "qwen3"}:
+        _validate_baseline_layout(entries, config)
+        return
+    text_config = getattr(resolved, "text_config", resolved)
+    names = {name.removeprefix(_PREFIX) for name in entries}
+    prefix = "model.language_model" if hasattr(resolved, "text_config") else "model"
+    required = {f"{prefix}.embed_tokens.weight", f"{prefix}.norm.weight"}
+    if not getattr(text_config, "tie_word_embeddings", False):
+        required.add("lm_head.weight")
+    if missing := required - names:
+        raise ValueError(f"Missing model tensors: {sorted(missing)}")
+    layer_prefix = prefix + ".layers."
+    layer_ids = {
+        int(name.removeprefix(layer_prefix).split(".", 1)[0]) for name in names if name.startswith(layer_prefix)
+    }
+    if layer_ids != set(range(text_config.num_hidden_layers)):
+        raise ValueError("Checkpoint decoder layers do not match configured depth")
+
+
+def _export_layout(
+    entries: dict[str, TensorStorageMetadata], config: dict, model_config: dict | None
+) -> tuple[list, set[str]]:
+    shapes = {name.removeprefix(_PREFIX): tuple(entry.size) for name, entry in entries.items()}
     model_type = config.get("model_type")
-    if model_type not in CPU_MODEL_TYPES:
-        raise ValueError(f"CPU export does not support model_type={model_type!r}")
-    if "vision_config" in config or "text_config" in config:
-        raise ValueError("CPU export currently supports text-only models")
+    # A meta model validates HF-native keys/shapes without allocating weight storage.
+    try:
+        schema, aliases = hf_schema_metadata(config, model_config)
+    except ModelSchemaUnavailable:
+        if model_type not in CUSTOM_MODEL_TYPES:
+            raise
+    except ImportError:
+        if model_type not in CUSTOM_MODEL_TYPES or (model_config or {}).get("trust_remote_code", False):
+            raise
+    else:
+        if matches_hf_schema(shapes, schema, aliases):
+            return [], set(aliases) & shapes.keys()
+        if model_type not in CUSTOM_MODEL_TYPES:
+            missing = schema.keys() - shapes.keys() - aliases.keys()
+            unexpected = shapes.keys() - schema.keys()
+            mismatched = {name for name in shapes.keys() & schema.keys() if shapes[name] != schema[name]}
+            raise ValueError(
+                "Checkpoint does not match HF model schema: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}, shapes={sorted(mismatched)}"
+            )
+    validate_model_layout(entries, config)
+    resolved = resolve_config(config)
+    text_config = getattr(resolved, "text_config", resolved)
+    aliases = {"lm_head.weight"} if getattr(text_config, "tie_word_embeddings", False) else set()
+    return conversion_chain(resolved), aliases
+
+
+def iter_cpu_hf_groups(
+    dcp_dir: Path, config: dict, *, model_config: dict | None = None
+) -> Iterator[dict[str, torch.Tensor]]:
+    """Read one structural block at a time, never optimizer state or model weights."""
     reader = FileSystemReader(dcp_dir)
     entries = _model_entries(reader)
-    validate_model_layout(entries, config)
+    operations, tied_aliases = _export_layout(entries, config, model_config)
     grouped: dict[str, list[str]] = {}
     for name in sorted(entries):
         logical = name.removeprefix(_PREFIX)
+        if logical in tied_aliases:
+            continue
         match = _LAYER.match(logical)
         unit = match.group(1) if match else logical
-        if match and int(unit.rsplit(".", 1)[1]) >= config["num_hidden_layers"]:
-            raise ValueError(f"Checkpoint layer exceeds configured depth: {logical}")
         grouped.setdefault(unit, []).append(name)
-    operations = conversion_chain(SimpleNamespace(**config)) if model_type.startswith("glm") else []
+    model_type = config.get("model_type", "")
     for names in grouped.values():
         targets = {
             name: torch.empty(entries[name].size, dtype=entries[name].properties.dtype, device="cpu") for name in names
@@ -177,13 +223,11 @@ def iter_cpu_hf_groups(dcp_dir: Path, config: dict) -> Iterator[dict[str, torch.
         )
         group = {name.removeprefix(_PREFIX): tensor for name, tensor in targets.items()}
         del targets
-        if model_type.startswith("glm"):
-            _validate_glm_group(group, config)
-        for name in list(group):
-            if config.get("tie_word_embeddings", False) and name == "lm_head.weight":
-                del group[name]
-            elif group[name].is_floating_point():
-                dtype = torch.float32 if model_type.startswith("glm") and keep_in_fp32(name) else torch.bfloat16
+        if model_type in {"glm4_moe", "glm_moe_dsa"} and operations:
+            _validate_glm_group(group, resolve_config(config).to_dict())
+        for name in group:
+            if group[name].is_floating_point():
+                dtype = torch.float32 if keep_in_fp32(model_type, name) else torch.bfloat16
                 group[name] = group[name].to(dtype)
         yield apply_prime_to_hf(group, operations)
         del group

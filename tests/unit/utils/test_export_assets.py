@@ -58,20 +58,49 @@ def test_prepare_export_config_applies_debug_depth_and_pad_without_mutating(dept
     assert prepare_export_config({**config, "pad_token_id": 9}, {})["pad_token_id"] == 9
 
 
-@pytest.mark.parametrize(
-    ("config_override", "model_override", "error"),
-    [
-        ({}, {"lora": {"rank": 4}}, "LoRA"),
-        ({}, {"vlm": {}}, "text-only"),
-        ({"vision_config": {}}, {}, "text-only"),
-        ({"text_config": {}}, {}, "text-only"),
-        ({"quantization_config": {"quant_method": "fp8"}}, {}, "quantization_config"),
-    ],
-)
-def test_prepare_export_config_rejects_unsupported_checkpoints(config_override, model_override, error):
-    config = {"num_hidden_layers": 1, "eos_token_id": 1, **config_override}
-    with pytest.raises(ValueError, match=error):
-        prepare_export_config(config, model_override)
+def test_prepare_export_config_rejects_lora():
+    with pytest.raises(ValueError, match="LoRA"):
+        prepare_export_config({"num_hidden_layers": 1}, {"lora": {"rank": 4}})
+
+
+def test_prepare_export_config_uses_native_layer_schedule_defaults():
+    config = {"model_type": "nemotron_h", "hybrid_override_pattern": "M*E*", "hidden_size": 8}
+    result = prepare_export_config(config, {"debug": {"num_layers": 2}})
+    assert result["num_hidden_layers"] == 2
+    assert len(result["layers_block_type"]) == 2
+    assert result["dtype"] == "bfloat16"
+
+
+def test_prepare_export_config_preserves_vlm_and_normalizes_quantization(caplog):
+    config = {
+        "model_type": "qwen3_5",
+        "quantization_config": {"quant_method": "fp8"},
+        "auto_map": {"AutoConfig": "configuration_custom.CustomConfig"},
+        "text_config": {
+            "num_hidden_layers": 8,
+            "dtype": "float32",
+            "quantization_config": {"quant_method": "fp8"},
+            "indexer_types": ["full", "shared"],
+            "eos_token_id": 1,
+        },
+        "vision_config": {"depth": 4, "dtype": "float32"},
+    }
+    original = deepcopy(config)
+    with caplog.at_level("INFO"):
+        result = prepare_export_config(
+            config, {"vlm": {}, "trust_remote_code": True, "debug": {"num_layers": 2}, "dsa_backend": "test"}
+        )
+    assert config == original
+    assert result["auto_map"] == config["auto_map"]
+    assert result["text_config"]["num_hidden_layers"] == 2
+    assert result["text_config"]["use_index_cache"] is True
+    assert result["text_config"]["dsa_backend"] == "test"
+    assert result["vision_config"]["depth"] == 4
+    for value in (result, result["text_config"], result["vision_config"]):
+        assert value["dtype"] == "bfloat16"
+        assert value["use_cache"] is False
+        assert "quantization_config" not in value
+    assert "Removing base quantization_config" in caplog.text
 
 
 @pytest.mark.parametrize("template_from_file", [False, True])
@@ -90,7 +119,7 @@ def test_save_model_assets_preserves_json_and_local_tokenizer(local_assets, tmp_
     save_model_assets(prepared, model, {"chat_template": template_setting}, output)
 
     exported_config = json.loads((output / "config.json").read_text())
-    assert exported_config == prepared
+    assert exported_config == json.loads(json.dumps(prepared))
     assert exported_config["dtype"] == "bfloat16"
     assert "torch_dtype" not in exported_config
     assert GenerationConfig.from_pretrained(output).use_cache is True
@@ -100,6 +129,67 @@ def test_save_model_assets_preserves_json_and_local_tokenizer(local_assets, tmp_
     assert tokenizer.apply_chat_template([{"role": "user", "content": "hello"}], tokenize=False) == "hello<eos>"
     assert {path.name: path.read_bytes() for path in source.iterdir()} == before
     assert not list(output.glob("*.safetensors"))
+
+
+def test_save_model_assets_handles_nested_text_generation(local_assets, tmp_path):
+    source, text = local_assets
+    config = {
+        "model_type": "qwen3_5",
+        "text_config": text,
+        "vision_config": {"depth": 2},
+    }
+    prepared = prepare_export_config(config, {"vlm": {}})
+    output = tmp_path / "nested-assets"
+    save_model_assets(prepared, {"name": str(source)}, {}, output)
+    generation = GenerationConfig.from_pretrained(output)
+    assert generation.use_cache is True
+    assert generation.eos_token_id == 1
+    assert json.loads((output / "config.json").read_text()) == json.loads(json.dumps(prepared))
+
+
+@pytest.mark.parametrize("remote_source", [False, True], ids=["local", "cached-remote"])
+def test_save_model_assets_localizes_trusted_code(local_assets, tmp_path, monkeypatch, remote_source):
+    from transformers import dynamic_module_utils
+
+    from prime_rl.utils import export_assets
+
+    source, config = local_assets
+    code_dir = tmp_path / "custom-code"
+    code_dir.mkdir()
+    (code_dir / "helper.py").write_text("ANSWER = 42\n")
+    (code_dir / "configuration_custom.py").write_text("from .helper import ANSWER\n")
+    (code_dir / "modeling_custom.py").write_text("from .configuration_custom import ANSWER\n")
+    prefix = "fake/custom--" if remote_source else ""
+    config["auto_map"] = {
+        "AutoConfig": prefix + "configuration_custom.CustomConfig",
+        "AutoModelForCausalLM": prefix + "modeling_custom.CustomModel",
+    }
+    calls = []
+    if remote_source:
+
+        def cached_file(repo, module, **kwargs):
+            calls.append((repo, module, kwargs))
+            assert repo == "fake/custom"
+            return str(code_dir / module)
+
+        monkeypatch.setattr(dynamic_module_utils, "get_cached_module_file", cached_file)
+    else:
+        for path in code_dir.glob("*.py"):
+            (source / path.name).write_bytes(path.read_bytes())
+    monkeypatch.setattr(export_assets.AutoProcessor, "from_pretrained", lambda *a, **kw: None)
+    original = deepcopy(config)
+    output = tmp_path / "trusted-export"
+    save_model_assets(config, {"name": str(source), "trust_remote_code": True}, {}, output)
+    assert config == original
+    for path in code_dir.glob("*.py"):
+        assert (output / path.name).read_bytes() == path.read_bytes()
+    exported = json.loads((output / "config.json").read_text())
+    assert exported["auto_map"] == {
+        "AutoConfig": "configuration_custom.CustomConfig",
+        "AutoModelForCausalLM": "modeling_custom.CustomModel",
+    }
+    if remote_source:
+        assert {module for _, module, _ in calls} == {"configuration_custom.py", "modeling_custom.py"}
 
 
 @pytest.fixture

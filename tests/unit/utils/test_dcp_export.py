@@ -162,9 +162,10 @@ def test_cpu_export_dense_and_tied_embeddings(tmp_path, model_type):
     torch.testing.assert_close(output["model.embed_tokens.weight"], weight.bfloat16(), rtol=0, atol=0)
 
 
-def test_cpu_export_rejects_unsupported_model_before_read(tmp_path):
-    with pytest.raises(ValueError, match="model_type"):
-        list(iter_cpu_hf_groups(tmp_path / "does-not-exist", {"model_type": "unsupported"}))
+def test_cpu_export_rejects_unrecognized_hf_model(tmp_path):
+    checkpoint = _save_model(tmp_path, {"weight": torch.ones(1)})
+    with pytest.raises(ValueError):
+        list(iter_cpu_hf_groups(checkpoint, {"model_type": "unsupported"}))
 
 
 @pytest.mark.parametrize("key", ["lora_A.weight", "lora_B.weight", "base_layer.weight"])

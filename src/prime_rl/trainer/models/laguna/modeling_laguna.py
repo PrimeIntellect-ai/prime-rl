@@ -15,7 +15,6 @@ from transformers.utils.generic import maybe_autocast
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
-from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -23,6 +22,7 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.weight_conversion.laguna import conversion_chain
 
 
 class LagunaRotaryEmbedding(nn.Module):

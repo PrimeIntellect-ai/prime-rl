@@ -13,11 +13,6 @@ from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import (
     Qwen3_5MoeTextConfig,
     Qwen3_5TextConfig,
 )
-from prime_rl.trainer.models.qwen3_5.converting_qwen3_5 import (
-    conversion_chain,
-    is_hf_state_dict,
-    is_prime_state_dict,
-)
 from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
     Qwen3_5RotaryEmbedding,
     build_qwen3_5_mrope_position_ids,
@@ -25,6 +20,12 @@ from prime_rl.trainer.models.qwen3_5.rotary_embedding import (
 from prime_rl.trainer.models.qwen3_5.vision import Qwen3_5VisionModel
 from prime_rl.utils.cp import CPContext, setup_cp_attention_params, shard_for_cp, shard_position_ids_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.weight_conversion.qwen3_5 import (
+    conversion_chain,
+    is_hf_state_dict,
+    is_prime_state_dict,
+    keep_in_fp32,
+)
 
 
 class Qwen3_5DecoderLayer(nn.Module):
@@ -118,7 +119,7 @@ class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
-        return name.endswith(("linear_attn.A_log", "linear_attn.norm.weight"))
+        return keep_in_fp32(name)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

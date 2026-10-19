@@ -34,8 +34,8 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
-from prime_rl.trainer.models.qwen3_moe.converting_qwen3_moe import conversion_chain
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.weight_conversion.qwen3_moe import conversion_chain
 
 logger = logging.get_logger(__name__)
 

@@ -89,4 +89,8 @@ def conversion_chain(config) -> list[ConvOp]:
     return operations
 
 
-__all__ = ["conversion_chain", "is_hf_state_dict", "is_prime_state_dict"]
+__all__ = ["conversion_chain", "is_hf_state_dict", "is_prime_state_dict", "keep_in_fp32"]
+
+
+def keep_in_fp32(key: str) -> bool:
+    return False

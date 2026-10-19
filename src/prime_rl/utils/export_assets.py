@@ -9,6 +9,8 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 from transformers import AutoProcessor, AutoTokenizer, GenerationConfig, PretrainedConfig
 
+from prime_rl.utils.weight_conversion import resolve_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,41 +26,86 @@ def prepare_export_config(config: dict, model_config: dict) -> dict:
     """Apply the trainer's relevant config changes without constructing a model."""
     if model_config.get("lora") is not None:
         raise ValueError("LoRA checkpoints are not supported - CPU export supports full fine-tunes only")
-    if model_config.get("vlm") is not None or "vision_config" in config or "text_config" in config:
-        raise ValueError("CPU export supports text-only models; VLM checkpoints are not supported")
-    quantization = config.get("quantization_config")
-    if quantization is not None and quantization != {}:
-        raise ValueError(
-            "CPU export does not support this quantization_config encoding "
-            f"({type(quantization).__name__}, including FP8 releases); "
-            "use an unquantized base config that matches the checkpoint"
-        )
-    auto_map = config.get("auto_map") or {}
-    if model_config.get("trust_remote_code", False) and any(
-        key == "AutoConfig" or key.startswith("AutoModel") for key in auto_map
-    ):
-        raise ValueError(
-            "CPU export cannot reproduce trusted custom model/config code; use a native Transformers config"
-        )
     result = deepcopy(config)
-    result["dtype"] = "bfloat16"
-    result.pop("torch_dtype", None)
-    result["use_cache"] = False
-    if "dsa_backend" in model_config:
-        result["dsa_backend"] = model_config["dsa_backend"]
-    indexer_types = result.get("indexer_types")
-    if indexer_types and "shared" in indexer_types:
-        result["use_index_cache"] = True
+
+    def normalize(subconfig: dict) -> None:
+        subconfig["dtype"] = "bfloat16"
+        subconfig.pop("torch_dtype", None)
+        subconfig["use_cache"] = False
+        if "quantization_config" in subconfig:
+            logger.info("Removing base quantization_config metadata for bf16 checkpoint export")
+            subconfig.pop("quantization_config")
+        for name, value in subconfig.items():
+            if isinstance(value, dict) and (
+                "model_type" in value
+                or name in ("text_config", "vision_config", "audio_config", "encoder", "decoder", "generator")
+            ):
+                normalize(value)
+
+    normalize(result)
+    resolved = resolve_config(result)
+    resolved_text = getattr(resolved, "text_config", resolved)
     layers = (model_config.get("debug") or {}).get("num_layers")
     if layers is not None:
-        result["num_hidden_layers"] = min(layers, result["num_hidden_layers"])
+        resolved_text.num_hidden_layers = min(layers, resolved_text.num_hidden_layers)
+    if hasattr(resolved, "to_dict"):
+        result = resolved.to_dict()
+        normalize(result)
+    text_config = result.get("text_config", result)
+    if hasattr(resolved_text, "num_hidden_layers"):
+        text_config["num_hidden_layers"] = resolved_text.num_hidden_layers
+    if "dsa_backend" in model_config:
+        text_config["dsa_backend"] = model_config["dsa_backend"]
+        result["dsa_backend"] = model_config["dsa_backend"]
+    indexer_types = text_config.get("indexer_types")
+    if indexer_types and "shared" in indexer_types:
+        text_config["use_index_cache"] = True
     pad = result.get("pad_token_id")
     if pad is None:
         pad = result.get("eos_token_id")
+    if pad is None:
+        pad = text_config.get("pad_token_id")
+    if pad is None:
+        pad = text_config.get("eos_token_id")
     if isinstance(pad, list):
         pad = pad[0]
     result["pad_token_id"] = pad
     return result
+
+
+def _save_trusted_code(config: dict, model_config: dict, output_dir: Path) -> None:
+    """Ship explicitly trusted auto-map modules and their relative imports."""
+    from transformers.dynamic_module_utils import get_cached_module_file, get_relative_import_files
+    from transformers.utils.hub import HF_MODULES_CACHE
+
+    def localize(reference):
+        if isinstance(reference, (tuple, list)):
+            return [localize(item) for item in reference]
+        if reference is None:
+            return None
+        if "--" in reference:
+            source, reference = reference.split("--", 1)
+        else:
+            source = model_config["name"]
+        module, _ = reference.rsplit(".", 1)
+        revision = model_config.get("code_revision")
+        if revision is None and source == model_config["name"]:
+            revision = model_config.get("revision")
+        cached = get_cached_module_file(source, module + ".py", revision=revision)
+        module_path = Path(HF_MODULES_CACHE) / cached
+        for path in [module_path, *map(Path, get_relative_import_files(module_path))]:
+            destination = output_dir / path.name
+            if destination.exists() and destination.read_bytes() != path.read_bytes():
+                raise ValueError(f"Conflicting trusted custom-code modules named {path.name}")
+            shutil.copyfile(path, destination)
+        return reference
+
+    auto_map = config.get("auto_map")
+    if auto_map:
+        config["auto_map"] = {name: localize(reference) for name, reference in auto_map.items()}
+    for name in ("text_config", "vision_config", "audio_config", "encoder", "decoder", "generator"):
+        if isinstance(config.get(name), dict):
+            _save_trusted_code(config[name], model_config, output_dir)
 
 
 def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, output_dir: Path) -> None:
@@ -67,7 +114,13 @@ def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, 
     # Enable generation caching before GenerationConfig validates cache settings.
     generation_source = deepcopy(config)
     generation_source["use_cache"] = True
-    generation_config = GenerationConfig.from_model_config(PretrainedConfig.from_dict(generation_source))
+    generation_model_config = PretrainedConfig.from_dict(generation_source)
+    for name in ("text_config", "decoder", "generator"):
+        if isinstance(generation_source.get(name), dict):
+            nested = deepcopy(generation_source[name])
+            nested["use_cache"] = True
+            setattr(generation_model_config, name, PretrainedConfig.from_dict(nested))
+    generation_config = GenerationConfig.from_model_config(generation_model_config)
     generation_config.use_cache = True
     generation_config.save_pretrained(output_dir)
 
@@ -98,5 +151,8 @@ def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, 
     if source_dir.is_dir():
         for path in source_dir.glob("*.py"):
             shutil.copyfile(path, output_dir / path.name)
-    # Save the original JSON attributes, rather than a generic config's defaults.
-    (output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    # Save the prepared config without constructing a model.
+    exported_config = deepcopy(config)
+    if trust_remote_code:
+        _save_trusted_code(exported_config, model_config, output_dir)
+    (output_dir / "config.json").write_text(json.dumps(exported_config, indent=2) + "\n")

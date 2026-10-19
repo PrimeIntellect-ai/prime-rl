@@ -16,8 +16,8 @@ from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.minimax_m2.configuration_minimax_m2 import MiniMaxM2Config
-from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.weight_conversion.minimax_m2 import conversion_chain
 
 logger = logging.get_logger(__name__)
 
