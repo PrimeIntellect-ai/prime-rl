@@ -24,7 +24,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from renderers import create_renderer
 from renderers.base import ToolCallParseStatus, load_tokenizer, template_field_names
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest, GenerateResponseChoice
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
+    GenerateRequest,
+    GenerateTextChoice,
+    GenerateTokensChoice,
+)
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
@@ -116,6 +120,7 @@ class RendererChatCompletions:
             model=request.model,
             cache_salt=request.cache_salt,
             priority=request.priority,
+            output_mode="text" if request.logprobs else "tokens",
         )
         result = await self.serving_tokens.serve_tokens(generate_request, raw_request)
         if isinstance(result, ErrorResponse):
@@ -136,7 +141,9 @@ class RendererChatCompletions:
             return StreamingResponse(self._stream(completion, request), media_type="text/event-stream")
         return JSONResponse(completion)
 
-    async def _choice(self, kwargs, choice: GenerateResponseChoice, tools, prompt_ids, request) -> dict[str, Any]:
+    async def _choice(
+        self, kwargs, choice: GenerateTokensChoice | GenerateTextChoice, tools, prompt_ids, request
+    ) -> dict[str, Any]:
         token_ids = choice.token_ids or []
         parsed = await self._run(self._parse, kwargs, token_ids, tools, prompt_ids)
         calls = [call for call in parsed.tool_calls if call.status == ToolCallParseStatus.OK]
