@@ -50,7 +50,8 @@ def hf_schema_details(
             )
         # Trainer registration overrides AutoConfig; the schema must use HF's native class.
         module = import_module(f"transformers.models.{model_type_to_module_name(model_type)}")
-        config_class = getattr(module, CONFIG_MAPPING_NAMES[model_type])
+        class_name = CONFIG_MAPPING_NAMES[model_type]
+        config_class = getattr(module, class_name, None) or getattr(import_module("transformers"), class_name)
         hf_config = config_class(**attributes)
     config_class = type(hf_config)
     remote_auto = next(
