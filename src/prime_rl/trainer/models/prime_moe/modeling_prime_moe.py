@@ -1,11 +1,10 @@
-"""The pretraining MoE: GLM-4.5's architecture (prime-rl's `glm4_moe`) with Gated Residual connections and null
-experts. Module names follow `glm4_moe`, so checkpoints share its state-dict layout."""
+"""The pretraining MoE (`prime_moe`), pretraining's own model, so architecture work leaves the shared MoE models
+unchanged. Module names follow `glm4_moe`, so checkpoints keep that state-dict layout and its conversion."""
 
-from typing import Optional, Union
+from typing import Optional
 
 import torch
 from torch import Tensor, nn
-from transformers.cache_utils import Cache
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.processing_utils import Unpack
@@ -164,7 +163,7 @@ class PrimeMoePreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def conversion_chain(cls, config):
-        # Same expert layout as glm4_moe.
+        # The expert state-dict layout of glm4_moe, so its conversion applies.
         return conversion_chain(config)
 
 
@@ -203,17 +202,13 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
 
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
+        input_ids: torch.LongTensor,
+        position_ids: torch.LongTensor,
         *,
         seq_lens: torch.LongTensor,
         seq_lens_are_pre_shard: bool = False,
     ) -> BaseModelOutputWithPast:
-        if (input_ids is None) ^ (inputs_embeds is not None):
-            raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-        if inputs_embeds is None:
-            inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
+        inputs_embeds = self.embed_tokens(input_ids)
 
         cu_seqlens, max_seqlen = get_cu_seqlens_from_seq_lens(
             seq_lens.to(device=inputs_embeds.device),
@@ -246,13 +241,9 @@ class PrimeMoeForCausalLM(PrimeMoePreTrainedModel):
 
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
+        input_ids: torch.LongTensor,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
         temperature: Optional[torch.Tensor] = None,
         *,
         seq_lens: torch.LongTensor,
@@ -261,25 +252,15 @@ class PrimeMoeForCausalLM(PrimeMoePreTrainedModel):
     ) -> PrimeLmOutput:
         """``labels`` and ``temperature`` go to prime-rl's wrapped LM head, which then returns per-token logprobs
         and entropy; without them it returns logits."""
-        assert use_cache is None and past_key_values is None, "prime_moe does not support KV caching"
         if position_ids is None:
-            tokens = inputs_embeds if inputs_embeds is not None else input_ids
-            position_ids = torch.arange(tokens.shape[1], device=tokens.device).unsqueeze(0)
-
+            position_ids = torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0)
         outputs = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
             seq_lens=seq_lens,
             seq_lens_are_pre_shard=seq_lens_are_pre_shard,
         )
-        hidden_states = outputs.last_hidden_state
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        return self.lm_head(
-            hidden_states[:, slice_indices, :],
-            labels[:, slice_indices] if labels is not None else None,
-            temperature=temperature,
-        )
+        return self.lm_head(outputs.last_hidden_state, labels, temperature=temperature)
 
     def init_buffers_post_meta(self):
         rotary_emb = self.model.rotary_emb

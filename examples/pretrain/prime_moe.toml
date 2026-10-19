@@ -1,4 +1,4 @@
-# GLM-4.5-style MoE (64 routed experts, 6 active, 2 shared) with d = 512 and 8 layers (moe-d512/config.json), trained from scratch on
+# prime_moe with 64 routed experts (6 active) and 2 shared experts, d = 512 and 8 layers (moe-d512/config.json), trained from scratch on
 # the Dolma 3 mixture tokenized with the DeepSeek-V4 tokenizer.
 # 4096 steps x 256K tokens = 1.1B tokens. QK-norm and the learning rate follow the MoE QK-norm sweep (optimum 2^-7
 # with QK-norm at d = 512). [parametrization] with this base shape keeps the LR when the width grows.

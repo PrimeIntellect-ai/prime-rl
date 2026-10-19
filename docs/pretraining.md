@@ -36,7 +36,7 @@ name = "examples/pretrain/moe-d512"
 name = "tokenizers/deepseek-v4-flash-base"  # defaults to model.name
 ```
 
-MoE models use `prime_moe`, pretraining's own model (`prime_rl.trainer.models.prime_moe`), so architecture work does not touch the `glm4_moe` that SFT and RL use. It is GLM-4.5's architecture with the same config fields and state-dict layout, plus:
+MoE models use `prime_moe`, pretraining's own model (`prime_rl.trainer.models.prime_moe`), so architecture work does not touch the shared MoE code that SFT and RL use. Its base is a decoder of grouped-query attention (optional QK norm, partial RoPE) and MoE layers with sigmoid-scored token-choice routed experts, a selection bias and shared experts, after leading dense layers. Its module names and state-dict layout match `glm4_moe`'s, so checkpoints convert the same way. On top of the base:
 - Gated Residual connections (Qwen3.8-Next): `hc_count` residual streams (above 1) with read gates of rank `hc_lowrank` replace the pre-norms and the final norm. Their projections train with AdamW.
 - Null experts (AdaMoE): `n_null_experts` zero-output experts the router can select next to the routed ones, so tokens use between 0 and `num_experts_per_tok` routed experts. Only the (token, routed expert) pairs are dispatched. The metrics are `router/k/*`.
 - Exclusive self attention (XSA): `exclusive_attention` removes from each head's output its component along the token's own value vector.
