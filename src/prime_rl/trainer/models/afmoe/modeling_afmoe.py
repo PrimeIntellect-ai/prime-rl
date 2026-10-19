@@ -367,7 +367,9 @@ class AfmoeModel(AfmoePreTrainedModel):
 
         for layer_idx, decoder_layer in enumerate(self.layers):
             mask = causal_mask_mapping[decoder_layer.attention_type] if causal_mask_mapping is not None else None
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = (
+                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+            )
 
             hidden_states = decoder_layer(
                 hidden_states,

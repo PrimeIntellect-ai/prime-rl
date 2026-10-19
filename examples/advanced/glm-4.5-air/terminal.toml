@@ -22,10 +22,6 @@ num_infer_replicas = 4
 project = "terminal-ablations"
 name = "glm45air-terminal"
 
-[weight_broadcast]
-type = "nccl"
-timeout = 3600
-
 [ckpt]
 interval = 50
 keep_last = 1
@@ -38,13 +34,11 @@ name = "zai-org/GLM-4.5-Air"
 # --- Trainer ---
 
 [trainer]
-dist_timeout_seconds = 3600
 enable_router_replay = true
 
 [trainer.model]
 attn = "flash_attention_3"
 cp = 4
-cp_style = "ulysses"
 fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
@@ -53,9 +47,6 @@ fused_lm_head_token_chunk_size = 1024
 max_inflight_activations = 1
 
 [trainer.model.compile]
-
-[trainer.ckpt]
-skip_optimizer = true
 
 [trainer.optim]
 type = "muon"
@@ -162,12 +153,6 @@ env.taskset.id = "terminal-bench-2"
 
 [inference]
 
-# vLLM + FlashInfer caches on node-local /tmp.
-[inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
-
 [inference.vllm]
 max_model_len = 131072
 tensor_parallel_size = 8
-enable_return_routed_experts = true
