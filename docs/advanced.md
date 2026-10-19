@@ -42,6 +42,14 @@ Dense linear precision and routed-expert precision are configured independently.
 - `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90 or SM100).
 - `type = "mxfp8"` — torchao MXFP8 linears (requires SM100). `recipe` is `mxfp8_rceil` or `mxfp8_rceil_wgrad_with_hp`.
 
+MXFP8 supports `qat = true` independently in `model.quantization` and `model.moe.compute`.
+QAT keeps the native MXFP8 forward and uses BF16 GEMMs for both backward products.
+Input gradients use the forward-rounded weights; weight gradients use the original BF16
+activations. Weights and activations round to nearest-even with RCEIL per-32 scales.
+Both backward products use BF16 regardless of `recipe`. Routed experts retain the released
+`mxfp8_moe` backend and require BF16 token transport. Without `qat = true`, the native
+MXFP8 backward and its recipe selection apply.
+
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.

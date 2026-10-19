@@ -9,6 +9,7 @@ from torchao.prototype.mx_formats import ScaleCalculationMode
 from torchao.quantization.quantize_.common import KernelPreference
 
 from prime_rl.configs.trainer import MXFP8Recipe
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.logger import get_logger
 
 
@@ -22,6 +23,7 @@ class MXFP8Linear(nn.Linear):
         kernel_preference: KernelPreference = KernelPreference.AUTO,
         wgrad_with_hp: bool = False,
         scale_calculation_mode: ScaleCalculationMode = ScaleCalculationMode.RCEIL,
+        qat: bool = False,
         device=None,
         dtype=None,
     ) -> None:
@@ -29,15 +31,21 @@ class MXFP8Linear(nn.Linear):
         self.kernel_preference = kernel_preference
         self.wgrad_with_hp = wgrad_with_hp
         self.scale_calculation_mode = scale_calculation_mode
+        self.qat = qat
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        output = _to_mxfp8_then_scaled_mm(
-            input,
-            self.weight,
-            self.kernel_preference,
-            self.scale_calculation_mode,
-            wgrad_with_hp=self.wgrad_with_hp,
-        )
+        if self.qat:
+            from prime_rl.trainer.models.layers.mxfp8_qat import mxfp8_qat_linear
+
+            output = mxfp8_qat_linear(input, self.weight)
+        else:
+            output = _to_mxfp8_then_scaled_mm(
+                input,
+                self.weight,
+                self.kernel_preference,
+                self.scale_calculation_mode,
+                wgrad_with_hp=self.wgrad_with_hp,
+            )
         if self.bias is not None:
             output = output + self.bias
         return output
@@ -50,6 +58,7 @@ class MXFP8Linear(nn.Linear):
         kernel_preference: KernelPreference = KernelPreference.AUTO,
         wgrad_with_hp: bool = False,
         scale_calculation_mode: ScaleCalculationMode = ScaleCalculationMode.RCEIL,
+        qat: bool = False,
     ) -> "MXFP8Linear":
         with torch.device("meta"):
             new_mod = cls(
@@ -59,13 +68,16 @@ class MXFP8Linear(nn.Linear):
                 kernel_preference=kernel_preference,
                 wgrad_with_hp=wgrad_with_hp,
                 scale_calculation_mode=scale_calculation_mode,
+                qat=qat,
             )
         new_mod.weight = mod.weight
         new_mod.bias = mod.bias
         return new_mod
 
 
-def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, ignore_modules: list[str]) -> None:
+def replace_linear_with_mxfp8_linear(
+    model: nn.Module, recipe: MXFP8Recipe, ignore_modules: list[str], qat: bool = False
+) -> None:
     wgrad_with_hp = recipe == "mxfp8_rceil_wgrad_with_hp"
     logger = get_logger()
     logger.info(f"Replacing linear layers with MXFP8 linear layers (recipe={recipe}, ignore={ignore_modules})")
@@ -78,6 +90,8 @@ def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, igno
         if any(re.search(pattern, name) for pattern in ignore_modules):
             skipped_modules.append(name)
             continue
+        if qat and isinstance(module, GroupedLinear):
+            raise ValueError(f"MXFP8 QAT does not support grouped projection {name}; add it to ignore_patterns")
         if (module.in_features & 31) != 0 or (module.out_features & 31) != 0:
             skipped_unaligned.append(f"{name}({module.in_features}->{module.out_features})")
             continue
@@ -86,7 +100,9 @@ def replace_linear_with_mxfp8_linear(model: nn.Module, recipe: MXFP8Recipe, igno
         setattr(
             parent,
             attr_name,
-            MXFP8Linear.from_linear(module, kernel_preference=KernelPreference.AUTO, wgrad_with_hp=wgrad_with_hp),
+            MXFP8Linear.from_linear(
+                module, kernel_preference=KernelPreference.AUTO, wgrad_with_hp=wgrad_with_hp, qat=qat
+            ),
         )
         replaced_modules.append(name)
 
