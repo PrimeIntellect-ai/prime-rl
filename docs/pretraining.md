@@ -115,7 +115,7 @@ The metrics are `expert_load/*` (global balance of the step), `loss/seq_balance`
 
 `data.type = "tokens"` reads [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: per source, a folder of `*.ds` token files with their `.ds.index` (document ends) and `.ds.metadata`. Each epoch reads every token of a source once: in blocks of 2^20 tokens in a random order and from a random start offset, both drawn from `data.seed`, the source and the epoch. Within an epoch, the rows of each group of 4,096 consecutive rows are read in a seeded random order, so the pieces of one long document spread over many steps. So every epoch has a new order and new row boundaries, and part of an epoch is a sample of the whole source, whatever the order of the files. Documents continue across rows, and attention restarts at every document, every row and every block boundary. Held-out sources are read in file-name order. Every document must end with the tokenizer's EOS; the trainer checks the first document of every source, which catches shards made with another tokenizer.
 
-Each row comes from one source, drawn with the weights of the current mixture phase. Phases start at fractions of `max_steps`. At startup the trainer computes how many passes over each source the run makes and fails above `data.max_epochs`.
+Each row comes from one source, drawn with the mixture `data.weights`. At startup the trainer computes how many passes over each source the run makes and fails above `data.max_epochs`.
 
 ```toml
 [data]
@@ -124,17 +124,11 @@ seq_len = 4096
 batch_tokens = 262144       # per optimizer step, over all GPUs
 micro_batch_tokens = 65536  # per forward pass on one GPU
 max_epochs = 3
+weights = { web = 0.8, code = 0.2 }
 
 [data.sources]
 web = { path = "data/web" }
 code = { path = "data/code" }
-
-[[data.phases]]
-weights = { web = 0.8, code = 0.2 }
-
-[[data.phases]]
-start = 0.9
-weights = { web = 0.5, code = 0.5 }
 ```
 
 Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and the number of steps. Resume restores the data position on the same GPU layout and `data.num_workers`; resuming on a different layout is not supported yet. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.

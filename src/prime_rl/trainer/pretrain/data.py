@@ -1,4 +1,3 @@
-import bisect
 import zlib
 from pathlib import Path
 
@@ -6,7 +5,7 @@ import numpy as np
 import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from prime_rl.configs.pretrain import MixturePhaseConfig, PretrainDataConfig, TokenSourceConfig
+from prime_rl.configs.pretrain import PretrainDataConfig, TokenSourceConfig
 from prime_rl.trainer.sft.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 
@@ -141,8 +140,7 @@ class RandomTokens:
 class TokenDataset(StatefulIterableDataset):
     """``seq_len`` windows of token sources, each window from one source of a weighted mixture.
 
-    Window ``w`` belongs to step ``w // batch_size``; its source is drawn from that step's phase weights
-    with an RNG keyed by ``(seed, w)``, and it continues the source's stream where that source's last
+    Window ``w``'s source is drawn from the mixture ``weights`` with an RNG keyed by ``(seed, w)``, and it continues the source's stream where that source's last
     window ended. Every data rank walks the whole window sequence but reads only its own windows; the
     state is the window counter and the tokens read per source. Each
     window reads one token past its end for the last target. With ``num_windows`` the dataset stops
@@ -151,10 +149,8 @@ class TokenDataset(StatefulIterableDataset):
     def __init__(
         self,
         sources: dict[str, TokenShards | RandomTokens],
-        phases: list[MixturePhaseConfig],
+        weights: dict[str, float],
         seq_len: int,
-        batch_size: int,
-        max_steps: int,
         seed: int = 0,
         non_dp_size: int = 1,
         num_windows: int | None = None,
@@ -162,10 +158,9 @@ class TokenDataset(StatefulIterableDataset):
         super().__init__(non_dp_size)
         self.sources = sources
         self.names = list(sources)
-        self.phase_starts = [round(phase.start * max_steps) for phase in phases]
-        self.phase_cdfs = [np.cumsum([phase.weights.get(name, 0.0) for name in self.names]) for phase in phases]
+        self.weights = np.array([weights.get(name, 0.0) for name in self.names])
+        self.cdf = np.cumsum(self.weights)
         self.seq_len = seq_len
-        self.batch_size = batch_size
         self.seed = seed
         self.num_windows = num_windows
         self.tokens = dict.fromkeys(self.names, 0)
@@ -180,23 +175,18 @@ class TokenDataset(StatefulIterableDataset):
         self.step = state_dict["dataset"]["step"]
         self.tokens.update(state_dict["dataset"]["tokens"])
 
-    def planned_epochs(self, max_steps: int) -> dict[str, float]:
-        """Expected passes over each source's tokens in ``max_steps`` steps."""
-        ends = [*self.phase_starts[1:], max_steps]
-        step_tokens = self.batch_size * self.seq_len
-        tokens = sum(
-            (end - start) * step_tokens * np.diff(cdf, prepend=0.0)
-            for start, end, cdf in zip(self.phase_starts, ends, self.phase_cdfs)
-        )
-        return {name: float(tokens[i]) / self.sources[name].num_tokens for i, name in enumerate(self.names)}
+    def planned_epochs(self, num_tokens: int) -> dict[str, float]:
+        """Expected passes over each source's tokens when ``num_tokens`` tokens are read."""
+        return {
+            name: num_tokens * float(weight) / self.sources[name].num_tokens
+            for name, weight in zip(self.names, self.weights)
+        }
 
     def source(self, window: int) -> str:
         if len(self.names) == 1:
             return self.names[0]
-        phase = bisect.bisect_right(self.phase_starts, window // self.batch_size) - 1
-        cdf = self.phase_cdfs[phase]
-        draw = np.random.default_rng([self.seed, window]).random() * cdf[-1]
-        return self.names[min(int(np.searchsorted(cdf, draw, side="right")), len(self.names) - 1)]
+        draw = np.random.default_rng([self.seed, window]).random() * self.cdf[-1]
+        return self.names[min(int(np.searchsorted(self.cdf, draw, side="right")), len(self.names) - 1)]
 
     def __iter__(self):
         self._setup_world_info()
@@ -251,16 +241,14 @@ def setup_train_dataset(
 ) -> TokenDataset:
     if config.type == "fake":
         sources = {"fake": RandomTokens(vocab_size, config.seed)}
-        phases = [MixturePhaseConfig(weights={"fake": 1.0})]
+        weights = {"fake": 1.0}
     else:
         sources = {name: TokenShards(source, seed=(config.seed, name)) for name, source in config.sources.items()}
         check_eos(sources, eos_token_id)
-        phases = config.phases
-    dataset = TokenDataset(
-        sources, phases, config.seq_len, config.batch_size, max_steps, seed=config.seed, non_dp_size=non_dp_size
-    )
+        weights = config.weights
+    dataset = TokenDataset(sources, weights, config.seq_len, seed=config.seed, non_dp_size=non_dp_size)
     if config.type == "tokens":
-        epochs = dataset.planned_epochs(max_steps)
+        epochs = dataset.planned_epochs(max_steps * config.batch_tokens)
         get_logger().info(f"Planned epochs per source: {epochs}")
         if over := {name: epoch for name, epoch in epochs.items() if epoch > config.max_epochs}:
             raise ValueError(f"Planned epochs {over} exceed data.max_epochs={config.max_epochs}")
@@ -269,8 +257,7 @@ def setup_train_dataset(
 
 def setup_val_dataset(source: TokenShards, seq_len: int, num_windows: int, non_dp_size: int) -> TokenDataset:
     """One pass over the first ``num_windows`` windows of a held-out source."""
-    phases = [MixturePhaseConfig(weights={"val": 1.0})]
-    return TokenDataset({"val": source}, phases, seq_len, 1, 1, non_dp_size=non_dp_size, num_windows=num_windows)
+    return TokenDataset({"val": source}, {"val": 1.0}, seq_len, non_dp_size=non_dp_size, num_windows=num_windows)
 
 
 def check_eos(sources: dict[str, TokenShards], eos_token_id: int) -> None:

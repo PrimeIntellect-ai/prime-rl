@@ -82,20 +82,6 @@ class TokenSourceConfig(BaseConfig):
     """Tokens available from this source: the first ``max_tokens`` of its stream. Defaults to all tokens in the shards."""
 
 
-class MixturePhaseConfig(BaseConfig):
-    start: float = Field(0.0, ge=0, lt=1)
-    """Fraction of ``max_steps`` at which this phase starts."""
-
-    weights: dict[str, float]
-    """Token share of each source in this phase. Shares are non-negative and sum to 1; unlisted sources get 0."""
-
-    @model_validator(mode="after")
-    def validate_weights(self):
-        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):
-            raise ValueError(f"Phase weights must be non-negative and sum to 1, got {self.weights}")
-        return self
-
-
 class BaseBatchConfig(BaseConfig):
     seq_len: int = Field(4096, ge=1)
     """Tokens per row. Documents continue across rows; attention restarts at every document and every row."""
@@ -145,20 +131,18 @@ class TokensDataConfig(BaseBatchConfig):
     sources: dict[str, TokenSourceConfig]
     """Token sources by name. The name labels the source's metrics."""
 
-    phases: list[MixturePhaseConfig]
-    """Mixture phases in order. The first starts at 0."""
+    weights: dict[str, float]
+    """Token share of each source. Shares are non-negative and sum to 1; unlisted sources get 0."""
 
     max_epochs: float = Field(1.0, gt=0)
     """Most passes over a source's available tokens that the run (``max_steps``) may make. Checked at startup."""
 
     @model_validator(mode="after")
-    def validate_phases(self):
-        starts = [phase.start for phase in self.phases]
-        if not starts or starts[0] != 0 or starts != sorted(set(starts)):
-            raise ValueError(f"Phase starts must begin at 0 and increase, got {starts}")
-        for phase in self.phases:
-            if unknown := phase.weights.keys() - self.sources.keys():
-                raise ValueError(f"Phase weights name unknown sources {sorted(unknown)}")
+    def validate_weights(self):
+        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):
+            raise ValueError(f"data.weights must be non-negative and sum to 1, got {self.weights}")
+        if unknown := self.weights.keys() - self.sources.keys():
+            raise ValueError(f"data.weights name unknown sources {sorted(unknown)}")
         return self
 
 

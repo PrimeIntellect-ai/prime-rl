@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from prime_rl.configs.pretrain import MixturePhaseConfig, TokenSourceConfig
+from prime_rl.configs.pretrain import TokenSourceConfig
 from prime_rl.trainer.pretrain import data
 from prime_rl.trainer.pretrain.data import TokenDataset, TokenShards, collate_rows, source_tokens
 
@@ -57,23 +57,18 @@ def test_window_shuffle_reads_every_window_of_an_epoch_once(tmp_path, monkeypatc
     assert sorted(starts[:10]) == list(range(0, 70, 7)) and sorted(starts[10:]) == list(range(70, 140, 7))
 
 
-def test_token_dataset_resumes_and_follows_phases(tmp_path):
+def test_token_dataset_resumes_and_continues_each_source(tmp_path):
     write_shard(tmp_path / "a" / "00.ds", [list(range(100, 200))])
     write_shard(tmp_path / "b" / "00.ds", [list(range(200, 300))])
     sources = {name: TokenShards(TokenSourceConfig(path=tmp_path / name)) for name in "ab"}
-    phases = [MixturePhaseConfig(weights={"a": 1.0}), MixturePhaseConfig(start=0.5, weights={"b": 1.0})]
 
     def dataset():
-        return TokenDataset(sources, phases, seq_len=4, batch_size=2, max_steps=4)
+        return TokenDataset(sources, {"a": 0.5, "b": 0.5}, seq_len=4)
 
     full = [window["tokens"].tolist() for window in islice(dataset(), 8)]
-    assert full[:4] == [
-        [100, 101, 102, 103, 104],
-        [104, 105, 106, 107, 108],
-        [108, 109, 110, 111, 112],
-        [112, 113, 114, 115, 116],
-    ]
-    assert full[4][0] == 200
+    for start in (100, 200):
+        windows = [window for window in full if start <= window[0] < start + 100]
+        assert windows and windows == [list(range(start + 4 * i, start + 4 * i + 5)) for i in range(len(windows))]
 
     first = dataset()
     iterator = iter(first)
@@ -88,9 +83,7 @@ def test_source_tokens_count_every_window_of_the_mixture(tmp_path):
     for name in "ab":
         write_shard(tmp_path / name / "00.ds", [list(range(100))])
     sources = {name: TokenShards(TokenSourceConfig(path=tmp_path / name)) for name in "ab"}
-    dataset = TokenDataset(
-        sources, [MixturePhaseConfig(weights={"a": 0.3, "b": 0.7})], seq_len=4, batch_size=8, max_steps=4
-    )
+    dataset = TokenDataset(sources, {"a": 0.3, "b": 0.7}, seq_len=4)
     list(islice(dataset, 32))
     # The training loop's global per-source counts equal the tokens the dataset itself read.
     assert source_tokens(dataset, 0, 32) == dataset.tokens

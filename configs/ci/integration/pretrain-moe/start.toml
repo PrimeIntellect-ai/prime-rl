@@ -25,12 +25,10 @@ seq_len = 2048
 batch_tokens = 16384
 micro_batch_tokens = 4096
 max_epochs = 100
+weights = { reverse = 1.0 }
 
 [data.sources]
 reverse = { path = "set-by-the-test" }
-
-[[data.phases]]
-weights = { reverse = 1.0 }
 
 [optim]
 type = "muon"
