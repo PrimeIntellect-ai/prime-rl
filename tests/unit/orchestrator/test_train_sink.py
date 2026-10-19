@@ -229,3 +229,22 @@ def test_partial_window_and_shutdown_release():
         assert s.take_rollout_window(force=True) is None
 
     asyncio.run(run())
+
+
+def test_orphan_payload_sweep_keeps_the_versions_of_live_work():
+    """Rollouts can outlive max_off_policy_steps, so the sweep bound follows the oldest live work."""
+    from prime_rl.orchestrator.orchestrator import Orchestrator
+
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.config = SimpleNamespace(max_off_policy_steps=2)
+    orchestrator.train_sink = sink()
+    orchestrator.dispatcher = SimpleNamespace(inflight={"task": SimpleNamespace(kind="train", policy_version=6)})
+    orchestrator.unread_payloads = {19: {"/payloads/v4/a.bin"}}
+    orchestrator.train_sink.pending_groups["g"].append(episode([trace()], version=5))
+    assert orchestrator.oldest_live_payload_version(20) == 4
+    orchestrator.unread_payloads.clear()
+    assert orchestrator.oldest_live_payload_version(20) == 5
+    orchestrator.train_sink.pending_groups.clear()
+    assert orchestrator.oldest_live_payload_version(20) == 6
+    orchestrator.dispatcher.inflight.clear()
+    assert orchestrator.oldest_live_payload_version(20) == 18

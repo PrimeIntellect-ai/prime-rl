@@ -25,6 +25,7 @@ import os
 import shutil
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import verifiers.v1 as vf
@@ -72,6 +73,7 @@ from prime_rl.orchestrator.utils import (
     min_fresh_version,
     release_and_trim,
     set_default_executor,
+    train_work,
     trim_process_memory,
 )
 from prime_rl.orchestrator.watcher import WeightWatcher
@@ -267,6 +269,8 @@ class Orchestrator:
             shutil.rmtree(config.payload_root, ignore_errors=True)
         # Step -> payload files of the shipped batch, deleted once the trainer has read it.
         self.unread_payloads: dict[int, set[str]] = {}
+        # Step of the last applied policy whose orphan payload sweep has not run yet (see main_loop).
+        self.payload_sweep_step: int | None = None
         get_logger().info(f"Initializing micro batch sender ({config.rollout_transport})")
         self.sender = setup_batch_sender(
             config.output_dir, config.num_train_workers, self.progress.step, config.rollout_transport
@@ -518,6 +522,14 @@ class Orchestrator:
                 get_logger().info("Pipeline drained, exiting main loop")
                 self.stopped.set()
                 break
+            # Between items every live train rollout is in flight, in the sink or in an unread batch,
+            # unless it waits in out_q, so the orphan payload sweep runs here and only on an empty out_q.
+            if self.payload_sweep_step is not None and self.dispatcher.out_q.empty():
+                oldest = self.oldest_live_payload_version(self.payload_sweep_step)
+                self.payload_sweep_step = None
+                asyncio.get_running_loop().run_in_executor(
+                    None, delete_payloads_before, self.config.payload_root, oldest
+                )
 
             try:
                 item = await asyncio.wait_for(self.dispatcher.out_q.get(), timeout=0.5)
@@ -1013,10 +1025,21 @@ class Orchestrator:
         # The trainer read batch `step` before publishing v{step}.
         read = [s for s in self.unread_payloads if s <= step]
         delete_files_in_background(set().union(*(self.unread_payloads.pop(s) for s in read)))
-        # Orphans (in-flight episodes that were cancelled or failed, files from before a resume):
-        # unread batches only hold rollouts dispatched at min_fresh_version(step + 1) or later.
-        oldest = min_fresh_version(step + 1, self.config.max_off_policy_steps)
-        asyncio.get_running_loop().run_in_executor(None, delete_payloads_before, self.config.payload_root, oldest)
+        self.payload_sweep_step = step
+
+    def oldest_live_payload_version(self, step: int) -> int:
+        """The oldest ``v<k>`` payload directory a rollout may still read from or write into: the
+        oldest group start among in-flight, waiting, queued and shipped-but-unread train work (a
+        rollout writes under its dispatch version, never older than its group's start), and at most
+        ``min_fresh_version(step + 1)``. Following the live work rather than the step keeps the bound
+        correct whether or not stale rollouts are cancelled in flight."""
+        versions = [meta.policy_version for meta in self.dispatcher.inflight.values() if meta.kind == "train"]
+        sink = self.train_sink
+        for episode in [*sink.episode_by_trace.values(), *(e for group in sink.pending_groups.values() for e in group)]:
+            if (policy := train_work(episode).policy) is not None:
+                versions.append(policy.start)
+        versions += [int(Path(file).parent.name[1:]) for files in self.unread_payloads.values() for file in files]
+        return min([min_fresh_version(step + 1, self.config.max_off_policy_steps), *versions])
 
     async def stop(self, clean_exit: bool) -> None:
         """Bounded best-effort teardown of all components. Has a global
