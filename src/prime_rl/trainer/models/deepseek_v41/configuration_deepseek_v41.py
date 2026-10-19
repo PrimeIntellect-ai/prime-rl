@@ -122,6 +122,8 @@ class DeepseekV41TextConfig(PretrainedConfig):
         tie_word_embeddings: bool = False,
         attention_bias: bool = False,
         attention_dropout: float = 0.0,
+        kv_precision: str = "bf16",
+        dsa_backend: str = "tilelang",
         pad_token_id: int | None = None,
         bos_token_id: int | None = 0,
         eos_token_id: int | list[int] | None = 1,
@@ -147,6 +149,8 @@ class DeepseekV41TextConfig(PretrainedConfig):
         self.sliding_window = sliding_window
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
+        self.kv_precision = kv_precision
+        self.dsa_backend = dsa_backend
         self.partial_rotary_factor = (
             partial_rotary_factor
             if partial_rotary_factor is not None

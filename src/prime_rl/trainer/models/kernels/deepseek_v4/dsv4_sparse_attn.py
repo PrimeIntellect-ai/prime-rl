@@ -11,6 +11,7 @@
 # and the stub calls abort().  Pre-loading the real library with RTLD_GLOBAL
 # ensures dlsym finds it before the stub's own exports.
 import ctypes as _ctypes
+import functools
 import math
 
 try:
@@ -179,6 +180,10 @@ def cudnn_flashmla_forward(
     if sm_scale is None:
         sm_scale = dim**-0.5
     flat_indices, topk_length = flat_cudnn_flashmla_indices(indices, n_positions)
+    # The pinned flash-mla wheel's SM90 kernel rejects `topk_length`. Slots past each query's valid
+    # prefix are -1, which FlashMLA masks, so SM90 reads the whole width to the same result.
+    if torch.cuda.get_device_capability(q.device)[0] == 9:
+        topk_length = None
     sink_logits = sinks.float().contiguous()
     out, _max_logits, sinkless_lse = flash_mla_sparse_fwd(
         q.view(batch * seq_len, heads, dim),
@@ -281,6 +286,24 @@ def tilelang_backward(
     return dq, dkv, delta
 
 
+# prime-kernels' SM90 backward keeps each query's slot list in shared memory, which caps the width it compiles at.
+HOPPER_BACKWARD_MAX_SLOTS = 2304
+
+
+@functools.cache
+def _hopper_sparse_attn_backward(heads: int, dim: int, max_slots: int):
+    """prime-kernels' SM90 sparse attention backward (~1.2x cuDNN's) when it is built for this GPU and shape."""
+    import prime_kernels
+
+    if cudnn_flashmla_slot_width(max_slots) > HOPPER_BACKWARD_MAX_SLOTS:
+        return None
+    if "dsa_sparse_attn_bwd" in prime_kernels.KERNELS and prime_kernels.is_available("dsa_sparse_attn_bwd"):
+        kernel = prime_kernels.load("dsa_sparse_attn_bwd")
+        if kernel.unsupported_shape_reason(heads, dim) is None:
+            return kernel.sparse_attn_backward_flat
+    return None
+
+
 def cudnn_flashmla_backward(
     q: torch.Tensor,
     kv: torch.Tensor,
@@ -309,7 +332,12 @@ def cudnn_flashmla_backward(
         # sink-aware probability, where recovering the sinkless LSE would cancel catastrophically.
         (lse * math.log(2.0)).view(batch * seq_len, heads),
     )
-    if torch.cuda.get_device_capability(q.device)[0] == 9:
+    # Both kernels fold `attn_sink` into the LSE themselves, and a -inf sink folds in nothing.
+    no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
+    hopper_backward = _hopper_sparse_attn_backward(heads, dim, max_slots)
+    if torch.cuda.get_device_capability(q.device)[0] == 9 and hopper_backward is not None:
+        dq, dkv, _ = hopper_backward(*flat_tensors, flat_indices, no_sink, sm_scale)
+    elif torch.cuda.get_device_capability(q.device)[0] == 9:
         dq, dkv = flash_attn_bwd_sm90(
             *flat_tensors,
             softmax_scale=sm_scale,
@@ -318,8 +346,6 @@ def cudnn_flashmla_backward(
             max_slots=cudnn_flashmla_slot_width(max_slots),
         )
     else:
-        # The SM100 kernel folds `attn_sink` into the LSE itself, and a -inf sink folds in nothing.
-        no_sink = torch.full((heads,), float("-inf"), dtype=torch.float32, device=q.device)
         workspace_bytes = flash_attn_bwd_sm100_workspace_size(batch * seq_len, batch * n_positions, dim, heads)
         dq, dkv, _ = flash_attn_bwd_sm100(
             *flat_tensors,

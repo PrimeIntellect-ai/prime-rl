@@ -346,6 +346,9 @@ def get_model(
     model_config.dsa_backend = config.dsa_backend
     if model_config.model_type == "deepseek_v4":
         model_config.kv_precision = config.dsv4_kv_precision
+    elif model_config.model_type == "deepseek_v41":
+        model_config.text_config.kv_precision = config.dsv4_kv_precision
+        model_config.text_config.dsa_backend = config.dsa_backend
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)

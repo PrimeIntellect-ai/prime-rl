@@ -178,14 +178,17 @@ class BF16MoEComputeConfig(MoEComputeConfigBase):
     """Run routed experts in bfloat16."""
 
     type: Literal["bf16"] = "bf16"
-    backend: Literal["torch", "sonicmoe"] = "torch"
-    """Expert compute implementation."""
+    backend: Literal["torch", "sonicmoe", "prime_kernels"] = "torch"
+    """Expert compute implementation. ``prime_kernels`` fuses the clamped SwiGLU into Hopper grouped GEMMs."""
 
 
 class DeepGemmFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with DeepGEMM FP8 kernels."""
 
     type: Literal["deepgemm_fp8"] = "deepgemm_fp8"
+    backend: Literal["torch", "prime_kernels"] = "torch"
+    """``prime_kernels`` fuses the FP8 quantization and the clamped SwiGLU into the passes around DeepGEMM's
+    GEMMs (prime-kernels' ``moe_experts``, SM90)."""
 
 
 class MXFP8MoEComputeConfig(MoEComputeConfigBase):
@@ -313,10 +316,10 @@ class ModelConfig(BaseModelConfig):
     quantization: QuantizationConfig | None = None
 
     dsa_backend: DSABackend = "cudnn_flashmla"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5), ``deepseek_v4`` and ``deepseek_v41``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
-    """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
+    """Precision DeepSeek V4 and V4.1 attention read keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
 
     freeze_moe_router: bool | Literal["auto"] = "auto"
     """Freeze MoE router gate parameters. ``auto`` (default): ``True`` for RL, ``False`` for SFT; a no-op on non-MoE models. Frozen routers get no optimizer state, so resuming a checkpoint saved with a frozen router with ``freeze_moe_router=false`` fails on missing DCP keys."""

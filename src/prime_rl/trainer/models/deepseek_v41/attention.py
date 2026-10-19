@@ -38,9 +38,14 @@ from prime_rl.trainer.models.deepseek_v4.attention import (
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import DeepseekV41TextConfig
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import VLLM_SWA_KV_AMAX_FLOOR, dsv4_kv_fake_quant
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
-from prime_rl.trainer.models.kernels.dsv41_sparse_attn import dsv41_sparse_attn, flashmla_sparse_attn_available
+from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
+    IndexerSegments,
+    cudnn_indexer_available,
+    dsv41_index_topk_cudnn,
+)
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -53,6 +58,17 @@ except ImportError:
     sparse_attn_shape_error = None  # type: ignore
 
 
+def _index_topk_op(num_heads: int, head_dim: int, block_size: int):
+    """prime-kernels' fused indexer top-k when it is built for this GPU and shape, else prime-rl's chunked one."""
+    import prime_kernels
+
+    if "dsa_indexer_topk" in prime_kernels.KERNELS and prime_kernels.is_available("dsa_indexer_topk"):
+        kernel = prime_kernels.load("dsa_indexer_topk")
+        if kernel.unsupported_shape_reason(num_heads, head_dim, block_size) is None:
+            return kernel.dsv41_index_topk
+    return dsv41_index_topk
+
+
 @dataclass(frozen=True)
 class PackedContext:
     """Document-aware bookkeeping for one packed row, derived once per forward from `seq_lens`."""
@@ -63,6 +79,8 @@ class PackedContext:
     window_indices: Tensor  # (seq_len, sliding_window) int32, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress ratio
     use_candidates: bool  # whether some document is long enough for candidate blocks to bind
+    # Per compress ratio, the documents as cuDNN's fused indexer reads them; None off Blackwell.
+    indexer_segments: dict[int, IndexerSegments] | None = None
 
     @classmethod
     def build(cls, *, config: DeepseekV41TextConfig, seq_lens: Tensor, device: torch.device) -> "PackedContext":
@@ -97,6 +115,14 @@ class PackedContext:
             use_candidates = (
                 layouts[rate].max_entries_per_doc > config.candidate_topk_blocks * config.candidate_block_size
             )
+        indexer_segments = None
+        if cudnn_indexer_available(config.index_n_heads, config.index_head_dim):
+            indexer_segments = {
+                rate: IndexerSegments.build(
+                    cu_seqlens=cu_seqlens, q_start=0, n_queries=total_tokens, compress_rate=rate
+                )
+                for rate in config.compress_rates
+            }
         return cls(
             position_ids=position_ids,
             tok_doc_idx=tok_doc_idx,
@@ -104,6 +130,7 @@ class PackedContext:
             window_indices=window_indices,
             compression_layouts=layouts,
             use_candidates=use_candidates,
+            indexer_segments=indexer_segments,
         )
 
     def check_position_ids(self, position_ids: Tensor) -> None:
@@ -190,6 +217,7 @@ class DeepseekV41Indexer(nn.Module):
         self.uses_candidates = 0 <= config.candidate_source_layer_id < layer_idx
         self.candidate_block_size = config.candidate_block_size
         self.candidate_topk_blocks = config.candidate_topk_blocks
+        self.index_topk_op = _index_topk_op(self.num_heads, self.head_dim, self.candidate_block_size)
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.weights_proj = nn.Linear(config.hidden_size, self.num_heads, bias=False)
         if self.owns_k:
@@ -222,13 +250,30 @@ class DeepseekV41Indexer(nn.Module):
         q = dsv4_rope(q, cos_sin_cache, packed.position_ids)
         w = self.weights_proj(hidden_states)
 
+        emit = self.is_candidate_source and packed.use_candidates
+        candidates_in = state.candidates if self.uses_candidates and packed.use_candidates else None
+        if packed.indexer_segments is not None and not emit and candidates_in is None:
+            # Blackwell, and no candidate blocks to emit or honor: cuDNN's fused scoring + top-k.
+            segments = packed.indexer_segments[self.compress_ratio]
+            top_k = dsv41_index_topk_cudnn(
+                q[0],
+                index_k,
+                w[0],
+                segments.cu_seqlens_q,
+                segments.cu_seqlens_k,
+                segments.q_causal_offsets,
+                self.index_topk,
+                self.compress_ratio,
+                segments.max_seqlen_q,
+                segments.max_seqlen_k,
+            )
+            return top_k.unsqueeze(0), index_k, state.candidates
+
         # Entry `e` pools source tokens up to `(e + 1) * compress_ratio - 1`, so a query reads the
         # entries of its own document whose sources all lie at or before it.
         entry_start = layout.first_entry_of_doc[packed.tok_doc_idx]
         entry_stop = entry_start + (packed.position_ids[0] + 1) // self.compress_ratio
-        emit = self.is_candidate_source and packed.use_candidates
-        candidates_in = state.candidates if self.uses_candidates and packed.use_candidates else None
-        top_k, candidates = dsv41_index_topk(
+        top_k, candidates = self.index_topk_op(
             q[0],
             index_k,
             w[0],
@@ -244,6 +289,18 @@ class DeepseekV41Indexer(nn.Module):
         return top_k.unsqueeze(0), index_k, candidates if emit else state.candidates
 
 
+def kv_fake_quant(kv: Tensor, rope_dim: int) -> Tensor:
+    """`kv` as vLLM's V4.1 `fp8_ds_mla` cache stores it, for the sliding window and the compressor alike.
+
+    Both writers floor each tile's absolute maximum at `VLLM_SWA_KV_AMAX_FLOOR`. On SM100 the
+    record is MXFP8 over all 512 channels in 32-wide tiles, RoPE included; elsewhere it is V4's,
+    448 FP8 channels in 64-wide tiles and the RoPE channels in bf16.
+    """
+    if torch.cuda.get_device_capability(kv.device)[0] == 10:
+        return dsv4_kv_fake_quant(kv, 0, VLLM_SWA_KV_AMAX_FLOOR, 0.0, 32)
+    return dsv4_kv_fake_quant(kv, rope_dim, VLLM_SWA_KV_AMAX_FLOOR, 0.0)
+
+
 class DeepseekV41Attention(nn.Module):
     def __init__(self, config: DeepseekV41TextConfig, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
         super().__init__()
@@ -255,6 +312,7 @@ class DeepseekV41Attention(nn.Module):
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
         self.scaling = self.head_dim**-0.5
+        self.kv_precision = config.kv_precision
 
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)
         self.q_a_norm = RMSNorm(RMSNormConfig(hidden_size=config.q_lora_rank, eps=config.rms_norm_eps))
@@ -272,14 +330,13 @@ class DeepseekV41Attention(nn.Module):
         # or a tilelang compile failure a long way from the config that caused it.
         if dsv4_sparse_attn is None:
             raise ValueError("DeepSeek V4.1 needs the tilelang sparse-attention kernel; install the `gpu` extra")
-        blocker = sparse_attn_shape_error(self.num_heads, 1, self.head_dim)
+        self.dsa_backend = config.dsa_backend
+        blocker = sparse_attn_shape_error(self.num_heads, 1, self.head_dim, self.dsa_backend)
         if blocker is not None:
             raise ValueError(f"DeepSeek V4.1 cannot run the fused sparse-attention kernel: {blocker}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
-        # FlashMLA forward + cuDNN backward on Hopper (about twice as fast); TileLang elsewhere.
-        self.sparse_attn = (
-            dsv41_sparse_attn if flashmla_sparse_attn_available(self.num_heads, self.head_dim) else dsv4_sparse_attn
-        )
+        # V4.1 has no heavily compressed layers: a query reads its window and at most `index_topk` entries.
+        self.max_slots = config.sliding_window + config.index_topk
 
         self.compressor = (
             DeepseekV41Compressor(config, self.compress_ratio, rotary_emb)
@@ -301,6 +358,8 @@ class DeepseekV41Attention(nn.Module):
 
         kv = self.kv_norm(self.kv_proj(hidden_states)).unsqueeze(2)  # (b, t, 1, d)
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
+        if self.kv_precision == "fp8":
+            kv = kv_fake_quant(kv, self.config.qk_rope_head_dim)
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))
         q = self.q_b_proj(q_residual).view(*input_shape, self.num_heads, self.head_dim)
@@ -310,6 +369,8 @@ class DeepseekV41Attention(nn.Module):
             latent = None
             if self.compressor is not None:
                 latent, entries = self.compressor(hidden_states, packed)
+                if self.kv_precision == "fp8":
+                    entries = kv_fake_quant(entries, self.config.qk_rope_head_dim)
                 state = SharedAttnState(entries[None, None], state.index_k, state.top_k_indices, state.candidates)
             if self.indexer is not None:
                 top_k, index_k, candidates = self.indexer(hidden_states, q_residual, latent, packed, state)
@@ -321,7 +382,15 @@ class DeepseekV41Attention(nn.Module):
             top_k_indices=state.top_k_indices if self.compress_ratio else None,
             window_indices=packed.window_indices,
         )
-        attn_output, _ = self.sparse_attn(q, inputs.kv_buf, inputs.indices, self.sinks.float(), self.scaling)
+        attn_output, _ = dsv4_sparse_attn(
+            q,
+            inputs.kv_buf,
+            inputs.indices,
+            self.sinks,
+            self.scaling,
+            backend=self.dsa_backend,
+            max_slots=self.max_slots,
+        )
         # Values are the rotated keys; the conjugate rotation at the query position cancels that.
         attn_output = dsv4_rope(attn_output, cos_sin_cache, packed.position_ids, inverse=True)
         grouped = self.o_a_proj(attn_output.reshape(*input_shape, self.config.o_groups, -1)).flatten(2)
