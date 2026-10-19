@@ -428,6 +428,22 @@ def head_partitions(num_heads: int, head_rows: tuple[int, ...], heads_per_block:
     return (heads_per_block * sum(head_rows),) * (num_heads // heads_per_block)
 
 
+def qkv_head_partitions(
+    attn: nn.Module, num_heads: int, num_kv_heads: int, head_dim: int, heads_per_block: int
+) -> dict[nn.Parameter, tuple[int, ...] | None]:
+    """Per-head Muon partitions of an attention module's query, key and value projections, packed in ``qkv_proj``
+    or not. ``q_proj`` may hold [query; gate] per head. ``o_proj`` holds its heads along the columns, which matrix
+    partitions cannot split, so it stays whole (``None``)."""
+    q = head_partitions(num_heads, (head_dim,) * (attn.q_proj.out_features // (num_heads * head_dim)), heads_per_block)
+    kv = head_partitions(num_kv_heads, (head_dim,), heads_per_block)
+    qkv_proj = getattr(attn, "qkv_proj", None)
+    if qkv_proj is not None:
+        partitions = {qkv_proj.weight: q + kv + kv}
+    else:
+        partitions = {attn.q_proj.weight: q, attn.k_proj.weight: kv, attn.v_proj.weight: kv}
+    return partitions | {attn.o_proj.weight: None}
+
+
 # TODO: Does torch compile support config._attn_implementation forking?
 # If so, we can combine FlashAttention variants into one class
 # Otherwise, do ABC or something to make the signatures match
@@ -484,13 +500,9 @@ class FlashAttention(nn.Module):
             return self.q_proj(hidden_states), self.k_proj(hidden_states), self.v_proj(hidden_states)
         return self.qkv_proj(hidden_states).split(self.qkv_sizes, dim=-1)
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
         kv_heads = self.qkv_sizes[1] // self.head_dim
-        heads = (kv_heads * self.num_key_value_groups, kv_heads, kv_heads)
-        q, k, v = (head_partitions(n, (rows // n,), heads_per_block) for rows, n in zip(self.qkv_sizes, heads))
-        if self.qkv_proj is not None:
-            return {self.qkv_proj.weight: q + k + v}
-        return {self.q_proj.weight: q, self.k_proj.weight: k, self.v_proj.weight: v}
+        return qkv_head_partitions(self, kv_heads * self.num_key_value_groups, kv_heads, self.head_dim, heads_per_block)
 
     def _compute_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens, max_seqlen):
         """Run the flash attention kernel. q/k/v are [total_tokens, heads, dim]."""

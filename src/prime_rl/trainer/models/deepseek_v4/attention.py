@@ -718,9 +718,12 @@ class DeepseekV4Attention(nn.Module):
 
         self.cp_context = CPContext()
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
-        # kv_proj is a single key/value head shared by all query heads
-        return {self.q_b_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block)}
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        # kv_proj is one key/value head shared by all query heads, o_a_proj is partitioned by its groups, q_a_proj
+        # and o_b_proj are latent, and the compressor's series are not heads
+        whole = [self.q_a_proj, self.kv_proj, self.o_a_proj, self.o_b_proj, self.compressor]
+        partitions = {p: None for module in whole if module is not None for p in module.parameters()}
+        return partitions | {self.q_b_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block)}
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""

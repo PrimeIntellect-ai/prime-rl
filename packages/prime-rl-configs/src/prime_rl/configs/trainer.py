@@ -431,7 +431,7 @@ class MuonConfig(BaseOptimizerConfig):
     """β2 for the AdamW/Lion sub-optimizer used on non-Muon params."""
 
     heads_per_block: int | None = Field(None, ge=1)
-    """Orthogonalize attention head projections in blocks of this many heads, each block on its own (per-head Muon; ``1`` = per head). Covers query/key/value projections (GQA key/value split by their own heads) and the MLA up-projections (``q_b_proj``; ``kv_b_proj``, whose W_UK and W_UV are separate matrices at ``1``). Output projections stay whole. If None, each projection is one matrix."""
+    """Orthogonalize attention projections that hold heads along their rows in blocks of this many heads, each block on its own (per-head Muon; ``1`` = per head): query/key/value (GQA key/value by their own heads), per-channel output gates, and the MLA up-projections ``q_b_proj`` and ``kv_b_proj``. At ``1``, matrices packed in one head ([query; gate], MLA [W_UK; W_UV]) are split too. Output projections (heads along columns) and latent projections stay whole. If None, each projection is one matrix."""
 
 
 class SignSGDConfig(BaseOptimizerConfig):

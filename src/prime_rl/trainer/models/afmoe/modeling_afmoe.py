@@ -18,6 +18,8 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_2_varlen_op,
     flash_attn_3_varlen_op,
     flash_attn_4_varlen_op,
+    head_partitions,
+    qkv_head_partitions,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -81,6 +83,10 @@ class AfmoeAttentionBase(nn.Module):
         # QK normalization
         self.q_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.k_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        partitions = qkv_head_partitions(self, self.num_heads, self.num_key_value_heads, self.head_dim, heads_per_block)
+        return partitions | {self.gate_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block)}
 
 
 class AfmoeFlashAttention(AfmoeAttentionBase):

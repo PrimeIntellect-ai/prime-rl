@@ -150,12 +150,16 @@ class GlmMoeDsaAttention(nn.Module):
 
         self.cp_context = CPContext()
 
-    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
+        # The down-projections are latent, and o_proj holds its heads along the columns
         return {
             self.q_b_proj.weight: head_partitions(self.num_heads, (self.qk_head_dim,), heads_per_block),
             self.kv_b_proj.weight: head_partitions(
                 self.num_heads, (self.qk_nope_head_dim, self.v_head_dim), heads_per_block
             ),
+            self.q_a_proj.weight: None,
+            self.kv_a_proj_with_mqa.weight: None,
+            self.o_proj.weight: None,
         }
 
     def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

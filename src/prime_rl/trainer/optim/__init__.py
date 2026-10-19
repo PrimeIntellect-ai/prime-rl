@@ -260,12 +260,18 @@ def muon_head_partitions(
 ) -> dict[nn.Parameter, tuple[int, ...]]:
     """Per-head Muon: the matrix partitions of every attention module's head projections (``optim.heads_per_block``).
 
-    Head partitions refine the packed ``qkv_proj`` partitions, since each head block lies inside one of q, k, v."""
+    Each attention module returns its own parameters, partitioned or ``None`` to stay whole, and must account for
+    every Muon parameter it owns. Head partitions refine the packed ``qkv_proj`` partitions, since each head block
+    lies inside one of q, k, v."""
     partitions = {}
     for name, module in model.named_modules():
-        if not name.endswith("self_attn"):
-            continue
         if not hasattr(module, "muon_head_partitions"):
-            raise NotImplementedError(f"optim.heads_per_block does not support {type(module).__name__} ({name})")
-        partitions |= module.muon_head_partitions(heads_per_block)
-    return {param: sizes for param, sizes in partitions.items() if param in muon_params}
+            if name.endswith("self_attn"):
+                raise NotImplementedError(f"optim.heads_per_block does not support {type(module).__name__} ({name})")
+            continue
+        module_partitions = module.muon_head_partitions(heads_per_block)
+        missed = [n for n, p in module.named_parameters() if p in muon_params and p not in module_partitions]
+        if missed:
+            raise ValueError(f"{type(module).__name__} ({name}) does not partition or keep whole: {missed}")
+        partitions |= {p: sizes for p, sizes in module_partitions.items() if sizes is not None and p in muon_params}
+    return partitions
