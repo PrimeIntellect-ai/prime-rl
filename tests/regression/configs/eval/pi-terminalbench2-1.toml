@@ -22,6 +22,6 @@ env.taskset.id = "pi-terminalbench2-1"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
 env.agent.retries.rules = [
-  {type = "ProviderError", max_retries = 2},
-  {type = "SandboxError", max_retries = 2},
+  {type = "ProviderError", max_retries = 1},
+  {type = "SandboxError", max_retries = 1},
 ]
