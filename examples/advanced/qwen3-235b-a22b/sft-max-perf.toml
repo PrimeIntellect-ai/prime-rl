@@ -1,0 +1,61 @@
+# SFT max trainer perf: Qwen3-235B-A22B on 4 nodes x 8 B300 at seq 16k.
+#
+# FSDP over 32 GPUs with EP 8, one packed 16384-token sample per GPU per step (32 x 16384 tokens),
+# full activation checkpointing, AdamW with fp32 master weights and fp32 optimizer states, bf16
+# compute, fp32 gradient reduce, FA4 varlen attention, torch.compile with fullgraph per block,
+# everything on GPU (no CPU offloading), 20 steps. Routing is forced round-robin balanced so the
+# step time does not depend on the data; drop [model.debug] for the checkpoint's real routing.
+# See docs/scaling.md#max-trainer-throughput-recipe. Around 46% MFU on 4 x 8 B300.
+#
+#   uv run sft @ examples/advanced/qwen3-235b-a22b/sft-max-perf.toml
+#
+# There is no [ckpt] block: this run measures step time, it does not produce a usable checkpoint.
+# `dist_timeout_seconds` covers the first run, which builds the HF -> prime-rl conversion cache.
+
+dist_timeout_seconds = 14400
+max_steps = 20
+
+# The renderer registry lists Qwen/Qwen3-235B-A22B but not the 2507 Thinking variant, which uses
+# the same Qwen3 chat template.
+[renderer]
+name = "qwen3"
+
+[model]
+name = "Qwen/Qwen3-235B-A22B-Thinking-2507"
+seq_len = 16384
+ep = 8
+offload = "none"
+ac_offloading = "None"
+# fullgraph needs the router inside the block's FSDP unit, which the fp32 router is not.
+moe_router_dtype = "bfloat16"
+
+# Selective AC does not fit at seq 16384 on 4 nodes with fp32 AdamW states and the torch dispatch.
+[model.ac]
+mode = "full"
+freq = 1
+
+[model.compile]
+fullgraph = true
+
+[model.moe.dispatch]
+type = "torch"
+
+[model.debug]
+force_balanced_routing = true
+
+[data]
+name = "PrimeIntellect/Reverse-Text-SFT"
+seq_len = 16384
+batch_size = 32
+micro_batch_size = 1
+
+[optim]
+type = "adamw"
+lr = 1e-5
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+
+[slurm]
+job_name = "qwen3-235b-sft-max-perf"

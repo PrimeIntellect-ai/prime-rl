@@ -113,9 +113,13 @@ class LiveFolds:
             if size < consumed:  # replaced by a new attempt's file
                 consumed, dispatch, assembly = 0, {}, EpisodeAssembly()
             if size > consumed:
-                with path.open("rb") as f:
-                    f.seek(consumed)
-                    data = f.read()
+                try:
+                    with path.open("rb") as f:
+                        f.seek(consumed)
+                        data = f.read()
+                except FileNotFoundError:
+                    self._folds.pop(path, None)
+                    return None
                 try:
                     read, dispatch = fold_lines(data, dispatch, assembly)
                 except (orjson.JSONDecodeError, KeyError):

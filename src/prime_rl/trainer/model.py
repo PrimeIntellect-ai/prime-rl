@@ -16,7 +16,6 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
@@ -39,7 +38,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
-from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
+from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
@@ -357,6 +356,8 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
     # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
     # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
     indexer_types = getattr(model_config, "indexer_types", None)
@@ -417,13 +418,9 @@ def get_model(
     # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
         cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
-        support = cp_model_cls.cp_support(model_config)
-        if config.cp_style not in support.styles:
-            supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
-            raise ValueError(
-                f"{model_config.model_type!r} does not support cp_style={config.cp_style!r} "
-                f"({support.reason}); {supported}."
-            )
+        cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
+        if cp_blocker is not None:
+            raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
 
     if config.vlm is not None and custom_vlm_cls is None:
         raise ValueError(
@@ -590,8 +587,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 reshard_after_forward=config.reshard_after_forward,
                 shard_placement_fn=shard_placement_fn,
             )
-            # Keep the router reduction from waiting for the expert reduction's input buffer.
-            block_mlp.router.set_reduce_scatter_max_input_buffers(2)
 
         fully_shard(
             transformer_block,
@@ -637,6 +632,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
     )
+    model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
     if not parallel_dims.ep_enabled:
         return
@@ -691,7 +687,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
@@ -773,19 +769,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     )
     write_back_loaded_packed_parameters(model, state_dict)
 
-    lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
-    if lora_modules:
-        generator: torch.Generator | None = None
-        if parallel_dims.dp_replicate_enabled:
-            # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
-            dp_replicate_mesh = parallel_dims.world_mesh["dp_replicate"]
-            seed_tensor = torch.empty(1, dtype=torch.long, device="cuda")
-            if dp_replicate_mesh.get_local_rank() == 0:
-                seed_tensor.random_()
-            torch.distributed.broadcast(seed_tensor, src=0, group=dp_replicate_mesh.get_group())
-            generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
-        for module in lora_modules:
-            module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
 
@@ -837,16 +820,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
-        layer = language_model.layers[layer_id]
-        if isinstance(layer, CheckpointWrapper) and any(
-            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
-        ):
-            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
-            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
-            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
-            layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -990,7 +965,7 @@ def setup_model(
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
-            freeze_all_except_lora_and_specified(model, config.lora)
+            freeze_all_except_lora(model)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
@@ -998,14 +973,13 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-
-    setup_fsdp(model, config, parallel_dims)
-
     if config.compile is not None:
         apply_compile(model, config.compile)
+
+    setup_fsdp(model, config, parallel_dims)
 
     if loading_from_checkpoint_later:
         logger.warning(
@@ -1016,7 +990,7 @@ def setup_model(
         torch.distributed.barrier()
         model.init_buffers_post_meta()
     else:
-        load_dcp_from_hf(model, config, parallel_dims)
+        load_dcp_from_hf(model, config)
 
     _reset_runtime_moe_buffers(model)
     return model
