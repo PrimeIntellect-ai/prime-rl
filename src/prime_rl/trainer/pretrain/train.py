@@ -96,6 +96,20 @@ def update_selection_biases(model: nn.Module, tokens_per_expert: Tensor, rate: f
             moe.router.selection_bias += rate * (delta - delta.mean())
 
 
+@torch.no_grad()
+def quantile_update_selection_biases(model: nn.Module, group: dist.ProcessGroup) -> None:
+    """Quantile balancing: set each layer's selection bias to minus the step's balancing thresholds of its experts
+    (``PrimeRouter.record_quantiles``), averaged over the micro-batches and ranks and mean-centred."""
+    routers = [moe.router for moe in iter_moe_blocks(model)]
+    sums = torch.stack([torch.cat([router.quantile_sum, router.quantile_count[None]]) for router in routers])
+    dist.all_reduce(sums, group=group)
+    for router, row in zip(routers, sums):
+        thresholds = row[:-1] / row[-1]
+        router.selection_bias.copy_(thresholds.mean() - thresholds)
+        router.quantile_sum.zero_()
+        router.quantile_count.zero_()
+
+
 def count_parameters(model: nn.Module) -> dict[str, int]:
     """Total, embedding (input embedding and LM head), non-embedding and active non-embedding parameter counts.
     Active counts the routed experts of each MoE layer at ``top_k / num_experts``, the share each token uses."""
@@ -267,9 +281,12 @@ def train(config: PretrainConfig):
         raise ValueError(f"Pretraining MoE models use model_type 'prime_moe', got {model.config.model_type!r}")
     balance = config.model.moe.balance
     for moe in iter_moe_blocks(model):
+        # Allocated uninitialized with the rest of the model.
         if moe.routed_k_counts is not None:
-            # Allocated uninitialized with the rest of the model.
             moe.routed_k_counts.zero_()
+        moe.router.quantile_sum.zero_()
+        moe.router.quantile_count.zero_()
+        moe.router.quantile_balance = balance.bias_update == "quantile"
     moes_with_seq_balance = list(iter_moe_blocks(model)) if balance.seq_aux_coeff > 0 else []
     for moe in moes_with_seq_balance:
         # A micro-batch is `micro_batch_size` packed rows concatenated into one sample; the sequences are the rows.
@@ -412,9 +429,13 @@ def train(config: PretrainConfig):
             biases = [
                 moe.router.selection_bias for moe in iter_moe_blocks(model) if moe.router.selection_bias is not None
             ]
-            if balance.bias_update_rate > 0 and progress.step <= bias_freeze_step:
+            updates_bias = balance.bias_update == "quantile" or balance.bias_update_rate > 0
+            if updates_bias and progress.step <= bias_freeze_step:
                 previous_biases = [bias.clone() for bias in biases]
-                update_selection_biases(model, result.tokens_per_expert, balance.bias_update_rate)
+                if balance.bias_update == "quantile":
+                    quantile_update_selection_biases(model, dp_cp_group)
+                else:
+                    update_selection_biases(model, result.tokens_per_expert, balance.bias_update_rate)
                 if biases:
                     # Share of experts whose bias moved in the opposite direction to the previous step's move.
                     moves = torch.stack([bias - previous for bias, previous in zip(biases, previous_biases)]).sign()

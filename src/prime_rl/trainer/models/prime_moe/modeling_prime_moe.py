@@ -19,6 +19,7 @@ from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
+from prime_rl.trainer.models.prime_moe.attention import PrimeFlashAttention
 from prime_rl.trainer.models.prime_moe.configuration_prime_moe import PrimeMoeConfig
 from prime_rl.trainer.models.prime_moe.hyper_connection import HyperConnection
 from prime_rl.trainer.models.prime_moe.moe import PrimeMoE, PrimeRouter
@@ -38,14 +39,22 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
             use_qk_norm=config.use_qk_norm,
             rms_norm_eps=config.rms_norm_eps,
         )
-        self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
+        if config.attn_output_gate or config.exclusive_attention:
+            self.self_attn = PrimeFlashAttention(
+                attn_config,
+                flash_attn_version=int(config._attn_implementation.removeprefix("flash_attention_")),
+                exclusive=config.exclusive_attention,
+                output_gate=config.attn_output_gate,
+            )
+        else:
+            self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
         if layer_idx >= config.first_k_dense_replace:
             shared_expert = None
-            if config.n_shared_experts > 0:
+            if config.shared_expert_intermediate_size > 0:
                 shared_expert = FeedForward(
                     dim=config.hidden_size,
-                    hidden_dim=config.moe_intermediate_size * config.n_shared_experts,
+                    hidden_dim=config.shared_expert_intermediate_size,
                     expert_type="gated",
                     activation=config.hidden_act,
                 )
@@ -57,15 +66,19 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                     top_k=config.num_experts_per_tok,
                     route_norm=config.norm_topk_prob,
                     route_scale=config.routed_scaling_factor,
+                    bias_on_logits=config.router_bias_on_logits,
                 ),
                 experts=GroupedExperts(
-                    dim=config.hidden_size,
+                    dim=config.latent_dim or config.hidden_size,
                     hidden_dim=config.moe_intermediate_size,
                     num_experts=config.n_routed_experts,
                     expert_type="gated",
                     activation=config.hidden_act,
                 ),
                 shared_expert=shared_expert,
+                dim=config.hidden_size,
+                latent_dim=config.latent_dim,
+                norm_eps=config.rms_norm_eps,
             )
         else:
             self.mlp = FeedForward(

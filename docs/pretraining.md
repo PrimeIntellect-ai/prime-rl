@@ -21,6 +21,10 @@ name = "tokenizers/deepseek-v4-flash-base"  # defaults to model.name
 MoE models use `prime_moe`, pretraining's own model (`prime_rl.trainer.models.prime_moe`), so architecture work does not touch the `glm4_moe` that SFT and RL use. It is GLM-4.5's architecture with the same config fields and state-dict layout, plus:
 - Gated Residual connections (Qwen3.8-Next): `hc_count` residual streams (above 1) with read gates of rank `hc_lowrank` replace the pre-norms and the final norm. Their projections train with AdamW.
 - Null experts (AdaMoE): `n_null_experts` zero-output experts the router can select next to the routed ones, so tokens use between 0 and `num_experts_per_tok` routed experts. Only the (token, routed expert) pairs are dispatched. The metrics are `router/k/*`.
+- Exclusive self attention (XSA): `exclusive_attention` removes from each head's output its component along the token's own value vector.
+- Gated attention (Qwen3-Next): `attn_output_gate` multiplies the attention output elementwise by `sigmoid(g_proj(x))`, computed from the block input, before `o_proj` (after XSA).
+- LatentMoE: with `latent_dim`, the routed experts work in that width (projection down and RMS norm before the dispatch, projection up after the combine). The router and the shared experts stay full width. With `latent_dim = d/2`, doubling the routed experts, the null experts and `num_experts_per_tok` (and `routed_scaling_factor`, which keeps each expert's gate) keeps the expert parameters and routed FLOPs per token (Kimi K3, NVIDIA LatentMoE).
+- `router_bias_on_logits` adds the selection bias to the router logits instead of the sigmoid scores (for quantile balancing).
 
 The trainer and the HF export (`tools/convert_dcp_to_bf16.py`) read the same model directory and tokenizer; vLLM does not support `prime_moe` yet. The trainer logs the active non-embedding (routed experts counted at `top_k / num_experts`), non-embedding, embedding (input embedding and LM head) and total parameter counts at startup, and as `params/*` at step 0.
 
@@ -81,6 +85,7 @@ The schedule scales every param group's own learning rate, so ratios between gro
 
 | Field | Meaning |
 |---|---|
+| `bias_update` | `sign` (default): the update below. `quantile`: quantile balancing. Every step, each layer's bias is set so that every expert would have been selected by `num_experts_per_tok / num_experts` of the step's tokens (null experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Best with `router_bias_on_logits`. |
 | `bias_update_rate` | Every step, each layer's selection bias moves by this step size (gamma) towards underloaded experts, using the step's global expert counts. The update is mean-centred. Default 3e-3; 0 turns it off. The bias starts at 0. |
 | `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
 | `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |

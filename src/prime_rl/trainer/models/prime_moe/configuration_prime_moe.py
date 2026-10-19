@@ -28,6 +28,8 @@ class PrimeMoeConfig(PretrainedConfig):
         moe_intermediate_size (`int`): Hidden size of each routed and shared expert.
         num_experts_per_tok (`int`): Experts each token selects (`top_k`), null experts included.
         n_shared_experts (`int`): Number of shared experts; their hidden sizes add up.
+        shared_expert_intermediate_size (`int`, *optional*): Hidden size of the shared experts together. Defaults to
+            `moe_intermediate_size * n_shared_experts`.
         n_routed_experts (`int`): Number of routed experts.
         routed_scaling_factor (`float`): Scale of the routed experts' output.
         first_k_dense_replace (`int`): Number of leading dense layers.
@@ -38,6 +40,15 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_lowrank (`int`, *optional*): Rank of the Gated Residual read gates; required when `hc_count` is above 1.
         n_null_experts (`int`): Zero-output experts the router can select next to the routed experts (AdaMoE); a
             token that selects them uses fewer routed experts.
+        attn_output_gate (`bool`): Elementwise sigmoid gate on the attention output, computed from the block input
+            (gated attention, Qwen3-Next).
+        exclusive_attention (`bool`): Exclusive self attention (XSA): remove from each head's output its component
+            along the token's own value vector.
+        latent_dim (`int`, *optional*): LatentMoE: the routed experts work in this width (`hidden_size -> latent_dim`
+            projection and RMS norm before them, `latent_dim -> hidden_size` projection after the combine), with hidden
+            size `moe_intermediate_size`. The router and the shared experts stay full width.
+        router_bias_on_logits (`bool`): Add the selection bias to the router logits instead of the sigmoid scores
+            (the space quantile balancing works best in).
     """
 
     model_type = "prime_moe"
@@ -67,12 +78,17 @@ class PrimeMoeConfig(PretrainedConfig):
         n_shared_experts=1,
         n_routed_experts=128,
         routed_scaling_factor=1.0,
+        shared_expert_intermediate_size=None,
         first_k_dense_replace=1,
         norm_topk_prob=True,
         use_qk_norm=False,
         hc_count=1,
         hc_lowrank=None,
         n_null_experts=0,
+        attn_output_gate=False,
+        exclusive_attention=False,
+        latent_dim=None,
+        router_bias_on_logits=False,
         pad_token_id=None,
         **kwargs,
     ):
@@ -98,6 +114,11 @@ class PrimeMoeConfig(PretrainedConfig):
         self.moe_intermediate_size = moe_intermediate_size
         self.num_experts_per_tok = num_experts_per_tok
         self.n_shared_experts = n_shared_experts
+        self.shared_expert_intermediate_size = (
+            shared_expert_intermediate_size
+            if shared_expert_intermediate_size is not None
+            else moe_intermediate_size * n_shared_experts
+        )
         self.n_routed_experts = n_routed_experts
         self.routed_scaling_factor = routed_scaling_factor
         self.first_k_dense_replace = first_k_dense_replace
@@ -107,5 +128,9 @@ class PrimeMoeConfig(PretrainedConfig):
         self.hc_count = hc_count
         self.hc_lowrank = hc_lowrank
         self.n_null_experts = n_null_experts
+        self.attn_output_gate = attn_output_gate
+        self.exclusive_attention = exclusive_attention
+        self.latent_dim = latent_dim
+        self.router_bias_on_logits = router_bias_on_logits
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)

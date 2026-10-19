@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 from prime_rl.trainer.distributed.token_dispatcher import TokenDispatcher
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -9,15 +10,28 @@ from prime_rl.trainer.models.layers.moe import (
     TokenChoiceTopKRouter,
     record_moe_routing_statistics,
 )
+from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 
 
 class PrimeRouter(TokenChoiceTopKRouter):
     """Sigmoid-scored top-k router with a selection bias and ``num_null_experts`` zero-output experts next to the
     routed ones (AdaMoE). Null experts are scored, selected and balanced like the others, so a token that selects
-    them uses fewer routed experts. Returns the scores of all experts too, for the sequence-wise balance loss."""
+    them uses fewer routed experts. Returns the scores of all experts too, for the sequence-wise balance loss.
+
+    With ``bias_on_logits`` the selection bias is added to the logits instead of the sigmoid scores. With
+    ``quantile_balance`` set by the training loop, every forward with grad records each expert's quantile balancing
+    threshold (``quantile_sum``, ``quantile_count``), from which the loop sets the next step's bias."""
 
     def __init__(
-        self, *, dim: int, num_experts: int, num_null_experts: int, top_k: int, route_norm: bool, route_scale: float
+        self,
+        *,
+        dim: int,
+        num_experts: int,
+        num_null_experts: int,
+        top_k: int,
+        route_norm: bool,
+        route_scale: float,
+        bias_on_logits: bool,
     ):
         super().__init__(
             dim=dim,
@@ -29,6 +43,21 @@ class PrimeRouter(TokenChoiceTopKRouter):
             selection_bias=True,
         )
         self.num_null_experts = num_null_experts
+        self.bias_on_logits = bias_on_logits
+        self.quantile_balance = False
+        self.register_buffer("quantile_sum", torch.zeros(self.num_experts, dtype=torch.float32), persistent=False)
+        self.register_buffer("quantile_count", torch.zeros((), dtype=torch.float32), persistent=False)
+
+    @torch.no_grad()
+    def record_quantiles(self, selection_scores: torch.Tensor, biased_scores: torch.Tensor) -> None:
+        """Quantile balancing (Su 2026; Kimi K3, Marin): each token's threshold is its largest unselected biased score,
+        and each expert's new bias is minus the margin over that threshold that ``top_k / num_experts`` of the tokens
+        exceed, so that with it every expert would have been selected by exactly that share of these tokens."""
+        thresholds = biased_scores.topk(self.top_k + 1, dim=1).values[:, -1:]
+        margins = selection_scores - thresholds
+        rank = max(1, round(margins.shape[0] * self.top_k / self.num_experts))
+        self.quantile_sum += margins.topk(rank, dim=0).values[-1]
+        self.quantile_count += 1
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Like ``TokenChoiceTopKRouter.forward`` with sigmoid scores; also returns the ``(bs*slen, num_experts)``
@@ -40,9 +69,11 @@ class PrimeRouter(TokenChoiceTopKRouter):
             logits = self.gate(x)
         scores = torch.sigmoid(logits.float())
         # The selection bias only affects which experts are selected, not their scores.
-        _, selected_experts_indices = torch.topk(
-            scores + self.selection_bias, k=self.top_k, dim=1, sorted=self.topk_sorted
-        )
+        selection_scores = logits.float() if self.bias_on_logits else scores
+        biased_scores = selection_scores + self.selection_bias
+        _, selected_experts_indices = torch.topk(biased_scores, k=self.top_k, dim=1, sorted=self.topk_sorted)
+        if self.quantile_balance and torch.is_grad_enabled():
+            self.record_quantiles(selection_scores, biased_scores)
         top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
         with torch.no_grad():
@@ -80,9 +111,22 @@ def sequence_balance(scores: torch.Tensor, selected_experts: torch.Tensor, num_r
 class PrimeMoE(MoE):
     """The shared token-choice MoE runtime with a ``PrimeRouter``. With null experts, tokens use different numbers of
     routed experts: only the (token, routed expert) pairs are dispatched, one per row. Also computes the sequence-wise
-    balance for its loss (``balance_rows``) and counts the routed experts per token (``routed_k_counts``)."""
+    balance for its loss (``balance_rows``) and counts the routed experts per token (``routed_k_counts``).
 
-    def __init__(self, *, router: PrimeRouter, experts: GroupedExperts, shared_expert: FeedForward | None) -> None:
+    With ``latent_dim`` (LatentMoE), the routed experts work in that width: the token is projected down and RMS-normalized
+    before the dispatch, and the combined expert output is projected back up. The router and the shared experts read
+    the full-width token."""
+
+    def __init__(
+        self,
+        *,
+        router: PrimeRouter,
+        experts: GroupedExperts,
+        shared_expert: FeedForward | None,
+        dim: int,
+        latent_dim: int | None,
+        norm_eps: float,
+    ) -> None:
         super().__init__(
             router=router,
             experts=experts,
@@ -106,6 +150,11 @@ class PrimeMoE(MoE):
         # how many packed rows a sample holds, every forward with grad computes the per-row balance for its loss.
         self.balance_rows: int | None = None
         self.seq_balance: torch.Tensor | None = None
+        self.latent_down = self.latent_norm = self.latent_up = None
+        if latent_dim is not None:
+            self.latent_down = nn.Linear(dim, latent_dim, bias=False)
+            self.latent_norm = RMSNorm(RMSNormConfig(hidden_size=latent_dim, eps=norm_eps))
+            self.latent_up = nn.Linear(latent_dim, dim, bias=False)
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         # Variable-k routing dispatches one (token, expert) pair per row.
@@ -126,6 +175,7 @@ class PrimeMoE(MoE):
                 self.tokens_per_expert, self.routing_confidence_sum, num_tokens_per_expert, routing_confidence_sum
             )
 
+        expert_input = x if self.latent_down is None else self.latent_norm(self.latent_down(x))
         if self.variable_k:
             # Dispatch only the (token, routed expert) pairs, without the null experts.
             routed = selected_experts_indices < self.experts.num_experts
@@ -134,24 +184,30 @@ class PrimeMoE(MoE):
                     self.routed_k_counts += torch.bincount(routed.sum(dim=1), minlength=self.routed_k_counts.numel())
             token_indices, slots = routed.nonzero(as_tuple=True)
             pair_output = self.token_dispatcher.run(
-                x[token_indices],
+                expert_input[token_indices],
                 top_scores[token_indices, slots].unsqueeze(1),
                 selected_experts_indices[token_indices, slots].unsqueeze(1),
                 self.experts,
                 score_before_experts=self.score_before_experts,
             )
             routed_output = (
-                torch.zeros(x.shape, dtype=torch.float32, device=x.device)
+                torch.zeros(expert_input.shape, dtype=torch.float32, device=x.device)
                 .index_add(0, token_indices, pair_output.float())
                 .to(x.dtype)
             )
         else:
             routed_output = self.token_dispatcher.run(
-                x, top_scores, selected_experts_indices, self.experts, score_before_experts=self.score_before_experts
+                expert_input,
+                top_scores,
+                selected_experts_indices,
+                self.experts,
+                score_before_experts=self.score_before_experts,
             )
 
         shared_output = self.shared_expert(x) if self.shared_expert is not None else None
         self.token_dispatcher.synchronize()
+        if self.latent_up is not None:
+            routed_output = self.latent_up(routed_output)
         if shared_output is not None:
             routed_output = routed_output + shared_output
         return routed_output.reshape(bs, slen, dim)
