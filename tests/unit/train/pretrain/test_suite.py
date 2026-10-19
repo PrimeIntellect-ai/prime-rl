@@ -49,15 +49,23 @@ def test_summarize_ctxcont_scores_the_gold_choice():
 class CharTokenizer:
     bos_token_id, eos_token_id = 1, 2
 
-    def __call__(self, texts, add_special_tokens=False):
-        return {"input_ids": [[ord(char) for char in text] for text in texts]}
+    def __call__(self, texts, add_special_tokens=False, return_offsets_mapping=False):
+        if isinstance(texts, str):
+            return {
+                "input_ids": [ord(char) for char in texts],
+                "offset_mapping": [(i, i + 1) for i in range(len(texts))],
+            }
+        return {
+            "input_ids": [[ord(char) for char in text] for text in texts],
+            "offset_mapping": [[(i, i + 1) for i in range(len(text))] for text in texts],
+        }
 
 
 def test_multi_length_set_scores_shared_requests_once(tmp_path):
     (tmp_path / "docs").mkdir()
     pq.write_table(pa.table({"text": ["short", "a much longer document"]}), tmp_path / "docs" / "test.parquet")
     (tmp_path / "docs" / "meta.json").write_text(json.dumps({"kind": "ppl", "parquet_sha256": "x"}))
-    multi = prepare_multi_length_set("docs", tmp_path, CharTokenizer(), [8, 32])
+    multi = prepare_multi_length_set("docs", tmp_path, CharTokenizer(), [8, 32], bos=True)
     # "short" (5 chars + BOS + EOS) is one window at both lengths; the long document is 3 windows at 8, 1 at 32.
     assert len(multi.versions[8].requests) == 4 and len(multi.versions[32].requests) == 2
     assert len(multi.requests) == 5
@@ -89,7 +97,7 @@ def test_score_sets_matches_scoring_each_set_alone(tmp_path):
             (tmp_path / name).mkdir()
             pq.write_table(pa.table({"text": texts}), tmp_path / name / "test.parquet")
             (tmp_path / name / "meta.json").write_text(json.dumps({"kind": "ppl", "parquet_sha256": "x"}))
-        eval_sets = [prepare_multi_length_set(name, tmp_path, CharTokenizer(), [8, 32]) for name in "ab"]
+        eval_sets = [prepare_multi_length_set(name, tmp_path, CharTokenizer(), [8, 32], bos=True) for name in "ab"]
         together = score_sets(TokenPositionModel(), eval_sets, token_budget=40, group=dist.group.WORLD)
         for eval_set, (logprobs, hits) in zip(eval_sets, together):
             alone_logprobs, alone_hits = score_requests(
@@ -106,8 +114,27 @@ def test_pairs_requests_fit_the_window(tmp_path):
     table = pa.table({"good": ["a long good sentence", "ok"], "bad": ["a long bad sentence!", "no"]})
     pq.write_table(table, tmp_path / "pairs" / "test.parquet")
     (tmp_path / "pairs" / "meta.json").write_text(json.dumps({"kind": "pairs", "parquet_sha256": "x"}))
-    eval_set = prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=8)
+    eval_set = prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=8, bos=True)
     assert all(len(ids) - 1 <= 8 for ids, _ in eval_set.requests)
     logprobs = [np.full(len(ids) - start, -1.0) for ids, start in eval_set.requests]
     summary, _ = summarize(eval_set, logprobs, [np.ones_like(lp, dtype=bool) for lp in logprobs])
     assert set_metrics("pairs", 8, summary)["eval/pairs/acc@8"] == 0.0  # equal scores: good never beats bad
+
+
+def test_requests_without_bos_start_at_the_text(tmp_path):
+    for name, kind, columns in [
+        ("docs", "ppl", {"text": ["hello"]}),
+        ("cc", "ctxcont", {"context": ["Q:"], "continuation": [" yes"]}),
+        ("pairs", "pairs", {"good": ["ab"], "bad": ["ba"]}),
+    ]:
+        (tmp_path / name).mkdir()
+        pq.write_table(pa.table(columns), tmp_path / name / "test.parquet")
+        (tmp_path / name / "meta.json").write_text(json.dumps({"kind": kind, "parquet_sha256": "x"}))
+    docs = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=False)
+    assert docs.requests == [([ord(char) for char in "hello"] + [2], 1)]
+    assert docs.context["bytes"].tolist() == [4]  # the first character is context only
+    with_bos = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=32, bos=True)
+    assert with_bos.requests[0][0][0] == 1 and with_bos.context["bytes"].tolist() == [5]
+    ids, start = prepare_set("cc", tmp_path, CharTokenizer(), seq_len=32, bos=False).requests[0]
+    assert ids == [ord(char) for char in "Q: yes"] and start == 2
+    assert prepare_set("pairs", tmp_path, CharTokenizer(), seq_len=32, bos=False).requests[0] == ([97, 98], 1)

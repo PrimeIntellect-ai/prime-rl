@@ -86,6 +86,9 @@ class TokenShards:
         _, order, offset = self.epoch_order
         return (offset + int(order[window]) * seq_len) % self.num_tokens
 
+    def first_token(self) -> int:
+        return int(self.open(0)[0][0])
+
     def last_token_of_first_document(self) -> int:
         tokens, doc_ends = self.open(0)
         return int(tokens[int(doc_ends[0]) - 1])
@@ -244,3 +247,12 @@ def check_eos(sources: dict[str, TokenShards], eos_token_id: int) -> None:
                 f"The first document of source {name!r} ends with token {last}, not the tokenizer's EOS "
                 f"{eos_token_id}. Were the shards tokenized with tokenizer.name?"
             )
+
+
+def starts_with_bos(sources: dict[str, TokenShards], bos_token_id: int | None) -> bool:
+    """Whether the documents of the sources start with the tokenizer's BOS, read off the first document of every
+    source. The eval suite formats its requests the same way."""
+    starts = {name: source.first_token() == bos_token_id for name, source in sources.items()}
+    if len(set(starts.values())) > 1:
+        raise ValueError(f"Only some token sources start their documents with BOS: {starts}")
+    return all(starts.values())

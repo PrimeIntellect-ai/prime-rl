@@ -41,6 +41,7 @@ from prime_rl.trainer.pretrain.data import (
     setup_train_dataset,
     source_tokens,
     setup_val_dataset,
+    starts_with_bos,
 )
 from prime_rl.trainer.pretrain.suite import (
     length_label,
@@ -351,11 +352,12 @@ def train(config: PretrainConfig):
     eval_sets = []
     if config.evals is not None:
         start_time = time.perf_counter()
+        bos = config.data.type == "tokens" and starts_with_bos(train_dataset.sources, tokenizer.bos_token_id)
         eval_sets = [
-            prepare_multi_length_set(name, config.evals.data_dir, tokenizer, config.evals.seq_lens)
+            prepare_multi_length_set(name, config.evals.data_dir, tokenizer, config.evals.seq_lens, bos)
             for name in config.evals.sets
         ]
-        logger.info(f"Prepared {len(eval_sets)} eval sets in {time.perf_counter() - start_time:.0f}s")
+        logger.info(f"Prepared {len(eval_sets)} eval sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s")
 
     @torch.no_grad()
     def run_suite(step: int) -> None:
