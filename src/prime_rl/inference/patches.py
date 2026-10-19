@@ -177,6 +177,9 @@ def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
     samples sporadic garbage tokens that eager prefill (and the trainer) do not reproduce. The
     boot-time kernel references the layer's original parameters, which layerwise reload refills
     in place, so on reload we only install the new weights and keep the kernel.
+
+    Upstream fix: https://github.com/vllm-project/vllm/pull/62406; remove this patch when our
+    minimum vLLM version includes it.
     """
     from vllm.model_executor.layers.fused_moe.oracle.fp8 import convert_to_fp8_moe_kernel_format
     from vllm.model_executor.layers.quantization.online.mxfp8 import Mxfp8OnlineMoEMethod
