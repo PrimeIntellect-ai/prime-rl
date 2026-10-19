@@ -43,6 +43,7 @@ MODEL = dict(
     # head axis to a power of two and its backward GEMM needs 32 rows.
     num_attention_heads=32,
     num_key_value_heads=1,
+    dsa_backend="tilelang",
     head_dim=32,
     q_lora_rank=64,
     partial_rotary_factor=0.5,

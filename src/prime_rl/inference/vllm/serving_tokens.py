@@ -36,7 +36,8 @@ from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
     GenerateResponse,
-    GenerateResponseChoice,
+    GenerateTokensChoice,
+    GenerateTokensResponse,
 )
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
@@ -49,14 +50,14 @@ from prime_rl.inference.patches import NEG_INF_BITS
 LOGPROB_SENTINEL = -9999.0
 
 
-class PrimeRlGenerateResponseChoice(GenerateResponseChoice):
+class PrimeRlGenerateResponseChoice(GenerateTokensChoice):
     routed_experts: dict[str, Any] | None = None  # type: ignore[assignment]
     completion_logprobs: dict[str, Any] | None = None
     sampling_mask: dict[str, Any] | None = None  # type: ignore[assignment]
     sampling_mask_logprobs: dict[str, Any] | None = None
 
 
-class PrimeRlGenerateResponse(GenerateResponse):
+class PrimeRlGenerateResponse(GenerateTokensResponse):
     choices: list[PrimeRlGenerateResponseChoice]
 
 
@@ -125,7 +126,7 @@ class _PackedOutputs:
                     output.sampling_mask = None
             yield request_output
 
-    def post_process(self, response: GenerateResponse) -> PrimeRlGenerateResponse:
+    def post_process(self, response: GenerateTokensResponse) -> PrimeRlGenerateResponse:
         choices = [
             PrimeRlGenerateResponseChoice(
                 **choice.model_dump(exclude={"routed_experts", "sampling_mask"}),
@@ -168,6 +169,6 @@ class PrimeRlServingTokens(ServingTokens):
             model_name,
             request_metadata,
         )
-        if isinstance(response, GenerateResponse):
+        if isinstance(response, GenerateTokensResponse):
             response = packed.post_process(response)
         return response
