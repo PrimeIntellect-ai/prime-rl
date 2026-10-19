@@ -172,6 +172,19 @@ class PrimeMoE(MoE):
             self.latent_norm = RMSNorm(RMSNormConfig(hidden_size=latent_dim, eps=norm_eps))
             self.latent_up = nn.Linear(latent_dim, dim, bias=False)
 
+    def prepare_expert_input(self, x: torch.Tensor) -> torch.Tensor:
+        if self.latent_down is None:
+            return x
+        x = self.latent_down(x)
+        return x if self.norm_latent_output else self.latent_norm(x)
+
+    def prepare_expert_output(self, x: torch.Tensor) -> torch.Tensor:
+        if self.latent_up is None:
+            return x
+        if self.norm_latent_output:
+            x = self.latent_norm(x)
+        return self.latent_up(x)
+
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         # Variable-k routing dispatches one (token, expert) pair per row.
         token_dispatcher.top_k = 1 if self.variable_k else self.router.top_k
@@ -191,11 +204,7 @@ class PrimeMoE(MoE):
                 self.tokens_per_expert, self.routing_confidence_sum, num_tokens_per_expert, routing_confidence_sum
             )
 
-        expert_input = x
-        if self.latent_down is not None:
-            expert_input = self.latent_down(x)
-            if not self.norm_latent_output:
-                expert_input = self.latent_norm(expert_input)
+        expert_input = self.prepare_expert_input(x)
         if self.variable_k:
             # Dispatch only the (token, routed expert) pairs, without the null experts.
             routed = selected_experts_indices < self.experts.num_experts
@@ -226,10 +235,7 @@ class PrimeMoE(MoE):
 
         shared_output = self.shared_expert(x) if self.shared_expert is not None else None
         self.token_dispatcher.synchronize()
-        if self.latent_up is not None:
-            if self.norm_latent_output:
-                routed_output = self.latent_norm(routed_output)
-            routed_output = self.latent_up(routed_output)
+        routed_output = self.prepare_expert_output(routed_output)
         if shared_output is not None:
             routed_output = routed_output + shared_output
         return routed_output.reshape(bs, slen, dim)
