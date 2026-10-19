@@ -130,6 +130,11 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
 
+    @classmethod
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.
+        return None
+
     def _init_weights(self, module):
         super()._init_weights(module)
 
