@@ -2,6 +2,7 @@ import asyncio
 import functools
 import importlib
 import math
+import os
 import sys
 from contextlib import contextmanager
 from typing import Any, Callable
@@ -60,6 +61,15 @@ def clean_exit(func: Callable) -> Callable:
             except Exception:
                 get_logger().opt(exception=True).error(f"Fatal error in {func.__name__}")
                 wandb.finish(exit_code=1)
+                dist = sys.modules.get("torch.distributed")
+                if dist is not None and dist.is_initialized():
+                    # A failed rank exits now, so the launcher tears the job down: destroying the process group
+                    # (and joining background threads at exit) waits for collectives the other ranks may never
+                    # join, until the NCCL watchdog fires.
+                    get_logger().complete()
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    os._exit(1)
                 # sys.exit raises SystemExit so the finally block still runs.
                 sys.exit(1)
             finally:
