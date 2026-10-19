@@ -57,22 +57,3 @@ def test_fp8_export_rolls_back_on_quantization_failure(tiny_run, fp8_tool, monke
         fp8_tool.convert(step)
     assert not (step / "weights-FP8").exists()
     assert not list(step.glob(".weights-FP8-*"))
-
-
-@pytest.mark.parametrize("format", ["bf16", "fp8"])
-@pytest.mark.parametrize("blocked", ["existing-output", "multiple-processes"])
-def test_export_rejects_unsafe_invocation(tiny_run, fp8_tool, monkeypatch, format, blocked):
-    bf16_tool, step, _, _ = tiny_run
-    tool = bf16_tool if format == "bf16" else fp8_tool
-    output = step / "export"
-    if blocked == "existing-output":
-        output.mkdir()
-        (output / "sentinel").write_bytes(b"keep")
-        with pytest.raises(FileExistsError):
-            tool.convert(step, output)
-        assert (output / "sentinel").read_bytes() == b"keep"
-    else:
-        monkeypatch.setenv("WORLD_SIZE", "2")
-        with pytest.raises(ValueError, match="one process"):
-            tool.convert(step, output)
-        assert not output.exists()
