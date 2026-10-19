@@ -89,7 +89,7 @@ def summarize_episode(line: int, rec: dict, offset: int | None = None) -> dict:
         if advantage is not None:
             advantages.append(advantage)
         for node in nodes:
-            if (node.get("message") or {}).get("role") == "assistant":
+            if node.get("sampled"):
                 turns += 1
         stop_condition = trace.get("stop_condition", stop_condition)
         truncated = truncated or trace_truncated(trace)

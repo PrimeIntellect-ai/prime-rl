@@ -40,7 +40,6 @@ name = "zai-org/GLM-4.5-Air"
 [trainer.model]
 attn = "flash_attention_3"
 cp = 4
-cp_style = "ulysses"
 
 [trainer.model.ac_offloading]
 max_inflight_activations = 1

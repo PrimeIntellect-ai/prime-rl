@@ -191,10 +191,10 @@ cat > "$LAUNCH_BODY" <<'LAUNCH_SH'
 
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
-{%- if kv_offload %}
+
+    # NIXL/RDMA registers pinned host memory (KV offload pools).
     ulimit -l unlimited
-{%- endif %}
-{%- if kv_offload_mooncake %}
+{%- if mooncake_offloads %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
 
@@ -278,6 +278,7 @@ cat > "$LAUNCH_BODY" <<'LAUNCH_SH'
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
+    CONFIG_PATH="$CONFIG_DIR/inference-$ROLE.json"
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
