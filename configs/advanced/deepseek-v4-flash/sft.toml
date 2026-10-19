@@ -19,7 +19,6 @@ max_steps = 20
 [model]
 name = "deepseek-ai/DeepSeek-V4-Flash-0731"
 ep = 8
-dsa_backend = "cudnn_flashmla"
 
 [model.ac]
 freq = 1
