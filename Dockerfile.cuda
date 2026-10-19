@@ -265,7 +265,6 @@ COPY packages /app/packages
 COPY deps /app/deps
 COPY configs /app/configs
 COPY examples /app/examples
-COPY benchmarks/scripts /app/benchmarks/scripts
 COPY scripts/docker-editable-pretend-versions.sh /app/scripts/docker-editable-pretend-versions.sh
 COPY scripts/docker_application.py /build/docker_application.py
 ARG VERIFIERS_PRETEND_VERSION

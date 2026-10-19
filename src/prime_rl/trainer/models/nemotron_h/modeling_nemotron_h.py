@@ -44,9 +44,9 @@ class NemotronHDecoderLayer(nn.Module):
         self.layer_type = config.layer_types[layer_idx]
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
 
-        if self.layer_type == "mamba":
+        if self.layer_type == "linear_attention":
             self.mamba = NemotronHMamba2(config)
-        elif self.layer_type == "attention":
+        elif self.layer_type == "full_attention":
             self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](
                 AttentionConfig(
                     hidden_size=config.hidden_size,
@@ -115,9 +115,9 @@ class NemotronHDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
 
-        if self.layer_type == "mamba":
+        if self.layer_type == "linear_attention":
             hidden_states = self.mamba(hidden_states, cu_seqlens)
-        elif self.layer_type == "attention":
+        elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
                 cu_seqlens=cu_seqlens,

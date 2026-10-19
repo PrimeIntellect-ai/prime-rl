@@ -17,8 +17,8 @@ from types import SimpleNamespace
 
 import numpy as np
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
-    GenerateResponse,
-    GenerateResponseChoice,
+    GenerateTokensChoice,
+    GenerateTokensResponse,
     PlaceholderRangeInfo,
 )
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
@@ -51,11 +51,11 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     )
     capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
-    response = GenerateResponse(
+    response = GenerateTokensResponse(
         request_id="request-id",
         model="test-model",
         choices=[
-            GenerateResponseChoice(
+            GenerateTokensChoice(
                 index=0,
                 token_ids=[1, 2, 3],
                 routed_experts="upstream-npy-payload",
@@ -99,7 +99,7 @@ def test_payload_dir_writes_routing_and_masks_by_handle(tmp_path):
 
     sampling_params = SimpleNamespace(routed_experts_prompt_start=2, extra_args={"payload_dir": str(tmp_path / "v3")})
     capture = _PackedOutputs(request_outputs(), SimpleNamespace(sampling_params=sampling_params))
-    response = GenerateResponse(choices=[GenerateResponseChoice(index=0, token_ids=[1, 2, 3])])
+    response = GenerateTokensResponse(choices=[GenerateTokensChoice(index=0, token_ids=[1, 2, 3])])
 
     async def run():
         async for _ in capture:
