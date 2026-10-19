@@ -1,18 +1,16 @@
-import json
 import os
-import uuid
 from pathlib import Path
 
 from prime_rl.configs.pretrain import PretrainConfig
-from prime_rl.entrypoints.sft import submit_slurm_script, write_trainer_slurm_script
-from prime_rl.utils.config import cli, dump_resolved_config
+from prime_rl.entrypoints.sft import submit_slurm_script, write_config, write_trainer_slurm_script
+from prime_rl.utils.config import cli
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
     format_config_message,
     format_log_message,
     get_launcher_dir,
     prepare_attempt_dirs,
-    validate_run_dir,
+    prepare_run,
     write_launch_artifacts,
 )
 from prime_rl.utils.process import (
@@ -42,20 +40,7 @@ def pretrain_slurm(config: PretrainConfig, config_path: Path, log_dir: Path) -> 
 
 def pretrain(config: PretrainConfig):
     logger = setup_logger(config.log.level or "info", json_logging=config.log.json_logging)
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None
-    os.environ["PRL_RUN_NAME"] = config.run.name
-
-    resuming = config.resume is not None
-    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_run_dir(
-        config.run_dir,
-        output_dir=config.output_dir,
-        resuming=resuming,
-        clean=config.clean,
-        ckpt_output_dir=ckpt_output_dir,
-    )
-    config.run_dir.mkdir(parents=True, exist_ok=True)
+    prepare_run(config, config.ckpt.output_dir if config.ckpt else None)
 
     logger.info("Starting pretraining run")
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
@@ -72,7 +57,7 @@ def pretrain(config: PretrainConfig):
         # A single-node job runs this launcher again on the node; the trainers of a
         # multi-node job read the config directly.
         exclude |= {"slurm", "deployment"} if config.deployment.type == "multi_node" else {"slurm"}
-    config_path.write_text(json.dumps(dump_resolved_config(config, exclude=exclude), indent=2))
+    write_config(config, config_path, exclude=exclude)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'pretrain', [('Pretrain', config_path)])}")
     if config.slurm is not None:
         pretrain_slurm(config, config_path, log_dir)
