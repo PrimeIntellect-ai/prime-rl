@@ -34,6 +34,7 @@ from prime_rl.utils.sparse_weights import (
     compile_fp8_quantizer,
     encode_gaps,
     quantize_fp8_blocks,
+    rank_failed_marker,
     rank_part,
     rank_parts_marker,
     read_engine_layout,
@@ -1025,6 +1026,8 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         self.armed_step: int | None = None
         self.streamed_dir: Path | None = None
         self.num_streamed = 0
+        # The delta dir of the step being encoded, where a failed encode or write leaves this rank's failure marker
+        self.delta_dir: Path | None = None
 
     def diff_in_optimizer(self, optimizer: "OptimizerLike") -> None:
         """Take the deltas of the optimizer's parameters from its steps, which must each be followed by a broadcast."""
@@ -1103,6 +1106,9 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
             except BaseException as error:
                 self.logger.exception(f"Sparse weight broadcast failed in {fn.__name__}")
                 self.errors.append(error)
+                if pool is not self.anchors and self.delta_dir is not None:
+                    # Engines reading the delta fail instead of waiting for parts that never come
+                    _write_json(self.delta_dir / rank_failed_marker(self.world.rank), {"error": repr(error)})
                 raise
 
         return pool.submit(run)
@@ -1176,6 +1182,7 @@ class SparseFileSystemWeightSender(FileSystemWeightSender):
         encoder = self.encoder
         start = time.perf_counter()
         num_parts = 0
+        self.delta_dir = step_dir / DELTA_DIR
 
         def emit(part: tuple) -> None:
             nonlocal num_parts

@@ -441,6 +441,11 @@ def rank_parts_marker(rank: int) -> str:
     return f"rank_{rank}.parts"
 
 
+def rank_failed_marker(rank: int) -> str:
+    """Written by a trainer rank whose encode or writes of the delta failed."""
+    return f"rank_{rank}.failed"
+
+
 def read_delta(
     step_dir: Path, pool: ThreadPoolExecutor, names: set[str] | None = None
 ) -> tuple[list[tuple[list[tuple[str, int]], np.ndarray, np.ndarray]], dict[str, int]]:
@@ -475,6 +480,13 @@ def read_delta(
                     next_part[rank] += 1
                     found = True
             if not found:
+                for rank in range(len(num_parts)):
+                    failed = delta_dir / rank_failed_marker(rank)
+                    if failed.exists():
+                        raise RuntimeError(
+                            f"Trainer rank {rank} failed to write the sparse weight delta in {step_dir}: "
+                            f"{json.loads(failed.read_text())['error']}"
+                        )
                 time.sleep(0.02)
         frames = [frame for frame in (job.result() for job in jobs) if frame[0]]
         for file in files:

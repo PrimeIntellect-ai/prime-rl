@@ -13,6 +13,7 @@ from prime_rl.utils.sparse_weights import (
     bits_checksum,
     decode_gaps,
     encode_gaps,
+    rank_failed_marker,
     rank_part,
     rank_parts_marker,
     read_anchor_checksums,
@@ -99,3 +100,12 @@ def test_anchor_checksums_and_unwritten_slices(tmp_path):
             with pytest.raises(RuntimeError, match="a@6"):
                 writer.close(1)
             assert not anchor_complete(step_dir)
+
+
+def test_read_delta_fails_on_a_failed_trainer_rank(tmp_path):
+    delta_dir = tmp_path / DELTA_DIR
+    delta_dir.mkdir()
+    (delta_dir / MANIFEST).write_text(json.dumps({"ranks": 2, "tensors": {}}))
+    (delta_dir / rank_failed_marker(1)).write_text(json.dumps({"error": "RuntimeError('boom')"}))
+    with ThreadPoolExecutor(1) as pool, pytest.raises(RuntimeError, match="rank 1 failed.*boom"):
+        read_delta(tmp_path, pool)

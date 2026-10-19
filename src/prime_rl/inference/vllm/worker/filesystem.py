@@ -147,7 +147,13 @@ class FileSystemWeightUpdateWorker(Worker):
         return pinned, checksums
 
     def prefetch_weights_done(self) -> bool:
-        return self.prefetched is None or self.prefetched[1].done()
+        if self.prefetched is None:
+            return True
+        if not self.prefetched[1].done():
+            return False
+        # Raises if the read failed, e.g. on a trainer rank's failure marker
+        self.prefetched[1].result()
+        return True
 
     def update_weights_from_path(self, weight_path: str) -> None:
         """Move to the broadcast step in ``weight_path`` (a full HF checkpoint and/or a sparse delta)."""
