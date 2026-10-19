@@ -171,7 +171,7 @@ def main() -> None:
         )
         print("relative diff vs bf16 EP path: " + ", ".join(f"{k}={v:.4f}" for k, v in diffs.items()))
 
-    mega_compute.buffer.destroy()
+    mega_compute.destroy()
     dist.destroy_process_group()
 
 

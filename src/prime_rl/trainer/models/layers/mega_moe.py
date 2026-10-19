@@ -485,6 +485,12 @@ class MegaMoEExpertCompute:
                 f"{expected}; got experts with {shape}."
             )
 
+    def destroy(self) -> None:
+        _, buffers = _BUFFER_REGISTRY.pop(self.buffer_key)
+        if buffers.forward is not buffers.backward:
+            buffers.forward.destroy()
+        buffers.backward.destroy()
+
     def validate_top_k(self, top_k: int) -> None:
         if top_k != self.top_k:
             raise ValueError(f"Mega MoE's buffers are sized for top_k={self.top_k}; got a router with top_k={top_k}.")
