@@ -533,10 +533,10 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
     + ``prompt_logprobs`` (the prime-rl server-side extension in
     ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
     the leading token, which has no preceding context)."""
-    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse
+    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateTokensResponse
 
     # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
-    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`
+    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateTokensResponse`
     # isn't an `openai.BaseModel`, so the SDK parse layer rejects it as `cast_to`;
     # `cast_to=httpx.Response` lets the SDK still build the request (auth, retries,
     # timeouts) and hand back the raw response for us to validate.
@@ -550,7 +550,7 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
             "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
         },
     )
-    response = GenerateResponse.model_validate_json(http_response.content)
+    response = GenerateTokensResponse.model_validate_json(http_response.content)
     # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
     # leading token (no preceding context). Flatten to `list[float]`.
     flat: list[float] = []

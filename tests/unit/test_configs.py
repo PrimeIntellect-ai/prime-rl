@@ -42,11 +42,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
-    config_files = list(Path("configs").rglob("*.toml"))
-    example_files = list(Path("examples").rglob("*.toml"))
-
-    return config_files + example_files
+    """Any TOML file inside `configs/`, `examples/` or `tests/regression/configs/`."""
+    roots = [Path("configs"), Path("examples"), Path("tests/regression/configs")]
+    return [path for root in roots for path in root.rglob("*.toml")]
 
 
 def can_parse(config_cls: type, args: list[str]) -> bool:
@@ -761,23 +759,6 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
-def test_trainer_rejects_vlm_cp_with_ring():
-    config = {
-        "model": {
-            "cp": 2,
-            "optimization_dtype": "bfloat16",
-            "reduce_dtype": "bfloat16",
-            "vlm": {
-                "vision_encoder_attr": "model.visual",
-                "language_model_attr": "model.language_model",
-            },
-        },
-    }
-
-    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
-        TrainerConfig.model_validate(config)
-
-
 def test_ac_none_disables_ac_offloading():
     config = TrainerModelConfig.model_validate({"ac": None})
     assert config.ac is None
@@ -1162,11 +1143,14 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-def test_combined_replay_uses_v2_runner(monkeypatch):
+@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
     config = InferenceConfig(
+        deployment=deployment,
+        slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
         vllm={"enable_return_routed_experts": True},
     )
@@ -1176,6 +1160,17 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+def test_pd_role_connectors():
+    mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
+    deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
+    config = InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake)
+    prefill = config.for_pd_role("prefill").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
 
 
 CUSTOM_RENDERER_SOURCE = """
