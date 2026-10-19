@@ -154,19 +154,30 @@ class NCCLWeightUpdateWorker(Worker):
         # aborting unblocks the collective so the survivors can regroup and receive again.
         abort_marker = Path(weight_dir) / f".abort_{receiver.port}"
         done = threading.Event()
+        lock = threading.Lock()
 
         def abort_on_marker() -> None:
             while not done.wait(0.5):
                 if abort_marker.exists():
-                    logger.warning("Aborting the NCCL weight receive: another engine died")
-                    abort_communicator(receiver.communicator)
+                    with lock:
+                        if not done.is_set():
+                            logger.warning("Aborting the NCCL weight receive: another engine died")
+                            abort_communicator(receiver.communicator)
                     return
+
+        def receive() -> Generator[tuple[str, torch.Tensor], None, None]:
+            yield from receiver.receive_state_dict()
+            # Once the last (asynchronous) broadcast has landed, a late abort marker must not fail
+            # an engine that already has the full weights.
+            torch.cuda.current_stream().synchronize()
+            with lock:
+                done.set()
 
         threading.Thread(target=abort_on_marker, daemon=True).start()
         try:
             load_weights_checkpoint_layerwise(
                 model,
-                receiver.receive_state_dict(),
+                receive(),
                 self.model_runner.model_config,
                 self.vllm_config,
             )
