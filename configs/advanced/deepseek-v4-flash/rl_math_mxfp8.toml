@@ -84,18 +84,9 @@ type = "mxfp8"
 [trainer.model.quantization]
 type = "mxfp8"
 recipe = "mxfp8_rceil_wgrad_with_hp"
-ignore_patterns = [
-    "lm_head",
-    "router",
-    'mlp\.gate\.',
-    'shared_expert\.output_gate',
-    "eh_proj",
-    "weights_proj",
-    "in_proj_a",
-    "in_proj_b",
-    "o_a_proj",
-    'compressor\.',
-]
+# Keeps the default ignores (lm_head, router, gates, weights_proj, ...) and adds DeepSeek-V4's wo_a
+# and compressors.
+extra_ignore_patterns = ["o_a_proj", 'compressor\.']
 
 [trainer.model.ac]
 freq = 1
