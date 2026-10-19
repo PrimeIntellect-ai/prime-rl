@@ -93,7 +93,7 @@ FSDP2 is the default model sharding strategy. By default the trainer fully shard
 
 EP shards MoE expert weights across the EP mesh, dramatically reducing the FSDP communication volume per layer and improving the training throughput.
 
-`ep` defaults to `"auto"`. At startup it loads the model config to check whether the model is MoE. For MoE models it resolves to `min(world_size // dp_replicate, 8)`: the FSDP island size, capped at 8. For non-MoE models it resolves to 1 (no-op). `"auto"` does not look at `num_experts` or `cp`; the resolved degree must still be a multiple of `cp` and divide `num_experts`, so set it explicitly when it does not. Set `ep` to an explicit integer to override:
+`ep` defaults to `"auto"`. At startup it loads the model config to check whether the model is MoE. For MoE models it resolves to the largest degree up to 8 that divides both the FSDP island size (`world_size // dp_replicate`) and `num_experts` and is a multiple of `cp` (1 if none is). For example, 6 GPUs with 128 experts resolve to `ep=2`. For non-MoE models it resolves to 1 (no-op). Set `ep` to an explicit integer to override:
 
 ```toml
 [trainer.model]
@@ -295,4 +295,4 @@ uv run sft @ sft.toml --data.type fake --max-steps 4
 uv run torchrun --nproc-per-node=8 src/prime_rl/trainer/rl/train.py @ train.toml --data.fake --max-steps 4
 ```
 
-Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup. [`benchmarks/scripts/run_single_benchmark.py`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/benchmarks/scripts/run_single_benchmark.py) does exactly this and is what the CI benchmark matrix runs.
+Every step logs `Throughput`, `MFU`, and `Peak Mem.` to the console. For machine-readable numbers, the file monitor writes `monitors/file/metrics.jsonl` under the run's output directory by default (`monitors.file`); aggregate `perf/throughput`, `perf/mfu`, `time/step`, and `perf/peak_memory` from the run's `metrics.jsonl` — skip the first step, it is warmup.

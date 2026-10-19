@@ -260,7 +260,7 @@ class ModelConfig(BaseModelConfig):
     """Data parallel dim where model weights are replicated."""
 
     ep: int | Literal["auto"] = "auto"
-    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves for MoE models to the largest degree up to 8 that divides both ``fsdp_island_size = world_size // dp_replicate`` and the expert count and is a multiple of ``cp``, and to 1 for non-MoE models. Set an explicit integer to override."""
 
     moe: MoERuntimeConfig = MoERuntimeConfig()
     """Routed-expert compute and token-dispatch runtime."""
@@ -282,8 +282,8 @@ class ModelConfig(BaseModelConfig):
 
     quantization: QuantizationConfig | None = None
 
-    dsa_backend: DSABackend = "tilelang"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
+    dsa_backend: DSABackend = "cudnn_flashmla"
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
