@@ -358,6 +358,8 @@ def train(config: PretrainConfig):
             for name in config.evals.sets
         ]
         logger.info(f"Prepared {len(eval_sets)} eval sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s")
+        # Packed rows as long as a training micro-batch, or the longest eval context if that is longer.
+        eval_token_budget = max(config.data.micro_batch_tokens, *config.evals.seq_lens)
 
     @torch.no_grad()
     def run_suite(step: int) -> None:
@@ -367,7 +369,7 @@ def train(config: PretrainConfig):
         metrics = {}
         # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
         with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
-            scored = score_sets(model, eval_sets, config.evals.token_budget, get_dcp_group())
+            scored = score_sets(model, eval_sets, eval_token_budget, get_dcp_group())
             for eval_set, (logprobs, hits) in zip(eval_sets, scored or []):
                 for seq_len, version in eval_set.versions.items():
                     index = eval_set.index[seq_len]

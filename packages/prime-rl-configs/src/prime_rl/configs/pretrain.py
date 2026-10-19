@@ -185,17 +185,8 @@ class EvalsConfig(BaseConfig):
     ``ctxcont`` sets. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g. ``bpb@4k``). Requests that are the
     same at several lengths are scored once."""
 
-    token_budget: int = Field(32768, ge=1)
-    """Tokens per packed row (one forward). Must exceed the longest context length."""
-
     save_arrays: bool = False
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
-
-    @model_validator(mode="after")
-    def validate_token_budget(self):
-        if self.token_budget <= max(self.seq_lens):
-            raise ValueError("token_budget must exceed the longest of seq_lens")
-        return self
 
 
 class PretrainAdamWConfig(AdamWConfig):
