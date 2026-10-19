@@ -266,7 +266,6 @@ def train(config: PretrainConfig):
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     is_moe_model = is_tt_moe_model(model)
@@ -299,9 +298,7 @@ def train(config: PretrainConfig):
         loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
         seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, seq_lens=seq_lens, cp_style=config.model.cp_style
-            )
+            input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, seq_lens=seq_lens)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
         labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)

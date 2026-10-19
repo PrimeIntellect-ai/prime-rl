@@ -700,7 +700,7 @@ class DeepseekV4Attention(nn.Module):
         self.rotary_emb = rotary_emb
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
-        self.dsa_backend = getattr(config, "dsa_backend", "tilelang")
+        self.dsa_backend = getattr(config, "dsa_backend", "cudnn_flashmla")
         if dsv4_sparse_attn is not None and self.dsa_backend not in FORWARD_BACKENDS:
             raise ValueError(
                 f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
@@ -709,7 +709,12 @@ class DeepseekV4Attention(nn.Module):
         self.max_slots = max_sparse_attn_slots(config)
         blocker = _kernel_blocker(self.num_heads, self.head_dim, self.dsa_backend)
         if blocker is not None:
-            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
+            hint = (
+                ' Set `model.dsa_backend = "tilelang"` to use the TileLang kernels instead.'
+                if self.dsa_backend == "cudnn_flashmla"
+                else ""
+            )
+            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}.{hint}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
