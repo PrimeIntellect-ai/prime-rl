@@ -41,7 +41,7 @@ if [ -n "$PRIME_RL_REF" ]; then
     echo "[prime-rl] fetching ${PRIME_RL_REF} from ${PRIME_RL_REPO}"
     git -C "$DEST" fetch --quiet --depth 1 origin "$PRIME_RL_REF"
     git -C "$DEST" checkout --quiet --force --detach FETCH_HEAD
-    # Same public submodules the image build inits (build_image.yaml);
+    # Same public submodules the image build inits (image.yml);
     # a pinned commit that isn't the submodule's branch tip is fetched by
     # sha, which GitHub allows.
     git -C "$DEST" submodule sync --quiet --recursive
@@ -98,7 +98,7 @@ if drift:
     print(
         f"[prime-rl] {sys.argv[1]} pins {', '.join(drift)} differently from the image; "
         "the runtime source overlay cannot rebuild these. Build an image for this ref "
-        "(build_image.yaml) or run it on an image whose lockfile matches.",
+        "(image.yml) or run it on an image whose lockfile matches.",
         file=sys.stderr,
     )
     sys.exit(1)

@@ -226,6 +226,12 @@ requires_cudnn_flashmla = pytest.mark.skipif(
 
 DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]
 
+if importlib.util.find_spec("flash_mla") is not None:
+    # vLLM's bundled FlashMLA (`vllm._flashmla_C`) and the flash-mla wheel both define the GNU-unique
+    # symbol `Fwd_Sm90_Impl::features`, so the copy loaded first in the process serves both. vLLM's
+    # older list lacks TOPK_LENGTH, so load the wheel at collection, before any vLLM test loads its copy.
+    import flash_mla  # noqa: F401
+
 # What a real query with a short window or a saturated top-k looks like; a masked slot still
 # costs a GEMM column.
 MASKED_FRACTION = 0.25
