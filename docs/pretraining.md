@@ -137,8 +137,6 @@ Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and t
 
 Every step logs the loss, learning rate, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, per-source token counts and epochs (`progress/<source>/*`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
 
-`[diagnostics]` (default: every 100 steps; `diagnostics = null` turns it off) adds the size of the optimizer update relative to the weights per parameter group (`update/rms_ratio/*`, `param/rms/*`) and a forward pass on a fixed probe batch: attention max logit and entropy per layer (`attn/*`, FlashAttention layers) and the residual-stream size per layer (`act/*`). It does not support context parallelism yet.
-
 ## Evals
 
 `[val]` computes the held-out loss (nats per token), perplexity and bits per UTF-8 byte (comparable across tokenizers) of every source in `val.sources`, through the same loss code as training, so it also works with context parallelism. Each eval reads the same leading windows of every source: as many as fill whole micro-batches on every data-parallel rank. Evals run after the optimizer update, so the metrics at step N describe the same weights as the step-N checkpoint. With `eval_on_start` (default), they also run before the first step (logged as step 0), and they always run at the last step.

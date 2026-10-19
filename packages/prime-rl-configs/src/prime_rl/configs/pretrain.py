@@ -163,18 +163,6 @@ class ValConfig(BaseConfig):
     windows: as many as fill whole micro-batches on every data-parallel rank."""
 
 
-class DiagnosticsConfig(BaseConfig):
-    """Diagnostic step: on every ``interval``-th step, the optimizer update's size per parameter group and a
-    forward pass on a fixed probe batch (the first ``probe_tokens`` tokens of each rank's first micro-batch)
-    that records attention max logits and entropy per head and the residual-stream size per layer."""
-
-    interval: int = Field(100, ge=1)
-    """Run the diagnostics every N steps."""
-
-    probe_tokens: int = Field(2048, ge=64)
-    """Tokens per rank in the probe batch. Fixed across sequence lengths so attention entropy stays comparable."""
-
-
 class EvalsConfig(BaseConfig):
     """The eval suite, scored inside the trainer: forward passes without gradients on the training model, every
     ``interval`` steps. The sets are log-likelihood evals in the format of the pretrain-evals offline suite."""
@@ -238,9 +226,6 @@ class PretrainConfig(BaseConfig):
 
     val: ValConfig | None = None
     """Held-out loss on token shards (``val/*``). If None, it never runs."""
-
-    diagnostics: DiagnosticsConfig | None = DiagnosticsConfig()
-    """Diagnostic step (update sizes, attention and activation probe). If None, it never runs."""
 
     evals: EvalsConfig | None = None
     """The eval suite, scored inside the trainer. If None, it never runs."""
@@ -381,8 +366,6 @@ class PretrainConfig(BaseConfig):
                 raise ValueError("data.seq_len must be divisible by model.cp")
             if self.data.micro_batch_size != 1:
                 raise ValueError("data.micro_batch_tokens must equal data.seq_len with context parallelism")
-            if self.diagnostics is not None:
-                raise ValueError("[diagnostics] does not support context parallelism yet; set diagnostics = null")
             if self.evals is not None:
                 raise ValueError("[evals] does not support context parallelism yet")
         return self

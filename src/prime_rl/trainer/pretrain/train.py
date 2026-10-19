@@ -2,7 +2,6 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 
 import asyncio
 import json
-import itertools
 import math
 import time
 from datetime import timedelta
@@ -43,7 +42,6 @@ from prime_rl.trainer.pretrain.data import (
     source_tokens,
     setup_val_dataset,
 )
-from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
 from prime_rl.trainer.pretrain.suite import (
     length_label,
     prepare_multi_length_set,
@@ -264,12 +262,6 @@ def train(config: PretrainConfig):
     # Create the iterator only after a potential resume: iter() forks the workers with the
     # dataset's current state.
     dataiter = iter(dataloader)
-    probe = None
-    if config.diagnostics is not None:
-        # The diagnostic forward's fixed batch: the start of the first micro-batch, which is then trained on as usual.
-        first_micro_batch = next(dataiter)
-        probe = probe_batch(first_micro_batch, config.diagnostics.probe_tokens)
-        dataiter = itertools.chain([first_micro_batch], dataiter)
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -402,7 +394,6 @@ def train(config: PretrainConfig):
     last_bias_moves = None
     # Per-expert selection bias, router-row norm and load of every MoE layer, every MOE_TRACE_INTERVAL steps.
     moe_trace: dict[str, list] = {"step": [], "bias": [], "router_norm": [], "load": []}
-    update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
     while True:
         torch.cuda.reset_peak_memory_stats()
@@ -463,14 +454,10 @@ def train(config: PretrainConfig):
 
         group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(None, model, config.optim.max_norm) if config.optim.max_norm else None
-        is_diagnostic_step = config.diagnostics is not None and progress.step % config.diagnostics.interval == 0
-        if is_diagnostic_step:
-            update_tracker.before_step(model)
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
-        diagnostic_metrics = update_tracker.after_step(model) if is_diagnostic_step else {}
         # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
         local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
         peak_memory = reduce_stats({"sum": local_peak_memory}, {"max": local_peak_memory}, dp_cp_group)
@@ -488,10 +475,6 @@ def train(config: PretrainConfig):
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
-
-        if is_diagnostic_step:
-            diagnostic_metrics |= run_probe(model, probe, dp_cp_group)
-            finish_no_grad_forwards()
 
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
@@ -547,7 +530,6 @@ def train(config: PretrainConfig):
             **peak_memory_metrics,
             **result.metrics,
             **moe_metrics,
-            **diagnostic_metrics,
             "step": progress.step,
         }
         if grad_norm is not None:
