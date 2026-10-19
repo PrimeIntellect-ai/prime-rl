@@ -75,10 +75,16 @@ class EvalSink:
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         env_name, step = key
+        failures = self.pending_batch_failures.pop(key, [])
+        cancelled = self.pending_batch_cancellations.pop(key, 0)
         return EvalBatch(
             env_name=env_name,
             step=step,
-            episodes=EvalEpisodes(self.pending_batches.pop(key, []), group_size=self.group_size_for(env_name)),
-            failures=self.pending_batch_failures.pop(key, []),
-            cancelled=self.pending_batch_cancellations.pop(key, 0),
+            episodes=EvalEpisodes(
+                self.pending_batches.pop(key, []),
+                group_size=self.group_size_for(env_name),
+                unscored=len(failures) + cancelled,
+            ),
+            failures=failures,
+            cancelled=cancelled,
         )

@@ -443,9 +443,12 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
 
 
 class EvalMetrics(EpisodeMetrics):
-    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int) -> None:
+    def __init__(
+        self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int, unscored: int = 0
+    ) -> None:
         super().__init__(episodes, records)
         self.group_size = group_size
+        self.unscored = unscored
 
     @property
     def reward(self) -> Stat:
@@ -455,7 +458,9 @@ class EvalMetrics(EpisodeMetrics):
         out = super().to_wandb(prefix=prefix, subset=subset)
         for agent, traces in self.by_agent().items():
             metric_prefix = f"{prefix}/{subset}/{agent}"
-            out[f"{metric_prefix}/avg@{self.group_size}"] = traces.stats()["reward"].mean()
+            unscored = self.unscored if subset == "all" else 0
+            rewards = [record.trace.reward for record in traces.records]
+            out[f"{metric_prefix}/avg@{self.group_size}"] = sum(rewards) / (len(rewards) + unscored)
             if subset == "effective":
                 out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(traces.records).items()}
         return out
@@ -636,14 +641,19 @@ class RolloutWindow:
 
 
 class EvalEpisodes(EpisodeCollection):
+    """``unscored`` counts the epoch's attempts that returned no episode
+    (cancelled or dispatch failed); the all subset's avg@k scores them as zero."""
+
     def __init__(
         self,
         episodes: list[vf.Episode],
         group_size: int,
         predicate: Callable[[TraceRecord], bool] | None = None,
+        unscored: int = 0,
     ) -> None:
         super().__init__(episodes, predicate=predicate)
         self.group_size = group_size
+        self.unscored = unscored
 
     @property
     def effective(self) -> EvalEpisodes:
@@ -655,4 +665,4 @@ class EvalEpisodes(EpisodeCollection):
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.selected_episodes, self.records, self.group_size)
+        return EvalMetrics(self.selected_episodes, self.records, self.group_size, self.unscored)
