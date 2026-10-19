@@ -576,6 +576,7 @@ class Orchestrator:
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+                delete_files_in_background(batch.payload_files)
             self.train_sink.discard_queued()
 
     def take_rollout_metrics(self) -> dict[str, float]:
