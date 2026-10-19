@@ -98,11 +98,16 @@ def install_bf16_stochastic_rounding(model: nn.Module, base_seed: int) -> dict[s
     names = {id(param): name for name, param in model.named_parameters()}
     patched, skipped = defaultdict(int), defaultdict(int)
     skipped_names = []
+    seen: set[int] = set()
     for module in model.modules():
         if not isinstance(module, FSDPModule):
             continue
         fsdp_params = [p for group in module._get_fsdp_state()._fsdp_param_groups for p in group.fsdp_params]
         for fsdp_param in fsdp_params:
+            # Modules sharded together (e.g. lm_head and the final norm) share one FSDP state.
+            if id(fsdp_param) in seen:
+                continue
+            seen.add(id(fsdp_param))
             name = names[id(fsdp_param.sharded_param)]
             kind = "expert" if "experts." in name else "dense"
             local = fsdp_param._sharded_local_tensor
