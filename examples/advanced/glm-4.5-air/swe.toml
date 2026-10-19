@@ -52,7 +52,6 @@ name = "zai-org/GLM-4.5-Air"
 [trainer.model]
 attn = "flash_attention_3"
 cp = 4
-cp_style = "ulysses"
 
 [trainer.model.ac]
 
@@ -107,11 +106,6 @@ env.agent.timeout.rollout = 3600
 # --- Inference ---
 
 [inference]
-
-# vLLM + FlashInfer caches on node-local /tmp (see [env_vars]).
-[inference.env_vars]
-VLLM_CACHE_ROOT = "/tmp/.vllm-cache"
-FLASHINFER_WORKSPACE_BASE = "/tmp/.flashinfer-cache"
 
 [inference.vllm]
 gpu_memory_utilization = 0.85

@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from prime_rl.trainer.models.kernels.fp8_utils import (
+    grouped_per_block_cast_to_fp8_triton,
     per_block_cast_to_fp8_tp_triton,
     per_block_cast_to_fp8_triton,
     per_token_cast_to_fp8_tp_triton,
@@ -69,3 +70,29 @@ def test_token_cast_matches_vllm_cuda_quant(rows, cols, input_scale):
     assert s.shape == ref_s.shape == (rows, cols // 128)
     assert torch.equal(s, ref_s)
     assert torch.equal(q.view(torch.uint8), ref_q.view(torch.uint8))
+
+
+@pytest.mark.parametrize("transposed_view", [False, True], ids=["contiguous", "transposed_view"])
+@pytest.mark.parametrize(
+    "rows,cols,input_scale",
+    [(256, 256, 1.0), (256, 512, 0.02), (512, 256, 0.002), (384, 320, 0.02), (256, 384, 0.0005)],
+)
+def test_block_cast_matches_vllm_online_quant(rows, cols, input_scale, transposed_view):
+    """The grouped weight cast is *bit-identical* to the block quantizer vLLM's ``fp8_per_block`` serves with."""
+    pytest.importorskip("vllm")
+    from vllm.utils.deep_gemm import per_block_cast_to_fp8
+
+    torch.manual_seed(rows + cols)
+    groups = 3
+    if transposed_view:
+        x = (torch.randn(groups, cols, rows, device="cuda", dtype=torch.bfloat16) * input_scale).transpose(1, 2)
+    else:
+        x = torch.randn(groups, rows, cols, device="cuda", dtype=torch.bfloat16) * input_scale
+
+    q, s = grouped_per_block_cast_to_fp8_triton(x, False)
+
+    for group in range(groups):
+        ref_q, ref_s = per_block_cast_to_fp8(x[group].contiguous(), use_ue8m0=False)
+        assert s[group].shape == ref_s.shape
+        assert torch.equal(s[group], ref_s)
+        assert torch.equal(q[group].view(torch.uint8), ref_q.view(torch.uint8))
