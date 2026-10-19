@@ -113,8 +113,8 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
-    # Phases of the last update_weights: until every engine paused, until the fastest one
-    # paused, the transfer while paused, and the resume. Replaced, never mutated.
+    # Timings of the last update_weights: each engine's pause, the transfer while paused,
+    # and the resume. Replaced, never mutated.
     last_update_times: dict[str, float] = {}
 
     def __init__(self, client_config: ClientConfig):
@@ -191,7 +191,6 @@ class AdminPlane:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        start = time.perf_counter()
         pause_times = await _pause_engines(self.clients, step=step)
         paused = time.perf_counter()
         try:
@@ -212,10 +211,11 @@ class AdminPlane:
         finally:
             await _resume_engines(self.clients)
         self.last_update_times = {
-            "pause": paused - start,
-            "pause_min": min(pause_times),
-            "transfer": updated - paused,
-            "resume": time.perf_counter() - updated,
+            "pause/min": min(pause_times),
+            "pause/mean": sum(pause_times) / len(pause_times),
+            "pause/max": max(pause_times),
+            "last_transfer_time": updated - paused,
+            "last_resume_time": time.perf_counter() - updated,
         }
 
     async def aclose(self) -> None:
