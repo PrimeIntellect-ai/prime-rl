@@ -319,7 +319,10 @@ def test_mxfp8_qat_padding_and_transport(qat):
     config = RLConfig.model_validate(
         {"orchestrator": {}, "trainer": {"model": {"quantization": {"type": "mxfp8", "qat": qat}}}}
     )
-    assert config.orchestrator.pad_to_multiple_of == config.trainer.model.cp * 32
+    native = RLConfig.model_validate(
+        {"orchestrator": {}, "trainer": {"model": {"quantization": {"type": "mxfp8"}}}}
+    )
+    assert config.orchestrator.pad_to_multiple_of == native.orchestrator.pad_to_multiple_of
     model = {"ep": 2, "moe": {"compute": {"type": "mxfp8", "qat": qat}, "dispatch": {"transport": "mxfp8"}}}
     if qat:
         with pytest.raises(ValidationError, match="requires BF16 transport"):
@@ -329,12 +332,14 @@ def test_mxfp8_qat_padding_and_transport(qat):
 
 
 def test_deepseek_v4_mxfp8_recipe_keeps_indexer_bf16_on_both_sides():
-    config_path = Path(__file__).resolve().parents[2] / "configs/advanced/deepseek-v4-flash/rl_math_mxfp8.toml"
-    config = RLConfig.model_validate(tomllib.loads(config_path.read_text()))
+    config_path = Path(__file__).resolve().parents[2] / "configs/advanced/deepseek-v4-flash/mxfp8_qat.toml"
+    config = RLConfig.model_validate({"orchestrator": {}, **tomllib.loads(config_path.read_text())})
     quant = config.trainer.model.quantization
     name = "model.layers.1.self_attn.compressor.indexer.q_b_proj"
-    assert any(re.search(pattern, name) for pattern in quant.ignore_patterns + quant.extra_ignore_patterns)
+    assert any(re.search(pattern, name) for pattern in quant.ignore_patterns)
     assert "re:.*indexer.*" in config.inference.vllm.quantization_config["ignore"]
+    assert quant.qat and config.trainer.model.moe.compute.qat
+    assert config.trainer.model.moe.dispatch.transport == "bf16"
 
 
 @pytest.mark.parametrize(
