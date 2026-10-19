@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
-from prime_rl.configs.shared import LogConfig
+from prime_rl.configs.shared import LogConfig, ResumeConfig
 from prime_rl.utils.config import dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
@@ -333,6 +333,18 @@ def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     logger = get_logger()
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")
     return latest_step
+
+
+def resolve_resume_step(resume: ResumeConfig | None, ckpt_dir: Path) -> int | None:
+    """The checkpoint step a run resumes from: ``resume.dir``'s step, ``resume.step``, or the latest checkpoint in
+    ``ckpt_dir``. None without ``resume``."""
+    if resume is None:
+        return None
+    if resume.dir is not None:
+        return resume.dir_step
+    if resume.step is not None:
+        return resume.step
+    return resolve_latest_ckpt_step(ckpt_dir)
 
 
 def has_checkpoints(output_dir: Path) -> bool:

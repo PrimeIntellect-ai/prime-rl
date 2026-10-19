@@ -23,7 +23,7 @@ from prime_rl.utils.pathing import (
     get_launcher_dir,
     get_launcher_log_dir,
     prepare_attempt_dirs,
-    resolve_latest_ckpt_step,
+    resolve_resume_step,
     validate_run_dir,
     write_env_server_config,
     write_launch_artifacts,
@@ -60,16 +60,6 @@ def get_ckpt_base(config: SFTConfig) -> Path:
     return (config.ckpt.output_dir if config.ckpt else None) or config.run_dir
 
 
-def resolve_resume_step(config: SFTConfig) -> int | None:
-    if config.resume is None:
-        return None
-    if config.resume.dir is not None:
-        return config.resume.dir_step
-    if config.resume.step is not None:
-        return config.resume.step
-    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
-
-
 def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
     """The online-eval process's monitors: same W&B and file config as the trainer's,
     with the platform monitor switched to the evaluation flavor under the same name."""
@@ -92,7 +82,7 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         weight_broadcast=config.weight_broadcast,
         broadcasts_dir=get_broadcast_dir(config.run_dir),
         max_steps=config.max_steps,
-        resume_step=resolve_resume_step(config),
+        resume_step=resolve_resume_step(config.resume, get_ckpt_dir(get_ckpt_base(config))),
         # Same run dir as the trainer: the dashboard reads the eval's
         # file-monitor artifacts from the run directory, so a separate
         # output dir would hide them. The train-vs-eval record collision
@@ -452,7 +442,7 @@ def clean_stale_eval_artifacts(config: SFTConfig) -> None:
     if os.environ.get("NEVER_CLEAN"):
         logger.warning("NEVER_CLEAN is set - keeping stale weight broadcasts; the online-eval process may replay them")
         return
-    resume_step = resolve_resume_step(config)
+    resume_step = resolve_resume_step(config.resume, get_ckpt_dir(get_ckpt_base(config)))
     clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
 
 

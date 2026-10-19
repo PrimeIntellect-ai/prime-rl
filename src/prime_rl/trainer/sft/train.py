@@ -13,7 +13,7 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_resume_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
@@ -131,14 +131,7 @@ def train(config: SFTConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
 
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")

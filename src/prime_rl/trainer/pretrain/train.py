@@ -74,7 +74,7 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_resume_step
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 from prime_rl.utils.weights import resolve_fqn
@@ -165,12 +165,7 @@ def train(config: PretrainConfig):
     grad_accum_steps = total_micro_batches // micro_batches_per_step
 
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step or resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)
 
     logger.info(f"Initializing model ({config.model})")
     # Weights come from the checkpoint when resuming and from the random init otherwise.
