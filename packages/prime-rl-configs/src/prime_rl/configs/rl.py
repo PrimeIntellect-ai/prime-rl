@@ -562,34 +562,6 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_no_routed_experts(self):
-        """Runs after ``auto_setup_router_replay``, which sets the inference flag after InferenceConfig's validators."""
-        inference = self.inference
-        if (
-            inference is not None
-            and inference.deployment.type == "disaggregated"
-            and inference.vllm.enable_return_routed_experts
-        ):
-            raise ValueError(
-                "Router replay (inference.vllm.enable_return_routed_experts / trainer.enable_router_replay) "
-                "is not supported with disaggregated P/D: vLLM does not capture routed experts across NIXL KV transfer."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_router_replay_without_kv_offload(self):
-        if (
-            self.trainer.enable_router_replay
-            and self.inference is not None
-            and self.inference.kv_cache_offload is not None
-        ):
-            raise ValueError(
-                "Router replay with inference.kv_cache_offload is not supported. "
-                "External KV cache hits do not carry routed-expert decisions."
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_mooncake_offload_requires_slurm(self):
         if (
             self.slurm is None
