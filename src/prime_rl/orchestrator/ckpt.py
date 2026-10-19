@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import tempfile
 import time
@@ -28,6 +29,10 @@ class CheckpointManager:
         return get_step_path(self.ckpt_dir, step) / "orchestrator"
 
     def save(self, progress: Progress, train_source: TrainSource, step: int) -> None:
+        self.save_state(build_state(progress, train_source), step)
+
+    def save_state(self, state: dict, step: int) -> None:
+        """Save a ``build_state`` snapshot as the checkpoint of ``step``."""
         ckpt_path = self.get_ckpt_path(step)
         ckpt_path.mkdir(parents=True, exist_ok=True)
         start = time.perf_counter()
@@ -36,7 +41,7 @@ class CheckpointManager:
         fd, tmp_name = tempfile.mkstemp(dir=ckpt_path, prefix="progress.pt.", suffix=".tmp")
         try:
             with os.fdopen(fd, "wb") as f:
-                torch.save({"progress": progress, "train_source": train_source.state_dict()}, f)
+                torch.save(state, f)
             os.replace(tmp_name, ckpt_path / "progress.pt")
         except BaseException:
             with contextlib.suppress(OSError):
@@ -69,6 +74,11 @@ class CheckpointManager:
             if name in train_source.curricula:
                 get_logger().info(f"Resumed curriculum state for env {name}")
         get_logger().debug(f"Orchestrator checkpoint loaded in {format_time(time.perf_counter() - start)}")
+
+
+def build_state(progress: Progress, train_source: TrainSource) -> dict:
+    """A snapshot of the orchestrator's checkpointed state, independent of later changes."""
+    return copy.deepcopy({"progress": progress, "train_source": train_source.state_dict()})
 
 
 def setup_ckpt_manager(output_dir: Path, config: CheckpointConfig | None) -> CheckpointManager:

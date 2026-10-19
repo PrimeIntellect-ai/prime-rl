@@ -4,7 +4,9 @@
 #SBATCH --nodes={{ num_train_nodes + num_infer_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
+{%- if partition %}
 #SBATCH --partition={{ partition }}
+{%- endif %}
 {%- if account %}
 #SBATCH --account={{ account }}
 {%- endif %}
@@ -336,10 +338,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {%- endfor %}
     LOCAL_IP=$(hostname -I | awk "{print \$1}")
 
-{%- if kv_offload %}
+    # NIXL/RDMA registers pinned host memory (KV offload pools, the HiSparse host pool).
     ulimit -l unlimited
-{%- endif %}
-{%- if kv_offload_mooncake %}
+{%- if mooncake_offloads %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
 
@@ -404,7 +405,6 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 {% endfor %}
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
-        export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
@@ -419,6 +419,7 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
+    CONFIG_PATH="$CONFIG_DIR/inference-$ROLE.json"
     echo "ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT" \
         | tee -a $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 
@@ -599,17 +600,25 @@ while true; do
 done
 
 REMAINING_PIDS=$(jobs -p)
-{%- if cleanup_grace_period %}
+{%- if cleanup_grace_period and ckpt_dir %}
 # Cross-node teardown is driven by `srun --kill-on-bad-exit=1`, which reaps peer
 # tasks only once a task *exits* non-zero. So on a non-zero exit (crash, SIGTERM,
-# wall-time) we stay alive for the grace period and signal nothing: this lets an
-# in-flight trainer checkpoint on this node finish, and — because the task has
-# not exited yet — keeps --kill-on-bad-exit from reaping checkpointing trainers
-# on peer nodes. We then propagate the exit code so the allocation tears down. A
-# clean (zero) exit cannot trip --kill-on-bad-exit, so we tear down immediately.
+# wall-time) we stay alive and signal nothing while the newest trainer checkpoint
+# is still being written (no DCP `.metadata` yet), up to the grace period: this lets
+# it finish on this node, and — because the task has not exited yet — keeps
+# --kill-on-bad-exit from reaping checkpointing trainers on peer nodes. We then
+# propagate the exit code so the allocation tears down. A clean (zero) exit cannot
+# trip --kill-on-bad-exit, so we tear down immediately.
 if [ "$EXIT_CODE" -ne 0 ]; then
-    echo "[$(hostname)] component exited with code $EXIT_CODE - waiting up to {{ cleanup_grace_period }}s for in-flight checkpoints to flush before teardown"
-    sleep {{ cleanup_grace_period }}
+    echo "[$(hostname)] component exited with code $EXIT_CODE - waiting up to {{ cleanup_grace_period }}s for an in-flight trainer checkpoint to finish before teardown"
+    GRACE_DEADLINE=$((SECONDS + {{ cleanup_grace_period }}))
+    while [ "$SECONDS" -lt "$GRACE_DEADLINE" ]; do
+        LATEST_CKPT=$(ls -d {{ ckpt_dir }}/step_*/trainer 2>/dev/null | sort -V | tail -n 1)
+        if [ -z "$LATEST_CKPT" ] || [ -f "$LATEST_CKPT/.metadata" ]; then
+            break
+        fi
+        sleep 10
+    done
 fi
 {%- endif %}
 echo "[$(hostname)] tearing down (exit code $EXIT_CODE) - terminating remaining processes"

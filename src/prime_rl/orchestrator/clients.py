@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -12,38 +12,18 @@ from httpx import AsyncClient
 from openai import AsyncOpenAI
 from renderers import RendererConfig
 from tenacity import AsyncRetrying, retry, retry_if_exception, stop_after_attempt, stop_after_delay, wait_exponential
-from verifiers.v1.configs.client import EvalClientConfig, TrainClientConfig
+from verifiers.v1.clients.base import build_async_openai
+from verifiers.v1.configs.client import (
+    BaseClientConfig,
+    EvalClientConfig,
+    TrainClientConfig,
+    resolve_api_key,
+    resolve_headers,
+)
 
-from prime_rl.configs.eval import PRIME_INFERENCE_URL
-from prime_rl.configs.shared import ClientConfig
+from prime_rl.configs.algorithm import FrozenModelConfig
+from prime_rl.configs.shared import ClientConfig, PolicyClientConfig
 from prime_rl.utils.logger import get_logger
-
-
-def resolve_api_key(api_key_var: str) -> str:
-    """The API key named by ``api_key_var``; ``PRIME_API_KEY`` also falls back to the prime
-    CLI config (``prime login``), like the verifiers client does. ``"EMPTY"`` when unset."""
-    api_key = os.environ.get(api_key_var)
-    if not api_key and api_key_var == "PRIME_API_KEY":
-        from prime_sandboxes import Config as PrimeConfig
-
-        api_key = PrimeConfig().api_key
-    return api_key or "EMPTY"
-
-
-def resolve_headers(client_config: ClientConfig) -> dict[str, str]:
-    """The static headers plus those read from the environment. A Prime Inference client
-    without a team header gets the team from ``$PRIME_TEAM_ID`` or the prime CLI config,
-    like the verifiers client: a team's internal models are served only under it."""
-    env_headers = {
-        k: v for k, v in ((k, os.getenv(v)) for k, v in client_config.headers_from_env.items()) if v is not None
-    }
-    headers = {**client_config.headers, **env_headers}
-    if client_config.base_url.startswith(PRIME_INFERENCE_URL) and "X-Prime-Team-ID" not in headers:
-        from prime_sandboxes import Config as PrimeConfig
-
-        if team_id := os.environ.get("PRIME_TEAM_ID") or PrimeConfig().team_id:
-            headers["X-Prime-Team-ID"] = team_id
-    return headers
 
 
 class PrefillScorer:
@@ -55,14 +35,8 @@ class PrefillScorer:
 
     async def score(self, config: vf.ClientConfig, model: str, token_ids: list[int]) -> list[float]:
         if self._client is None:
-            # Build the OpenAI client straight from the config fields — works for any
-            # ClientConfig type; resolve_client would hand back an EvalClient (no `.openai`)
-            # for these chat-completions teacher configs.
-            self._client = AsyncOpenAI(
-                base_url=config.base_url,
-                api_key=resolve_api_key(config.api_key_var),
-                default_headers=config.headers or None,
-            )
+            # Prefill scoring uses the SDK even when generation uses the eval relay.
+            self._client = build_async_openai(config)
         return await prefill_logprobs(self._client, model, token_ids)
 
     async def aclose(self) -> None:
@@ -139,8 +113,16 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
-    def __init__(self, client_config: ClientConfig):
+    roles: list[str | None] | None = None
+    """P/D role of each client, in client order. Prefill engines pause before decode engines."""
+
+    # Per-engine times of the last update_weights phases (pause, transfer, resume).
+    # Replaced, never mutated.
+    update_times: dict[str, list[float]] = {}
+
+    def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
         self.clients = setup_admin_clients(client_config)
+        self.roles = roles
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -213,36 +195,34 @@ class AdminPlane:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        await _pause_engines(self.clients, step=step)
+        pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
         try:
             if on_paused is not None:
                 on_paused()
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in self.clients
-                ]
+            transfer_times = await _post_all(
+                self.clients,
+                "/update_weights",
+                json={"weight_dir": weight_dir_posix},
+                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             )
         finally:
-            await _resume_engines(self.clients)
+            resume_times = await _resume_engines(self.clients)
+        self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
 
 
-def setup_admin_plane(client_config: ClientConfig, model_name: str) -> AdminPlane:
+def setup_admin_plane(
+    client_config: PolicyClientConfig, model_name: str, roles: list[str | None] | None = None
+) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
         return DynamoAdminPlane(client_config, model_name)
-    return AdminPlane(client_config)
+    return AdminPlane(client_config, roles)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -254,6 +234,21 @@ async def check_inference_ready(client_config: ClientConfig, model_name: str) ->
         await admin.wait_for_ready(model_name)
     finally:
         await admin.aclose()
+
+
+async def connect_frozen_client(
+    config: FrozenModelConfig, *, renderer_config: RendererConfig | None = None
+) -> InferenceClient:
+    """Connect to an externally hosted frozen model and wait for it."""
+    get_logger().info(f"Initializing frozen model pool (model={config.name}, base_url={config.base_url})")
+    if renderer_config is not None:
+        clients = InferenceClient(
+            config, model_name=config.name, train_client_type="renderer", renderer_config=renderer_config
+        )
+    else:
+        clients = InferenceClient(config, model_name=config.name)
+    await check_inference_ready(config, config.name)
+    return clients
 
 
 def setup_client(
@@ -274,10 +269,7 @@ def setup_client(
             "renderer": renderer_config,
             "renderer_model_name": renderer_model_name,
         }
-    headers = resolve_headers(client_config)
-    return config_cls(
-        base_url=client_config.base_url, api_key_var=client_config.api_key_var, headers=headers, **renderer_extra
-    )
+    return config_cls(**client_config.model_dump(include=set(BaseClientConfig.model_fields)), **renderer_extra)
 
 
 def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
@@ -290,8 +282,9 @@ def setup_admin_clients(client_config: ClientConfig) -> list[AsyncClient]:
     urls = client_config.admin_base_url if client_config.admin_base_url else [client_config.base_url]
 
     def _setup_admin_client(base_url: str) -> httpx.AsyncClient:
-        headers = resolve_headers(client_config)
-        api_key = resolve_api_key(client_config.api_key_var)
+        config = client_config.model_copy(update={"base_url": base_url})
+        headers = resolve_headers(config)
+        api_key = resolve_api_key(config)
         if api_key != "EMPTY":
             headers["Authorization"] = f"Bearer {api_key}"
 
@@ -324,7 +317,9 @@ async def maybe_check_has_model(
                 f"{result.text[:300]}"
             )
         models = body["data"]
-        if not any(model["id"] == model_name for model in models):
+        # A LoRA server lists the model name only once the adapter is loaded; until then
+        # the base model (served as ``<model>-base``) carries it as its ``root``.
+        if not any(model_name in (model["id"], model.get("root")) for model in models):
             raise ValueError(f"Model {model_name} was not found in the inference pool on {admin_client.base_url}")
     logger.debug(f"Model {model_name} was found in the inference pool")
 
@@ -412,25 +407,48 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
-    """Pause all inference engines, waiting for in-flight requests to drain."""
+async def _post_all(admin_clients: list[AsyncClient], path: str, **kwargs) -> list[float]:
+    """POST ``path`` to every engine concurrently; returns each engine's request time."""
+
+    async def post(client: AsyncClient) -> float:
+        start = time.perf_counter()
+        await _admin_post(client, path, **kwargs)
+        return time.perf_counter() - start
+
+    return await asyncio.gather(*[post(client) for client in admin_clients])
+
+
+async def _pause_engines(
+    admin_clients: list[AsyncClient], *, step: int, roles: list[str | None] | None = None
+) -> list[float]:
+    """Pause all inference engines, waiting for in-flight requests to drain.
+    Returns each engine's pause time.
+
+    Prefill engines pause first. A prefill engine's pause waits until decode has pulled the KV
+    blocks it still holds, and a paused decode engine never pulls them: the prefill would wait
+    for vLLM's NIXL KV lease to expire (30 s by default) and decode would later read the
+    released blocks."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
-    )
-    logger.debug("All inference engines paused")
+    roles = roles or [None] * len(admin_clients)
+    prefill = [client for client, role in zip(admin_clients, roles, strict=True) if role == "prefill"]
+    rest = [client for client, role in zip(admin_clients, roles, strict=True) if role != "prefill"]
+    pause_times: list[float] = []
+    for clients in (prefill, rest):
+        pause_times += await _post_all(clients, "/pause", params={"mode": "keep", "clear_cache": "false"})
+    logger.debug(f"All inference engines paused in {min(pause_times):.2f}-{max(pause_times):.2f}s")
+    return pause_times
 
 
-async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
-    """Resume all inference engines after weight update.
+async def _resume_engines(admin_clients: list[AsyncClient]) -> list[float]:
+    """Resume all inference engines after weight update. Returns each engine's resume time.
 
     Resuming is idempotent (it just clears the paused flag), so retrying transient
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
-    logger = get_logger()
-    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
-    logger.debug("All inference engines resumed")
+    resume_times = await _post_all(admin_clients, "/resume")
+    get_logger().debug("All inference engines resumed")
+    return resume_times
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
@@ -525,10 +543,10 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
     + ``prompt_logprobs`` (the prime-rl server-side extension in
     ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
     the leading token, which has no preceding context)."""
-    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse
+    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateTokensResponse
 
     # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
-    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`
+    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateTokensResponse`
     # isn't an `openai.BaseModel`, so the SDK parse layer rejects it as `cast_to`;
     # `cast_to=httpx.Response` lets the SDK still build the request (auth, retries,
     # timeouts) and hand back the raw response for us to validate.
@@ -542,7 +560,7 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
             "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
         },
     )
-    response = GenerateResponse.model_validate_json(http_response.content)
+    response = GenerateTokensResponse.model_validate_json(http_response.content)
     # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
     # leading token (no preceding context). Flatten to `list[float]`.
     flat: list[float] = []

@@ -3,17 +3,16 @@
 The full happy-path is owned upstream by vLLM's
 ``vllm/entrypoints/serve/disagg`` test suite. We only cover the prime-RL
 deltas here:
-    * ``serialize_routed_experts`` round-trips a compact raw-byte payload.
     * The subclass overrides ``serve_tokens_full_generator`` without
       monkey-patching the parent.
-    * ``post_process`` swaps in the compact routed_experts while preserving
+    * ``post_process`` swaps in the packed payloads while preserving
       the rest of the upstream response (``usage`` included).
-    * Numeric logprob buffers preserve sampled/head evidence and replay masks
-      through the real upstream response formatter and renderer decoder.
+    * The sampled-token logprobs pack from vLLM's flat logprobs.
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 
 import numpy as np
@@ -30,27 +29,21 @@ from vllm import SamplingParams
 from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
-    GenerateResponse,
-    GenerateResponseChoice,
+    GenerateTokensChoice,
+    GenerateTokensResponse,
     PlaceholderRangeInfo,
 )
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
 from vllm.logprobs import FlatLogprobs, Logprob
-from vllm.outputs import CompletionOutput, RequestOutput, SamplingMask
+from vllm.outputs import CompletionOutput, RequestOutput
 
+from prime_rl.inference.patches import PackedSamplingMask
 from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
-from prime_rl.inference.vllm.routed_experts import serialize_routed_experts
 from prime_rl.inference.vllm.serving_tokens import (
     PrimeRlServingTokens,
-    _GenerateOutputCapture,
+    _PackedOutputs,
+    pack_sampled_logprobs,
 )
-
-
-def _decode_routed_experts(encoded: dict) -> np.ndarray:
-    return np.frombuffer(
-        pybase64.b64decode_as_bytearray(encoded["data"]),
-        dtype=np.uint8,
-    ).reshape(encoded["shape"])
 
 
 async def _empty_request_outputs():
@@ -63,33 +56,16 @@ def test_subclass_overrides_serve_tokens_full_generator():
     assert PrimeRlServingTokens.serve_tokens_full_generator is not upstream.serve_tokens_full_generator
 
 
-def test_serialize_routed_experts_uses_compact_raw_payload():
-    routed_experts = np.array(
-        [
-            [[1, 2], [3, 4]],
-            [[5, 6], [7, 8]],
-        ],
-        dtype=np.int64,
-    )
-
-    encoded = serialize_routed_experts(routed_experts)
-    assert encoded is not None
-
-    decoded = _decode_routed_experts(encoded)
-    assert decoded.dtype == np.uint8
-    np.testing.assert_array_equal(decoded, routed_experts)
-
-
 def test_generate_response_post_process_preserves_prompt_metadata():
     compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
-    capture = _GenerateOutputCapture(_empty_request_outputs())
-    capture.routed_experts[0] = compact_routed_experts
+    capture = _PackedOutputs(_empty_request_outputs(), SimpleNamespace(sampling_params=SamplingParams()))
+    capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
-    response = GenerateResponse(
+    response = GenerateTokensResponse(
         request_id="request-id",
         model="test-model",
         choices=[
-            GenerateResponseChoice(
+            GenerateTokensChoice(
                 index=0,
                 token_ids=[1, 2, 3],
                 routed_experts="upstream-npy-payload",
@@ -110,6 +86,15 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     assert payload["prompt_token_ids"] == [10, 11, 12, 13]
     assert payload["mm_placeholders"] == {"image": [{"offset": 1, "length": 2}]}
     assert payload["usage"]["total_tokens"] == 7
+
+
+def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
+    logprobs = FlatLogprobs()
+    logprobs.append({5: Logprob(-0.5, 2, None), 7: Logprob(-0.1, 1, None)})  # sampled token first
+    logprobs.append(None)
+    logprobs.append({3: Logprob(float("-inf"), 9, None)})
+
+    np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
 
 
 @pytest.mark.parametrize("flat", [False, True])
@@ -152,8 +137,12 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
             logprobs.append_fast(ids, [logq[i] for i in ids], iter(range(len(ids))), [None] * len(ids))
         else:
             logprobs.append({i: Logprob(logq[i]) for i in ids})
-    support = SamplingMask([[3, 1, 2], [1, 3, 2]]) if replay else None
-    experts = np.array([[[1, 2]], [[3, 4]]], dtype=np.int64) if routed else None
+    support = (
+        PackedSamplingMask(np.array([3, 1, 2, 1, 3, 2], dtype=np.int32), np.array([3, 3], dtype=np.int32))
+        if replay
+        else None
+    )
+    experts = np.array([[[1, 2]], [[3, 4]]], dtype=np.uint8) if routed else None
     output = RequestOutput(
         "test",
         None,
@@ -179,7 +168,7 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
     )
 
     async def generate_outputs():
-        yield output
+        yield deepcopy(output)
 
     responses = []
     evidence = []
@@ -189,23 +178,23 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
         request._response_mm_placeholders = {"image": [PlaceholderRangeInfo(offset=0, length=1)]}
         metadata = RequestResponseMetadata(request_id="test")
         response = await serving.serve_tokens_full_generator(request, generate_outputs(), "test", "test", metadata)
-        assert isinstance(response, GenerateResponse)
-        assert params.logprobs == 4
+        assert isinstance(response, GenerateTokensResponse)
+        assert params.logprobs == (None if compact else 4)
         assert request.sampling_params is params
         assert output.outputs[0].logprobs is logprobs
         assert response.usage == metadata.final_usage_info
-        payload = parse_generate_response(JSONResponse(content=response.model_dump()).body, compact_logprobs=compact)
+        payload = parse_generate_response(JSONResponse(content=response.model_dump()).body)
         for choice in payload["choices"]:
             if compact:
                 assert choice["logprobs"] is None
                 assert isinstance(choice["compact_logprobs"]["data"], memoryview)
-                evidence.append(_parse_compact_logprobs(choice, sampled_ids, 2))
+                evidence.append(_parse_compact_logprobs(choice, sampled_ids, 3 if replay else 2))
             else:
                 assert choice.get("compact_logprobs") is None
                 evidence.append(
                     (
                         _parse_completion_logprobs(choice, sampled_ids),
-                        *_parse_completion_top_logprobs(choice, sampled_ids, 2),
+                        *_parse_completion_top_logprobs(choice, sampled_ids, 3 if replay else 2),
                     )
                 )
             choice.pop("logprobs")

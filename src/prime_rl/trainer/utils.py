@@ -5,6 +5,7 @@ import shutil
 import time
 from collections import defaultdict
 from datetime import timedelta
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,10 +22,10 @@ from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
 
 if TYPE_CHECKING:
-    from prime_rl.configs.trainer import OptimizerInBackwardOffloadConfig
     from prime_rl.trainer.optim import GradientOffloadManager
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
+DCP_TIMEOUT = timedelta(hours=4)
 
 
 class GarbageCollection:
@@ -176,9 +177,8 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
-def setup_full_cpu_optimizer_offload(config: "OptimizerInBackwardOffloadConfig") -> None:
-    if config.numa_bind:
-        bind_process_to_gpu_numa_node()
+def setup_full_cpu_optimizer_offload() -> None:
+    bind_process_to_gpu_numa_node()
     configure_cpu_optimizer_threads()
 
 
@@ -203,6 +203,15 @@ def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: b
 
     dist.init_process_group(backend=backend, timeout=timeout, device_id=device_id)
     get_logger().debug(f"Initialized torch distributed in {format_time(time.perf_counter() - t0)}")
+
+
+@cache
+def get_dcp_group() -> dist.ProcessGroup:
+    """A gloo group for DCP checkpoint save/load. DCP's collectives wait for the slowest rank's
+    writes or reads (and, on the first HF load, its download), which can outlast
+    ``dist_timeout_seconds``; on this group they wait up to ``DCP_TIMEOUT`` instead. Every rank must
+    make its first call at the same point."""
+    return dist.new_group(backend="gloo", timeout=DCP_TIMEOUT)
 
 
 def print_sample(input_ids: list[int], loss_mask: list[bool], tokenizer: PreTrainedTokenizer):

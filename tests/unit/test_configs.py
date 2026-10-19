@@ -4,6 +4,7 @@ from typing import Annotated, Literal, get_args
 
 import pytest
 import tomli_w
+import verifiers.v1 as vf
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
@@ -17,6 +18,10 @@ from prime_rl.configs.orchestrator import (
     RLOnlineEvalConfig,
     ScheduledEvalConfig,
     TrainConfig,
+    TrainSourceConfig,
+)
+from prime_rl.configs.orchestrator import (
+    ModelConfig as OrchestratorModelConfig,
 )
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
@@ -37,11 +42,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
-    config_files = list(Path("configs").rglob("*.toml"))
-    example_files = list(Path("examples").rglob("*.toml"))
-
-    return config_files + example_files
+    """Any TOML file inside `configs/`, `examples/` or `tests/regression/configs/`."""
+    roots = [Path("configs"), Path("examples"), Path("tests/regression/configs")]
+    return [path for root in roots for path in root.rglob("*.toml")]
 
 
 def can_parse(config_cls: type, args: list[str]) -> bool:
@@ -119,9 +122,10 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
-@pytest.mark.parametrize("loss_type", ["score_centering", "ipo", "ipo_tis"])
+@pytest.mark.parametrize("loss_type", ["score_centering", "ipo", "ipo_tis", "icepop_tis"])
 def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
     from prime_rl.entrypoints.rl import write_config
+    from prime_rl.orchestrator.envs import TrainEnv
 
     config = cli(
         RLConfig,
@@ -146,6 +150,9 @@ def test_rl_launcher_config_roundtrip(tmp_path, loss_type):
     assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
     assert reloaded.inference.vllm.max_logprobs >= 6
     assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+    env = TrainEnv(reloaded.orchestrator.train.source[0], None, tmp_path / "address", None, None, None)
+    assert env.requires_top_logprobs
+    assert env.sampling.logprobs == 4
 
 
 def test_toml_partial_nested_override(tmp_path):
@@ -398,8 +405,7 @@ def test_removed_moe_runtime_fields_are_rejected(removed):
 def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     config = config_cls.model_validate({})
 
-    assert config.model.optim_cpu_offload is True
-    assert config.model.full_offload is None
+    assert config.model.offload == "optimizer"
 
 
 def test_moe_router_dtype_auto_resolves_per_trainer():
@@ -412,12 +418,22 @@ def test_moe_router_dtype_auto_resolves_per_trainer():
             assert config_cls.model_validate({"model": {"moe_router_dtype": dtype}}).model.moe_router_dtype == dtype
 
 
+def test_freeze_moe_router_auto_resolves_per_trainer():
+    """``freeze_moe_router='auto'`` (the default) freezes the router for RL, not SFT; explicit values are kept."""
+    assert TrainerConfig.model_validate({}).model.freeze_moe_router is True
+    assert SFTConfig.model_validate({}).model.freeze_moe_router is False
+
+    for config_cls in (TrainerConfig, SFTConfig):
+        for freeze in (True, False):
+            assert config_cls.model_validate({"model": {"freeze_moe_router": freeze}}).model.freeze_moe_router is freeze
+
+
 @pytest.mark.parametrize("config_cls", [TrainerConfig, SFTConfig])
 def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
         config = config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"max_norm": 1.0},
             }
         )
@@ -430,7 +446,7 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
     with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
         config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"type": "muon", "max_norm": None},
             }
         )
@@ -440,11 +456,11 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
 def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
     config = config_cls.model_validate(
         {
-            "model": {"optim_cpu_offload": False, "full_offload": True},
+            "model": {"offload": "full"},
             "optim": {"type": "sign_sgd", "max_norm": None},
         }
     )
-    assert config.model.full_offload is not None
+    assert config.model.offload == "full"
     assert config.optim.type == "sign_sgd"
 
 
@@ -463,6 +479,36 @@ def test_resolved_json_roundtrips_explicit_none(tmp_path):
     assert reloaded.model.compile is None
     assert reloaded.optim.max_norm is None
     assert reloaded == config
+
+
+@pytest.mark.parametrize(
+    "config_class,source_args,expected_url,expected_key",
+    [
+        (
+            EvalConfig,
+            ["--source", '[{"env":{"id":"single_agent"}}]'],
+            "https://configured.pinference.ai/api/v1",
+            "PRIME_API_KEY",
+        ),
+        (
+            SFTOnlineEvalConfig,
+            ["--source", '[{"env":{"id":"single_agent"}}]'],
+            "http://localhost:8000/v1",
+            "VLLM_API_KEY",
+        ),
+        (OrchestratorModelConfig, [], "http://localhost:8000/v1", "VLLM_API_KEY"),
+    ],
+)
+@pytest.mark.parametrize("overrides", [[], ["--client.skip-model-check"], ["--client.wait-for-ready-timeout", "10"]])
+def test_client_defaults_survive_partial_overrides(
+    monkeypatch, config_class, source_args, expected_url, expected_key, overrides
+):
+    monkeypatch.setenv("PRIME_INFERENCE_URL", "https://configured.pinference.ai/api/v1")
+    config = cli(config_class, args=source_args + overrides)
+    assert config.client.base_url == expected_url
+    assert config.client.api_key_var == expected_key
+    reloaded = config_class.model_validate_json(config.model_dump_json())
+    assert reloaded.client == config.client
 
 
 def test_env_algo_inherits_the_group_algo():
@@ -491,11 +537,25 @@ def test_env_algo_inherits_the_group_algo():
     assert [env.algo.type for env in reloaded.train.source] == ["grpo", "echo", "echo"]
 
 
-def test_sources_inherit_the_group_fields_they_leave_unset():
+@pytest.mark.parametrize("group_token_key", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("source_token_key", ["max_tokens", "max_completion_tokens"])
+@pytest.mark.parametrize("source_token_limit", [200, None])
+@pytest.mark.parametrize("nested_sampling", [False, True])
+def test_sources_inherit_the_group_fields_they_leave_unset(
+    group_token_key, source_token_key, source_token_limit, nested_sampling
+):
+    overrides = {source_token_key: source_token_limit, "top_k": 20}
     config = EvalConfig.model_validate(
         {
             "r": 4,
-            "sampling": {"temperature": 0.5, "extra_body": {"a": 1}},
+            "sampling": {
+                group_token_key: 100,
+                "temperature": 3.0,
+                "reasoning_effort": "xhigh",
+                "top_k": 40,
+                "frequency_penalty": 0.5,
+                "extra_body": {"a": 1},
+            },
             "select": {"limit": 8, "include": {"idx": [":100"]}},
             "env": {"retries": {"max_retries": 3}},
             "source": [
@@ -504,7 +564,11 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
                     "name": "b",
                     "env": {"taskset": {"id": "gsm8k"}},
                     "group_size": 2,
-                    "sampling": {"extra_body": {"b": 2}},
+                    "sampling": {
+                        **({} if nested_sampling else overrides),
+                        "reasoning_effort": "max",
+                        "extra_body": {"b": 2, **(overrides if nested_sampling else {})},
+                    },
                     "select": {"include": {"names": ["x"]}},
                 },
             ],
@@ -512,7 +576,18 @@ def test_sources_inherit_the_group_fields_they_leave_unset():
     )
     a, b = config.source
     assert (a.group_size, b.group_size) == (4, 2)
-    assert b.sampling.temperature == 0.5 and b.sampling.extra_body == {"a": 1, "b": 2}
+    assert isinstance(a.sampling, vf.SamplingConfig) and isinstance(b.sampling, vf.SamplingConfig)
+    assert a.sampling.max_tokens == 100 and b.sampling.max_tokens == source_token_limit
+    assert a.sampling.reasoning_effort == "xhigh" and a.sampling.top_k == 40
+    assert b.sampling.model_dump(exclude_none=True) == {
+        **({"max_tokens": source_token_limit} if source_token_limit is not None else {}),
+        "temperature": 3.0,
+        "reasoning_effort": "max",
+        "top_k": 20,
+        "frequency_penalty": 0.5,
+        "a": 1,
+        "b": 2,
+    }
     assert b.select.limit == 8 and b.select.include.idx == [":100"] and b.select.include.names == ["x"]
     assert a.env.retries.max_retries == 3 and b.env.retries.max_retries == 3
     reloaded = EvalConfig.model_validate(config.model_dump(mode="json"))
@@ -593,6 +668,39 @@ def test_policy_sources_accept_different_top_p_values():
     assert [source.sampling.top_k for source in config.train.source] == [512, 512]
 
 
+@pytest.mark.parametrize("frozen", [False, True])
+@pytest.mark.parametrize(
+    "sampling,agent_sampling,rejected",
+    [
+        ({}, {}, False),
+        ({"top_p": 0.9}, {"max_completion_tokens": 200, "reasoning_effort": "high"}, False),
+        ({}, {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}, False),
+        ({}, {"temperature": 1.0}, True),
+        ({}, {"temperature": None}, True),
+        ({}, {"extra_body": {"top_k": 20}}, True),
+        ({}, {"frequency_penalty": 0.5}, True),
+        ({}, {"extra_body": {"frequency_penalty": 0.5}}, True),
+        ({"extra_body": {"frequency_penalty": 0.5}}, {}, True),
+    ],
+)
+def test_policy_sampling_is_validated_before_rollouts(sampling, agent_sampling, rejected, frozen):
+    source = {
+        "env": {"taskset": {"id": "reverse-text"}, "agent": {"sampling": agent_sampling}},
+        "sampling": sampling,
+    }
+    if frozen:
+        source["algo"] = {
+            "type": "sft",
+            "sampling": {"source": {"name": "teacher", "base_url": "http://localhost:8000/v1"}},
+        }
+    if rejected and not frozen:
+        with pytest.raises(ValidationError, match="sampling"):
+            TrainSourceConfig.model_validate(source)
+    else:
+        config = TrainSourceConfig.model_validate(source)
+        assert TrainSourceConfig.model_validate_json(config.model_dump_json()) == config
+
+
 def test_policy_sources_reject_mixed_top_k_capture():
     with pytest.warns(UserWarning, match="defaulting top_k"):
         with pytest.raises(ValidationError, match="cannot mix top_k > 0 and top_k = -1"):
@@ -633,8 +741,29 @@ def test_single_node_auto_inference_ports_follow_server_port():
 
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size == 2
+    assert config.trainer.weight_broadcast.inference_world_size == 2
+    assert config.orchestrator.weight_broadcast.inference_world_size == 2
     assert config.inference.backend_port == 8101
     assert config.orchestrator.model.client.admin_base_url == ["http://localhost:8101/v1"]
+
+
+def test_single_node_nccl_resolved_json_roundtrips(tmp_path):
+    """The resolved rl.json re-parses (as a SLURM launch does) to the same config."""
+    import json
+
+    config = RLConfig.model_validate(
+        {
+            "trainer": {},
+            "orchestrator": {},
+            "inference": {"vllm": {"tensor_parallel_size": 1}},
+            "deployment": {"type": "single_node", "gpus_per_node": 4, "num_train_gpus": 2, "num_infer_gpus": 2},
+        }
+    )
+    path = tmp_path / "rl.json"
+    path.write_text(json.dumps(dump_resolved_config(config, exclude={"slurm", "dry_run", "clean"})))
+    reloaded = cli(RLConfig, args=["@", str(path)])
+    assert reloaded.trainer.weight_broadcast.inference_world_size == 2
+    assert reloaded == config
 
 
 def test_multi_node_auto_inference_parallelism():
@@ -656,6 +785,24 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference is not None
     assert config.inference.vllm.data_parallel_size_local == 2
     assert config.inference.vllm.data_parallel_size == 2
+
+
+def test_disaggregated_inference_inherits_deployment_gpus_per_node():
+    config = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": {"tensor_parallel_size": 2}, "deployment": {"type": "disaggregated"}},
+        "deployment": {"type": "multi_node", "gpus_per_node": 4, "num_train_nodes": 1},
+        "slurm": {},
+    }
+    resolved = RLConfig.model_validate(config)
+    assert resolved.inference.deployment.gpus_per_node == 4
+    assert resolved.inference.vllm.data_parallel_size_local == 2
+
+    config["deployment"].pop("gpus_per_node")
+    config["inference"]["deployment"]["gpus_per_node"] = 4
+    with pytest.raises(ValidationError, match="gpus_per_node must match"):
+        RLConfig.model_validate(config)
 
 
 def test_orchestrator_vlm_requires_renderer():
@@ -688,21 +835,10 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
-def test_trainer_rejects_vlm_cp_with_ring():
-    config = {
-        "model": {
-            "cp": 2,
-            "optimization_dtype": "bfloat16",
-            "reduce_dtype": "bfloat16",
-            "vlm": {
-                "vision_encoder_attr": "model.visual",
-                "language_model_attr": "model.language_model",
-            },
-        },
-    }
-
-    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
-        TrainerConfig.model_validate(config)
+def test_ac_none_disables_ac_offloading():
+    config = TrainerModelConfig.model_validate({"ac": None})
+    assert config.ac is None
+    assert config.ac_offloading is None
 
 
 def test_shared_model_name_propagates_to_subconfigs():
@@ -1083,11 +1219,14 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-def test_combined_replay_uses_v2_runner(monkeypatch):
+@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
     config = InferenceConfig(
+        deployment=deployment,
+        slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
         vllm={"enable_return_routed_experts": True},
     )
@@ -1097,6 +1236,32 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+def test_pd_role_connectors():
+    mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
+    deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
+    config = InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake)
+    prefill = config.for_pd_role("prefill").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
+
+    with pytest.raises(ValidationError, match="decode_kv_cache_offload"):
+        InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake, hisparse={"host_pool_gib": 160})
+    deployment["decode_kv_cache_offload"] = None
+    config = InferenceConfig(
+        deployment=deployment, slurm={}, kv_cache_offload=mooncake, hisparse={"host_pool_gib": 160}
+    )
+    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    assert [c["kv_connector"] for c in decode] == ["NixlConnector", "HiSparseConnector"]
+    assert config.for_pd_role("prefill").hisparse is None
+
+    with pytest.raises(ValidationError, match="native KV cache offload"):
+        InferenceConfig(
+            kv_cache_offload={"type": "native", "cpu": {"num_bytes": 1000}}, hisparse={"host_pool_gib": 160}
+        )
 
 
 CUSTOM_RENDERER_SOURCE = """

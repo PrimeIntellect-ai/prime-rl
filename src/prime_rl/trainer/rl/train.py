@@ -1,6 +1,5 @@
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
-
 from contextlib import nullcontext
+from functools import partial
 import time
 import asyncio
 from datetime import timedelta
@@ -17,7 +16,7 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, validate_score_centering_data
+from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch, validate_score_centering_data
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -38,7 +37,6 @@ from prime_rl.trainer.rl.loss import (
     shift_tensor_right,
 )
 from prime_rl.multimodal import get_multimodal_adapter
-from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.rl.annotations import AnnotationWriter
 from prime_rl.trainer.model import (
     forward,
@@ -67,13 +65,15 @@ from prime_rl.trainer.utils import (
 )
 from prime_rl.trainer.world import get_world
 from prime_rl.trainer.lora import get_lora_state
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.trainer.models.layers.lm_head import tail_log_softmax
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
+from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.worker_pool import WorkerPool
+from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -81,6 +81,8 @@ from prime_rl.utils.utils import clean_exit
 def train(config: TrainerConfig):
     # Setup world and logger
     world = get_world()
+    if world.is_master:
+        write_resolved_config(config.output_dir, config, "trainer")
     logger = setup_logger(
         config.log.level,
         json_logging=config.log.json_logging,
@@ -107,10 +109,10 @@ def train(config: TrainerConfig):
     # Set precision
     setup_torch_distributed(
         timeout=timedelta(seconds=config.dist_timeout_seconds),
-        enable_gloo=config.model.fsdp_cpu_offload or config.model.full_offload is not None,
+        enable_gloo=config.model.offload == "full",
     )
-    if config.model.full_offload is not None:
-        setup_full_cpu_optimizer_offload(config.model.full_offload)
+    if config.model.offload == "full":
+        setup_full_cpu_optimizer_offload()
     # Configurable to support ROCm/AMD GPUs where reduced precision
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
@@ -149,6 +151,8 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
+    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+    micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
         raise ValueError("Packed multimodal training requires model support")
@@ -165,11 +169,10 @@ def train(config: TrainerConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
-        cpu_offload=config.model.optim_cpu_offload,
-        full_offload_config=config.model.full_offload,
+        offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.full_offload is not None else None
+            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
         ),
     )
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
@@ -252,12 +255,19 @@ def train(config: TrainerConfig):
         maybe_record_function = record_function
     start_step = progress.step
     max_peak_memory = 0.0
+    controller = Controller(requires_step=False)
+    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server.start()
+    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
+        if config.control is not None:
+            paused = broadcast_pause(controller, progress.step)
+            is_last_step = is_last_step or paused
 
         logger.debug(f"Starting training step {progress.step}")
         step_start_time = time.perf_counter()
@@ -339,7 +349,9 @@ def train(config: TrainerConfig):
         cp_size = parallel_dims.cp
 
         step_tokens_per_expert = 0
-        for micro_step, micro_batch in enumerate(micro_batches):
+        step_local_num_tokens = 0
+        for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
+            step_local_num_tokens += micro_batch["input_ids"].shape[1]
             score_centering = config.loss.type == "score_centering" or (
                 config.loss.type in ("ipo", "ipo_tis", "icepop_tis") and config.loss.score_centering
             )
@@ -383,17 +395,10 @@ def train(config: TrainerConfig):
             if topk_ids is not None:
                 topk_ids = topk_ids.to("cuda")
 
-            mm_kwargs = None
-            mm_forward_policy = None
-            mm_refs = micro_batch.get("mm_refs")
-            if mm_refs is not None:
-                if processor is None or mm_adapter is None:
-                    raise ValueError("Received multimodal samples but [model.vlm] is not set")
-                materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
-                mm_kwargs = {key: value.to("cuda") for key, value in materialized.kwargs.items()}
-                mm_forward_policy = materialized.forward_policy
-                micro_batch["mm_refs"] = None
-                del materialized, mm_refs
+            mm_kwargs = micro_batch.pop("mm_kwargs")
+            if mm_kwargs is not None:
+                mm_kwargs = {key: value.to("cuda") for key, value in mm_kwargs.items()}
+            mm_forward_policy = micro_batch.pop("mm_forward_policy")
             mm_token_type_ids = (
                 micro_batch["mm_token_type_ids"].to("cuda")
                 if micro_batch.get("mm_token_type_ids") is not None
@@ -422,9 +427,7 @@ def train(config: TrainerConfig):
                         position_ids,
                         cp_rank,
                         cp_size,
-                        cp_group,
                         seq_lens=seq_lens,
-                        cp_style=config.model.cp_style,
                     )
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
@@ -436,18 +439,6 @@ def train(config: TrainerConfig):
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-            if config.model.lora:
-                lora_num_tokens = micro_batch["lora_num_tokens"].to("cuda")
-                if cp_enabled:
-                    chunk_size = labels.shape[1]
-                    # Convert to cumsum, adjust for CP chunk, convert back to num_tokens
-                    cu_offsets = lora_num_tokens.cumsum(dim=0, dtype=torch.int32)
-                    adjusted_cu = torch.clip(cu_offsets - chunk_size * cp_rank, min=0, max=chunk_size)
-                    lora_num_tokens = torch.diff(
-                        adjusted_cu, prepend=torch.tensor([0], device=adjusted_cu.device, dtype=adjusted_cu.dtype)
-                    )
-                set_lora_num_tokens(lora_num_tokens)
 
             temperatures = micro_batch["temperatures"].to("cuda")
 
@@ -571,7 +562,9 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
-            tensors["loss"].append(loss.detach().to("cpu").unsqueeze(0))
+            # Every CP rank computes the whole sequence's loss, and the global normalizers count each
+            # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
+            tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
 
             env_names = micro_batch["env_names"]
             masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
@@ -692,9 +685,10 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # Compute step metrics
-        num_local_tokens = seq_len * batch_size
-        num_tokens = parallel_dims.get_mesh("dp").size() * num_local_tokens
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
@@ -786,17 +780,25 @@ def train(config: TrainerConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None:
+    if config.ckpt is not None or paused:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress)
-        ckpt_manager.maybe_clean()
+        if paused:
+            controller.mark_saved(progress.step)
+        else:
+            ckpt_manager.maybe_clean()
 
     if gradient_manager is not None:
         gradient_manager.close()
+    micro_batch_workers.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("RL trainer finished")
-    asyncio.run(monitors.finalize())
+    logger.success(f"RL trainer {'paused' if paused else 'finished'} at step {progress.step}")
+    asyncio.run(monitors.finalize(paused=paused))
+    if paused and world.is_master:
+        # The run's owner reads the committed pause from the control API, then stops the run.
+        logger.info("Paused, serving the control API until the run is stopped")
+        control_server.wait()
 
 
 def main():

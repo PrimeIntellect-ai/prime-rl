@@ -1,6 +1,6 @@
 """Ulysses-style context parallelism via all-to-all on the head/seq dimensions.
 
-Ulysses is the simpler alternative to ring attention for context parallelism:
+Context parallelism redistributes attention inputs between sequence and head shards:
 
     sequence-sharded Q/K/V                 head-sharded Q/K/V
     [S/cp, H,    D]   ── all-to-all ──▶   [S, H/cp, D]
@@ -39,9 +39,8 @@ import torch.distributed as dist
 
 from prime_rl.trainer.distributed.collectives import all_to_all_single_equal
 
-# Populated by `update_ulysses_params` before each forward pass. Mirrors
-# ring_flash_attn's DATA_PARAMS pattern so the patched attention path can
-# reach the *full* (un-sharded) cu_seqlens / max_seqlen at call time.
+# Populated by `update_ulysses_params` before each forward pass so the
+# patched attention path can reach the *full* (un-sharded) cu_seqlens / max_seqlen at call time.
 ULYSSES_PARAMS: dict = {}
 
 
@@ -167,24 +166,20 @@ def substitute_ulysses_attn(
     process_group: dist.ProcessGroup,
     attn_impl: str = "flash_attention_2",
 ) -> None:
-    """Patch FlashAttention._compute_attention to do Ulysses all-to-all + local FA.
-
-    Mirrors `substitute_ring_attn` so swapping CP styles is a one-line change
-    in the trainer.
-    """
+    """Patch FlashAttention._compute_attention to do Ulysses all-to-all + local FA."""
     cp_size = dist.get_world_size(group=process_group)
 
     # Resolve flash kernel + version from attn_impl.
     if attn_impl == "flash_attention_4":
-        from flash_attn.cute import flash_attn_varlen_func as flash_fn
+        from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_op as flash_fn
 
         flash_attn_version = 4
     elif attn_impl == "flash_attention_3":
-        from flash_attn_interface import flash_attn_varlen_func as flash_fn
+        from prime_rl.trainer.models.layers.attn import flash_attn_3_varlen_op as flash_fn
 
         flash_attn_version = 3
     else:
-        from flash_attn import flash_attn_varlen_func as flash_fn
+        from prime_rl.trainer.models.layers.attn import flash_attn_2_varlen_op as flash_fn
 
         flash_attn_version = 2
 

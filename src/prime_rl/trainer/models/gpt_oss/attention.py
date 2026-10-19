@@ -2,7 +2,7 @@
 
 Learned sink logits are model parameters, not an attention-backend option. GPT-OSS
 therefore owns its FA4 call and shards each sink with the corresponding query heads
-in its ring and Ulysses paths.
+in its Ulysses path.
 """
 
 import torch
@@ -105,47 +105,6 @@ class GptOssAttention(nn.Module):
         return self.o_proj(output.contiguous().view(batch_size, sequence_length, -1))
 
 
-def substitute_gpt_oss_ring_attention(
-    process_group: torch.distributed.ProcessGroup,
-    heads_k_stride: int,
-) -> None:
-    from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
-
-    from prime_rl.trainer.distributed.collectives import all_gather
-
-    def ring_attention(self, query, key, value, _cu_seqlens, _max_seqlen):
-        key_value_groups = self.num_attention_heads // self.num_key_value_heads
-        local_k_slice = DATA_PARAMS["local_k_slice"]
-        window_size = (self.sliding_window - 1, 0) if self.sliding_window is not None else (None, None)
-        outputs = []
-
-        for key_head_start in range(0, self.num_key_value_heads, heads_k_stride):
-            key_head_stop = min(key_head_start + heads_k_stride, self.num_key_value_heads)
-            query_head_start = key_head_start * key_value_groups
-            query_head_stop = key_head_stop * key_value_groups
-
-            gathered_key = all_gather(key[:, key_head_start:key_head_stop], 0, process_group)[local_k_slice]
-            gathered_value = all_gather(value[:, key_head_start:key_head_stop], 0, process_group)[local_k_slice]
-            output, _ = self.flash_attn(
-                query[:, query_head_start:query_head_stop],
-                gathered_key,
-                gathered_value,
-                cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
-                cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
-                max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
-                max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
-                softmax_scale=self.scaling,
-                causal=True,
-                window_size=window_size,
-                learnable_sink=self.sinks[query_head_start:query_head_stop],
-            )
-            outputs.append(output)
-
-        return torch.cat(outputs, dim=1)
-
-    GptOssAttention.compute_attention = ring_attention
-
-
 def substitute_gpt_oss_ulysses_attention(process_group: torch.distributed.ProcessGroup) -> None:
     from prime_rl.trainer.models.layers.ulysses_attn import ULYSSES_PARAMS, ulysses_flash_attn_varlen_func
 
@@ -176,6 +135,5 @@ def substitute_gpt_oss_ulysses_attention(process_group: torch.distributed.Proces
 
 __all__ = [
     "GptOssAttention",
-    "substitute_gpt_oss_ring_attention",
     "substitute_gpt_oss_ulysses_attention",
 ]

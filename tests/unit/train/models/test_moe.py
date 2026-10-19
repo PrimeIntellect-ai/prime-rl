@@ -5,9 +5,8 @@ import torch.nn.functional as F
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
-from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4Experts
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
-from prime_rl.trainer.models.layers.activations import ActivationDispatch
+from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
@@ -69,7 +68,7 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
         pytest.param(GroupedExperts, {"activation": "relu2"}, True, "standard SwiGLU", id="relu2"),
         pytest.param(GroupedExperts, {"activation": "clamped_swiglu"}, True, "standard SwiGLU", id="clamped-swiglu"),
         pytest.param(GroupedExperts, {"bias": True}, True, "bias-free", id="bias"),
-        pytest.param(DeepseekV4Experts, {"swiglu_limit": 10.0}, True, "standard SwiGLU", id="deepseek-v4"),
+        pytest.param(GroupedExperts, {"activation": ClampedSilu(10.0)}, True, "standard SwiGLU", id="deepseek-v4"),
     ],
 )
 def test_set_compute_validates_sonic_expert_structure(expert_cls, kwargs, fused, error):
@@ -122,12 +121,14 @@ def test_local_token_dispatcher(score_before_experts):
         score_before_experts=score_before_experts,
     )
 
-    expected = torch.zeros_like(x)
-    for token in range(len(x)):
+    x_ref = x.detach().clone().requires_grad_()
+    scores_ref = scores.detach().clone().requires_grad_()
+    expected = torch.zeros_like(x_ref)
+    for token in range(len(x_ref)):
         for route in range(selected.shape[1]):
-            score = scores[token, route]
+            score = scores_ref[token, route]
             expert_scale = selected[token, route] + 1
-            expert_input = x[token] * score if score_before_experts else x[token]
+            expert_input = x_ref[token] * score if score_before_experts else x_ref[token]
             contribution = expert_input.square() * expert_scale
             if not score_before_experts:
                 contribution = contribution * score
@@ -135,8 +136,9 @@ def test_local_token_dispatcher(score_before_experts):
 
     torch.testing.assert_close(actual, expected)
     actual.sum().backward()
-    assert x.grad is not None
-    assert scores.grad is not None
+    expected.sum().backward()
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(scores.grad, scores_ref.grad)
 
 
 def test_local_token_dispatcher_handles_empty_input_and_unused_experts():

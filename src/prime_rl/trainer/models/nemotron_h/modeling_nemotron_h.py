@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -44,9 +44,9 @@ class NemotronHDecoderLayer(nn.Module):
         self.layer_type = config.layer_types[layer_idx]
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.layer_norm_epsilon))
 
-        if self.layer_type == "mamba":
+        if self.layer_type == "linear_attention":
             self.mamba = NemotronHMamba2(config)
-        elif self.layer_type == "attention":
+        elif self.layer_type == "full_attention":
             self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](
                 AttentionConfig(
                     hidden_size=config.hidden_size,
@@ -115,9 +115,9 @@ class NemotronHDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
 
-        if self.layer_type == "mamba":
+        if self.layer_type == "linear_attention":
             hidden_states = self.mamba(hidden_states, cu_seqlens)
-        elif self.layer_type == "attention":
+        elif self.layer_type == "full_attention":
             hidden_states, _ = self.self_attn(
                 hidden_states=hidden_states,
                 cu_seqlens=cu_seqlens,
@@ -130,13 +130,6 @@ class NemotronHDecoderLayer(nn.Module):
 
 class NemotronHPreTrainedModel(PreTrainedModelPrimeRL):
     config: NemotronHConfig
-
-    @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(
-            frozenset({"ulysses"}),
-            "Mamba layers require Ulysses to reconstruct full sequences while sharding Mamba heads",
-        )
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:
@@ -192,7 +185,7 @@ class NemotronHModel(NemotronHPreTrainedModel):
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         for layer_idx, decoder_layer in enumerate(self.layers):
-            layer_routed_experts = routed_experts[:, :, layer_idx] if routed_experts is not None else None
+            layer_routed_experts = routed_experts[:, :, layer_idx].contiguous() if routed_experts is not None else None
             hidden_states = decoder_layer(
                 hidden_states,
                 cu_seqlens,
