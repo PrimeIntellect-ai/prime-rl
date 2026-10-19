@@ -38,6 +38,19 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_count (`int`): Number of residual streams. Above 1, Gated Residual connections (Qwen3.8-Next) replace the
             pre-norms and the final norm.
         hc_lowrank (`int`, *optional*): Rank of the Gated Residual read gates; required when `hc_count` is above 1.
+        hc_stream_width (`int`, *optional*): Width of each residual stream; a divisor of `hidden_size`, which each
+            read then assembles from `hidden_size / hc_stream_width` chunks. Defaults to `hidden_size`.
+        hc_qkv_reads (`bool`): Separate Gated Residual reads (gates) for the attention's query, key and value inputs.
+        hc_moe_reads (`bool`): Separate reads for the MoE router and the experts (routed and shared).
+        hc_qkv_conv (`int`): Kernel size of causal depthwise convolutions after the attention read, one per query, key
+            and value input; 0 for none.
+        hc_stream_inputs (`str`): What the residual streams start from: `copy` (the token embedding in every stream),
+            `tables` (one token embedding table per stream), `ngram` (the last stream hashed token bi- and trigrams,
+            the others token tables) or `bytes` (the last stream the token's preceding UTF-8 bytes, the others token
+            tables).
+        hc_ngram_vocab_size (`int`, *optional*): Rows per hash head of the n-gram stream.
+        hc_byte_window (`int`, *optional*): Bytes per token of the byte stream.
+        hc_byte_table (`str`, *optional*): Path of the tokenizer's token-to-bytes table for the byte stream.
         n_null_experts (`int`): Zero-output experts the router can select next to the routed experts (AdaMoE); a
             token that selects them uses fewer routed experts.
         attn_output_gate (`bool`): Elementwise sigmoid gate on the attention output, computed from the block input
@@ -84,6 +97,14 @@ class PrimeMoeConfig(PretrainedConfig):
         use_qk_norm=False,
         hc_count=1,
         hc_lowrank=None,
+        hc_stream_width=None,
+        hc_qkv_reads=False,
+        hc_moe_reads=False,
+        hc_qkv_conv=0,
+        hc_stream_inputs="copy",
+        hc_ngram_vocab_size=None,
+        hc_byte_window=None,
+        hc_byte_table=None,
         n_null_experts=0,
         attn_output_gate=False,
         exclusive_attention=False,
@@ -127,6 +148,14 @@ class PrimeMoeConfig(PretrainedConfig):
 
         self.hc_count = hc_count
         self.hc_lowrank = hc_lowrank
+        self.hc_stream_width = hc_stream_width
+        self.hc_qkv_reads = hc_qkv_reads
+        self.hc_moe_reads = hc_moe_reads
+        self.hc_qkv_conv = hc_qkv_conv
+        self.hc_stream_inputs = hc_stream_inputs
+        self.hc_ngram_vocab_size = hc_ngram_vocab_size
+        self.hc_byte_window = hc_byte_window
+        self.hc_byte_table = hc_byte_table
         self.n_null_experts = n_null_experts
         self.attn_output_gate = attn_output_gate
         self.exclusive_attention = exclusive_attention

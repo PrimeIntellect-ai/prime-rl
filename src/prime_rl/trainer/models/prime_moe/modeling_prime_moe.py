@@ -20,9 +20,11 @@ from prime_rl.trainer.models.layers.moe import GroupedExperts
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.prime_moe.attention import PrimeFlashAttention
+from prime_rl.trainer.models.prime_moe.byte_window import ByteWindowEmbedding
 from prime_rl.trainer.models.prime_moe.configuration_prime_moe import PrimeMoeConfig
 from prime_rl.trainer.models.prime_moe.hyper_connection import HyperConnection
 from prime_rl.trainer.models.prime_moe.moe import PrimeMoE, PrimeRouter
+from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -39,7 +41,7 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
             use_qk_norm=config.use_qk_norm,
             rms_norm_eps=config.rms_norm_eps,
         )
-        if config.attn_output_gate or config.exclusive_attention:
+        if config.attn_output_gate or config.exclusive_attention or config.hc_qkv_reads or config.hc_qkv_conv:
             self.self_attn = PrimeFlashAttention(
                 attn_config,
                 flash_attn_version=int(config._attn_implementation.removeprefix("flash_attention_")),
@@ -92,9 +94,13 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 "stream_count": config.hc_count,
                 "low_rank": config.hc_lowrank,
                 "norm_eps": config.rms_norm_eps,
+                "stream_width": config.hc_stream_width,
             }
-            self.attn_hyper_connection = HyperConnection(**connection_args)
-            self.mlp_hyper_connection = HyperConnection(**connection_args)
+            self.attn_hyper_connection = HyperConnection(
+                **connection_args, read_count=3 if config.hc_qkv_reads else 1, conv_kernel_size=config.hc_qkv_conv
+            )
+            moe_reads = config.hc_moe_reads and isinstance(self.mlp, PrimeMoE)
+            self.mlp_hyper_connection = HyperConnection(**connection_args, read_count=2 if moe_reads else 1)
         else:
             self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
             self.post_attention_layernorm = RMSNorm(
@@ -109,7 +115,7 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
         max_seqlen: int,
     ) -> torch.Tensor:
         if self.gated_residual:
-            block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
+            block_input, residual_state = self.attn_hyper_connection.mix(hidden_states, cu_seqlens)
             block_output, _ = self.self_attn(
                 hidden_states=block_input,
                 position_embeddings=position_embeddings,
@@ -173,6 +179,38 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        # Per-stream inputs: the first stream is the token embedding, the others extra token tables, and with
+        # `ngram` / `bytes` the last one hashed token n-grams / the token's preceding bytes.
+        extra_tables = {
+            "copy": 0,
+            "tables": config.hc_count - 1,
+            "ngram": config.hc_count - 2,
+            "bytes": config.hc_count - 2,
+        }
+        self.extra_embed_tokens = (
+            nn.Embedding(config.vocab_size, extra_tables[config.hc_stream_inputs] * config.hidden_size)
+            if extra_tables[config.hc_stream_inputs]
+            else None
+        )
+        self.ngram_embed_tokens = (
+            NGramEmbedding(
+                embedding_dim=config.hidden_size,
+                ngram_size=3,
+                heads_per_ngram=2,
+                ngram_vocab_size=config.hc_ngram_vocab_size,
+                token_vocab_size=config.vocab_size,
+                eos_token_id=config.eos_token_id,
+                vocab_size_divisor=128,
+                ngram_layer_index=0,
+            )
+            if config.hc_stream_inputs == "ngram"
+            else None
+        )
+        self.byte_embed_tokens = (
+            ByteWindowEmbedding(dim=config.hidden_size, window=config.hc_byte_window, table_path=config.hc_byte_table)
+            if config.hc_stream_inputs == "bytes"
+            else None
+        )
         self.layers = nn.ModuleList(
             [PrimeMoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -183,6 +221,7 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
                 low_rank=config.hc_lowrank,
                 norm_eps=config.rms_norm_eps,
                 with_residual_injection=False,
+                stream_width=config.hc_stream_width,
             )
         else:
             self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
@@ -220,8 +259,17 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
 
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
-        # Gated Residual: every residual stream starts from the token embedding.
-        hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
+        if self.config.hc_stream_inputs == "copy":
+            # Gated Residual: every residual stream starts from the token embedding (its chunks, for narrower streams).
+            stream_width = self.config.hc_stream_width or self.config.hidden_size
+            hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count * stream_width // self.config.hidden_size)
+        else:
+            streams = [inputs_embeds, self.extra_embed_tokens(input_ids)]
+            if self.ngram_embed_tokens is not None:
+                streams.append(self.ngram_embed_tokens(input_ids, cu_seqlens))
+            if self.byte_embed_tokens is not None:
+                streams.append(self.byte_embed_tokens(input_ids, cu_seqlens))
+            hidden_states = torch.cat(streams, dim=-1)
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
                 hidden_states, position_embeddings=position_embeddings, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen
@@ -283,3 +331,7 @@ class PrimeMoeForCausalLM(PrimeMoePreTrainedModel):
         rotary_emb = self.model.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
+        if self.model.ngram_embed_tokens is not None:
+            self.model.ngram_embed_tokens.reset_parameters()
+        if self.model.byte_embed_tokens is not None:
+            self.model.byte_embed_tokens.reset_buffers()

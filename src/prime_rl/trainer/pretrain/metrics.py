@@ -129,7 +129,7 @@ class SpikeDetector:
 def param_group(name: str) -> str:
     """The parameter group a parameter's gradient norm is logged under."""
     parts = name.split(".")
-    if "embed_tokens" in parts:
+    if any("embed_tokens" in part for part in parts):
         return "embed"
     if "lm_head" in parts:
         return "lm_head"

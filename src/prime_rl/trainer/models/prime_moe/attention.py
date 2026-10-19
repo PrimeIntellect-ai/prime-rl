@@ -13,6 +13,9 @@ class PrimeFlashAttention(FlashAttention):
       token's own (normalized) value vector, so attention carries only context the residual path does not already have.
     - ``output_gate`` (Qiu et al. 2025, "Gated Attention for Large Language Models", their best variant; Qwen3-Next):
       multiply the output elementwise by ``sigmoid(g_proj(x))``, computed from the block input.
+
+    The block input can also be a (query, key, value) triple of separate inputs (Gated Residual reads); the gate then
+    reads the query input. Separate inputs need unfused q, k and v projections.
     """
 
     def __init__(self, config: AttentionConfig, flash_attn_version: int, *, exclusive: bool, output_gate: bool):
@@ -22,15 +25,25 @@ class PrimeFlashAttention(FlashAttention):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        hidden_states: torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
     ) -> tuple[torch.Tensor, None]:
+        if isinstance(hidden_states, tuple):
+            assert self.qkv_proj is None, "separate query, key and value inputs need model.fusions without qkv"
+            query_input, key_input, value_input = hidden_states
+            query_states, key_states, value_states = (
+                self.q_proj(query_input),
+                self.k_proj(key_input),
+                self.v_proj(value_input),
+            )
+            hidden_states = query_input
+        else:
+            query_states, key_states, value_states = self.project_qkv(hidden_states)
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states, key_states, value_states = self.project_qkv(hidden_states)
         if self.use_qk_norm and self.qk_norm_type == "per_layer":
             query_states = self.q_norm(query_states)
             key_states = self.k_norm(key_states)
