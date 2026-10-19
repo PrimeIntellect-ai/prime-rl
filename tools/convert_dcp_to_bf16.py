@@ -2,12 +2,15 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "torch==2.13.0",
+#     "torchvision==0.28.0",
+#     "pillow",
 #     "transformers==5.19.0",
 #     "safetensors",
 #     "huggingface-hub",
 # ]
 # [tool.uv.sources]
 # torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+# torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 # [[tool.uv.index]]
 # name = "pytorch-cpu"
 # url = "https://download.pytorch.org/whl/cpu"
