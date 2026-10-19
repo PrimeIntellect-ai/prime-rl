@@ -12,7 +12,7 @@ from transformers.utils import TransformersKwargs, auto_docstring, can_return_tu
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.lm_head import OutputLinear, PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
@@ -99,25 +99,8 @@ class Qwen3PreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": Qwen3DecoderLayer,
     }
 
-    muon_params = (
-        "*.self_attn.q_proj.weight",
-        "*.self_attn.k_proj.weight",
-        "*.self_attn.v_proj.weight",
-        "*.self_attn.o_proj.weight",
-        "*.mlp.gate_proj.weight",
-        "*.mlp.up_proj.weight",
-        "*.mlp.down_proj.weight",
-    )
-    non_muon_params = (
-        "*.embed_tokens.weight",
-        "*.input_layernorm.weight",
-        "*.post_attention_layernorm.weight",
-        "*.self_attn.q_norm.weight",
-        "*.self_attn.k_norm.weight",
-        "*.norm.weight",
-        "*.bias",
-        "lm_head.weight",
-    )
+    muon_layers = (nn.Linear,)
+    non_muon_layers = (nn.Embedding, OutputLinear)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

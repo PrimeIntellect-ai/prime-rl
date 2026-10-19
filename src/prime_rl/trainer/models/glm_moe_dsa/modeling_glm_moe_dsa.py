@@ -15,9 +15,9 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm_moe_dsa.configuration_glm_moe_dsa import GlmMoeDsaConfig, _index_cache_skip_topk
 from prime_rl.trainer.models.glm_moe_dsa.converting_glm_moe_dsa import conversion_chain
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import GlmMoeDsaAttention, SparseMlaAttentionArgs
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.lm_head import OutputLinear, PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
-from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 
@@ -130,33 +130,8 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
 
-    muon_params = (
-        "*.self_attn.q_a_proj.weight",
-        "*.self_attn.q_b_proj.weight",
-        "*.self_attn.kv_a_proj_with_mqa.weight",
-        "*.self_attn.kv_b_proj.weight",
-        "*.self_attn.o_proj.weight",
-        "*.mlp.gate_proj.weight",
-        "*.mlp.up_proj.weight",
-        "*.mlp.down_proj.weight",
-        "*.mlp.shared_expert.gate_proj.weight",
-        "*.mlp.shared_expert.up_proj.weight",
-        "*.mlp.shared_expert.down_proj.weight",
-        "*.mlp.router.gate.weight",
-        "*.mlp.experts.gate_proj",
-        "*.mlp.experts.up_proj",
-        "*.mlp.experts.down_proj",
-    )
-    non_muon_params = (
-        "*.embed_tokens.weight",
-        "*.input_layernorm.weight",
-        "*.post_attention_layernorm.weight",
-        "*.self_attn.q_a_layernorm.weight",
-        "*.self_attn.kv_a_layernorm.weight",
-        "*.norm.weight",
-        "*.bias",
-        "lm_head.weight",
-    )
+    muon_layers = (nn.Linear, GroupedExperts)
+    non_muon_layers = (nn.Embedding, OutputLinear)
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:

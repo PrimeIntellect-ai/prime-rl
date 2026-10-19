@@ -4,7 +4,7 @@ from transformers.modeling_outputs import BaseModelOutput
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.layers.gated_delta_net import GatedDeltaNet
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import OutputLinear, PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.mlp import FeedForward, SigmoidGatedFeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
@@ -116,51 +116,8 @@ class Qwen3_5DecoderLayer(nn.Module):
 class Qwen3_5PreTrainedModel(PreTrainedModelPrimeRL):
     config_class = Qwen3_5TextConfig
 
-    muon_params = (
-        "*.self_attn.q_proj.weight",
-        "*.self_attn.k_proj.weight",
-        "*.self_attn.v_proj.weight",
-        "*.self_attn.o_proj.weight",
-        "*.linear_attn.in_proj_qkv.weight",
-        "*.linear_attn.in_proj_z.weight",
-        "*.linear_attn.in_proj_b.weight",
-        "*.linear_attn.in_proj_a.weight",
-        "*.linear_attn.conv1d.weight",
-        "*.linear_attn.out_proj.weight",
-        "*.mlp.gate_proj.weight",
-        "*.mlp.up_proj.weight",
-        "*.mlp.down_proj.weight",
-        "*.mlp.shared_expert.gate_proj.weight",
-        "*.mlp.shared_expert.up_proj.weight",
-        "*.mlp.shared_expert.down_proj.weight",
-        "*.mlp.shared_expert.output_gate.weight",
-        "*.mlp.router.gate.weight",
-        "*.mlp.experts.gate_proj",
-        "*.mlp.experts.up_proj",
-        "*.mlp.experts.down_proj",
-        "*.visual.patch_embed.proj.weight",
-        "*.visual.pos_embed.weight",
-        "*.visual.blocks.*.attn.qkv.weight",
-        "*.visual.blocks.*.attn.proj.weight",
-        "*.visual.blocks.*.mlp.linear_fc1.weight",
-        "*.visual.blocks.*.mlp.linear_fc2.weight",
-        "*.visual.merger.linear_fc1.weight",
-        "*.visual.merger.linear_fc2.weight",
-    )
-    non_muon_params = (
-        "*.embed_tokens.weight",
-        "*.input_layernorm.weight",
-        "*.post_attention_layernorm.weight",
-        "*.self_attn.q_norm.weight",
-        "*.self_attn.k_norm.weight",
-        "*.linear_attn.A_log",
-        "*.linear_attn.dt_bias",
-        "*.visual.blocks.*.norm1.weight",
-        "*.visual.blocks.*.norm2.weight",
-        "*.norm.weight",
-        "*.bias",
-        "lm_head.weight",
-    )
+    muon_layers = (nn.Linear, nn.Conv1d, nn.Conv3d, GroupedExperts)
+    non_muon_layers = (nn.Embedding, OutputLinear)
 
     @classmethod
     def keep_in_fp32_for_weight_transfer(cls, name: str) -> bool:

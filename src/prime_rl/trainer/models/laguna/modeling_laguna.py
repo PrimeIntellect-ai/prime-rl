@@ -17,9 +17,9 @@ from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.laguna.configuration_laguna import LagunaConfig
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain
 from prime_rl.trainer.models.layers.attn import AttentionConfig, FlashAttention
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
+from prime_rl.trainer.models.layers.lm_head import OutputLinear, PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
-from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, MoEArgs
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -268,33 +268,8 @@ class LagunaPreTrainedModel(PreTrainedModelPrimeRL):
         "hidden_states": LagunaDecoderLayer,
     }
 
-    muon_params = (
-        "*.self_attn.q_proj.weight",
-        "*.self_attn.k_proj.weight",
-        "*.self_attn.v_proj.weight",
-        "*.self_attn.o_proj.weight",
-        "*.self_attn.g_proj.weight",
-        "*.mlp.gate_proj.weight",
-        "*.mlp.up_proj.weight",
-        "*.mlp.down_proj.weight",
-        "*.mlp.shared_expert.gate_proj.weight",
-        "*.mlp.shared_expert.up_proj.weight",
-        "*.mlp.shared_expert.down_proj.weight",
-        "*.mlp.router.gate.weight",
-        "*.mlp.experts.gate_proj",
-        "*.mlp.experts.up_proj",
-        "*.mlp.experts.down_proj",
-    )
-    non_muon_params = (
-        "*.embed_tokens.weight",
-        "*.input_layernorm.weight",
-        "*.post_attention_layernorm.weight",
-        "*.self_attn.q_norm.weight",
-        "*.self_attn.k_norm.weight",
-        "*.norm.weight",
-        "*.bias",
-        "lm_head.weight",
-    )
+    muon_layers = (nn.Linear, GroupedExperts)
+    non_muon_layers = (nn.Embedding, OutputLinear)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

@@ -128,7 +128,7 @@ def _create_optimizer(
             )
         case "muon":
             if model is None:
-                raise ValueError("Muon requires the model, which lists the parameters Muon updates")
+                raise ValueError("Muon requires the model, which lists the layers Muon updates")
             return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
         case "sign_sgd":
             return SignSGD(
@@ -145,37 +145,33 @@ def _create_muon_optimizer(
     model: PreTrainedModelPrimeRL,
     lr: float | None = None,
 ) -> Optimizer:
-    packed_infos = {packed_info.parameter: packed_info for packed_info in get_model_packed_parameters(model)}
-    lora_adapters = {
-        param
-        for module in model.modules()
-        if isinstance(module, LoRAModule)
-        for param in module.parameters(recurse=False)
-    }
+    param_layers = {}
+    for layer in model.modules():
+        for param in layer.parameters(recurse=False):
+            param_layers.setdefault(param, layer)
     moe_blocks = [module for module in model.modules() if isinstance(module, MoE)]
     moe_experts = {param for moe in moe_blocks for param in moe.experts.parameters()}
     moe_routers = {param for moe in moe_blocks for param in moe.router.parameters()}
 
-    def uses_muon(name: str, param: nn.Parameter) -> bool:
-        # LoRA adapters are low-rank matrices that the model does not list.
-        if param in lora_adapters:
-            return True
-        # A packed parameter is updated like the parameters it packs.
-        packed_info = packed_infos.get(param)
-        logical_names = packed_info.logical_fqns if packed_info is not None else (name,)
-        decisions = {model.is_muon_param(logical_name) for logical_name in logical_names}
-        if len(decisions) > 1:
-            raise ValueError(f"{name!r} packs parameters that {type(model).__name__} splits between Muon and AdamW")
-        return decisions.pop()
+    def uses_muon(param: nn.Parameter) -> bool:
+        # Muon only updates matrices. Grouped experts stack one tensor per expert along the first dimension.
+        matrix_ndim = param.ndim - 1 if param in moe_experts else param.ndim
+        if matrix_ndim < 2:
+            return False
+        layer = param_layers[param]
+        # A LoRA adapter is updated like the layer it adapts.
+        if isinstance(layer, LoRAModule):
+            layer = layer.base_layer
+        return model.is_muon_layer(layer)
 
     muon_params = []
     expert_params = []
     router_params = []
     adamw_params = []
-    for name, param in named_params:
+    for _, param in named_params:
         if not param.requires_grad:
             continue
-        if not uses_muon(name, param):
+        if not uses_muon(param):
             adamw_params.append(param)
         elif param in moe_experts:
             expert_params.append(param)
@@ -226,7 +222,7 @@ def _create_muon_optimizer(
     # matrices it replaces would. Packed biases and frozen parameters are not Muon's.
     matrix_partitions = {}
     muon_group_params = {p for group in param_groups if group["algorithm"] == "muon" for p in group["params"]}
-    for packed_info in packed_infos.values():
+    for packed_info in get_model_packed_parameters(model):
         partitions = packed_info.spec.muon_matrix_partitions(packed_info.parameter)
         if partitions is not None and packed_info.parameter in muon_group_params:
             matrix_partitions[packed_info.parameter] = partitions

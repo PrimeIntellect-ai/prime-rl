@@ -16,7 +16,7 @@ from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, PackedContext
+from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, DeepseekV4Compressor, PackedContext
 from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
 from prime_rl.trainer.models.deepseek_v4.converting_deepseek_v4 import conversion_chain
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_state_dict_
@@ -26,8 +26,8 @@ from prime_rl.trainer.models.deepseek_v4.hyperconnections import (
 )
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
-from prime_rl.trainer.models.layers.moe import MoE
+from prime_rl.trainer.models.layers.lm_head import OutputLinear, PrimeLmOutput
+from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 
 
@@ -107,43 +107,8 @@ class DeepseekV4PreTrainedModel(PreTrainedModelPrimeRL):
     _can_record_outputs = {"hidden_states": DeepseekV4DecoderLayer}
     _keys_to_ignore_on_load_unexpected = [r"(^|\.)mtp\..*"]
 
-    muon_params = (
-        "*.self_attn.q_a_proj.weight",
-        "*.self_attn.q_b_proj.weight",
-        "*.self_attn.kv_proj.weight",
-        "*.self_attn.o_a_proj.weight",
-        "*.self_attn.o_b_proj.weight",
-        "*.compressor.kv_proj.weight",
-        "*.compressor.gate_proj.weight",
-        "*.compressor.position_bias",
-        "*.attn_hc.fn",
-        "*.ffn_hc.fn",
-        "*.hc_head.hc_fn",
-        "*.mlp.shared_expert.gate_proj.weight",
-        "*.mlp.shared_expert.up_proj.weight",
-        "*.mlp.shared_expert.down_proj.weight",
-        "*.mlp.router.gate.weight",
-        "*.mlp.experts.gate_proj",
-        "*.mlp.experts.up_proj",
-        "*.mlp.experts.down_proj",
-    )
-    non_muon_params = (
-        "*.embed_tokens.weight",
-        "*.input_layernorm.weight",
-        "*.post_attention_layernorm.weight",
-        "*.self_attn.q_a_norm.weight",
-        "*.self_attn.kv_norm.weight",
-        "*.compressor.kv_norm.weight",
-        "*.self_attn.sinks",
-        "*.attn_hc.base",
-        "*.attn_hc.scale",
-        "*.ffn_hc.base",
-        "*.ffn_hc.scale",
-        "*.hc_head.hc_base",
-        "*.hc_head.hc_scale",
-        "*.norm.weight",
-        "lm_head.weight",
-    )
+    muon_layers = (nn.Linear, GroupedExperts, DeepseekV4Compressor, DeepseekV4HyperConnection, DeepseekV4HyperHead)
+    non_muon_layers = (nn.Embedding, OutputLinear)
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:

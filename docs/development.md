@@ -133,7 +133,7 @@ Don't expect reward to climb meaningfully in 20 steps on a random model.
 Before merging a new model, you need to ensure the following:
 
 - The model is correctly registered and defines and all the required methods - such as `convert_hf_layer_to_tt` and `convert_tt_layer_to_hf`.
-- The model's `muon_params` and `non_muon_params` list every trainable parameter as `fnmatch` patterns of its state-dict name. Muon updates the first list; its AdamW update takes the second (embeddings, LM head, norms, biases). Muon refuses to start if a parameter matches neither list or both.
+- The model's `muon_layers` and `non_muon_layers` list the layer classes that hold weight matrices. Muon updates the matrices of the first list (e.g. `nn.Linear`, `GroupedExperts`) and AdamW those of the second (e.g. `nn.Embedding`, `OutputLinear`). Vectors such as biases and norm weights always go to AdamW. Muon refuses to start on a matrix whose layer class is in neither list.
 - The small smoke test passes.
 
 In the PR that adds the new model, you also need to provide a table covering the KL mismatch across 20 steps on `math` environment with `batch_size=64`. All the entries in the table must lower than 0.015. If this is not met, the PR will not be merged (unless reasonable justification is provided). This is to ensure all our models are consistent and their implementations match the implementations in the inference framework.

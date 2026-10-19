@@ -10,7 +10,7 @@ from prime_rl.trainer.models.gpt_oss.converting_gpt_oss import (
     is_hf_state_dict,
     is_prime_state_dict,
 )
-from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput, VanillaOutputLinear
+from prime_rl.trainer.models.layers.lm_head import OutputLinear, PrimeLmOutput, VanillaOutputLinear
 from prime_rl.trainer.models.layers.moe import GroupedExperts, MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -93,28 +93,8 @@ class GptOssPreTrainedModel(PreTrainedModelPrimeRL):
     _supports_attention_backend = True
     _keep_in_fp32_modules = ["post_attention_layernorm", "input_layernorm", "norm"]
 
-    muon_params = (
-        "*.self_attn.q_proj.weight",
-        "*.self_attn.k_proj.weight",
-        "*.self_attn.v_proj.weight",
-        "*.self_attn.o_proj.weight",
-        "*.mlp.router.gate.weight",
-        "*.mlp.experts.gate_proj",
-        "*.mlp.experts.up_proj",
-        "*.mlp.experts.down_proj",
-    )
-    non_muon_params = (
-        "*.embed_tokens.weight",
-        "*.input_layernorm.weight",
-        "*.post_attention_layernorm.weight",
-        "*.self_attn.sinks",
-        "*.mlp.experts.gate_proj_bias",
-        "*.mlp.experts.up_proj_bias",
-        "*.mlp.experts.down_proj_bias",
-        "*.norm.weight",
-        "*.bias",
-        "lm_head.weight",
-    )
+    muon_layers = (nn.Linear, GroupedExperts)
+    non_muon_layers = (nn.Embedding, OutputLinear)
 
     @classmethod
     def is_hf_state_dict(cls, state_dict: dict[str, Tensor]) -> bool:

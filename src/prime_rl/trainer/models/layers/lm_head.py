@@ -37,7 +37,11 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
     )
 
 
-class FusedOutputLinear(torch.nn.Linear):
+class OutputLinear(torch.nn.Linear):
+    """Base class of the LM heads, which map hidden states to vocabulary logits."""
+
+
+class FusedOutputLinear(OutputLinear):
     """Chunked LM head that never materializes the full [N, V] logits.
 
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
@@ -80,7 +84,7 @@ class FusedOutputLinear(torch.nn.Linear):
         return PrimeLmOutput(logprobs=logprobs, entropy=entropy)
 
 
-class VanillaOutputLinear(torch.nn.Linear):
+class VanillaOutputLinear(OutputLinear):
     """LM head that returns the full logits, or with ``labels`` and no ``temperature`` the summed fp32
     cross-entropy over labels != IGNORE_INDEX as ``loss``."""
 
