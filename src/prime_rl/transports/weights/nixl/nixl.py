@@ -23,6 +23,7 @@ from prime_rl.configs.shared import NIXLWeightBroadcastConfig
 from prime_rl.orchestrator.clients import init_nixl_broadcast
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.world import wait_for_master
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.transports.weights.nixl.agent import (
     NixlAgent,
@@ -394,6 +395,8 @@ class NIXLWeightSender(WeightSender):
             inference_metadata = None
 
         if startup:
+            # The master's ModelExpress discovery can outlast the NCCL timeout; hold the others on the store.
+            wait_for_master(f"weight_broadcast/nixl_discovery/{step}", self.config.timeout)
             objects = [inference_metadata]
             dist.broadcast_object_list(objects, src=0)
             if self.is_serving_rank:
@@ -442,6 +445,7 @@ class NIXLWeightSender(WeightSender):
                 policy_notification(step, "complete"),
                 timeout=self.config.timeout,
             )
+        wait_for_master(f"weight_broadcast/nixl_complete/{step}", self.config.timeout)
         dist.barrier()
         self.broadcast_count += 1
         self.logger.info(f"NIXL+ModelExpress policy v{step} synchronized in {time.perf_counter() - start:.2f}s")

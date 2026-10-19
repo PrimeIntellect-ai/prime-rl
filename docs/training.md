@@ -20,6 +20,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
+  - [Pausing a Live Run](#pausing-a-live-run)
   - [Serving Checkpoints](#serving-checkpoints)
 - [Observability](#observability)
   - [Log Files](#log-files)
@@ -338,6 +339,23 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
+
+### Pausing a Live Run
+
+With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
+
+```bash
+uv run rl @ rl.toml --ckpt --trainer.control --orchestrator.control --run.name my-run
+
+curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "pause"}'
+# {"id": "3f2a...", "type": "pause", "state": "pending", "step": null}
+curl localhost:8040/v1/actions/3f2a...
+# {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12}
+curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
+# {"id": "9c41...", "type": "pause", "state": "pending", "step": 12}
+```
+
+Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
 
 ### Exporting Checkpoints
 

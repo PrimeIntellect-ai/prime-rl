@@ -8,6 +8,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import dump_resolved_config
@@ -71,6 +73,11 @@ def prepare_attempt_dirs(run_dir: Path) -> tuple[Path, Path]:
     resolved_config_dir.mkdir(parents=True, exist_ok=True)
     attempt_log_dir.mkdir(parents=True, exist_ok=True)
     return resolved_config_dir, attempt_log_dir
+
+
+def launcher_attempt_env(config_dir: Path, log_dir: Path) -> dict[str, str]:
+    """Env that pins a launcher's child processes to its attempt (see ``prepare_attempt_dirs``)."""
+    return {"PRL_ATTEMPT_CONFIG_DIR": str(config_dir), "PRL_ATTEMPT_LOG_DIR": str(log_dir)}
 
 
 def create_attempt_log_dir(run_dir: Path) -> Path:
@@ -168,6 +175,23 @@ def get_config_dir(output_dir: Path) -> Path:
     latest = configs_dir / "latest" / "resolved"
     legacy = configs_dir / "resolved"
     return legacy if legacy.is_dir() and not latest.exists() else latest
+
+
+def write_resolved_config(output_dir: Path, config: BaseModel, name: str) -> None:
+    """Save a component's resolved config and dashboard launch artifacts.
+
+    Independently launched components share the unnumbered config directory;
+    allocating an attempt in each process would split one run across attempts.
+    Launcher-managed components write into their pinned attempt directory.
+    """
+    config_dir = get_config_dir(output_dir)
+    if not config_dir.exists():
+        config_dir = output_dir / "configs" / "resolved"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=config_dir, delete=False) as f:
+        json.dump(dump_resolved_config(config), f, indent=2)
+    os.replace(f.name, config_dir / f"{name}.json")
+    write_launch_artifacts(config_dir, name)
 
 
 def write_launch_command(config_dir: Path, name: str) -> None:
