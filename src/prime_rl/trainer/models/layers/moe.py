@@ -180,14 +180,14 @@ class TokenChoiceTopKRouter(nn.Module):
         self,
         x: torch.Tensor,
         routed_experts: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs*slen, dim)``.
             routed_experts (torch.Tensor | None, optional): Optional tensor with shape ``(bs * slen, top_k)``.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
                 - top_scores (torch.Tensor):
                     Routing scores for selected experts with shape ``(bs*slen, top_k)``.
                 - selected_experts_indices (torch.Tensor):
@@ -196,8 +196,6 @@ class TokenChoiceTopKRouter(nn.Module):
                     Number of tokens assigned to each expert with shape ``(num_experts,)``.
                 - routing_confidence_sum (torch.Tensor):
                     Sum over tokens of the selected-expert probability mass before route normalization/scaling.
-                - scores (torch.Tensor):
-                    Scores of all experts with shape ``(bs*slen, num_experts)``.
         """
         # scores shape (bs*slen, num_experts)
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
@@ -268,31 +266,12 @@ class TokenChoiceTopKRouter(nn.Module):
             max=self.num_experts,
         ).to(torch.int64)
 
-        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, scores
+        return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
         if self.gate.bias is not None:
             nn.init.zeros_(self.gate.bias)
-
-
-def sequence_balance(scores: torch.Tensor, selected_experts: torch.Tensor, num_rows: int) -> torch.Tensor:
-    """DeepSeek-V3's sequence-wise balance loss without its coefficient, per row: ``sum_i f_i P_i`` with
-    ``f_i`` the row's share of expert ``i``'s selections times ``num_experts / top_k`` (1 when balanced) and
-    ``P_i`` its mean score normalized over all experts. 1 for a balanced row, up to ``num_experts / top_k``.
-
-    Args:
-        scores: ``(num_rows * slen, num_experts)`` scores of all experts.
-        selected_experts: ``(num_rows * slen, top_k)`` selected experts.
-    """
-    num_experts = scores.shape[1]
-    selections = selected_experts.view(num_rows, -1)
-    counts = torch.zeros(num_rows, num_experts, device=scores.device).scatter_add_(
-        1, selections, torch.ones_like(selections, dtype=torch.float32)
-    )
-    f = counts * (num_experts / selections.shape[1])
-    p = (scores / scores.sum(dim=-1, keepdim=True)).view(num_rows, -1, num_experts).mean(dim=1)
-    return (f * p).sum(dim=-1)
 
 
 class MoE(nn.Module):
@@ -365,10 +344,6 @@ class MoE(nn.Module):
             persistent=False,
         )
         self.register_buffer("routing_confidence_sum", torch.tensor(0.0, dtype=torch.float32), persistent=False)
-        # Sequence-wise balance (DeepSeek-V3 eq. 17-20): with balance_rows set by the training loop, which knows
-        # how many packed rows a sample holds, every forward with grad computes the per-row balance for its loss.
-        self.balance_rows: int | None = None
-        self.seq_balance: torch.Tensor | None = None
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         self.token_dispatcher = token_dispatcher
@@ -408,11 +383,7 @@ class MoE(nn.Module):
             selected_experts_indices,
             num_tokens_per_expert,
             routing_confidence_sum,
-            scores,
         ) = self.router(x, routed_experts=routed_experts)
-
-        if self.balance_rows is not None and torch.is_grad_enabled():
-            self.seq_balance = sequence_balance(scores, selected_experts_indices, self.balance_rows)
 
         # Accumulate expert usage for selection-bias updates and metrics.
         with torch.no_grad():

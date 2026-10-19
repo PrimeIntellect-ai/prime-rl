@@ -333,18 +333,6 @@ def get_expert_load_stats(tokens_per_expert: Tensor, group: dist.ProcessGroup) -
     return {name: value.item() for name, value in compute_expert_load_stats(tokens_per_expert).items()}
 
 
-@torch.no_grad()
-def update_selection_biases(model: nn.Module, tokens_per_expert: Tensor, rate: float) -> None:
-    """Aux-loss-free load balancing (https://arxiv.org/abs/2408.15664): move each layer's selection bias by
-    ``rate`` towards underloaded experts, given the step's global ``[num_moe_layers, num_experts]`` counts.
-    The update is mean-centred (as in Moonlight and torchtitan), which leaves the selection unchanged but keeps
-    the biases from drifting together."""
-    for moe, load in zip(iter_moe_blocks(model), tokens_per_expert):
-        if moe.router.selection_bias is not None:
-            delta = torch.sign(load.mean() - load)
-            moe.router.selection_bias += rate * (delta - delta.mean())
-
-
 def get_model(
     config: ModelConfig, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.bfloat16
 ) -> nn.Module:
