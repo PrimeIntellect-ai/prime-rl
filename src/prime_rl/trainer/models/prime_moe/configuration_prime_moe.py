@@ -47,6 +47,10 @@ class PrimeMoeConfig(PretrainedConfig):
         latent_dim (`int`, *optional*): LatentMoE: the routed experts work in this width (`hidden_size -> latent_dim`
             projection and RMS norm before them, `latent_dim -> hidden_size` projection after the combine), with hidden
             size `moe_intermediate_size`. The router and the shared experts stay full width.
+        latent_norm (`str`): Where LatentMoE's RMS norm sits: `"input"` on the projected expert input (Marin) or
+            `"output"` on the combined expert output before the up-projection (Kimi K3's Stable LatentMoE).
+        expert_activation (`str`, *optional*): Activation of the routed and shared experts: `"situ_glu"` (Kimi K3's
+            soft-capped SwiGLU). Defaults to `hidden_act`.
         router_bias_on_logits (`bool`): Add the selection bias to the router logits instead of the sigmoid scores
             (the space quantile balancing works best in).
     """
@@ -88,6 +92,8 @@ class PrimeMoeConfig(PretrainedConfig):
         attn_output_gate=False,
         exclusive_attention=False,
         latent_dim=None,
+        latent_norm="input",
+        expert_activation=None,
         router_bias_on_logits=False,
         pad_token_id=None,
         **kwargs,
@@ -131,6 +137,8 @@ class PrimeMoeConfig(PretrainedConfig):
         self.attn_output_gate = attn_output_gate
         self.exclusive_attention = exclusive_attention
         self.latent_dim = latent_dim
+        self.latent_norm = latent_norm
+        self.expert_activation = expert_activation
         self.router_bias_on_logits = router_bias_on_logits
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)

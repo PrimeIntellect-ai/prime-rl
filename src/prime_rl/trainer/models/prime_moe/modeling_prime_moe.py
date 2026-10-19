@@ -22,7 +22,7 @@ from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmb
 from prime_rl.trainer.models.prime_moe.attention import PrimeFlashAttention
 from prime_rl.trainer.models.prime_moe.configuration_prime_moe import PrimeMoeConfig
 from prime_rl.trainer.models.prime_moe.hyper_connection import HyperConnection
-from prime_rl.trainer.models.prime_moe.moe import PrimeMoE, PrimeRouter
+from prime_rl.trainer.models.prime_moe.moe import PrimeMoE, PrimeRouter, SituGlu
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 
@@ -50,13 +50,14 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
             self.self_attn = ATTN_IMPL2CLASS[config._attn_implementation](attn_config)
 
         if layer_idx >= config.first_k_dense_replace:
+            expert_activation = SituGlu() if config.expert_activation == "situ_glu" else config.hidden_act
             shared_expert = None
             if config.shared_expert_intermediate_size > 0:
                 shared_expert = FeedForward(
                     dim=config.hidden_size,
                     hidden_dim=config.shared_expert_intermediate_size,
                     expert_type="gated",
-                    activation=config.hidden_act,
+                    activation=expert_activation,
                 )
             self.mlp = PrimeMoE(
                 router=PrimeRouter(
@@ -73,11 +74,12 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                     hidden_dim=config.moe_intermediate_size,
                     num_experts=config.n_routed_experts,
                     expert_type="gated",
-                    activation=config.hidden_act,
+                    activation=expert_activation,
                 ),
                 shared_expert=shared_expert,
                 dim=config.hidden_size,
                 latent_dim=config.latent_dim,
+                latent_norm=config.latent_norm,
                 norm_eps=config.rms_norm_eps,
             )
         else:
