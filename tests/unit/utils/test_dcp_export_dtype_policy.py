@@ -9,6 +9,7 @@ from prime_rl.utils.dcp_export import iter_cpu_hf_groups
 @pytest.mark.parametrize(
     ("model_type", "config_fields", "sensitive"),
     [
+        ("afmoe", {}, ["model.layers.0.mlp.expert_bias"]),
         ("glm4_moe", {}, ["model.layers.0.mlp.gate.e_score_correction_bias"]),
         ("glm_moe_dsa", {}, ["model.layers.0.mlp.gate.e_score_correction_bias"]),
         (

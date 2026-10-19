@@ -386,7 +386,8 @@ def test_custom_family_streaming_cpu_dcp_export(tmp_path, family):
     assert exported.keys() == hf.keys()
     for name, tensor in hf.items():
         fp32 = (
-            (family in {"glm4_moe", "glm_moe_dsa"} and name.endswith("e_score_correction_bias"))
+            (family == "afmoe" and name.endswith("expert_bias"))
+            or (family in {"glm4_moe", "glm_moe_dsa"} and name.endswith("e_score_correction_bias"))
             or (family == "nemotron_h" and name.endswith("A_log"))
             or (family == "deepseek_v4" and name in {"norm.weight", "layers.0.ffn.gate.bias"})
             or (family == "qwen3_5" and name.endswith(("linear_attn.A_log", "linear_attn.norm.weight")))
