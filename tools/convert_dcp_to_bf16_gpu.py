@@ -116,9 +116,19 @@ def setup_single_process_env() -> None:
     os.environ["LOCAL_WORLD_SIZE"] = "1"
 
 
-def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
+def save_model_assets(
+    model,
+    model_config: ModelConfig,
+    tokenizer_config: TokenizerConfig,
+    output_dir: Path,
+    *,
+    strip_quantization_config: bool = False,
+) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
-    model.config.save_pretrained(output_dir)
+    export_config = deepcopy(model.config)
+    if strip_quantization_config and hasattr(export_config, "quantization_config"):
+        delattr(export_config, "quantization_config")
+    export_config.save_pretrained(output_dir)
     gen_config = getattr(model, "generation_config", None)
     if gen_config is None:
         generation_source = deepcopy(model.config)
@@ -185,7 +195,7 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
     logger.info(f"Writing HF weights to {output_dir}")
     save_state_dict_parallel(state_dict, output_dir)
     if get_world().is_master:
-        save_model_assets(model, model_config, tokenizer_config, output_dir)
+        save_model_assets(model, model_config, tokenizer_config, output_dir, strip_quantization_config=True)
         logger.info(f"Done: {output_dir}")
     return output_dir
 
