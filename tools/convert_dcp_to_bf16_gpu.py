@@ -168,7 +168,9 @@ def load_and_convert(ckpt_dir: Path):
 
     logger.info("Gathering and converting weights")
     state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
-    if getattr(model.config, "tie_word_embeddings", False):
+    text_config = getattr(model.config, "text_config", model.config)
+    if getattr(text_config, "tie_word_embeddings", False):
+        state_dict.pop("lm_head.weight", None)
         for key in getattr(model, "_tied_weights_keys", None) or []:
             state_dict.pop(key, None)
     state_dict = convert_state_dict_to_hf(model, state_dict)
