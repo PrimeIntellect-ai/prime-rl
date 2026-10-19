@@ -17,7 +17,7 @@ from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import MoeModelOutputWithPast
 
-from prime_rl.trainer.models.base import CPSupport, PreTrainedModelPrimeRL
+from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.deepseek_v4.dequantize import dequantize_weight
 from prime_rl.trainer.models.deepseek_v4.moe import DeepseekV4MoE
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
@@ -106,8 +106,8 @@ class DeepseekV41PreTrainedModel(PreTrainedModelPrimeRL):
     _keys_to_ignore_on_load_unexpected = [r"^(mtp|vision|aligner)\.", r"^image_(start|end|newline)$"]
 
     @classmethod
-    def cp_support(cls, config) -> CPSupport:
-        return CPSupport(frozenset(), "context parallelism is not implemented for DeepSeek-V4.1")
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        return "context parallelism is not implemented for DeepSeek-V4.1"
 
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)

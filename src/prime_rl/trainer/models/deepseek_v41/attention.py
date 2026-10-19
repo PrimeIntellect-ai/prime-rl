@@ -33,7 +33,6 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.attention import (
     CompressionLayout,
-    DeepseekV4GroupedLinear,
     SparseAttnInputs,
 )
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
@@ -42,6 +41,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_rope
 from prime_rl.trainer.models.kernels.dsv41_indexer import dsv41_index_topk
 from prime_rl.trainer.models.kernels.dsv41_sparse_attn import dsv41_sparse_attn, flashmla_sparse_attn_available
+from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
@@ -261,7 +261,7 @@ class DeepseekV41Attention(nn.Module):
         self.q_b_proj = nn.Linear(config.q_lora_rank, self.num_heads * self.head_dim, bias=False)
         self.kv_proj = nn.Linear(config.hidden_size, self.head_dim, bias=False)
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
-        self.o_a_proj = DeepseekV4GroupedLinear(
+        self.o_a_proj = GroupedLinear(
             self.num_heads * self.head_dim // config.o_groups, config.o_groups * config.o_lora_rank, config.o_groups
         )
         self.o_b_proj = nn.Linear(config.o_groups * config.o_lora_rank, config.hidden_size, bias=False)
