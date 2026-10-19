@@ -114,8 +114,16 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
-    def __init__(self, client_config: ClientConfig):
+    prefill: set[AsyncClient] = set()
+    """The P/D prefill engines. They pause before the other engines."""
+
+    # Per-engine times of the last update_weights phases (pause, transfer, resume).
+    # Replaced, never mutated.
+    update_times: dict[str, list[float]] = {}
+
+    def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
         self.clients = setup_admin_clients(client_config)
+        self.prefill = {client for client, role in zip(self.clients, roles or []) if role == "prefill"}
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -221,10 +229,9 @@ class AdminPlane:
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
         rejoining = self._rejoining()
         self.updating = True
+        times: dict[str, list[float]] = {}
         try:
-            members = await self._each(
-                self.clients + rejoining, "/pause", params={"mode": "keep", "clear_cache": "false"}
-            )
+            members = await self._pause(self.clients + rejoining, step, times.setdefault("pause", []))
             # A rejoining engine has no communicator (it may have been relaunched), so always regroup
             regroup = bool(rejoining)
             try:
@@ -240,13 +247,15 @@ class AdminPlane:
                     if on_paused is not None:
                         on_paused()
                         on_paused = None
-                    members, retry = await self._transfer(members, weight_dir_posix, abort, resend)
+                    times["transfer"] = []
+                    members, retry = await self._transfer(members, weight_dir_posix, abort, resend, times["transfer"])
                     if not retry:
                         break
             finally:
-                resumed = await self._each(members, "/resume")
+                resumed = await self._each(members, "/resume", times=times.setdefault("resume", []))
         finally:
             self.updating = False
+        self.update_times = times
         await self._readmit(rejoining, resumed, step)
 
     def _rejoining(self) -> list[AsyncClient]:
@@ -272,14 +281,19 @@ class AdminPlane:
         weight_dir: str | None,
         abort: Callable[[AsyncClient], None] | None,
         resend: Callable[[], Awaitable[bool]] | None,
+        times: list[float],
     ) -> tuple[list[AsyncClient], bool]:
         """Run ``/update_weights`` on ``members``. Returns the members still standing and whether
         the transfer was aborted and must run again."""
         if not self.evicting or abort is None:
             json = {"weight_dir": weight_dir}
-            return await self._each(members, "/update_weights", json=json, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S), False
+            survivors = await self._each(
+                members, "/update_weights", times=times, json=json, timeout_s=UPDATE_WEIGHTS_TIMEOUT_S
+            )
+            return survivors, False
 
         async def update(client: AsyncClient) -> None:
+            start = time.perf_counter()
             # One attempt: retrying a collective receive cannot succeed on its own. No read timeout:
             # the deadline below tells a hung engine from the ones waiting behind it.
             response = await client.post(
@@ -288,6 +302,7 @@ class AdminPlane:
                 timeout=httpx.Timeout(connect=10.0, read=None, write=60.0, pool=10.0),
             )
             response.raise_for_status()
+            times.append(time.perf_counter() - start)
 
         tasks = {asyncio.create_task(update(client)): client for client in members}
         dead: list[AsyncClient] = []
@@ -443,18 +458,39 @@ class AdminPlane:
                     f"Could not {'add' if routed else 'remove'} {url} on router {router.base_url}: {error!r}"
                 )
 
-    async def _each(self, clients: list[AsyncClient], op: str, **kwargs) -> list[AsyncClient]:
+    async def _pause(self, clients: list[AsyncClient], step: int, times: list[float]) -> list[AsyncClient]:
+        """Pause ``clients``, waiting for in-flight requests to drain; returns the ones that paused.
+
+        Prefill engines pause first. A prefill engine's pause waits until decode has pulled the KV
+        blocks it still holds, and a paused decode engine never pulls them: the prefill would wait
+        for vLLM's NIXL KV lease to expire (30 s by default) and decode would later read the
+        released blocks."""
+        get_logger().debug(f"Pausing inference engines to update weights to policy v{step}")
+        params = {"mode": "keep", "clear_cache": "false"}
+        paused = await self._each([c for c in clients if c in self.prefill], "/pause", times=times, params=params)
+        paused += await self._each([c for c in clients if c not in self.prefill], "/pause", times=times, params=params)
+        return [client for client in clients if client in paused]
+
+    async def _each(
+        self, clients: list[AsyncClient], op: str, times: list[float] | None = None, **kwargs
+    ) -> list[AsyncClient]:
         """Run one admin op on every client; evict the ones that fail and return the rest. Without
-        eviction (``monitor_health`` not running), a failure raises."""
+        eviction (``monitor_health`` not running), a failure raises. Appends each successful
+        request's time to ``times``."""
+
+        async def post(client: AsyncClient, **retry) -> None:
+            start = time.perf_counter()
+            await _admin_post(client, op, **retry, **kwargs)
+            if times is not None:
+                times.append(time.perf_counter() - start)
+
         if not self.evicting:
-            await asyncio.gather(*(_admin_post(client, op, **kwargs) for client in clients))
+            await asyncio.gather(*(post(client) for client in clients))
             return list(clients)
         # One attempt: an engine that fails is evicted and rejoins once it answers again. Retrying
         # could reach a relaunched engine on the same port that has neither the weights nor the
         # weight broadcast group.
-        results = await asyncio.gather(
-            *(_admin_post(client, op, attempts=1, **kwargs) for client in clients), return_exceptions=True
-        )
+        results = await asyncio.gather(*(post(client, attempts=1) for client in clients), return_exceptions=True)
         succeeded = []
         for client, result in zip(clients, results):
             if isinstance(result, Exception):
@@ -469,13 +505,15 @@ class AdminPlane:
             await client.aclose()
 
 
-def setup_admin_plane(client_config: PolicyClientConfig, model_name: str) -> AdminPlane:
+def setup_admin_plane(
+    client_config: PolicyClientConfig, model_name: str, roles: list[str | None] | None = None
+) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
         return DynamoAdminPlane(client_config, model_name)
-    return AdminPlane(client_config)
+    return AdminPlane(client_config, roles)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -792,10 +830,10 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
     + ``prompt_logprobs`` (the prime-rl server-side extension in
     ``inference/vllm/serving_tokens.py``). Returns one logprob per token (0.0 for
     the leading token, which has no preceding context)."""
-    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse
+    from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateTokensResponse
 
     # `/inference/v1/generate` is mounted at server root, not under `/v1`: pass an
-    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateResponse`
+    # absolute URL so the SDK skips the base-url merge. vLLM's `GenerateTokensResponse`
     # isn't an `openai.BaseModel`, so the SDK parse layer rejects it as `cast_to`;
     # `cast_to=httpx.Response` lets the SDK still build the request (auth, retries,
     # timeouts) and hand back the raw response for us to validate.
@@ -809,7 +847,7 @@ async def prefill_logprobs(openai: AsyncOpenAI, model: str, token_ids: list[int]
             "sampling_params": {"max_tokens": 1, "temperature": 1.0, "top_p": 1.0, "prompt_logprobs": 1},
         },
     )
-    response = GenerateResponse.model_validate_json(http_response.content)
+    response = GenerateTokensResponse.model_validate_json(http_response.content)
     # `prompt_logprobs[i]` is a `{token_id: Logprob}` dict, or `None` for the
     # leading token (no preceding context). Flatten to `list[float]`.
     flat: list[float] = []
