@@ -110,6 +110,17 @@ def _glm_state(model_type="glm4_moe", num_hidden_layers=2):
     return {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
 
 
+def _legacy_glm_hf_state(state, config):
+    model, _ = _glm_model(config["model_type"], config["num_hidden_layers"])
+    gathered = {
+        name: tensor.to(torch.float32 if model.keep_in_fp32_for_weight_transfer(name) else torch.bfloat16)
+        if tensor.is_floating_point()
+        else tensor
+        for name, tensor in state.items()
+    }
+    return apply_prime_to_hf(gathered, conversion_chain(config))
+
+
 @pytest.fixture
 def glm_state():
     return _glm_state()
@@ -140,7 +151,7 @@ def test_cpu_export_reads_model_groups_and_converts_glm(tmp_path, monkeypatch, m
         layer_names = {f"app.model.{name}" for name in state if name.startswith(f"model.layers.{layer}.")}
         assert sum(1 for read in reads if read & layer_names) == 1
 
-    expected = apply_prime_to_hf(dict(state), conversion_chain(config))
+    expected = _legacy_glm_hf_state(state, config)
     assert output.keys() == expected.keys()
     for name, tensor in expected.items():
         assert output[name].device.type == "cpu"
@@ -238,7 +249,7 @@ def test_cpu_export_reconstructs_multirank_expert_chunks(gloo_checkpoint):
     assert len(groups) == 4
     output = {name: tensor for group in groups for name, tensor in group.items()}
     assert all(not name.startswith("app.") for name in output)
-    expected = apply_prime_to_hf(dict(reference), conversion_chain(config))
+    expected = _legacy_glm_hf_state(reference, config)
     assert output.keys() == expected.keys()
     for name, tensor in expected.items():
         torch.testing.assert_close(output[name], tensor, rtol=0, atol=0)
