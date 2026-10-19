@@ -96,11 +96,24 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 "norm_eps": config.rms_norm_eps,
                 "stream_width": config.hc_stream_width,
             }
-            self.attn_hyper_connection = HyperConnection(
-                **connection_args, read_count=3 if config.hc_qkv_reads else 1, conv_kernel_size=config.hc_qkv_conv
-            )
-            moe_reads = config.hc_moe_reads and isinstance(self.mlp, PrimeMoE)
-            self.mlp_hyper_connection = HyperConnection(**connection_args, read_count=2 if moe_reads else 1)
+            self.attention_read_count = 3 if config.hc_qkv_reads else 1
+            self.parallel_block = config.hc_parallel_block
+            if self.parallel_block:
+                # Attention and MLP read the same streams (one read, or their own reads with `separate_reads`) and
+                # both write to all streams, each with its own scalars.
+                separate = self.parallel_block == "separate_reads"
+                self.hyper_connection = HyperConnection(
+                    **connection_args,
+                    read_count=self.attention_read_count + separate,
+                    write_count=2,
+                    conv_kernel_size=config.hc_qkv_conv,
+                )
+            else:
+                self.attn_hyper_connection = HyperConnection(
+                    **connection_args, read_count=self.attention_read_count, conv_kernel_size=config.hc_qkv_conv
+                )
+                moe_reads = config.hc_moe_reads and isinstance(self.mlp, PrimeMoE)
+                self.mlp_hyper_connection = HyperConnection(**connection_args, read_count=2 if moe_reads else 1)
         else:
             self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
             self.post_attention_layernorm = RMSNorm(
@@ -114,6 +127,17 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
         cu_seqlens: torch.LongTensor,
         max_seqlen: int,
     ) -> torch.Tensor:
+        if self.gated_residual and self.parallel_block:
+            reads, residual_state = self.hyper_connection.read(hidden_states)
+            attention_output, _ = self.self_attn(
+                hidden_states=self.hyper_connection.attention_inputs(reads[: self.attention_read_count], cu_seqlens),
+                position_embeddings=position_embeddings,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=max_seqlen,
+            )
+            mlp_output = self.mlp(reads[-1] if self.parallel_block == "separate_reads" else reads[0])
+            return self.hyper_connection.combine((attention_output, mlp_output), residual_state)
+
         if self.gated_residual:
             block_input, residual_state = self.attn_hyper_connection.mix(hidden_states, cu_seqlens)
             block_output, _ = self.self_attn(
