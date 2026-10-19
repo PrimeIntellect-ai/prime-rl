@@ -528,9 +528,12 @@ class FlashAttention(nn.Module):
         value_states = value_states.transpose(1, 2)
 
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        attn_output = out.contiguous().view(1, out.shape[0], -1)
-        attn_output = self.o_proj(attn_output)
-        return attn_output, None
+        return self.project_output(out, value_states[0], hidden_states), None
+
+    def project_output(self, out: torch.Tensor, values: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
+        """``o_proj`` of the per-head attention output ``out`` ([tokens, heads, dim]). Subclasses that change the
+        output first also get the values ([tokens, kv_heads, dim]) and the block input."""
+        return self.o_proj(out.contiguous().view(1, out.shape[0], -1))
 
 
 ATTN_IMPL2CLASS = {
