@@ -15,7 +15,7 @@ AFMoE specifics:
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import GATE_DOWN_UP, ConvOp, Drop, Rename, Stack
+from prime_rl.utils.conversion_ops import GATE_DOWN_UP, ConvOp, Drop, Rename, Stack
 
 
 def conversion_chain(config) -> list[ConvOp]:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Rename, routed_experts_op
+from prime_rl.utils.conversion_ops import ConvOp, Rename, routed_experts_op
 
 
 def conversion_chain(config) -> list[ConvOp]:

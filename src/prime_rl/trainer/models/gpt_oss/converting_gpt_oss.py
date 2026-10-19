@@ -2,7 +2,7 @@
 
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Rename
+from prime_rl.utils.conversion_ops import ConvOp, Rename
 
 
 class GptOssExperts(ConvOp):

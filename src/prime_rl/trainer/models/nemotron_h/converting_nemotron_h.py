@@ -1,7 +1,7 @@
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, PrefixRename, Rename, Stack
 from prime_rl.trainer.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
+from prime_rl.utils.conversion_ops import ConvOp, Drop, PrefixRename, Rename, Stack
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:

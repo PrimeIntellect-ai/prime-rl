@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitConcat
+from prime_rl.utils.conversion_ops import ConvOp, Drop, Rename, SplitConcat
 
 
 @dataclass

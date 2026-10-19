@@ -356,17 +356,30 @@ Once paused, both keep serving the API until the run is stopped, so its owner ca
 
 ### Exporting Checkpoints
 
-Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
+Trainer checkpoints are DCP-sharded. Export full fine-tunes to HF-format safetensors with `tools/convert_dcp_to_bf16.py`; LoRA checkpoints are rejected. The script reads `trainer.json` or `sft.json` from the run's resolved configs and the base model's `config.json`. It writes weights, model/generation configs, and tokenizer assets to `<step_dir>/weights` (or a second positional argument).
+
+Llama (`llama`), Qwen3 (`qwen3`), GLM-4 MoE (`glm4_moe`), and GLM-MoE-DSA (`glm_moe_dsa`) export on **one CPU process**. No CUDA, training environment, base-model weight download, or model instantiation is needed. Run the standalone script with its pinned dependencies:
 
 ```bash
-# single process (1 GPU)
-uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
-
-# multi-rank for faster gathers and models that don't fit one GPU
-uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+uv run --script tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+# Optional explicit output directory; the trainer/ subdirectory is also accepted
+uv run --script tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10/trainer exported-model
 ```
 
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
+CPU export reads only model tensors, one decoder layer at a time, and writes sharded safetensors. Floating weights and exported config dtype are bf16, except declared GLM selection-bias buffers kept in fp32; training dtype settings are not changed. Host memory must fit a full decoder layer (including all routed experts), its conversion buffers, the largest saved DCP tensor chunk read from disk, and an output shard; it need not fit the full model or optimizer. The 5 GB shard target is not a RAM limit, and a single larger tensor is written in an oversized shard. The output directory must not exist and must not have concurrent writers. Assets and weights are staged in a unique sibling directory and renamed only after success. Failures remove only that staging directory; source checkpoints are never changed.
+
+CPU export supports canonical full-checkpoint layouts for text-only, native model/config implementations. GLM configs must explicitly include `first_k_dense_replace`, `n_shared_experts`, and `n_routed_experts`; missing layout fields are not guessed. VLMs, trusted custom model/config code, and base configs with nonempty `quantization_config` are rejected. This includes FP8-base releases even when the checkpoint has bf16 tensors; use a matching unquantized base config. Config/tokenizer files may be fetched from the Hub, but model weights are not. `model.debug.num_layers`, configured tokenizer chat templates, and pad-token-to-EOS behavior are preserved. CPU export rejects `WORLD_SIZE > 1`; do not use multi-rank `torchrun` for these families.
+
+Other model families log a message and use the CUDA exporter when the dispatcher runs in the full GPU training environment. The standalone `--script` environment contains only CPU export dependencies and cannot run this fallback. For other families, invoke the CUDA script directly in the training environment with enough GPUs for the model. That path keeps the distributed export behavior and does not use CPU staging:
+
+```bash
+# Unsupported CPU family: single GPU
+uv run python tools/convert_dcp_to_bf16_gpu.py outputs/my-run/checkpoints/step_10
+# Unsupported CPU family: multi-rank CUDA gather
+uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16_gpu.py outputs/my-run/checkpoints/step_10
+```
+
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any compatible HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (CUDA; each rank quantizes its gathered slice and writes only `<ckpt_dir>/weights-FP8`, without an intermediate bf16 export). Dequantize an fp8-only release for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 

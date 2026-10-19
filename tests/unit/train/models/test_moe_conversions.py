@@ -5,11 +5,11 @@ import torch
 
 from prime_rl.trainer.models.afmoe.converting_afmoe import conversion_chain as afmoe_conversion_chain
 from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoePreTrainedModel
-from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.laguna.converting_laguna import conversion_chain as laguna_conversion_chain
 from prime_rl.trainer.models.laguna.modeling_laguna import LagunaPreTrainedModel
 from prime_rl.trainer.models.minimax_m2.converting_minimax_m2 import conversion_chain as minimax_conversion_chain
 from prime_rl.trainer.models.minimax_m2.modeling_minimax_m2 import MiniMaxM2PreTrainedModel
+from prime_rl.utils.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 
 
 def _afmoe_state_dict() -> dict[str, torch.Tensor]:

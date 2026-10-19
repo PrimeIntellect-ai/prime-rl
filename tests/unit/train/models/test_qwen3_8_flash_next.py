@@ -1,12 +1,12 @@
 import pytest
 import torch
 
-from prime_rl.trainer.models.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.trainer.models.qwen3_8_flash_next import (
     Qwen3_8FlashNextConfig,
     Qwen3_8FlashNextForCausalLM,
     Qwen3_8FlashNextTextConfig,
 )
+from prime_rl.utils.conversion_ops import apply_hf_to_prime, apply_prime_to_hf
 from prime_rl.utils.vlm import get_language_model
 
 

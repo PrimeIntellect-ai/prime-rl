@@ -1,7 +1,7 @@
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitConcat
 from prime_rl.trainer.models.qwen3_5.configuration_qwen3_5 import Qwen3_5MoeTextConfig
+from prime_rl.utils.conversion_ops import ConvOp, Drop, Rename, SplitConcat
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:

@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
-from convert_dcp_to_bf16 import load_and_convert, save_model_assets
+from convert_dcp_to_bf16_gpu import load_and_convert, save_model_assets
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
