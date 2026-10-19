@@ -333,7 +333,9 @@ jobs:
         name: Eval / ${{ matrix.name }}
         needs: eval-plan
         runs-on: ubuntu-latest
-        timeout-minutes: 240
+        # The GitHub-hosted maximum. Agent evals have no rollout timeout, so a slow endpoint
+        # stretches the run instead of failing tasks.
+        timeout-minutes: 360
         strategy:
             fail-fast: false
             matrix:

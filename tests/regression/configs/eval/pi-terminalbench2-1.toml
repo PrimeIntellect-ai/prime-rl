@@ -11,7 +11,8 @@ model = "internal/glm-5.3-high-throughput"
 group_size = 1
 dashboard = false
 
-# Every task in flight at once: a run takes as long as its slowest rollout.
+# Every task in flight at once: a run takes as long as its slowest rollout. Rollouts
+# have no timeout, so a slow endpoint shows up as time to finish, not as failed tasks.
 [concurrency]
 min_inflight = 82
 max_inflight = 82
@@ -20,7 +21,9 @@ max_inflight = 82
 env.taskset.id = "pi-terminalbench2-1"
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "prime"
-env.agent.timeout.rollout = 3600
+# A sandbox idles while its turn waits on the model; the default 1 h idle limit
+# would delete it under a slow or backlogged endpoint.
+env.agent.runtime.idle_timeout = 21600
 env.agent.retries.rules = [
   {type = "ProviderError", max_retries = 2},
   {type = "SandboxError", max_retries = 2},
