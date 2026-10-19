@@ -221,7 +221,7 @@ requires_cudnn_flashmla = pytest.mark.skipif(
     or importlib.util.find_spec("cudnn") is None
     or not torch.cuda.is_available()
     or (torch.cuda.get_device_capability()[0] != 9 and torch.cuda.get_device_capability() not in ((10, 0), (10, 3))),
-    reason="the cudnn_flashmla backend needs the `flash-mla` extra, the cuDNN frontend and an SM90, SM100 or SM103 GPU",
+    reason="the cudnn_flashmla backend needs `flash-mla` (the `gpu` extra), the cuDNN frontend and an SM90, SM100 or SM103 GPU",
 )
 
 DSV4_BACKENDS = ["tilelang", pytest.param("cudnn_flashmla", marks=requires_cudnn_flashmla)]

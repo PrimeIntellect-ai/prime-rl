@@ -1,12 +1,11 @@
-import importlib.util
 from dataclasses import dataclass
-from typing import Literal
 
 import torch
 import torch.distributed as dist
 from torch import nn
 
 from prime_rl.configs.trainer import DSABackend
+from prime_rl.trainer.models.kernels import cudnn_flashmla_error
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
@@ -16,20 +15,6 @@ try:
     from prime_rl.trainer.models.kernels.sparse_mla_fwd import sparse_mla
 except ImportError:
     sparse_mla = None  # type: ignore
-
-
-def resolve_dsa_backend(backend: DSABackend | Literal["auto"], num_heads: int) -> DSABackend:
-    """Resolve ``auto``: ``cudnn_flashmla`` on SM90 with FlashMLA installed and a head count FlashMLA supports, else ``tilelang``."""
-    if backend != "auto":
-        return backend
-    if (
-        torch.cuda.is_available()
-        and torch.cuda.get_device_capability()[0] == 9
-        and num_heads % 64 == 0
-        and importlib.util.find_spec("flash_mla") is not None
-    ):
-        return "cudnn_flashmla"
-    return "tilelang"
 
 
 @dataclass(frozen=True)
@@ -162,6 +147,12 @@ class GlmMoeDsaAttention(nn.Module):
         self.use_index_cache = args.use_index_cache
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
+        if args.dsa_backend == "cudnn_flashmla" and (
+            error := cudnn_flashmla_error(self.num_heads, 1, self.kv_lora_rank)
+        ):
+            raise ValueError(
+                f'GLM DSA sparse attention cannot run the cudnn_flashmla backend: {error}. Set `model.dsa_backend = "tilelang"` to use the TileLang kernels instead.'
+            )
 
         self.cp_context = CPContext()
 
