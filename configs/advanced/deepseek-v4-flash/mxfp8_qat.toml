@@ -1,0 +1,9 @@
+# Compose after rl_math_mxfp8.toml to use BF16 backward with the same MXFP8 forward.
+[trainer.model.quantization]
+qat = true
+
+[trainer.model.moe.compute]
+qat = true
+
+[trainer.model.moe.dispatch]
+transport = "bf16"
