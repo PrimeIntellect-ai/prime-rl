@@ -19,21 +19,22 @@ job_state() {
 }
 
 # Requeue the job (kind "failure" or "signal") and exclude the nodes given after the kind.
-# Failures count against max_requeues; the count resets when a newer complete checkpoint
-# exists. A job that is already ending (scancel, time limit) is not requeued.
+# Failures count against max_requeues; the count resets when a complete checkpoint newer
+# than any seen before exists (a resume can move newer checkpoints to abandoned/). A job
+# that is already ending (scancel, time limit) is not requeued.
 requeue() {
-    local kind=$1 latest="" last="" count=0 excluded
+    local kind=$1 latest="" last=-1 count=0 excluded
     shift
     if [ "$(job_state)" != RUNNING ]; then
         return
     fi
     if [ "$kind" = failure ]; then
 {%- if ckpt_dir %}
-        latest=$(ls -d {{ ckpt_dir }}/step_*/trainer/.metadata 2>/dev/null | sort -V | tail -n 1)
+        latest=$(ls -d {{ ckpt_dir }}/step_*/trainer/.metadata 2>/dev/null | sort -V | tail -n 1 | sed 's|.*/step_\([0-9]*\)/trainer/.metadata$|\1|')
 {%- endif %}
-        latest=${latest:-none}
+        latest=${latest:--1}
         [ ! -f {{ launcher_dir }}/requeue_$SLURM_JOB_ID ] || read -r last count < {{ launcher_dir }}/requeue_$SLURM_JOB_ID
-        [ "$latest" = "$last" ] || count=0
+        if [ "$latest" -gt "$last" ]; then count=0; else latest=$last; fi
         if [ "$count" -ge {{ max_requeues }} ]; then
             echo "Not requeueing: {{ max_requeues }} requeues in a row without a new complete checkpoint"
             return
@@ -145,7 +146,7 @@ launch() {
         echo "Job failed with exit code $code"
 {%- if smoke_test %}
         # Leftovers of the failed run must not fail the smoke test of a healthy node
-        ! declare -F node_cleanup > /dev/null || node_cleanup
+        ! declare -F node_cleanup > /dev/null || node_cleanup || true
         smoke_test || echo "Smoke test failed on: $BAD_NODES"
 {%- endif %}
         requeue failure $BAD_NODES
