@@ -437,6 +437,14 @@ class TrainSink:
         """Release accepted traces that cannot ship after training stops."""
         if self.pending_batch:
             self.rollout_window.metrics.count("rollout/queued/cancelled", float(len(self.pending_batch)))
+        delete_files_in_background(
+            {
+                segment.file
+                for samples in self.pending_batch.values()
+                for sample in samples
+                for segment in sample.payload or ()
+            }
+        )
         self.pending_batch.clear()
         self.queued.clear()
         self.episode_by_trace.clear()
