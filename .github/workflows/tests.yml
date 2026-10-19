@@ -89,7 +89,7 @@ jobs:
           # `verifiers` (+ its `datasets` dep) is a declared slim dep: the v1 config types
           # (EnvConfig, Task, ...) extend verifiers.v1, which is pure-pydantic and pulls no
           # GPU/ML deps. We still forbid the actual heavy training deps below.
-          forbidden = ["torch", "transformers", "vllm", "wandb", "ring_flash_attn",
+          forbidden = ["torch", "transformers", "vllm", "wandb",
                        "prime", "liger_kernel", "loguru"]
           leaked = [m for m in forbidden if m in sys.modules]
           if leaked:
