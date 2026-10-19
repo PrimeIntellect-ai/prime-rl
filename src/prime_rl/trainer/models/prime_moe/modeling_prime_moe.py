@@ -204,11 +204,13 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         # Per-stream inputs: the first stream is the token embedding, the others extra token tables, and with
-        # `ngram`, `bytes` or two of them joined by `_` (e.g. `ngram_bytes`, `ngram_ngram`) the last stream(s) hashed
-        # token n-grams and / or the token's preceding bytes. A second stream of the same kind is an independent copy
-        # (own parameters; the second n-gram stream hashes with another layout).
+        # `ngram`, `bytes` or several of them joined by `_` (e.g. `ngram_bytes`, `ngram_ngram`) the last stream(s) hashed
+        # token n-grams and / or the token's preceding bytes. A repeated kind is an independent copy (own parameters;
+        # every n-gram stream hashes with its own layout). With `hc_byte_add`, an own byte embedding is added to the
+        # input of every token-table stream (`tables`) or every n-gram stream (`ngrams`).
         kinds = [] if config.hc_stream_inputs in ("copy", "tables") else config.hc_stream_inputs.split("_")
         tables = 0 if config.hc_stream_inputs == "copy" else config.hc_count - 1 - len(kinds)
+        self.extra_tables = tables
         self.extra_embed_tokens = nn.Embedding(config.vocab_size, tables * config.hidden_size) if tables else None
 
         def ngram_stream(layout: int) -> NGramEmbedding:
@@ -229,9 +231,12 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
             )
 
         self.ngram_embed_tokens = ngram_stream(0) if "ngram" in kinds else None
-        self.ngram_embed_tokens_2 = ngram_stream(1) if kinds.count("ngram") == 2 else None
+        self.ngram_embed_tokens_2 = ngram_stream(1) if kinds.count("ngram") >= 2 else None
+        self.ngram_embed_tokens_3 = ngram_stream(2) if kinds.count("ngram") >= 3 else None
         self.byte_embed_tokens = byte_stream() if "bytes" in kinds else None
-        self.byte_embed_tokens_2 = byte_stream() if kinds.count("bytes") == 2 else None
+        self.byte_embed_tokens_2 = byte_stream() if kinds.count("bytes") >= 2 else None
+        added_to = {None: 0, "tables": 1 + tables, "ngrams": kinds.count("ngram")}[config.hc_byte_add]
+        self.byte_add_embed_tokens = nn.ModuleList(byte_stream() for _ in range(added_to)) if added_to else None
         self.layers = nn.ModuleList(
             [PrimeMoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -285,15 +290,26 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
             stream_width = self.config.hc_stream_width or self.config.hidden_size
             hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count * stream_width // self.config.hidden_size)
         else:
-            streams = [inputs_embeds, self.extra_embed_tokens(input_ids)]
-            for stream in (
-                self.ngram_embed_tokens,
-                self.ngram_embed_tokens_2,
-                self.byte_embed_tokens,
-                self.byte_embed_tokens_2,
-            ):
-                if stream is not None:
-                    streams.append(stream(input_ids, cu_seqlens))
+            table_streams = [inputs_embeds]
+            if self.extra_embed_tokens is not None:
+                table_streams += self.extra_embed_tokens(input_ids).chunk(self.extra_tables, dim=-1)
+            ngram_streams = [
+                stream(input_ids, cu_seqlens)
+                for stream in (self.ngram_embed_tokens, self.ngram_embed_tokens_2, self.ngram_embed_tokens_3)
+                if stream is not None
+            ]
+            byte_streams = [
+                stream(input_ids, cu_seqlens)
+                for stream in (self.byte_embed_tokens, self.byte_embed_tokens_2)
+                if stream is not None
+            ]
+            if self.config.hc_byte_add is not None:
+                added = [stream(input_ids, cu_seqlens) for stream in self.byte_add_embed_tokens]
+                if self.config.hc_byte_add == "tables":
+                    table_streams = [stream + bytes_ for stream, bytes_ in zip(table_streams, added)]
+                else:
+                    ngram_streams = [stream + bytes_ for stream, bytes_ in zip(ngram_streams, added)]
+            streams = table_streams + ngram_streams + byte_streams
             hidden_states = torch.cat(streams, dim=-1)
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
@@ -356,9 +372,10 @@ class PrimeMoeForCausalLM(PrimeMoePreTrainedModel):
         rotary_emb = self.model.rotary_emb
         inv_freq, rotary_emb.attention_scaling = rotary_emb.rope_init_fn(rotary_emb.config, rotary_emb.inv_freq.device)
         rotary_emb.inv_freq.copy_(inv_freq)
-        for stream in (self.model.ngram_embed_tokens, self.model.ngram_embed_tokens_2):
+        model = self.model
+        for stream in (model.ngram_embed_tokens, model.ngram_embed_tokens_2, model.ngram_embed_tokens_3):
             if stream is not None:
                 stream.reset_parameters()
-        for stream in (self.model.byte_embed_tokens, self.model.byte_embed_tokens_2):
+        for stream in (model.byte_embed_tokens, model.byte_embed_tokens_2, *(model.byte_add_embed_tokens or ())):
             if stream is not None:
                 stream.reset_buffers()
