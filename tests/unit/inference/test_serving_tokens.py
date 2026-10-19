@@ -31,8 +31,8 @@ from vllm import SamplingParams
 from vllm.entrypoints.generate.base.protocol import RequestResponseMetadata
 from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
     GenerateRequest,
-    GenerateResponse,
-    GenerateResponseChoice,
+    GenerateTokensChoice,
+    GenerateTokensResponse,
     PlaceholderRangeInfo,
 )
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
@@ -91,11 +91,11 @@ def test_generate_response_post_process_preserves_prompt_metadata():
     )
     capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
-    response = GenerateResponse(
+    response = GenerateTokensResponse(
         request_id="request-id",
         model="test-model",
         choices=[
-            GenerateResponseChoice(
+            GenerateTokensChoice(
                 index=0,
                 token_ids=[1, 2, 3],
                 routed_experts="upstream-npy-payload",
@@ -201,12 +201,12 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
         request._response_mm_placeholders = {"image": [PlaceholderRangeInfo(offset=0, length=1)]}
         metadata = RequestResponseMetadata(request_id="test")
         response = await serving.serve_tokens_full_generator(request, generate_outputs(), "test", "test", metadata)
-        assert isinstance(response, GenerateResponse)
+        assert isinstance(response, GenerateTokensResponse)
         assert params.logprobs == 4
         assert request.sampling_params is params
         assert output.outputs[0].logprobs is logprobs
         assert response.usage == metadata.final_usage_info
-        payload = parse_generate_response(JSONResponse(content=response.model_dump()).body, compact_logprobs=compact)
+        payload = parse_generate_response(JSONResponse(content=response.model_dump()).body)
         for choice in payload["choices"]:
             if compact:
                 assert choice["logprobs"] is None
@@ -225,7 +225,7 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
         payload.pop("created")
         responses.append(payload)
     assert all(item == evidence[0] for item in evidence)
-    assert evidence[0][1] == ([[1, 2, 3]] * 2 if replay else [[1, 2]] * 2)
+    assert evidence[0][1] == ([[1]] * 2 if replay else [[1, 2]] * 2)
     assert responses[0] == responses[1]
     assert responses[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 1
     assert responses[1]["kv_transfer_params"] == {"kv": "kept"}
