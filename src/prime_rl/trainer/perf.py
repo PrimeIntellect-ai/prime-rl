@@ -20,16 +20,9 @@ class FlopCounter:
         active_params = model.num_active_params()
         lora_params = [param for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name]
         if lora_params:
-            # Frozen base matmuls cost forward (2x) and dX (2x); fully trainable non-LoRA params
-            # (modules_to_save) add their weight gradient (2x); adapters cost 6x.
+            # Frozen base matmuls cost forward (2x) and dX (2x); adapters cost 6x.
             lora_active_params = count_active_params(model, lora_params)
-            lora_param_ids = {id(param) for param in lora_params}
-            trainable_params = sum(
-                param.numel() for param in model.parameters() if param.requires_grad and id(param) not in lora_param_ids
-            )
-            self.matmul_flops_per_token = (
-                4 * (active_params - lora_active_params) + 2 * trainable_params + 6 * lora_active_params
-            )
+            self.matmul_flops_per_token = 4 * (active_params - lora_active_params) + 6 * lora_active_params
         else:
             self.matmul_flops_per_token = 6 * active_params
         self.attention_modules = [module for module in model.modules() if isinstance(module, AttentionFlops)]
