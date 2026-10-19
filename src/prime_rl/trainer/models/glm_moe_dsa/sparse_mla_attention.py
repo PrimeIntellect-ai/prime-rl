@@ -6,6 +6,7 @@ from torch import nn
 
 from prime_rl.configs.trainer import DSABackend
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.attn import head_partitions
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -148,6 +149,14 @@ class GlmMoeDsaAttention(nn.Module):
         self.scaling = self.qk_head_dim ** (-0.5)
 
         self.cp_context = CPContext()
+
+    def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...]]:
+        return {
+            self.q_b_proj.weight: head_partitions(self.num_heads, (self.qk_head_dim,), heads_per_block),
+            self.kv_b_proj.weight: head_partitions(
+                self.num_heads, (self.qk_nope_head_dim, self.v_head_dim), heads_per_block
+            ),
+        }
 
     def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))

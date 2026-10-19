@@ -231,6 +231,8 @@ def _create_muon_optimizer(
         for module in model.modules():
             if isinstance(module, GroupedLinear) and module.weight in muon_params:
                 matrix_partitions[module.weight] = (module.out_features // module.n_groups,) * module.n_groups
+        if config.heads_per_block is not None:
+            matrix_partitions |= muon_head_partitions(model, muon_params, config.heads_per_block)
 
     optimizer = Muon(
         params=param_groups,
@@ -251,3 +253,19 @@ def _create_muon_optimizer(
     if expert_params and parallel_dims.ep_enabled:
         _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
     return optimizer
+
+
+def muon_head_partitions(
+    model: nn.Module, muon_params: set[nn.Parameter], heads_per_block: int
+) -> dict[nn.Parameter, tuple[int, ...]]:
+    """Per-head Muon: the matrix partitions of every attention module's head projections (``optim.heads_per_block``).
+
+    Head partitions refine the packed ``qkv_proj`` partitions, since each head block lies inside one of q, k, v."""
+    partitions = {}
+    for name, module in model.named_modules():
+        if not name.endswith("self_attn"):
+            continue
+        if not hasattr(module, "muon_head_partitions"):
+            raise NotImplementedError(f"optim.heads_per_block does not support {type(module).__name__} ({name})")
+        partitions |= module.muon_head_partitions(heads_per_block)
+    return {param: sizes for param, sizes in partitions.items() if param in muon_params}
