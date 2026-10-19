@@ -296,6 +296,7 @@ jobs:
         runs-on: ubuntu-latest
         outputs:
             configs: ${{ steps.plan.outputs.configs }}
+            titles: ${{ steps.plan.outputs.titles }}
             matrix: ${{ steps.plan.outputs.matrix }}
         steps:
             - name: Checkout repository
@@ -305,6 +306,8 @@ jobs:
             - id: plan
               env:
                   CONFIG: ${{ inputs.eval_config }}
+                  # Display name of each config in job names and the summary. A config not listed shows its file name.
+                  TITLES: '{"gsm8k": "GSM8K", "pi-terminalbench2-1": "Terminal-Bench-2.1"}'
               run: |
                   configs=$(ls tests/regression/configs/eval/*.toml | xargs -n1 basename | sed 's/\.toml$//')
                   if [ -n "$CONFIG" ]; then
@@ -316,11 +319,14 @@ jobs:
                   fi
                   configs=$(printf '%s\n' "$configs" | jq -R . | jq -sc .)
                   # One job per config and repeat. The repeat shows in the job name only when there are several.
-                  matrix=$(jq -nc --argjson configs "$configs" --argjson n "$EVAL_REPEATS" '[
+                  titles=$(jq -nc --argjson configs "$configs" --argjson titles "$TITLES" '
+                      [$configs[] as $c | {($c): ($titles[$c] // $c)}] | add')
+                  matrix=$(jq -nc --argjson configs "$configs" --argjson titles "$titles" --argjson n "$EVAL_REPEATS" '[
                       $configs[] as $c | range(1; $n + 1) as $r
-                      | {config: $c, repeat: $r, name: (if $n > 1 then "\($c) (\($r))" else $c end)}
+                      | {config: $c, repeat: $r, name: (if $n > 1 then "\($titles[$c]) (\($r))" else $titles[$c] end)}
                   ]')
                   echo "configs=$configs" >> "$GITHUB_OUTPUT"
+                  echo "titles=$titles" >> "$GITHUB_OUTPUT"
                   echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
     eval:
@@ -408,12 +414,14 @@ jobs:
             - name: Compare against baselines
               env:
                   CONFIGS: ${{ needs.eval-plan.outputs.configs }}
+                  TITLES: ${{ needs.eval-plan.outputs.titles }}
               run: |
                   # A single downloaded artifact lands in artifacts/ itself, several land in subdirectories.
                   status=0
                   : > summary.md
                   for config in $(echo "$CONFIGS" | jq -r '.[]'); do
-                      python3 tests/regression/scripts/eval.py summarize --name "$config" \
+                      title=$(echo "$TITLES" | jq -r --arg c "$config" '.[$c]')
+                      python3 tests/regression/scripts/eval.py summarize --name "$title" \
                           $(find artifacts -path "*/results/$config/*.json") \
                           --expected "$EVAL_REPEATS" --baseline "tests/regression/baselines/eval/$config.json" \
                           >> summary.md || status=1
