@@ -18,6 +18,7 @@ This page covers the inference configuration and the supported features/deployme
     - [HiSparse](#hisparse)
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
+    - [Python chat renderer](#python-chat-renderer)
     - [Router Replay](#router-replay)
 
 
@@ -311,6 +312,32 @@ max_num_seqs = 256
 ```
 
 On the CLI the same keys are available as `--inference.vllm.max-num-seqs 256` (or `--vllm.max-num-seqs 256` for the standalone inference entrypoint); dict-valued arguments take a JSON string, e.g. `--vllm.compilation-config '{"cudagraph_mode": "NONE"}'`.
+
+### Python chat renderer
+
+Set `inference.renderer` to serve `/v1/chat/completions` through a Python renderer.
+It renders messages and tools into prompt token IDs and parses generated IDs into
+content, reasoning and tool calls. Configure the same renderer and tokenizer as
+the orchestrator so chat requests use the rollout format:
+
+```toml
+[inference.vllm]
+tokenizer = "/path/to/tokenizer"
+
+[inference.renderer]
+name = "custom"
+import_path = "/path/to/renderer.py:CustomRenderer"
+
+[orchestrator.renderer]
+name = "custom"
+import_path = "/path/to/renderer.py:CustomRenderer"
+```
+
+Renderer-specific fields belong in both renderer blocks. Request
+`chat_template_kwargs` override supported template fields. The handler supports
+returned token IDs and OpenAI logprobs. Streaming sends the completed response
+in one chunk, followed by the finish event and optional usage. Beam search is
+unsupported. With no renderer configured, vLLM handles chat completions.
 
 ### Router Replay
 

@@ -9,8 +9,13 @@ from types import SimpleNamespace
 import pytest
 from renderers import Qwen3RendererConfig, create_renderer
 from renderers.base import load_tokenizer
-from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse, GenerateResponseChoice
+from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionLogProbs, ChatCompletionRequest
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import (
+    GenerateTextChoice,
+    GenerateTextResponse,
+    GenerateTokensChoice,
+    GenerateTokensResponse,
+)
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
 from vllm.sampling_params import RequestOutputKind
 
@@ -42,9 +47,22 @@ class StubServingTokens:
 
     async def serve_tokens(self, request, raw_request):
         self.requests.append(request)
-        return GenerateResponse(
+        if request.output_mode == "text":
+            logprobs = ChatCompletionLogProbs.model_validate(
+                {
+                    "content": [
+                        {"token": "Sunny", "logprob": -0.5, "bytes": [83, 117, 110, 110, 121], "top_logprobs": []}
+                    ]
+                }
+            )
+            return GenerateTextResponse(
+                model=request.model,
+                choices=[GenerateTextChoice(index=0, text="Sunny.", token_ids=self.completion_ids, logprobs=logprobs)],
+                usage=UsageInfo(prompt_tokens=len(request.token_ids), completion_tokens=len(self.completion_ids)),
+            )
+        return GenerateTokensResponse(
             model=request.model,
-            choices=[GenerateResponseChoice(index=0, token_ids=self.completion_ids, finish_reason="stop")],
+            choices=[GenerateTokensChoice(index=0, token_ids=self.completion_ids, finish_reason="stop")],
             usage=UsageInfo(prompt_tokens=len(request.token_ids), completion_tokens=len(self.completion_ids)),
         )
 
@@ -109,11 +127,18 @@ def test_request_template_kwargs_override_defaults_and_unknown_ones_are_ignored(
     assert stub.requests[0].token_ids == renderer.render_ids(MESSAGES, add_generation_prompt=True)
 
 
-def test_token_ids_are_returned_on_request():
-    stub, response = serve("<think>\n\n</think>\n\nSunny.<|im_end|>", {"return_token_ids": True})
+@pytest.mark.parametrize("logprobs", [False, True])
+def test_token_ids_are_returned_on_request(logprobs):
+    stub, response = serve("<think>\n\n</think>\n\nSunny.<|im_end|>", {"return_token_ids": True, "logprobs": logprobs})
     body = payload(response)
     assert body["prompt_token_ids"] == stub.requests[0].token_ids
     assert body["choices"][0]["token_ids"] == stub.completion_ids
+    assert stub.requests[0].output_mode == ("text" if logprobs else "tokens")
+    if logprobs:
+        token = body["choices"][0]["logprobs"]["content"][0]
+        assert token == {"token": "Sunny", "logprob": -0.5, "bytes": [83, 117, 110, 110, 121], "top_logprobs": []}
+    else:
+        assert body["choices"][0]["logprobs"] is None
 
 
 def test_stream_sends_the_completion_as_one_chunk():

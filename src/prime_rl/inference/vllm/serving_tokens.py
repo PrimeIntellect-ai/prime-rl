@@ -128,7 +128,7 @@ class PrimeRlServingTokens(ServingTokens):
         raw_request: Request | None = None,
     ) -> GenerateResponse | ErrorResponse | AsyncGenerator[str, None]:
         sampling_params = request.sampling_params
-        if not request.stream:
+        if not request.stream and request.output_mode == "tokens":
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
             if not sampling_params.stop:
@@ -143,6 +143,10 @@ class PrimeRlServingTokens(ServingTokens):
         model_name: str,
         request_metadata: RequestResponseMetadata,
     ) -> ErrorResponse | GenerateResponse:
+        if request.output_mode != "tokens":
+            return await super().serve_tokens_full_generator(
+                request, result_generator, request_id, model_name, request_metadata
+            )
         packed = _PackedOutputs(result_generator, request)
         response = await super().serve_tokens_full_generator(
             request,
