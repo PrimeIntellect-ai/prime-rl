@@ -1,4 +1,6 @@
 # Compose after a DeepSeek V4 workload. Dense and expert backward use BF16.
+[orchestrator]
+
 [trainer.model.quantization]
 type = "mxfp8"
 qat = true
