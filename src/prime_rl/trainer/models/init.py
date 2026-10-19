@@ -8,8 +8,8 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.trainer import InitConfig, ParametrizationConfig
+from prime_rl.trainer.models.layers.hyper_connection import ExpandedRMSNorm
 from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
-from prime_rl.trainer.models.prime_moe.hyper_connection import ExpandedRMSNorm
 from prime_rl.utils.weights import resolve_fqn
 
 ParamRole = Literal["embedding", "output", "residual_out", "hidden", "norm", "bias"]

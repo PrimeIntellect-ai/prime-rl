@@ -13,6 +13,7 @@ from transformers.utils import TransformersKwargs
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
+from prime_rl.trainer.models.layers.hyper_connection import HyperConnection
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -20,7 +21,6 @@ from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import RotaryEmbedding, RotaryEmbeddingConfig
 from prime_rl.trainer.models.prime_moe.attention import PrimeFlashAttention
 from prime_rl.trainer.models.prime_moe.configuration_prime_moe import PrimeMoeConfig
-from prime_rl.trainer.models.prime_moe.hyper_connection import HyperConnection
 from prime_rl.trainer.models.prime_moe.moe import PrimeMoE, PrimeRouter, SituGlu
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
