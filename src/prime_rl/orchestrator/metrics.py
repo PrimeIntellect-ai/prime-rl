@@ -444,11 +444,17 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
 
 class EvalMetrics(EpisodeMetrics):
     def __init__(
-        self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int, unscored: int = 0
+        self,
+        episodes: list[vf.Episode],
+        records: list[TraceRecord],
+        group_size: int,
+        unscored: int = 0,
+        agents: list[str] | None = None,
     ) -> None:
         super().__init__(episodes, records)
         self.group_size = group_size
         self.unscored = unscored
+        self.agents = agents if agents is not None else []
 
     @property
     def reward(self) -> Stat:
@@ -456,13 +462,17 @@ class EvalMetrics(EpisodeMetrics):
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
-        for agent, traces in self.by_agent().items():
+        by_agent = self.by_agent()
+        unscored = self.unscored if subset == "all" else 0
+        # Declared agents score avg@k even when every attempt was unscored and left no trace.
+        agents = sorted(set(by_agent) | set(self.agents)) if unscored else list(by_agent)
+        for agent in agents:
             metric_prefix = f"{prefix}/{subset}/{agent}"
-            unscored = self.unscored if subset == "all" else 0
-            rewards = [record.trace.reward for record in traces.records]
+            records = by_agent[agent].records if agent in by_agent else []
+            rewards = [record.trace.reward for record in records]
             out[f"{metric_prefix}/avg@{self.group_size}"] = sum(rewards) / (len(rewards) + unscored)
             if subset == "effective":
-                out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(traces.records).items()}
+                out |= {f"{metric_prefix}/{key}": value for key, value in pass_at_k(records).items()}
         return out
 
 
@@ -642,7 +652,8 @@ class RolloutWindow:
 
 class EvalEpisodes(EpisodeCollection):
     """``unscored`` counts the epoch's attempts that returned no episode
-    (cancelled or dispatch failed); the all subset's avg@k scores them as zero."""
+    (cancelled or dispatch failed); the all subset's avg@k scores them as zero
+    for each of the env's declared ``agents``."""
 
     def __init__(
         self,
@@ -650,10 +661,12 @@ class EvalEpisodes(EpisodeCollection):
         group_size: int,
         predicate: Callable[[TraceRecord], bool] | None = None,
         unscored: int = 0,
+        agents: list[str] | None = None,
     ) -> None:
         super().__init__(episodes, predicate=predicate)
         self.group_size = group_size
         self.unscored = unscored
+        self.agents = agents if agents is not None else []
 
     @property
     def effective(self) -> EvalEpisodes:
@@ -665,4 +678,4 @@ class EvalEpisodes(EpisodeCollection):
 
     @property
     def metrics(self) -> EvalMetrics:
-        return EvalMetrics(self.selected_episodes, self.records, self.group_size, self.unscored)
+        return EvalMetrics(self.selected_episodes, self.records, self.group_size, self.unscored, self.agents)

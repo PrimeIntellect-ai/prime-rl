@@ -307,6 +307,9 @@ def test_eval_avg_at_k_and_pass_k():
     assert (
         partial.effective.metrics.to_wandb(prefix="eval/x", subset="effective")["eval/x/effective/agent/avg@2"] == 0.5
     )
+    cancelled = EvalEpisodes([], group_size=2, unscored=4, agents=["agent"])
+    assert cancelled.metrics.to_wandb(prefix="eval/x", subset="all")["eval/x/all/agent/avg@2"] == 0.0
+    assert not cancelled.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     non_binary = EvalEpisodes([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")], group_size=2)
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
