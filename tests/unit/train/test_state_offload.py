@@ -112,3 +112,20 @@ def test_offload_reuses_pinned_buffers_across_steps() -> None:
     assert pointers_before.keys() == pointers_after.keys()
     for key, pointer in pointers_before.items():
         assert pointers_after[key] == pointer, f"state buffer reallocated for {key}"
+
+
+@pytest.mark.parametrize("step_chunk_bytes", [1, 64 * 128 * 8, None])
+def test_chunked_steps_match_plain_adamw(step_chunk_bytes: int | None) -> None:
+    reference_model = make_model(0)
+    reference_optimizer = torch.optim.AdamW(reference_model.parameters(), lr=1e-2)
+    run_steps(reference_model, reference_optimizer, num_steps=3, seed=1)
+
+    chunked_model = make_model(0)
+    chunked_optimizer = CPUOffloadOptimizer(
+        torch.optim.AdamW(chunked_model.parameters(), lr=1e-2), step_chunk_bytes=step_chunk_bytes
+    )
+    run_steps(chunked_model, chunked_optimizer, num_steps=3, seed=1)
+
+    assert_params_equal(reference_model, chunked_model)
+    assert_states_offloaded(chunked_optimizer)
+    assert all(param.grad is None for param in chunked_model.parameters())

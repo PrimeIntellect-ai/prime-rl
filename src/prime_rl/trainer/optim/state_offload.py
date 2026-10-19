@@ -15,9 +15,14 @@ class CPUOffloadOptimizer(OffloadOptimizer):
     at the same time: peak memory becomes max(activations, opt_states) instead of sum.
     """
 
-    def __init__(self, optimizer: Optimizer, pin_memory: bool = True):
+    def __init__(self, optimizer: Optimizer, pin_memory: bool = True, step_chunk_bytes: int | None = 4 << 30):
         self.optimizer = optimizer
         self.pin_memory = pin_memory
+        # Upper bound on the optimizer state (estimated at two fp32 moments per element) brought
+        # to GPU per step pass. Moving all states at once needs the full sharded state on GPU next
+        # to weights and gradients, which can OOM for very large models. None steps everything in
+        # one pass.
+        self.step_chunk_bytes = step_chunk_bytes
         self._initialized = False
         self._cpu_buffers: dict[tuple[torch.Tensor, str], torch.Tensor] = {}
 
@@ -32,9 +37,12 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             buffer.copy_(src, non_blocking=True)
         return buffer
 
-    def _move_states(self, device: str):
-        """Move optimizer states to CPU or back to GPU (matching each parameter's device)."""
-        for param in self.optimizer.state:
+    def _move_states(self, device: str, params=None):
+        """Move optimizer states to CPU or back to GPU (matching each parameter's device), for
+        `params` or every parameter with state."""
+        for param in self.optimizer.state if params is None else params:
+            if param not in self.optimizer.state:
+                continue
             state = self.optimizer.state[param]
             for key, value in state.items():
                 if isinstance(value, DTensor):
@@ -57,20 +65,52 @@ class CPUOffloadOptimizer(OffloadOptimizer):
     def step(self, closure=None):
         # First step initializes states on GPU - offload after
         if not self._initialized:
-            result = self.optimizer.step(closure)
-            self._move_states("cpu")
+            if self.step_chunk_bytes is not None:
+                result = self._chunked_step(closure)
+            else:
+                result = self.optimizer.step(closure)
+                self._move_states("cpu")
             self._initialized = True
             return result
 
-        # Move states to GPU
-        self._move_states("cuda")
+        if self.step_chunk_bytes is None:
+            self._move_states("cuda")
+            result = self.optimizer.step(closure)
+            self._move_states("cpu")
+            return result
+        return self._chunked_step(closure)
 
-        # Run optimizer step
-        result = self.optimizer.step(closure)
+    def _step_chunks(self, params: list[torch.Tensor]) -> list[list[torch.Tensor]]:
+        chunks: list[list[torch.Tensor]] = [[]]
+        chunk_bytes = 0
+        for param in params:
+            local = param._local_tensor if isinstance(param, DTensor) else param
+            state_bytes = 8 * local.numel()
+            if chunks[-1] and chunk_bytes + state_bytes > self.step_chunk_bytes:
+                chunks.append([])
+                chunk_bytes = 0
+            chunks[-1].append(param)
+            chunk_bytes += state_bytes
+        return chunks
 
-        # Move states back to CPU
-        self._move_states("cpu")
-
+    def _chunked_step(self, closure=None):
+        """Step the parameters chunk by chunk, with only one chunk's states on GPU. Each pass sees
+        only its chunk's gradients; the optimizer skips parameters without one, so every parameter
+        is updated exactly once with the same element-wise math as a single step."""
+        params = [p for group in self.optimizer.param_groups for p in group["params"] if p.grad is not None]
+        grads = {id(p): p.grad for p in params}
+        result = None
+        try:
+            for chunk in self._step_chunks(params):
+                ids = {id(p) for p in chunk}
+                for param in params:
+                    param.grad = grads[id(param)] if id(param) in ids else None
+                self._move_states("cuda", chunk)
+                result = self.optimizer.step(closure)
+                self._move_states("cpu", chunk)
+        finally:
+            for param in params:
+                param.grad = grads[id(param)]
         return result
 
     def zero_grad(self, set_to_none: bool = True):
