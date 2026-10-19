@@ -9,6 +9,7 @@ from prime_rl.configs.shared import ClientConfig
 from prime_rl.orchestrator.clients import (
     AdminPlane,
     _is_retryable_lora_error,
+    _pause_engines,
     check_health,
     load_lora_adapter,
     setup_client,
@@ -85,6 +86,23 @@ def test_admin_plane_initializes_nccl():
         },
     )
     asyncio.run(admin_plane.aclose())
+
+
+def test_pause_engines_pauses_prefill_before_decode():
+    events = []
+
+    def engine(name):
+        async def post(path, **kwargs):
+            events.append(f"{name} start")
+            await asyncio.sleep(0.01 if name == "prefill" else 0)
+            events.append(f"{name} done")
+            return MagicMock()
+
+        return MagicMock(post=post)
+
+    asyncio.run(_pause_engines([engine("decode"), engine("prefill")], step=1, roles=["decode", "prefill"]))
+
+    assert events == ["prefill start", "prefill done", "decode start", "decode done"]
 
 
 def test_setup_client_creates_renderer_client():

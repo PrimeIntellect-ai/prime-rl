@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -112,8 +113,16 @@ class AdminPlane:
     GPU rank order used by NCCL/NIXL initialization and the metrics collector's
     role list index."""
 
-    def __init__(self, client_config: ClientConfig):
+    roles: list[str | None] | None = None
+    """P/D role of each client, in client order. Prefill engines pause before decode engines."""
+
+    # Per-engine times of the last update_weights phases (pause, transfer, resume).
+    # Replaced, never mutated.
+    update_times: dict[str, list[float]] = {}
+
+    def __init__(self, client_config: ClientConfig, roles: list[str | None] | None = None):
         self.clients = setup_admin_clients(client_config)
+        self.roles = roles
         # When admin URLs bypass a router, also health-check the client-facing
         # (router) endpoint - it only starts serving once its workers are healthy.
         self._router_clients = (
@@ -186,36 +195,34 @@ class AdminPlane:
         """Update every inference engine through its configured weight transport."""
         weight_dir_posix = weight_dir.as_posix() if weight_dir is not None else None
 
-        await _pause_engines(self.clients, step=step)
+        pause_times = await _pause_engines(self.clients, step=step, roles=self.roles)
         try:
             if on_paused is not None:
                 on_paused()
-            await asyncio.gather(
-                *[
-                    _admin_post(
-                        admin_client,
-                        "/update_weights",
-                        json={"weight_dir": weight_dir_posix, "weight_version": step},
-                        timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
-                    )
-                    for admin_client in self.clients
-                ]
+            transfer_times = await _post_all(
+                self.clients,
+                "/update_weights",
+                json={"weight_dir": weight_dir_posix, "weight_version": step},
+                timeout_s=UPDATE_WEIGHTS_TIMEOUT_S,
             )
         finally:
-            await _resume_engines(self.clients)
+            resume_times = await _resume_engines(self.clients)
+        self.update_times = {"pause": pause_times, "transfer": transfer_times, "resume": resume_times}
 
     async def aclose(self) -> None:
         for client in self.clients + self._router_clients:
             await client.aclose()
 
 
-def setup_admin_plane(client_config: PolicyClientConfig, model_name: str) -> AdminPlane:
+def setup_admin_plane(
+    client_config: PolicyClientConfig, model_name: str, roles: list[str | None] | None = None
+) -> AdminPlane:
     dynamo = client_config.dynamo
     if dynamo is not None and dynamo.enabled:
         from prime_rl.inference.dynamo import DynamoAdminPlane
 
         return DynamoAdminPlane(client_config, model_name)
-    return AdminPlane(client_config)
+    return AdminPlane(client_config, roles)
 
 
 async def check_inference_ready(client_config: ClientConfig, model_name: str) -> None:
@@ -400,25 +407,48 @@ async def _admin_post(client: AsyncClient, path: str, *, timeout_s: float = ADMI
             response.raise_for_status()
 
 
-async def _pause_engines(admin_clients: list[AsyncClient], *, step: int) -> None:
-    """Pause all inference engines, waiting for in-flight requests to drain."""
+async def _post_all(admin_clients: list[AsyncClient], path: str, **kwargs) -> list[float]:
+    """POST ``path`` to every engine concurrently; returns each engine's request time."""
+
+    async def post(client: AsyncClient) -> float:
+        start = time.perf_counter()
+        await _admin_post(client, path, **kwargs)
+        return time.perf_counter() - start
+
+    return await asyncio.gather(*[post(client) for client in admin_clients])
+
+
+async def _pause_engines(
+    admin_clients: list[AsyncClient], *, step: int, roles: list[str | None] | None = None
+) -> list[float]:
+    """Pause all inference engines, waiting for in-flight requests to drain.
+    Returns each engine's pause time.
+
+    Prefill engines pause first. A prefill engine's pause waits until decode has pulled the KV
+    blocks it still holds, and a paused decode engine never pulls them: the prefill would wait
+    for vLLM's NIXL KV lease to expire (30 s by default) and decode would later read the
+    released blocks."""
     logger = get_logger()
     logger.debug(f"Pausing inference engines to update weights to policy v{step}")
-    await asyncio.gather(
-        *[_admin_post(client, "/pause", params={"mode": "keep", "clear_cache": "false"}) for client in admin_clients]
-    )
-    logger.debug("All inference engines paused")
+    roles = roles or [None] * len(admin_clients)
+    prefill = [client for client, role in zip(admin_clients, roles, strict=True) if role == "prefill"]
+    rest = [client for client, role in zip(admin_clients, roles, strict=True) if role != "prefill"]
+    pause_times: list[float] = []
+    for clients in (prefill, rest):
+        pause_times += await _post_all(clients, "/pause", params={"mode": "keep", "clear_cache": "false"})
+    logger.debug(f"All inference engines paused in {min(pause_times):.2f}-{max(pause_times):.2f}s")
+    return pause_times
 
 
-async def _resume_engines(admin_clients: list[AsyncClient]) -> None:
-    """Resume all inference engines after weight update.
+async def _resume_engines(admin_clients: list[AsyncClient]) -> list[float]:
+    """Resume all inference engines after weight update. Returns each engine's resume time.
 
     Resuming is idempotent (it just clears the paused flag), so retrying transient
     failures is safe; a dropped /resume would leave engines paused indefinitely.
     """
-    logger = get_logger()
-    await asyncio.gather(*[_admin_post(client, "/resume") for client in admin_clients])
-    logger.debug("All inference engines resumed")
+    resume_times = await _post_all(admin_clients, "/resume")
+    get_logger().debug("All inference engines resumed")
+    return resume_times
 
 
 def _is_retryable_lora_error(exception: BaseException) -> bool:
