@@ -191,8 +191,8 @@ class WeightBroadcastConfig(BaseConfig):
 
 
 class CPUOffloadTier(BaseConfig):
-    num_bytes: int = Field(..., gt=0)
-    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``)."""
+    num_bytes: int = Field(..., ge=0)
+    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally; must be positive). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``); 0 connects the node to the shared pool without contributing storage."""
 
 
 class DiskOffloadTier(BaseConfig):
@@ -220,6 +220,12 @@ class BaseKVCacheOffloadConfig(BaseConfig):
 class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["native"] = "native"
     """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs`` disk secondary). Fully self-contained — no external processes."""
+
+    @model_validator(mode="after")
+    def positive_cpu_capacity(self):
+        if self.cpu is not None and self.cpu.num_bytes == 0:
+            raise ValueError("Native KV cache offload requires a positive cpu.num_bytes.")
+        return self
 
     def to_connector_dict(self) -> dict[str, Any]:
         assert self.cpu is not None
@@ -390,6 +396,12 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_vllm_overrides: dict[str, Any] = {}
     """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
 
+    prefill_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
+    """KV cache offload on prefill instances. ``inherit`` uses ``inference.kv_cache_offload``; None disables it."""
+
+    decode_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
+    """KV cache offload on decode instances. ``inherit`` uses ``inference.kv_cache_offload``; None disables it."""
+
     @property
     def num_prefill_nodes(self) -> int:
         return self.prefill_nodes_per_replica * self.num_prefill_replicas
@@ -494,7 +506,10 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_kv_cache_offload(self):
-        if self.kv_cache_offload is not None:
+        offloads = [offload for offload in self.kv_cache_offload_by_role.values() if offload is not None]
+        if len({offload.disk.path for offload in offloads if offload.type == "mooncake" and offload.disk}) > 1:
+            raise ValueError("Mooncake roles share one store master, so their disk tiers must use the same path.")
+        if offloads:
             if self.vllm.enable_prefix_caching is False:
                 raise ValueError("KV cache offloading requires inference.vllm.enable_prefix_caching to be true.")
             if "enable_prefix_caching" not in self.vllm.model_fields_set:
@@ -532,6 +547,24 @@ class InferenceConfig(BaseConfig):
                 self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
 
+    @property
+    def kv_cache_offload_by_role(self) -> dict[str, KVCacheOffloadConfig | None]:
+        """KV cache offload per P/D role (``prefill``/``decode``), or ``all`` for other deployments."""
+        if self.deployment.type != "disaggregated":
+            return {"all": self.kv_cache_offload}
+        overrides = {
+            "prefill": self.deployment.prefill_kv_cache_offload,
+            "decode": self.deployment.decode_kv_cache_offload,
+        }
+        return {role: self.kv_cache_offload if offload == "inherit" else offload for role, offload in overrides.items()}
+
+    def for_pd_role(self, role: Literal["prefill", "decode"]) -> "InferenceConfig":
+        """Engine config for one role of a disaggregated deployment, with that role's KV cache offload."""
+        assert self.deployment.type == "disaggregated"
+        config = self.model_copy(deep=True)
+        config.kv_cache_offload = self.kv_cache_offload_by_role[role]
+        return config
+
     def build_kv_transfer_config(self) -> dict[str, Any] | None:
         """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.
 
@@ -549,7 +582,11 @@ class InferenceConfig(BaseConfig):
                 }
             )
         if self.kv_cache_offload is not None:
-            connectors.append(self.kv_cache_offload.to_connector_dict())
+            connector = self.kv_cache_offload.to_connector_dict()
+            if self.use_pd_kv_transfer and connector["kv_connector"] == "MooncakeStoreConnector":
+                # Decode instances also store the KV they generate, so the next turn's prefill can load it.
+                connector["kv_connector_extra_config"]["save_decode_cache"] = True
+            connectors.append(connector)
 
         if not connectors:
             return None
