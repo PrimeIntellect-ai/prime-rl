@@ -28,7 +28,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     MXFP8ExpertCompute,
 )
-from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute
+from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, reserve_sms_for_comm
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
@@ -78,7 +78,6 @@ def _resolve_mega_moe_compute(
         intermediate_hidden=moe.experts.hidden_dim,
         group=group,
         max_tokens_per_rank=dispatch.max_tokens_per_rank,
-        num_reserved_sms=dispatch.num_reserved_sms,
         precision=dispatch.precision,
     )
 
@@ -113,6 +112,7 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
             raise ValueError(
                 "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
             )
+        reserve_sms_for_comm(dispatch.num_reserved_sms)
         # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
         selected_moes = set(moe_layers)
         selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group())
@@ -129,6 +129,8 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 "Mega MoE dispatch requires `score_before_experts=False` on the MoE layer "
                 "(router weights are applied at combine time, after both expert GEMMs)."
             )
+        if is_mega_moe:
+            selected_compute.validate_top_k(moe.router.top_k)
         compute = selected_compute if moe in selected_moes else bf16_compute
         moe.experts.set_compute(compute)
         if ep_mesh is None:

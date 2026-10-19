@@ -33,6 +33,7 @@ from prime_rl.configs.trainer import (
     OptimizerConfig,
     SchedulerConfig,
     TokenizerConfig,
+    mega_moe_max_tokens_per_rank,
     validate_scheduler,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
@@ -579,9 +580,11 @@ class SFTConfig(BaseConfig):
     @model_validator(mode="after")
     def resolve_mega_moe_max_tokens_per_rank(self):
         dispatch = self.model.moe.dispatch
-        if dispatch.type == "mega_moe" and dispatch.max_tokens_per_rank is None:
+        if dispatch.type == "mega_moe":
             data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
-            dispatch.max_tokens_per_rank = max(data.micro_batch_size * data.seq_len for data in data_configs)
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
+            )
         return self
 
     @model_validator(mode="after")

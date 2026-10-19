@@ -221,26 +221,28 @@ class DeepEPMoEDispatchConfig(BaseConfig):
 class MegaMoeMoEDispatchConfig(BaseConfig):
     type: Literal["mega_moe"] = "mega_moe"
     precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
-    """Precision of the fused expert GEMMs. ``mxfp8`` runs forward and backward on the MXFP8 kernels
-    (E4M3 data with 1x32 UE8M0 block scales, like the ``mxfp8`` expert compute); expert weights and
-    routed activations are quantized per call, gradients stay BF16/FP32. SM100 only. ``fp8`` runs forward and backward in Hopper
-    blockwise FP8 (E4M3 weights with 128x128 fp32 block scales quantized per call, tokens dispatched as E4M3
-    with 1x128 scales; the backward recomputes gate/up from the gathered tokens); SM90 only. ``fp8_bwd`` keeps the BF16 forward and
-    runs only the backward in Hopper blockwise FP8, recomputing gate/up from the gathered tokens; SM90 only."""
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
+    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
 
     max_tokens_per_rank: int | None = Field(None, ge=1)
-    """Upper bound on tokens per rank per MoE forward call, used to size Mega MoE's symmetric buffer
-    once at startup. Defaults to the micro batch: ``model.seq_len`` for RL (one packed sequence per
-    micro batch) and ``data.micro_batch_size * data.seq_len`` for SFT. Set it to size the buffer for
-    a different bound."""
+    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
+    (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
 
     num_reserved_sms: int = Field(16, ge=1)
-    """SMs left free for concurrent NCCL kernels (FSDP all-gathers etc.). The Mega MoE kernels are
-    persistent grids that synchronize across ranks; if they occupied every SM while an NCCL kernel
-    on another stream was waiting for a peer, the two would deadlock. ``NCCL_MAX_CTAS`` caps the
-    CTAs (one per SM) a NCCL kernel launches, so set it to this value in ``env_vars``; startup fails
-    if it is unset or larger. 16 is enough for FSDP's collectives; every reserved SM is taken from
-    the GEMMs, so don't reserve more than NCCL uses."""
+    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+
+
+def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
+    """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
+    buffer must hold the full micro batch."""
+    if max_tokens_per_rank is None:
+        return micro_batch_tokens
+    if max_tokens_per_rank < micro_batch_tokens:
+        raise ValueError(
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the micro batch "
+            f"({micro_batch_tokens} tokens)."
+        )
+    return max_tokens_per_rank
 
 
 MoEDispatchConfig: TypeAlias = Annotated[
@@ -677,8 +679,10 @@ class TrainerConfig(BaseConfig):
     def resolve_mega_moe_max_tokens_per_rank(self):
         """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
         dispatch = self.model.moe.dispatch
-        if dispatch.type == "mega_moe" and dispatch.max_tokens_per_rank is None:
-            dispatch.max_tokens_per_rank = self.model.seq_len
+        if dispatch.type == "mega_moe":
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, self.model.seq_len
+            )
         return self
 
     @model_validator(mode="after")
