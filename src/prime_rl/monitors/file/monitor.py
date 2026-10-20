@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
 import orjson
+from verifiers.v1.trace import EXCLUDE_FIELDS
 
 from prime_rl.configs.monitors import FileMonitorConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
     import verifiers.v1 as vf
 
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
+
+LIVE_NODE_EXCLUDE = frozenset(EXCLUDE_FIELDS["nodes"]["__all__"])
+"""Node fields that stay on the wire but out of live trace files, the same ones finished records
+drop (``Trace.to_record``): routed experts, sampling masks and top logprobs, which alone are
+``logprobs`` times the captured top-k per token."""
 
 
 class FileMonitor(Monitor):
@@ -109,7 +115,7 @@ class FileMonitor(Monitor):
                 line = {key: value for key, value in delta.items() if key != "routing_repairs"}
                 if "nodes" in line:
                     line["nodes"] = [
-                        {key: value for key, value in node.items() if key not in ("routed_experts", "sampling_mask")}
+                        {key: value for key, value in node.items() if key not in LIVE_NODE_EXCLUDE}
                         for node in line["nodes"]
                     ]
                 if "open" in delta:
