@@ -15,7 +15,6 @@ import prime_runs as pr
 from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
-from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -37,9 +36,6 @@ FINISH_TIMEOUT = 60.0
 
 PENDING_METRICS_LIMIT = 256
 UNATTACHED_WARN_SECONDS = 300.0
-
-# Both producers post the same raw timing keys at one step; the platform merges metrics by step.
-PLATFORM_TIMING_SUFFIXES = {"time/step": "step", "time/save_ckpt": "save_ckpt"}
 
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
@@ -166,7 +162,6 @@ class PrimeTrainMonitor(Monitor):
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         self.sidecar = isinstance(config, TrainerConfig)
-        self.timing_prefix = "trainer" if self.sidecar else "orch" if isinstance(config, OrchestratorConfig) else None
         if self.sidecar:
             await self._init_sidecar(output_dir)
             return
@@ -338,12 +333,6 @@ class PrimeTrainMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        if self.timing_prefix is not None:
-            prefix = f"time/{self.timing_prefix}_"
-            metrics = {
-                prefix + suffix if (suffix := PLATFORM_TIMING_SUFFIXES.get(key)) else key: value
-                for key, value in metrics.items()
-            }
         if self.sidecar and self.run is None:
             await self._log_metrics_pending(metrics, step)
             return

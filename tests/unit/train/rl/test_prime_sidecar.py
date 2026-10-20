@@ -84,12 +84,12 @@ def test_selfhost_defers_until_record_appears(prime, monkeypatch, tmp_path):
     assert monitor.run is None
     assert prime.calls == []
 
-    row = {"time/step": 1.0, "time/save_ckpt": 2.0, "optim/lr": 3.0}
+    row = {"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "optim/lr": 3.0}
     path = get_platform_run_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text("{not json")
     asyncio.run(monitor.log_metrics(row, step=1))
-    assert row == {"time/step": 1.0, "time/save_ckpt": 2.0, "optim/lr": 3.0}  # caller's dict untouched
+    assert row == {"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "optim/lr": 3.0}  # caller's dict untouched
     write_platform_record(tmp_path, {"kind": "eval", "run_id": "r", "evaluations": {}})
     asyncio.run(monitor.log_metrics({"optim/lr": 2.0}, step=2))
     assert monitor.run is None
@@ -98,21 +98,31 @@ def test_selfhost_defers_until_record_appears(prime, monkeypatch, tmp_path):
     asyncio.run(monitor.log_metrics({"optim/lr": 3.0}, step=3))
     assert prime.calls[0]["id"] == "run-123"
     assert [step for _, step in monitor.run.metrics] == [1, 2, 3]
-    queued = monitor.run.metrics[0][0]
-    assert queued == {"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "optim/lr": 3.0, "_timestamp": 100.0}
+    assert monitor.run.metrics[0][0] == {
+        "time/trainer_step": 1.0,
+        "time/trainer_save_ckpt": 2.0,
+        "optim/lr": 3.0,
+        "_timestamp": 100.0,
+    }
 
 
-def test_sidecar_renames_timing_keys_on_the_platform(prime, monkeypatch):
-    monkeypatch.setenv("RUN_ID", "run-123")
+@pytest.mark.parametrize(
+    "config, timings",
+    [
+        (TrainerConfig.model_validate({}), {"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "optim/lr": 3.0}),
+        (OrchestratorConfig.model_validate({}), {"time/orch_step": 1.0, "time/orch_save_ckpt": 2.0, "optim/lr": 3.0}),
+    ],
+    ids=["trainer", "orchestrator"],
+)
+def test_each_producer_logs_its_own_names(prime, monkeypatch, config, timings):
+    monkeypatch.setenv("RUN_ID", "run-123")  # the attach path skips the registration fields
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
-    _init(monitor)
+    asyncio.run(monitor.init(config=config, output_dir=None))
 
-    timings = {"time/step": 1.0, "time/save_ckpt": 2.0, "time/wait_for_batch": 3.0, "optim/lr": 4.0}
+    expected = dict(timings)
     asyncio.run(monitor.log_metrics(timings, step=5))
-    assert monitor.run.metrics == [
-        ({"time/trainer_step": 1.0, "time/trainer_save_ckpt": 2.0, "time/wait_for_batch": 3.0, "optim/lr": 4.0}, 5)
-    ]
-    assert timings == {"time/step": 1.0, "time/save_ckpt": 2.0, "time/wait_for_batch": 3.0, "optim/lr": 4.0}
+    assert monitor.run.metrics == [(expected, 5)]  # each producer's own names, posted as is
+    assert timings == expected  # caller's dict untouched
 
 
 def test_selfhost_record_missing_warns_once(prime, monkeypatch, tmp_path):
@@ -189,8 +199,3 @@ def test_owners_keep_their_semantics(prime, monkeypatch, config):
 
     assert monitor.run.metrics == [(timings, 5)]  # unknown and SFT owners keep the raw keys
     assert monitor.run.finishes  # it finishes; it is not a flush-only sidecar
-
-    orch = PrimeTrainMonitor(PrimeTrainMonitorConfig())
-    asyncio.run(orch.init(config=OrchestratorConfig.model_validate({}), output_dir=None))
-    asyncio.run(orch.log_metrics(timings, step=6))
-    assert orch.run.metrics == [({"time/orch_step": 1.0, "time/orch_save_ckpt": 2.0, "optim/lr": 3.0}, 6)]

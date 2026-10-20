@@ -295,7 +295,7 @@ Pulled from the console log and mirrored to W&B.
 | `perf/throughput`, `perf/throughput_per_gpu` | tokens/s overall and per GPU |
 | `perf/mfu` | MFU |
 | `perf/peak_memory` | peak GPU memory (GiB) |
-| `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
+| `time/trainer_step`, `time/orch_step`, `time/forward_backward`, `time/trainer_save_ckpt`, `time/orch_save_ckpt` (RL); `time/step`, `time/forward_backward`, `time/save_ckpt` (SFT) | step breakdown |
 
 ## Checkpointing
 
