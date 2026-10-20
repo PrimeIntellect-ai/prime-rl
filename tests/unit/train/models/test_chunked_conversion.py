@@ -14,10 +14,7 @@ from prime_rl.utils.weights import get_chunked_conversion_ops
 @dataclass
 class PairChunks(ChunkedConvOp):
     runtime_weight: str
-
-    @property
-    def packet_count(self):
-        return 2
+    shard_count: int = 2
 
     def hf_to_prime(self, sd):
         if "checkpoint.part0" in sd:
@@ -56,7 +53,7 @@ def test_ngram_stream_matches_checkpoint_conversion(rows, parts):
         return value[start:stop].clone()
 
     packets = list(op.iter_prime_to_hf(weight, resolve_rows))
-    assert len(packets) == op.packet_count == parts
+    assert len(packets) == op.shard_count == parts
     assert all(0 <= start <= stop <= rows for start, stop in intervals)
     actual = {name: value for packet in packets for name, value in packet.items()}
     shard_size = (rows + parts - 1) // parts
@@ -80,7 +77,7 @@ def test_chunked_conversion_is_not_ngram_specific():
     operations = get_chunked_conversion_ops(model, state)
     op = operations["model.layers.0.weight"]
     assert isinstance(op, PairChunks)
-    assert sum(operation.packet_count for operation in operations.values()) == 2
+    assert sum(operation.shard_count for operation in operations.values()) == 2
     expected = state[op.runtime_weight].clone()
     op.prime_to_hf(state)
     assert set(state) == {"checkpoint.part0", "checkpoint.part1"}

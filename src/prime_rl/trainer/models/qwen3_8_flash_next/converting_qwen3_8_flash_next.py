@@ -26,10 +26,6 @@ class NGramEmbeddingWeights(ChunkedConvOp):
             dim=0,
         )
 
-    @property
-    def packet_count(self) -> int:
-        return self.shard_count
-
     def iter_prime_to_hf(
         self, weight: Tensor, resolve_rows: Callable[[Tensor, int, int], Tensor]
     ) -> Iterator[dict[str, Tensor]]:

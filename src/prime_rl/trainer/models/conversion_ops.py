@@ -56,16 +56,13 @@ class ConvOp(ABC):
 class ChunkedConvOp(ConvOp):
     """Convert one runtime weight into independent, final HF-format packets.
 
-    The iterator must yield exactly ``packet_count`` packets. The caller supplies
-    row resolution, which may gather distributed rows. Other conversion operations
-    must not depend on or transform these packet keys.
+    The iterator must yield exactly ``shard_count`` packets, one per shard.
+    The caller supplies row resolution, which may gather distributed rows.
+    Other conversion operations must not depend on or transform these packet keys.
     """
 
     runtime_weight: str
-
-    @property
-    @abstractmethod
-    def packet_count(self) -> int: ...
+    shard_count: int
 
     @abstractmethod
     def iter_prime_to_hf(

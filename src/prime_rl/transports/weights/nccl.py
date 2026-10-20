@@ -157,7 +157,7 @@ class NCCLBroadcaster:
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         chunked_ops = get_chunked_conversion_ops(model, state_dict)
-        num_state_dict_to_send = num_layers + 1 + sum(op.packet_count for op in chunked_ops.values())
+        num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in chunked_ops.values())
 
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
