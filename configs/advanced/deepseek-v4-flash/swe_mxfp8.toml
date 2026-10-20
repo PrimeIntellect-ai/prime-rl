@@ -107,7 +107,6 @@ freeze_moe_router = false
 ep = 8
 # DeepSeek V4 only supports ring CP. 131k / 8 = 16k tokens per rank.
 cp = 8
-fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.compile]
 
