@@ -165,9 +165,7 @@ def train(config: SFTConfig):
         parallel_dims,
         offload=config.model.offload,
         model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
-        ),
+        full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
     )
 
     # Set up the learning rate scheduler

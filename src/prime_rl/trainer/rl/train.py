@@ -171,9 +171,7 @@ def train(config: TrainerConfig):
         parallel_dims,
         offload=config.model.offload,
         model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
-        ),
+        full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
     )
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 

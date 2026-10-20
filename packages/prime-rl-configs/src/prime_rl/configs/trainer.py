@@ -54,7 +54,7 @@ OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
-    """Compile transformer blocks with ``fullgraph=True``. Custom MoE models need ``moe_router_dtype="bfloat16"``: FP32/FP16 routers have a separate FSDP unit inside the block, and dynamo cannot trace FSDP hooks."""
+    """Compile transformer blocks with ``fullgraph=True``."""
 
     mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
     """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
@@ -301,8 +301,8 @@ class ModelConfig(BaseModelConfig):
     reduce_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for gradient/parameter reductions."""
 
-    moe_router_dtype: Literal["bfloat16", "float16", "float32", "auto"] = "auto"
-    """Operand dtype for MoE router gates; logits and scores are always FP32. ``bfloat16`` uses the block's FSDP policy and a BF16×BF16 → FP32 GEMM. ``float32`` and ``float16`` keep FP32 router parameters in a separate FSDP unit, casting directly to the selected compute dtype; this nested unit prevents full-block compilation with activation checkpointing. ``auto`` resolves to ``float32`` for RL and ``bfloat16`` for SFT. A no-op for non-MoE models."""
+    moe_router_dtype: Literal["bfloat16"] = "bfloat16"
+    """MoE router gates use BF16 operands and return FP32 logits and scores. Routers share the transformer block's FSDP unit. A no-op for non-MoE models."""
 
     reduce_scatter_max_input_buffers: int = Field(1, ge=1)
     """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
@@ -598,7 +598,6 @@ class DataLoaderConfig(BaseConfig):
 class BaseTrainerConfig(BaseConfig):
     """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
 
-    auto_moe_router_dtype: ClassVar[Literal["float32", "bfloat16"]]
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
 
@@ -644,8 +643,6 @@ class BaseTrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_auto_defaults(self):
-        if self.model.moe_router_dtype == "auto":
-            self.model.moe_router_dtype = self.auto_moe_router_dtype
         if self.model.freeze_moe_router == "auto":
             self.model.freeze_moe_router = self.auto_freeze_moe_router
         if self.optim.weight_decay == "auto":
@@ -715,8 +712,6 @@ class BaseTrainerConfig(BaseConfig):
 
 
 class TrainerConfig(BaseTrainerConfig):
-    # fp32 routing matches the fp32-routed checkpoints RL trains from (e.g. GLM-5.x).
-    auto_moe_router_dtype = "float32"
     # RL keeps the pretrained router.
     auto_freeze_moe_router = True
     # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.

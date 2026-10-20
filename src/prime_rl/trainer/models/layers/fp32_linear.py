@@ -3,7 +3,7 @@ import torch.nn.functional as F
 
 
 class _FP32OutputMatmul(torch.autograd.Function):
-    """Low-precision operands with an FP32 output and FP32 gradient accumulation."""
+    """BF16 operands with an FP32 output and FP32 gradient accumulation."""
 
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
@@ -21,19 +21,14 @@ class _FP32OutputMatmul(torch.autograd.Function):
         return grad_x, grad_weight
 
 
-def fp32_linear(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None = None) -> torch.Tensor:
-    """Cast inputs to the weight dtype and return FP32 output without an intermediate downcast."""
-    with torch.autocast(device_type=x.device.type, enabled=False):
-        x = x.to(weight.dtype)
-        if x.is_cuda and weight.dtype in (torch.bfloat16, torch.float16):
-            output = _FP32OutputMatmul.apply(x.reshape(-1, x.shape[-1]), weight)
-            output = output.reshape(*x.shape[:-1], weight.shape[0])
-            return output if bias is None else output + bias.float()
-        return F.linear(x.float(), weight.float(), bias.float() if bias is not None else None)
-
-
 class FP32Linear(torch.nn.Linear):
     """A linear layer whose output stays in FP32 regardless of its parameter dtype."""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return fp32_linear(x, self.weight, self.bias)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            x = x.to(self.weight.dtype)
+            if x.is_cuda and self.weight.dtype == torch.bfloat16:
+                output = _FP32OutputMatmul.apply(x.reshape(-1, x.shape[-1]), self.weight)
+                output = output.reshape(*x.shape[:-1], self.weight.shape[0])
+                return output if self.bias is None else output + self.bias.float()
+            return F.linear(x.float(), self.weight.float(), self.bias.float() if self.bias is not None else None)
