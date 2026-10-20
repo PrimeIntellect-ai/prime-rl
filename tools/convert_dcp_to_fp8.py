@@ -10,7 +10,8 @@ Usage:
     uv run python tools/convert_dcp_to_fp8.py <run>/checkpoints/step_{n} [output_dir] [--block-size 128]
     uv run python tools/convert_dcp_to_fp8.py <checkpoint> [output_dir] --device cuda
 
-CPU streaming is the default; CUDA gathers and quantizes each rank's slice on GPU.
+CPU streaming is the default; --workers parallelizes independent CPU groups.
+CUDA gathers and quantizes each rank's slice on GPU.
 Multi-rank torchrun automatically selects CUDA for compatibility.
 Writes to <step_dir>/weights-FP8 by default. Existing output files are overwritten.
 """
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
 
-from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
+from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_assets import prepare_export_config, publish_export, read_model_config, save_model_assets
 from prime_rl.utils.export_config import resolve_dcp_dir, resolve_run_configs
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -32,8 +33,12 @@ from prime_rl.utils.logger import get_logger, setup_logger
 logger = get_logger()
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, device: str = "cpu") -> Path:
+def convert(
+    ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, device: str = "cpu", workers: int = 1
+) -> Path:
     """Export blockwise-FP8 weights using CPU streaming or the parallel CUDA gather."""
+    if workers <= 0:
+        raise ValueError("workers must be positive")
     if block_size <= 0:
         raise ValueError("block_size must be positive")
     if device not in ("cpu", "cuda"):
@@ -66,7 +71,17 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
                 num_scales += sum(name.endswith("_scale_inv") for name in group)
                 yield group
 
-        write_hf_shards(quantized_groups(), staging_dir)
+        if workers == 1:
+            write_hf_shards(quantized_groups(), staging_dir)
+        else:
+            num_scales, modules_to_not_convert = write_cpu_hf_groups(
+                dcp_dir,
+                config,
+                staging_dir,
+                model_config=model_config,
+                workers=workers,
+                transform=lambda group: quantize_state_dict(group, block_size, "cpu"),
+            )
         if num_scales == 0:
             raise ValueError(f"No quantizable weights found in {dcp_dir} - is this a bf16 checkpoint?")
         logger.info(f"Quantized {num_scales} weights to blockwise fp8")
@@ -91,9 +106,10 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights-FP8")
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="export device (default: cpu)")
+    parser.add_argument("--workers", type=int, default=1, help="CPU export threads (default: 1)")
     args = parser.parse_args()
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, args.block_size, device=args.device)
+    convert(args.ckpt_dir, args.output_dir, args.block_size, device=args.device, workers=args.workers)
 
 
 if __name__ == "__main__":

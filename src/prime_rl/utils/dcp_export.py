@@ -4,12 +4,14 @@ import itertools
 import json
 import math
 import re
-from collections.abc import Iterable, Iterator
+import shutil
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
 from safetensors.torch import save_file
-from torch.distributed.checkpoint import FileSystemReader
+from torch.distributed.checkpoint import FileSystemReader, Metadata
 from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
 from torch.distributed.checkpoint.metadata import TensorStorageMetadata
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
@@ -155,12 +157,18 @@ def _identity_canonical_names(entries: dict[str, TensorStorageMetadata], config:
     return {original_names[id(tensor)]: name for name, tensor in canonical.items() if id(tensor) in original_names}
 
 
-def iter_cpu_hf_groups(
-    dcp_dir: Path, config: dict, *, model_config: dict | None = None
-) -> Iterator[dict[str, torch.Tensor]]:
-    """Read one structural block at a time, never optimizer state or model weights."""
-    reader = FileSystemReader(dcp_dir)
-    entries = _model_entries(reader)
+class _MetadataReader(FileSystemReader):
+    def __init__(self, path: Path, metadata: Metadata):
+        super().__init__(path)
+        self.metadata = metadata
+
+    def read_metadata(self, *args, **kwargs) -> Metadata:
+        return self.metadata
+
+
+def _cpu_group_plan(dcp_dir: Path, config: dict, model_config: dict | None):
+    metadata = FileSystemReader(dcp_dir).read_metadata()
+    entries = _model_entries(_MetadataReader(dcp_dir, metadata))
     operations, tied_aliases = _export_layout(entries, config, model_config)
     identity_names = _identity_canonical_names(entries, config) if not operations else {}
     grouped: dict[str, list[str]] = {}
@@ -171,31 +179,121 @@ def iter_cpu_hf_groups(
         match = _LAYER.match(logical)
         unit = match.group(1) if match else logical
         grouped.setdefault(unit, []).append(name)
-    model_type = config.get("model_type", "")
-    for names in grouped.values():
-        targets = {
-            name: torch.empty(entries[name].size, dtype=entries[name].properties.dtype, device="cpu") for name in names
-        }
-        dcp_load(
-            targets,
-            storage_reader=reader,
-            planner=DefaultLoadPlanner(
-                flatten_state_dict=False, flatten_sharded_tensors=False, allow_partial_load=False
-            ),
-            no_dist=True,
+    return entries, operations, identity_names, list(grouped.values()), config.get("model_type", ""), metadata
+
+
+def _load_cpu_hf_group(
+    dcp_dir: Path,
+    names: list[str],
+    entries: dict[str, TensorStorageMetadata],
+    operations: list,
+    identity_names: dict[str, str],
+    model_type: str,
+    metadata: Metadata,
+) -> dict[str, torch.Tensor]:
+    targets = {
+        name: torch.empty(entries[name].size, dtype=entries[name].properties.dtype, device="cpu") for name in names
+    }
+    dcp_load(
+        targets,
+        storage_reader=_MetadataReader(dcp_dir, metadata),
+        planner=DefaultLoadPlanner(flatten_state_dict=False, flatten_sharded_tensors=False, allow_partial_load=False),
+        no_dist=True,
+    )
+    group = {name.removeprefix(_PREFIX): tensor for name, tensor in targets.items()}
+    del targets
+    for name in group:
+        if group[name].is_floating_point():
+            canonical_name = identity_names.get(name, name)
+            preserve = keep_in_fp32(model_type, canonical_name)
+            dtype = torch.float32 if preserve else torch.bfloat16
+            if canonical_name.endswith(".router.selection_bias"):
+                dtype = group[name].dtype
+            group[name] = group[name].to(dtype)
+    return apply_prime_to_hf(group, operations)
+
+
+def iter_cpu_hf_groups(
+    dcp_dir: Path, config: dict, *, model_config: dict | None = None
+) -> Iterator[dict[str, torch.Tensor]]:
+    """Read one structural block at a time, never optimizer state or model weights."""
+    entries, operations, identity_names, grouped, model_type, metadata = _cpu_group_plan(dcp_dir, config, model_config)
+    for names in grouped:
+        yield _load_cpu_hf_group(dcp_dir, names, entries, operations, identity_names, model_type, metadata)
+
+
+def write_cpu_hf_groups(
+    dcp_dir: Path,
+    config: dict,
+    output_dir: Path,
+    *,
+    model_config: dict | None = None,
+    workers: int = 1,
+    transform: Callable[[dict[str, torch.Tensor]], tuple[dict[str, torch.Tensor], list[str]]] | None = None,
+) -> tuple[int, list[str]]:
+    """Load, transform and write independent groups on CPU threads; retain metadata only."""
+    if workers <= 0:
+        raise ValueError("workers must be positive")
+    entries, operations, identity_names, grouped, model_type, metadata = _cpu_group_plan(dcp_dir, config, model_config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def write_group(item: tuple[int, list[str]]) -> tuple[list[tuple[str, dict[str, int]]], int, list[str]]:
+        number, names = item
+        group = _load_cpu_hf_group(dcp_dir, names, entries, operations, identity_names, model_type, metadata)
+        skipped: list[str] = []
+        if transform is not None:
+            group, skipped = transform(group)
+        if not group:
+            return [], 0, skipped
+        scales = sum(name.endswith("_scale_inv") for name in group)
+        sizes = {name: tensor.numel() * tensor.element_size() for name, tensor in group.items()}
+        local_dir = output_dir / f".group-{number:05d}"
+        write_hf_shards(iter((group,)), local_dir)
+        index_path = local_dir / "model.safetensors.index.json"
+        if index_path.exists():
+            weight_map = json.loads(index_path.read_text())["weight_map"]
+        else:
+            weight_map = dict.fromkeys(sizes, "model.safetensors")
+        shard_names = sorted(
+            set(weight_map.values()), key=lambda name: int(name.split("-")[1]) if name.startswith("model-") else 0
         )
-        group = {name.removeprefix(_PREFIX): tensor for name, tensor in targets.items()}
-        del targets
-        for name in group:
-            if group[name].is_floating_point():
-                canonical_name = identity_names.get(name, name)
-                preserve = keep_in_fp32(model_type, canonical_name)
-                dtype = torch.float32 if preserve else torch.bfloat16
-                if canonical_name.endswith(".router.selection_bias"):
-                    dtype = group[name].dtype
-                group[name] = group[name].to(dtype)
-        yield apply_prime_to_hf(group, operations)
-        del group
+        shards = [
+            (
+                str(local_dir / shard_name),
+                {name: sizes[name] for name in sorted(sizes) if weight_map[name] == shard_name},
+            )
+            for shard_name in shard_names
+        ]
+        return shards, scales, skipped
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Each worker writes its group before returning, so queued results contain no tensors.
+        results = list(pool.map(write_group, enumerate(grouped)))
+
+    shards = [shard for group_shards, _, _ in results for shard in group_shards]
+    weight_map: dict[str, str] = {}
+    total_size = 0
+    for number, (source, sizes) in enumerate(shards, start=1):
+        filename = "model.safetensors" if len(shards) == 1 else f"model-{number:05d}-of-{len(shards):05d}.safetensors"
+        for name, size in sizes.items():
+            if name in weight_map:
+                raise ValueError(f"Duplicate output tensor: {name}")
+            weight_map[name] = filename
+            total_size += size
+        Path(source).rename(output_dir / filename)
+    if not weight_map:
+        raise ValueError("No HF tensors to write")
+    for number in range(len(grouped)):
+        group_dir = output_dir / f".group-{number:05d}"
+        if group_dir.exists():
+            shutil.rmtree(group_dir)
+    if len(shards) > 1:
+        index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+        path = output_dir / "model.safetensors.index.json"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
+        temporary.replace(path)
+    return sum(scales for _, scales, _ in results), [name for _, _, skipped in results for name in skipped]
 
 
 def write_hf_shards(

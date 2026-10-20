@@ -88,6 +88,29 @@ def test_cpu_export_overwrites_existing_output(tiny_run, format):
     assert not list(step.glob(".existing-output-*"))
 
 
+@pytest.mark.parametrize("format", ["bf16", "fp8"])
+def test_cpu_export_workers_match_single_worker(tiny_run, format):
+    _, step, _, _ = tiny_run
+    cli = importlib.import_module(f"convert_dcp_to_{format}")
+    single = step / "export-single"
+    threaded = step / "export-threaded"
+    cli.convert(step, single)
+    assert cli.convert(step, threaded, workers=2) == threaded
+    names = sorted(path.name for path in single.iterdir())
+    assert sorted(path.name for path in threaded.iterdir()) == names
+    for name in names:
+        assert (threaded / name).read_bytes() == (single / name).read_bytes()
+    assert not list(step.glob(".export-threaded-*"))
+
+
+@pytest.mark.parametrize("format", ["bf16", "fp8"])
+def test_cpu_export_rejects_non_positive_workers(tiny_run, format):
+    _, step, _, _ = tiny_run
+    cli = importlib.import_module(f"convert_dcp_to_{format}")
+    with pytest.raises(ValueError, match="workers must be positive"):
+        cli.convert(step, step / "export", workers=0)
+
+
 @pytest.mark.parametrize("num_groups", [1, 2])
 def test_hf_shard_names(tmp_path, num_groups):
     groups = [{f"weight_{number}": torch.full((2,), float(number))} for number in range(num_groups)]

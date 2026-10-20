@@ -8,7 +8,8 @@ Usage:
     uv run python tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
     uv run python tools/convert_dcp_to_bf16.py <checkpoint> [output_dir] --device cuda
 
-CPU streaming is the default; CUDA uses the parallel GPU gather path.
+CPU streaming is the default; --workers parallelizes independent CPU groups.
+CUDA uses the parallel GPU gather path.
 Multi-rank torchrun automatically selects CUDA for compatibility.
 Writes to <step_dir>/weights by default. Existing output files are overwritten.
 """
@@ -19,7 +20,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
+from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_assets import prepare_export_config, publish_export, read_model_config, save_model_assets
 from prime_rl.utils.export_config import resolve_dcp_dir, resolve_run_configs
 from prime_rl.utils.logger import get_logger, setup_logger
@@ -27,8 +28,10 @@ from prime_rl.utils.logger import get_logger, setup_logger
 logger = get_logger()
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None, *, device: str = "cpu") -> Path:
+def convert(ckpt_dir: Path, output_dir: Path | None = None, *, device: str = "cpu", workers: int = 1) -> Path:
     """Export a full trainer checkpoint using CPU streaming or the parallel CUDA gather."""
+    if workers <= 0:
+        raise ValueError("workers must be positive")
     if device not in ("cpu", "cuda"):
         raise ValueError(f"Unsupported export device: {device}")
     if device == "cuda" or int(os.environ.get("WORLD_SIZE", "1")) > 1:
@@ -49,7 +52,10 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, *, device: str = "cp
         logger.info(f"Saving model assets to {staging_dir}")
         save_model_assets(config, model_config, tokenizer_config, staging_dir)
         logger.info(f"Reading model tensors from {dcp_dir} on CPU")
-        write_hf_shards(iter_cpu_hf_groups(dcp_dir, config, model_config=model_config), staging_dir)
+        if workers == 1:
+            write_hf_shards(iter_cpu_hf_groups(dcp_dir, config, model_config=model_config), staging_dir)
+        else:
+            write_cpu_hf_groups(dcp_dir, config, staging_dir, model_config=model_config, workers=workers)
         publish_export(staging_dir, output_dir)
     except BaseException:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -65,9 +71,10 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights")
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="export device (default: cpu)")
+    parser.add_argument("--workers", type=int, default=1, help="CPU export threads (default: 1)")
     args = parser.parse_args()
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, device=args.device)
+    convert(args.ckpt_dir, args.output_dir, device=args.device, workers=args.workers)
 
 
 if __name__ == "__main__":
