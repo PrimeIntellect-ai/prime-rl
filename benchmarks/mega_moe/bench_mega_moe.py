@@ -3,12 +3,12 @@ bf16 EP path (``TorchTokenDispatcher`` + ``BF16ExpertCompute``) for the same rou
 workload, weights, and token counts, and check the gradients agree.
 
 Requires >=2 SM90+ GPUs, PyTorch >= 2.9 (CUDA symmetric memory), and the prime-mega-moe
-``deep_gemm`` wheel from Prime Intellect installed over the public one. ``NCCL_MAX_CTAS`` must be
-set to at most the SMs Mega MoE reserves for NCCL (16). ``--hidden`` must be a multiple of 256 and
-``--intermediate`` a multiple of 128.
+``deep_gemm`` wheel from Prime Intellect installed over the public one. ``NCCL_MAX_CTAS`` defaults to half
+the SMs Mega MoE reserves for NCCL (16). ``--hidden`` must be a multiple of 256 and ``--intermediate`` a
+multiple of 128.
 
 Usage:
-    NCCL_MAX_CTAS=16 torchrun --nproc_per_node=8 benchmarks/mega_moe/bench_mega_moe.py \
+    torchrun --nproc_per_node=8 benchmarks/mega_moe/bench_mega_moe.py \
         --num-experts 128 --top-k 8 --hidden 2048 --intermediate 1024 --tokens-per-rank 2048
 """
 
@@ -20,7 +20,12 @@ import torch.distributed as dist
 
 from prime_rl.trainer.distributed.token_dispatcher import FusedTokenDispatcher, TorchTokenDispatcher
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute
-from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, mega_moe_available, reserve_sms_for_comm
+from prime_rl.trainer.models.layers.mega_moe import (
+    MegaMoEExpertCompute,
+    default_nccl_max_ctas,
+    mega_moe_available,
+    reserve_sms_for_comm,
+)
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
@@ -58,6 +63,7 @@ def main() -> None:
     args = parse_args()
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
+    default_nccl_max_ctas(16)
     dist.init_process_group(backend="nccl", device_id=torch.device("cuda", local_rank))
     rank, world_size = dist.get_rank(), dist.get_world_size()
     group = dist.group.WORLD

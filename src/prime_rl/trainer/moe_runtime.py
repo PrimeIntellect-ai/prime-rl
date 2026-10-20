@@ -28,11 +28,22 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     MXFP8ExpertCompute,
 )
-from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, reserve_sms_for_comm
+from prime_rl.trainer.models.layers.mega_moe import (
+    MegaMoEExpertCompute,
+    default_nccl_max_ctas,
+    reserve_sms_for_comm,
+)
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.vlm import get_language_model
+
+
+def setup_moe_comm_env(config: ModelConfig) -> None:
+    """Environment the MoE dispatch needs before torch distributed creates NCCL communicators."""
+    dispatch = config.moe.dispatch
+    if isinstance(dispatch, MegaMoeMoEDispatchConfig):
+        default_nccl_max_ctas(dispatch.num_reserved_sms)
 
 
 def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:

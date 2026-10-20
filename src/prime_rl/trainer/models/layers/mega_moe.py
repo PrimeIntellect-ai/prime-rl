@@ -63,13 +63,21 @@ def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
         )
 
 
+def default_nccl_max_ctas(num_reserved_sms: int) -> None:
+    """Set ``NCCL_MAX_CTAS`` to half the reserved SMs unless it is already set. FSDP can run an all-gather and a
+    reduce-scatter at once next to a Mega MoE grid, and both must fit in the reserved SMs. NCCL reads it when the
+    first communicator is created, so call this before initializing torch distributed."""
+    os.environ.setdefault("NCCL_MAX_CTAS", str(num_reserved_sms // 2))
+
+
 def reserve_sms_for_comm(num_reserved_sms: int) -> int:
     """SMs the Mega MoE grids run on: ``total - num_reserved_sms``"""
     nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
-    if nccl_max_ctas is None or int(nccl_max_ctas) > num_reserved_sms:
+    if nccl_max_ctas is None or 2 * int(nccl_max_ctas) > num_reserved_sms:
         raise ValueError(
-            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, so `NCCL_MAX_CTAS` must be set to at most "
-            f"{num_reserved_sms} (got {nccl_max_ctas!r}); set it in `env_vars` or raise `num_reserved_sms`."
+            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, and FSDP can run two NCCL kernels at once, so "
+            f"`NCCL_MAX_CTAS` must be at most {num_reserved_sms // 2} (got {nccl_max_ctas!r}); unset it to use that "
+            "default or raise `num_reserved_sms`."
         )
     total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
     return max(total - num_reserved_sms, 1)
