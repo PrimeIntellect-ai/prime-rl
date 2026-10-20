@@ -140,13 +140,30 @@ def test_metrics_only_drops_episodes(prime_init, run_id):
     assert monitor.run.episodes == []
 
 
-def test_metrics_only_still_logs_stepped_metrics(prime_init, run_id):
+def test_metrics_only_renames_colliding_time_keys(prime_init, run_id):
+    """The trainer's colliding time keys (the orchestrator posts the same names
+    at the same step) land in a trainer namespace; everything else is verbatim."""
     monitor = _metrics_only_monitor()
     asyncio.run(monitor.init(config=None, output_dir=None))
 
-    asyncio.run(monitor.log_metrics({"optim/lr": 1e-4}, step=3))
+    asyncio.run(
+        monitor.log_metrics(
+            {"time/step": 1.0, "time/save_ckpt": 2.0, "time/wait_for_batch": 3.0, "optim/lr": 4.0},
+            step=5,
+        )
+    )
 
-    assert monitor.run.metrics == [({"optim/lr": 1e-4}, 3)]
+    assert monitor.run.metrics == [
+        (
+            {
+                "time/trainer/step": 1.0,
+                "time/trainer/save_ckpt": 2.0,
+                "time/wait_for_batch": 3.0,
+                "optim/lr": 4.0,
+            },
+            5,
+        )
+    ]
 
 
 def test_trainer_setup_wires_metrics_only(prime_init, run_id, clear_monitors):
