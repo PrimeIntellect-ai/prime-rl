@@ -1,4 +1,5 @@
 import copy
+import math
 
 import torch
 from torch.distributed.tensor import DTensor
@@ -82,14 +83,17 @@ class CPUOffloadOptimizer(OffloadOptimizer):
 
     @staticmethod
     def _planned_numel(param: torch.Tensor) -> int:
-        """Per-rank element count estimated from the global shape: identical on every rank."""
+        """Largest per-rank element count, from the global shape: identical on every rank.
+
+        Rounds up per sharded tensor dim, so a dim that does not divide evenly counts its largest shard."""
         if not isinstance(param, DTensor):
             return param.numel()
-        shards = 1
-        for dim, placement in enumerate(param.placements):
+        shape = list(param.shape)
+        for mesh_dim, placement in enumerate(param.placements):
             if placement.is_shard():
-                shards *= param.device_mesh.size(dim)
-        return -(-param.numel() // shards)
+                dim = placement.dim
+                shape[dim] = -(-shape[dim] // param.device_mesh.size(mesh_dim))
+        return math.prod(shape)
 
     def _step_chunks(self, params: list[torch.Tensor]) -> list[list[torch.Tensor]]:
         """Group parameters into passes of at most ``step_chunk_bytes`` of estimated state.

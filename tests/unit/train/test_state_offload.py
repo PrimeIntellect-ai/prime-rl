@@ -149,3 +149,23 @@ def test_chunk_plan_covers_params_without_grad(monkeypatch) -> None:
     # The second pass leaves parameters without a gradient untouched and their grad None.
     assert params[1].grad is None and torch.equal(params[1].data, torch.full((64,), -0.1))
     assert torch.equal(params[0].data, torch.full((64,), -0.2))
+
+
+def test_planned_numel_counts_the_largest_uneven_shard() -> None:
+    """A dim that does not divide evenly across ranks must count its largest shard, not numel / ranks."""
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import DTensor, Shard
+    from torch.testing._internal.distributed.fake_pg import FakeStore
+
+    dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=2)
+    try:
+        mesh = init_device_mesh("cpu", (2,))
+        param = DTensor.from_local(
+            torch.zeros(2, 1000), mesh, [Shard(0)], shape=torch.Size([3, 1000]), stride=(1000, 1)
+        )
+        # Rank 0 holds rows 0-1 (2000 elements); ceil(3000 / 2) would say 1500.
+        assert CPUOffloadOptimizer._planned_numel(param) == 2000
+        assert CPUOffloadOptimizer._planned_numel(torch.zeros(3, 1000)) == 3000
+    finally:
+        dist.destroy_process_group()
