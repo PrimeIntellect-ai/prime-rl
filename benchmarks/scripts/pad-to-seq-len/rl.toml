@@ -1,0 +1,54 @@
+max_steps = 15
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+
+[deployment]
+type = "single_node"
+num_train_gpus = 4
+num_infer_gpus = 4
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "feat-rl-pad-to-seq-len"
+name = "rl-qwen3-30b-a3b-replay-pad-to-seq-len"
+tags = ["rl", "qwen3-30b-a3b", "router-replay", "pad-to-seq-len"]
+
+[trainer]
+enable_router_replay = true
+
+[trainer.model]
+attn = "flash_attention_3"
+ep = 4
+offload = "none"
+ac_offloading = "None"
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+
+[trainer.optim]
+lr = 1e-6
+
+[orchestrator]
+batch_size = 64
+pad_to_seq_len = true
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.sampling]
+max_completion_tokens = 768
+
+[[orchestrator.train.source]]
+name = "alphabet-sort"
+env.taskset.id = "alphabet-sort"
+env.taskset.min_turns = 3
+env.taskset.max_turns = 5
+env.taskset.task.power_per_turn = false
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[inference.vllm]
+data_parallel_size = 4
