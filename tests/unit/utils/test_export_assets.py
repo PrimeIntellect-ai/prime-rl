@@ -9,7 +9,7 @@ from transformers import AutoTokenizer, GenerationConfig
 from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups
 from prime_rl.utils.export_assets import prepare_export_config
-from prime_rl.utils.export_conversion import conversion_chain
+from prime_rl.utils.export_conversion import conversion_chain, resolve_config
 from prime_rl.utils.utils import default_dtype
 
 
@@ -43,6 +43,7 @@ def test_convert_publishes_complete_assets_or_no_output(tmp_path, tiny_run, monk
         exported_config = json.loads((output / "config.json").read_text())
         assert exported_config["dtype"] == "bfloat16"
         assert "torch_dtype" not in exported_config
+        assert "quantization_config" not in exported_config
         assert GenerationConfig.from_pretrained(output).use_cache is True
         tokenizer = AutoTokenizer.from_pretrained(output, local_files_only=True)
         assert tokenizer.pad_token_id == tokenizer.eos_token_id == 1
@@ -56,7 +57,7 @@ def test_convert_publishes_complete_assets_or_no_output(tmp_path, tiny_run, monk
     assert after == before
 
 
-def test_qwen3_5_shortened_real_model_export_matches_debug_schedule(tmp_path):
+def test_debug_shortened_exports_rebuild_first_n_layouts(tmp_path):
     from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 
     text = Qwen3_5TextConfig(
@@ -73,6 +74,29 @@ def test_qwen3_5_shortened_real_model_export_matches_debug_schedule(tmp_path):
     prepared = prepare_export_config(text.to_dict(), {"debug": {"num_layers": 2}})
     assert prepared["num_hidden_layers"] == 2
     assert len(prepared["layer_types"]) == 2
+
+    # Shortened configs must rebuild through their own strict validation.
+    deepseek = prepare_export_config(
+        {"model_type": "deepseek_v4", "num_hidden_layers": 4, "num_hash_layers": 3},
+        {"debug": {"num_layers": 2}},
+    )
+    assert deepseek["num_hidden_layers"] == 2
+    assert deepseek["num_hash_layers"] == 2
+    assert len(deepseek["layer_types"]) == 2
+    resolve_config(deepseek)
+    laguna = prepare_export_config(
+        {
+            "model_type": "laguna",
+            "num_hidden_layers": 4,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "num_attention_heads_per_layer": [2, 2, 4, 2],
+        },
+        {"debug": {"num_layers": 2}},
+    )
+    assert laguna["num_hidden_layers"] == 2
+    assert laguna["num_attention_heads_per_layer"] == [2, 2]
+    resolve_config(laguna)
 
     shortened = Qwen3_5TextConfig(
         vocab_size=32,

@@ -37,6 +37,7 @@ def local_assets(tmp_path, monkeypatch):
         "dtype": "float32",
         "torch_dtype": "float16",
         "custom_export_attribute": {"preserve": True},
+        "quantization_config": {"quant_method": "fp8"},
     }
     (source / "config.json").write_text(json.dumps(config))
     return source, config

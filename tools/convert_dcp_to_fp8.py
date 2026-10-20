@@ -20,10 +20,10 @@ import tempfile
 from pathlib import Path
 
 from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
-from convert_dcp_to_bf16 import resolve_dcp_dir, resolve_run_configs
 
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_assets import prepare_export_config, read_model_config, save_model_assets
+from prime_rl.utils.export_config import resolve_dcp_dir, resolve_run_configs
 from prime_rl.utils.logger import get_logger, setup_logger
 
 logger = get_logger()
@@ -38,7 +38,8 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
-    model_config, tokenizer_config = resolve_run_configs(step_dir)
+    model, tokenizer = resolve_run_configs(step_dir)
+    model_config, tokenizer_config = model.model_dump(mode="json"), tokenizer.model_dump(mode="json")
     config = prepare_export_config(read_model_config(model_config), model_config)
     output_dir = Path(output_dir) if output_dir is not None else step_dir / "weights-FP8"
     if output_dir.exists() or output_dir.is_symlink():

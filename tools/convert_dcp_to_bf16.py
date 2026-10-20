@@ -11,7 +11,6 @@ Writes to <step_dir>/weights by default. CPU output must not already exist.
 """
 
 import argparse
-import json
 import os
 import shutil
 import tempfile
@@ -19,35 +18,10 @@ from pathlib import Path
 
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_assets import prepare_export_config, read_model_config, save_model_assets
+from prime_rl.utils.export_config import resolve_dcp_dir, resolve_run_configs
 from prime_rl.utils.logger import get_logger, setup_logger
-from prime_rl.utils.pathing import get_config_dir
 
 logger = get_logger()
-RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
-
-
-def resolve_dcp_dir(ckpt_dir: Path) -> Path:
-    """Find the DCP checkpoint in a step directory or its trainer subdirectory."""
-    if (ckpt_dir / "trainer" / ".metadata").exists():
-        return ckpt_dir / "trainer"
-    if (ckpt_dir / ".metadata").exists():
-        return ckpt_dir
-    raise FileNotFoundError(f"No DCP checkpoint found at {ckpt_dir} (expected {ckpt_dir}/trainer/.metadata)")
-
-
-def resolve_run_configs(step_dir: Path) -> tuple[dict, dict]:
-    """Read the model and tokenizer config for this run."""
-    config_dir = get_config_dir(step_dir.parent.parent)
-    for name in RUN_CONFIG_NAMES:
-        path = config_dir / name
-        if path.exists():
-            logger.info(f"Reading model config from {path}")
-            run_config = json.loads(path.read_text())
-            return run_config["model"], run_config["tokenizer"]
-    raise FileNotFoundError(
-        f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {config_dir} "
-        "- the checkpoint must live in its run directory"
-    )
 
 
 def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
@@ -55,7 +29,8 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
-    model_config, tokenizer_config = resolve_run_configs(step_dir)
+    model, tokenizer = resolve_run_configs(step_dir)
+    model_config, tokenizer_config = model.model_dump(mode="json"), tokenizer.model_dump(mode="json")
     config = read_model_config(model_config)
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         raise ValueError("CPU export requires one process; run without torchrun (WORLD_SIZE must be 1)")

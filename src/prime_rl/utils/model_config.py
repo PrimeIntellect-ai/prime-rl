@@ -11,7 +11,17 @@ logger = get_logger()
 
 # Per-layer schedule fields of the supported architectures; anything else is left untouched.
 # One entry per decoder layer, truncated to the surviving layers.
-_LAYER_SCHEDULE_LISTS = ("layer_types", "layers_block_type", "mlp_layer_types", "indexer_types", "compress_ratios")
+_LAYER_SCHEDULE_LISTS = (
+    "layer_types",
+    "layers_block_type",
+    "mlp_layer_types",
+    "indexer_types",
+    "compress_ratios",
+    "num_attention_heads_per_layer",
+)
+# Scalar prefix counts: layers below the count use a different block; clamped to depth.
+# Periodic strides like `decoder_sparse_step` are not prefix counts.
+_LAYER_PREFIX_COUNTS = ("num_hash_layers", "num_dense_layers", "first_k_dense_replace")
 # Decoder layer indices, filtered to the surviving layers.
 _LAYER_INDEX_SCHEDULES = ("mlp_only_layers",)
 # Compact per-layer pattern (one character per decoder layer), sliced to the surviving layers.
@@ -53,6 +63,10 @@ def truncate_model_depth(config, num_layers: int) -> tuple[int, int]:
             pattern = _get(config, name)
             if isinstance(pattern, str) and len(pattern) > depth:
                 _set(config, name, pattern[:depth])
+        for name in _LAYER_PREFIX_COUNTS:
+            count = _get(config, name)
+            if isinstance(count, int) and count > depth:
+                _set(config, name, depth)
     if isinstance(config, dict):
         config["num_hidden_layers"] = depth
     else:

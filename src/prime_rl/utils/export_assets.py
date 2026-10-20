@@ -8,6 +8,7 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 from transformers import GenerationConfig, PretrainedConfig
 
+from prime_rl.utils.export_config import strip_quantization_metadata
 from prime_rl.utils.export_conversion import resolve_config
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.model_config import (
@@ -33,14 +34,12 @@ def prepare_export_config(config: dict, model_config: dict) -> dict:
     if model_config.get("lora") is not None:
         raise ValueError("LoRA checkpoints are not supported - CPU export supports full fine-tunes only")
     result = deepcopy(config)
+    strip_quantization_metadata(result)
 
     def normalize(subconfig: dict) -> None:
         subconfig["dtype"] = "bfloat16"
         subconfig.pop("torch_dtype", None)
         subconfig["use_cache"] = False
-        if "quantization_config" in subconfig:
-            logger.info("Removing base quantization_config metadata for bf16 checkpoint export")
-            subconfig.pop("quantization_config")
         for name, value in subconfig.items():
             if isinstance(value, dict) and (
                 "model_type" in value

@@ -1,6 +1,7 @@
 """Convert a DCP trainer checkpoint into bf16 HF-format weights offline.
 
-Legacy GPU export path retained for direct FP8 export and parity checks. It mirrors the trainer's broadcast save path: build the model, DCP-load
+Legacy GPU BF16 export path. It mirrors the trainer's broadcast save path:
+build the model, DCP-load
 the checkpoint's model state, gather rank-parallel, convert to HF format, and
 write sharded safetensors plus config/tokenizer assets.
 
@@ -18,7 +19,6 @@ Writes to ``<ckpt_dir>/weights`` by default.
 """
 
 import argparse
-import json
 import os
 import shutil
 import socket
@@ -37,8 +37,13 @@ from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.utils import setup_torch_distributed
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.export_config import (
+    resolve_dcp_dir,
+    resolve_run_configs,
+    strip_quantization_metadata,
+    uses_tied_embeddings,
+)
 from prime_rl.utils.logger import get_logger, setup_logger
-from prime_rl.utils.pathing import get_config_dir
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
@@ -56,38 +61,6 @@ CONVERSION_OVERRIDES = {
     "moe": MoERuntimeConfig(),
     "attn": "flash_attention_2",
 }
-
-RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
-
-
-def resolve_dcp_dir(ckpt_dir: Path) -> Path:
-    """The DCP checkpoint id for a step dir (``step_{n}``) or its ``trainer`` subdir."""
-    if (ckpt_dir / "trainer" / ".metadata").exists():
-        return ckpt_dir / "trainer"
-    if (ckpt_dir / ".metadata").exists():
-        return ckpt_dir
-    raise FileNotFoundError(f"No DCP checkpoint found at {ckpt_dir} (expected {ckpt_dir}/trainer/.metadata)")
-
-
-def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
-    """Model/tokenizer configs from the run's resolved config."""
-    logger = get_logger()
-    config_dir = get_config_dir(step_dir.parent.parent)
-    for name in RUN_CONFIG_NAMES:
-        path = config_dir / name
-        if path.exists():
-            logger.info(f"Reading model config from {path}")
-            run_config = json.loads(path.read_text())
-            break
-    else:
-        raise FileNotFoundError(
-            f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {config_dir} "
-            "- the checkpoint must live in its run directory"
-        )
-
-    model = ModelConfig(**run_config["model"])
-    tokenizer = TokenizerConfig(**run_config["tokenizer"])
-    return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
 
 
 def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
@@ -126,8 +99,8 @@ def save_model_assets(
 ) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
     export_config = deepcopy(model.config)
-    if strip_quantization_config and hasattr(export_config, "quantization_config"):
-        delattr(export_config, "quantization_config")
+    if strip_quantization_config:
+        strip_quantization_metadata(export_config)
     export_config.save_pretrained(output_dir)
     gen_config = getattr(model, "generation_config", None)
     if gen_config is None:
@@ -164,6 +137,7 @@ def load_and_convert(ckpt_dir: Path):
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
     model_config, tokenizer_config = resolve_run_configs(step_dir)
+    model_config = model_config.model_copy(update=CONVERSION_OVERRIDES)
     check_not_lora(model_config, dcp_dir)
 
     setup_single_process_env()
@@ -178,8 +152,7 @@ def load_and_convert(ckpt_dir: Path):
 
     logger.info("Gathering and converting weights")
     state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
-    text_config = getattr(model.config, "text_config", model.config)
-    if getattr(text_config, "tie_word_embeddings", False):
+    if uses_tied_embeddings(model.config):
         state_dict.pop("lm_head.weight", None)
         for key in getattr(model, "_tied_weights_keys", None) or []:
             state_dict.pop(key, None)

@@ -7,6 +7,7 @@ from transformers import AutoConfig
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
 from prime_rl.trainer.models import _CUSTOM_CAUSAL_LM_BY_MODEL_TYPE, get_custom_causal_lm_cls
+from prime_rl.utils.export_config import uses_tied_embeddings
 
 CUSTOM_MODEL_TYPES = frozenset(_CUSTOM_CAUSAL_LM_BY_MODEL_TYPE)
 
@@ -61,6 +62,11 @@ def prime_schema_details(config) -> tuple[dict[str, Shape], dict[str, str], dict
                 aliases[name] = canonical[identity]
             else:
                 canonical[identity] = name
+        if uses_tied_embeddings(resolved):
+            embedding = model.get_input_embeddings().weight
+            aliases["lm_head.weight"] = next(
+                name for name, parameter in model.named_parameters(remove_duplicate=False) if parameter is embedding
+            )
         return schema, aliases, dtypes
     finally:
         del model

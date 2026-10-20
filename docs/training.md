@@ -365,6 +365,8 @@ uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10
 uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10/trainer exported-model --block-size 128
 ```
 
+The parallel GPU BF16 workflow remains available through `uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16_gpu.py <checkpoint>`.
+
 BF16 writes `<step_dir>/weights`; FP8 writes `<step_dir>/weights-FP8` without an intermediate BF16 export. FP8 uses the same blockwise e4m3 quantization, FP32 scales and skip-module rules as `tools/convert_bf16_to_fp8.py`. Both save model/generation configs, tokenizer assets and explicitly trusted custom code. The output directory must not exist. Failed exports remove only their staging directory; source checkpoints are never changed.
 
 No GPU hardware, distributed setup or base-model weight download is needed. The exporter reads model tensors one decoder layer at a time, not optimizer state. Host memory must fit a layer (including its experts), conversion/quantization buffers, the largest DCP storage chunk and an output shard. The 5 GB shard target is not a RAM limit; one larger tensor may exceed it.
