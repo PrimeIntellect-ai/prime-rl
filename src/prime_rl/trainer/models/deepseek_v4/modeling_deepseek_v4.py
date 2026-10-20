@@ -40,8 +40,8 @@ class DeepseekV4DecoderLayer(GradientCheckpointingLayer):
     transposed, i.e. summing over the *source* stream axis. Sinkhorn leaves `comb` doubly
     stochastic but not symmetric, so that direction is not a free choice.
 
-    Both gates come out of the hyper-connection in fp32 and are cast back to the residual's
-    dtype before mixing, so the residual keeps the dtype it entered with.
+    Both gates come out of the hyper-connection in fp32 and stay fp32 through the write-back,
+    which rounds once to the residual's dtype, so the residual keeps the dtype it entered with.
     """
 
     def __init__(self, config: DeepseekV4Config, layer_idx: int, rotary_emb: DeepseekV4RotaryEmbedding):
