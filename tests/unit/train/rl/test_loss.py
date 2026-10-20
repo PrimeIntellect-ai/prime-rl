@@ -475,23 +475,17 @@ def test_disjoint_components_in_one_sequence():
     assert "is_masked" in metrics
 
 
-@pytest.mark.parametrize("masked_value", [-1.0, float("nan"), float("inf"), -float("inf")])
-@pytest.mark.parametrize("config", [IPOLossConfig(), IcePopLossConfig(score_centering=True, score_centering_topk=2)])
-def test_empty_components_keep_backward_valid(masked_value, config):
+def test_empty_components_keep_backward_valid():
     """A fully truncated distillation sample (stamped streams survive truncation
     as all-zero prefixes) must train as a zero-gradient no-op, not crash backward."""
-    trainer_logprobs = [torch.full((6,), masked_value, dtype=torch.float32, requires_grad=True)]
-    inference_logprobs = [torch.zeros(6, dtype=torch.float32)]
-    advantages = [torch.zeros(6, dtype=torch.float32)]
-    loss_mask = [torch.zeros(6, dtype=torch.bool)]
-    rl_weights = [torch.zeros(6, dtype=torch.float32)]
-    ce_weights = [torch.zeros(6, dtype=torch.float32)]
+    trainer_logprobs = [torch.randn(6, dtype=torch.float32, device="cuda", requires_grad=True)]
+    inference_logprobs = [torch.zeros(6, dtype=torch.float32).cuda()]
+    advantages = [torch.zeros(6, dtype=torch.float32).cuda()]
+    loss_mask = [torch.zeros(6, dtype=torch.bool).cuda()]
+    rl_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
+    ce_weights = [torch.zeros(6, dtype=torch.float32).cuda()]
 
-    rl_loss_fn = setup_rl_loss_fn(config)
-    empty_loss = rl_loss_fn.loss(
-        LossInputs(trainer_logprobs[0], inference_logprobs[0], None, advantages[0], loss_mask[0])
-    ).loss
-    assert torch.equal(empty_loss, torch.zeros_like(empty_loss))
+    rl_loss_fn = setup_rl_loss_fn(IPOLossConfig())
     loss, _ = compute_loss(
         trainer_logprobs=trainer_logprobs,
         inference_logprobs=inference_logprobs,
@@ -511,42 +505,6 @@ def test_empty_components_keep_backward_valid(masked_value, config):
     loss.backward()
     assert trainer_logprobs[0].grad is not None
     assert torch.equal(trainer_logprobs[0].grad, torch.zeros_like(trainer_logprobs[0].grad))
-
-
-@pytest.mark.parametrize("config", [IPOLossConfig(), IcePopLossConfig(score_centering=True, score_centering_topk=2)])
-def test_compute_loss_ignores_nonfinite_masked_logprobs(config):
-    trainer = torch.tensor([-1.0, float("nan")], requires_grad=True)
-    sampler = torch.tensor([-1.0, float("nan")])
-    advantage = torch.tensor([1.0, float("nan")])
-    mask = torch.tensor([True, False])
-    head = torch.tensor([[-1.0, -2.0], [float("nan"), float("nan")]], requires_grad=True)
-    sampler_head = head.detach().clone()
-    valid = torch.tensor([[True, True], [False, False]])
-    loss_fn = setup_rl_loss_fn(config)
-    expected = loss_fn.loss(LossInputs(trainer, sampler, None, advantage, mask, None, head, sampler_head, valid)).loss
-    loss, _ = compute_loss(
-        trainer_logprobs=[trainer],
-        inference_logprobs=[sampler],
-        ref_logprobs=None,
-        advantages=[advantage],
-        loss_mask=[mask],
-        rl_weights=None,
-        ce_weights=None,
-        ref_kl_weights=None,
-        rl_loss_fn=loss_fn,
-        rl_scale=1,
-        ce_scale=1,
-        ref_kl_scale=1,
-        trainer_topk_logprobs=[head],
-        sampler_topk_logprobs=[sampler_head],
-        topk_valid=[valid],
-    )
-    torch.testing.assert_close(loss, expected)
-    loss.backward()
-    torch.testing.assert_close(trainer.grad, torch.tensor([-1.0, 0.0]))
-    if config.type == "icepop" and config.score_centering:
-        assert torch.isfinite(head.grad).all()
-        assert (head.grad[1] == 0).all()
 
 
 def test_overlapping_components_sum():

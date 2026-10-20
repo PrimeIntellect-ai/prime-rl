@@ -225,7 +225,7 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
         payload.pop("created")
         responses.append(payload)
     assert all(item == evidence[0] for item in evidence)
-    assert evidence[0][1] == ([[1]] * 2 if replay else [[1, 2]] * 2)
+    assert evidence[0][1] == ([[1, 2, 3]] * 2 if replay else [[1, 2]] * 2)
     assert responses[0] == responses[1]
     assert responses[1]["usage"]["prompt_tokens_details"]["cached_tokens"] == 1
     assert responses[1]["kv_transfer_params"] == {"kv": "kept"}

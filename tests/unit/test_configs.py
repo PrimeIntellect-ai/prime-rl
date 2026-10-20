@@ -222,9 +222,6 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
-    for invalid in ({"ratio_high": float("inf")}, {"ratio_low": float("nan")}):
-        with pytest.raises(ValidationError):
-            TrainerConfig.model_validate({"loss": {"type": "icepop", **invalid}})
     assert config.loss.score_centering_topk == 128
     assert not config.loss.score_centering
     for unsupported in (

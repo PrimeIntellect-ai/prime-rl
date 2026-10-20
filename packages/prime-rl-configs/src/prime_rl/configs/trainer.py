@@ -505,10 +505,10 @@ class IPOLossConfig(BaseConfig):
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
 
-    ratio_low: float = Field(0.2, gt=0, allow_inf_nan=False)
+    ratio_low: float = Field(0.2, gt=0)
     """Lower accepted trainer-to-inference probability ratio."""
 
-    ratio_high: float = Field(5.0, gt=0, allow_inf_nan=False)
+    ratio_high: float = Field(5.0, gt=0)
     """Upper accepted trainer-to-inference probability ratio."""
 
     adv_tau: float = Field(1.0, ge=0)
