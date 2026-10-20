@@ -50,27 +50,88 @@ def test_export_device_dispatch(tiny_run, monkeypatch, format, device):
 
 
 @pytest.mark.parametrize("format", ["bf16", "fp8"])
-def test_cpu_export_rejects_multiple_processes(tmp_path, monkeypatch, format):
+@pytest.mark.parametrize("device", [None, "cpu"])
+def test_multi_rank_export_uses_cuda(tmp_path, monkeypatch, format, device):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools"))
     cli = importlib.import_module(f"convert_dcp_to_{format}")
+    calls = []
+    output = tmp_path / "export"
+
+    def convert_cuda(*args):
+        calls.append(args)
+        return output
+
+    monkeypatch.setitem(
+        sys.modules, "convert_dcp_to_bf16_gpu", SimpleNamespace(convert=convert_cuda, convert_fp8=convert_cuda)
+    )
     monkeypatch.setenv("WORLD_SIZE", "2")
-    with pytest.raises(ValueError, match="WORLD_SIZE must be 1"):
-        cli.convert(tmp_path / "missing-checkpoint")
+    checkpoint = tmp_path / "missing-checkpoint"
+    kwargs = {} if device is None else {"device": device}
+    assert cli.convert(checkpoint, output, **kwargs) == output
+    expected = (checkpoint, output, 128) if format == "fp8" else (checkpoint, output)
+    assert calls == [expected]
 
 
 @pytest.mark.parametrize("format", ["bf16", "fp8"])
-def test_cpu_export_preserves_existing_output(tiny_run, format):
+def test_cpu_export_overwrites_existing_output(tiny_run, format):
     _, step, _, _ = tiny_run
     cli = importlib.import_module(f"convert_dcp_to_{format}")
     output = step / "existing-output"
     output.mkdir()
     sentinel = output / "keep.txt"
-    sentinel.write_text("existing export")
-    with pytest.raises(FileExistsError, match="output already exists"):
-        cli.convert(step, output)
-    assert sentinel.read_text() == "existing export"
-    assert list(output.iterdir()) == [sentinel]
+    sentinel.write_text("unrelated file")
+    (output / "config.json").write_text("old config")
+    assert cli.convert(step, output) == output
+    assert json.loads((output / "config.json").read_text())["model_type"] == "llama"
+    assert (output / "model.safetensors.index.json").exists()
+    assert sentinel.read_text() == "unrelated file"
     assert not list(step.glob(".existing-output-*"))
+
+
+@pytest.mark.parametrize("num_groups", [1, 2])
+def test_hf_shard_names(tmp_path, num_groups):
+    groups = [{f"weight_{number}": torch.full((2,), float(number))} for number in range(num_groups)]
+    output = tmp_path / "weights"
+    write_hf_shards(iter(groups), output)
+    index_path = output / "model.safetensors.index.json"
+    if num_groups == 1:
+        assert {path.name for path in output.iterdir()} == {"model.safetensors"}
+        torch.testing.assert_close(load_file(output / "model.safetensors")["weight_0"], torch.zeros(2))
+    else:
+        expected = {f"model-{number:05d}-of-00002.safetensors" for number in (1, 2)}
+        assert {path.name for path in output.iterdir()} == expected | {index_path.name}
+        index = json.loads(index_path.read_text())
+        assert index["metadata"]["total_size"] == 16
+        for number in range(num_groups):
+            name = f"weight_{number}"
+            filename = f"model-{number + 1:05d}-of-00002.safetensors"
+            assert index["weight_map"][name] == filename
+            torch.testing.assert_close(load_file(output / filename)[name], torch.full((2,), float(number)))
+
+
+@pytest.mark.parametrize("num_groups", [1, 2])
+def test_publish_export_overwrites_existing_weight_layout(tmp_path, num_groups):
+    from prime_rl.utils.export_assets import publish_export
+
+    output = tmp_path / "weights"
+    output.mkdir()
+    sentinel = output / "keep.txt"
+    sentinel.write_text("keep")
+    (output / "model.safetensors.index.json").write_text("stale index")
+    (output / "model.safetensors").write_bytes(b"stale weights")
+    staging = tmp_path / "staging"
+    groups = [{f"weight_{number}": torch.ones(2)} for number in range(num_groups)]
+    write_hf_shards(iter(groups), staging)
+    publish_export(staging, output)
+    assert not staging.exists()
+    assert sentinel.read_text() == "keep"
+    index = output / "model.safetensors.index.json"
+    if num_groups == 1:
+        assert not index.exists()
+        assert (output / "model.safetensors").exists()
+    else:
+        assert not (output / "model.safetensors").exists()
+        assert len(json.loads(index.read_text())["weight_map"]) == 2
 
 
 def _model_state(layout):

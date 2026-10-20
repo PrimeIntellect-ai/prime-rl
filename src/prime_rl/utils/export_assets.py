@@ -121,6 +121,21 @@ def _save_trusted_code(config: dict, model_config: dict, output_dir: Path) -> No
             _save_trusted_code(config[name], model_config, output_dir)
 
 
+def publish_export(staging_dir: Path, output_dir: Path) -> None:
+    """Publish atomically to a new directory, or overwrite matching files in an existing one."""
+    if not output_dir.exists():
+        staging_dir.rename(output_dir)
+        return
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if (staging_dir / "model.safetensors").exists():
+        (output_dir / "model.safetensors.index.json").unlink(missing_ok=True)
+    else:
+        (output_dir / "model.safetensors").unlink(missing_ok=True)
+    for path in staging_dir.iterdir():
+        path.replace(output_dir / path.name)
+    staging_dir.rmdir()
+
+
 def save_model_assets(config: dict, model_config: dict, tokenizer_config: dict, output_dir: Path) -> None:
     """Save HF assets without loading or instantiating model weights."""
     output_dir.mkdir(parents=True, exist_ok=True)

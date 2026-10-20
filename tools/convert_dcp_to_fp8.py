@@ -11,7 +11,8 @@ Usage:
     uv run python tools/convert_dcp_to_fp8.py <checkpoint> [output_dir] --device cuda
 
 CPU streaming is the default; CUDA gathers and quantizes each rank's slice on GPU.
-Writes to <step_dir>/weights-FP8 by default. CPU output must not already exist.
+Multi-rank torchrun automatically selects CUDA for compatibility.
+Writes to <step_dir>/weights-FP8 by default. Existing output files are overwritten.
 """
 
 import argparse
@@ -24,7 +25,7 @@ from pathlib import Path
 from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
 
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
-from prime_rl.utils.export_assets import prepare_export_config, read_model_config, save_model_assets
+from prime_rl.utils.export_assets import prepare_export_config, publish_export, read_model_config, save_model_assets
 from prime_rl.utils.export_config import resolve_dcp_dir, resolve_run_configs
 from prime_rl.utils.logger import get_logger, setup_logger
 
@@ -35,14 +36,12 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
     """Export blockwise-FP8 weights using CPU streaming or the parallel CUDA gather."""
     if block_size <= 0:
         raise ValueError("block_size must be positive")
-    if device == "cuda":
+    if device not in ("cpu", "cuda"):
+        raise ValueError(f"Unsupported export device: {device}")
+    if device == "cuda" or int(os.environ.get("WORLD_SIZE", "1")) > 1:
         from convert_dcp_to_bf16_gpu import convert_fp8
 
         return convert_fp8(ckpt_dir, output_dir, block_size)
-    if device != "cpu":
-        raise ValueError(f"Unsupported export device: {device}")
-    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
-        raise ValueError("CPU export requires one process; run without torchrun (WORLD_SIZE must be 1)")
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
@@ -50,8 +49,6 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
     model_config, tokenizer_config = model.model_dump(mode="json"), tokenizer.model_dump(mode="json")
     config = prepare_export_config(read_model_config(model_config), model_config)
     output_dir = Path(output_dir) if output_dir is not None else step_dir / "weights-FP8"
-    if output_dir.exists() or output_dir.is_symlink():
-        raise FileExistsError(f"CPU export output already exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-", dir=output_dir.parent))
     try:
@@ -78,11 +75,9 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
         exported_config = json.loads(config_path.read_text())
         exported_config["quantization_config"] = quantization_config(modules_to_not_convert, block_size)
         config_path.write_text(json.dumps(exported_config, indent=2) + "\n")
-        if output_dir.exists() or output_dir.is_symlink():
-            raise FileExistsError(f"CPU export output already exists: {output_dir}")
-        staging_dir.rename(output_dir)
+        publish_export(staging_dir, output_dir)
     except BaseException:
-        shutil.rmtree(staging_dir)
+        shutil.rmtree(staging_dir, ignore_errors=True)
         raise
     logger.info(f"Done: {output_dir}")
     return output_dir

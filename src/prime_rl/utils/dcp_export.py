@@ -242,6 +242,15 @@ def write_hf_shards(
         flush()
     if not weight_map:
         raise ValueError("No HF tensors to write")
+    filenames = {}
+    for number in range(1, shard_number + 1):
+        original = f"model-{number:05d}.safetensors"
+        final = "model.safetensors" if shard_number == 1 else f"model-{number:05d}-of-{shard_number:05d}.safetensors"
+        (output_dir / original).rename(output_dir / final)
+        filenames[original] = final
+    if shard_number == 1:
+        return
+    weight_map = {name: filenames[filename] for name, filename in weight_map.items()}
     index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
     path = output_dir / "model.safetensors.index.json"
     temporary = path.with_suffix(".json.tmp")
