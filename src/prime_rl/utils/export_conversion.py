@@ -42,6 +42,9 @@ def prime_schema_details(
     """Canonical PrimeRL state names, tied aliases and dtypes from a meta-model build."""
     resolved = resolve_config(config)
     model_cls = get_custom_causal_lm_cls(resolved)
+    if attn_implementation == "auto":
+        # Meta validation never runs attention; use the custom model's default backend.
+        attn_implementation = "flash_attention_3"
     with torch.device("meta"):
         model = model_cls._from_config(resolved, attn_implementation=attn_implementation)
     try:

@@ -131,7 +131,8 @@ def test_rejects_bad_checkpoint_chunks(tiny_run, broken):
         list(iter_cpu_hf_groups(checkpoint, config))
 
 
-def test_custom_vlm_schema_uses_trainer_attention():
+@pytest.mark.parametrize("attn", ["flash_attention_2", "auto"])
+def test_custom_vlm_schema_uses_trainer_attention(attn):
     from prime_rl.trainer.models.qwen3_5 import Qwen3_5Config
     from prime_rl.utils.export_conversion import prime_schema_details
 
@@ -155,6 +156,6 @@ def test_custom_vlm_schema_uses_trainer_attention():
             num_position_embeddings=16,
         ),
     )
-    schema, _, dtypes = prime_schema_details(config.to_dict(), attn_implementation="flash_attention_2")
+    schema, _, dtypes = prime_schema_details(config.to_dict(), attn_implementation=attn)
     assert schema["model.visual.blocks.0.attn.qkv.weight"] == (48, 16)
     assert dtypes["model.visual.blocks.0.attn.qkv.weight"].is_floating_point
