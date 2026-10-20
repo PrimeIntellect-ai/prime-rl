@@ -25,6 +25,7 @@ def mk(
     is_timeout: bool = False,
     is_completed: bool = True,
     has_error: bool = False,
+    cancelled: bool = False,
     error_type: str = "error",
     stop_condition: str | None = None,
     metrics: dict | None = None,
@@ -74,7 +75,8 @@ def mk(
     episode = SimpleNamespace(
         id=episode_id or f"e{next(_ids)}",
         traces=[trace],
-        ok=not has_error,
+        ok=not has_error and not cancelled,
+        cancelled=cancelled,
         env=SimpleNamespace(id=env_name, name=env_name),
         group=SimpleNamespace(id=group_id),
     )
@@ -302,14 +304,6 @@ def test_eval_avg_at_k_and_pass_k():
     all_out = binary.metrics.to_wandb(prefix="eval/x", subset="all")
     assert all_out["eval/x/all/agent/avg@2"] == 0.5
     assert not any("pass@" in k or "pass^" in k for k in all_out)  # pass@k effective-only
-    partial = EvalEpisodes(binary.episodes, group_size=2, unscored=2)
-    assert partial.metrics.to_wandb(prefix="eval/x", subset="all")["eval/x/all/agent/avg@2"] == 0.25
-    assert (
-        partial.effective.metrics.to_wandb(prefix="eval/x", subset="effective")["eval/x/effective/agent/avg@2"] == 0.5
-    )
-    cancelled = EvalEpisodes([], group_size=2, unscored=4, agents=["agent"])
-    assert cancelled.metrics.to_wandb(prefix="eval/x", subset="all")["eval/x/all/agent/avg@2"] == 0.0
-    assert not cancelled.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
     non_binary = EvalEpisodes([mk(reward=0.5, group_id="g0"), mk(reward=1.0, group_id="g0")], group_size=2)
     assert not any("pass@" in k for k in non_binary.effective.metrics.to_wandb(prefix="eval/x", subset="effective"))
 
@@ -332,3 +326,31 @@ def test_compute_pass_metrics_matches_closed_form():
     assert out["pass@2"] == 1.0 - math.comb(2, 2) / math.comb(4, 2)
     assert out["pass^2"] == math.comb(2, 2) / math.comb(4, 2)
     assert set(out) == {"pass@1", "pass@2", "pass@4", "pass^1", "pass^2", "pass^4"}
+
+
+def traceless(**kwargs):
+    episode = mk(**kwargs)
+    episode.traces = []
+    return episode
+
+
+def test_failed_episodes_score_zero_in_all():
+    episodes = EvalEpisodes(
+        [mk(reward=1.0), mk(reward=1.0, has_error=True), mk(reward=1.0, cancelled=True), traceless(cancelled=True)],
+        group_size=4,
+    )
+    all_out = episodes.metrics.to_wandb(prefix="eval/x", subset="all")
+    assert all_out["eval/x/all/agent/avg@4"] == 0.25  # failed episodes score zero, traced or not
+    assert all_out["eval/x/all/has_error/mean"] == 0.25  # cancellations are not errors
+    assert all_out["eval/x/all/cancelled/mean"] == 0.5
+    eff = episodes.effective.metrics.to_wandb(prefix="eval/x", subset="effective")
+    assert eff["eval/x/effective/agent/avg@4"] == 1.0
+
+    train = TrainEpisodes([mk(reward=1.0), traceless(cancelled=True)])
+    assert train.metrics.to_wandb(prefix="train/agg", subset="all")["train/agg/all/agent/reward/mean"] == 0.5
+
+
+def test_fully_cancelled_epoch_scores_zero():
+    episodes = EvalEpisodes([mk(reward=1.0, cancelled=True), traceless(cancelled=True)], group_size=2)
+    assert episodes.metrics.to_wandb(prefix="eval/x", subset="all")["eval/x/all/agent/avg@2"] == 0.0
+    assert not episodes.effective.metrics.to_wandb(prefix="eval/x", subset="effective")

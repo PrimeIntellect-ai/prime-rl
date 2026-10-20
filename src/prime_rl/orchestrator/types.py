@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias
@@ -41,10 +42,11 @@ CancelReason = Literal["stale", "overload", "superseded", "shutdown"]
 
 @dataclass
 class GroupCancellation:
-    """Terminal marker for a dropped group: one message covering every episode
-    the group still owed the sink (in-flight and never-dispatched), so
-    count-to-``group_size`` finalization still fires. ``reason`` distinguishes
-    pipeline decisions (staleness, overload cut, superseded eval, shutdown) from episode errors."""
+    """Terminal marker for a dropped group. ``count`` covers the episodes that
+    never reached an env server, so count-to-``group_size`` finalization still
+    fires; in-flight episodes return on their own, flagged ``cancelled``.
+    ``reason`` distinguishes pipeline decisions (staleness, overload cut,
+    superseded eval, shutdown) from episode errors."""
 
     kind: WorkKind
     env_name: str
@@ -112,6 +114,9 @@ class InflightEpisode:
     live: dict[str, LiveTrace] = field(default_factory=dict)
     """The episode's in-flight traces by id, as far as the env server's stream has
     told: which phase each is in and how many turns it has committed."""
+    cancel: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set to end the run early. Its permit is released when set; the episode still
+    returns, flagged ``cancelled``."""
 
 
 @dataclass

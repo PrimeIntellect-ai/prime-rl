@@ -275,9 +275,11 @@ class EvalRunner:
             prefix=f"eval/{batch.env_name}/all",
             total_attempts=total_attempts,
         )
-        if batch.cancelled:
-            metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(batch.cancelled)
-            metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = batch.cancelled / total_attempts
+        # Never-dispatched episodes count here; the cancelled in-flight ones returned.
+        cancelled = batch.cancelled + sum(episode.cancelled for episode in episodes)
+        if cancelled:
+            metrics[f"eval/{batch.env_name}/all/cancelled/count"] = float(cancelled)
+            metrics[f"eval/{batch.env_name}/all/cancelled/mean"] = cancelled / total_attempts
         metrics[f"eval/{batch.env_name}/policy_version"] = float(batch.step)
         metrics["step"] = float(batch.step)
         await monitors.log(metrics, step=batch.step)
@@ -285,12 +287,12 @@ class EvalRunner:
         eff, full = effective.metrics, episodes.metrics
         triggered_at = self.eval_triggered_at.pop((batch.env_name, batch.step), None)
         elapsed = (time.perf_counter() - triggered_at) if triggered_at is not None else 0.0
-        if batch.cancelled:
+        if cancelled:
             get_logger().warning(
                 f"Partially evaluated {batch.env_name} (Step {batch.step}) | "
                 f"{format_time(elapsed):>7} | Reward {eff.reward.mean():.4f} | "
                 f"Error {full.has_error.mean():.1%} | "
-                f"Completed {len(episodes)}/{total_attempts} | Cancelled {batch.cancelled}/{total_attempts}"
+                f"Completed {total_attempts - cancelled}/{total_attempts} | Cancelled {cancelled}/{total_attempts}"
             )
             return
         get_logger().success(

@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from verifiers.v1.configs.agent import agent_config_fields
-
 from prime_rl.orchestrator.envs import EvalEnvs
 from prime_rl.orchestrator.metrics import EvalEpisodes
 from prime_rl.orchestrator.types import DispatchFailure, EvalBatch, GroupCancellation
@@ -40,7 +38,9 @@ class EvalSink:
         return self._complete(key)
 
     def cancel(self, cancellation: GroupCancellation) -> EvalBatch | None:
-        """Count a dispatcher-cancelled group toward its superseded eval epoch."""
+        """Count a dropped group's never-dispatched episodes toward its superseded
+        eval epoch; its in-flight episodes arrive through ``add``, flagged
+        ``cancelled``."""
         if cancellation.kind != "eval":
             raise ValueError(f"EvalSink cannot process a {cancellation.kind} group cancellation")
         key = (cancellation.env_name, cancellation.step)
@@ -77,17 +77,10 @@ class EvalSink:
 
     def process_batch(self, key: tuple[str, int]) -> EvalBatch:
         env_name, step = key
-        failures = self.pending_batch_failures.pop(key, [])
-        cancelled = self.pending_batch_cancellations.pop(key, 0)
         return EvalBatch(
             env_name=env_name,
             step=step,
-            episodes=EvalEpisodes(
-                self.pending_batches.pop(key, []),
-                group_size=self.group_size_for(env_name),
-                unscored=len(failures) + cancelled,
-                agents=list(agent_config_fields(self.eval_envs.get(env_name).config.env)),
-            ),
-            failures=failures,
-            cancelled=cancelled,
+            episodes=EvalEpisodes(self.pending_batches.pop(key, []), group_size=self.group_size_for(env_name)),
+            failures=self.pending_batch_failures.pop(key, []),
+            cancelled=self.pending_batch_cancellations.pop(key, 0),
         )

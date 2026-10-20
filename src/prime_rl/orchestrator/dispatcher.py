@@ -7,9 +7,10 @@
   once.
 - Optional rate limiting via ``AsyncLimiter(dispatch_per_minute, 60)``, one token per episode.
 - Every dispatched attempt reaches ``out_q`` exactly once: as the native
-  episode returned by the environment, as a ``DispatchFailure`` when no
-  episode was produced, or under the group's ``GroupCancellation`` when the
-  orchestrator abandons it.
+  episode returned by the environment (flagged ``cancelled`` when the
+  orchestrator dropped its group mid-run), or as a ``DispatchFailure`` when no
+  episode was produced. A dropped group's ``GroupCancellation`` covers the
+  episodes it never dispatched.
 - ``DispatcherMode.PREFER_TRAIN`` / ``PREFER_EVAL`` controls which kind to
   schedule next. Transitions are level-triggered (driven by the eval
   source's emptiness), so in-flight episodes of the opposite kind drain
@@ -255,7 +256,7 @@ class Dispatcher:
         # member, cancelling the most sunk cost instead of the least
         group_age: dict[uuid.UUID, float] = {}
         for meta in self.inflight.values():
-            if meta.kind != "train":
+            if meta.kind != "train" or meta.cancel.is_set():
                 continue
             age = group_age.get(meta.group_id)
             group_age[meta.group_id] = meta.started_at if age is None else min(age, meta.started_at)
@@ -265,7 +266,7 @@ class Dispatcher:
                 break
             # Count only live cancellations toward the excess: drop_group's
             # return includes never-dispatched episodes, which free no permits
-            live = sum(1 for meta in self.inflight.values() if meta.group_id == group_id)
+            live = sum(1 for meta in self.inflight.values() if meta.group_id == group_id and not meta.cancel.is_set())
             await self.drop_group(group_id, reason="overload")
             shed += live
         if shed:
@@ -321,7 +322,7 @@ class Dispatcher:
         return [
             (self.progress.step - 1) - meta.policy_version
             for meta in self.inflight.values()
-            if meta.kind == "train" and self.train_envs.get(meta.env_name).uses_live_policy
+            if meta.kind == "train" and not meta.cancel.is_set() and self.train_envs.get(meta.env_name).uses_live_policy
         ]
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -601,6 +602,7 @@ class Dispatcher:
                     cache_salt=cache_salt,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
+                    cancel=meta.cancel,
                 )
                 session_ids.update(trace.id for trace in episode.traces)
                 return episode
@@ -636,9 +638,10 @@ class Dispatcher:
         """Emit the terminal result of one dispatched environment request."""
         meta = self.inflight.pop(task, None)
         if meta is None:
-            return  # already handled by drop_group / cancel_inflight_episodes
+            return  # already handled by cancel_inflight_episodes
         self.retire(meta)
-        self.release(refund_admission=True)
+        if not meta.cancel.is_set():  # a cancel released the permit already
+            self.release(refund_admission=True)
         group = self.groups.get(meta.group_id)
 
         try:
@@ -668,6 +671,9 @@ class Dispatcher:
             )
             return
 
+        if episode.cancelled:
+            await self.emit_episode(meta, group, episode)
+            return
         for trace in episode.traces:
             if trace.is_timeout and not trace.has_error and meta.kind == "train":
                 # Training keeps a timed-out rollout out of the batch: an error,
@@ -731,61 +737,51 @@ class Dispatcher:
         await self.out_q.put(episode)
 
     async def drop_group(self, group_id: uuid.UUID, *, reason: CancelReason) -> int:
-        """Cancel this group's remaining in-flight tasks and emit one
-        ``GroupCancellation`` covering every episode it still owes the sink (both
-        in-flight and never-dispatched), so count-to-``group_size``
-        finalization still fires. Returns the owed count for metrics."""
+        """End this group. Its in-flight episodes are cancelled on their env servers
+        and still return, flagged ``cancelled``; their permits are freed now. One
+        ``GroupCancellation`` carries the reason and covers the never-dispatched
+        rest, so count-to-``group_size`` finalization still fires. Returns the
+        cancelled count for metrics."""
         group = self.groups.pop(group_id, None)
-        # Sync claim phase: pop matching tasks from ``self.inflight`` and
-        # release their permits in one non-yielding sweep. After this loop
-        # the dropped tasks are no longer reachable from ``self.inflight``,
-        # so ``handle_completed_request``'s existing None-guard makes the
-        # subsequent async emit phase race-free.
-        claimed: list[tuple[asyncio.Task, InflightEpisode]] = []
-        for task, meta in list(self.inflight.items()):
-            if meta.group_id != group_id:
-                continue
-            del self.inflight[task]
+        # Claim synchronously: once ``cancel`` is set, ``handle_completed_request``
+        # no longer releases the permit, even for a run that finishes meanwhile.
+        cancelling = [meta for meta in self.inflight.values() if meta.group_id == group_id and not meta.cancel.is_set()]
+        for meta in cancelling:
+            meta.cancel.set()
             self.release()
-            self.retire(meta)
-            claimed.append((task, meta))
-
-        inflight_cancelled = len(claimed)
-        unscheduled_cancelled = group.episodes_to_schedule if group is not None else 0
-        cancelled = inflight_cancelled + unscheduled_cancelled
-
+        unscheduled = group.episodes_to_schedule if group is not None else 0
+        cancelled = len(cancelling) + unscheduled
         if cancelled > 0:
-            # ``group`` can be ``None`` only if every episode was already
-            # emitted — then nothing is in flight or unscheduled, so kind/env
-            # always resolve from the group or a claimed meta.
-            kind = group.kind if group is not None else claimed[-1][1].kind
-            env_name = group.env_name if group is not None else claimed[-1][1].env_name
+            # ``group`` is ``None`` only once every episode was dispatched, so a
+            # cancelling meta names the group then.
+            kind = group.kind if group is not None else cancelling[-1].kind
+            env_name = group.env_name if group is not None else cancelling[-1].env_name
             self.metrics.record_cancellation(kind=kind, env_name=env_name, n=cancelled)
             get_logger().debug(
                 f"Dropped {kind} group | group={str(group_id)[:8]} env={env_name} reason={reason} | "
-                f"cancelled={cancelled} (inflight={inflight_cancelled} unscheduled={unscheduled_cancelled})"
+                f"cancelled={cancelled} (inflight={len(cancelling)} unscheduled={unscheduled})"
             )
+            # Queued ahead of the cancelled episodes, so the sink knows the reason
+            # before the group completes.
             await self.out_q.put(
                 GroupCancellation(
                     kind=kind,
                     env_name=env_name,
                     group_id=str(group_id),
-                    step=group.step if group is not None else claimed[-1][1].step,
-                    count=cancelled,
+                    step=group.step if group is not None else cancelling[-1].step,
+                    count=unscheduled,
                     reason=reason,
                 )
             )
-
-        if claimed:
-            await safe_cancel_all([task for task, _ in claimed])
         return cancelled
 
     async def cancel_inflight_episodes(self) -> None:
         """Cancel all in-flight episodes. Used on shutdown — doesn't emit
         markers since the sinks are being torn down anyway."""
         for meta in self.inflight.values():
-            self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
-            self.release()
+            if not meta.cancel.is_set():
+                self.metrics.record_cancellation(kind=meta.kind, env_name=meta.env_name)
+                self.release()
             self.retire(meta)
         tasks = list(self.inflight.keys())
         self.inflight.clear()
@@ -822,9 +818,10 @@ class Dispatcher:
             if meta.kind != "train":
                 continue
             self.inflight.pop(task, None)
-            self.release()
+            if not meta.cancel.is_set():
+                self.release()
+                self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
             self.retire(meta)
-            self.metrics.record_cancellation(kind="train", env_name=meta.env_name)
             train_tasks.append(task)
             if meta.group_id not in cancelled_by_group:
                 cancelled_by_group[meta.group_id] = GroupCancellation(
