@@ -4973,12 +4973,10 @@ flash-attn-3 = [
 flash-attn-cute = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
 ]
-flash-mla = [
-    { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
 gpu = [
     { name = "dion", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
+    { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
@@ -5039,7 +5037,7 @@ requires-dist = [
     { name = "flash-attn-3", marker = "sys_platform == 'linux' and extra == 'flash-attn-3'", index = "https://download.pytorch.org/whl/test/cu130" },
     { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
-    { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'flash-mla'", url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl" },
+    { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
@@ -5062,7 +5060,6 @@ requires-dist = [
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn-3"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn-cute"], marker = "extra == 'all'" },
-    { name = "prime-rl", extras = ["flash-mla"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["gpu"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["quack"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["sonic-moe"], marker = "extra == 'all'" },
@@ -5102,7 +5099,7 @@ requires-dist = [
     { name = "wandb", specifier = ">=0.26.1" },
     { name = "wandb-workspaces", specifier = ">=0.4.3" },
 ]
-provides-extras = ["gpu", "dashboard", "dynamo", "flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "quack", "sonic-moe", "flash-mla", "kernels", "all"]
+provides-extras = ["gpu", "dashboard", "dynamo", "flash-attn", "flash-attn-3", "flash-attn-cute", "disagg", "quack", "sonic-moe", "kernels", "all"]
 
 [package.metadata.requires-dev]
 dev = [

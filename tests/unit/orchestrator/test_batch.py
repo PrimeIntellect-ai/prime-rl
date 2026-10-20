@@ -1,10 +1,7 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
 from prime_rl.orchestrator.batch import (
-    build_bin_cost,
     pad_micro_batch,
     prepare_batch,
     prepare_sample,
@@ -68,16 +65,9 @@ def _has_loss_tokens(batch: MicroBatch) -> bool:
     return any(batch.loss_mask)
 
 
-def make_flops_config():
-    return SimpleNamespace(
-        hidden_size=16,
-        num_attention_heads=2,
-        num_key_value_heads=2,
-        vocab_size=32,
-        intermediate_size=64,
-        num_hidden_layers=2,
-        head_dim=8,
-    )
+def flop_cost(seq_lens: list[int]) -> int:
+    """A FlopCounter-shaped cost: a per-token term plus a per-document attention term."""
+    return sum(64 * n + n * n for n in seq_lens)
 
 
 def test_training_sample_requires_env_name():
@@ -103,7 +93,7 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         rollouts=examples,
         seq_len=4,
         num_train_workers=num_train_workers,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
@@ -142,7 +132,7 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
         rollouts=examples,
         seq_len=4,
         num_train_workers=2,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
         pad_to_multiple_of=8,
     )
 
@@ -176,7 +166,7 @@ def test_randomized_packing_invariants():
         num_samples = int(rng.integers(1, 65))
         lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
         examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
-        bin_cost = build_bin_cost(make_flops_config() if case_idx % 2 == 0 else None)
+        bin_cost = flop_cost if case_idx % 2 == 0 else sum
 
         batches_per_gpu = prepare_batch(
             rollouts=examples,
@@ -221,7 +211,7 @@ def test_split_to_align_avoids_dummy_micro_batches():
         rollouts=examples,
         seq_len=12,
         num_train_workers=4,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     assert all(_has_loss_tokens(batch) for batch in _flatten_batches(batches_per_gpu))
@@ -235,7 +225,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
         rollouts=examples,
         seq_len=100,
         num_train_workers=2,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     assert _worker_token_sums(balanced) == [170, 170]
@@ -243,7 +233,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
 
 def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
     examples = [make_sized_training_example(length) for length in [32, 32, 16, 16, 16, 16]]
-    bin_cost = build_bin_cost(make_flops_config())
+    bin_cost = flop_cost
 
     balanced = prepare_batch(
         rollouts=examples,
@@ -264,7 +254,7 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
         rollouts=examples,
         seq_len=64,
         num_train_workers=4,
-        bin_cost=build_bin_cost(make_flops_config()),
+        bin_cost=flop_cost,
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
@@ -282,7 +272,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
         rollouts=[example1, example2],
         seq_len=16,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -341,7 +331,7 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
         rollouts=[longer, shorter],
         seq_len=16,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -380,7 +370,7 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         seq_len=16,
         pad_to_multiple_of=1,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
     flat_batches = _flatten_batches(batches_per_gpu)
     assert len(flat_batches) == 1  # both samples share one bin
@@ -487,7 +477,7 @@ def test_prepare_batch_packs_multimodal_with_text():
         rollouts=[mm_sample, text_sample],
         seq_len=8,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
@@ -519,7 +509,7 @@ def test_split_to_align_splits_multimodal_bins():
         rollouts=[make_mm_sample(10), make_mm_sample(20)],
         seq_len=8,
         num_train_workers=2,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     batches = _flatten_batches(batches_per_gpu)

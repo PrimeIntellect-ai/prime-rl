@@ -62,6 +62,9 @@ gpu = [
     "tilelang>=0.1.8 ; sys_platform == 'linux'",
     # DSA sparse MLA backward kernel (CuTe DSL); >=1.29 matches the pinned CUTLASS DSL 4.7.
     "nvidia-cudnn-frontend>=1.30.0 ; sys_platform == 'linux'",
+    # DSA sparse MLA forward for the default `model.dsa_backend = "cudnn_flashmla"` (sm_90a + sm_100f).
+    # FlashMLA is not on PyPI and only an x86_64 wheel is published.
+    "flash-mla ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "flash-linear-attention ; sys_platform == 'linux'",
     "mamba-ssm>=2.3.0 ; sys_platform == 'linux'",
     "nvidia-ml-py>=12.575.51 ; sys_platform == 'linux'",
@@ -97,9 +100,6 @@ quack = [
     "quack-kernels>=0.4.1 ; sys_platform == 'linux'",
 ]
 sonic-moe = ["sonic-moe ; sys_platform == 'linux'"]
-# FlashMLA sparse prefill forward for `model.dsa_backend = "cudnn_flashmla"` (sm_90a + sm_100f).
-# FlashMLA is not on PyPI and only an x86_64 wheel is published.
-flash-mla = ["flash-mla ; sys_platform == 'linux' and platform_machine == 'x86_64'"]
 # Prebuilt `prime-kernels` wheels from a release (see the `kernels` skill). Compiled for
 # sm_100a; on other GPUs the package installs fine and reports its kernels unavailable.
 kernels = [
@@ -113,7 +113,6 @@ all = [
     "prime-rl[sonic-moe]",
     "prime-rl[flash-attn-3]",
     "prime-rl[flash-attn-cute]",
-    "prime-rl[flash-mla]",
 ]
 
 [dependency-groups]
