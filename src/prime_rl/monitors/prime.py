@@ -270,9 +270,7 @@ class PrimeTrainMonitor(Monitor):
         # drops the hook for the same reason).
         atexit.unregister(self.run._atexit_hook)
         if self.run.url:
-            self.logger.info(
-                f"Logging trainer metrics to platform run {self.run.id} ({self.run.url}) (metrics-only)"
-            )
+            self.logger.info(f"Logging trainer metrics to platform run {self.run.id} ({self.run.url}) (metrics-only)")
 
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # The SDK also drops non-finite values, but silently; sanitize first so
