@@ -1,8 +1,9 @@
 import torch
 from torch import nn
 
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
+from prime_rl.trainer.models.layers.norms import ZeroCenteredRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
-from prime_rl.trainer.models.qwen3_8_flash_next.norm import RMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import apply_rotary_embedding
 from prime_rl.utils.cp import CPContext, gather_for_cp
 
@@ -33,8 +34,8 @@ class IndexedGatedAttention(nn.Module):
         self.k_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(num_attention_heads * head_dim, hidden_size, bias=False)
-        self.q_norm = RMSNorm(head_dim, norm_eps)
-        self.k_norm = RMSNorm(head_dim, norm_eps)
+        self.q_norm = ZeroCenteredRMSNorm(head_dim, norm_eps)
+        self.k_norm = ZeroCenteredRMSNorm(head_dim, norm_eps)
         self.indexer = SparseAttentionIndexer(
             hidden_size=hidden_size,
             num_query_heads=indexer_num_heads,
@@ -47,6 +48,19 @@ class IndexedGatedAttention(nn.Module):
         self.cp_context = CPContext()
         # Resolve once before torch.compile traces the layer; the loader caches the module.
         self.indexed_attention = prime_kernels.load("indexed_attention").indexed_attention
+
+    def attention_flops(self, seq_len: int) -> int:
+        # The indexer scores every compressed block, forward only (no_grad); attention reads `token_budget` tokens.
+        indexer = self.indexer
+        num_blocks = seq_len // indexer.compression_ratio
+        indexer_flops = 2 * indexer.num_query_heads * indexer.head_dim * seq_len * num_blocks
+        return indexer_flops + quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, indexer.token_budget),
+        )
 
     def forward(
         self,

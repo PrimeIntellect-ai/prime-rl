@@ -15,6 +15,7 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
@@ -50,6 +51,9 @@ class TrainSamplingConfig(BaseConfig):
 
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
+
+    logprobs: int | None = Field(None, ge=1)
+    """Record this many top sampler probabilities per token, in addition to its sampled logprob."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
@@ -460,6 +464,11 @@ class ConcurrencyConfig(BaseConfig):
 TRAIN_TOP_K_BOUND = 512
 
 
+class OrchestratorControlConfig(ControlConfig):
+    port: int = Field(8041, ge=1, le=65535)
+    """Port the control API listens on, next to the trainer's 8040 on a single node."""
+
+
 class OrchestratorConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
@@ -492,7 +501,7 @@ class OrchestratorConfig(BaseConfig):
     """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each policy admin client when collecting P/D inference metrics."""
+    """P/D role of each policy admin client: labels inference metrics, and prefill engines pause before decode engines on weight updates."""
 
     ckpt: CheckpointConfig | None = None
     """Checkpoint configuration."""
@@ -538,6 +547,10 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: OrchestratorControlConfig | None = None
+    """Serve the orchestrator's control API (pause at a step the trainer accepted). If None, it
+    takes no control requests."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):
