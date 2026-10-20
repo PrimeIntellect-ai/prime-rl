@@ -60,17 +60,6 @@ class DeepseekV4RotaryEmbedding(nn.Module):
             return self.compute_default_rope_parameters
         return ROPE_INIT_FUNCTIONS[rope_type]
 
-    def _apply(self, fn, recurse=True):
-        # Preserve the original values: promoting a rounded table cannot recover
-        # the long-context phases lost by a model-wide BF16 conversion.
-        buffers = dict(self._buffers)
-        super()._apply(fn, recurse=recurse)
-        for name, original in buffers.items():
-            converted = self._buffers[name]
-            if converted.dtype != torch.float32:
-                self._buffers[name] = original.to(device=converted.device, dtype=torch.float32)
-        return self
-
     def init_buffers_post_meta(self) -> None:
         """Re-derive the per-rope-type inverse frequencies and cos/sin caches in place.
 
@@ -116,7 +105,7 @@ class DeepseekV4RotaryEmbedding(nn.Module):
         device_type = device.type if isinstance(device.type, str) and device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):  # Force float32
             # No `cat([freqs, freqs])`: interleaved RoPE needs one theta per pair.
-            freqs = (inv_freq_expanded * position_ids_expanded).transpose(1, 2)
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
             cos = freqs.cos() * attention_scaling
             sin = freqs.sin() * attention_scaling
 
