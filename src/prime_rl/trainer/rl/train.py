@@ -385,6 +385,9 @@ def train(config: TrainerConfig):
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
 
+            sampler_support_complete = (
+                (sampling_mask >= 0).any(-1) if score_centering and sampling_mask is not None else None
+            )
             topk_ids = micro_batch["top_logprobs_ids"] if score_centering else None
             sampler_topk = micro_batch["top_logprobs_values"].to("cuda") if topk_ids is not None else None
             topk_valid = (topk_ids >= 0).to("cuda") if topk_ids is not None else None
@@ -520,6 +523,9 @@ def train(config: TrainerConfig):
                 if sampler_topk is not None
                 else None,
                 topk_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
+                sampler_support_complete=sampler_support_complete.squeeze(0).split(sequence_lengths)
+                if sampler_support_complete is not None
+                else None,
             )
 
             # Backward pass

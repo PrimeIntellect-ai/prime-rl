@@ -324,8 +324,19 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -
     q = values.exp().masked_fill(~valid, 0.0)
     if (q.sum(-1) > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
-        raise ValueError("Top-k score centering requires untruncated sampling")
+    if batch["sampling_mask"] is not None:
+        support = batch["sampling_mask"][mask]
+        replay = (support >= 0).any(-1)
+        width = max(ids.shape[-1], support.shape[-1])
+        head_ids = torch.nn.functional.pad(ids, (0, width - ids.shape[-1]), value=-1).sort(-1).values
+        support_ids = torch.nn.functional.pad(support, (0, width - support.shape[-1]), value=-1).sort(-1).values
+        if (head_ids[replay] != support_ids[replay]).any():
+            raise ValueError("Score centering requires exactly the complete recorded sampling support")
+        if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
+            raise ValueError("Sampler probabilities must normalize over the recorded support")
+        sampled = batch["input_ids"][mask]
+        if not ((support[replay] == sampled[replay, None]).any(-1)).all():
+            raise ValueError("Sampled token is missing from the recorded support")
 
 
 def _torch_dtype(name: str) -> torch.dtype:

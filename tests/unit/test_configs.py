@@ -1310,3 +1310,28 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 
     with pytest.raises(ConfigFileError, match="depth"):
         cli(SFTConfig, args=["@", str(config_file)])
+
+
+@pytest.mark.parametrize("top_k", [32, 256])
+@pytest.mark.parametrize("top_p", [0.9, 1.0])
+def test_score_centering_captures_complete_bounded_support(top_k, top_p):
+    config = RLConfig.model_validate(
+        {
+            "trainer": {"loss": {"type": "icepop", "score_centering": True}},
+            "orchestrator": {
+                "train": {
+                    "source": [
+                        {
+                            "env": {"taskset": {"id": "reverse-text"}},
+                            "sampling": {"top_k": top_k, "top_p": top_p},
+                        }
+                    ]
+                }
+            },
+            "inference": {},
+        }
+    )
+    assert config.orchestrator.train.source[0].sampling.logprobs == top_k
+    assert config.inference.vllm.max_logprobs >= top_k + 2
+    assert config.inference.enable_return_sampling_mask
+    assert RLConfig.model_validate_json(config.model_dump_json()) == config
