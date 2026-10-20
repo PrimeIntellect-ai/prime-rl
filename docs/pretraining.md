@@ -7,7 +7,7 @@
 - [Launch](#launch)
 - [Model](#model)
 - [Initialization](#initialization)
-- [Parametrization](#parametrization)
+- [Optimizer Groups](#optimizer-groups)
 - [Learning-Rate Schedule](#learning-rate-schedule)
 - [MoE Load Balancing](#moe-load-balancing)
 - [Data](#data)
@@ -53,36 +53,12 @@ Weights start from a random init, unless the run resumes from a checkpoint. The 
 
 | Field | Meaning |
 |---|---|
-| `model.init.std` | Every weight matrix and the embedding start from N(0, std) (default 0.02), scaled per role under CompleteP (below). Norm weights start at 1, biases at 0. |
+| `model.init.std` | Every weight matrix and embedding (including the LM head, the router, expert and Gated Residual projections) starts from N(0, std) (default 0.02), with no per-role, width or depth scaling. Norm weights start at 1, biases at 0; zero-centred norm gains and the MoE selection biases start at 0. |
 | `model.init.seed` | Seed. Every rank initializes only its own shard, and the values depend only on the seed and the parameter name, not on the number of GPUs. |
 
-## Parametrization
+## Optimizer Groups
 
-The optimizer gets one parameter group per role (embedding, hidden matrices, `o_proj`/`down_proj`, LM head, norms, biases; with MoE also experts and the router). By default (standard parametrization) every role uses `optim.lr`, `optim.eps` and `optim.weight_decay`, except norms and biases, which get no weight decay.
-
-`[parametrization]` trains with [CompleteP](https://arxiv.org/abs/2505.01618) (muP extended to depth, alpha = 1), so that hyperparameters tuned on a small base shape carry over to wider and deeper models. `optim.lr`, `optim.eps`, `optim.weight_decay` and `model.init.std` are the base-shape values, and the base shape is set by `parametrization.base_hidden_size` and `parametrization.base_num_layers`. With `m_N = hidden_size / base_hidden_size` and `m_L = num_layers / base_num_layers`:
-
-| Parameters | Init std | Learning rate | Adam eps | Weight decay |
-|---|---|---|---|---|
-| Embedding | std | lr | eps / m_N | wd |
-| Hidden matrices | std / sqrt(m_N) | lr / m_N | eps / (m_N m_L) | wd m_N |
-| `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (m_N m_L) | eps / m_N | wd m_N m_L |
-| LM head | std / m_N | lr / m_N | eps | wd m_N |
-| Norm weights | 1 | lr | eps / m_N | 0 |
-
-CompleteP scales each residual branch by 1/m_L and the logits by 1/m_N. These multipliers are folded into `o_proj`, `down_proj` and the LM head, so the model, its checkpoints and the exported weights are plain Llama.
-
-With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are trained by Muon (`rms_norm` learning-rate adjustment), the rest by AdamW with the rules above. Muon's `rms_norm` update grows as sqrt(m_N), so its groups use:
-
-| Parameters | Init std | Learning rate | Weight decay |
-|---|---|---|---|
-| Hidden matrices | std / sqrt(m_N) | lr / sqrt(m_N) | wd sqrt(m_N) |
-| `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (sqrt(m_N) m_L) | wd sqrt(m_N) m_L |
-| MoE router | std / sqrt(m_N) | lr / m_N | wd m_N |
-
-In MoE models, the expert matrices follow the hidden and `down_proj` rules per expert. The router maps the width to a fixed number of experts, so under Muon its learning rate falls as 1/m_N (with AdamW it follows the hidden rule).
-
-Use QK-norm (`"use_qk_norm": true` in the model config) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
+The optimizer gets one parameter group per role (embedding, hidden matrices, `o_proj`/`down_proj`, LM head, norms, biases; with MoE also experts and the router; with Gated Residual its projections). Every group uses `optim.lr`, `optim.eps` and `optim.weight_decay`, except norms and biases, which get no weight decay. With `optim.type = "muon"` (the default), the hidden matrices (expert matrices per expert), `o_proj`/`down_proj` and the MoE router are trained by Muon (`rms_norm` learning-rate adjustment), the rest by AdamW. The groups need AdamW or Muon and `model.offload = "none"`.
 
 ## Learning-Rate Schedule
 
