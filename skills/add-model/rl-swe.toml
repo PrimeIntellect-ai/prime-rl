@@ -1,0 +1,122 @@
+# SWE RL check for a new model: scaleswe train, swebench-verified eval, 131k context, long run.
+# Fill every `<...>` and every line marked FILL.
+#
+#   uv run rl @ skills/add-model/rl-swe.toml --dry-run --output-dir <scratch>
+#   uv run rl @ skills/add-model/rl-swe.toml @ skills/add-model/mxfp8.toml   # quantized variant
+
+max_steps = 1000
+seq_len = 131072
+
+[model]
+name = "<org>/<model>"
+
+[monitors.wandb]
+project = "<project>"
+group = "<model>-swe"
+
+# FlashInfer autotuning runs on every replica startup. Its cache is keyed by the vLLM config, so it
+# is safe on shared storage. Top-level so the sbatch exports it.
+[env_vars]
+VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "$HOME/.cache/vllm-flashinfer-autotune"
+
+# Router replay rules out disaggregated prefill/decode: use independent replicas.
+[deployment]
+type = "multi_node"
+num_train_nodes = 2 # FILL
+num_infer_nodes = 1 # FILL: nodes per replica
+num_infer_replicas = 4 # FILL
+
+[slurm]
+job_name = "<model>-swe"
+partition = "<partition>"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[ckpt]
+interval = 50
+# Keep 1 when the full trainer state is TBs.
+keep_last = 1
+
+[orchestrator]
+batch_size = 256 # FILL
+# Episodes span many trainer steps.
+max_off_policy_steps = 32
+
+[orchestrator.model.client]
+# Must cover loading (and online quantization of) the checkpoint on every replica.
+wait_for_ready_timeout = 7200
+
+# Keep a cap. Uncapped, in-flight episodes grow into the thousands, per-token latency inflates and
+# eval rollouts hit their timeout.
+[orchestrator.concurrency]
+initial_inflight = 384 # FILL
+max_inflight = 1536 # FILL
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[orchestrator.train.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "auto" # FILL when `auto` does not resolve the model name
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["<run-label>"]
+
+[orchestrator.eval]
+interval = 50
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.runtime.labels = ["<run-label>"]
+env.agent.timeout.rollout = 3600
+group_size = 1
+
+[trainer]
+# MoE only. Also turns on `inference.vllm.enable_return_routed_experts`.
+enable_router_replay = true
+dist_timeout_seconds = 3600
+
+[trainer.model]
+cp = 4 # FILL: 131k / cp tokens per rank
+ep = 8 # FILL: MoE only
+freeze_moe_router = false
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 1
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.01
+
+[inference.vllm]
+max_model_len = 131072
+tensor_parallel_size = 8 # FILL
+data_parallel_size = 1 # FILL: TP x DP = GPUs per replica
+enable_expert_parallel = true # MoE only
+gpu_memory_utilization = 0.8 # FILL: leave headroom for the NCCL weight-receive buffer
+# Eval goes through chat completions, so both parsers must resolve. `auto` matches on the model
+# name; set them explicitly for re-exports under another org.
+# tool_call_parser = "<parser>"
+# reasoning_parser = "<parser>"

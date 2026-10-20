@@ -1,0 +1,78 @@
+# Math RL check for a new model: short, normal RL (lr 1e-6, never 0) whose job is to show that the
+# trainer and vLLM compute the same policy. Fill every `<...>` and every line marked FILL.
+#
+#   uv run rl @ skills/add-model/rl-math.toml --dry-run --output-dir <scratch>
+#   uv run rl @ skills/add-model/rl-math.toml @ skills/add-model/mxfp8.toml   # quantized variant
+
+max_steps = 60
+seq_len = 4096
+
+[model]
+name = "<org>/<model>"
+
+[monitors.wandb]
+project = "<project>"
+group = "<model>-math"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1 # FILL
+num_infer_nodes = 1 # FILL
+
+[slurm]
+job_name = "<model>-math"
+partition = "<partition>"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[orchestrator]
+batch_size = 64
+
+[orchestrator.concurrency]
+max_inflight = 128
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.algo]
+type = "grpo"
+
+# Set explicitly when `auto` does not resolve the model name (re-exports under another org).
+# [orchestrator.renderer]
+# name = "<renderer>"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 3072
+
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "math-env"
+# Deterministic scoring: the default judge calls out to an LLM whenever math-verify scores 0.
+env.taskset.task.judge = "None"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer]
+# MoE only. Also turns on `inference.vllm.enable_return_routed_experts`.
+enable_router_replay = true
+dist_timeout_seconds = 3600
+
+[trainer.model]
+ep = 8 # FILL: MoE only; must divide the number of trainer GPUs
+freeze_moe_router = false
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+lr = 1e-6
+weight_decay = 0.0
+
+[inference.vllm]
+tensor_parallel_size = 8 # FILL
+enable_expert_parallel = true # MoE only
+max_model_len = 4096
