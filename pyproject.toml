@@ -231,6 +231,8 @@ requires-dist = [
 # verifiers pins harbor==0.24.0, published inside the rolling window;
 # bounded cutoff mirroring the one in deps/verifiers/pyproject.toml
 harbor = "2026-10-08T00:00:00Z"
+# certifi 2026.10.19 drops the roots behind the compromised eMudhra intermediates
+certifi = "2026-10-21T00:00:00Z"
 tokenspeed-mla = false
 # vLLM 0.32.0 pins flashinfer-python 0.7.0.post1, published inside the rolling window
 flashinfer-python = false
