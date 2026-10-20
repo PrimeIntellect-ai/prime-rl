@@ -39,7 +39,8 @@ class BaseDataConfig(BaseConfig):
 
     pad_to_seq_len: bool = False
     """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
-    one shape, so torch.compile never recompiles on a new row length."""
+    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
+    at the cost of extra padding."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
