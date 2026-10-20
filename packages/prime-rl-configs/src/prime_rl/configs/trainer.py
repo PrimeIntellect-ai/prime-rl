@@ -301,9 +301,6 @@ class ModelConfig(BaseModelConfig):
     reduce_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for gradient/parameter reductions."""
 
-    moe_router_dtype: Literal["bfloat16"] = "bfloat16"
-    """MoE router gates use BF16 operands and return FP32 logits and scores. Routers share the transformer block's FSDP unit. A no-op for non-MoE models."""
-
     reduce_scatter_max_input_buffers: int = Field(1, ge=1)
     """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
 

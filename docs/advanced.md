@@ -105,8 +105,7 @@ GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset 
 
 ### Router precision
 
-Router gates use BF16 operands (`trainer.model.moe_router_dtype = "bfloat16"`) and share the
-transformer block's FSDP unit. Logits are produced in FP32 directly from the gate GEMM;
+Router gates use BF16 operands and share the transformer block's FSDP unit. Logits are produced in FP32 directly from the gate GEMM;
 score functions, normalization and routing weights remain FP32.
 
 For models that weight expert outputs after expert computation, local and Torch EP dispatch multiply

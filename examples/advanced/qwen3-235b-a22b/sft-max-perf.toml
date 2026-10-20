@@ -26,8 +26,6 @@ seq_len = 16384
 ep = 8
 offload = "none"
 ac_offloading = "None"
-# Router gates share the block's FSDP unit and return FP32 logits.
-moe_router_dtype = "bfloat16"
 
 # Selective AC does not fit at seq 16384 on 4 nodes with fp32 AdamW states and the torch dispatch.
 [model.ac]
