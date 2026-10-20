@@ -32,6 +32,8 @@ env.taskset.task.power_per_turn = false
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
+[trainer] # Default trainer config
+
 [orchestrator.concurrency]
 max_inflight = 128
 

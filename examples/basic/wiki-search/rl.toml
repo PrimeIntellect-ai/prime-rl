@@ -31,6 +31,8 @@ env.taskset.id = "wiki-search"
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
+[trainer] # Default trainer config
+
 [ckpt] # Checkpoint at the end of training
 
 [inference.vllm]
