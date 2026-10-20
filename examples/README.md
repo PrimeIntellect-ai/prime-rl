@@ -21,8 +21,8 @@ All advanced configs submit through SLURM (the `rl` entrypoint writes the sbatch
 Walk-throughs for the core environments (baseline eval → optional SFT warmup → RL → eval), each with its own README:
 
 - [`reverse-text/`](basic/reverse-text/README.md) — smallest end-to-end loop (single-turn, 0.6B): `eval.toml` → `sft.toml` → `rl.toml`
-- [`alphabet-sort/`](basic/alphabet-sort/README.md) — multi-turn, user simulator, LoRA
-- [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling, LoRA
+- [`alphabet-sort/`](basic/alphabet-sort/README.md) — multi-turn, user simulator
+- [`wiki-search/`](basic/wiki-search/README.md) — multi-turn tool calling
 - [`wordle/`](basic/wordle/README.md) — multi-turn (~6-turn games)
 - [`hendrycks-sanity/`](basic/hendrycks-sanity/README.md) — single-turn math, long-running
 
