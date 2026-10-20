@@ -1,0 +1,20 @@
+# Compose after a DeepSeek V4 workload. Dense and expert backward use BF16.
+[orchestrator]
+
+[trainer.model.quantization]
+type = "mxfp8"
+qat = true
+ignore_patterns = ['lm_head', 'router', 'mlp\.gate\.', 'shared_expert\.output_gate', 'eh_proj', 'weights_proj', 'in_proj_a', 'in_proj_b', 'o_a_proj', 'compressor\.', 'indexer']
+
+[trainer.model.moe.compute]
+type = "mxfp8"
+qat = true
+
+[trainer.model.moe.dispatch]
+transport = "bf16"
+
+[inference.vllm]
+quantization = "mxfp8"
+
+[inference.vllm.quantization_config]
+ignore = ["*.wo_a", "re:.*indexer.*"]

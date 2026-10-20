@@ -59,6 +59,7 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
         return MXFP8ExpertCompute(
             kernel=kernel,
             high_precision_wgrad=compute.recipe == "mxfp8_rceil_wgrad_with_hp",
+            qat=compute.qat,
         )
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 

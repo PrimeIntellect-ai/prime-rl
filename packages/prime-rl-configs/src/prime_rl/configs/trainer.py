@@ -134,8 +134,10 @@ class FP8Config(BaseConfig):
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
+    qat: bool = False
+    """Use the native MXFP8 forward with BF16 backward and forward-rounded weights for input gradients. Rounding is nearest-even."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
-    """MXFP8 recipe for dense linear modules."""
+    """MXFP8 recipe for dense linear modules. With QAT, both backward GEMMs use BF16 regardless of recipe."""
 
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from torchao MXFP8 replacement."""
@@ -192,8 +194,10 @@ class MXFP8MoEComputeConfig(MoEComputeConfigBase):
     """Run routed-expert grouped GEMMs with Prime's vendored MXFP8 implementation."""
 
     type: Literal["mxfp8"] = "mxfp8"
+    qat: bool = False
+    """Keep the mxfp8_moe forward and use BF16 backward with forward-rounded weights for input gradients."""
     recipe: MXFP8Recipe = "mxfp8_rceil"
-    """MXFP8 expert-compute recipe."""
+    """MXFP8 expert-compute recipe. With QAT, both backward GEMMs use BF16 regardless of recipe."""
 
 
 MoEComputeConfig: TypeAlias = Annotated[
@@ -361,6 +365,8 @@ class ModelConfig(BaseModelConfig):
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
+            if compute.qat:
+                raise ValueError("MXFP8 QAT requires BF16 transport to preserve BF16 backward gradients.")
         return self
 
 
