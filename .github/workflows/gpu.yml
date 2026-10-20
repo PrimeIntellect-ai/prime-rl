@@ -16,6 +16,11 @@ jobs:
   gate:
     name: Gate
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'pull_request' && github.event.label.name == 'gpu-ci')
+      || (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
     permissions:
       contents: read
       actions: read
@@ -28,40 +33,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          LABEL: ${{ github.event.label.name }}
-          REVIEW_STATE: ${{ github.event.review.state }}
           REVIEWER: ${{ github.event.review.user.login }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          decide() {
+          set_run_and_exit() {
             echo "run=$1" >> "$GITHUB_OUTPUT"
             exit 0
           }
 
-          case "$EVENT_NAME" in
-            push|workflow_dispatch) decide true ;;
-            pull_request) [[ "$LABEL" == "gpu-ci" ]] || decide false ;;
-            pull_request_review) [[ "$REVIEW_STATE" == "approved" ]] || decide false ;;
-            *) decide false ;;
-          esac
+          [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "workflow_dispatch" ]] && set_run_and_exit true
 
           if [[ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
             echo "::notice::Fork PRs get no secrets on these events, so GPU CI cannot run here. A maintainer can push the branch to $GITHUB_REPOSITORY and apply the gpu-ci label to that PR."
-            decide false
+            set_run_and_exit false
           fi
 
-          [[ "$EVENT_NAME" == "pull_request" ]] && decide true
+          [[ "$EVENT_NAME" == "pull_request" ]] && set_run_and_exit true
 
-          if ! role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REVIEWER/permission" --jq .role_name 2> permission_error.txt); then
-            grep -q "HTTP 404" permission_error.txt || { cat permission_error.txt; exit 1; }
-            role=none
-          fi
+          role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REVIEWER/permission" --jq .role_name)
           echo "Reviewer $REVIEWER has role: $role"
           case "$role" in
             admin|maintain|write|triage) ;;
-            *) decide false ;;
+            *) set_run_and_exit false ;;
           esac
 
           runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/gpu.yml/runs?head_sha=$HEAD_SHA&per_page=100" \
@@ -74,11 +69,11 @@ jobs:
                 and all($gpu_jobs[]; .conclusion == "success" or (.status != "completed" and .conclusion == null))')
             if [[ "$covered" == "true" ]]; then
               echo "::notice::Head commit $HEAD_SHA is already covered by GPU run $run_url"
-              decide false
+              set_run_and_exit false
             fi
           done <<< "$runs"
 
-          decide true
+          set_run_and_exit true
       - name: Remove gpu-ci label
         if: github.event_name == 'pull_request' && steps.decide.outputs.run == 'true'
         continue-on-error: true
