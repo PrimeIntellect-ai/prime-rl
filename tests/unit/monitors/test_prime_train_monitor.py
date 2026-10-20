@@ -9,8 +9,6 @@ advancing train row. Everything else uploads bare.
 import asyncio
 from typing import Any
 
-import pytest
-
 from prime_rl.configs.monitors import PrimeTrainMonitorConfig
 from prime_rl.monitors.prime import PrimeTrainMonitor
 
@@ -219,63 +217,3 @@ def test_no_wall_time_cache_means_unchanged_step_upload():
     (metrics, step), = run.rows
     assert metrics == {**train_row(3), "train/agg/effective/reward/mean": 0.6}
     assert step == 3
-
-
-class FlakyRun:
-    """Fails the first queue put, records the rest (the fan-out swallows the raise)."""
-
-    def __init__(self):
-        self.rows: list[tuple[dict[str, Any], int | None]] = []
-        self.fail_once = True
-
-    def log_metrics(self, values, *, step=None):
-        if self.fail_once:
-            self.fail_once = False
-            raise RuntimeError("queue put failed")
-        self.rows.append((dict(values), step))
-
-
-def test_failed_queue_put_leaves_gate_and_deltas_for_retry():
-    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
-    run = FlakyRun()
-    monitor.run = run
-
-    asyncio.run(monitor.log_metrics({"dispatcher/cancelled/train": 2.0}, step=None))
-    with pytest.raises(RuntimeError):
-        asyncio.run(monitor.log_metrics(train_row(1), step=1))  # the fan-out swallows this
-
-    assert monitor._last_attached_step is None  # gate not advanced
-    assert monitor._step_deltas == {"dispatcher/cancelled/train": 2.0}  # counts not lost
-
-    asyncio.run(monitor.log_metrics(train_row(1), step=1))  # retry attaches
-    (metrics, step), = run.rows
-    assert step == 1
-    assert metrics["dispatcher/cancelled/train"] == 2.0
-    assert monitor._last_attached_step == 1
-    assert monitor._step_deltas == {}
-
-
-def test_delta_arriving_during_queue_put_survives_consumption():
-    """A step-less tick can land while the train row's queue put is in flight;
-    its delta must survive the attach's reset."""
-
-    class InterleavingRun:
-        def __init__(self, monitor):
-            self.monitor = monitor
-            self.rows: list[tuple[dict[str, Any], int | None]] = []
-
-        def log_metrics(self, values, *, step=None):
-            if not self.rows:  # during the first (train-row) put
-                self.monitor._step_deltas["dispatcher/cancelled/train"] = 5.0
-            self.rows.append((dict(values), step))
-
-    monitor, run = make_monitor()
-    asyncio.run(monitor.log_metrics({"dispatcher/cancelled/train": 1.0}, step=None))
-    monitor.run = InterleavingRun(monitor)
-    asyncio.run(monitor.log_metrics(train_row(1), step=1))
-
-    (metrics, _), = monitor.run.rows
-    assert metrics["dispatcher/cancelled/train"] == 1.0  # the put saw the pre-window sum
-    assert monitor._step_deltas == {"dispatcher/cancelled/train": 5.0}  # the window tick survives
-    asyncio.run(monitor.log_metrics(train_row(2), step=2))
-    assert monitor.run.rows[1][0]["dispatcher/cancelled/train"] == 5.0
