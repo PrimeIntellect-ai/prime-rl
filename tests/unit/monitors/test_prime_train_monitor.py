@@ -9,6 +9,9 @@ advancing train row. Everything else uploads bare.
 import asyncio
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
 from prime_rl.configs.monitors import PrimeTrainMonitorConfig
 from prime_rl.monitors.prime import PrimeTrainMonitor
 
@@ -223,8 +226,6 @@ def test_supports_step_snapshots_is_a_marker_not_a_config_field():
     """The capability marker advertises the step-snapshot behavior to gating
     consumers without widening the schema: not user-settable, not serialized,
     and absent on older schema objects (getattr default False)."""
-    from pydantic import ValidationError
-
     assert PrimeTrainMonitorConfig.supports_step_snapshots is True
 
     assert "supports_step_snapshots" not in PrimeTrainMonitorConfig.model_fields
