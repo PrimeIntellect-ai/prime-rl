@@ -21,7 +21,7 @@ from prime_rl.orchestrator.algo.base import iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import stamp_loss_routing
 from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
-from prime_rl.orchestrator.trajectories import trace_to_samples
+from prime_rl.orchestrator.trajectories import iter_trainable_branches, trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
 from prime_rl.orchestrator.utils import (
     episode_env_name,
@@ -416,12 +416,17 @@ class TrainSink:
         for trace_id, trace_samples in selected_by_trace.items():
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
-            branches = episode.traces[0].branches if policy is not None and policy.start < min_version else None
+            if policy is None or policy.start >= min_version:
+                kept += sum(sum(sample.mask) for sample in trace_samples)
+                continue
+            trace = episode.traces[0]
+            # Shared fork prefixes train only in their first branch; count each stale token once.
+            trainable = {id(branch): mask for branch, mask in iter_trainable_branches(trace)}
             for sample in trace_samples:
                 kept += sum(sample.mask)
-                if branches is not None:
-                    runs = stale_token_runs(branches[sample.branch_index], policy.start, min_version)
-                    masked += sum(end - start for start, end in runs)
+                branch = trace.branches[sample.branch_index]
+                runs = stale_token_runs(branch, policy.start, min_version)
+                masked += sum(sum(trainable[id(branch)][start:end]) for start, end in runs)
         self.rollout_window.metrics.rate("off_policy/token/masked", {"": float(masked)}, kept + masked)
 
         shipped_ids = set(selected_by_trace)
