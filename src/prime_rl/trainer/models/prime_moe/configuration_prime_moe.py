@@ -3,9 +3,10 @@ from transformers.configuration_utils import PretrainedConfig
 
 class PrimeMoeConfig(PretrainedConfig):
     r"""
-    Configuration of the pretraining MoE (`PrimeMoeForCausalLM`): GLM-4.5's architecture (attention with optional QK
-    norm, sigmoid-scored token-choice experts with a selection bias, shared experts, leading dense layers) plus
-    Gated Residual connections and null experts. The fields shared with `Glm4MoeConfig` have the same names.
+    Configuration of the pretraining MoE (`PrimeMoeForCausalLM`): grouped-query attention (optional QK norm, gated
+    attention, exclusive self attention), MoE layers with sigmoid-scored token-choice routed experts, a selection bias,
+    shared experts and optional null experts or LatentMoE, after leading dense layers, and optional Gated Residual
+    connections. Fields that also exist in the Hugging Face MoE configs keep their names there.
 
     Args:
         vocab_size (`int`): Vocabulary size.
@@ -18,13 +19,11 @@ class PrimeMoeConfig(PretrainedConfig):
         partial_rotary_factor (`float`): Share of each head's dimensions that RoPE rotates.
         hidden_act (`str`): Activation of the gated MLPs.
         max_position_embeddings (`int`): Maximum sequence length.
-        initializer_range (`float`): Unused by prime-rl's initialization; kept for Hugging Face compatibility.
         rms_norm_eps (`float`): Epsilon of the RMS norms.
         tie_word_embeddings (`bool`): Whether the LM head shares the input embedding.
         rope_theta (`float`): RoPE base period.
         rope_scaling (`dict`, *optional*): RoPE scaling configuration.
         attention_bias (`bool`): Whether the attention projections have biases.
-        attention_dropout (`float`): Attention dropout (unused in training).
         moe_intermediate_size (`int`): Hidden size of each routed and shared expert.
         num_experts_per_tok (`int`): Experts each token selects (`top_k`), null experts included.
         n_shared_experts (`int`): Number of shared experts; their hidden sizes add up.
@@ -69,8 +68,13 @@ class PrimeMoeConfig(PretrainedConfig):
         latent_dim (`int`, *optional*): LatentMoE: the routed experts work in this width (`hidden_size -> latent_dim`
             projection and RMS norm before them, `latent_dim -> hidden_size` projection after the combine), with hidden
             size `moe_intermediate_size`. The router and the shared experts stay full width.
+        latent_norm (`str`): Where LatentMoE's RMS norm sits: `"input"` on the projected expert input (Marin) or
+            `"output"` on the combined expert output before the up-projection (Kimi K3's Stable LatentMoE).
+        expert_activation (`str`, *optional*): Activation of the routed and shared experts: `"situ_glu"` (Kimi K3's
+            soft-capped SwiGLU). Defaults to `hidden_act`.
         router_bias_on_logits (`bool`): Add the selection bias to the router logits instead of the sigmoid scores
-            (the space quantile balancing works best in).
+            (the space quantile balancing, the default, works best in).
+        pad_token_id (`int`, *optional*): Padding token id, the input embedding's `padding_idx`.
     """
 
     model_type = "prime_moe"
@@ -87,14 +91,11 @@ class PrimeMoeConfig(PretrainedConfig):
         head_dim=None,
         hidden_act="silu",
         max_position_embeddings=131072,
-        initializer_range=0.02,
         rms_norm_eps=1e-5,
-        use_cache=True,
         tie_word_embeddings=False,
         rope_theta=10000.0,
         rope_scaling=None,
         attention_bias=False,
-        attention_dropout=0.0,
         moe_intermediate_size=1408,
         num_experts_per_tok=8,
         n_shared_experts=1,
@@ -121,7 +122,9 @@ class PrimeMoeConfig(PretrainedConfig):
         attn_output_gate=False,
         exclusive_attention=False,
         latent_dim=None,
-        router_bias_on_logits=False,
+        latent_norm="input",
+        expert_activation=None,
+        router_bias_on_logits=True,
         pad_token_id=None,
         **kwargs,
     ):
@@ -135,13 +138,10 @@ class PrimeMoeConfig(PretrainedConfig):
         self.num_key_value_heads = num_key_value_heads
         self.head_dim = head_dim if head_dim is not None else hidden_size // num_attention_heads
         self.hidden_act = hidden_act
-        self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
-        self.use_cache = use_cache
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
-        self.attention_dropout = attention_dropout
         self.pad_token_id = pad_token_id
 
         self.moe_intermediate_size = moe_intermediate_size
@@ -175,6 +175,8 @@ class PrimeMoeConfig(PretrainedConfig):
         self.attn_output_gate = attn_output_gate
         self.exclusive_attention = exclusive_attention
         self.latent_dim = latent_dim
+        self.latent_norm = latent_norm
+        self.expert_activation = expert_activation
         self.router_bias_on_logits = router_bias_on_logits
 
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)

@@ -30,43 +30,33 @@ class PrimeFlashAttention(FlashAttention):
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
     ) -> tuple[torch.Tensor, None]:
-        if isinstance(hidden_states, tuple):
-            assert self.qkv_proj is None, "separate query, key and value inputs need model.fusions without qkv"
-            query_input, key_input, value_input = hidden_states
-            query_states, key_states, value_states = (
-                self.q_proj(query_input),
-                self.k_proj(key_input),
-                self.v_proj(value_input),
-            )
-            hidden_states = query_input
-        else:
-            query_states, key_states, value_states = self.project_qkv(hidden_states)
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
-
+        if not isinstance(hidden_states, tuple):
+            return super().forward(hidden_states, position_embeddings, cu_seqlens, max_seqlen)
+        assert self.qkv_proj is None, "separate query, key and value inputs need model.fusions without qkv"
+        query_input, key_input, value_input = hidden_states
+        hidden_shape = (*query_input.shape[:-1], -1, self.head_dim)
+        query_states, key_states = self.q_proj(query_input), self.k_proj(key_input)
         if self.use_qk_norm and self.qk_norm_type == "per_layer":
-            query_states = self.q_norm(query_states)
-            key_states = self.k_norm(key_states)
-        query_states = query_states.view(hidden_shape)
-        key_states = key_states.view(hidden_shape)
-        value_states = value_states.view(hidden_shape)
+            query_states, key_states = self.q_norm(query_states), self.k_norm(key_states)
+        query_states, key_states = query_states.view(hidden_shape), key_states.view(hidden_shape)
+        value_states = self.v_proj(value_input).view(hidden_shape)
         if self.use_qk_norm and self.qk_norm_type == "per_head":
-            query_states = self.q_norm(query_states)
-            key_states = self.k_norm(key_states)
-
+            query_states, key_states = self.q_norm(query_states), self.k_norm(key_states)
         if position_embeddings is not None:
             cos, sin = position_embeddings
             query_states, key_states = apply_rotary_pos_emb(
                 query_states.transpose(1, 2), key_states.transpose(1, 2), cos, sin
             )
             query_states, key_states = query_states.transpose(1, 2), key_states.transpose(1, 2)
-
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
+        return self.project_output(out, value_states[0], query_input), None
+
+    def project_output(self, out: torch.Tensor, values: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
         if self.exclusive:
             # Each query head's own value is its key/value group's.
-            values = F.normalize(value_states[0], dim=-1).repeat_interleave(self.num_key_value_groups, dim=1)
+            values = F.normalize(values, dim=-1).repeat_interleave(self.num_key_value_groups, dim=1)
             out = out - (out * values).sum(dim=-1, keepdim=True) * values
         attn_output = out.contiguous().view(1, out.shape[0], -1)
         if self.g_proj is not None:
             attn_output = attn_output * torch.sigmoid(self.g_proj(hidden_states))
-        return self.o_proj(attn_output), None
+        return self.o_proj(attn_output)

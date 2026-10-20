@@ -2,7 +2,6 @@ import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before im
 
 import asyncio
 import json
-import itertools
 import math
 import time
 from datetime import timedelta
@@ -42,8 +41,8 @@ from prime_rl.trainer.pretrain.data import (
     setup_train_dataset,
     source_tokens,
     setup_val_dataset,
+    starts_with_bos,
 )
-from prime_rl.trainer.pretrain.diagnostics import UpdateTracker, probe_batch, run_probe
 from prime_rl.trainer.pretrain.suite import (
     length_label,
     prepare_multi_length_set,
@@ -64,6 +63,7 @@ from prime_rl.trainer.pretrain.metrics import (
 from prime_rl.trainer.sft.data import get_dataset_state
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.trainer.utils import (
+    get_grad_accum_steps,
     get_dcp_group,
     GarbageCollection,
     clip_grad_norm_,
@@ -75,7 +75,7 @@ from prime_rl.utils.config import cli
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.logger import setup_logger
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_resume_step
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.utils import clean_exit
 from prime_rl.utils.weights import resolve_fqn
@@ -157,21 +157,12 @@ def train(config: PretrainConfig):
     resolve_ep(config.model)
     parallel_dims = get_parallel_dims(config.model)
 
-    total_micro_batches = config.data.batch_size * config.model.cp
-    micro_batches_per_step = world.world_size * config.data.micro_batch_size
-    assert total_micro_batches % micro_batches_per_step == 0, (
-        f"batch_size * cp ({total_micro_batches}) must be divisible by "
-        f"world_size * micro_batch_size ({micro_batches_per_step})"
+    grad_accum_steps = get_grad_accum_steps(
+        config.data.batch_size, config.data.micro_batch_size, config.model.cp, world.world_size
     )
-    grad_accum_steps = total_micro_batches // micro_batches_per_step
 
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step or resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)
 
     logger.info(f"Initializing model ({config.model})")
     # Weights come from the checkpoint when resuming and from the random init otherwise.
@@ -264,16 +255,9 @@ def train(config: PretrainConfig):
     # Create the iterator only after a potential resume: iter() forks the workers with the
     # dataset's current state.
     dataiter = iter(dataloader)
-    probe = None
-    if config.diagnostics is not None:
-        # The diagnostic forward's fixed batch: the start of the first micro-batch, which is then trained on as usual.
-        first_micro_batch = next(dataiter)
-        probe = probe_batch(first_micro_batch, config.diagnostics.probe_tokens)
-        dataiter = itertools.chain([first_micro_batch], dataiter)
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     cp_size = parallel_dims.cp
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     is_moe_model = is_tt_moe_model(model)
@@ -306,9 +290,7 @@ def train(config: PretrainConfig):
         loss_mask = micro_batch["loss_mask"].to("cuda", non_blocking=True)
         seq_lens = micro_batch["seq_lens"].to("cuda", non_blocking=True)
         if cp_enabled:
-            input_ids, position_ids = setup_cp_params(
-                input_ids, position_ids, cp_rank, cp_size, cp_group, seq_lens=seq_lens, cp_style=config.model.cp_style
-            )
+            input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size, seq_lens=seq_lens)
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
         labels = target_ids.masked_fill(~loss_mask, IGNORE_INDEX)
@@ -359,11 +341,12 @@ def train(config: PretrainConfig):
     eval_sets = []
     if config.evals is not None:
         start_time = time.perf_counter()
+        bos = config.data.type == "tokens" and starts_with_bos(train_dataset.sources, tokenizer.bos_token_id)
         eval_sets = [
-            prepare_multi_length_set(name, config.evals.data_dir, tokenizer, config.evals.seq_lens)
+            prepare_multi_length_set(name, config.evals.data_dir, tokenizer, config.evals.seq_lens, bos)
             for name in config.evals.sets
         ]
-        logger.info(f"Prepared {len(eval_sets)} eval sets in {time.perf_counter() - start_time:.0f}s")
+        logger.info(f"Prepared {len(eval_sets)} eval sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s")
 
     @torch.no_grad()
     def run_suite(step: int) -> None:
@@ -373,7 +356,7 @@ def train(config: PretrainConfig):
         metrics = {}
         # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
         with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
-            scored = score_sets(model, eval_sets, config.evals.token_budget, get_dcp_group())
+            scored = score_sets(model, eval_sets, config.evals.micro_batch_tokens, get_dcp_group())
             for eval_set, (logprobs, hits) in zip(eval_sets, scored or []):
                 for seq_len, version in eval_set.versions.items():
                     index = eval_set.index[seq_len]
@@ -402,7 +385,6 @@ def train(config: PretrainConfig):
     last_bias_moves = None
     # Per-expert selection bias, router-row norm and load of every MoE layer, every MOE_TRACE_INTERVAL steps.
     moe_trace: dict[str, list] = {"step": [], "bias": [], "router_norm": [], "load": []}
-    update_tracker = UpdateTracker()
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
     while True:
         torch.cuda.reset_peak_memory_stats()
@@ -463,14 +445,10 @@ def train(config: PretrainConfig):
 
         group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(None, model, config.optim.max_norm) if config.optim.max_norm else None
-        is_diagnostic_step = config.diagnostics is not None and progress.step % config.diagnostics.interval == 0
-        if is_diagnostic_step:
-            update_tracker.before_step(model)
         optimizer.step()
         optimizer.zero_grad()
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
-        diagnostic_metrics = update_tracker.after_step(model) if is_diagnostic_step else {}
         # Peak memory of the step's forward, backward and optimizer passes, over all ranks.
         local_peak_memory = torch.tensor(torch.cuda.max_memory_reserved() / 1024**3, device="cuda")
         peak_memory = reduce_stats({"sum": local_peak_memory}, {"max": local_peak_memory}, dp_cp_group)
@@ -488,10 +466,6 @@ def train(config: PretrainConfig):
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
-
-        if is_diagnostic_step:
-            diagnostic_metrics |= run_probe(model, probe, dp_cp_group)
-            finish_no_grad_forwards()
 
         eval_start_time = time.perf_counter()
         if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
@@ -547,7 +521,6 @@ def train(config: PretrainConfig):
             **peak_memory_metrics,
             **result.metrics,
             **moe_metrics,
-            **diagnostic_metrics,
             "step": progress.step,
         }
         if grad_norm is not None:

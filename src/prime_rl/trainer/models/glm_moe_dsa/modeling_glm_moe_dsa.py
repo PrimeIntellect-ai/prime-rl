@@ -41,7 +41,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
         index_topk=config.index_topk,
         use_index_cache=getattr(config, "use_index_cache", False),
         skip_topk=_index_cache_skip_topk(config, layer_idx),
-        dsa_backend=getattr(config, "dsa_backend", "tilelang"),
+        dsa_backend=getattr(config, "dsa_backend", "cudnn_flashmla"),
     )
 
 
@@ -129,6 +129,11 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     _can_record_outputs = {
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
+
+    @classmethod
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.
+        return None
 
     def _init_weights(self, module):
         super()._init_weights(module)

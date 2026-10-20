@@ -1,8 +1,11 @@
+from typing import Literal
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.distributed.token_dispatcher import TokenDispatcher
+from prime_rl.trainer.models.layers.activations import Activation
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
@@ -11,6 +14,16 @@ from prime_rl.trainer.models.layers.moe import (
     record_moe_routing_statistics,
 )
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+
+
+class SituGlu(Activation):
+    """Sigmoid Tanh Unit GLU (Kimi K3 report, eq. 12): SwiGLU with both factors soft-capped,
+    ``(4 tanh(gate / 4) * sigmoid(gate)) * (25 tanh(up / 25))``; close to SwiGLU near 0 and bounded by 100."""
+
+    @staticmethod
+    def apply(gate: torch.Tensor | None, up: torch.Tensor) -> torch.Tensor:
+        assert gate is not None
+        return 4.0 * torch.tanh(gate / 4.0) * torch.sigmoid(gate) * (25.0 * torch.tanh(up / 25.0))
 
 
 class PrimeRouter(TokenChoiceTopKRouter):
@@ -110,15 +123,16 @@ def sequence_balance(scores: torch.Tensor, selected_experts: torch.Tensor, num_r
 
 class PrimeMoE(MoE):
     """The shared token-choice MoE runtime with a ``PrimeRouter``. With null experts, tokens use different numbers of
-    routed experts: only the (token, routed expert) pairs are dispatched, one per row. Also computes the sequence-wise
-    balance for its loss (``balance_rows``) and counts the routed experts per token (``routed_k_counts``).
+        routed experts: only the (token, routed expert) pairs are dispatched, one per row. Also computes the sequence-wise
+        balance for its loss (``balance_rows``) and counts the routed experts per token (``routed_k_counts``).
 
-    With ``latent_dim`` (LatentMoE), the routed experts work in that width: the token is projected down and RMS-normalized
-    before the dispatch, and the combined expert output is projected back up. The router and the shared experts read
-    the full-width token.
+    With ``latent_dim`` (LatentMoE), the routed experts work in that width: the token is projected down before the
+        dispatch and the combined expert output is projected back up, with an RMS norm on the expert input
+        (``latent_norm = "input"``, Marin) or on the combined output before the up-projection (``"output"``, Kimi K3's
+        Stable LatentMoE). The router and the shared experts read the full-width token.
 
-    The input can also be a (router input, expert input) pair (Gated Residual reads): the router scores the first, the
-    routed experts (via the latent projection) and the shared experts process the second."""
+        The input can also be a (router input, expert input) pair (Gated Residual reads): the router scores the first, the
+        routed experts (via the latent projection) and the shared experts process the second."""
 
     def __init__(
         self,
@@ -128,6 +142,7 @@ class PrimeMoE(MoE):
         shared_expert: FeedForward | None,
         dim: int,
         latent_dim: int | None,
+        latent_norm: Literal["input", "output"],
         norm_eps: float,
     ) -> None:
         super().__init__(
@@ -154,10 +169,24 @@ class PrimeMoE(MoE):
         self.balance_rows: int | None = None
         self.seq_balance: torch.Tensor | None = None
         self.latent_down = self.latent_norm = self.latent_up = None
+        self.norm_latent_output = latent_norm == "output"
         if latent_dim is not None:
             self.latent_down = nn.Linear(dim, latent_dim, bias=False)
             self.latent_norm = RMSNorm(RMSNormConfig(hidden_size=latent_dim, eps=norm_eps))
             self.latent_up = nn.Linear(latent_dim, dim, bias=False)
+
+    def prepare_expert_input(self, x: torch.Tensor) -> torch.Tensor:
+        if self.latent_down is None:
+            return x
+        x = self.latent_down(x)
+        return x if self.norm_latent_output else self.latent_norm(x)
+
+    def prepare_expert_output(self, x: torch.Tensor) -> torch.Tensor:
+        if self.latent_up is None:
+            return x
+        if self.norm_latent_output:
+            x = self.latent_norm(x)
+        return self.latent_up(x)
 
     def set_token_dispatcher(self, token_dispatcher: TokenDispatcher) -> None:
         # Variable-k routing dispatches one (token, expert) pair per row.
@@ -183,7 +212,7 @@ class PrimeMoE(MoE):
                 self.tokens_per_expert, self.routing_confidence_sum, num_tokens_per_expert, routing_confidence_sum
             )
 
-        expert_input = x if self.latent_down is None else self.latent_norm(self.latent_down(x))
+        expert_input = self.prepare_expert_input(x)
         if self.variable_k:
             # Dispatch only the (token, routed expert) pairs, without the null experts.
             routed = selected_experts_indices < self.experts.num_experts
@@ -214,8 +243,7 @@ class PrimeMoE(MoE):
 
         shared_output = self.shared_expert(x) if self.shared_expert is not None else None
         self.token_dispatcher.synchronize()
-        if self.latent_up is not None:
-            routed_output = self.latent_up(routed_output)
+        routed_output = self.prepare_expert_output(routed_output)
         if shared_output is not None:
             routed_output = routed_output + shared_output
         return routed_output.reshape(bs, slen, dim)

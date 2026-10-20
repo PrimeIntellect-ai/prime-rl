@@ -1,4 +1,3 @@
-import bisect
 import zlib
 from pathlib import Path
 
@@ -6,30 +5,23 @@ import numpy as np
 import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from prime_rl.configs.pretrain import MixturePhaseConfig, PretrainDataConfig, TokenSourceConfig
+from prime_rl.configs.pretrain import PretrainDataConfig, TokenSourceConfig
 from prime_rl.trainer.sft.data import StatefulIterableDataset
 from prime_rl.utils.logger import get_logger
 
-# Unit of the per-epoch shuffle of a token source. A block boundary inside a document splits it, about once
-# per 256 windows of 4,096 tokens.
-BLOCK_TOKENS = 1 << 20
-# Unit of the window shuffle of a token source: consecutive windows, so the pieces of one long document spread
-# over many steps.
-WINDOW_GROUP = 4096
-
 
 class TokenShards:
-    """Datatrove tokenized shards in one folder, the ``num_tokens`` first tokens of the files in name order.
+    """Datatrove tokenized shards in one folder, the ``num_tokens`` first tokens of the files in name order, read as
+    one cyclic token stream.
 
     ``<name>.ds`` holds the token ids (little-endian, 2 or 4 bytes as recorded on the first line of
     ``<name>.ds.metadata``) and ``<name>.ds.index`` the uint64 end offset of every document. File
     boundaries are document boundaries.
 
-    Stream position ``p`` belongs to epoch ``p // num_tokens``, and every epoch reads every token once. With a
-    ``seed``, each epoch reads the tokens in blocks of ``BLOCK_TOKENS`` in a seeded random order, starting at a
-    seeded random offset, so epochs differ in order and window boundaries, and part of an epoch is a sample of
-    the whole source, and the windows are read shuffled within groups (``window_start``). Without one
-    (held-out sets), the stream is the files in name order."""
+    With a ``seed``, each epoch reads all ``num_tokens // seq_len`` windows of the source once, in a seeded random
+    order and from a seeded random offset, so epochs differ in order and window boundaries, and part of an epoch is a
+    sample of the whole source (``window_start``). The last ``num_tokens % seq_len`` tokens of an epoch are skipped.
+    Without one (held-out sets), the windows are read in order."""
 
     def __init__(self, config: TokenSourceConfig, seed: tuple[int, str] | None = None):
         self.files = sorted(config.path.glob("*.ds"))
@@ -44,8 +36,8 @@ class TokenShards:
         self.num_tokens = total if config.max_tokens is None else config.max_tokens
         self.seed = None if seed is None else [seed[0], zlib.crc32(seed[1].encode())]
         self.memmaps: dict[int, tuple[np.memmap, np.memmap]] = {}
-        self.layouts: dict[int, tuple[np.ndarray, np.ndarray, int]] = {}
-        self.window_order: tuple[tuple[int, int] | None, np.ndarray | None] = (None, None)
+        # The current epoch, its window order and its offset.
+        self.epoch_order: tuple[int | None, np.ndarray | None, int] = (None, None, 0)
 
     def open(self, file_index: int) -> tuple[np.memmap, np.memmap]:
         # Opened lazily, so every dataloader worker maps the files itself.
@@ -56,33 +48,18 @@ class TokenShards:
             self.memmaps[file_index] = tokens, doc_ends
         return self.memmaps[file_index]
 
-    def layout(self, epoch: int) -> tuple[np.ndarray, np.ndarray, int]:
-        """An epoch's block order, the stream offsets where its blocks start, and its start offset."""
-        if epoch not in self.layouts:
-            rng = np.random.default_rng([*self.seed, epoch])
-            order = rng.permutation(-(-self.num_tokens // BLOCK_TOKENS))
-            lengths = np.minimum(BLOCK_TOKENS, self.num_tokens - order * BLOCK_TOKENS)
-            self.layouts[epoch] = order, np.cumsum([0, *lengths]), int(rng.integers(self.num_tokens))
-        return self.layouts[epoch]
-
     def locate(self, position: int, length: int) -> tuple[int, int, int]:
         """File index, offset in the file and length of the contiguous file run at stream ``position``,
         at most ``length`` tokens."""
-        epoch, position = divmod(position, self.num_tokens)
+        position %= self.num_tokens
         length = min(length, self.num_tokens - position)
-        if self.seed is not None:
-            order, block_starts, offset = self.layout(epoch)
-            position = (position + offset) % self.num_tokens
-            block = int(np.searchsorted(block_starts, position, side="right")) - 1
-            length = min(length, int(block_starts[block + 1]) - position)
-            position = int(order[block]) * BLOCK_TOKENS + position - int(block_starts[block])
         file_index = int(np.searchsorted(self.starts, position, side="right")) - 1
         length = min(length, int(self.starts[file_index + 1]) - position)
         return file_index, position - int(self.starts[file_index]), length
 
     def read(self, start: int, length: int) -> tuple[np.ndarray, list[int]]:
-        """Tokens ``[start, start + length)`` of the stream and the offsets in them where a document starts.
-        A block cut through a document starts a new one."""
+        """Tokens ``[start, start + length)`` of the cyclic stream and the offsets in them where a document starts.
+        The wrap from the end of the stream to its start begins a new document."""
         pieces, doc_starts = [], []
         offset = 0
         while offset < length:
@@ -97,20 +74,20 @@ class TokenShards:
         return np.concatenate(pieces).astype(np.int64), doc_starts
 
     def window_start(self, position: int, seq_len: int) -> int:
-        """Stream position of the window to read when ``position`` tokens have been read. With a seed, each epoch's
-        windows are read in a seeded random order within groups of ``WINDOW_GROUP`` consecutive windows."""
+        """Stream offset of the window to read when ``position`` tokens have been read."""
         if self.seed is None:
-            return position
-        epoch = position // self.num_tokens
-        group = (position - epoch * self.num_tokens) // (WINDOW_GROUP * seq_len)
-        group_start = epoch * self.num_tokens + group * WINDOW_GROUP * seq_len
-        group_end = min((epoch + 1) * self.num_tokens, group_start + WINDOW_GROUP * seq_len)
-        # The windows that start in [group_start, group_end).
-        first, last = -(-group_start // seq_len), -(-group_end // seq_len)
-        if self.window_order[0] != (epoch, group):
-            order = np.random.default_rng([*self.seed, epoch, group, 1]).permutation(last - first)
-            self.window_order = (epoch, group), order
-        return (first + int(self.window_order[1][position // seq_len - first])) * seq_len
+            return position % self.num_tokens
+        num_windows = self.num_tokens // seq_len
+        epoch, window = divmod(position // seq_len, num_windows)
+        if self.epoch_order[0] != epoch:
+            rng = np.random.default_rng([*self.seed, epoch])
+            order = rng.permutation(num_windows).astype(np.uint32)
+            self.epoch_order = epoch, order, int(rng.integers(self.num_tokens))
+        _, order, offset = self.epoch_order
+        return (offset + int(order[window]) * seq_len) % self.num_tokens
+
+    def first_token(self) -> int:
+        return int(self.open(0)[0][0])
 
     def last_token_of_first_document(self) -> int:
         tokens, doc_ends = self.open(0)
@@ -141,20 +118,16 @@ class RandomTokens:
 class TokenDataset(StatefulIterableDataset):
     """``seq_len`` windows of token sources, each window from one source of a weighted mixture.
 
-    Window ``w`` belongs to step ``w // batch_size``; its source is drawn from that step's phase weights
-    with an RNG keyed by ``(seed, w)``, and it continues the source's stream where that source's last
-    window ended. Every data rank walks the whole window sequence but reads only its own windows; the
-    state is the window counter and the tokens read per source. Each
-    window reads one token past its end for the last target. With ``num_windows`` the dataset stops
-    after that many windows."""
+    Window ``w``'s source is drawn from the mixture ``weights`` with an RNG keyed by ``(seed, w)``, and it is that
+    source's next window (``TokenShards.window_start``). Every data rank walks the whole window sequence but reads only
+    its own windows; the state is the window counter and the tokens read per source. Each window reads one token past
+    its end for the last target. With ``num_windows`` the dataset stops after that many windows."""
 
     def __init__(
         self,
         sources: dict[str, TokenShards | RandomTokens],
-        phases: list[MixturePhaseConfig],
+        weights: dict[str, float],
         seq_len: int,
-        batch_size: int,
-        max_steps: int,
         seed: int = 0,
         non_dp_size: int = 1,
         num_windows: int | None = None,
@@ -162,10 +135,9 @@ class TokenDataset(StatefulIterableDataset):
         super().__init__(non_dp_size)
         self.sources = sources
         self.names = list(sources)
-        self.phase_starts = [round(phase.start * max_steps) for phase in phases]
-        self.phase_cdfs = [np.cumsum([phase.weights.get(name, 0.0) for name in self.names]) for phase in phases]
+        self.weights = np.array([weights.get(name, 0.0) for name in self.names])
+        self.cdf = np.cumsum(self.weights)
         self.seq_len = seq_len
-        self.batch_size = batch_size
         self.seed = seed
         self.num_windows = num_windows
         self.tokens = dict.fromkeys(self.names, 0)
@@ -180,23 +152,18 @@ class TokenDataset(StatefulIterableDataset):
         self.step = state_dict["dataset"]["step"]
         self.tokens.update(state_dict["dataset"]["tokens"])
 
-    def planned_epochs(self, max_steps: int) -> dict[str, float]:
-        """Expected passes over each source's tokens in ``max_steps`` steps."""
-        ends = [*self.phase_starts[1:], max_steps]
-        step_tokens = self.batch_size * self.seq_len
-        tokens = sum(
-            (end - start) * step_tokens * np.diff(cdf, prepend=0.0)
-            for start, end, cdf in zip(self.phase_starts, ends, self.phase_cdfs)
-        )
-        return {name: float(tokens[i]) / self.sources[name].num_tokens for i, name in enumerate(self.names)}
+    def planned_epochs(self, num_tokens: int) -> dict[str, float]:
+        """Expected passes over each source's tokens when ``num_tokens`` tokens are read."""
+        return {
+            name: num_tokens * float(weight) / self.sources[name].num_tokens
+            for name, weight in zip(self.names, self.weights)
+        }
 
     def source(self, window: int) -> str:
         if len(self.names) == 1:
             return self.names[0]
-        phase = bisect.bisect_right(self.phase_starts, window // self.batch_size) - 1
-        cdf = self.phase_cdfs[phase]
-        draw = np.random.default_rng([self.seed, window]).random() * cdf[-1]
-        return self.names[min(int(np.searchsorted(cdf, draw, side="right")), len(self.names) - 1)]
+        draw = np.random.default_rng([self.seed, window]).random() * self.cdf[-1]
+        return self.names[min(int(np.searchsorted(self.cdf, draw, side="right")), len(self.names) - 1)]
 
     def __iter__(self):
         self._setup_world_info()
@@ -251,16 +218,14 @@ def setup_train_dataset(
 ) -> TokenDataset:
     if config.type == "fake":
         sources = {"fake": RandomTokens(vocab_size, config.seed)}
-        phases = [MixturePhaseConfig(weights={"fake": 1.0})]
+        weights = {"fake": 1.0}
     else:
         sources = {name: TokenShards(source, seed=(config.seed, name)) for name, source in config.sources.items()}
         check_eos(sources, eos_token_id)
-        phases = config.phases
-    dataset = TokenDataset(
-        sources, phases, config.seq_len, config.batch_size, max_steps, seed=config.seed, non_dp_size=non_dp_size
-    )
+        weights = config.weights
+    dataset = TokenDataset(sources, weights, config.seq_len, seed=config.seed, non_dp_size=non_dp_size)
     if config.type == "tokens":
-        epochs = dataset.planned_epochs(max_steps)
+        epochs = dataset.planned_epochs(max_steps * config.batch_tokens)
         get_logger().info(f"Planned epochs per source: {epochs}")
         if over := {name: epoch for name, epoch in epochs.items() if epoch > config.max_epochs}:
             raise ValueError(f"Planned epochs {over} exceed data.max_epochs={config.max_epochs}")
@@ -269,8 +234,7 @@ def setup_train_dataset(
 
 def setup_val_dataset(source: TokenShards, seq_len: int, num_windows: int, non_dp_size: int) -> TokenDataset:
     """One pass over the first ``num_windows`` windows of a held-out source."""
-    phases = [MixturePhaseConfig(weights={"val": 1.0})]
-    return TokenDataset({"val": source}, phases, seq_len, 1, 1, non_dp_size=non_dp_size, num_windows=num_windows)
+    return TokenDataset({"val": source}, {"val": 1.0}, seq_len, non_dp_size=non_dp_size, num_windows=num_windows)
 
 
 def check_eos(sources: dict[str, TokenShards], eos_token_id: int) -> None:
@@ -283,3 +247,12 @@ def check_eos(sources: dict[str, TokenShards], eos_token_id: int) -> None:
                 f"The first document of source {name!r} ends with token {last}, not the tokenizer's EOS "
                 f"{eos_token_id}. Were the shards tokenized with tokenizer.name?"
             )
+
+
+def starts_with_bos(sources: dict[str, TokenShards], bos_token_id: int | None) -> bool:
+    """Whether the documents of the sources start with the tokenizer's BOS, read off the first document of every
+    source. The eval suite formats its requests the same way."""
+    starts = {name: source.first_token() == bos_token_id for name, source in sources.items()}
+    if len(set(starts.values())) > 1:
+        raise ValueError(f"Only some token sources start their documents with BOS: {starts}")
+    return all(starts.values())

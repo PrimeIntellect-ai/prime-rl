@@ -1,4 +1,4 @@
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
+import prime_rl._compat  # noqa: F401
 
 import math
 import time
@@ -13,14 +13,13 @@ from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
-from prime_rl.utils.pathing import resolve_latest_ckpt_step
+from prime_rl.utils.pathing import resolve_resume_step
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import CheckpointConfig
 from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_sender
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -46,6 +45,7 @@ from prime_rl.trainer.sft.data import (
     setup_dataset,
 )
 from prime_rl.trainer.utils import (
+    get_grad_accum_steps,
     GarbageCollection,
     MemoryProfiler,
     begin_backward,
@@ -117,13 +117,9 @@ def train(config: SFTConfig):
     # Initialize parallel dimensions
     parallel_dims = get_parallel_dims(config.model)
 
-    total_micro_batches = config.data.batch_size * config.model.cp
-    micro_batches_per_step = world.world_size * config.data.micro_batch_size
-    assert total_micro_batches % micro_batches_per_step == 0, (
-        f"batch_size * cp ({total_micro_batches}) must be divisible by "
-        f"world_size * micro_batch_size ({micro_batches_per_step})"
+    grad_accum_steps = get_grad_accum_steps(
+        config.data.batch_size, config.data.micro_batch_size, config.model.cp, world.world_size
     )
-    grad_accum_steps = total_micro_batches // micro_batches_per_step
 
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
@@ -132,14 +128,7 @@ def train(config: SFTConfig):
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.run_dir, config.ckpt, resume=config.resume)
 
-    checkpoint_step = None
-    if config.resume is not None:
-        if config.resume.dir is not None:
-            checkpoint_step = config.resume.dir_step
-        else:
-            checkpoint_step = config.resume.step
-            if checkpoint_step is None:
-                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
+    checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)
 
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
@@ -235,7 +224,6 @@ def train(config: SFTConfig):
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
@@ -259,25 +247,18 @@ def train(config: SFTConfig):
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
-            defer_vlm_cp_to_model = (
-                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
-            )
+            defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(
                     input_ids,
                     position_ids,
                     cp_rank,
                     cp_size,
-                    cp_group,
                     seq_lens=seq_lens,
-                    cp_style=config.model.cp_style,
                 )
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-        if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 

@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -11,7 +10,7 @@ from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
-from prime_rl.entrypoints.inference import vllm_overrides_fragment
+from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
 from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -21,9 +20,10 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    launcher_attempt_env,
     prepare_attempt_dirs,
-    resolve_latest_ckpt_step,
-    validate_run_dir,
+    prepare_run,
+    resolve_resume_step,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -88,6 +88,8 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     for name, component in dump_rl_components(config).items():
         with open(output_dir / filenames[name], "w") as f:
             json.dump(component, f, indent=2)
+    if config.inference is not None:
+        write_pd_configs(config.inference, output_dir)
 
     # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
@@ -139,6 +141,7 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
     }
+    attempt_env = launcher_attempt_env(config_dir, log_dir)
 
     # Validate client port matches inference server port
     if config.inference is not None:
@@ -216,6 +219,7 @@ def rl_local(config: RLConfig):
                 **config.env_vars,
                 **config.orchestrator.env_vars,
                 **wandb_shared_env,
+                **attempt_env,
                 "WANDB_SHARED_LABEL": "orchestrator",
             },
             log_path=log_dir / "orchestrator.log",
@@ -241,6 +245,7 @@ def rl_local(config: RLConfig):
                 **config.env_vars,
                 **config.trainer.env_vars,
                 **wandb_shared_env,
+                **attempt_env,
                 "WANDB_SHARED_LABEL": "trainer",
                 "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
             },
@@ -265,15 +270,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
-    offload = config.inference.kv_cache_offload if config.inference is not None else None
-    is_mooncake = offload is not None and offload.type == "mooncake"
-    mooncake_vars = dict(
-        kv_offload=offload is not None,
-        kv_offload_mooncake=is_mooncake,
-        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
-        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
-        kv_offload_device_name=offload.device_name if is_mooncake else "",
-    )
+    mooncake_vars = dict(mooncake_offloads=mooncake_offloads(config.inference))
 
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the
     # user's config merged on top. Runtime wiring stays in the template.
@@ -481,38 +478,17 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
-    # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
-    # the vehicle for runtime info between processes, and every spawned process inherits
-    # them. Components launched standalone have no run identity. TODO: fetch the id from
-    # the Prime SDK once runs are registered there.
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None  # resolved at construction
-    os.environ["PRL_RUN_NAME"] = config.run.name
-
-    resuming = config.resume is not None
-    clean = config.clean and not os.environ.get("NEVER_CLEAN")
+    # TODO: fetch the run id from the Prime SDK once runs are registered there.
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_run_dir(
-        config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
-    )
-    config.run_dir.mkdir(parents=True, exist_ok=True)
-    if ckpt_output_dir is not None:
-        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_run(config, ckpt_output_dir)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
     # step is stale. When training from scratch, every existing step directory is
     # stale — without this, a fresh run in a dirty run dir would pick up rollouts
     # from a previous run and the orchestrator would see a negative async level.
     get_logger().info("Starting RL run")
-    resume_step: int | None = None
-    if resuming:
-        if config.resume.dir is not None:
-            resume_step = config.resume.dir_step
-        else:
-            resume_step = config.resume.step
-            if resume_step is None:
-                ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
+    ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
+    resume_step = resolve_resume_step(config.resume, get_ckpt_dir(ckpt_base))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

@@ -528,9 +528,12 @@ class FlashAttention(nn.Module):
         value_states = value_states.transpose(1, 2)
 
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        attn_output = out.contiguous().view(1, out.shape[0], -1)
-        attn_output = self.o_proj(attn_output)
-        return attn_output, None
+        return self.project_output(out, value_states[0], hidden_states), None
+
+    def project_output(self, out: torch.Tensor, values: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
+        """``o_proj`` of the per-head attention output ``out`` ([tokens, heads, dim]). Subclasses that change the
+        output first also get the values ([tokens, kv_heads, dim]) and the block input."""
+        return self.o_proj(out.contiguous().view(1, out.shape[0], -1))
 
 
 ATTN_IMPL2CLASS = {
@@ -538,47 +541,3 @@ ATTN_IMPL2CLASS = {
     "flash_attention_3": functools.partial(FlashAttention, flash_attn_version=3),
     "flash_attention_4": functools.partial(FlashAttention, flash_attn_version=4),
 }
-
-
-def substitute_ring_attn(
-    process_group: torch.distributed.ProcessGroup,
-    heads_k_stride: int,
-    attn_impl: str = "flash_attention_2",
-) -> None:
-    """Patch _compute_attention on FlashAttention variants to use ring attention."""
-    from .ring_attn import ring_varlen_attention
-
-    def _ring_compute_attention(self, q, k, v, cu_seqlens, max_seqlen):
-        from ring_flash_attn.adapters.hf_adapter import DATA_PARAMS
-
-        window_size = (-1, -1)
-        sliding_window = getattr(self, "sliding_window", None)
-        if sliding_window is not None:
-            window_size = (sliding_window - 1, 0)
-
-        out = ring_varlen_attention(
-            q,
-            k,
-            v,
-            cu_seqlens_q=DATA_PARAMS["cu_seqlens_q"],
-            cu_seqlens_k=DATA_PARAMS["cu_seqlens_k"],
-            max_seqlen_q=DATA_PARAMS["max_seqlen_q"],
-            max_seqlen_k=DATA_PARAMS["max_seqlen_k"],
-            local_k_slice=DATA_PARAMS["local_k_slice"],
-            causal=True,
-            window_size=window_size,
-            group=process_group,
-            heads_k_stride=heads_k_stride,
-            attention_backend=attn_impl,
-        )
-        return out
-
-    FlashAttention._compute_attention = _ring_compute_attention
-
-    from prime_rl.trainer.models.afmoe.modeling_afmoe import AfmoeFlashAttention
-
-    AfmoeFlashAttention._compute_attention = _ring_compute_attention
-
-    from prime_rl.trainer.models.gpt_oss.attention import substitute_gpt_oss_ring_attention
-
-    substitute_gpt_oss_ring_attention(process_group, heads_k_stride)

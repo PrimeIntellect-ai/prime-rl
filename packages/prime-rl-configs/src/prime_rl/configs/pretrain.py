@@ -1,26 +1,13 @@
 import math
 import uuid
-import warnings
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from prime_rl.configs.monitors import TrainMonitorsConfig
-from prime_rl.configs.shared import (
-    EnvVars,
-    HeartbeatConfig,
-    ResumeConfig,
-    RunConfig,
-    SFTDeploymentConfig,
-    SingleNodeDeploymentConfig,
-    SlurmConfig,
-    TrainerLogConfig,
-)
 from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
-    GCConfig,
     InitConfig,
     LinearSchedulerConfig,
     ModelConfig,
@@ -28,22 +15,21 @@ from prime_rl.configs.trainer import (
     MuonConfig,
     ParametrizationConfig,
     SchedulerConfig,
-    TokenizerConfig,
-    validate_scheduler,
+    TrainerLaunchConfig,
 )
-from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
+from prime_rl.utils.config import BaseConfig
 
 
 class MoEBalanceConfig(BaseConfig):
     """MoE load balancing as in DeepSeek-V3: an aux-loss-free selection bias plus a small sequence-wise balance
     loss."""
 
-    bias_update: Literal["sign", "quantile"] = "sign"
-    """``sign``: every step, each layer's bias moves by ``bias_update_rate`` towards underloaded experts.
-    ``quantile``: quantile balancing (Su 2026; Kimi K3, Marin): every step, each layer's bias is set to the value
-    with which every expert would have been selected by ``top_k / num_experts`` of the step's tokens (null experts
-    included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Marin found it works
-    best on the router logits (``router_bias_on_logits`` in the model config)."""
+    bias_update: Literal["sign", "quantile"] = "quantile"
+    """``quantile`` (default): quantile balancing (Su 2026; Kimi K3, Marin): every step, each layer's bias is set to
+    the value with which every expert would have been selected by ``top_k / num_experts`` of the step's tokens (null
+    experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Marin found it
+    works best on the router logits (``router_bias_on_logits`` in the model config, on by default). ``sign``: every
+    step, each layer's bias moves by ``bias_update_rate`` towards underloaded experts."""
 
     bias_update_rate: float = Field(3e-3, ge=0)
     """Step size of the sign update (gamma): every step, each layer's bias moves by this towards underloaded experts,
@@ -80,20 +66,6 @@ class TokenSourceConfig(BaseConfig):
 
     max_tokens: int | None = Field(None, ge=1)
     """Tokens available from this source: the first ``max_tokens`` of its stream. Defaults to all tokens in the shards."""
-
-
-class MixturePhaseConfig(BaseConfig):
-    start: float = Field(0.0, ge=0, lt=1)
-    """Fraction of ``max_steps`` at which this phase starts."""
-
-    weights: dict[str, float]
-    """Token share of each source in this phase. Shares are non-negative and sum to 1; unlisted sources get 0."""
-
-    @model_validator(mode="after")
-    def validate_weights(self):
-        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):
-            raise ValueError(f"Phase weights must be non-negative and sum to 1, got {self.weights}")
-        return self
 
 
 class BaseBatchConfig(BaseConfig):
@@ -145,20 +117,18 @@ class TokensDataConfig(BaseBatchConfig):
     sources: dict[str, TokenSourceConfig]
     """Token sources by name. The name labels the source's metrics."""
 
-    phases: list[MixturePhaseConfig]
-    """Mixture phases in order. The first starts at 0."""
+    weights: dict[str, float]
+    """Token share of each source. Shares are non-negative and sum to 1; unlisted sources get 0."""
 
     max_epochs: float = Field(1.0, gt=0)
     """Most passes over a source's available tokens that the run (``max_steps``) may make. Checked at startup."""
 
     @model_validator(mode="after")
-    def validate_phases(self):
-        starts = [phase.start for phase in self.phases]
-        if not starts or starts[0] != 0 or starts != sorted(set(starts)):
-            raise ValueError(f"Phase starts must begin at 0 and increase, got {starts}")
-        for phase in self.phases:
-            if unknown := phase.weights.keys() - self.sources.keys():
-                raise ValueError(f"Phase weights name unknown sources {sorted(unknown)}")
+    def validate_weights(self):
+        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):
+            raise ValueError(f"data.weights must be non-negative and sum to 1, got {self.weights}")
+        if unknown := self.weights.keys() - self.sources.keys():
+            raise ValueError(f"data.weights name unknown sources {sorted(unknown)}")
         return self
 
 
@@ -177,18 +147,6 @@ class ValConfig(BaseConfig):
     sources: dict[str, TokenSourceConfig]
     """Held-out sources by name, logged as ``val/<name>/loss``, ``/ppl`` and ``/bpb``. Each eval reads the same
     windows: as many as fill whole micro-batches on every data-parallel rank."""
-
-
-class DiagnosticsConfig(BaseConfig):
-    """Diagnostic step: on every ``interval``-th step, the optimizer update's size per parameter group and a
-    forward pass on a fixed probe batch (the first ``probe_tokens`` tokens of each rank's first micro-batch)
-    that records attention max logits and entropy per head and the residual-stream size per layer."""
-
-    interval: int = Field(100, ge=1)
-    """Run the diagnostics every N steps."""
-
-    probe_tokens: int = Field(2048, ge=64)
-    """Tokens per rank in the probe batch. Fixed across sequence lengths so attention entropy stays comparable."""
 
 
 class EvalsConfig(BaseConfig):
@@ -213,17 +171,12 @@ class EvalsConfig(BaseConfig):
     ``ctxcont`` sets. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g. ``bpb@4k``). Requests that are the
     same at several lengths are scored once."""
 
-    token_budget: int = Field(32768, ge=1)
-    """Tokens per packed row (one forward). Must exceed the longest context length."""
+    micro_batch_tokens: int | None = Field(None, ge=1)
+    """Tokens per packed eval row (one forward pass on one GPU). Defaults to ``data.micro_batch_tokens`` or the
+    longest of ``seq_lens``, whichever is larger; must be at least the longest of ``seq_lens``."""
 
     save_arrays: bool = False
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
-
-    @model_validator(mode="after")
-    def validate_token_budget(self):
-        if self.token_budget <= max(self.seq_lens):
-            raise ValueError("token_budget must exceed the longest of seq_lens")
-        return self
 
 
 class PretrainAdamWConfig(AdamWConfig):
@@ -239,24 +192,20 @@ class PretrainMuonConfig(MuonConfig):
 PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
 
 
-class PretrainConfig(BaseConfig):
+class PretrainConfig(TrainerLaunchConfig):
+    # A trainable fp32 router, and weight decay 0.1.
+    auto_moe_router_dtype = "float32"
+    auto_freeze_moe_router = False
+    auto_weight_decay = 0.1
+
     model: PretrainModelConfig = PretrainModelConfig()
     """The model. ``model.name`` is an HF model id or a local model directory with a ``config.json`` (as in SFT and
     RL); its weights are not loaded: the model is initialized from scratch (``model.init``) or resumed."""
-
-    env_vars: EnvVars = {}
-    """Extra environment variables for the trainer processes."""
-
-    tokenizer: TokenizerConfig = TokenizerConfig()
-    """The tokenizer. Defaults to the one in ``model.name``."""
 
     data: PretrainDataConfig
 
     val: ValConfig | None = None
     """Held-out loss on token shards (``val/*``). If None, it never runs."""
-
-    diagnostics: DiagnosticsConfig | None = DiagnosticsConfig()
-    """Diagnostic step (update sizes, attention and activation probe). If None, it never runs."""
 
     evals: EvalsConfig | None = None
     """The eval suite, scored inside the trainer. If None, it never runs."""
@@ -270,26 +219,6 @@ class PretrainConfig(BaseConfig):
     ckpt: CheckpointConfig | None = CheckpointConfig()
     """Checkpointing. Defaults to a checkpoint at the end of training."""
 
-    resume: ResumeConfig | None = None
-    """Resume the run from a checkpoint. If None, does not resume."""
-
-    log: TrainerLogConfig = TrainerLogConfig()
-
-    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
-
-    run: RunConfig = Field(default_factory=RunConfig)
-    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
-
-    output_dir: Path = Field(default_factory=default_output_dir)
-    """Directory that groups related runs. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
-
-    clean: bool = False
-    """Delete the run directory before starting. Required to overwrite a previous run's artifacts when not resuming."""
-
-    matmul_precision: Literal["highest", "high", "medium"] = "high"
-    """Precision for float32 matrix multiplications (``torch.set_float32_matmul_precision``)."""
-
     max_steps: int = Field(ge=1)
     """Training steps."""
 
@@ -297,38 +226,14 @@ class PretrainConfig(BaseConfig):
     """CompleteP relative to a base shape. If None, the standard parametrization: the same per-role parameter
     groups with every multiplier at 1 (norms and biases without weight decay)."""
 
-    gc: GCConfig | None = GCConfig()
-    """Deterministic garbage collection every N steps. Set to null for Python's default GC."""
-
-    dist_timeout_seconds: int = 900
-    """Timeout in seconds for torch distributed ops."""
-
-    heartbeat: HeartbeatConfig | None = None
-    """BetterStack heartbeat configuration."""
-
-    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
-    """``single_node`` (``num_train_gpus`` on this node) or ``multi_node`` (``num_train_nodes`` x ``gpus_per_node``, needs ``[slurm]``). The online-eval fields (``num_infer_*``) are not used."""
-
-    slurm: SlurmConfig | None = None
-    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
-
-    dry_run: bool = False
-    """Only validate and dump resolved configs, then exit."""
-
-    @property
-    def run_dir(self) -> Path:
-        assert self.run.dir is not None  # resolved at construction
-        return self.output_dir / self.run.dir
+    def default_run_name(self) -> str:
+        return f"{Path(self.model.name).name}--{uuid.uuid4().hex[:8]}"
 
     @model_validator(mode="after")
-    def resolve_autos(self):
-        """Resolve the shared ``auto`` fields for pretraining: a trainable fp32 MoE router and weight decay 0.1."""
-        if self.model.moe_router_dtype == "auto":
-            self.model.moe_router_dtype = "float32"
-        if self.model.freeze_moe_router == "auto":
-            self.model.freeze_moe_router = False
-        if self.optim.weight_decay == "auto":
-            self.optim.weight_decay = 0.1
+    def validate_unsupported(self):
+        unsupported = [name for name in ("trace_path", "memory_profiler_path", "control") if getattr(self, name)]
+        if unsupported:
+            raise ValueError(f"Pretraining does not support {', '.join(unsupported)} yet")
         return self
 
     @model_validator(mode="after")
@@ -338,74 +243,24 @@ class PretrainConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def auto_setup_run_identity(self):
-        if self.run.name is None:
-            self.run.name = f"{Path(self.model.name).name}--{uuid.uuid4().hex[:8]}"
-        if self.run.dir is None:
-            self.run.dir = self.run.name
-        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
-            self.monitors.wandb.name = self.run.name
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_tokenizer(self):
-        if self.tokenizer.name is None:
-            self.tokenizer.name = self.model.name
-        if self.tokenizer.trust_remote_code is None:
-            self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_deployment(self):
-        """A multi-node deployment needs SLURM and sets ``model.dp_replicate`` from ``nodes_per_fsdp_group``; the
-        SLURM job name defaults to the run name and the template to the bundled single- or multi-node template."""
-        deployment = self.deployment
-        if deployment.type == "multi_node":
-            if self.slurm is None:
-                raise ValueError("Must use SLURM for multi-node deployment.")
-            if deployment.nodes_per_fsdp_group is not None:
-                if deployment.num_train_nodes % deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({deployment.nodes_per_fsdp_group})"
-                    )
-                self.model.dp_replicate = deployment.num_train_nodes // deployment.nodes_per_fsdp_group
-        if self.slurm is not None:
-            if self.slurm.job_name is None:
-                self.slurm.job_name = self.run.name
-            if self.slurm.template_path is None:
-                templates_dir = find_package_resource("templates")
-                if templates_dir is not None:
-                    self.slurm.template_path = templates_dir / f"{deployment.type}_sft.sbatch.j2"
-        return self
-
-    @model_validator(mode="after")
-    def deepep_disables_grad_clipping(self):
-        if self.model.ep != 1 and self.model.moe.dispatch.type == "deepep" and self.optim.max_norm is not None:
-            warnings.warn(
-                "Gradient clipping is not compatible with DeepEP. "
-                "Automatically setting optim.max_norm to None (disabled).",
-                stacklevel=1,
-            )
-            self.optim.max_norm = None
-        return self
-
-    @model_validator(mode="after")
     def validate_cp(self):
         if self.model.cp > 1:
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("data.seq_len must be divisible by model.cp")
             if self.data.micro_batch_size != 1:
                 raise ValueError("data.micro_batch_tokens must equal data.seq_len with context parallelism")
-            if self.diagnostics is not None:
-                raise ValueError("[diagnostics] does not support context parallelism yet; set diagnostics = null")
             if self.evals is not None:
                 raise ValueError("[evals] does not support context parallelism yet")
         return self
 
     @model_validator(mode="after")
-    def validate_scheduler_steps(self):
-        validate_scheduler(self.scheduler, self.max_steps)
+    def auto_setup_eval_micro_batch_tokens(self):
+        if self.evals is not None:
+            longest = max(self.evals.seq_lens)
+            if self.evals.micro_batch_tokens is None:
+                self.evals.micro_batch_tokens = max(self.data.micro_batch_tokens, longest)
+            elif self.evals.micro_batch_tokens < longest:
+                raise ValueError(f"evals.micro_batch_tokens must be at least the longest of evals.seq_lens ({longest})")
         return self
 
     @model_validator(mode="after")

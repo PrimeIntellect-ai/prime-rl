@@ -2,12 +2,15 @@
 (`pretrain-evals` offline suite). A set lives in ``<data_dir>/<name>/`` as ``test.parquet`` plus ``meta.json``
 (``kind``, ``parquet_sha256``). Kinds:
 
-- ``ppl``: column ``text``. Each document is BOS + text + EOS, cut into non-overlapping windows of ``seq_len``
-  scored tokens (later windows start cold). Every token after BOS is scored.
+Requests start with BOS only if the training documents do (``bos``), so evals see the training format.
+
+- ``ppl``: column ``text``. Each document is [BOS +] text + EOS, cut into non-overlapping windows of ``seq_len``
+  scored tokens (later windows start cold). Every token after the first is scored; without BOS, bpb leaves out
+  the bytes of the first text token.
 - ``ctxcont``: ``context``/``continuation`` (+ ``choices``/``gold``, optional ``choice_contexts``). The
-  continuation is scored given BOS + context; context and continuation are tokenized jointly and the
+  continuation is scored given [BOS +] context; context and continuation are tokenized jointly and the
   continuation span is found by character offsets.
-- ``pairs``: ``good``/``bad`` sentences, each scored as BOS + sentence.
+- ``pairs``: ``good``/``bad`` sentences, each scored as [BOS +] sentence from its second token.
 
 A set is tokenized once (`prepare_set`); every round scores its requests (`score_requests`, the model's LM head
 replaced by `scoring_head`) and summarizes them (`summarize`)."""
@@ -162,12 +165,12 @@ def score_sets(
     return per_set
 
 
-def continuation_ids(tokenizer: PreTrainedTokenizer, context: str, continuation: str) -> Request:
-    """BOS + jointly tokenized context + continuation, and the index of the first continuation token (the
+def continuation_ids(tokenizer: PreTrainedTokenizer, context: str, continuation: str, prefix: list[int]) -> Request:
+    """``prefix`` + jointly tokenized context + continuation, and the index of the first continuation token (the
     first token that ends after the context; a token straddling the boundary counts as continuation)."""
     encoding = tokenizer(context + continuation, add_special_tokens=False, return_offsets_mapping=True)
     first = next(i for i, (_, end) in enumerate(encoding["offset_mapping"]) if end > len(context))
-    return [tokenizer.bos_token_id, *encoding["input_ids"]], first + 1
+    return [*prefix, *encoding["input_ids"]], first + len(prefix)
 
 
 def truncate_left(ids: list[int], start: int, seq_len: int) -> Request:
@@ -186,32 +189,39 @@ def requests_of(row: dict) -> list[tuple[str, str]]:
     return [(row["context"], row["continuation"])]
 
 
-def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_len: int) -> EvalSet:
-    """Load and tokenize one eval set."""
+def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_len: int, bos: bool) -> EvalSet:
+    """Load and tokenize one eval set; requests start with BOS if ``bos``."""
     meta = json.loads((data_dir / name / "meta.json").read_text())
     table = pq.read_table(data_dir / name / "test.parquet")
     kind, requests, context = meta["kind"], [], {}
+    prefix = [tokenizer.bos_token_id] if bos else []
     if kind == "ppl":
         texts = table.column("text").to_pylist()
-        owner = []
-        for doc, text_ids in enumerate(tokenizer(texts, add_special_tokens=False)["input_ids"]):
-            ids = [tokenizer.bos_token_id, *text_ids, tokenizer.eos_token_id]
+        encodings = tokenizer(texts, add_special_tokens=False, return_offsets_mapping=True)
+        owner, num_bytes = [], []
+        for doc, (text, text_ids) in enumerate(zip(texts, encodings["input_ids"])):
+            ids = [*prefix, *text_ids, tokenizer.eos_token_id]
             for begin in range(0, len(ids) - 1, seq_len):
                 requests.append((ids[begin : begin + seq_len + 1], 1))
                 owner.append(doc)
-        context = {"texts": texts, "owner": owner}
+            # Without BOS the first text token is only context.
+            scored_text = text if bos else text[encodings["offset_mapping"][doc][0][1] :]
+            num_bytes.append(len(scored_text.encode()))
+        context = {"owner": owner, "bytes": np.array(num_bytes)}
     elif kind == "ctxcont":
         rows = table.to_pylist()
         options = [requests_of(row) for row in rows]
         requests = [
-            truncate_left(*continuation_ids(tokenizer, ctx, cont), seq_len) for item in options for ctx, cont in item
+            truncate_left(*continuation_ids(tokenizer, ctx, cont, prefix), seq_len)
+            for item in options
+            for ctx, cont in item
         ]
         context = {"rows": rows, "options": options}
     elif kind == "pairs":
         good, bad = table.column("good").to_pylist(), table.column("bad").to_pylist()
         encoded = tokenizer(good + bad, add_special_tokens=False)["input_ids"]
         # Cut to the window like the other kinds, so every request fits in a row of ``token_budget`` tokens.
-        requests = [([tokenizer.bos_token_id, *ids][: seq_len + 1], 1) for ids in encoded]
+        requests = [([*prefix, *ids][: seq_len + 1], 1) for ids in encoded]
         context = {"num_good": len(good)}
     else:
         raise ValueError(f"Unknown eval set kind {kind!r} ({name})")
@@ -232,9 +242,9 @@ class MultiLengthSet:
 
 
 def prepare_multi_length_set(
-    name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_lens: list[int]
+    name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_lens: list[int], bos: bool
 ) -> MultiLengthSet:
-    versions = {seq_len: prepare_set(name, data_dir, tokenizer, seq_len) for seq_len in seq_lens}
+    versions = {seq_len: prepare_set(name, data_dir, tokenizer, seq_len, bos) for seq_len in seq_lens}
     distinct: dict[tuple[tuple[int, ...], int], int] = {}
     index = {
         seq_len: [distinct.setdefault((tuple(ids), start), len(distinct)) for ids, start in version.requests]
@@ -257,27 +267,27 @@ def length_label(seq_len: int) -> str:
 def summarize(eval_set: EvalSet, logprobs: list[np.ndarray], hits: list[np.ndarray]) -> tuple[dict, dict]:
     """Summary metrics and per-document / per-item arrays of one scored set."""
     if eval_set.kind == "ppl":
-        return summarize_ppl(eval_set.context["texts"], eval_set.context["owner"], logprobs)
+        return summarize_ppl(eval_set.context["bytes"], eval_set.context["owner"], logprobs)
     if eval_set.kind == "ctxcont":
         return summarize_ctxcont(eval_set.context["rows"], eval_set.context["options"], logprobs, hits)
     return summarize_pairs(eval_set.context["num_good"], logprobs)
 
 
-def summarize_ppl(texts: list[str], owner: list[int], logprobs: list[np.ndarray]) -> tuple[dict, dict]:
+def summarize_ppl(num_bytes: np.ndarray, owner: list[int], logprobs: list[np.ndarray]) -> tuple[dict, dict]:
+    """``num_bytes``: the bytes of each document's scored text."""
     bins = list(zip(POSITION_BINS[:-1], POSITION_BINS[1:]))
-    nll = np.zeros(len(texts))
-    tokens = np.zeros(len(texts), dtype=np.int64)
-    nll_bins = np.zeros((len(texts), len(bins)))
+    nll = np.zeros(len(num_bytes))
+    tokens = np.zeros(len(num_bytes), dtype=np.int64)
+    nll_bins = np.zeros((len(num_bytes), len(bins)))
     for doc, window in zip(owner, logprobs):
         nll[doc] -= window.sum()
         tokens[doc] += len(window)
         for b, (lo, hi) in enumerate(bins):
             nll_bins[doc, b] -= window[lo:hi].sum()
-    num_bytes = np.array([len(text.encode()) for text in texts])
     summary = {
         "loss": nll.sum() / tokens.sum(),
         "bpb": nll.sum() / (num_bytes.sum() * math.log(2)),
-        "docs": len(texts),
+        "docs": len(num_bytes),
         "tokens": int(tokens.sum()),
     }
     for b, (lo, hi) in enumerate(bins):
