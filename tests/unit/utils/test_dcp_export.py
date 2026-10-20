@@ -51,6 +51,7 @@ def test_export_device_dispatch(tiny_run, monkeypatch, format, device):
 
 @pytest.mark.parametrize("format", ["bf16", "fp8"])
 def test_cpu_export_rejects_multiple_processes(tmp_path, monkeypatch, format):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools"))
     cli = importlib.import_module(f"convert_dcp_to_{format}")
     monkeypatch.setenv("WORLD_SIZE", "2")
     with pytest.raises(ValueError, match="WORLD_SIZE must be 1"):
