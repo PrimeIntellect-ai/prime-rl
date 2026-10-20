@@ -317,7 +317,7 @@ def train(config: TrainerConfig):
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.perf_counter()
-        seq_len = micro_batches[0]["input_ids"].shape[1]
+        perf_counter = get_perf_counter(model)
 
         # Normalize each loss component by its own global (dp_cp) denominator, so every rank
         # divides by the same value. With a per-rank denominator, ranks with fewer loss
@@ -360,8 +360,10 @@ def train(config: TrainerConfig):
 
         step_tokens_per_expert = 0
         step_local_num_tokens = 0
+        step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
+            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
             advantages = micro_batch["advantages"].to("cuda")
@@ -642,14 +644,13 @@ def train(config: TrainerConfig):
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
         # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens = global_num_tokens.item()
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
         progress.total_tokens += num_tokens
         progress.total_samples += batch_size
-        perf_counter = get_perf_counter(model, seq_len)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
-        mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
+        mfu = perf_counter.get_step_mfu(num_flops, forward_backward_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
