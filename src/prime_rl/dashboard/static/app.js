@@ -30,7 +30,7 @@ const state = {
   live: true,
   metrics: {
     loaded: false, offset: 0, byKey: new Map(),
-    charts: [], renderedKeys: -1, timeKeys: new Set(), timeZero: null, maxStep: null,
+    charts: [], renderedKeys: -1, timeKeys: new Set(), windowKeys: new Set(), timeZero: null, maxStep: null,
     collapsedSections: new Set(prefs.collapsedSections ?? []),
     searches: { overview: prefs.overviewSearch ?? "", metrics: prefs.metricsSearch ?? "" },
     smooth: prefs.smooth ?? 1, paneMin: prefs.paneMin ?? 300, paneH: prefs.paneH ?? 170,
@@ -210,7 +210,7 @@ async function selectRun(name, deferTab = false) {
   state.metrics = {
     ...state.metrics,
     loaded: false, fetching: false, offset: 0, byKey: new Map(), charts: [], renderedKeys: -1,
-    timeKeys: new Set(), timeZero: null, maxStep: null,
+    timeKeys: new Set(), windowKeys: new Set(), timeZero: null, maxStep: null,
     evalEtag: null, evalCount: 0, evalCost: null, evalSeries: null, allStrips: new Set(),
   };
   // the env filter is per run: a name from the last run means nothing in this one
@@ -480,7 +480,8 @@ function ingestInto(store, rows, meta) {
   const touched = new Set();
   for (const row of rows) {
     // step=None rows are time-keyed (inference metrics): x = seconds since run start
-    const isTime = row.step == null;
+    const isWindow = typeof row["rollout/window"] === "number";
+    const isTime = row.step == null && !isWindow;
     let x;
     if (isTime) {
       const t = row.time ?? row._timestamp;
@@ -489,12 +490,12 @@ function ingestInto(store, rows, meta) {
       x = Math.max(0, t - store.timeZero);
     } else {
       if (typeof row.step !== "number") continue;
-      x = row.step;
-      if (store.maxStep == null || x > store.maxStep) store.maxStep = x;
+      if (store.maxStep == null || row.step > store.maxStep) store.maxStep = row.step;
+      x = isWindow ? row["rollout/window"] : row.step;
     }
     const producer = isTime ? "infer" : rowProducer(row, meta);
     for (const [key, value] of Object.entries(row)) {
-      if (key === "step" || key === "time" || key === "_timestamp" || key === "producer" || typeof value !== "number") continue;
+      if (key === "step" || key === "rollout/window" || key === "time" || key === "_timestamp" || key === "producer" || typeof value !== "number") continue;
       let producers = store.byKey.get(key);
       if (!producers) store.byKey.set(key, (producers = new Map()));
       let series = producers.get(producer);
@@ -502,6 +503,7 @@ function ingestInto(store, rows, meta) {
       series.set(x, value);
       touched.add(key);
       if (isTime) store.timeKeys.add(key);
+      if (isWindow) store.windowKeys.add(key);
     }
   }
   return touched;
@@ -1404,7 +1406,7 @@ async function fetchCompares() {
     state.compare.runs.map(async (name) => {
       let store = state.compare.data.get(name);
       if (!store) {
-        store = { offset: 0, byKey: new Map(), timeKeys: new Set(), timeZero: null, maxStep: null, meta: null };
+        store = { offset: 0, byKey: new Map(), timeKeys: new Set(), windowKeys: new Set(), timeZero: null, maxStep: null, meta: null };
         state.compare.data.set(name, store);
       }
       try {
@@ -1574,7 +1576,7 @@ function resolvePanel(panel) {
     if (activeFilter) keys = keys.filter((k) => activeFilter.test(k));
     for (const key of keys)
       for (const [producer, points] of store.byKey.get(key))
-        series.push({ key, producer, points, run, time: store.timeKeys.has(key) });
+        series.push({ key, producer, points, run, time: store.timeKeys.has(key), window: store.windowKeys.has(key) });
   }
   return series;
 }
@@ -1644,7 +1646,7 @@ function buildChartLayout(entry, timeAxis) {
   groups.forEach((g, gi) => g.strands.forEach((strand) => mains.push({ strand, color: colors[gi] })));
   const labels = seriesLabels(mains.map((m) => m.strand.main));
   const cols = []; // parallel to uPlot series[1..]: {s, role: ghost|main|aux}
-  const uSeries = [{ label: timeAxis ? "time" : "step" }];
+  const uSeries = [{ label: timeAxis ? "time" : entry.series.every((s) => s.window) ? "rollout window" : "step" }];
   const bands = [];
   const meta = [];
   let mainIdx = 0;
@@ -1802,7 +1804,7 @@ function unzoomPlugin() {
 }
 
 /* hover popover with the x value and every series' y value */
-function tooltipPlugin(meta, timeAxis) {
+function tooltipPlugin(meta, timeAxis, axisLabel = "step") {
   let tip;
   let dots;
   return {
@@ -1833,7 +1835,7 @@ function tooltipPlugin(meta, timeAxis) {
           return;
         }
         const x = u.data[0][idx];
-        let rows = `<div class="u-tip-x">${timeAxis ? fmtTickDur(x) : `step ${x}`}</div>`;
+        let rows = `<div class="u-tip-x">${timeAxis ? fmtTickDur(x) : `${axisLabel} ${x}`}</div>`;
         let any = false;
         meta.forEach((m) => {
           const v = u.data[m.dataIdx][idx]; // the strand's main (smoothed) series
@@ -1912,7 +1914,7 @@ function makeChart(el, layout, width, timeAxis = false) {
       axes: [xAxis, { ...axis, size: 54, values: (u, vals) => vals.map(fmtAxis) }],
       legend: { show: false },
       bands: layout.bands,
-      plugins: [tooltipPlugin(layout.meta, timeAxis), unzoomPlugin()],
+      plugins: [tooltipPlugin(layout.meta, timeAxis, layout.uSeries[0].label), unzoomPlugin()],
       series: layout.uSeries,
     },
     [[], ...layout.cols.map(() => [])],
