@@ -34,14 +34,14 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, *, device: str = "cp
         return convert_cuda(ckpt_dir, output_dir)
     if device != "cpu":
         raise ValueError(f"Unsupported export device: {device}")
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise ValueError("CPU export requires one process; run without torchrun (WORLD_SIZE must be 1)")
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
     model, tokenizer = resolve_run_configs(step_dir)
     model_config, tokenizer_config = model.model_dump(mode="json"), tokenizer.model_dump(mode="json")
     config = read_model_config(model_config)
-    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
-        raise ValueError("CPU export requires one process; run without torchrun (WORLD_SIZE must be 1)")
     config = prepare_export_config(config, model_config)
     output_dir = Path(output_dir) if output_dir is not None else step_dir / "weights"
     if output_dir.exists() or output_dir.is_symlink():

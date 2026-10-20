@@ -49,6 +49,29 @@ def test_export_device_dispatch(tiny_run, monkeypatch, format, device):
         assert (output / "model.safetensors.index.json").exists()
 
 
+@pytest.mark.parametrize("format", ["bf16", "fp8"])
+def test_cpu_export_rejects_multiple_processes(tmp_path, monkeypatch, format):
+    cli = importlib.import_module(f"convert_dcp_to_{format}")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    with pytest.raises(ValueError, match="WORLD_SIZE must be 1"):
+        cli.convert(tmp_path / "missing-checkpoint")
+
+
+@pytest.mark.parametrize("format", ["bf16", "fp8"])
+def test_cpu_export_preserves_existing_output(tiny_run, format):
+    _, step, _, _ = tiny_run
+    cli = importlib.import_module(f"convert_dcp_to_{format}")
+    output = step / "existing-output"
+    output.mkdir()
+    sentinel = output / "keep.txt"
+    sentinel.write_text("existing export")
+    with pytest.raises(FileExistsError, match="output already exists"):
+        cli.convert(step, output)
+    assert sentinel.read_text() == "existing export"
+    assert list(output.iterdir()) == [sentinel]
+    assert not list(step.glob(".existing-output-*"))
+
+
 def _model_state(layout):
     from transformers import GPT2Config, GPT2LMHeadModel
     from transformers.models.llama.configuration_llama import LlamaConfig
