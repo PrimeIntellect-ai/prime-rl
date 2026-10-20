@@ -203,7 +203,7 @@ See [Algorithms § Multi-Turn Trajectories](algorithms.md#multi-turn-trajectorie
 
 ### Launch
 
-The minimal SFT run trains `Qwen3-0.6B` on the `reverse-text` SFT dataset:
+The minimal SFT run trains `Qwen3.5-0.8B` on the `reverse-text` SFT dataset:
 
 ```bash
 uv run sft @ examples/basic/reverse-text/sft.toml --monitors.wandb

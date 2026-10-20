@@ -3,7 +3,7 @@ max_steps = 20
 [ckpt] # Checkpoint at the end of training
 
 [model]
-name = "PrimeIntellect/Qwen3-1.7B"
+name = "Qwen/Qwen3.5-2B"
 
 [data]
 name = "willcb/V3-wordle"

@@ -34,7 +34,7 @@ This is of course just a quick vibe check and no full-fledged evaluation, but we
 
 ## SFT
 
-We will fine-tune `PrimeIntellect/Qwen3-0.6B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-0.6B)), which is a clone of `Qwen/Qwen3-0.6B` ([HF](https://huggingface.co/Qwen/Qwen3-0.6B)) with a chat template suitable for multi-turn RL, on `willcb/R1-reverse-wikipedia-paragraphs-v1-1000` ([HF](https://huggingface.co/datasets/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) which contains 1K examples of reversals of small paragraphs.
+We will fine-tune `Qwen/Qwen3.5-0.8B` ([HF](https://huggingface.co/Qwen/Qwen3.5-0.8B)) on `willcb/R1-reverse-wikipedia-paragraphs-v1-1000` ([HF](https://huggingface.co/datasets/willcb/R1-reverse-wikipedia-paragraphs-v1-1000)) which contains 1K examples of reversals of small paragraphs.
 
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=s3p14m48jod).*
 
@@ -62,7 +62,7 @@ uv run torchrun \
 
 This should write a DCP checkpoint in `outputs/sft/checkpoints/step_100`.
 
-We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT).
+We have uploaded the final model as [`PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT`](https://huggingface.co/PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT) — trained from `PrimeIntellect/Qwen3-0.6B`, a clone of `Qwen/Qwen3-0.6B` with a chat template suitable for multi-turn RL. The example now fine-tunes `Qwen3.5-0.8B`, the closest base pre-cached on Prime hosted-training clusters; the RL section below keeps using the published 0.6B checkpoints.
 
 ## RL
 
