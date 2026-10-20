@@ -12,6 +12,7 @@ from prime_rl.trainer.models.deepseek_v4.attention import DeepseekV4Attention, P
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.utils.utils import default_dtype
+from tests.unit.train.models.deepseek_v4_markers import requires_datacenter_gpu
 
 # Every layer is built through `DeepseekV4Attention.__init__`, which refuses to construct without
 # the kernel it dispatches to, so the whole file needs tilelang.
@@ -22,19 +23,6 @@ pytestmark = [
         reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
     ),
 ]
-
-requires_fp8_indexer = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
-    reason="the indexer kernel quantizes to Triton fp8e4nv (e4m3), only supported on Hopper (SM90) and newer",
-)
-
-# The kernels' shared tiles fit only the datacenter Hopper and Blackwell SMs. The opt-in limit does
-# not follow capability order, so this enumerates rather than compares: sm120 allows well under half
-# of what sm90 does.
-requires_datacenter_gpu = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (9, 10),
-    reason="the fused sparse attention kernels need the shared memory of a datacenter Hopper or Blackwell GPU",
-)
 
 # Deliberately heterogeneous: one layer of every attention type, hash-routed bootstrap
 # layers ahead of standard MoE ones, and a sliding window narrow enough that the compressed
@@ -195,7 +183,6 @@ def _packed_context(doc_lens: tuple[int, ...], dtype: torch.dtype) -> PackedCont
     )
 
 
-@requires_fp8_indexer
 @requires_datacenter_gpu
 def test_deepseek_v4_hash_layers_route_on_token_ids():
     """The bootstrap layers read `input_ids`, so identical hidden states still route apart."""
@@ -220,7 +207,6 @@ def test_deepseek_v4_hash_layers_route_on_token_ids():
     torch.testing.assert_close(counts[0][0], expected)
 
 
-@requires_fp8_indexer
 @requires_datacenter_gpu
 def test_deepseek_v4_backward():
     """Every parameter that can train does, and the Lightning Indexer's still cannot."""

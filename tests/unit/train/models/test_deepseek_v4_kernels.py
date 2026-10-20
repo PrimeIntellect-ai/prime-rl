@@ -18,6 +18,7 @@ from prime_rl.trainer.models.layers.fp8_linear import (
 )
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.utils.utils import default_dtype
+from tests.unit.train.models.deepseek_v4_markers import requires_datacenter_gpu
 
 try:
     import tilelang
@@ -34,14 +35,6 @@ pytestmark = [pytest.mark.gpu]
 requires_sparse_attn_kernel = pytest.mark.skipif(
     dsv4_attention.dsv4_sparse_attn is None,
     reason="the fused sparse attention kernel did not import; tilelang ships in the `gpu` extra, on linux only",
-)
-
-# The kernels' shared tiles fit only the datacenter Hopper and Blackwell SMs. The opt-in limit does
-# not follow capability order, so this enumerates rather than compares: sm120 allows well under half
-# of what sm90 does.
-requires_datacenter_gpu = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (9, 10),
-    reason="the fused sparse attention kernels need the shared memory of a datacenter Hopper or Blackwell GPU",
 )
 
 
