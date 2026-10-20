@@ -15,6 +15,7 @@ import prime_runs as pr
 from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
+from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
@@ -37,8 +38,8 @@ FINISH_TIMEOUT = 60.0
 PENDING_METRICS_LIMIT = 256
 UNATTACHED_WARN_SECONDS = 300.0
 
-# The orchestrator owns these platform keys.
-TRAINER_PLATFORM_EXCLUDED_KEYS = {"time/step", "time/save_ckpt"}
+# Both producers post the same raw timing keys at one step; the platform merges metrics by step.
+PLATFORM_TIMING_SUFFIXES = {"time/step": "step", "time/save_ckpt": "save_ckpt"}
 
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
@@ -164,9 +165,10 @@ class PrimeTrainMonitor(Monitor):
     attach_gave_up: bool
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
-        self.metrics_only = isinstance(config, TrainerConfig)
-        if self.metrics_only:
-            await self._init_metrics_only(output_dir)
+        self.sidecar = isinstance(config, TrainerConfig)
+        self.timing_prefix = "trainer" if self.sidecar else "orch" if isinstance(config, OrchestratorConfig) else None
+        if self.sidecar:
+            await self._init_sidecar(output_dir)
             return
 
         init_kwargs: dict[str, Any]
@@ -240,8 +242,8 @@ class PrimeTrainMonitor(Monitor):
         else:
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
-    async def _init_metrics_only(self, output_dir: Path | None) -> None:
-        """Attach to the run another process owns, for stepped metrics only."""
+    async def _init_sidecar(self, output_dir: Path | None) -> None:
+        """Attach to the run another process owns and post stepped metrics to it."""
         self.mode = os.getenv(pr.MODE_ENV) or "online"
         self.output_dir = output_dir
         self.pending = deque(maxlen=PENDING_METRICS_LIMIT)
@@ -288,7 +290,7 @@ class PrimeTrainMonitor(Monitor):
         # before the owner finishes it; finishing belongs to the owner alone.
         atexit.unregister(run._atexit_hook)
         if run.url:
-            self.logger.info(f"Logging trainer metrics to platform run {run.id} ({run.url}) (metrics-only)")
+            self.logger.info(f"Logging trainer metrics to platform run {run.id} ({run.url}) (sidecar)")
         return run
 
     async def _attach_record(self, run_id: str) -> None:
@@ -336,13 +338,15 @@ class PrimeTrainMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        if self.metrics_only:
-            metrics = {key: value for key, value in metrics.items() if key not in TRAINER_PLATFORM_EXCLUDED_KEYS}
-            if not metrics:
-                return
-            if self.run is None:
-                await self._log_metrics_pending(metrics, step)
-                return
+        if self.timing_prefix is not None:
+            prefix = f"time/{self.timing_prefix}_"
+            metrics = {
+                prefix + suffix if (suffix := PLATFORM_TIMING_SUFFIXES.get(key)) else key: value
+                for key, value in metrics.items()
+            }
+        if self.sidecar and self.run is None:
+            await self._log_metrics_pending(metrics, step)
+            return
         # A queue put that can block briefly under backpressure - off the loop. The SDK
         # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
@@ -352,13 +356,13 @@ class PrimeTrainMonitor(Monitor):
         (every 10th step) and the Parquet encoding live in the SDK's training
         samples sink, which reads each episode's dispatch step off ``run.work``
         - the ``TrainRunInfo`` the dispatcher stamps at emit time."""
-        if self.metrics_only or kind != "train" or subset != "effective" or not episodes:
+        if self.sidecar or kind != "train" or subset != "effective" or not episodes:
             return
         # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_episodes, episodes)
 
     async def finalize(self, paused: bool = False) -> None:
-        if self.metrics_only:
+        if self.sidecar:
             if self.run is None:
                 if not self.warned_unattached and not self.attach_gave_up:
                     self.warned_unattached = True
