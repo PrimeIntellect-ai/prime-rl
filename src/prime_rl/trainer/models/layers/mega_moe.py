@@ -96,6 +96,15 @@ class MegaMoeBuffers:
     backward: object
 
 
+# Staging layout of each direction's symmetric buffer
+_STAGING_MMA_TYPES: dict[str, tuple[str, str]] = {  # (forward, backward)
+    "bf16": ("bf16xbf16", "bf16xbf16"),
+    "mxfp8": ("fp8xfp8", "fp8xfp8"),
+    "fp8": ("fp8xfp8", "bf16xbf16"),
+    "fp8_bwd": ("bf16xbf16", "bf16xbf16"),
+}
+
+
 def build_mega_moe_buffers(
     group: ProcessGroup,
     num_experts: int,
@@ -109,13 +118,13 @@ def build_mega_moe_buffers(
 
     check_mega_moe_dims(hidden, intermediate_hidden)
     args = (group, num_experts, num_max_tokens_per_rank, top_k, hidden, intermediate_hidden)
-    if precision == "mxfp8":
-        buffer = deep_gemm.get_symm_buffer_for_mega_moe(*args, mma_type="fp8xfp8")
-        return MegaMoeBuffers(forward=buffer, backward=buffer)
-    buffer = deep_gemm.get_symm_buffer_for_mega_moe(*args, mma_type="bf16xbf16")
-    if precision == "fp8":
-        return MegaMoeBuffers(forward=deep_gemm.SymmBuffer(*args, mma_type="fp8xfp8", base=buffer), backward=buffer)
-    return MegaMoeBuffers(forward=buffer, backward=buffer)
+    forward_mma_type, backward_mma_type = _STAGING_MMA_TYPES[precision]
+    backward = deep_gemm.SymmBuffer(*args, mma_type=backward_mma_type)
+    if forward_mma_type == backward_mma_type:
+        return MegaMoeBuffers(forward=backward, backward=backward)
+    # Both directions restage their inputs on every call, so the forward layout can view the backward's allocation instead of allocating a second symmetric buffer
+    forward = deep_gemm.SymmBuffer(*args, mma_type=forward_mma_type, base=backward)
+    return MegaMoeBuffers(forward=forward, backward=backward)
 
 
 # Custom ops take an int key: the buffers are not tensors
