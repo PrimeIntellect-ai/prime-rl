@@ -1,3 +1,4 @@
+import math
 import uuid
 import warnings
 from pathlib import Path
@@ -581,7 +582,9 @@ class RLConfig(BaseConfig):
         self.orchestrator.pad_to_multiple_of = self.trainer.model.cp
         if isinstance(self.trainer.model.quantization, MXFP8Config):
             # MXFP8 linears quantize grad_output in 32-token blocks, per CP rank.
-            self.orchestrator.pad_to_multiple_of *= 32
+            self.orchestrator.pad_to_multiple_of = math.lcm(
+                self.orchestrator.pad_to_multiple_of, self.trainer.model.cp * 32
+            )
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
