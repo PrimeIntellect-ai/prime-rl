@@ -113,8 +113,8 @@ def _compare_accumulated_grads(module: nn.Module, expected: dict[str, torch.Tens
 
 
 # The real DeepSeek V4-Flash attention shapes, written out as a literal so nothing here depends on a local HF
-# cache. This file runs these shapes and no others: the sparse path the kernel serves only exists at
-# this size. The MoE fields are shrunk to nothing, since `DeepseekV4Attention` reads none of them.
+# cache. This file runs these shapes and no others. The MoE fields are shrunk to nothing, since
+# `DeepseekV4Attention` reads none of them.
 V4FLASH_MODEL = dict(
     vocab_size=64,
     hidden_size=4096,
@@ -494,10 +494,9 @@ def test_absent_slots_are_marked_negative_rather_than_pointed_at_a_pad_row(doc_l
     query of a row carries 639 pad slots against 1 real key, so its denominator would be wrong by
     roughly three orders of magnitude, and nothing would raise.
 
-    The neighbouring index tests do fail if the pad row comes back, but on incidental symptoms:
-    every pad slot naming one row reads as "a query gathers the same key twice", and the extra row
-    reads as a compressed-entry count that does not match the layout. Neither names the cause, so
-    this asserts the contract directly.
+    The neighbouring index test does fail if the pad row comes back, but on an incidental symptom:
+    every pad slot naming one row reads as "a query gathers the same key twice". That does not name
+    the cause, so this asserts the contract directly.
     """
     module = v4flash_attention(V4FLASH_CSA_LAYER, dtype=torch.bfloat16)
     packed = _packed_context(doc_lens, torch.bfloat16, V4FLASH_CONFIG)
