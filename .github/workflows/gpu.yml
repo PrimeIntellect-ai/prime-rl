@@ -1,0 +1,204 @@
+name: GPU Tests
+
+on:
+  pull_request:
+    types: [labeled]
+  pull_request_review:
+    types: [submitted]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Decide whether to run GPU jobs
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          LABEL: ${{ github.event.label.name }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEWER: ${{ github.event.review.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          decide() {
+            echo "run=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          case "$EVENT_NAME" in
+            push|workflow_dispatch) decide true ;;
+            pull_request) [[ "$LABEL" == "gpu-ci" ]] || decide false ;;
+            pull_request_review) [[ "$REVIEW_STATE" == "approved" ]] || decide false ;;
+            *) decide false ;;
+          esac
+
+          if [[ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::notice::Fork PRs get no secrets on these events, so GPU CI cannot run here. A maintainer can push the branch to $GITHUB_REPOSITORY and apply the gpu-ci label to that PR."
+            decide false
+          fi
+
+          [[ "$EVENT_NAME" == "pull_request" ]] && decide true
+
+          if ! role=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$REVIEWER/permission" --jq .role_name 2> permission_error.txt); then
+            grep -q "HTTP 404" permission_error.txt || { cat permission_error.txt; exit 1; }
+            role=none
+          fi
+          echo "Reviewer $REVIEWER has role: $role"
+          case "$role" in
+            admin|maintain|write|triage) ;;
+            *) decide false ;;
+          esac
+
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/gpu.yml/runs?head_sha=$HEAD_SHA&per_page=100" \
+            --jq ".workflow_runs[] | select(.id != $RUN_ID) | \"\(.id) \(.html_url)\"")
+          while read -r run_id run_url; do
+            [[ -n "$run_id" ]] || continue
+            covered=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" --jq '
+              [.jobs[] | select(.name != "Gate")] as $gpu_jobs
+              | ($gpu_jobs | length > 0)
+                and all($gpu_jobs[]; .conclusion == "success" or (.status != "completed" and .conclusion == null))')
+            if [[ "$covered" == "true" ]]; then
+              echo "::notice::Head commit $HEAD_SHA is already covered by GPU run $run_url"
+              decide false
+            fi
+          done <<< "$runs"
+
+          decide true
+      - name: Remove gpu-ci label
+        if: github.event_name == 'pull_request' && steps.decide.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/gpu-ci"
+
+  unit-gpu:
+    name: Unit (GPU)
+    needs: gate
+    runs-on: prime-rl-2xh200
+    container:
+      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+      options: --gpus all
+    timeout-minutes: 45
+    if: needs.gate.outputs.run == 'true'
+    concurrency:
+      group: gpu-ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}-unit-gpu
+      cancel-in-progress: ${{ github.event.pull_request != null }}
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - parallel:
+          - name: Init public submodules
+            run: |
+              git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
+            with:
+              enable-cache: true
+              cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync --all-extras --all-packages --locked
+      - name: Run unit tests
+        env:
+          USERNAME_CI: CI_RUNNER
+          WANDB_MODE: offline
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          PYTEST_OUTPUT_DIR: /tmp/outputs
+        run: uv run pytest tests/unit -m gpu
+
+  integration:
+    name: Integration / ${{ matrix.name }}
+    needs: gate
+    runs-on: prime-rl-2xh200
+    container:
+      image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+      options: --gpus all
+    timeout-minutes: 60
+    if: needs.gate.outputs.run == 'true'
+    concurrency:
+      group: gpu-ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.run_id }}-integration-${{ matrix.test }}
+      cancel-in-progress: ${{ github.event.pull_request != null }}
+    strategy:
+      fail-fast: false
+      # Bound per-PR fan-out: at most 5 integration jobs at a time (plus unit-tests),
+      # i.e. 6 h200 pods per PR. Tune together with the ARC scale set maxRunners.
+      max-parallel: 5
+      matrix:
+        include:
+          - {test: reverse_text_sft, name: Reverse Text SFT}
+          - {test: reverse_text_sft_lora, name: Reverse Text SFT LoRA}
+          - {test: reverse_text, name: Reverse Text}
+          - {test: reverse_text_rl_opd, name: Reverse Text RL OPD}
+          - {test: reverse_text_rl_sft, name: Reverse Text RL SFT}
+          - {test: alphabet_sort, name: Alphabet Sort}
+          - {test: reverse_text_lora, name: Reverse Text LoRA}
+          - {test: reverse_text_moe, name: Reverse Text MoE}
+    steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          apt-get install -y git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+      - parallel:
+          - name: Init public submodules
+            run: |
+              git config --global url."https://github.com/".insteadOf "git@github.com:"
+              git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
+            with:
+              enable-cache: true
+              cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync --all-extras --all-packages --locked
+      - name: Run integration tests
+        env:
+          USERNAME_CI: CI_RUNNER
+          WANDB_MODE: offline
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+          PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          PYTEST_OUTPUT_DIR: /tmp/outputs
+          VLLM_WORKER_MULTIPROC_METHOD: spawn
+        run: uv run pytest -vvs tests/integration/test_${{ matrix.test }}.py
+      - name: Upload run logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.test }}-logs
+          path: /tmp/outputs/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
