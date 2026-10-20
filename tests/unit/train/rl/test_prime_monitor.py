@@ -166,10 +166,9 @@ def test_trainer_setup_wires_metrics_only(prime_init, run_id, clear_monitors):
     assert monitor.metrics_only
 
 
-def test_owner_flavored_monitor_is_unchanged(prime_init, monkeypatch):
-    """Without the flag the monitor keeps the owner semantics: it registers (or
-    attaches via $RUN_ID) with its config kwargs and finalizes the run."""
-    monkeypatch.setenv("RUN_ID", "run-123")
+def test_metrics_only_defaults_off():
+    """Without the flag the monitor keeps the owner semantics; the owner path
+    itself is covered by the SFT monitor tests."""
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
 
     assert monitor.metrics_only is False

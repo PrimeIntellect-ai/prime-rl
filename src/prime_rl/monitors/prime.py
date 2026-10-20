@@ -148,7 +148,9 @@ class PrimeTrainMonitor(Monitor):
     platform run another process owns (the managed launch's ``$RUN_ID``) and
     posts stepped metrics. It never registers or finalizes a run, and it drops
     the SDK's atexit crash hook so its process can exit while the owner is
-    still running without reporting the shared run crashed.
+    still running without reporting the shared run crashed. Queued metrics at
+    an abnormal exit are lost, never drained: no drain runs off the normal
+    finalize path.
     """
 
     config: PrimeTrainMonitorConfig

@@ -77,7 +77,9 @@ class SharedMonitorsConfig(BaseConfig):
     """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
     prime: PrimeTrainMonitorConfig | None = None
-    """Prime platform monitor. Propagated to the orchestrator only — the trainer has no platform integration."""
+    """Prime platform monitor. Propagated to the orchestrator only — the trainer's
+    sink is a separate explicit attach (``[trainer.monitors.prime]``) and never
+    comes from the shared block."""
 
 
 class SharedCheckpointConfig(BaseConfig):
