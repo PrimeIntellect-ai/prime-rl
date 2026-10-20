@@ -356,24 +356,17 @@ Once paused, both keep serving the API until the run is stopped, so its owner ca
 
 ### Exporting Checkpoints
 
-Export full trainer DCP checkpoints to HF-format safetensors with one CPU process in the normal environment (`uv sync --all-extras`):
+Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
 
 ```bash
+# single process (1 GPU)
 uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
-uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10
-# Both accept the nested trainer/ directory and an optional output directory.
-uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10/trainer exported-model --block-size 128
+
+# multi-rank for faster gathers and models that don't fit one GPU
+uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 ```
 
-Both exporters are CPU-only and run in one process; there is no GPU path. Launching them under `torchrun` (or any `WORLD_SIZE > 1` process group) exits with a clear error — run them with plain `uv run python` instead.
-
-BF16 writes `<step_dir>/weights`; FP8 writes `<step_dir>/weights-FP8` without an intermediate BF16 export. FP8 uses the same blockwise e4m3 quantization, FP32 scales and skip-module rules as `tools/convert_bf16_to_fp8.py`. Both save model/generation configs, tokenizer assets and explicitly trusted custom code. Existing output directories are accepted and matching files are overwritten. New directories are published atomically; existing directories are updated file by file after conversion completes. Failed conversions remove their staging directory. Source checkpoints are never changed.
-
-The default CPU path needs no GPU hardware, distributed setup or base-model weight download. It reads model tensors one decoder layer at a time, not optimizer state. Host memory must fit a layer (including its experts), conversion/quantization buffers, the largest DCP storage chunk and an output shard. Add `--workers N` to process N independent groups on CPU threads (default 1); output files are identical, but all in-flight groups' tensors and buffers must fit in host memory, so more workers trade peak RAM for speed. Weight files use standard HF names: `model.safetensors` without an index for one shard, or `model-00001-of-000NN.safetensors` with `model.safetensors.index.json` for multiple shards. Shards never span decoder-layer or standalone-tensor groups, so exports may contain more, smaller files than a manual merge would produce. The 5 GB per-shard size target is not a RAM limit; one larger tensor may exceed it.
-
-The checkpoint must match its resolved run config and a supported model schema. LoRA and already-quantized checkpoint tensors are rejected. Exports must run in a single process (`WORLD_SIZE > 1` fails with a clear error). BF16 export removes stale base quantization metadata; FP8 writes metadata for the new quantized weights. Normal FP32 model buffers retain the model's policy and stored selection-buffer dtype; training dtype settings are not changed.
-
-The output loads into a compatible HF consumer or `uv run inference --vllm.model <dir>`. To quantize an existing HF directory, use `tools/convert_bf16_to_fp8.py <dir>`. To dequantize an FP8-only release for training, use `tools/convert_fp8_to_bf16.py <dir>`.
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 

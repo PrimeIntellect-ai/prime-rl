@@ -35,7 +35,6 @@ Namespaces are one honking great idea -- let's do more of those!
 - **Tools vs entrypoints**: standalone scripts in `tools/` use plain argparse with positional args; `[project.scripts]` entrypoints use pydantic-config (`@ file.toml` + dotted CLI overrides).
 - **Adding dependencies**: add to `pyproject.toml` and run `uv sync --all-extras` to install and lock them.
 - **Git dependency pins**: when pinning git dependencies in `pyproject.toml`, always use a small (7-char) commit hash for the `rev` field.
-- **CPU-only checkpoint export**: `tools/convert_dcp_to_bf16.py` and `tools/convert_dcp_to_fp8.py` run in one CPU process — no `--device` flag and no `torchrun` (`WORLD_SIZE > 1` exits with a clear error). `--workers N` (default 1) parallelizes independent groups; output bytes are identical, but every in-flight group's tensors must fit in host memory, so more workers trade peak RAM for speed.
 - **Never edit `.venv/`**: the local virtual env is read-only. Edits there are silently overwritten by the next `uv sync` and don't propagate to teammates or CI. Reading files under `.venv/` to understand library behavior is fine; writing is not. To fix a dependency issue, update `pyproject.toml` (pin a fork via 7-char commit hash if needed), vendor the code into `src/`, or patch upstream.
 
 ## Docs
