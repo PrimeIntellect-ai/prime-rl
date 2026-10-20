@@ -105,7 +105,7 @@ class FakeDataset(StatefulIterableDataset):
             else self.seq_len
         )
         random_input_ids = (
-            torch.randint(0, self.vocab_size, (self.seq_len + 1,), generator=generator).long().tolist()
+            torch.randint(0, self.vocab_size, (seq_len + 1,), generator=generator).long().tolist()
             if self.input_ids == "random"
             else None
         )
@@ -144,7 +144,7 @@ class FakeDataset(StatefulIterableDataset):
                 "mm_token_type_ids": None,
             }
             self.num_samples["fake"] += 1
-            self.num_tokens["fake"] += len(input_ids)
+            self.num_tokens["fake"] += seq_len
             yield fake_sample
 
 
@@ -761,7 +761,10 @@ def setup_dataset(
 
 
 def setup_dataloader(dataset: StatefulIterableDataset, config: DataConfig, cp: int) -> StatefulDataLoader:
-    packing_dataset = CatDataset(dataset, config.seq_len * config.micro_batch_size, pad_to_multiple_of=cp)
+    row_len = config.seq_len * config.micro_batch_size
+    # Rows hold at most `row_len` tokens, so padding to a multiple of it pads every row to exactly `row_len`
+    pad_to_multiple_of = row_len if config.pad_to_seq_len else cp
+    packing_dataset = CatDataset(dataset, row_len, pad_to_multiple_of=pad_to_multiple_of)
     return StatefulDataLoader(
         packing_dataset,
         batch_size=1,
