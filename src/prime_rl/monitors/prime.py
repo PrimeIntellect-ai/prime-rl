@@ -161,14 +161,37 @@ class PrimeTrainMonitor(Monitor):
     still running without reporting the shared run crashed. Queued metrics at
     an abnormal exit are lost, never drained: no drain runs off the normal
     finalize path.
+
+    Platform metric storage is step-keyed and rejects step-less records, so
+    wall-time rows (``step=None``, e.g. inference/dispatcher/concurrency
+    gauges) are not uploaded as-is: the latest values per metric family are
+    cached here and merged into the next training-step upload. Only a step row
+    carrying a ``train/`` metric attaches gauges, strictly advancing by step —
+    the train row is the one canonical gauge carrier per training step; eval
+    rows (``eval/{env}/*``, possibly far behind the current step) upload bare
+    and never overwrite a step's gauges. The file and W&B monitors keep the
+    full wall-time history.
     """
 
     config: PrimeTrainMonitorConfig
     run: pr.Run
 
+    # Drained dispatcher counters arrive as per-tick deltas in the step-less payload;
+    # their latest-tick copy would lose every other tick of the step, so they are
+    # accumulated separately and shipped as totals (file/W&B keep the per-tick rows).
+    DELTA_PREFIXES = ("dispatcher/cancelled/", "dispatcher/errored/")
+
     def __init__(self, config: PrimeTrainMonitorConfig, *, metrics_only: bool = False) -> None:
         super().__init__(config)
         self.metrics_only = metrics_only
+        # Latest wall-time gauge snapshot per metric family (the first path
+        # segment of the key), replaced wholesale by each step-less payload.
+        # Per-instance: every trainer/eval process owns its own monitor.
+        self._latest_wall_time: dict[str, dict[str, Any]] = {}
+        # Summed per-tick deltas since the last attached train row.
+        self._step_deltas: dict[str, float] = {}
+        # The step of the last row gauges were attached to.
+        self._last_attached_step: int | None = None
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         if self.metrics_only:
@@ -279,9 +302,45 @@ class PrimeTrainMonitor(Monitor):
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
         if self.metrics_only:
+            # The trainer's colliding keys move to a trainer namespace before
+            # anything else sees the row (gauges from the wall-time cache are
+            # merged below; the renames keep them out of its step's upload).
             metrics = {TRAINER_KEY_RENAMES.get(key, key): value for key, value in metrics.items()}
-        # A queue put that can block briefly under backpressure - off the loop. The SDK
-        # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
+        if step is None:
+            # The SDK honors a step-embedded-in-payload key (it only fills a
+            # missing one); a row carrying it is a real step row, not wall time.
+            step = metrics.get("step")
+        if step is None:
+            # Wall-time row: the platform rejects step-less records, so cache
+            # the latest values per metric family instead of uploading. A new
+            # payload replaces its families' snapshots wholesale, so dead keys
+            # (e.g. a removed engine) drop out instead of going stale forever.
+            families: dict[str, dict[str, Any]] = {}
+            for key, value in metrics.items():
+                if key.startswith(self.DELTA_PREFIXES):
+                    self._step_deltas[key] = self._step_deltas.get(key, 0.0) + value
+                else:
+                    families.setdefault(key.split("/", 1)[0], {})[key] = value
+            self._latest_wall_time.update(families)
+            return
+        # One gauge snapshot per strictly advancing training step, carried by the
+        # train row itself (identified by its ``train/`` metrics — the only step
+        # row the orchestrator emits them with). Everything else uploads bare:
+        # a late or same-step eval row must never overwrite that step's gauges.
+        attach = (self._last_attached_step is None or step > self._last_attached_step) and any(
+            key.startswith("train/") for key in metrics
+        )
+        if attach:
+            merged: dict[str, Any] = {}
+            for snapshot in self._latest_wall_time.values():
+                merged.update(snapshot)
+            # The step's own metrics win, then the summed deltas (their latest-tick
+            # copies stay out of the family snapshots); both cache and deltas are
+            # only consumed here, so a bare row can never clear or re-stamp them.
+            metrics = {**merged, **self._step_deltas, **metrics}
+            self._last_attached_step = step
+            self._step_deltas = {}
+        # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
