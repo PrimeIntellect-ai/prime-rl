@@ -8,7 +8,7 @@ from prime_rl.configs.algorithm import (
     LinearLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
-from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm
+from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
 from prime_rl.orchestrator.algo.max_rl import MaxRLAlgorithm
 from prime_rl.orchestrator.algo.routing import assign_advantages
 from prime_rl.orchestrator.trajectories import trace_to_samples
@@ -273,6 +273,78 @@ def test_linear_turns_term_penalizes_more_turns():
     )
     assert advs[0] > advs[1]
     assert sum(advs) == pytest.approx(0.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("subagent_token_weight", [0.0, 0.7, 1.0])
+@pytest.mark.parametrize("term", ["num_output_tokens_weight", "num_input_tokens_weight", "num_turns_weight"])
+def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, term):
+    episode = _build_episode(1.0, sampled_lengths=[1])
+    trace = episode.traces[0]
+    trace.nodes.clear()
+    trace.calls.clear()
+
+    def turn(parent, input_tokens, output_tokens, links=()):
+        prompt_id = len(trace.nodes)
+        trace.nodes.append(vf.MessageNode(parent=parent, message=vf.UserMessage(content="q")))
+        node_id = len(trace.nodes)
+        trace.nodes.append(
+            vf.MessageNode(
+                parent=prompt_id,
+                message=vf.AssistantMessage(content="a"),
+                sampled=True,
+                token_ids=[1] * output_tokens,
+                mask=[True] * output_tokens,
+                semantic_parents=[vf.ParentLink(node=source, type=kind) for source, kind in links],
+            )
+        )
+        trace.calls.append(
+            vf.ModelCall(
+                node=node_id,
+                usage=vf.Usage(prompt_tokens=input_tokens - 5, cached_input_tokens=5, completion_tokens=output_tokens),
+            )
+        )
+        return node_id
+
+    root = turn(None, 100, 10)
+    child = turn(root, 115, 20, [(root, "subagent_call")])
+    child_next = turn(child, 142, 30, [(child, "continuation")])
+    summary = turn(None, 200, 40, [(child_next, "compaction_attempt")])
+    resumed = turn(None, 60, 50, [(summary, "compaction")])
+    nested = turn(None, 70, 60, [(resumed, "subagent_call")])
+    root_next = turn(
+        root,
+        125,
+        80,
+        [(root, "continuation"), (resumed, "subagent_return"), (nested, "agent_message"), (child, "vendor:review")],
+    )
+    # A cancel closes a causal loop without changing which agent owns either turn.
+    trace.nodes[child_next].semantic_parents.append(vf.ParentLink(node=root_next, type="subagent_cancel"))
+
+    # Shared physical prefixes count once; fresh compaction contexts retain their full input.
+    expected_output = 90 + 200 * subagent_token_weight
+    expected_input = 115 + 342 * subagent_token_weight
+    assert _length_penalty_tokens(trace, subagent_token_weight) == pytest.approx((expected_output, expected_input))
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert _length_penalty_tokens(restored, subagent_token_weight) == pytest.approx((expected_output, expected_input))
+
+    unlabelled = episode.model_copy(deep=True)
+    for node in unlabelled.traces[0].nodes:
+        node.semantic_parents.clear()
+    assert _length_penalty_tokens(unlabelled.traces[0], subagent_token_weight) == pytest.approx((290, 457))
+
+    cfg = LinearLengthPenaltyConfig(
+        num_output_tokens_weight=0.0,
+        num_input_tokens_weight=0.0,
+        num_turns_weight=0.0,
+        subagent_token_weight=subagent_token_weight,
+    )
+    setattr(cfg, term, 0.25)
+    expected = {"num_output_tokens_weight": expected_output / 290, "num_input_tokens_weight": expected_input / 457}
+    advantage = 0.125 * (1 - expected.get(term, 1.0))
+    assert _grpo([episode, unlabelled], length_penalty=cfg) == pytest.approx([advantage, -advantage], abs=1e-6)
+    assert trace.reward == 1.0
+    assert trace.num_turns == 7
+    assert sum(sum(node.mask) for node in trace.nodes) == 290
 
 
 # --------------------------------------------------------------------------

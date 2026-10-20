@@ -325,7 +325,10 @@ type = "grpo"
 
 [orchestrator.train.algo.length_penalty]
 type = "linear"
+subagent_token_weight = 0.7
 ```
+
+Subagent input and output tokens count at `subagent_token_weight` (default `0.7`) before group normalization; `0` excludes them and `1` counts them fully. The penalty counts each committed model call once, including calls on shared branch prefixes, and uses Verifiers' per-call new-input accounting. Subagent membership follows harness-declared `subagent_call`, `continuation`, `compaction_attempt`, and `compaction` edges, including nested subagents at the same weight. Return, cancel, message, and unknown edges do not propagate membership. Calls without subagent attribution count fully. The turns term and training-token weights stay unchanged; the length-weighted baseline still uses undiscounted training-token counts.
 
 A **length-weighted baseline** (`length_weighted_baseline = true` on the `grpo`-family algorithms) replaces the plain group mean with $b = \sum_i L_i s_i / \sum_i L_i$, where $L_i$ is the number of trainable (policy-sampled, loss-masked) tokens of rollout $i$, summed across all its turns; it applies after the length penalty. With token-level loss normalization, long rollouts carry more gradient weight, so this baseline makes the per-token advantage zero-mean across the group's tokens rather than across rollouts.
 

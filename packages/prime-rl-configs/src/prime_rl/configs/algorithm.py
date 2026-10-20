@@ -92,13 +92,16 @@ class LinearLengthPenaltyConfig(BaseConfig):
     type: Literal["linear"] = "linear"
 
     num_output_tokens_weight: float = Field(0.25, ge=0, allow_inf_nan=False)
-    """Scale on the output-token term. Each reward is reduced by ``num_output_tokens_weight * pass_rate * (rollout num_output_tokens / group's max num_output_tokens)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Finite and non-negative; 0 disables the term."""
+    """Scale on the output-token term. Each reward is reduced by ``num_output_tokens_weight * pass_rate * (weighted output tokens / group's max weighted output tokens)`` — where ``pass_rate`` is the group's mean reward — before the GRPO baseline subtraction. Tokens count once per committed model call. Finite and non-negative; 0 disables the term."""
 
     num_input_tokens_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
-    """Scale on the input-token term — tokens the model conditioned on but did not generate (``num_total_tokens - num_output_tokens``: prompts, tool responses), as a fraction of the group's max input tokens. 0 disables the term."""
+    """Scale on weighted new input tokens (prompts, tool responses), counted once per committed model call, as a fraction of the group's max weighted input tokens. Input is a lower bound when the harness drops history between calls. 0 disables the term."""
 
     num_turns_weight: float = Field(0.1, ge=0, allow_inf_nan=False)
     """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
+
+    subagent_token_weight: float = Field(0.7, ge=0, le=1, allow_inf_nan=False)
+    """Multiplier on subagent input and output tokens before group normalization. Uses harness-declared ``subagent_call`` edges and their continuations, compaction attempts, and compacted contexts; unlabelled calls count at full weight. Nested subagents use the same multiplier. 0 excludes subagent tokens, 1 counts them fully. Does not change the turns term or training-token weights."""
 
 
 LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
