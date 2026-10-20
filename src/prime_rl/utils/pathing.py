@@ -237,10 +237,14 @@ def format_config_message(config_dir: Path, name: str, components: list[tuple[st
     return "\n".join(lines)
 
 
-def write_launch_artifacts(config_dir: Path, name: str) -> None:
-    """Write the user command and launch TOML for a config attempt."""
+def write_launch_artifacts(config_dir: Path, name: str, config: BaseModel | None = None) -> None:
+    """Write launch inputs and an optional full resolved config for a config attempt."""
     write_launch_command(config_dir, name)
     write_launch_toml(config_dir, name)
+    snapshot = config_dir / "launcher.json"
+    # A SLURM child reuses this attempt with a stripped config; preserve the submission's snapshot.
+    if config is not None and not snapshot.exists():
+        snapshot.write_text(json.dumps(dump_resolved_config(config), indent=2))
 
 
 def env_address_file(config_dir: Path, split: str, name: str) -> Path:
