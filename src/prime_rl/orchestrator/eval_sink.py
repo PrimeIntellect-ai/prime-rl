@@ -38,7 +38,9 @@ class EvalSink:
         return self._complete(key)
 
     def cancel(self, cancellation: GroupCancellation) -> EvalBatch | None:
-        """Count a dispatcher-cancelled group toward its superseded eval epoch."""
+        """Count a dropped group's never-dispatched episodes toward its superseded
+        eval epoch; its in-flight episodes arrive through ``add``, flagged
+        ``cancelled``."""
         if cancellation.kind != "eval":
             raise ValueError(f"EvalSink cannot process a {cancellation.kind} group cancellation")
         key = (cancellation.env_name, cancellation.step)

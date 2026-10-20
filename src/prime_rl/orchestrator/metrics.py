@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -31,14 +32,19 @@ def dispatch_failure_metrics(failures: list[DispatchFailure], *, prefix: str, to
 @dataclass(frozen=True)
 class TraceRecord:
     """A trace joined with its episode and training selection state.
-    ``cancelled`` marks episodes the pipeline voided (stale drop) — a
-    selection verdict disjoint from trace errors."""
+    ``cancelled`` marks episodes the pipeline cancelled mid-run or voided (stale
+    drop) — a selection verdict disjoint from errors."""
 
     episode: vf.Episode
     trace: vf.Trace
     sampled: bool
     admitted: bool
     cancelled: bool
+
+    @property
+    def reward(self) -> float:
+        """A failed episode scores zero, whatever its traces recorded."""
+        return self.trace.reward if self.episode.ok else 0.0
 
 
 def _records(
@@ -53,7 +59,7 @@ def _records(
             trace=trace,
             sampled=trace.id in sampled_trace_ids,
             admitted=episode.id in admitted,
-            cancelled=episode.id in cancelled,
+            cancelled=episode.cancelled or episode.id in cancelled,
         )
         for episode in episodes
         for trace in episode.traces
@@ -244,11 +250,18 @@ class TraceMetrics(StatGroup):
     )
     RATES = ("is_truncated", "is_timeout", "is_completed")
 
+    def __init__(self, records: list[TraceRecord], unscored: int = 0) -> None:
+        super().__init__(records)
+        self.unscored = unscored
+        """Failed episodes without a trace of this agent; each scores zero."""
+
     def stats(self) -> dict[str, Stat]:
-        return {
+        stats = {
             name: Stat([float(getattr(trace, name)) for trace in self.traces])
             for name in (*self.DISTRIBUTIONS, *self.RATES)
         }
+        stats["reward"] = Stat([record.reward for record in self.records] + [0.0] * self.unscored)
+        return stats
 
     @property
     def timing(self) -> TimingMetrics:
@@ -268,7 +281,7 @@ class TraceMetrics(StatGroup):
 
     @property
     def cancelled(self) -> Stat:
-        """Pipeline cancellations (stale drop) — disjoint from errors."""
+        """Pipeline cancellations — disjoint from errors."""
         return Stat([float(record.cancelled) for record in self.records])
 
     def error_types(self) -> dict[str, int]:
@@ -278,10 +291,10 @@ class TraceMetrics(StatGroup):
     def solve_rates(self) -> dict[str, float]:
         groups: dict = {}
         for record in self.records:
-            groups.setdefault(episode_group_id(record.episode), []).append(record.trace)
+            groups.setdefault(episode_group_id(record.episode), []).append(record.reward)
         num_groups = len(groups)
-        solved_none = sum(sum(trace.reward for trace in group) == 0 for group in groups.values())
-        solved_all = sum(all(trace.reward == 1.0 for trace in group) for group in groups.values())
+        solved_none = sum(sum(group) == 0 for group in groups.values())
+        solved_all = sum(all(reward == 1.0 for reward in group) for group in groups.values())
         return {
             "solved_none": solved_none / num_groups,
             "solved_all": solved_all / num_groups,
@@ -291,6 +304,10 @@ class TraceMetrics(StatGroup):
     def snapshot(self, prefix: str, *, subset: Subset) -> MetricWindow:
         stats = self.stats()
         out = MetricWindow()
+        if not self.records:
+            # Only failed episodes without a trace of this agent: their zero reward.
+            out.distribution(f"{prefix}/reward", stats["reward"])
+            return out
         for name in self.DISTRIBUTIONS:
             out.distribution(f"{prefix}/{name}", stats[name])
         for name in self.RATES:
@@ -336,9 +353,22 @@ class EpisodeMetrics:
 
     def by_agent(self) -> dict[str, TraceMetrics]:
         per_agent: dict[str, list[TraceRecord]] = {}
+        agents_by_env: dict[str, set[str]] = defaultdict(set)
         for record in self.records:
             per_agent.setdefault(record.trace.agent.name, []).append(record)
-        return {name: TraceMetrics(records) for name, records in sorted(per_agent.items())}
+            agents_by_env[episode_env_name(record.episode)].add(record.trace.agent.name)
+        # A failed episode scores zero for each of its env's agents it left no trace for.
+        unscored: dict[str, int] = defaultdict(int)
+        for episode in self.episodes:
+            if episode.ok:
+                continue
+            traced = {trace.agent.name for trace in episode.traces}
+            for agent in agents_by_env[episode_env_name(episode)] - traced:
+                unscored[agent] += 1
+        return {
+            name: TraceMetrics(per_agent.get(name, []), unscored[name])
+            for name in sorted(per_agent.keys() | unscored.keys())
+        }
 
     def _episode_stat(self, attr: str) -> Stat:
         by_episode = {id(episode): 0.0 for episode in self.episodes}
@@ -376,16 +406,14 @@ class EpisodeMetrics:
 
     @property
     def has_error(self) -> Stat:
-        return Stat(
-            [float(not episode.ok or any(trace.has_error for trace in episode.traces)) for episode in self.episodes]
-        )
+        return Stat([float(not episode.ok and not episode.cancelled) for episode in self.episodes])
 
     @property
     def cancelled(self) -> Stat:
         """Per-episode pipeline-cancellation rate — same denominator as
-        ``has_error``. Read from the id-set, not the trace records, so
+        ``has_error``. Read off the episodes, not the trace records, so
         trace-less episodes still count."""
-        return Stat([float(episode.id in self.cancelled_ids) for episode in self.episodes])
+        return Stat([float(episode.cancelled or episode.id in self.cancelled_ids) for episode in self.episodes])
 
     def snapshot(self, *, prefix: str, subset: Subset) -> MetricWindow:
         out = MetricWindow()
@@ -408,7 +436,7 @@ class EpisodeMetrics:
 class TrainMetrics(EpisodeMetrics):
     @property
     def reward(self) -> Stat:
-        return Stat([float(record.trace.reward) for record in self.records])
+        return Stat([record.reward for record in self.records])
 
     def snapshot(self, *, prefix: str, subset: Subset) -> MetricWindow:
         out = super().snapshot(prefix=prefix, subset=subset)
@@ -443,13 +471,18 @@ def pass_at_k(records: list[TraceRecord]) -> dict[str, float]:
 
 
 class EvalMetrics(EpisodeMetrics):
-    def __init__(self, episodes: list[vf.Episode], records: list[TraceRecord], group_size: int) -> None:
+    def __init__(
+        self,
+        episodes: list[vf.Episode],
+        records: list[TraceRecord],
+        group_size: int,
+    ) -> None:
         super().__init__(episodes, records)
         self.group_size = group_size
 
     @property
     def reward(self) -> Stat:
-        return Stat([float(record.trace.reward) for record in self.records])
+        return Stat([record.reward for record in self.records])
 
     def to_wandb(self, *, prefix: str, subset: Subset) -> dict[str, float]:
         out = super().to_wandb(prefix=prefix, subset=subset)
@@ -564,7 +597,7 @@ class TrainEpisodes(EpisodeCollection):
                 record.admitted
                 and record.sampled
                 and not record.cancelled
-                and not record.trace.has_error
+                and record.episode.ok
                 and record.trace.agent.trainable
             ),
         )
@@ -614,14 +647,13 @@ class RolloutWindow:
         self.attempts += attempts
         discarded = [episode for episode in episodes if not any(t.id in queued_trace_ids for t in episode.traces)]
         self.discarded += len(discarded) + len(failures) + cancelled
+        voided = sum(episode.cancelled or episode.id in episodes.cancelled for episode in discarded) + cancelled
         if cancellation is not None and cancellation.reason != "stale":
-            self.cancelled += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled
+            self.cancelled += voided
         else:
-            self.stale += sum(episode.id in episodes.cancelled for episode in discarded) + cancelled
+            self.stale += voided
         self.errored += len(failures) + sum(
-            episode.id not in episodes.cancelled
-            and (not episode.ok or any(trace.has_error for trace in episode.traces))
-            for episode in discarded
+            not episode.ok and not episode.cancelled and episode.id not in episodes.cancelled for episode in discarded
         )
         for prefix in ("train/agg", f"train/{env_name}"):
             self.metrics.extend(episodes.metrics.snapshot(prefix=prefix, subset="all"))
@@ -650,7 +682,7 @@ class EvalEpisodes(EpisodeCollection):
         return EvalEpisodes(
             self.episodes,
             self.group_size,
-            predicate=lambda record: not record.trace.has_error and record.trace.agent.trainable,
+            predicate=lambda record: record.episode.ok and record.trace.agent.trainable,
         )
 
     @property

@@ -122,16 +122,19 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
-        change of one of the episode's traces — as it lands."""
+        change of one of the episode's traces — as it lands. Setting ``cancel`` ends
+        the run early; the episode still returns, flagged ``cancelled``."""
         return await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
             sampling=self._sampling(cache_salt),
             on_delta=on_delta,
+            cancel=cancel,
         )
 
 
