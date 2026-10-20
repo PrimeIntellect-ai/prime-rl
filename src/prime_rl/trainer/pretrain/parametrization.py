@@ -6,48 +6,16 @@ from prime_rl.configs.pretrain import PretrainAdamWConfig, PretrainMuonConfig
 from prime_rl.trainer.models.init import param_role
 from prime_rl.utils.weights import resolve_fqn
 
+# Roles trained by Muon (``rms_norm`` learning-rate adjustment) when ``optim.type = "muon"``; everything else, and
+# every role with ``optim.type = "adamw"``, is trained by AdamW.
+MUON_ROLES = ("hidden", "router", "residual_out")
 
-def param_groups(
-    model: nn.Module, optim: PretrainAdamWConfig | PretrainMuonConfig, m_n: float, m_l: float, ep_enabled: bool
-) -> list[dict]:
-    """Optimizer parameter groups per role for CompleteP with alpha = 1 (Dey et al. 2025). ``optim.lr``,
-    ``optim.eps`` and ``optim.weight_decay`` are the values for the base shape; each role scales
-    them by the width and depth multipliers. With both multipliers at 1 this is the standard
-    parametrization, where only norms and biases differ (no weight decay). The residual output projections and the LM head
-    carry CompleteP's 1/m_L and 1/m_N forward multipliers folded into their weights (see
-    ``role_std``), which turns their rules into the ones below.
 
-    With Muon, the hidden matrices and residual output projections are Muon groups with
-    ``rms_norm`` learning-rate adjustment, whose update size grows as sqrt(m_N); their learning
-    rate is scaled by 1/sqrt(m_N) to compensate (and weight decay by sqrt(m_N), keeping
-    lr * weight_decay fixed). Everything else is trained with AdamW, as with ``optim.type = "adamw"``.
-
-    MoE experts follow the same roles per expert matrix (``rms_norm`` adjusts each expert by its
-    own shape). The router maps width to a fixed number of experts, so its spectral-norm target
-    sqrt(num_experts / d) shrinks as m_N^-1/2: with Muon its learning rate is scaled by 1/m_N;
-    with AdamW it follows the hidden rule.
-
-    Gated Residual projections (``hyper_connection``) follow the hidden rule but always train with AdamW, as in
-    Qwen3.8-Next.
-    """
-    # (lr, eps, weight decay) scale per role for AdamW. PyTorch AdamW and Dion decay by lr * weight_decay.
-    adam_scales = {
-        "embedding": (1.0, 1 / m_n, 1.0),
-        "hidden": (1 / m_n, 1 / (m_n * m_l), m_n),
-        "router": (1 / m_n, 1 / (m_n * m_l), m_n),
-        "hyper_connection": (1 / m_n, 1 / (m_n * m_l), m_n),
-        "residual_out": (1 / (m_n * m_l), 1 / m_n, m_n * m_l),
-        "output": (1 / m_n, 1.0, m_n),
-        "norm": (1.0, 1 / m_n, 0.0),
-        "bias": (1.0, 1 / m_n, 0.0),
-    }
-    # (lr, weight decay) scale per role for Muon with rms_norm adjustment.
-    muon_scales = {
-        "hidden": (m_n**-0.5, m_n**0.5),
-        "router": (1 / m_n, m_n),
-        "residual_out": (m_n**-0.5 / m_l, m_n**0.5 * m_l),
-    }
-
+def param_groups(model: nn.Module, optim: PretrainAdamWConfig | PretrainMuonConfig, ep_enabled: bool) -> list[dict]:
+    """Optimizer parameter groups per role, all with ``optim.lr`` and ``optim.eps``, and ``optim.weight_decay``
+    except for norms and biases (no weight decay). With Muon, the hidden matrices (expert matrices per expert), the
+    residual output projections and the MoE router are Muon groups; the embedding, the LM head, norms, biases and the
+    Gated Residual projections (``hyper_connection``, as in Qwen3.8-Next) train with AdamW."""
     params = defaultdict(list)
     for name, param in model.named_parameters():
         if param.requires_grad:
@@ -61,24 +29,19 @@ def param_groups(
 
     groups = []
     for (role, experts), role_params in params.items():
-        if optim.type == "muon" and role in muon_scales:
-            lr, wd = muon_scales[role]
+        weight_decay = 0.0 if role in ("norm", "bias") else optim.weight_decay
+        if optim.type == "muon" and role in MUON_ROLES:
             group = dict(
-                params=role_params,
-                algorithm="muon",
-                adjust_lr="rms_norm",
-                lr=optim.lr * lr,
-                weight_decay=optim.weight_decay * wd,
+                params=role_params, algorithm="muon", adjust_lr="rms_norm", lr=optim.lr, weight_decay=weight_decay
             )
             if experts and ep_enabled:
                 group["distributed_mesh_name"] = "dp_shard_mod_ep"
             groups.append(group)
             continue
-        lr, eps, wd = adam_scales[role]
-        group = dict(params=role_params, lr=optim.lr * lr, weight_decay=optim.weight_decay * wd)
+        group = dict(params=role_params, lr=optim.lr, weight_decay=weight_decay)
         if optim.type == "muon":
-            group.update(algorithm="adamw", epsilon=optim.eps * eps)
+            group.update(algorithm="adamw", epsilon=optim.eps)
         else:
-            group["eps"] = optim.eps * eps
+            group["eps"] = optim.eps
         groups.append(group)
     return groups

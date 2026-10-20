@@ -34,7 +34,6 @@ from prime_rl.configs.trainer import (
     InitConfig,
     ModelConfig,
     MXFP8Config,
-    ParametrizationConfig,
     TokenizerConfig,
 )
 from prime_rl.multimodal import ForwardPolicy
@@ -56,7 +55,7 @@ from prime_rl.trainer.models.fusions import (
     write_back_loaded_packed_parameters,
 )
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
-from prime_rl.trainer.models.init import init_weights, multipliers
+from prime_rl.trainer.models.init import init_weights
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
@@ -940,12 +939,11 @@ def setup_model(
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
     init: InitConfig | None = None,
-    parametrization: ParametrizationConfig | None = None,
     compile_inside_full_checkpoint: bool = False,
 ) -> nn.Module:
     """Build the sharded model. Its weights come from ``config.name``, or later from a checkpoint
-    (``loading_from_checkpoint_later``); with ``init``, they are initialized from scratch (with the CompleteP
-    multipliers of ``parametrization``) instead. ``compile_inside_full_checkpoint`` compiles blocks inside their
+    (``loading_from_checkpoint_later``); with ``init``, they are initialized from scratch instead.
+    ``compile_inside_full_checkpoint`` compiles blocks inside their
     full activation checkpoints (see ``apply_compile``)."""
     resolve_auto_attn(config)
 
@@ -1029,7 +1027,7 @@ def setup_model(
 
     _reset_runtime_moe_buffers(model)
     if init is not None:
-        init_weights(model, init, *multipliers(parametrization, model))
+        init_weights(model, init)
     return model
 
 

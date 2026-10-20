@@ -235,26 +235,14 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class InitConfig(BaseConfig):
-    """Random weight initialization: every weight matrix and the embedding from N(0, std), scaled per role under
-    CompleteP (see ``[parametrization]``). Norm weights start at 1, biases at 0."""
+    """Random weight initialization: every weight matrix and embedding from N(0, std). Norm weights start at 1,
+    biases at 0."""
 
     std: float = Field(0.02, gt=0)
-    """Base standard deviation."""
+    """Standard deviation."""
 
     seed: int = 0
     """Seed for the initialization. The values depend only on the seed, not on the number of GPUs."""
-
-
-class ParametrizationConfig(BaseConfig):
-    """CompleteP (muP extended to depth, Dey et al. 2025, alpha = 1) relative to a base shape: init std, learning
-    rate, Adam eps and weight decay scale per parameter role with ``m_N = hidden_size / base_hidden_size`` and
-    ``m_L = num_layers / base_num_layers``, so hyperparameters tuned on the base shape carry over."""
-
-    base_hidden_size: int = Field(ge=1)
-    """Hidden size of the base shape."""
-
-    base_num_layers: int = Field(ge=1)
-    """Number of layers of the base shape."""
 
 
 class ModelConfig(BaseModelConfig):

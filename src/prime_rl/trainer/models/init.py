@@ -7,7 +7,7 @@ from torch import nn
 from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
-from prime_rl.configs.trainer import InitConfig, ParametrizationConfig
+from prime_rl.configs.trainer import InitConfig
 from prime_rl.trainer.models.layers.hyper_connection import ExpandedRMSNorm
 from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
 from prime_rl.utils.weights import resolve_fqn
@@ -20,8 +20,8 @@ BLOCK_NUMEL = 1 << 22
 
 
 def param_role(name: str, param: torch.Tensor) -> ParamRole:
-    """Classify a parameter by its canonical name. Init schemes (and later per-role learning
-    rates) are defined over these roles."""
+    """Classify a parameter by its canonical name: the initialization and the pretraining optimizer groups are defined
+    over these roles."""
     if "embed_tokens" in name:
         return "embedding"
     if "lm_head" in name:
@@ -35,22 +35,6 @@ def param_role(name: str, param: torch.Tensor) -> ParamRole:
     if name.endswith(("o_proj.weight", "down_proj.weight", "down_proj")):
         return "residual_out"
     return "hidden"
-
-
-def role_std(role: ParamRole, std: float, m_n: float, m_l: float) -> float:
-    """Init std of a role under CompleteP with width and depth multipliers ``m_N``, ``m_L`` (both 1 in the
-    standard parametrization). CompleteP's 1/m_L residual-branch and 1/m_N logit multipliers are folded into the
-    residual output projections and the LM head, so the forward pass stays unchanged."""
-    scale = {"embedding": 1.0, "hidden": m_n**-0.5, "residual_out": m_n**-0.5 / m_l, "output": 1 / m_n}
-    return std * scale[role]
-
-
-def multipliers(config: ParametrizationConfig | None, model: nn.Module) -> tuple[float, float]:
-    """Width and depth multipliers ``(m_N, m_L)`` of the model relative to the CompleteP base shape; 1 and 1 in
-    the standard parametrization."""
-    if config is None:
-        return 1.0, 1.0
-    return model.config.hidden_size / config.base_hidden_size, model.config.num_hidden_layers / config.base_num_layers
 
 
 def block_seed(seed: int, name: str, block: int) -> int:
@@ -87,9 +71,10 @@ def normal_shard(
 
 
 @torch.no_grad()
-def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: float = 1.0) -> None:
-    """Initialize every parameter and the MoE selection biases in place, with the CompleteP multipliers ``m_N``, ``m_L``. Each rank fills only
-    its local shard, without communication, and the values do not depend on the world size or the sharding."""
+def init_weights(model: nn.Module, config: InitConfig) -> None:
+    """Initialize every parameter and the MoE selection biases in place: weight matrices and embeddings from
+    N(0, ``config.std``), norm weights at 1, biases at 0. Each rank fills only its local shard, without communication,
+    and the values do not depend on the world size or the sharding."""
     for name, param in model.named_parameters():
         # Canonical names, so wrappers such as activation checkpointing don't change the values.
         name = resolve_fqn(model, name)
@@ -110,7 +95,7 @@ def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: fl
         values = normal_shard(
             name, tuple(param.shape), tuple(local_shape), tuple(global_offset), config.seed, local.device
         )
-        local.copy_(values.mul_(role_std(role, config.std, m_n, m_l)))
+        local.copy_(values.mul_(config.std))
     # MoE selection biases are buffers: they start at 0, so routing starts from the router scores alone.
     # Gated Residual norm gains are zero-centred (scale 1 + w), so they start at 0.
     for module in model.modules():

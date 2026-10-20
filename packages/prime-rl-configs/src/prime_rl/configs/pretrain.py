@@ -13,7 +13,6 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
-    ParametrizationConfig,
     SchedulerConfig,
     TrainerLaunchConfig,
 )
@@ -191,12 +190,12 @@ class EvalsConfig(BaseConfig):
 
 class PretrainAdamWConfig(AdamWConfig):
     eps: float = Field(1e-8, gt=0)
-    """Adam epsilon of the base shape (scaled per role under CompleteP)."""
+    """Adam epsilon."""
 
 
 class PretrainMuonConfig(MuonConfig):
     eps: float = Field(1e-8, gt=0)
-    """Adam epsilon of the base shape for the AdamW groups (scaled per role under CompleteP)."""
+    """Adam epsilon of the AdamW groups."""
 
 
 PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
@@ -231,10 +230,6 @@ class PretrainConfig(TrainerLaunchConfig):
 
     max_steps: int = Field(ge=1)
     """Training steps."""
-
-    parametrization: ParametrizationConfig | None = None
-    """CompleteP relative to a base shape. If None, the standard parametrization: the same per-role parameter
-    groups with every multiplier at 1 (norms and biases without weight decay)."""
 
     def default_run_name(self) -> str:
         return f"{Path(self.model.name).name}--{uuid.uuid4().hex[:8]}"

@@ -31,7 +31,7 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.models.init import multipliers, param_role
+from prime_rl.trainer.models.init import param_role
 from prime_rl.trainer.models.prime_moe.moe import histogram_quantile_biases
 from prime_rl.trainer.pretrain.parametrization import param_groups
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
@@ -194,10 +194,8 @@ def train(config: PretrainConfig):
         parallel_dims,
         loading_from_checkpoint_later=checkpoint_step is not None,
         init=config.model.init if checkpoint_step is None else None,
-        parametrization=config.parametrization,
         compile_inside_full_checkpoint=True,
     )
-    m_n, m_l = multipliers(config.parametrization, model)
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
     num_params = count_parameters(model)
@@ -216,7 +214,7 @@ def train(config: PretrainConfig):
         list(model.named_parameters()),
         parallel_dims,
         model=model,
-        param_groups=param_groups(model, config.optim, m_n, m_l, parallel_dims.ep_enabled),
+        param_groups=param_groups(model, config.optim, parallel_dims.ep_enabled),
     )
 
     # With ckpt.skip_scheduler, the schedule is rebuilt over the remaining steps.
