@@ -126,8 +126,13 @@ class DeepGemmFP8ExpertCompute(GroupedGemmExpertCompute):
 
 
 class MXFP8ExpertCompute(GroupedGemmExpertCompute):
-    def __init__(self, kernel: ModuleType, high_precision_wgrad: bool) -> None:
+    def __init__(self, kernel: ModuleType, high_precision_wgrad: bool, qat: bool = False) -> None:
+        gemm = partial(kernel.grouped_gemm, high_precision_wgrad=high_precision_wgrad)
+        if qat:
+            from prime_rl.trainer.models.layers.mxfp8_qat import mxfp8_qat_grouped_mm
+
+            gemm = mxfp8_qat_grouped_mm
         super().__init__(
-            partial(kernel.grouped_gemm, high_precision_wgrad=high_precision_wgrad),
+            gemm,
             token_group_alignment=kernel.TOKEN_GROUP_ALIGNMENT,
         )

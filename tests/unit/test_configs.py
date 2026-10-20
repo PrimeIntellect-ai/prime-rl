@@ -1,4 +1,6 @@
 import os
+import re
+import tomllib
 from pathlib import Path
 from typing import Annotated, Literal, get_args
 
@@ -275,6 +277,7 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
 
     assert config.quantization is not None and config.quantization.type == "mxfp8"
+    assert config.quantization.qat is False
     assert config.moe.compute.type == "bf16"
     assert config.moe.compute.backend == "torch"
     assert config.moe.dispatch.type == "torch"
@@ -291,6 +294,7 @@ def test_moe_runtime_defaults_are_independent_from_dense_quantization():
         },
         {"moe": {"compute": {"type": "deepgemm_fp8"}}},
         {"moe": {"compute": {"type": "mxfp8", "recipe": "mxfp8_rceil_wgrad_with_hp"}}},
+        {"ep": 2, "moe": {"compute": {"type": "mxfp8", "qat": True}}},
         {"ep": 2, "moe": {"dispatch": {"type": "deepep", "num_sms": 16, "token_chunk_size": 1024}}},
         {
             "ep": 2,
@@ -372,6 +376,34 @@ def test_moe_compute_apply_to_cli(selection, selected):
 def test_invalid_moe_runtime_configs_fail(model, message):
     with pytest.raises(ValidationError, match=message):
         TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize("qat", [False, True])
+def test_mxfp8_qat_padding_and_transport(qat):
+    config = RLConfig.model_validate(
+        {"orchestrator": {}, "trainer": {"model": {"quantization": {"type": "mxfp8", "qat": qat}}}}
+    )
+    native = RLConfig.model_validate(
+        {"orchestrator": {}, "trainer": {"model": {"quantization": {"type": "mxfp8"}}}}
+    )
+    assert config.orchestrator.pad_to_multiple_of == native.orchestrator.pad_to_multiple_of
+    model = {"ep": 2, "moe": {"compute": {"type": "mxfp8", "qat": qat}, "dispatch": {"transport": "mxfp8"}}}
+    if qat:
+        with pytest.raises(ValidationError, match="requires BF16 transport"):
+            TrainerModelConfig.model_validate(model)
+    else:
+        assert TrainerModelConfig.model_validate(model).moe.compute.qat is False
+
+
+def test_deepseek_v4_mxfp8_recipe_keeps_indexer_bf16_on_both_sides():
+    config_path = Path(__file__).resolve().parents[2] / "configs/advanced/deepseek-v4-flash/mxfp8_qat.toml"
+    config = RLConfig.model_validate({"orchestrator": {}, **tomllib.loads(config_path.read_text())})
+    quant = config.trainer.model.quantization
+    name = "model.layers.1.self_attn.compressor.indexer.q_b_proj"
+    assert any(re.search(pattern, name) for pattern in quant.ignore_patterns)
+    assert "re:.*indexer.*" in config.inference.vllm.quantization_config["ignore"]
+    assert quant.qat and config.trainer.model.moe.compute.qat
+    assert config.trainer.model.moe.dispatch.transport == "bf16"
 
 
 @pytest.mark.parametrize(
