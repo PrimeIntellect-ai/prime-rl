@@ -8,7 +8,9 @@ bf16 export on disk.
 
 Usage:
     uv run python tools/convert_dcp_to_fp8.py <run>/checkpoints/step_{n} [output_dir] [--block-size 128]
+    uv run python tools/convert_dcp_to_fp8.py <checkpoint> [output_dir] --device cuda
 
+CPU streaming is the default; CUDA gathers and quantizes each rank's slice on GPU.
 Writes to <step_dir>/weights-FP8 by default. CPU output must not already exist.
 """
 
@@ -29,10 +31,16 @@ from prime_rl.utils.logger import get_logger, setup_logger
 logger = get_logger()
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128) -> Path:
-    """Export a full trainer checkpoint as blockwise-FP8 weights on CPU."""
+def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, device: str = "cpu") -> Path:
+    """Export blockwise-FP8 weights using CPU streaming or the parallel CUDA gather."""
     if block_size <= 0:
         raise ValueError("block_size must be positive")
+    if device == "cuda":
+        from convert_dcp_to_bf16_gpu import convert_fp8
+
+        return convert_fp8(ckpt_dir, output_dir, block_size)
+    if device != "cpu":
+        raise ValueError(f"Unsupported export device: {device}")
     if int(os.environ.get("WORLD_SIZE", "1")) > 1:
         raise ValueError("CPU export requires one process; run without torchrun (WORLD_SIZE must be 1)")
     ckpt_dir = Path(ckpt_dir)
@@ -87,9 +95,10 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights-FP8")
     parser.add_argument("--block-size", type=int, default=128)
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="export device (default: cpu)")
     args = parser.parse_args()
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, args.block_size)
+    convert(args.ckpt_dir, args.output_dir, args.block_size, device=args.device)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ Writes to ``<ckpt_dir>/weights`` by default.
 """
 
 import argparse
+import json
 import os
 import shutil
 import socket
@@ -162,15 +163,50 @@ def load_and_convert(ckpt_dir: Path):
 
 def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
     logger = get_logger()
-    model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir)
-    output_dir = output_dir if output_dir is not None else step_dir / "weights"
+    try:
+        model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir)
+        output_dir = Path(output_dir) if output_dir is not None else step_dir / "weights"
 
-    logger.info(f"Writing HF weights to {output_dir}")
-    save_state_dict_parallel(state_dict, output_dir)
-    if get_world().is_master:
-        save_model_assets(model, model_config, tokenizer_config, output_dir, strip_quantization_config=True)
-        logger.info(f"Done: {output_dir}")
-    return output_dir
+        logger.info(f"Writing HF weights to {output_dir}")
+        save_state_dict_parallel(state_dict, output_dir)
+        if get_world().is_master:
+            save_model_assets(model, model_config, tokenizer_config, output_dir, strip_quantization_config=True)
+            logger.info(f"Done: {output_dir}")
+        return output_dir
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+def convert_fp8(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128) -> Path:
+    """Gather on CUDA and quantize each rank's slice without an intermediate BF16 export."""
+    from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
+
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
+    logger = get_logger()
+    try:
+        model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir)
+        output_dir = Path(output_dir) if output_dir is not None else step_dir / "weights-FP8"
+        world = get_world()
+        logger.info("Quantizing weights to blockwise fp8 on CUDA")
+        state_dict, modules_to_not_convert = quantize_state_dict(state_dict, block_size, "cuda")
+        save_state_dict_parallel(state_dict, output_dir)
+        all_modules: list[list[str] | None] = [None] * world.world_size
+        dist.all_gather_object(all_modules, modules_to_not_convert)
+        if world.is_master:
+            save_model_assets(model, model_config, tokenizer_config, output_dir, strip_quantization_config=True)
+            config_path = output_dir / "config.json"
+            config = json.loads(config_path.read_text())
+            config["quantization_config"] = quantization_config(
+                [module for modules in all_modules for module in modules or []], block_size
+            )
+            config_path.write_text(json.dumps(config, indent=2) + "\n")
+            logger.info(f"Done: {output_dir}")
+        return output_dir
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
 
 
 def main() -> None:
@@ -181,7 +217,6 @@ def main() -> None:
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights")
     args = parser.parse_args()
     convert(args.ckpt_dir, args.output_dir)
-    dist.destroy_process_group()
 
 
 if __name__ == "__main__":

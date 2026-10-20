@@ -1,7 +1,10 @@
+import importlib
 import json
 import pickle
+import sys
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,6 +14,39 @@ from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
 from prime_rl.utils.dcp_export import iter_cpu_hf_groups, write_hf_shards
 from prime_rl.utils.export_conversion import conversion_chain
 from prime_rl.utils.utils import default_dtype
+
+
+@pytest.mark.parametrize("format", ["bf16", "fp8"])
+@pytest.mark.parametrize("device", [None, "cpu", "cuda"])
+def test_export_device_dispatch(tiny_run, monkeypatch, format, device):
+    _, step, _, _ = tiny_run
+    cli = importlib.import_module(f"convert_dcp_to_{format}")
+    output = step / f"export-{format}"
+    calls = []
+
+    def convert_cuda(*args):
+        calls.append(args)
+        return output
+
+    monkeypatch.setitem(
+        sys.modules,
+        "convert_dcp_to_bf16_gpu",
+        SimpleNamespace(convert=convert_cuda, convert_fp8=convert_cuda),
+    )
+    argv = ["export", str(step), str(output)]
+    if device is not None:
+        argv += ["--device", device]
+    if format == "fp8":
+        argv += ["--block-size", "2"]
+    monkeypatch.setattr(sys, "argv", argv)
+    cli.main()
+    if device == "cuda":
+        expected = (step, output, 2) if format == "fp8" else (step, output)
+        assert calls == [expected]
+        assert not output.exists()
+    else:
+        assert calls == []
+        assert (output / "model.safetensors.index.json").exists()
 
 
 def _model_state(layout):

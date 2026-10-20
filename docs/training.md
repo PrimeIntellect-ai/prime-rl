@@ -365,13 +365,20 @@ uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10
 uv run python tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10/trainer exported-model --block-size 128
 ```
 
-The parallel GPU BF16 workflow remains available through `uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16_gpu.py <checkpoint>`.
+Both exporters default to `--device cpu`. Select `--device cuda` for the parallel GPU gather and conversion path, including FP8 quantization:
 
-BF16 writes `<step_dir>/weights`; FP8 writes `<step_dir>/weights-FP8` without an intermediate BF16 export. FP8 uses the same blockwise e4m3 quantization, FP32 scales and skip-module rules as `tools/convert_bf16_to_fp8.py`. Both save model/generation configs, tokenizer assets and explicitly trusted custom code. The output directory must not exist. Failed exports remove only their staging directory; source checkpoints are never changed.
+```bash
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10 --device cuda
+uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_fp8.py outputs/my-run/checkpoints/step_10 --device cuda
+```
 
-No GPU hardware, distributed setup or base-model weight download is needed. The exporter reads model tensors one decoder layer at a time, not optimizer state. Host memory must fit a layer (including its experts), conversion/quantization buffers, the largest DCP storage chunk and an output shard. The 5 GB shard target is not a RAM limit; one larger tensor may exceed it.
+The GPU-only BF16 script `tools/convert_dcp_to_bf16_gpu.py` is also available.
 
-The checkpoint must match its resolved run config and a supported model schema. LoRA and already-quantized checkpoint tensors are rejected. Run without multi-rank `torchrun`; `WORLD_SIZE > 1` is rejected. BF16 export removes stale base quantization metadata; FP8 writes metadata for the new quantized weights. Normal FP32 model buffers retain the model's policy and stored selection-buffer dtype; training dtype settings are not changed.
+BF16 writes `<step_dir>/weights`; FP8 writes `<step_dir>/weights-FP8` without an intermediate BF16 export. FP8 uses the same blockwise e4m3 quantization, FP32 scales and skip-module rules as `tools/convert_bf16_to_fp8.py`. Both save model/generation configs, tokenizer assets and explicitly trusted custom code. CPU output directories must not exist; failed CPU exports remove only their staging directory. CUDA retains the GPU writer's output-directory behavior. Source checkpoints are never changed.
+
+The default CPU path needs no GPU hardware, distributed setup or base-model weight download. It reads model tensors one decoder layer at a time, not optimizer state. Host memory must fit a layer (including its experts), conversion/quantization buffers, the largest DCP storage chunk and an output shard. The 5 GB shard target is not a RAM limit; one larger tensor may exceed it.
+
+The checkpoint must match its resolved run config and a supported model schema. LoRA and already-quantized checkpoint tensors are rejected. CPU export runs without multi-rank `torchrun`; `WORLD_SIZE > 1` is rejected for CPU only. BF16 export removes stale base quantization metadata; FP8 writes metadata for the new quantized weights. Normal FP32 model buffers retain the model's policy and stored selection-buffer dtype; training dtype settings are not changed.
 
 The output loads into a compatible HF consumer or `uv run inference --vllm.model <dir>`. To quantize an existing HF directory, use `tools/convert_bf16_to_fp8.py <dir>`. To dequantize an FP8-only release for training, use `tools/convert_fp8_to_bf16.py <dir>`.
 

@@ -6,7 +6,9 @@ other HF-compatible layouts are validated against a meta-device HF model.
 
 Usage:
     uv run python tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
+    uv run python tools/convert_dcp_to_bf16.py <checkpoint> [output_dir] --device cuda
 
+CPU streaming is the default; CUDA uses the parallel GPU gather path.
 Writes to <step_dir>/weights by default. CPU output must not already exist.
 """
 
@@ -24,8 +26,14 @@ from prime_rl.utils.logger import get_logger, setup_logger
 logger = get_logger()
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
-    """Export a full trainer checkpoint on CPU without loading base-model weights."""
+def convert(ckpt_dir: Path, output_dir: Path | None = None, *, device: str = "cpu") -> Path:
+    """Export a full trainer checkpoint using CPU streaming or the parallel CUDA gather."""
+    if device == "cuda":
+        from convert_dcp_to_bf16_gpu import convert as convert_cuda
+
+        return convert_cuda(ckpt_dir, output_dir)
+    if device != "cpu":
+        raise ValueError(f"Unsupported export device: {device}")
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
@@ -61,9 +69,10 @@ def main() -> None:
         "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights")
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="export device (default: cpu)")
     args = parser.parse_args()
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir)
+    convert(args.ckpt_dir, args.output_dir, device=args.device)
 
 
 if __name__ == "__main__":
