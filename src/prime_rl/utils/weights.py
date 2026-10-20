@@ -1,8 +1,9 @@
+import functools
 import json
 import re
 import warnings
 from pathlib import Path
-from typing import Callable, cast
+from typing import TYPE_CHECKING, Callable, cast
 
 import torch
 import torch.distributed as dist
@@ -20,6 +21,9 @@ from transformers.utils import (
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
 
 
 def load_state_dict_keys(save_dir: Path) -> list[str]:
@@ -184,10 +188,23 @@ def resolve_row_chunk(value: Tensor, start: int, stop: int, dtype: torch.dtype) 
     return chunk
 
 
+def get_chunked_conversion_ops(model: nn.Module, state_dict: dict[str, Tensor]) -> dict[str, "ChunkedConvOp"]:
+    """Match independent chunked conversions to weights actually present, including wrapper prefixes."""
+    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
+    from prime_rl.trainer.models.conversion_ops import ChunkedConvOp
+
+    if not isinstance(model, PreTrainedModelPrimeRL):
+        return {}
+    operations = {op.runtime_weight: op for op in model.conversion_chain(model.config) if isinstance(op, ChunkedConvOp)}
+    if not operations:
+        return {}
+    return {key: operations[fqn] for key in state_dict if (fqn := resolve_fqn(model, key)) in operations}
+
+
 def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
-    Ngram tables are reconstructed one HF fragment at a time, with fragments spread
+    Chunked conversions resolve one HF fragment at a time, with fragments spread
     across writers. Other distributed tensors use per-tensor all-gathers, with each
     rank retaining its assigned weights on CPU. The copies are plain blocking
     transfers; no stream-ordering assumptions.
@@ -199,15 +216,8 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     back up rather than failing, so a downcast here shows up as lost mantissa in a
     Sinkhorn normalization rather than as an error.
     """
-    from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
-    from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import NGramEmbeddingWeights
-
     state_dict = model.state_dict()
-    embedding_ops = (
-        {op.runtime_weight: op for op in model.conversion_chain(model.config) if isinstance(op, NGramEmbeddingWeights)}
-        if isinstance(model, PreTrainedModelPrimeRL)
-        else {}
-    )
+    chunked_ops = get_chunked_conversion_ops(model, state_dict)
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
     owners = partition_weights(state_dict, world.world_size, dtype)
@@ -217,20 +227,17 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
         for key, value in state_dict.items():
-            op = embedding_ops.get(resolve_fqn(model, key)) if embedding_ops else None
+            op = chunked_ops.get(key)
             if op is not None:
-                shard_rows = (value.shape[0] + op.shard_count - 1) // op.shard_count
                 target_dtype = (
                     resolve_wire_dtype(keep_in_fp32, key, dtype) if isinstance(value, DTensor) else value.dtype
                 )
-                for index in range(op.shard_count):
-                    start = min(index * shard_rows, value.shape[0])
-                    stop = min(start + shard_rows, value.shape[0])
-                    chunk = resolve_row_chunk(value, start, stop, target_dtype)
+                resolve_rows = functools.partial(resolve_row_chunk, dtype=target_dtype)
+                for index, packet in enumerate(op.iter_prime_to_hf(value, resolve_rows)):
                     # Spread HF fragments across writers instead of keeping the table on one host.
                     if (owners[key] + index) % world.world_size == world.rank:
-                        partial[f"{op.checkpoint_prefix}.shard_{index}.weight"] = chunk.to("cpu")
-                    del chunk
+                        partial.update({name: chunk.to("cpu") for name, chunk in packet.items()})
+                    del packet
                 continue
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster

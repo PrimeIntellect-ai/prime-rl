@@ -35,6 +35,7 @@ Design constraints:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -50,6 +51,33 @@ class ConvOp(ABC):
 
     @abstractmethod
     def prime_to_hf(self, sd: StateDict) -> None: ...
+
+
+class ChunkedConvOp(ConvOp):
+    """Convert one runtime weight into independent, final HF-format packets.
+
+    The iterator must yield exactly ``packet_count`` packets. The caller supplies
+    row resolution, which may gather distributed rows. Other conversion operations
+    must not depend on or transform these packet keys.
+    """
+
+    runtime_weight: str
+
+    @property
+    @abstractmethod
+    def packet_count(self) -> int: ...
+
+    @abstractmethod
+    def iter_prime_to_hf(
+        self, weight: Tensor, resolve_rows: Callable[[Tensor, int, int], Tensor]
+    ) -> Iterator[StateDict]: ...
+
+    def prime_to_hf(self, sd: StateDict) -> None:
+        if self.runtime_weight not in sd:
+            return
+        weight = sd.pop(self.runtime_weight)
+        for packet in self.iter_prime_to_hf(weight, lambda value, start, stop: value[start:stop]):
+            sd.update(packet)
 
 
 def apply_hf_to_prime(sd: StateDict, ops: list[ConvOp]) -> StateDict:

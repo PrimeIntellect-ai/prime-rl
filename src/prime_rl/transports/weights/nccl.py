@@ -1,4 +1,5 @@
 import pickle
+from functools import partial
 from pathlib import Path
 from typing import Callable, Generator
 
@@ -11,13 +12,12 @@ from vllm.distributed.utils import StatelessProcessGroup
 
 from prime_rl.configs.shared import NCCLWeightBroadcastConfig
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
-from prime_rl.trainer.models.qwen3_8_flash_next.converting_qwen3_8_flash_next import NGramEmbeddingWeights
 from prime_rl.trainer.utils import get_world
 from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 from prime_rl.utils.vlm import get_layer_prefix
-from prime_rl.utils.weights import resolve_row_chunk, resolve_wire_dtype
+from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_row_chunk, resolve_wire_dtype
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
@@ -114,6 +114,8 @@ def preprocess_layer_checkpoint(
     layer_state_dict: dict[str, Tensor],
     layer_idx: int,
 ) -> dict[str, Tensor]:
+    if not layer_state_dict:
+        return layer_state_dict
     if isinstance(model, PreTrainedModelPrimeRL) and model.is_prime_state_dict(layer_state_dict):
         model.convert_layer_to_hf(layer_state_dict, layer_idx)
         return layer_state_dict
@@ -154,16 +156,8 @@ class NCCLBroadcaster:
         state_dict = model.state_dict()
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
-        embedding_ops = (
-            {
-                op.runtime_weight: op
-                for op in model.conversion_chain(model.config)
-                if isinstance(op, NGramEmbeddingWeights) and op.runtime_weight in state_dict
-            }
-            if isinstance(model, PreTrainedModelPrimeRL)
-            else {}
-        )
-        num_state_dict_to_send = num_layers + 1 + sum(op.shard_count for op in embedding_ops.values())
+        chunked_ops = get_chunked_conversion_ops(model, state_dict)
+        num_state_dict_to_send = num_layers + 1 + sum(op.packet_count for op in chunked_ops.values())
 
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
@@ -171,23 +165,20 @@ class NCCLBroadcaster:
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
-            embedding_weights = {key: layer_state_dict.pop(key) for key in embedding_ops if key in layer_state_dict}
+            chunked_weights = {key: layer_state_dict.pop(key) for key in chunked_ops if key in layer_state_dict}
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
             if self.world.is_master:
                 broadcast_state_dict(layer_state_dict, self.communicator)
             del layer_state_dict
-            for key, value in embedding_weights.items():
-                op = embedding_ops[key]
-                rows_per_part = (value.shape[0] + op.shard_count - 1) // op.shard_count
+            for key, value in chunked_weights.items():
+                op = chunked_ops[key]
                 dtype = resolve_wire_dtype(keep_in_fp32, key, self.dtype) if isinstance(value, DTensor) else value.dtype
-                for index in range(op.shard_count):
-                    start = min(index * rows_per_part, value.shape[0])
-                    stop = min(start + rows_per_part, value.shape[0])
-                    chunk = resolve_row_chunk(value, start, stop, dtype)
+                resolve_rows = partial(resolve_row_chunk, dtype=dtype)
+                for packet in op.iter_prime_to_hf(value, resolve_rows):
                     if self.world.is_master:
-                        broadcast_state_dict({f"{op.checkpoint_prefix}.shard_{index}.weight": chunk}, self.communicator)
-                    del chunk
+                        broadcast_state_dict(packet, self.communicator)
+                    del packet
 
 
 class NCCLWeightSender(WeightSender):
