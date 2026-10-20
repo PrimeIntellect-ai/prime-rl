@@ -463,6 +463,12 @@ class InferenceConfig(BaseConfig):
     enable_return_sampling_mask: bool = False
     """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
 
+    enable_return_sampling_mask_logprobs: bool = False
+    """Also return the sampler's renormalized logprob of every sampling-mask id (``sampling_mask_logprobs``), for score centering. Requires ``enable_return_sampling_mask``. The ``rl`` entrypoint sets it when ``trainer.loss.score_centering`` is on."""
+
+    sampling_mask_logprobs_dtype: Literal["float32", "float16"] = "float32"
+    """Dtype of ``sampling_mask_logprobs`` in responses. ``float16`` halves their size; the dtype travels with the data and clients cast back to float32. Score centering stays exact (the trainer takes the sampled token's sampler logprob from the mask too); the sampler distribution it sees is rounded to float16."""
+
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 

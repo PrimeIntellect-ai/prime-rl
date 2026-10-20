@@ -501,6 +501,11 @@ class IPOLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering: bool = False
+    """Add the score-centering correction (arXiv:2609.20807) against trainer-inference mismatch
+    drift, exact over the sampling mask. Requires truncated train sampling (sampling replay).
+    See docs/algorithms.md."""
+
 
 class IcePopLossConfig(BaseConfig):
     type: Literal["icepop"] = "icepop"
@@ -513,6 +518,10 @@ class IcePopLossConfig(BaseConfig):
 
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
+
+    score_centering: bool = False
+    """Add the score-centering correction (arXiv:2609.20807) with the IcePop weight. See
+    ``IPOLossConfig.score_centering``."""
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
