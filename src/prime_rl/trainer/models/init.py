@@ -112,8 +112,8 @@ def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: fl
         )
         local.copy_(values.mul_(role_std(role, config.std, m_n, m_l)))
     # MoE selection biases are buffers: they start at 0, so routing starts from the router scores alone.
-    # Gated Residual norm gains are zero-centred (scale 1 + w), so they start at 0. Read convolutions (x + conv(x)) and
-    # the output term of output-dependent writes start at 0, so reads and writes start as plain Gated Residual ones.
+    # Gated Residual norm gains are zero-centred (scale 1 + w), so they start at 0. Read convolutions (x + conv(x)) start
+    # at 0, so the reads start as plain Gated Residual ones.
     for module in model.modules():
         if isinstance(module, TokenChoiceTopKRouter) and module.selection_bias is not None:
             module.selection_bias.zero_()
@@ -121,5 +121,3 @@ def init_weights(model: nn.Module, config: InitConfig, m_n: float = 1.0, m_l: fl
             module.weight.zero_()
         if isinstance(module, HyperConnection) and module.read_conv_weight is not None:
             module.read_conv_weight.zero_()
-        if isinstance(module, HyperConnection) and module.write_output_weight is not None:
-            module.write_output_weight.weight.zero_()
