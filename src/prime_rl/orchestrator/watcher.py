@@ -24,7 +24,7 @@ class WeightWatcher:
         policy: Policy,
         observers: list[VersionObserver],
         ckpt_step: int = 0,
-        poll_interval: float = 1.0,
+        poll_interval: float = 0.1,
     ) -> None:
         self.receiver = receiver
         self.policy = policy
@@ -136,4 +136,9 @@ class WeightWatcher:
             "watcher/update_count": float(self.update_count),
             "watcher/last_update_weights_time": self.last_update_weights_time,
             "watcher/last_wait_for_ckpt_time": self.last_wait_for_ckpt_time,
+            **{
+                f"watcher/{phase}/{stat}": value
+                for phase, times in self.receiver.admin_plane.update_times.items()
+                for stat, value in (("min", min(times)), ("mean", sum(times) / len(times)), ("max", max(times)))
+            },
         }

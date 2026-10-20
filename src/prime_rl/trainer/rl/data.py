@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import numpy as np
 import torch
@@ -7,6 +7,8 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from prime_rl.configs.trainer import FakeDataLoaderConfig
+from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
+from prime_rl.trainer.multimodal import materialize_mm_refs
 from prime_rl.trainer.world import get_world
 from prime_rl.transports.batch import (
     BatchReceiver,
@@ -37,7 +39,6 @@ class TensorMicroBatch(TypedDict):
     branch_indices: list[int] | None
 
     # Batch level
-    lora_num_tokens: Int[Tensor, "n_loras"]
     seq_lens: Int[Tensor, "segments"]
 
     # MoE router replay
@@ -47,8 +48,11 @@ class TensorMicroBatch(TypedDict):
     # maximum mask size. A row containing only -1 has no mask.
     sampling_mask: Int[Tensor, "batch seq mask"] | None
 
-    # Materialized immediately before this microbatch's forward pass.
+    # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
+    # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
     mm_refs: MMRefs | None
+    mm_kwargs: NotRequired[dict[str, Tensor] | None]
+    mm_forward_policy: NotRequired[ForwardPolicy | None]
     # mm_token_type_ids: token type per token [batch seq], int64 (0=text, 1=image, 2=video)
     mm_token_type_ids: Int[Tensor, "batch seq"] | None
 
@@ -81,10 +85,11 @@ class FakeDataLoader:
         else:
             get_micro_batch_fn = self._get_sample_micro_batch
 
-        # This is a pretty ugly hack to ensure that all CP ranks in a data parallel group receive the same micro batch.
+        # Seeded by the global micro batch index, so every DP layout trains the same batch and
+        # all CP ranks of a data parallel group receive the same micro batch.
         micro_batches = []
         for micro_batch_idx in range(self.num_micro_batches):
-            seed = self.dp_rank * 1000000 + self.batch_counter * 1000 + micro_batch_idx
+            seed = self.batch_counter * 1000000 + self.dp_rank * self.num_micro_batches + micro_batch_idx
             generator = torch.Generator().manual_seed(seed)
             micro_batches.append(get_micro_batch_fn(generator))
 
@@ -128,7 +133,6 @@ class FakeDataLoader:
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
-            "lora_num_tokens": torch.tensor([input_ids.shape[0]], dtype=torch.int32),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
@@ -160,7 +164,6 @@ class FakeDataLoader:
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
-            "lora_num_tokens": torch.tensor([self.seq_len], dtype=torch.int32),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
@@ -170,6 +173,23 @@ class FakeDataLoader:
             "ce_weights": None,
             "ref_kl_weights": None,
         }
+
+
+def prepare_micro_batch(
+    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+) -> TensorMicroBatch:
+    """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
+    micro_batch["mm_kwargs"] = None
+    micro_batch["mm_forward_policy"] = None
+    mm_refs = micro_batch.get("mm_refs")
+    if mm_refs is not None:
+        if processor is None or mm_adapter is None:
+            raise ValueError("Received multimodal samples but [model.vlm] is not set")
+        materialized = materialize_mm_refs(mm_refs, processor, mm_adapter)
+        micro_batch["mm_kwargs"] = materialized.kwargs
+        micro_batch["mm_forward_policy"] = materialized.forward_policy
+        micro_batch["mm_refs"] = None
+    return micro_batch
 
 
 class DataLoader:
@@ -187,7 +207,14 @@ class DataLoader:
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
 
-        self.receiver: BatchReceiver = setup_batch_receiver(output_dir, dp_rank, start_step, config)
+        self.receiver: BatchReceiver = setup_batch_receiver(
+            output_dir,
+            data_rank=dp_rank,
+            rank=self.world.rank,
+            world_size=self.world.world_size,
+            current_step=start_step,
+            transport=config,
+        )
 
     def wait_for_batch(self) -> None:
         self.receiver.wait()
@@ -234,8 +261,6 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
-            # Single adapter: every token in the batch belongs to it (padding included).
-            lora_num_tokens=torch.tensor([len(micro_batch.input_ids)], dtype=torch.int32),
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)

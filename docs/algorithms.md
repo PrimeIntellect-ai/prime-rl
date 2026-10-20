@@ -139,7 +139,7 @@ algo.type = "echo"
 
 ### The Algorithm Classes
 
-At runtime, each env's resolved config builds two objects: a `GenerationSource` (`prime_rl.orchestrator.generation_source`) that resolves the `sampling.source` model into the inference pool used for train episodes, and one of the named algorithm classes in `prime_rl.orchestrator.train.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
+At runtime, each env's `TrainEnv` (`prime_rl.orchestrator.envs`) resolves the `sampling.source` model into the inference pool used for train episodes, and its resolved config builds one of the named algorithm classes in `prime_rl.orchestrator.train.algo` (one module per algorithm: `algo/grpo.py`, `algo/opd.py`, …) from the algorithm config. Algorithm dispatch is keyed on `algo.type` — it names the algorithm, and each config class's defaults are its vetted parameterization:
 
 | `algo.type` | Class | hook(s) — stage |
 |---|---|---|
@@ -192,7 +192,7 @@ The orchestrator stamps each sample's component membership as per-token weight s
 
 ### IPO Loss
 
-The default RL loss is Importance Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
+The default RL loss is INTELLECT Policy Optimization (IPO). It is an importance-weighted policy-gradient term. A symmetric trust region removes tokens whose absolute probability change exceeds $\epsilon$:
 
 $$
 \mathcal{L}(\theta) = -\frac{1}{N}\sum_t
@@ -210,6 +210,8 @@ The knobs under `[trainer.loss]` are:
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
 Omit `[trainer.loss]` to use these defaults. Set `type = "ipo"` when you specify the section. The `ce` and `ref_kl` components are fixed and unaffected by `[trainer.loss]`.
+
+See [IPO](ipo.md) for why IPO masks by probability instead of ratio, and the GLM-4.5-Air ablation against IcePop behind `eps = 0.3`.
 
 ### IcePop Loss
 

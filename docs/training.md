@@ -20,6 +20,7 @@ This page covers everything you need to launch, observe, checkpoint, and recover
 - [Checkpointing](#checkpointing)
   - [Enabling Checkpoints](#enabling-checkpoints)
   - [Resuming a Run](#resuming-a-run)
+  - [Pausing a Live Run](#pausing-a-live-run)
   - [Serving Checkpoints](#serving-checkpoints)
 - [Observability](#observability)
   - [Log Files](#log-files)
@@ -62,6 +63,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `orchestrator.train.group_size` | Rollouts generated per task. |
 | `orchestrator.max_off_policy_steps` | Maximum staleness of a trained rollout (default 8): the version a batch trains on minus the oldest version that generated the rollout, queue time included. Episodes past the bound are dropped; a group shares one dispatch version, so its episodes age out together. The main off-policy dial on long agentic rollouts — bump for throughput, lower for tighter on-policyness. Watch `off_policy/*` and `mismatch_kl/all/mean` when tuning. |
 | `[orchestrator.train.algo]` | Training algorithm — its `type` names it (`grpo` default, `max_rl`, `rae`, `hierarchical_grpo`, `opd`, `opsd`, `sft`, `echo`). See [Algorithms](#algorithms). |
+| `trainer.model.freeze_moe_router` | Freeze MoE router gates (default `true` for RL, `false` for SFT). Router updates in RL shift the trainer's expert choices away from the ones inference sampled, amplifying the train-inference mismatch, so RL keeps the pretrained router. Set `false` to train it. |
 | `[[orchestrator.train.source]]` | Training sources. List multiple tables for multi-env training; weight them via `ratio`. See [Configuration § Training sources](configuration.md#training-sources-orchestratortrainsource). |
 | `[[orchestrator.eval.source]]` + `orchestrator.eval.interval` | Eval environments and cadence (default every 100 steps). |
 
@@ -157,6 +159,10 @@ If both columns are present, `messages` takes precedence. A dataset that stores 
 messages = "conversation"
 tools = "schemas"
 ```
+
+**Per-message loss selection.** An optional `message_loss_mask` column contains one boolean or integer 0/1 per message. For example, `[0, 0, 0, 1]` on a user/assistant/user/assistant conversation trains only the final assistant turn while retaining the full context. For prompt-completion rows, the mask covers the concatenated prompt and completion messages. Zero excludes a message; one preserves the normal role and renderer loss settings. A missing or null mask leaves those settings unchanged. The renderer applies selection without changing token IDs, including ownership of assistant closing tokens. Invalid mask lengths or entries raise an error.
+
+To read a differently named column, set `data.columns.message_loss_mask = "selection"`.
 
 **Tool definitions and renderer controls.** For tool-use SFT, add a `tools` column in OpenAI function-calling format. Each row's value can be either a list of dicts or a JSON-encoded string of a list.
 
@@ -330,6 +336,23 @@ uv run rl @ rl.toml --max-steps 20 --ckpt --resume.step 10 --run.name my-run
 uv run rl @ rl.toml --max-steps 20 --ckpt --run.name my-fork \
   --resume.dir outputs/my-run/checkpoints/step_10
 ```
+
+### Pausing a Live Run
+
+With `--trainer.control` and `--orchestrator.control` (SFT: `--control`), the trainer serves a small control API on port 8040 and the orchestrator on 8041. Each saves only its own state, so a pause asks the trainer first: it accepts the pause at its next step N, trains N, saves it and stops. The orchestrator is then asked to pause at N and saves its state as of shipping N, which it can always do because a paused trainer never requests N + 1. A pause is `committed` on each once that component saved N, and the run continues with `--resume`:
+
+```bash
+uv run rl @ rl.toml --ckpt --trainer.control --orchestrator.control --run.name my-run
+
+curl -X POST localhost:8040/v1/actions -H 'content-type: application/json' -d '{"type": "pause"}'
+# {"id": "3f2a...", "type": "pause", "state": "pending", "step": null}
+curl localhost:8040/v1/actions/3f2a...
+# {"id": "3f2a...", "type": "pause", "state": "accepted", "step": 12}
+curl -X POST localhost:8041/v1/actions -H 'content-type: application/json' -d '{"type": "pause", "step": 12}'
+# {"id": "9c41...", "type": "pause", "state": "pending", "step": 12}
+```
+
+Once paused, both keep serving the API until the run is stopped, so its owner can read the committed step first.
 
 ### Exporting Checkpoints
 

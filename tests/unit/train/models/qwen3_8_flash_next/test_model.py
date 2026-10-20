@@ -57,7 +57,6 @@ def test_config_and_checkpoint_roundtrip(config, shard_count):
     model = Qwen3_8FlashNextForCausalLM(restored)
     model.init_buffers_post_meta()
     assert len(get_language_model(model).layers) == 1
-    assert model.cp_support(restored).styles == frozenset({"ulysses"})
     assert model.supports_packed_multimodal_training == model.is_vlm
     assert (get_vision_encoder(model) is not None) == model.is_vlm
     original = {

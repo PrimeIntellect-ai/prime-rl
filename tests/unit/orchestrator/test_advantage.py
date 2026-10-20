@@ -110,6 +110,7 @@ def _build_episode(
         task=trace.task,
         group=vf.GroupInfo(id="group"),
         traces=[trace],
+        ok=True,
     )
     return episode
 

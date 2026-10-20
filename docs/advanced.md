@@ -39,13 +39,13 @@ and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 che
 
 Dense linear precision and routed-expert precision are configured independently. `[trainer.model.quantization]` applies only to dense `Linear` modules:
 
-- `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90+).
+- `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90 or SM100).
 - `type = "mxfp8"` — torchao MXFP8 linears (requires SM100). `recipe` is `mxfp8_rceil` or `mxfp8_rceil_wgrad_with_hp`.
 
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
-- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
+- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90 or SM100)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
@@ -100,7 +100,7 @@ Backend shape checks and token alignment apply only to the selected compute path
 
 In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
 
-GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
+GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
 
 ### Expert Parallelism Backends
 

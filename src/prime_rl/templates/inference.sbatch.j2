@@ -4,7 +4,9 @@
 #SBATCH --nodes={{ num_nodes }}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:{{ gpus_per_node }}
+{%- if partition %}
 #SBATCH --partition={{ partition }}
+{%- endif %}
 {%- if account %}
 #SBATCH --account={{ account }}
 {%- endif %}
@@ -189,10 +191,10 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
 
 {% include '_launch_rank.sh.j2' %}
 {% include '_launch_router.sh.j2' %}
-{%- if kv_offload %}
+
+    # NIXL/RDMA registers pinned host memory (KV offload pools, the HiSparse host pool).
     ulimit -l unlimited
-{%- endif %}
-{%- if kv_offload_mooncake %}
+{%- if mooncake_offloads %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
 
@@ -261,7 +263,6 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         ROLE_EXTRA="\"all2all_backend\": \"deepep_high_throughput\"{{ prefill_vllm_extra_json }}"
     else
         # ── Decode node ──
-        export UCX_NET_DEVICES=mlx5_0:1
         ROLE="decode"
         RANK_IN_DECODE=$((RANK_IN_REPLICA - NUM_PREFILL_NODES))
         SUB_REPLICA=$((RANK_IN_DECODE / NODES_PER_DECODE_REPLICA))
@@ -276,6 +277,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         ROLE_EXTRA="\"all2all_backend\": \"deepep_low_latency\", \"compilation_config\": $DECODE_COMPILE_CFG{{ decode_vllm_extra_json }}"
     fi
 
+    CONFIG_PATH="$CONFIG_DIR/inference-$ROLE.json"
     echo "NODE_RANK=$INFER_NODE_RANK ROLE=$ROLE REPLICA=$REPLICA_IDX SUB_REPLICA=$SUB_REPLICA ROLE_RANK=$ROLE_RANK DP=$DP PORT=$PORT LOCAL_IP=$LOCAL_IP" \
         | tee $LOG_DIR/inference/node_${INFER_NODE_RANK}.log
 

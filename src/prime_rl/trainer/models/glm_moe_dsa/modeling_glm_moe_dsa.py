@@ -41,7 +41,7 @@ def _sparse_mla_attention_args(config: GlmMoeDsaConfig, layer_idx: int) -> Spars
         index_topk=config.index_topk,
         use_index_cache=getattr(config, "use_index_cache", False),
         skip_topk=_index_cache_skip_topk(config, layer_idx),
-        dsa_backend=getattr(config, "dsa_backend", "tilelang"),
+        dsa_backend=getattr(config, "dsa_backend", "cudnn_flashmla"),
     )
 
 
@@ -129,6 +129,11 @@ class GlmMoeDsaPreTrainedModel(PreTrainedModelPrimeRL):
     _can_record_outputs = {
         "hidden_states": GlmMoeDsaDecoderLayer,
     }
+
+    @classmethod
+    def cp_blocker(cls, config, cp: int) -> str | None:
+        # CP all-gathers the keys inside the attention layer and keeps every head, so no head constraint.
+        return None
 
     def _init_weights(self, module):
         super()._init_weights(module)
@@ -241,7 +246,9 @@ class GlmMoeDsaModel(GlmMoeDsaPreTrainedModel):
         cached_indices = None
         use_index_cache = getattr(self.config, "use_index_cache", False)
         for layer_idx, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
-            routed_experts_layer = routed_experts[:, :, layer_idx, :] if routed_experts is not None else None
+            routed_experts_layer = (
+                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+            )
             hidden_states, next_cached_indices = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
