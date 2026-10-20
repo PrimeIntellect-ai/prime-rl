@@ -1,4 +1,4 @@
-import prime_rl._compat  # noqa: F401 — patch ring_flash_attn compat before import
+import prime_rl._compat  # noqa: F401
 
 import math
 import time
@@ -20,7 +20,6 @@ from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_se
 from prime_rl.utils.cp import setup_context_parallel, setup_cp_params, shard_for_cp
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.models.layers.lora import set_lora_num_tokens
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
@@ -59,6 +58,8 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.control.controller import Controller, broadcast_pause
+from prime_rl.control.server import ControlServer
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
 from prime_rl.utils.config import cli
@@ -164,9 +165,7 @@ def train(config: SFTConfig):
         parallel_dims,
         offload=config.model.offload,
         model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
-        ),
+        full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
     )
 
     # Set up the learning rate scheduler
@@ -233,7 +232,6 @@ def train(config: SFTConfig):
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
-    cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
@@ -257,25 +255,18 @@ def train(config: SFTConfig):
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
-            defer_vlm_cp_to_model = (
-                mm_kwargs is not None and "image_grid_thw" in mm_kwargs and config.model.cp_style == "ulysses"
-            )
+            defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(
                     input_ids,
                     position_ids,
                     cp_rank,
                     cp_size,
-                    cp_group,
                     seq_lens=seq_lens,
-                    cp_style=config.model.cp_style,
                 )
             seq_lens_are_pre_shard = True
             target_ids = shard_for_cp(target_ids, cp_rank=cp_rank, cp_world_size=cp_size)
             loss_mask = shard_for_cp(loss_mask, cp_rank=cp_rank, cp_world_size=cp_size)
-
-        if config.model.lora is not None:
-            set_lora_num_tokens(torch.full((1,), loss_mask.numel(), dtype=torch.int32, device="cuda"))
 
         token_count = loss_mask.sum(dtype=torch.int64)
 
@@ -399,12 +390,19 @@ def train(config: SFTConfig):
         prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True).__enter__()
         maybe_record_function = record_function  # noqa: F841 – captured by run_forward_loop closure
     max_peak_memory = 0.0
+    controller = Controller(requires_step=False)
+    control_server = ControlServer(controller, config.control if world.is_master else None)
+    control_server.start()
+    paused = False
     while True:
         # Reset peak memory stats
         torch.cuda.reset_peak_memory_stats()
         if gc_handler is not None:
             gc_handler.run(progress.step)
         is_last_step = config.max_steps is not None and progress.step >= config.max_steps
+        if config.control is not None:
+            paused = broadcast_pause(controller, progress.step)
+            is_last_step = is_last_step or paused
 
         memory_profiler = (
             MemoryProfiler(progress.step, config.memory_profiler_path) if config.memory_profiler_path else None
@@ -450,9 +448,12 @@ def train(config: SFTConfig):
             )
 
         step_tokens_per_expert = 0
+        perf_counter = get_perf_counter(model)
         step_local_num_tokens = 0
+        step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
+            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
@@ -485,6 +486,8 @@ def train(config: SFTConfig):
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
                 step_tokens_per_expert += tokens_per_expert
 
+        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
+        torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
@@ -551,19 +554,18 @@ def train(config: SFTConfig):
             memory_profiler.step()
 
         # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens = global_num_tokens.item()
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time
-        perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
-        mfu = perf_counter.get_step_mfu(num_tokens, step_time)
+        mfu = perf_counter.get_step_mfu(num_flops, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
@@ -670,13 +672,17 @@ def train(config: SFTConfig):
         logger.info(f"Saved trace to {trace_file}")
 
     # Write final checkpoint
-    if config.ckpt is not None:
+    if config.ckpt is not None or paused:
         logger.info(f"Saving final checkpoint at step {progress.step}")
         ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-        ckpt_manager.maybe_clean()
+        if paused:
+            controller.mark_saved(progress.step)
+        else:
+            ckpt_manager.maybe_clean()
 
-    # Broadcast the final weights so the evals process can run its forced final epoch
-    if weight_sender is not None:
+    # Broadcast the final weights so the evals process can run its forced final epoch. A paused
+    # run has no final epoch.
+    if weight_sender is not None and not paused:
         logger.info("Broadcasting final weights")
         weight_sender.broadcast(model, step=progress.step)
 
@@ -684,8 +690,12 @@ def train(config: SFTConfig):
         gradient_manager.close()
 
     logger.info(f"Peak memory: {max_peak_memory:.1f} GiB")
-    logger.success("SFT trainer finished")
-    asyncio.run(monitors.finalize())
+    logger.success("SFT trainer paused" if paused else "SFT trainer finished")
+    asyncio.run(monitors.finalize(paused=paused))
+    if paused and world.is_master:
+        # The run's owner reads the committed pause from the control API, then stops the run.
+        logger.info("Paused, serving the control API until the run is stopped")
+        control_server.wait()
 
 
 def main():

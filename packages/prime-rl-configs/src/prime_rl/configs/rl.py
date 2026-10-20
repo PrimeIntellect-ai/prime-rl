@@ -532,6 +532,41 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_score_centering(self):
+        loss = self.trainer.loss
+        if loss.type != "icepop" or not loss.score_centering:
+            return self
+        samplings = [
+            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        if not samplings:
+            raise ValueError("Score centering requires a policy-sampled training source")
+        requested = []
+        for sampling in samplings:
+            if sampling.temperature <= 0:
+                raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
+            if sampling.truncates_distribution():
+                raise ValueError("IcePop score centering requires untruncated sampling")
+            k = loss.score_centering_topk
+            if sampling.logprobs is not None and sampling.logprobs < k:
+                raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
+            sampling.logprobs = max(sampling.logprobs or 0, k)
+            requested.append(sampling.logprobs + 2)
+        if self.inference is not None:
+            if getattr(self.inference.vllm, "logprobs_mode", "processed_logprobs") != "processed_logprobs":
+                raise ValueError("Score centering requires inference.vllm.logprobs_mode = 'processed_logprobs'")
+            self.inference.vllm.logprobs_mode = "processed_logprobs"
+            limit = getattr(self.inference.vllm, "max_logprobs", 20)
+            if limit != -1:
+                self.inference.vllm.max_logprobs = max(limit, *requested)
+        else:
+            warnings.warn(
+                "Score centering requires the external server to use processed_logprobs and sufficient max_logprobs",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating
@@ -558,34 +593,6 @@ class RLConfig(BaseConfig):
                 "eval sampling config or the model's generation config) or with temperature 0 are "
                 "rejected by the inference server while truncated train sampling is on.",
                 stacklevel=2,
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_disaggregated_no_routed_experts(self):
-        """Runs after ``auto_setup_router_replay``, which sets the inference flag after InferenceConfig's validators."""
-        inference = self.inference
-        if (
-            inference is not None
-            and inference.deployment.type == "disaggregated"
-            and inference.vllm.enable_return_routed_experts
-        ):
-            raise ValueError(
-                "Router replay (inference.vllm.enable_return_routed_experts / trainer.enable_router_replay) "
-                "is not supported with disaggregated P/D: vLLM does not capture routed experts across NIXL KV transfer."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def validate_router_replay_without_kv_offload(self):
-        if (
-            self.trainer.enable_router_replay
-            and self.inference is not None
-            and self.inference.kv_cache_offload is not None
-        ):
-            raise ValueError(
-                "Router replay with inference.kv_cache_offload is not supported. "
-                "External KV cache hits do not carry routed-expert decisions."
             )
         return self
 
