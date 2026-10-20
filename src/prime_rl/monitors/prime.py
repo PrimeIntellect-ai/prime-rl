@@ -34,10 +34,11 @@ EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
 # not linger that long, and a clean finish rarely has more than the last step queued.
 FINISH_TIMEOUT = 60.0
 
-# A selfhosted metrics-only trainer queues metric rows until the orchestrator writes its
-# platform record (its registration can lag the trainer's first log calls).
-PENDING_METRICS_LIMIT = 256  # rows; the oldest are dropped when the queue is full
-UNATTACHED_WARN_SECONDS = 300.0  # one warning when the record still has not appeared
+PENDING_METRICS_LIMIT = 256
+UNATTACHED_WARN_SECONDS = 300.0
+
+# The orchestrator owns these platform keys.
+TRAINER_PLATFORM_EXCLUDED_KEYS = {"time/step", "time/save_ckpt"}
 
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
@@ -151,20 +152,10 @@ class PrimeTrainMonitor(Monitor):
     ``init``/``finish`` do network I/O and run in worker threads; the log
     calls are queue puts onto the SDK's uploader thread, which owns retries
     and backpressure, so they never stall the loop.
-
-    The RL trainer always uses this monitor as a metrics-only sidecar: it attaches to a
-    platform run another process owns — the managed launch's ``$RUN_ID``, or the
-    selfhosted orchestrator's registration read from the shared platform record — and
-    posts stepped metrics. It never registers or finalizes a run, and it drops
-    the SDK's atexit crash hook so its process can exit while the owner is
-    still running without reporting the shared run crashed. A selfhosted record
-    that lags is waited for lazily: metric rows queue bounded until it appears,
-    with one warning if it never does. Queued metrics at an abnormal exit are
-    lost, never drained: no drain runs off the normal finalize path.
     """
 
     config: PrimeTrainMonitorConfig
-    run: pr.Run | None  # None until the selfhosted record attach (metrics-only)
+    run: pr.Run | None
     mode: str
     output_dir: Path | None
     pending: deque[tuple[int | None, dict[str, Any]]]
@@ -250,13 +241,7 @@ class PrimeTrainMonitor(Monitor):
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
     async def _init_metrics_only(self, output_dir: Path | None) -> None:
-        """Attach to the run another process owns, for stepped metrics only.
-
-        The owner injects ``$RUN_ID`` (managed launch) or, selfhosted, registers the
-        run and leaves its id in the shared output dir's platform record. A record
-        not there yet is attached lazily on the next ``log_metrics``: rows queue
-        bounded until then, and training is never blocked on the platform.
-        """
+        """Attach to the run another process owns, for stepped metrics only."""
         self.mode = os.getenv(pr.MODE_ENV) or "online"
         self.output_dir = output_dir
         self.pending = deque(maxlen=PENDING_METRICS_LIMIT)
@@ -266,7 +251,6 @@ class PrimeTrainMonitor(Monitor):
         self.run = None
         run_id = os.getenv("RUN_ID")
         if run_id:
-            # A managed launch owns the run: attach now, failures included.
             self.run = await self._attach(run_id)
         elif self.mode == "online" and output_dir is not None and (record_id := self._record_run_id(output_dir)):
             await self._attach_record(record_id)
@@ -284,15 +268,14 @@ class PrimeTrainMonitor(Monitor):
         """The run id the orchestrator left in the shared platform record, if any."""
         try:
             record = read_platform_record(output_dir)
-        except (OSError, ValueError):  # missing, unreadable, or corrupt record
+        except (OSError, ValueError):
             return None
         if isinstance(record, dict) and record.get("kind") == "train" and record.get("id"):
             return str(record["id"])
         return None
 
     async def _attach(self, run_id: str) -> pr.Run:
-        """Attach to the run the orchestrator owns. Attaching is a local handle, not a
-        request, so an error here is inherited as-is."""
+        """Attaching is a local handle, not a request, so errors are inherited."""
         run = await asyncio.to_thread(
             pr.init,
             kind="train",
@@ -301,19 +284,15 @@ class PrimeTrainMonitor(Monitor):
             id=run_id,
             finish_timeout=FINISH_TIMEOUT,
         )
-        # One writer among several: the SDK's atexit hook would report the shared
-        # run crashed when this process exits before the owner finishes it, and an
-        # explicit finish() acknowledges the platform's monitoring finalize - both
-        # belong to the run's owner alone (the PrimeEvalMonitor's parent attach
-        # drops the hook for the same reason).
+        # The atexit hook would report the shared run crashed when this process exits
+        # before the owner finishes it; finishing belongs to the owner alone.
         atexit.unregister(run._atexit_hook)
         if run.url:
             self.logger.info(f"Logging trainer metrics to platform run {run.id} ({run.url}) (metrics-only)")
         return run
 
     async def _attach_record(self, run_id: str) -> None:
-        """Attach to the orchestrator's registered run. A failed attach disables this
-        sink for the rest of the run; training continues, untracked."""
+        """A failed attach disables this sink for the rest of the run."""
         try:
             run = await self._attach(run_id)
         except Exception as e:
@@ -325,13 +304,11 @@ class PrimeTrainMonitor(Monitor):
             )
             return
         self.run = run
-        while self.pending:  # flush in queue order, keeping each row's own timestamp
+        while self.pending:
             pending_step, pending_metrics = self.pending.popleft()
             await asyncio.to_thread(run.log_metrics, pending_metrics, step=pending_step)
 
     async def _log_metrics_pending(self, metrics: dict[str, Any], step: int | None) -> None:
-        """One metric row while the orchestrator's record has not appeared: attach and
-        flush once it has, else queue bounded (the oldest rows are dropped)."""
         if self.attach_gave_up:
             return
         run_id = self._record_run_id(self.output_dir) if self.output_dir is not None else None
@@ -359,9 +336,13 @@ class PrimeTrainMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        if self.metrics_only and self.run is None:
-            await self._log_metrics_pending(metrics, step)
-            return
+        if self.metrics_only:
+            metrics = {key: value for key, value in metrics.items() if key not in TRAINER_PLATFORM_EXCLUDED_KEYS}
+            if not metrics:
+                return
+            if self.run is None:
+                await self._log_metrics_pending(metrics, step)
+                return
         # A queue put that can block briefly under backpressure - off the loop. The SDK
         # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
@@ -370,8 +351,7 @@ class PrimeTrainMonitor(Monitor):
         """Only the trained cohort ships to the platform. The upload cadence
         (every 10th step) and the Parquet encoding live in the SDK's training
         samples sink, which reads each episode's dispatch step off ``run.work``
-        - the ``TrainRunInfo`` the dispatcher stamps at emit time. A
-        metrics-only attach posts no episodes: their run owns them."""
+        - the ``TrainRunInfo`` the dispatcher stamps at emit time."""
         if self.metrics_only or kind != "train" or subset != "effective" or not episodes:
             return
         # A queue put that can block briefly under backpressure - off the loop.
@@ -380,8 +360,6 @@ class PrimeTrainMonitor(Monitor):
     async def finalize(self, paused: bool = False) -> None:
         if self.metrics_only:
             if self.run is None:
-                # Never attached: nothing to drain; the once-only warning covers
-                # a run that ends before the record appears.
                 if not self.warned_unattached and not self.attach_gave_up:
                     self.warned_unattached = True
                     self.logger.warning(
@@ -389,10 +367,7 @@ class PrimeTrainMonitor(Monitor):
                     )
                 self.pending.clear()
                 return
-            # Drain only, paused or not: the run's owner finalizes it. A trainer's
-            # finish() acknowledges the platform's monitoring finalize even on an
-            # attached run, which could tear the hosted job down before the
-            # orchestrator is done with it.
+            # Drain only: the owner finalizes; a finish() could tear the hosted job down.
             await asyncio.to_thread(self.run.flush, timeout=FINISH_TIMEOUT)
             return
         # Drains queued uploads so the final step's metrics and episodes land,

@@ -77,7 +77,7 @@ class SharedMonitorsConfig(BaseConfig):
     """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
     prime: PrimeTrainMonitorConfig | None = None
-    """Prime platform monitor. Propagated to trainer and orchestrator."""
+    """Prime platform monitor."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -206,7 +206,7 @@ class RLConfig(BaseConfig):
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
     monitors: SharedMonitorsConfig = SharedMonitorsConfig()
-    """Shared monitor configs (``monitors.wandb``, ``monitors.file``, ``monitors.prime``). Propagated to trainer and orchestrator."""
+    """Shared metric monitors."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""

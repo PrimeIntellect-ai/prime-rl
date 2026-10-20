@@ -295,7 +295,7 @@ Pulled from the console log and mirrored to W&B.
 | `perf/throughput`, `perf/throughput_per_gpu` | tokens/s overall and per GPU |
 | `perf/mfu` | MFU |
 | `perf/peak_memory` | peak GPU memory (GiB) |
-| `time/trainer/step`, `time/forward_backward`, `time/trainer/save_ckpt` (RL); `time/step`, `time/forward_backward`, `time/save_ckpt` (SFT) | step breakdown |
+| `time/step`, `time/forward_backward`, `time/save_ckpt` | step breakdown |
 
 ## Checkpointing
 
@@ -445,8 +445,6 @@ name = "my-experiment"
 The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeIntellect-ai/prime/tree/main/packages/prime-runs) SDK (installed as `prime-runs[train]`): it registers the run, streams per-step metrics, uploads every 10th step's episodes (full conversations with rewards and advantages) to the run's sample viewer, and closes the run out. Finalization is best-effort SDK delivery: a process that exits without finishing is reported crashed when the SDK's atexit hook runs, but an abrupt kill (SIGKILL, OOM, node loss) skips the report and a lost finalize is not retried — the platform owns the terminal state of attached (`RUN_ID`) and managed runs. Uploaded episodes are keyed to the platform run by the SDK; the orchestrator's own run id (the launcher's `PRL_RUN_ID`) stays on W&B and in the local records.
 
 On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
-
-Under `rl`, only the orchestrator registers the run: the trainer attaches to it metrics-only. A managed launch injects `RUN_ID`; selfhosted, the trainer reads the orchestrator's registration from the shared `monitors/prime/run.json` record (queued metric rows attach once it appears, with a warning if it never does).
 
 Requires `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. A configured monitor must work: a missing key or a team outside the allowlist fails the launch. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 

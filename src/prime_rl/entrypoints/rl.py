@@ -521,8 +521,7 @@ def rl(config: RLConfig):
         clean_future_steps(config.run_dir, -1)
 
     if not config.dry_run:
-        # A resume-reused run dir keeps the previous attempt's platform record; the
-        # orchestrator rewrites it once this attempt registers its own run.
+        # A resume-reused run dir keeps the previous attempt's record: never attach its finalized run.
         get_platform_run_path(config.run_dir).unlink(missing_ok=True)
 
         from prime_rl.trainer.model import pre_download_model
