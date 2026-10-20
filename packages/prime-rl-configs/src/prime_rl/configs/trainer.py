@@ -665,6 +665,15 @@ class BaseTrainerConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def heads_per_block_incompatible_with_lora(self):
+        if self.model.lora is not None and self.optim.type == "muon" and self.optim.heads_per_block is not None:
+            raise ValueError(
+                "optim.heads_per_block is incompatible with LoRA: Muon then trains only the adapters, "
+                "which are not split by head."
+            )
+        return self
+
+    @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
         if self.model.offload == "full" and self.optim.max_norm is not None:
             warnings.warn(
