@@ -215,8 +215,35 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class MegaMoeMoEDispatchConfig(BaseConfig):
+    type: Literal["mega_moe"] = "mega_moe"
+    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
+    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
+    (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
+
+    num_reserved_sms: int = Field(16, ge=1)
+    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+
+
+def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
+    """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
+    buffer must hold the full micro batch."""
+    if max_tokens_per_rank is None:
+        return micro_batch_tokens
+    if max_tokens_per_rank < micro_batch_tokens:
+        raise ValueError(
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the micro batch "
+            f"({micro_batch_tokens} tokens)."
+        )
+    return max_tokens_per_rank
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -323,6 +350,8 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
@@ -485,6 +514,13 @@ class IcePopLossConfig(BaseConfig):
     adv_tau: float = Field(1.0, ge=0)
     """Temperature for the advantage term."""
 
+    score_centering: bool = False
+    """Center the ratio-masked importance-weighted score under the sampler."""
+
+    score_centering_topk: int = Field(128, ge=1)
+    """Captured head size for an untruncated sampler with a proportional tail.
+    Probabilities retain full-vocabulary normalization; sampling is not truncated."""
+
     @model_validator(mode="after")
     def validate_ratio_bounds(self):
         if self.ratio_low > self.ratio_high:
@@ -538,7 +574,8 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig, Field(discriminator="type")
+    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    Field(discriminator="type"),
 ]
 
 
@@ -714,5 +751,15 @@ class TrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe":
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, self.model.seq_len
             )
         return self

@@ -532,6 +532,41 @@ class RLConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
+    def auto_setup_score_centering(self):
+        loss = self.trainer.loss
+        if loss.type != "icepop" or not loss.score_centering:
+            return self
+        samplings = [
+            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
+        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        if not samplings:
+            raise ValueError("Score centering requires a policy-sampled training source")
+        requested = []
+        for sampling in samplings:
+            if sampling.temperature <= 0:
+                raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
+            if sampling.truncates_distribution():
+                raise ValueError("IcePop score centering requires untruncated sampling")
+            k = loss.score_centering_topk
+            if sampling.logprobs is not None and sampling.logprobs < k:
+                raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
+            sampling.logprobs = max(sampling.logprobs or 0, k)
+            requested.append(sampling.logprobs + 2)
+        if self.inference is not None:
+            if getattr(self.inference.vllm, "logprobs_mode", "processed_logprobs") != "processed_logprobs":
+                raise ValueError("Score centering requires inference.vllm.logprobs_mode = 'processed_logprobs'")
+            self.inference.vllm.logprobs_mode = "processed_logprobs"
+            limit = getattr(self.inference.vllm, "max_logprobs", 20)
+            if limit != -1:
+                self.inference.vllm.max_logprobs = max(limit, *requested)
+        else:
+            warnings.warn(
+                "Score centering requires the external server to use processed_logprobs and sufficient max_logprobs",
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def auto_setup_sampling_mask_capture(self):
         """Truncated train sampling needs the inference server to return the sampling
         masks the trainer replays (OrchestratorConfig guarantees truncating

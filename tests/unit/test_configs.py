@@ -123,6 +123,34 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+def test_rl_launcher_config_roundtrip(tmp_path):
+    from prime_rl.entrypoints.rl import write_config
+
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "examples/basic/reverse-text/rl.toml",
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--run.name",
+            "roundtrip",
+            "--trainer.loss.type",
+            "icepop",
+            "--trainer.loss.score-centering",
+            "--trainer.loss.score-centering-topk",
+            "4",
+        ],
+    )
+    write_config(config, tmp_path, exclude={"slurm", "dry_run", "clean"})
+    reloaded = cli(RLConfig, args=["@", str(tmp_path / "rl.json")])
+    assert reloaded.run_dir == config.run_dir
+    assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
+    assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
+    assert reloaded.inference.vllm.max_logprobs >= 6
+    assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})
@@ -220,6 +248,16 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
+    assert config.loss.score_centering_topk == 128
+    assert not config.loss.score_centering
+    for unsupported in (
+        {"type": "ipo_tis"},
+        {"type": "score_centering"},
+        {"type": "ipo", "score_centering": True},
+        {"type": "icepop", "score_centering_topk": None},
+    ):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": unsupported})
     assert config.loss.ratio_low == 0.2
     assert config.loss.ratio_high == 5.0
 

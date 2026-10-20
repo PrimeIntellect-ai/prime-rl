@@ -242,6 +242,39 @@ ratio_high = 5.0
 | `ratio_high` | 5.0 | Upper accepted trainer-to-inference probability ratio. |
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 
+### IcePop with Score Centering
+
+Enable [score centering](https://arxiv.org/abs/2609.20807) on IcePop:
+
+```toml
+[trainer.loss]
+type = "icepop"
+score_centering = true
+score_centering_topk = 128
+```
+
+Training sampling must be untruncated (`top_p = 1`, no `top_k`) with positive
+temperature. The captured head retains full-vocabulary normalization. The trainer
+approximates the remaining sampler mass as proportional to its own tail.
+
+With `w_v = (p_v/q_v) * 1[ratio_low <= p_v/q_v <= ratio_high]`, the update is
+`A * (w_a * grad(log p_a) - sum_v q_v*w_v*grad(log p_v))`. The correction applies
+even when the sampled action is rejected. All centering coefficients are detached.
+The modeled tail has a constant importance ratio, so all tail actions are accepted
+or rejected together. Both tail masses are floored at `1e-6` for stability.
+This is an approximation to the unknown sampler tail, not exact full-distribution
+centering. The IcePop ratio band remains `[0.2, 5]` by default.
+
+The launcher configures probability capture automatically. Standalone inference
+servers need `processed_logprobs` and `max_logprobs >= sampling.logprobs + 2`.
+The renderer requests two extra candidates to recover a head independent of the
+sampled action, excluding ties at the head boundary. Missing heads fail explicitly.
+Compact HTTP transport packs token IDs and probabilities into binary buffers.
+
+Metrics report captured sampler `score_centering/head_mass`, modeled
+`score_centering/tail_scale`, and `score_centering/logit_correction_l1` (the
+baseline's logit-gradient L1 norm before advantage scaling).
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).
