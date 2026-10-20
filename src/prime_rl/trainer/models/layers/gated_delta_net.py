@@ -19,8 +19,6 @@ build_cp_context_eager = torch.compiler.disable(build_cp_context)
 class GatedDeltaNet(nn.Module):
     """Qwen3.5-style Gated DeltaNet linear attention (FLA kernels)."""
 
-    uses_fla = True
-
     def __init__(
         self,
         *,

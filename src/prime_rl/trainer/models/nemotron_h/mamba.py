@@ -76,8 +76,6 @@ class GatedRMSNorm(nn.Module):
 
 
 class NemotronHMamba2(nn.Module):
-    uses_fla = True
-
     def __init__(self, config: NemotronHConfig) -> None:
         super().__init__()
         from fla.modules.conv import causal_conv1d

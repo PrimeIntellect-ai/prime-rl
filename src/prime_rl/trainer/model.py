@@ -780,6 +780,8 @@ def reshard_module(model: nn.Module):
 
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
+    # FLA's metadata cache must not skip operations during checkpoint replay.
+    fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     language_model = get_language_model(model)
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
     checkpointed_layers = 0
@@ -788,9 +790,6 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         if layer_id % ac_config.freq != 0:
             continue
 
-        # FLA's metadata cache must not skip operations during checkpoint replay.
-        if any(getattr(module, "uses_fla", False) for module in transformer_block.modules()):
-            fla.utils.FLA_DISABLE_TENSOR_CACHE = True
         language_model.layers.register_module(layer_name, wrap_block(transformer_block))
         checkpointed_layers += 1
 
