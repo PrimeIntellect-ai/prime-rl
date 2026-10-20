@@ -104,7 +104,9 @@ The schedule scales every param group's own learning rate, so ratios between gro
 
 | Field | Meaning |
 |---|---|
-| `bias_update` | `quantile` (default): quantile balancing. Every step, each layer's bias is set so that every expert would have been selected by `num_experts_per_tok / num_experts` of the step's tokens (null experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Best with `router_bias_on_logits` (on by default). `sign`: the update below. The bias starts at 0. |
+| `bias_update` | `quantile` (default): quantile balancing. Every step, each layer's bias is set so that every expert would have been selected by `num_experts_per_tok / num_experts` of the step's tokens (null experts included), estimated as `quantile_estimator` sets; no rate. Best with `router_bias_on_logits` (on by default). `sign`: the update below. The bias starts at 0. |
+| `quantile_estimator` | How `quantile` estimates the thresholds. `histogram` (default; Kimi K3 report, §2.3.3): one histogram of the margins per expert over the whole step, summed over the ranks with one all-reduce, read with in-bin interpolation; the quantile of the pooled step, independent of how the tokens are split. `micro_batch_mean`: each micro-batch's exact quantile, averaged over the micro-batches and ranks. |
+| `quantile_bins` | Bins of the `histogram` estimator (default 1024). Its grid is the previous step's global margin range, `[-1, 1]` on the first step after a start or resume. |
 | `bias_update_rate` | With `sign`: every step, each layer's selection bias moves by this step size (gamma) towards underloaded experts, using the step's global expert counts. The update is mean-centred. Default 3e-3; 0 turns it off. |
 | `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
 | `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |

@@ -33,7 +33,9 @@ class PrimeRouter(TokenChoiceTopKRouter):
 
     With ``bias_on_logits`` the selection bias is added to the logits instead of the sigmoid scores. With
     ``quantile_balance`` set by the training loop, every forward with grad records each expert's quantile balancing
-    threshold (``quantile_sum``, ``quantile_count``), from which the loop sets the next step's bias."""
+    threshold (``quantile_sum``, ``quantile_count``), from which the loop sets the next step's bias. If the loop also
+    sets ``quantile_hist`` (``(num_experts, bins)`` counts) and ``quantile_grid`` (its ``[lo, hi]``), the forward
+    instead adds each expert's required biases to that histogram (``record_quantile_histogram``)."""
 
     def __init__(
         self,
@@ -60,6 +62,9 @@ class PrimeRouter(TokenChoiceTopKRouter):
         self.quantile_balance = False
         self.register_buffer("quantile_sum", torch.zeros(self.num_experts, dtype=torch.float32), persistent=False)
         self.register_buffer("quantile_count", torch.zeros((), dtype=torch.float32), persistent=False)
+        self.quantile_hist: torch.Tensor | None = None
+        self.quantile_grid: torch.Tensor | None = None
+        self.quantile_range: torch.Tensor | None = None
 
     @torch.no_grad()
     def record_quantiles(self, selection_scores: torch.Tensor, biased_scores: torch.Tensor) -> None:
@@ -71,6 +76,25 @@ class PrimeRouter(TokenChoiceTopKRouter):
         rank = max(1, round(margins.shape[0] * self.top_k / self.num_experts))
         self.quantile_sum += margins.topk(rank, dim=0).values[-1]
         self.quantile_count += 1
+
+    @torch.no_grad()
+    def record_quantile_histogram(self, selection_scores: torch.Tensor, biased_scores: torch.Tensor) -> None:
+        """Histogram estimator of quantile balancing (Kimi K3 report, §2.3.3 and appendix D): add each expert's
+        required biases ``threshold - score`` (the bias that puts the expert exactly at the token's threshold) to its
+        row of ``quantile_hist`` on the grid ``quantile_grid``. Values outside the grid count in the edge bins, so the
+        counts below any in-grid value stay exact. Also tracks the values' ``[min, max]`` in ``quantile_range``."""
+        thresholds = biased_scores.topk(self.top_k + 1, dim=1).values[:, -1:]
+        required = thresholds - selection_scores
+        num_experts, bins = self.quantile_hist.shape
+        lo, hi = self.quantile_grid
+        index = ((required - lo) * (bins / (hi - lo))).floor().clamp_(0, bins - 1).long()
+        index += torch.arange(num_experts, device=index.device) * bins
+        # scatter_add_ instead of bincount: CUDA bincount reads its input's maximum to the host, one sync per call.
+        self.quantile_hist.view(-1).scatter_add_(
+            0, index.view(-1), torch.ones_like(index.view(-1), dtype=self.quantile_hist.dtype)
+        )
+        self.quantile_range[0] = torch.minimum(self.quantile_range[0], required.min())
+        self.quantile_range[1] = torch.maximum(self.quantile_range[1], required.max())
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Like ``TokenChoiceTopKRouter.forward`` with sigmoid scores; also returns the ``(bs*slen, num_experts)``
@@ -86,7 +110,10 @@ class PrimeRouter(TokenChoiceTopKRouter):
         biased_scores = selection_scores + self.selection_bias
         _, selected_experts_indices = torch.topk(biased_scores, k=self.top_k, dim=1, sorted=self.topk_sorted)
         if self.quantile_balance and torch.is_grad_enabled():
-            self.record_quantiles(selection_scores, biased_scores)
+            if self.quantile_hist is None:
+                self.record_quantiles(selection_scores, biased_scores)
+            else:
+                self.record_quantile_histogram(selection_scores, biased_scores)
         top_scores = scores.gather(dim=1, index=selected_experts_indices)
 
         with torch.no_grad():
@@ -100,6 +127,24 @@ class PrimeRouter(TokenChoiceTopKRouter):
             selected_experts_indices.reshape(-1).float(), bins=self.num_experts, min=0, max=self.num_experts
         ).to(torch.int64)
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, scores
+
+
+def histogram_quantile_biases(hist: torch.Tensor, grid: torch.Tensor, top_k: int) -> torch.Tensor:
+    """Each expert's ``top_k / num_experts`` quantile of the required biases counted in ``hist`` (``(num_experts,
+    bins)`` on ``grid = [lo, hi]``), mean-centred: the first bin whose cumulative count reaches the target ``q`` plus
+    linear interpolation inside it. With it, every expert would have been selected by ``q`` of the counted tokens.
+    ``q`` comes from each expert's own count, so a forward recomputed under activation checkpointing (which counts
+    every token twice) leaves the result unchanged."""
+    num_experts, bins = hist.shape
+    cumulative = hist.cumsum(dim=1)
+    target = cumulative[:, -1] * top_k / num_experts
+    selected = (cumulative < target.ceil()[:, None]).sum(dim=1).clamp(max=bins - 1)[:, None]
+    inside = hist.gather(1, selected)
+    below = cumulative.gather(1, selected) - inside
+    fraction = ((target[:, None] - below) / inside.clamp(min=1)).clamp(0, 1)
+    lo, hi = grid
+    biases = (lo + (selected + fraction) * (hi - lo) / bins).squeeze(1)
+    return biases - biases.mean()
 
 
 def sequence_balance(scores: torch.Tensor, selected_experts: torch.Tensor, num_rows: int) -> torch.Tensor:

@@ -27,9 +27,19 @@ class MoEBalanceConfig(BaseConfig):
     bias_update: Literal["sign", "quantile"] = "quantile"
     """``quantile`` (default): quantile balancing (Su 2026; Kimi K3, Marin): every step, each layer's bias is set to
     the value with which every expert would have been selected by ``top_k / num_experts`` of the step's tokens (null
-    experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Marin found it
+    experts included), estimated as ``quantile_estimator`` sets; no rate. Marin found it
     works best on the router logits (``router_bias_on_logits`` in the model config, on by default). ``sign``: every
     step, each layer's bias moves by ``bias_update_rate`` towards underloaded experts."""
+
+    quantile_estimator: Literal["histogram", "micro_batch_mean"] = "histogram"
+    """How ``quantile`` estimates the thresholds. ``histogram`` (default; Kimi K3 report, §2.3.3): per expert, a
+    histogram of the step's margins summed over the micro-batches and ranks (one all-reduce per step), read with in-bin
+    interpolation; the quantile of the pooled step, independent of how the tokens are split. Its grid is the previous
+    step's global margin range (``[-1, 1]`` on the first step after a start or resume). ``micro_batch_mean``: each
+    micro-batch's exact quantile, averaged over the micro-batches and ranks."""
+
+    quantile_bins: int = Field(1024, ge=2)
+    """Bins of the ``histogram`` estimator's grid."""
 
     bias_update_rate: float = Field(3e-3, ge=0)
     """Step size of the sign update (gamma): every step, each layer's bias moves by this towards underloaded experts,
