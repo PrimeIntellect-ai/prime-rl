@@ -264,7 +264,8 @@ class TrainSourceConfig(EnvConfig):
                 f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
             )
         for name, agent in agent_config_fields(self.env).items():
-            if agent.sampling is None:
+            # An agent pinned to its own model (e.g. a judge) never samples the policy.
+            if agent.sampling is None or agent.model is not None:
                 continue
             if unsupported := agent.sampling.model_dump(exclude_unset=True).keys() - agent_options:
                 raise ValueError(
