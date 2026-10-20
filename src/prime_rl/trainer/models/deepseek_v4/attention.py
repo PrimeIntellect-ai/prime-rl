@@ -138,7 +138,7 @@ from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
 )
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
-from prime_rl.trainer.models.layers.attn import head_partitions
+from prime_rl.trainer.models.layers.attn import head_partitions, quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -701,7 +701,7 @@ class DeepseekV4Attention(nn.Module):
         self.rotary_emb = rotary_emb
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
-        self.dsa_backend = getattr(config, "dsa_backend", "tilelang")
+        self.dsa_backend = getattr(config, "dsa_backend", "cudnn_flashmla")
         if dsv4_sparse_attn is not None and self.dsa_backend not in FORWARD_BACKENDS:
             raise ValueError(
                 f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
@@ -710,7 +710,12 @@ class DeepseekV4Attention(nn.Module):
         self.max_slots = max_sparse_attn_slots(config)
         blocker = _kernel_blocker(self.num_heads, self.head_dim, self.dsa_backend)
         if blocker is not None:
-            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
+            hint = (
+                ' Set `model.dsa_backend = "tilelang"` to use the TileLang kernels instead.'
+                if self.dsa_backend == "cudnn_flashmla"
+                else ""
+            )
+            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}.{hint}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
@@ -724,6 +729,26 @@ class DeepseekV4Attention(nn.Module):
         whole = [self.q_a_proj, self.kv_proj, self.o_a_proj, self.o_b_proj, self.compressor]
         partitions = {p: None for module in whole if module is not None for p in module.parameters()}
         return partitions | {self.q_b_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block)}
+
+    def attention_flops(self, seq_len: int) -> int:
+        # Each query attends the local window plus the compressed entries (CSA: the indexer scores
+        # all of them forward only, under no_grad; attention reads `index_topk`).
+        attended_tokens = min(seq_len, self.config.sliding_window)
+        indexer_flops = 0
+        if self.compressor is not None:
+            compressed_len = seq_len // self.compressor.compress_rate
+            indexer = getattr(self.compressor, "indexer", None)
+            if indexer is not None:
+                indexer_flops = 2 * indexer.num_heads * indexer.head_dim * seq_len * compressed_len
+                compressed_len = min(compressed_len, indexer.index_topk)
+            attended_tokens += compressed_len
+        return indexer_flops + quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=attended_tokens,
+        )
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""

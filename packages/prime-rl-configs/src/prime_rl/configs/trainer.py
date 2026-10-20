@@ -215,8 +215,35 @@ class DeepEPMoEDispatchConfig(BaseConfig):
     """Optional chunk size used to pipeline dispatch with local expert compute."""
 
 
+class MegaMoeMoEDispatchConfig(BaseConfig):
+    type: Literal["mega_moe"] = "mega_moe"
+    precision: Literal["bf16", "mxfp8", "fp8", "fp8_bwd"] = "bf16"
+    """Expert GEMM precision. ``mxfp8``: forward and backward in MXFP8 (SM100). ``fp8``: forward and backward
+    in blockwise FP8 (SM90). ``fp8_bwd``: BF16 forward, blockwise FP8 backward (SM90)."""
+
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Tokens per rank per MoE call that the symmetric buffer is sized for. Defaults to the micro batch
+    (``model.seq_len`` for RL, ``data.micro_batch_size * data.seq_len`` for SFT) and cannot be smaller."""
+
+    num_reserved_sms: int = Field(16, ge=1)
+    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value."""
+
+
+def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int) -> int:
+    """A rank with more tokens than its buffer fails alone while its peers wait in the kernel, so the
+    buffer must hold the full micro batch."""
+    if max_tokens_per_rank is None:
+        return micro_batch_tokens
+    if max_tokens_per_rank < micro_batch_tokens:
+        raise ValueError(
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must be at least the micro batch "
+            f"({micro_batch_tokens} tokens)."
+        )
+    return max_tokens_per_rank
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -260,7 +287,7 @@ class ModelConfig(BaseModelConfig):
     """Data parallel dim where model weights are replicated."""
 
     ep: int | Literal["auto"] = "auto"
-    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves to ``min(fsdp_island_size, 8)`` for MoE models (where ``fsdp_island_size = world_size // dp_replicate``), and to 1 for non-MoE models. Set an explicit integer to override."""
+    """Expert parallelism degree for MoE layers. 1 disables EP. ``auto`` resolves for MoE models to the largest degree up to 8 that divides both ``fsdp_island_size = world_size // dp_replicate`` and the expert count and is a multiple of ``cp``, and to 1 for non-MoE models. Set an explicit integer to override."""
 
     moe: MoERuntimeConfig = MoERuntimeConfig()
     """Routed-expert compute and token-dispatch runtime."""
@@ -282,8 +309,8 @@ class ModelConfig(BaseModelConfig):
 
     quantization: QuantizationConfig | None = None
 
-    dsa_backend: DSABackend = "tilelang"
-    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``tilelang`` runs the TileLang forward and backward. ``cudnn_flashmla`` runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs the ``flash-mla`` extra and an SM90, SM100 or SM103 GPU."""
+    dsa_backend: DSABackend = "cudnn_flashmla"
+    """Kernels for the sparse attention of ``glm_moe_dsa`` (DSA sparse MLA, e.g. GLM-5) and ``deepseek_v4``. ``cudnn_flashmla`` (default) runs the FlashMLA sparse prefill forward with the cuDNN frontend CuTe-DSL backward; it needs an SM90, SM100 or SM103 GPU, ``flash-mla`` (installed with the ``gpu`` extra on x86_64), 64 or 128 attention heads and head_dim 512, and setup fails otherwise. ``tilelang`` runs the TileLang forward and backward."""
 
     dsv4_kv_precision: Literal["bf16", "fp8"] = "fp8"
     """Precision DeepSeek V4 attention reads keys and values at. ``fp8`` rounds them as vLLM's ``fp8_ds_mla`` KV cache stores them, with a straight-through gradient."""
@@ -323,6 +350,8 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
@@ -717,5 +746,15 @@ class TrainerConfig(BaseTrainerConfig):
             raise ValueError(
                 "LoRA requires weight_broadcast.type = 'filesystem': vLLM loads adapters only from a "
                 "PEFT-shaped directory on disk - in-memory transports have no disk artifact to load from."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        """RL micro batches are one packed sequence of ``model.seq_len`` tokens."""
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe":
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, self.model.seq_len
             )
         return self

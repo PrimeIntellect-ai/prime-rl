@@ -20,6 +20,7 @@ from prime_rl.trainer.models.layers.attn import (
     flash_attn_4_varlen_op,
     head_partitions,
     qkv_head_partitions,
+    quadratic_attention_flops,
 )
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -87,6 +88,15 @@ class AfmoeAttentionBase(nn.Module):
     def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
         partitions = qkv_head_partitions(self, self.num_heads, self.num_key_value_heads, self.head_dim, heads_per_block)
         return partitions | {self.gate_proj.weight: head_partitions(self.num_heads, (self.head_dim,), heads_per_block)}
+
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, self.sliding_window or seq_len),
+        )
 
 
 class AfmoeFlashAttention(AfmoeAttentionBase):

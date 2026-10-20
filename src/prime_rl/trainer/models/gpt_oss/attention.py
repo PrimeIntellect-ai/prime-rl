@@ -10,7 +10,7 @@ from torch import nn
 
 from prime_rl.trainer.models.fusions import fuse_qkv_projections
 from prime_rl.trainer.models.gpt_oss.configuration_gpt_oss import GptOssConfig
-from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func, qkv_head_partitions
+from prime_rl.trainer.models.layers.attn import flash_attn_4_varlen_func, qkv_head_partitions, quadratic_attention_flops
 from prime_rl.trainer.models.layers.rotary_emb import apply_rotary_pos_emb
 
 
@@ -54,6 +54,15 @@ class GptOssAttention(nn.Module):
     def muon_head_partitions(self, heads_per_block: int) -> dict[nn.Parameter, tuple[int, ...] | None]:
         return qkv_head_partitions(
             self, self.num_attention_heads, self.num_key_value_heads, self.head_dim, heads_per_block
+        )
+
+    def attention_flops(self, seq_len: int) -> int:
+        return quadratic_attention_flops(
+            num_heads=self.num_attention_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, self.sliding_window or seq_len),
         )
 
     def compute_attention(
