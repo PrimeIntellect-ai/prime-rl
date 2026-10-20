@@ -162,12 +162,7 @@ def _local_reorder(
     top_k: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     flattened_experts = selected_experts_indices.reshape(-1)
-    num_tokens_per_expert = torch.histc(
-        flattened_experts.float(),
-        bins=num_experts,
-        min=0,
-        max=num_experts,
-    ).to(torch.int64)
+    num_tokens_per_expert = torch.histc(flattened_experts, bins=num_experts, min=0, max=num_experts)
     route_indices_experts_sorted = torch.argsort(flattened_experts, stable=True)
     top_scores_experts_sorted = top_scores.reshape(-1)[route_indices_experts_sorted]
     # A route slot is token_index * top_k + expert_slot (position among selected experts).

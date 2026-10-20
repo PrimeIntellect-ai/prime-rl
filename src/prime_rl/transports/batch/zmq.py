@@ -9,6 +9,7 @@ import zmq.asyncio
 from prime_rl.configs.shared import ZMQTransportConfig
 from prime_rl.transports.batch.base import BatchReceiver, BatchSender
 from prime_rl.transports.batch.types import MicroBatch
+from prime_rl.utils.pathing import get_batch_dir, get_step_path
 
 
 class BatchRequest(msgspec.Struct):
@@ -99,6 +100,7 @@ class ZMQBatchReceiver(BatchReceiver):
         self.socket.connect(f"tcp://{transport.host}:{transport.port}")
         self.request_encoder = msgspec.msgpack.Encoder()
         self.current_step = current_step
+        self.persist_dir = get_batch_dir(output_dir) if transport.persist else None
         self.logger.debug(f"Initialized ZMQ micro batch receiver (endpoint=tcp://{transport.host}:{transport.port})")
 
     def wait(self) -> None:
@@ -113,6 +115,8 @@ class ZMQBatchReceiver(BatchReceiver):
     def receive(self) -> list[MicroBatch]:
         """Receive a micro batch from the orchestrator."""
         payload = self.socket.recv(copy=False)
+        if self.persist_dir is not None:
+            self._persist(payload.buffer)
         micro_batches: list[MicroBatch] = self.decoder.decode(payload)
         self.logger.debug(f"Received {len(micro_batches)} micro batches for step {self.current_step}")
         self.current_step += 1
@@ -123,3 +127,12 @@ class ZMQBatchReceiver(BatchReceiver):
             self.socket.close(linger=0)
         finally:
             self.logger.debug("Closed ZMQ micro batch receiver")
+
+    def _persist(self, payload: memoryview) -> None:
+        """Write the payload where the filesystem receiver would read it. Ranks sharing a data rank receive the same
+        bytes, so each writes its own temp file and renames it into place."""
+        step_path = get_step_path(self.persist_dir, self.current_step)
+        step_path.mkdir(parents=True, exist_ok=True)
+        tmp_path = step_path / f"rank_{self.data_rank}.bin.{self.rank}.tmp"
+        tmp_path.write_bytes(payload)
+        tmp_path.rename(step_path / f"rank_{self.data_rank}.bin")

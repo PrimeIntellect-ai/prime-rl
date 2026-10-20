@@ -177,6 +177,11 @@ def configure_cpu_optimizer_threads() -> None:
     )
 
 
+def setup_deterministic() -> None:
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.use_deterministic_algorithms(True)
+
+
 def setup_full_cpu_optimizer_offload() -> None:
     bind_process_to_gpu_numa_node()
     configure_cpu_optimizer_threads()

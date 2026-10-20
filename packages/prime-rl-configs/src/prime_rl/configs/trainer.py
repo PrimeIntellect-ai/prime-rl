@@ -580,6 +580,9 @@ class BaseTrainerConfig(BaseConfig):
     matmul_precision: Literal["highest", "high", "medium"] = "high"
     """Precision for float32 matrix multiplications. ``highest`` is full FP32 (required on ROCm/AMD GPUs to avoid catastrophic precision loss in softmax over large vocabularies). ``high`` enables TF32 on NVIDIA GPUs for a speedup with minor precision tradeoff. See ``torch.set_float32_matmul_precision``."""
 
+    deterministic: bool = False
+    """Make every training step bitwise reproducible from its state and batch, on the same hardware and world size. Enables ``torch.use_deterministic_algorithms``, which selects deterministic flash attention backward kernels and raises on any op that has no deterministic implementation. Disables ``torch.compile``, whose kernels depend on the sequence lengths a process sees first, so a run resumed from a checkpoint matches the uninterrupted run."""
+
     max_steps: int | None = None
     """Maximum number of training steps. If None, runs indefinitely."""
 
@@ -624,6 +627,17 @@ class BaseTrainerConfig(BaseConfig):
                 stacklevel=1,
             )
             self.optim.max_norm = None
+        return self
+
+    @model_validator(mode="after")
+    def deterministic_disables_compile(self):
+        if self.deterministic and self.model.compile is not None:
+            warnings.warn(
+                "torch.compile tunes kernels for the sequence lengths a process sees first, so a resumed run would "
+                "not match the uninterrupted one. Automatically setting model.compile to None (disabled).",
+                stacklevel=1,
+            )
+            self.model.compile = None
         return self
 
     @model_validator(mode="after")
@@ -693,8 +707,8 @@ class TrainerConfig(BaseTrainerConfig):
     resume: ResumeConfig | None = None
     """Resume training from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
 
-    weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
-    """Transport used to broadcast updated weights from trainer to inference."""
+    weight_broadcast: WeightBroadcastConfig | None = FileSystemWeightBroadcastConfig()
+    """Transport used to broadcast updated weights from trainer to inference. None trains without an inference consumer, e.g. when replaying persisted batches."""
 
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""

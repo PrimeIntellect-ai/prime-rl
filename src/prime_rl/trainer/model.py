@@ -899,12 +899,16 @@ def resolve_auto_attn(config: ModelConfig) -> None:
 
     FA4 on datacenter Blackwell (SM10x/SM11x, e.g. B200, B300), FA3 on Hopper (SM90), FA2
     otherwise. FA4 is built around the tcgen05/TMEM instructions of the SM10x/SM11x families.
-    Workstation Blackwell (SM12x, e.g. RTX PRO 6000) lacks them, so it gets FA2.
+    Workstation Blackwell (SM12x, e.g. RTX PRO 6000) lacks them, so it gets FA2. Under deterministic
+    algorithms it always picks FA2, the only one with a deterministic backward for every head dim
+    (FA3 has none for head dim 256, e.g. Qwen3.5).
     """
     if config.attn != "auto":
         return
     major, minor = torch.cuda.get_device_capability()
-    if major in (10, 11):
+    if torch.are_deterministic_algorithms_enabled():
+        resolved = "flash_attention_2"
+    elif major in (10, 11):
         resolved = "flash_attention_4"
     elif major == 9:
         resolved = "flash_attention_3"
