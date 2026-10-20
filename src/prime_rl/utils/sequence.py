@@ -50,3 +50,9 @@ def get_cu_seqlens_from_seq_lens(seq_lens: torch.Tensor, total_tokens: int | Non
     cu_seqlens[0] = 0
     cu_seqlens[1:] = seq_lens.cumsum(dim=0, dtype=torch.int32)
     return cu_seqlens, int(seq_lens.max().item())
+
+
+def repeat_to_length(values: list | bytes, length: int) -> list | bytes:
+    """Repeat `values` end to end and truncate to `length` elements."""
+    num_repeats = length // len(values) + 1
+    return (values * num_repeats)[:length]
