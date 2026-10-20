@@ -11,7 +11,7 @@ from prime_rl.configs.inference import VllmRouterConfig
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
-from prime_rl.entrypoints.inference import vllm_overrides_fragment
+from prime_rl.entrypoints.inference import mooncake_offloads, vllm_overrides_fragment, write_pd_configs
 from prime_rl.utils.config import cli, dump_resolved_config, dump_rl_components
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import (
@@ -21,6 +21,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    launcher_attempt_env,
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
     validate_run_dir,
@@ -88,6 +89,8 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     for name, component in dump_rl_components(config).items():
         with open(output_dir / filenames[name], "w") as f:
             json.dump(component, f, indent=2)
+    if config.inference is not None:
+        write_pd_configs(config.inference, output_dir)
 
     # One EnvServerConfig per launcher-managed source: `env-server @ <path>` binds an
     # OS-assigned port and publishes it to the source's address file, where the
@@ -139,6 +142,7 @@ def rl_local(config: RLConfig):
         "WANDB_SHARED_MODE": "1",
         "WANDB_RUN_ID": os.environ["PRL_RUN_ID"],
     }
+    attempt_env = launcher_attempt_env(config_dir, log_dir)
 
     # Validate client port matches inference server port
     if config.inference is not None:
@@ -216,6 +220,7 @@ def rl_local(config: RLConfig):
                 **config.env_vars,
                 **config.orchestrator.env_vars,
                 **wandb_shared_env,
+                **attempt_env,
                 "WANDB_SHARED_LABEL": "orchestrator",
             },
             log_path=log_dir / "orchestrator.log",
@@ -241,6 +246,7 @@ def rl_local(config: RLConfig):
                 **config.env_vars,
                 **config.trainer.env_vars,
                 **wandb_shared_env,
+                **attempt_env,
                 "WANDB_SHARED_LABEL": "trainer",
                 "CUDA_VISIBLE_DEVICES": ",".join(map(str, trainer_gpu_ids)),
             },
@@ -265,15 +271,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
     env = Environment(loader=FileSystemLoader(config.slurm.template_path.parent), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
-    offload = config.inference.kv_cache_offload if config.inference is not None else None
-    is_mooncake = offload is not None and offload.type == "mooncake"
-    mooncake_vars = dict(
-        kv_offload=offload is not None,
-        kv_offload_mooncake=is_mooncake,
-        kv_offload_cpu_bytes=int(offload.cpu.num_bytes) if is_mooncake else 0,
-        kv_offload_disk_path=str(offload.disk.path) if (is_mooncake and offload.disk is not None) else "",
-        kv_offload_device_name=offload.device_name if is_mooncake else "",
-    )
+    mooncake_vars = dict(mooncake_offloads=mooncake_offloads(config.inference))
 
     # Per-component env vars: launcher defaults (shared + multi-node-specific) with the
     # user's config merged on top. Runtime wiring stays in the template.
