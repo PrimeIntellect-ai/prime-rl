@@ -111,7 +111,7 @@ class FileMonitor(Monitor):
                     path.unlink(missing_ok=True)
                     continue
                 # Training arrays stay on the wire; live records only need display data.
-                line = {key: value for key, value in delta.items() if key != "routing_repairs"}
+                line = {key: value for key, value in delta.items() if key not in ("routing_repairs", "arrays")}
                 if "nodes" in line:
                     line["nodes"] = [
                         {key: value for key, value in node.items() if key not in LIVE_NODE_EXCLUDE}
