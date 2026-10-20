@@ -101,7 +101,6 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
             self.attn_hyper_connection = HyperConnection(
                 **connection_args,
                 read_count=self.qkv_read_count + self.gate_read,
-                separate_down=config.hc_qkv_separate_down,
                 conv_kernel_size=config.hc_qkv_conv,
             )
             self.mlp_hyper_connection = HyperConnection(**connection_args)

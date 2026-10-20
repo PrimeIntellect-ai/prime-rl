@@ -28,8 +28,7 @@ class ExpandedRMSNorm(nn.Module):
 class HyperConnection(nn.Module):
     """Learned mixing and residual injection across expanded residual streams.
 
-    A read returns ``read_count`` block inputs, each a gated mixture of the normalized streams; the reads' gates come
-    from one shared low-rank bottleneck, or with ``separate_down`` from one bottleneck per read. With
+    A read returns ``read_count`` block inputs, each a gated mixture of the normalized streams. With
     ``conv_kernel_size``, the attention's reads are followed by three causal depthwise convolutions over the sequence
     (one per query, key and value input; residual form), which then make up the attention's inputs."""
 
@@ -42,7 +41,6 @@ class HyperConnection(nn.Module):
         norm_eps: float,
         with_residual_injection: bool = True,
         read_count: int = 1,
-        separate_down: bool = False,
         conv_kernel_size: int = 0,
     ) -> None:
         super().__init__()
@@ -52,15 +50,8 @@ class HyperConnection(nn.Module):
         expanded_size = stream_count * hidden_size
 
         self.hc_norm = ExpandedRMSNorm(hidden_size, stream_count, norm_eps)
-        self.separate_down = separate_down
-        if separate_down:
-            self.input_mix_weight_down = nn.Linear(expanded_size, read_count * low_rank, bias=False)
-            self.input_mix_weight_up = nn.ModuleList(
-                nn.Linear(low_rank, expanded_size, bias=False) for _ in range(read_count)
-            )
-        else:
-            self.input_mix_weight_down = nn.Linear(expanded_size, low_rank, bias=False)
-            self.input_mix_weight_up = nn.Linear(low_rank, read_count * expanded_size, bias=False)
+        self.input_mix_weight_down = nn.Linear(expanded_size, low_rank, bias=False)
+        self.input_mix_weight_up = nn.Linear(low_rank, read_count * expanded_size, bias=False)
         self.block_inject_weight = (
             nn.Linear(expanded_size, stream_count, bias=False) if with_residual_injection else None
         )
@@ -71,12 +62,8 @@ class HyperConnection(nn.Module):
     def read(self, expanded_states: torch.Tensor) -> tuple[list[torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
         """The ``read_count`` block inputs, and the state ``combine`` needs."""
         normalized_states = self.hc_norm(expanded_states)
-        bottleneck = F.silu(self.input_mix_weight_down(normalized_states) / self.stream_count)
-        if self.separate_down:
-            up_projections = zip(self.input_mix_weight_up, bottleneck.chunk(self.read_count, dim=-1))
-            mixing_weights = torch.sigmoid(torch.cat([up(rank) for up, rank in up_projections], dim=-1))
-        else:
-            mixing_weights = torch.sigmoid(self.input_mix_weight_up(bottleneck))
+        mixing_weights = F.silu(self.input_mix_weight_down(normalized_states) / self.stream_count)
+        mixing_weights = torch.sigmoid(self.input_mix_weight_up(mixing_weights))
         normalized_streams = normalized_states.unflatten(-1, (self.stream_count, self.hidden_size))
         block_inputs = [
             (gate.unflatten(-1, (self.stream_count, self.hidden_size)) * normalized_streams)
