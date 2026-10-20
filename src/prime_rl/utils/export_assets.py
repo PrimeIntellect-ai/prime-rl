@@ -127,10 +127,12 @@ def publish_export(staging_dir: Path, output_dir: Path) -> None:
         staging_dir.rename(output_dir)
         return
     output_dir.mkdir(parents=True, exist_ok=True)
-    if (staging_dir / "model.safetensors").exists():
+    staged_names = {path.name for path in staging_dir.iterdir()}
+    for path in [output_dir / "model.safetensors", *output_dir.glob("model-*.safetensors")]:
+        if path.name not in staged_names:
+            path.unlink(missing_ok=True)
+    if "model.safetensors.index.json" not in staged_names:
         (output_dir / "model.safetensors.index.json").unlink(missing_ok=True)
-    else:
-        (output_dir / "model.safetensors").unlink(missing_ok=True)
     for path in staging_dir.iterdir():
         path.replace(output_dir / path.name)
     staging_dir.rmdir()

@@ -119,12 +119,21 @@ def test_publish_export_overwrites_existing_weight_layout(tmp_path, num_groups):
     sentinel.write_text("keep")
     (output / "model.safetensors.index.json").write_text("stale index")
     (output / "model.safetensors").write_bytes(b"stale weights")
+    (output / "model-00001.safetensors").write_bytes(b"old CPU shard")
+    (output / "model-00003-of-00003.safetensors").write_bytes(b"old numbered shard")
+    (output / "model-00001-of-00002.safetensors").write_bytes(b"matching shard to overwrite")
     staging = tmp_path / "staging"
     groups = [{f"weight_{number}": torch.ones(2)} for number in range(num_groups)]
     write_hf_shards(iter(groups), staging)
     publish_export(staging, output)
     assert not staging.exists()
     assert sentinel.read_text() == "keep"
+    expected_shards = (
+        {"model.safetensors"}
+        if num_groups == 1
+        else {"model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"}
+    )
+    assert {path.name for path in output.glob("*.safetensors")} == expected_shards
     index = output / "model.safetensors.index.json"
     if num_groups == 1:
         assert not index.exists()
