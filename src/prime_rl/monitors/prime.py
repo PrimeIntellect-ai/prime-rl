@@ -143,10 +143,24 @@ class PrimeTrainMonitor(Monitor):
     ``init``/``finish`` do network I/O and run in worker threads; the log
     calls are queue puts onto the SDK's uploader thread, which owns retries
     and backpressure, so they never stall the loop.
+
+    Platform storage is step-keyed and deliberately rejects step-less records
+    (the Sep 7 queue incident: step-less 938-key engine payloads flooded the
+    ingestion queue), so wall-time rows (``step=None``, e.g. inference/
+    dispatcher/concurrency gauges) are NOT uploaded as-is: the latest values per
+    metric family are cached here and merged into the next explicit-step
+    upload. The file and W&B monitors keep the full wall-time history.
     """
 
     config: PrimeTrainMonitorConfig
     run: pr.Run
+
+    def __init__(self, config: PrimeTrainMonitorConfig):
+        super().__init__(config)
+        # Latest wall-time gauge snapshot per metric family (the first path
+        # segment of the key), replaced wholesale by each step-less payload.
+        # Per-instance: every trainer/eval process owns its own monitor.
+        self._latest_wall_time: dict[str, dict[str, Any]] = {}
 
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
         init_kwargs: dict[str, Any]
@@ -226,8 +240,29 @@ class PrimeTrainMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        # A queue put that can block briefly under backpressure - off the loop. The SDK
-        # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
+        if step is None:
+            # The SDK honors a step-embedded-in-payload key (it only fills a
+            # missing one); a row carrying it is a real step row, not wall time.
+            step = metrics.get("step")
+        if step is None:
+            # Wall-time row: the platform rejects step-less records, so cache
+            # the latest values per metric family instead of uploading. A new
+            # payload replaces its families' snapshots wholesale, so dead keys
+            # (e.g. a removed engine) drop out instead of going stale forever.
+            families: dict[str, dict[str, Any]] = {}
+            for key, value in metrics.items():
+                families.setdefault(key.split("/", 1)[0], {})[key] = value
+            self._latest_wall_time.update(families)
+            return
+        if self._latest_wall_time:
+            # Merged under the step's own metrics (those win on key collision)
+            # and kept, not cleared: a follow-up upload at the same step (e.g.
+            # the eval epoch's row) carries the latest gauges too.
+            merged: dict[str, Any] = {}
+            for snapshot in self._latest_wall_time.values():
+                merged.update(snapshot)
+            metrics = {**merged, **metrics}
+        # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
