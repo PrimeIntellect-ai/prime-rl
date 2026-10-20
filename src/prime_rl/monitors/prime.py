@@ -276,18 +276,26 @@ class PrimeTrainMonitor(Monitor):
         attach = (self._last_attached_step is None or step > self._last_attached_step) and any(
             key.startswith("train/") for key in metrics
         )
+        consumed: dict[str, float] = {}
         if attach:
             merged: dict[str, Any] = {}
             for snapshot in self._latest_wall_time.values():
                 merged.update(snapshot)
             # The step's own metrics win, then the summed deltas (their latest-tick
-            # copies stay out of the family snapshots); both cache and deltas are
-            # only consumed here, so a bare row can never clear or re-stamp them.
-            metrics = {**merged, **self._step_deltas, **metrics}
-            self._last_attached_step = step
-            self._step_deltas = {}
+            # copies stay out of the family snapshots); a bare row never consumes.
+            consumed = self._step_deltas.copy()
+            metrics = {**merged, **consumed, **metrics}
         # A queue put that can block briefly under backpressure - off the loop.
+        # The fan-out swallows a failed put, so the gate and the summed deltas
+        # are consumed only once the queue accepts the row: a failure leaves
+        # them for the next train row to re-attach.
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
+        if attach:
+            self._last_attached_step = step
+            # A step-less tick can land while the put is in flight; keep its delta.
+            self._step_deltas = {
+                key: value - consumed.get(key, 0.0) for key, value in self._step_deltas.items()
+            }
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
         """Only the trained cohort ships to the platform. The upload cadence
