@@ -703,9 +703,11 @@ class TrainerConfig(BaseTrainerConfig):
     """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
 
     ``monitors.prime`` makes the trainer a metrics-only attach on the platform run
-    owned by the orchestrator (or the platform): it requires a managed launch
-    (``$RUN_ID``), uploads stepped trainer metrics, and never registers, finalizes,
-    or finishes a run. Shared ``[monitors.prime]`` enables both components.
+    owned by the orchestrator (or the platform): a managed launch injects
+    ``$RUN_ID``, and a selfhosted launch reads the orchestrator's registration from
+    the shared platform record (queued metric rows attach once it appears). It
+    uploads stepped trainer metrics and never registers, finalizes, or finishes
+    a run. Shared ``[monitors.prime]`` enables both components.
     It is off by default."""
 
     output_dir: Path = Field(default_factory=default_output_dir)

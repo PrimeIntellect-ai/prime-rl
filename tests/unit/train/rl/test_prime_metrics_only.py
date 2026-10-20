@@ -1,9 +1,11 @@
 """The RL trainer's platform wiring: a metrics-only attach on a run it does not own.
 
 ``monitors.prime`` on ``TrainerConfig`` must never register or finalize a platform
-run: the trainer attaches to the run the managed launch injected (``$RUN_ID``),
-uploads stepped metrics, and only flushes on finalize — the run's owner (the
-orchestrator, or the platform) alone finishes it.
+run: the trainer attaches to the run the managed launch injected (``$RUN_ID``) or,
+selfhosted, to the orchestrator's registration in the shared platform record, uploads
+stepped metrics, and only flushes on finalize — the run's owner (the orchestrator,
+or the platform) alone finishes it. A selfhosted record that lags the trainer's
+first log calls is attached lazily: metric rows queue bounded until it appears.
 """
 
 import asyncio
@@ -14,7 +16,8 @@ import pytest
 from prime_rl import monitors
 from prime_rl.configs.monitors import PrimeTrainMonitorConfig
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.monitors.prime import PrimeTrainMonitor
+from prime_rl.monitors.prime import PrimeTrainMonitor, write_platform_record
+from prime_rl.utils.pathing import get_platform_run_path
 
 
 class FakeRun:
@@ -107,13 +110,147 @@ def test_metrics_only_attaches_without_registration(prime_init, unregistered_ate
     assert unregistered_atexit == [monitor.run._atexit_hook]
 
 
-def test_metrics_only_requires_run_id(prime_init, unregistered_atexit):
+def test_metrics_only_without_run_id_defers_attach(prime_init, unregistered_atexit, tmp_path):
+    """No $RUN_ID and no record yet: the attach defers, and nothing is registered."""
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
 
-    with pytest.raises(RuntimeError, match=r"\$RUN_ID"):
-        asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=None))
-
+    assert monitor.run is None
     assert prime_init == []
+    assert unregistered_atexit == []
+
+
+def test_selfhost_record_attaches_at_init(prime_init, unregistered_atexit, tmp_path):
+    """A record the orchestrator already wrote is attached to right away."""
+    write_platform_record(tmp_path, {"kind": "train", "id": "run-123", "url": "https://platform/training/run-123"})
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    (call,) = prime_init
+    assert call["kind"] == "train"
+    assert call["id"] == "run-123"
+    assert not set(call) & {"name", "model", "environments", "training", "config"}
+    assert unregistered_atexit == [monitor.run._atexit_hook]
+
+
+def test_selfhost_record_attaches_lazily_and_flushes(prime_init, monkeypatch, tmp_path):
+    """A record that lags the trainer's first log calls queues them; the attach
+    flushes the queue in order, keeping each row its own timestamp."""
+    monkeypatch.setattr("prime_rl.monitors.prime.time.time", lambda: 100.0)
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    row = {"optim/lr": 1.0}
+    asyncio.run(monitor.log_metrics(row, step=1))
+    assert monitor.run is None
+    assert "_timestamp" not in row  # the queued copy is stamped, not the caller's dict
+    write_platform_record(tmp_path, {"kind": "train", "id": "run-123", "url": "https://platform/training/run-123"})
+
+    asyncio.run(monitor.log_metrics({"optim/lr": 2.0}, step=2))
+
+    (call,) = prime_init
+    assert call["id"] == "run-123"
+    assert [step for _, step in monitor.run.metrics] == [1, 2]
+    assert monitor.run.metrics[0][0]["_timestamp"] == 100.0  # its original queue time
+    assert "_timestamp" not in monitor.run.metrics[1][0]
+
+
+def test_selfhost_record_never_appears_warns_once(prime_init, monkeypatch, tmp_path):
+    monkeypatch.setattr("prime_rl.monitors.prime.UNATTACHED_WARN_SECONDS", 0.0)
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    asyncio.run(monitor.log_metrics({"optim/lr": 1.0}, step=1))
+    assert monitor.warned_unattached
+
+    asyncio.run(monitor.log_metrics({"optim/lr": 2.0}, step=2))
+    asyncio.run(monitor.finalize())
+
+    assert monitor.run is None
+    assert prime_init == []
+
+
+def test_finalize_unattached_warns(prime_init, tmp_path):
+    """A run that ends before the record appears: one warning, no crash."""
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    asyncio.run(monitor.finalize())
+
+    assert monitor.run is None
+    assert monitor.warned_unattached
+
+
+def test_selfhost_invalid_or_foreign_record_ignored(prime_init, tmp_path):
+    """A corrupt or non-train record is never attached to; rows keep queueing."""
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    path = get_platform_run_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json")
+    asyncio.run(monitor.log_metrics({"optim/lr": 1.0}, step=1))
+    write_platform_record(tmp_path, {"kind": "eval", "run_id": "r", "evaluations": {}})
+    asyncio.run(monitor.log_metrics({"optim/lr": 2.0}, step=2))
+
+    assert monitor.run is None
+    assert prime_init == []
+    assert [step for step, _ in monitor.pending] == [1, 2]
+
+
+def test_pending_queue_is_bounded_oldest_dropped(prime_init, monkeypatch, tmp_path):
+    monkeypatch.setattr("prime_rl.monitors.prime.PENDING_METRICS_LIMIT", 2)
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    for step in range(1, 4):
+        asyncio.run(monitor.log_metrics({"optim/lr": float(step)}, step=step))
+
+    assert [step for step, _ in monitor.pending] == [2, 3]
+
+
+def test_attach_failure_disables_sink(monkeypatch, tmp_path):
+    """A record whose run cannot be attached disables the sink: one attempt, one
+    warning, and the rest of the run trains untracked."""
+    calls = []
+
+    def fake_init(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("id"):
+            raise RuntimeError("attach failed")
+        return FakeRun()
+
+    monkeypatch.setattr("prime_rl.monitors.prime.pr.init", fake_init)
+    monkeypatch.delenv("RUN_ID", raising=False)
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    asyncio.run(monitor.log_metrics({"optim/lr": 1.0}, step=1))  # queued
+    write_platform_record(tmp_path, {"kind": "train", "id": "run-123", "url": "https://platform/training/run-123"})
+    asyncio.run(monitor.log_metrics({"optim/lr": 2.0}, step=2))  # attach fails, sink disabled
+
+    assert monitor.run is None
+    assert monitor.attach_gave_up
+    assert not monitor.pending
+
+    asyncio.run(monitor.log_metrics({"optim/lr": 3.0}, step=3))
+    asyncio.run(monitor.finalize())
+    assert len(calls) == 1  # no retry loop, no disabled-handle fallback
+
+
+def test_disabled_mode_inits_without_record(prime_init, monkeypatch, tmp_path):
+    """A disabled platform never writes a record, so the trainer must not wait for
+    one: it takes the SDK's disabled handle straight away."""
+    monkeypatch.setenv("PRIME_RUNS_MODE", "disabled")
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=tmp_path))
+
+    (call,) = prime_init
+    assert call["mode"] == "disabled"
+    assert "id" not in call
+
+    asyncio.run(monitor.log_metrics({"optim/lr": 1.0}, step=1))
+    assert monitor.run.metrics == [({"optim/lr": 1.0}, 1)]
 
 
 def test_metrics_only_finalize_flushes_and_never_finishes(prime_init, run_id):

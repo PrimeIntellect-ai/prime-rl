@@ -446,6 +446,8 @@ The monitor is a thin layer over the [`prime-runs`](https://github.com/PrimeInte
 
 On `sft` the monitor registers the run with the dataset-batched training fields (`max_steps`, `batch_size`, `seq_len`) and streams the trainer's per-step metrics and validation losses; SFT has no rollouts, so no episodes are uploaded.
 
+Under `rl`, only the orchestrator registers the run: the trainer attaches to it metrics-only. A managed launch injects `RUN_ID`; selfhosted, the trainer reads the orchestrator's registration from the shared `monitors/prime/run.json` record (queued metric rows attach once it appears, with a warning if it never does).
+
 Requires `PRIME_API_KEY` (`prime login` or the env var) and a team (`PRIME_TEAM_ID`, or the team selected with `prime login`) enabled for external runs. A configured monitor must work: a missing key or a team outside the allowlist fails the launch. `PRIME_RUNS_MODE=disabled` keeps the monitor configured but opens no platform run; `RUN_ID=<id>` attaches to an external run a launcher already created instead of registering a new one. Currently internal-only.
 
 ## Rules of Thumb

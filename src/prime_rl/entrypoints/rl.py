@@ -21,6 +21,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    get_platform_run_path,
     launcher_attempt_env,
     prepare_attempt_dirs,
     resolve_latest_ckpt_step,
@@ -520,6 +521,10 @@ def rl(config: RLConfig):
         clean_future_steps(config.run_dir, -1)
 
     if not config.dry_run:
+        # A resume-reused run dir keeps the previous attempt's platform record; the
+        # orchestrator rewrites it once this attempt registers its own run.
+        get_platform_run_path(config.run_dir).unlink(missing_ok=True)
+
         from prime_rl.trainer.model import pre_download_model
 
         pre_download_model(config.trainer.model.name, skip_weights=config.trainer.model.debug.random_init)
