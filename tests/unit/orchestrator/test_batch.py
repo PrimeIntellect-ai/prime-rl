@@ -39,8 +39,10 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     np.testing.assert_array_equal(np.frombuffer(sample.top_logprobs.counts, np.int32), [0, 0, 2, 1])
 
 
-@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support"])
-def test_top_logprobs_validate_only_rl_tokens_and_reject_truncation(corruption):
+@pytest.mark.parametrize(
+    "corruption", [None, "missing", "duplicate", "vocab", "mass", "support", "support_mass", "sampled"]
+)
+def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
     from prime_rl.trainer.rl.data import validate_score_centering_data
@@ -56,7 +58,7 @@ def test_top_logprobs_validate_only_rl_tokens_and_reject_truncation(corruption):
     }
     validate_score_centering_data(batch, vocab_size=9)
     if corruption is None:
-        batch["sampling_mask"][0, 1] = -1
+        batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
         validate_score_centering_data(batch, vocab_size=9)
         return
     match corruption:
@@ -70,6 +72,12 @@ def test_top_logprobs_validate_only_rl_tokens_and_reject_truncation(corruption):
             batch["top_logprobs_values"][0, 1] = 0
         case "support":
             batch["sampling_mask"][0, 1, 1] = 7
+        case "support_mass":
+            batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
+            batch["top_logprobs_values"][0, 1] = torch.tensor([0.5, 0.25]).log()
+        case "sampled":
+            batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
+            batch["input_ids"][0, 1] = 4
     with pytest.raises(ValueError):
         validate_score_centering_data(batch, vocab_size=9)
 

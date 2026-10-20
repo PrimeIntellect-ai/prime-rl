@@ -545,9 +545,9 @@ class RLConfig(BaseConfig):
         for sampling in samplings:
             if sampling.temperature <= 0:
                 raise ValueError("Score centering requires stochastic sampling (temperature > 0)")
-            if sampling.truncates_distribution():
-                raise ValueError("IcePop score centering requires untruncated sampling")
-            k = loss.score_centering_topk
+            k = sampling.top_k if sampling.truncates_distribution() else loss.score_centering_topk
+            if k is None:
+                raise ValueError("Truncated score centering requires a bounded top_k")
             if sampling.logprobs is not None and sampling.logprobs < k:
                 raise ValueError(f"Score centering needs sampling.logprobs >= {k}")
             sampling.logprobs = max(sampling.logprobs or 0, k)
