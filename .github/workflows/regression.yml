@@ -254,29 +254,11 @@ jobs:
                   # secrets that were explicitly collected via `-e` / `--env-file`,
                   # not ambient env, so the workflow env: block alone is not
                   # enough to reach the hosted trainer/orchestrator pods.
-                  # The platform's config validator 503s intermittently (see
-                  # the old nightly-fft: 17 failed scheduled nights in a row,
-                  # mostly this). A validator failure happens before the run
-                  # is created, so a bounded retry is safe. Never retry other
-                  # errors: e.g. a read timeout may have created the run after
-                  # the CLI gave up, and a retry would double-dispatch it.
-                  log=$(mktemp)
-                  attempt=1
-                  until prime train "$dispatch_cfg" \
-                          --image-tag "${{ needs.image.outputs.tag }}" \
-                          -e WANDB_API_KEY \
-                          -e HF_TOKEN \
-                          --yes --output json >"$log" 2>&1; do
-                      status=$?
-                      cat "$log"
-                      if [ "$attempt" -ge 3 ] || ! grep -q "Config validator" "$log"; then
-                          exit "$status"
-                      fi
-                      echo "Attempt $attempt hit the flaky config validator; retrying in 60s."
-                      attempt=$((attempt + 1))
-                      sleep 60
-                  done
-                  cat "$log"
+                  prime train "$dispatch_cfg" \
+                      --image-tag "${{ needs.image.outputs.tag }}" \
+                      -e WANDB_API_KEY \
+                      -e HF_TOKEN \
+                      --yes --output json
 
     sft-plan:
         name: SFT / Plan
@@ -365,27 +347,12 @@ jobs:
                   printf 'name = "%s"\n\n' "$run_name" > "$dispatch_cfg"
                   cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
                   echo "Dispatched run name: $run_name"
-                  # Bounded retry for the flaky platform config validator,
-                  # same rationale as the rl job above: validator errors fail
-                  # before the run is created, everything else is final.
-                  log=$(mktemp)
-                  attempt=1
-                  until prime train "$dispatch_cfg" \
-                          --image-tag "${{ needs.image.outputs.tag }}" \
-                          --volume "$SFT_VOLUME" \
-                          -e WANDB_API_KEY \
-                          -e HF_TOKEN \
-                          --yes --output json >"$log" 2>&1; do
-                      status=$?
-                      cat "$log"
-                      if [ "$attempt" -ge 3 ] || ! grep -q "Config validator" "$log"; then
-                          exit "$status"
-                      fi
-                      echo "Attempt $attempt hit the flaky config validator; retrying in 60s."
-                      attempt=$((attempt + 1))
-                      sleep 60
-                  done
-                  cat "$log"
+                  prime train "$dispatch_cfg" \
+                      --image-tag "${{ needs.image.outputs.tag }}" \
+                      --volume "$SFT_VOLUME" \
+                      -e WANDB_API_KEY \
+                      -e HF_TOKEN \
+                      --yes --output json
 
     parallel:
         name: Parallel / Invariance
