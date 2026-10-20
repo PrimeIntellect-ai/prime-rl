@@ -95,7 +95,6 @@ def train(config: TrainerConfig):
             producer="trainer",
             wandb=config.monitors.wandb,
             prime=config.monitors.prime,
-            prime_metrics_only=True,
             file=config.monitors.file,
             output_dir=config.output_dir,
             run_config=config,
@@ -691,11 +690,11 @@ def train(config: TrainerConfig):
 
         # Log time metrics
         time_metrics = {
-            "time/step": step_time,
+            "time/trainer/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
             "time/broadcast_weights": broadcast_weights_time,
-            "time/save_ckpt": save_ckpt_time,
+            "time/trainer/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }

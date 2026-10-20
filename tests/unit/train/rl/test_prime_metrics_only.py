@@ -82,10 +82,6 @@ def clear_monitors():
     monitors.MONITORS.clear()
 
 
-def _metrics_only_monitor():
-    return PrimeTrainMonitor(PrimeTrainMonitorConfig(), metrics_only=True)
-
-
 def test_trainer_config_has_prime_monitor_field():
     config = TrainerConfig.model_validate({})
 
@@ -98,7 +94,7 @@ def test_trainer_config_has_prime_monitor_field():
 
 
 def test_metrics_only_attaches_without_registration(prime_init, unregistered_atexit, run_id):
-    monitor = _metrics_only_monitor()
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
     asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=None))
 
     (call,) = prime_init
@@ -112,17 +108,17 @@ def test_metrics_only_attaches_without_registration(prime_init, unregistered_ate
 
 
 def test_metrics_only_requires_run_id(prime_init, unregistered_atexit):
-    monitor = _metrics_only_monitor()
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
 
     with pytest.raises(RuntimeError, match=r"\$RUN_ID"):
-        asyncio.run(monitor.init(config=None, output_dir=None))
+        asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=None))
 
     assert prime_init == []
 
 
 def test_metrics_only_finalize_flushes_and_never_finishes(prime_init, run_id):
-    monitor = _metrics_only_monitor()
-    asyncio.run(monitor.init(config=None, output_dir=None))
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=None))
 
     asyncio.run(monitor.finalize())
     asyncio.run(monitor.finalize(paused=True))
@@ -132,23 +128,22 @@ def test_metrics_only_finalize_flushes_and_never_finishes(prime_init, run_id):
 
 
 def test_metrics_only_drops_episodes(prime_init, run_id):
-    monitor = _metrics_only_monitor()
-    asyncio.run(monitor.init(config=None, output_dir=None))
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=None))
 
     asyncio.run(monitor.log_episodes([SimpleNamespace()], step=1, kind="train", subset="effective"))
 
     assert monitor.run.episodes == []
 
 
-def test_metrics_only_renames_colliding_time_keys(prime_init, run_id):
-    """The trainer's colliding time keys (the orchestrator posts the same names
-    at the same step) land in a trainer namespace; everything else is verbatim."""
-    monitor = _metrics_only_monitor()
-    asyncio.run(monitor.init(config=None, output_dir=None))
+def test_metrics_only_preserves_metric_keys(prime_init, run_id):
+    """All monitors receive the trainer's source metric names unchanged."""
+    monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=TrainerConfig.model_validate({}), output_dir=None))
 
     asyncio.run(
         monitor.log_metrics(
-            {"time/step": 1.0, "time/save_ckpt": 2.0, "time/wait_for_batch": 3.0, "optim/lr": 4.0},
+            {"time/trainer/step": 1.0, "time/trainer/save_ckpt": 2.0, "time/wait_for_batch": 3.0, "optim/lr": 4.0},
             step=5,
         )
     )
@@ -168,13 +163,13 @@ def test_metrics_only_renames_colliding_time_keys(prime_init, run_id):
 
 def test_trainer_setup_wires_metrics_only(prime_init, run_id, clear_monitors):
     """The RL trainer's ``monitors.setup`` call attaches metrics-only when the
-    config enables the prime sink — the SFT path (no flag) is unaffected."""
+    config enables the prime sink; no separate sidecar flag is needed."""
     asyncio.run(
         monitors.setup(
             prime=TrainerConfig.model_validate({"monitors": {"prime": {}}}).monitors.prime,
-            prime_metrics_only=True,
             file=None,
             output_dir=None,
+            run_config=TrainerConfig.model_validate({}),
         )
     )
 
@@ -183,9 +178,9 @@ def test_trainer_setup_wires_metrics_only(prime_init, run_id, clear_monitors):
     assert monitor.metrics_only
 
 
-def test_metrics_only_defaults_off():
-    """Without the flag the monitor keeps the owner semantics; the owner path
-    itself is covered by the SFT monitor tests."""
+def test_non_trainer_keeps_owner_semantics(prime_init):
     monitor = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+    asyncio.run(monitor.init(config=None, output_dir=None))
 
     assert monitor.metrics_only is False
+    assert prime_init[0]["model"] == "unknown"

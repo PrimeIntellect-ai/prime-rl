@@ -56,7 +56,6 @@ async def setup(
     train_env_names: list[str] | None = None,
     eval_env_names: list[str] | None = None,
     overview_flavor: Literal["rl", "sft", "eval"] = "rl",
-    prime_metrics_only: bool = False,
 ) -> None:
     """Construct, initialize, and register one monitor per non-None config.
 
@@ -74,7 +73,7 @@ async def setup(
         monitors.append(
             (
                 "prime",
-                PrimeTrainMonitor(prime, metrics_only=prime_metrics_only),
+                PrimeTrainMonitor(prime),
                 dict(config=run_config, output_dir=output_dir),
             )
         )

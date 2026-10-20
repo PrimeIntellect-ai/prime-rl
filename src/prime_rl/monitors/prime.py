@@ -15,6 +15,7 @@ from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
 from prime_rl.configs.sft import SFTConfig
+from prime_rl.configs.trainer import TrainerConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
 from prime_rl.utils.logger import get_logger
@@ -27,15 +28,6 @@ if TYPE_CHECKING:
 BASE_URL_VAR = "PRIME_API_BASE"
 EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
 
-# Trainer keys that collide, at the same step, with keys the orchestrator also
-# posts (its shipped-cohort rows): the platform merges a run's metrics by step,
-# so a shared name would lose one side nondeterministically. A metrics-only
-# attach renames them into a trainer namespace; the file and W&B sinks keep the
-# original names.
-TRAINER_KEY_RENAMES = {
-    "time/step": "time/trainer/step",
-    "time/save_ckpt": "time/trainer/save_ckpt",
-}
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
@@ -154,7 +146,7 @@ class PrimeTrainMonitor(Monitor):
     calls are queue puts onto the SDK's uploader thread, which owns retries
     and backpressure, so they never stall the loop.
 
-    ``metrics_only`` is the trainer's flavor of this monitor: it attaches to a
+    The RL trainer always uses this monitor as a metrics-only sidecar: it attaches to a
     platform run another process owns (the managed launch's ``$RUN_ID``) and
     posts stepped metrics. It never registers or finalizes a run, and it drops
     the SDK's atexit crash hook so its process can exit while the owner is
@@ -166,11 +158,8 @@ class PrimeTrainMonitor(Monitor):
     config: PrimeTrainMonitorConfig
     run: pr.Run
 
-    def __init__(self, config: PrimeTrainMonitorConfig, *, metrics_only: bool = False) -> None:
-        super().__init__(config)
-        self.metrics_only = metrics_only
-
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
+        self.metrics_only = isinstance(config, TrainerConfig)
         if self.metrics_only:
             await self._init_metrics_only()
             return
@@ -278,8 +267,6 @@ class PrimeTrainMonitor(Monitor):
         metrics, dropped = sanitize(metrics)
         if dropped:
             self.logger.warning(f"Dropping {len(dropped)} non-finite metric value(s): {', '.join(dropped[:5])}")
-        if self.metrics_only:
-            metrics = {TRAINER_KEY_RENAMES.get(key, key): value for key, value in metrics.items()}
         # A queue put that can block briefly under backpressure - off the loop. The SDK
         # stamps `_timestamp` on every row, so step=None rows keep a time anchor.
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)

@@ -103,10 +103,8 @@ def propagate_shared_fields(data: Any) -> Any:
     # [monitors.file] leaf. (Bare empty ``[monitors.file]`` block enablement is at the end.)
     propagate("monitors.file.path", "trainer.monitors.file.path", "orchestrator.monitors.file.path")
 
-    # [monitors.prime] leaf → orchestrator only. The RL trainer has its own
-    # explicit metrics-only attach ([trainer.monitors.prime]); the SFT trainer
-    # parses SFTConfig directly.
-    propagate("monitors.prime.name", "orchestrator.monitors.prime.name")
+    # [monitors.prime] leaves and bare block follow the other shared monitors.
+    propagate("monitors.prime.name", "trainer.monitors.prime.name", "orchestrator.monitors.prime.name")
 
     # [tokenizer]. ``chat_template`` also flows to ``inference.vllm`` (vLLM's
     # ``--chat-template``); ``name`` and ``trust_remote_code`` can legitimately
@@ -171,7 +169,7 @@ def propagate_shared_fields(data: Any) -> Any:
         "ckpt": ("trainer", "orchestrator"),
         "monitors.wandb": ("trainer", "orchestrator"),
         "monitors.file": ("trainer", "orchestrator"),
-        "monitors.prime": ("orchestrator",),
+        "monitors.prime": ("trainer", "orchestrator"),
     }
     for key, targets in presence_targets.items():
         value = get(key)

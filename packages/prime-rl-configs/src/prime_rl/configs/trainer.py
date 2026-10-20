@@ -705,7 +705,8 @@ class TrainerConfig(BaseTrainerConfig):
     ``monitors.prime`` makes the trainer a metrics-only attach on the platform run
     owned by the orchestrator (or the platform): it requires a managed launch
     (``$RUN_ID``), uploads stepped trainer metrics, and never registers, finalizes,
-    or finishes a run. Selfhosted runs keep it unset (default)."""
+    or finishes a run. Shared ``[monitors.prime]`` enables both components.
+    It is off by default."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""

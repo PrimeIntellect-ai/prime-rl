@@ -77,9 +77,7 @@ class SharedMonitorsConfig(BaseConfig):
     """Shared local JSONL metric sink. If set, enables ``<output_dir>/monitors/file/metrics.jsonl`` on both trainer and orchestrator."""
 
     prime: PrimeTrainMonitorConfig | None = None
-    """Prime platform monitor. Propagated to the orchestrator only — the trainer's
-    sink is a separate explicit attach (``[trainer.monitors.prime]``) and never
-    comes from the shared block."""
+    """Prime platform monitor. Propagated to trainer and orchestrator."""
 
 
 class SharedCheckpointConfig(BaseConfig):
@@ -208,7 +206,7 @@ class RLConfig(BaseConfig):
     """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
 
     monitors: SharedMonitorsConfig = SharedMonitorsConfig()
-    """Shared monitor configs (``monitors.wandb``, ``monitors.file``). Propagated to trainer and orchestrator; ``[orchestrator.monitors.prime]`` configures the platform monitor."""
+    """Shared monitor configs (``monitors.wandb``, ``monitors.file``, ``monitors.prime``). Propagated to trainer and orchestrator."""
 
     model: SharedModelConfig | None = None
     """Shared model config. If None, falls back to the sub-config model settings."""
@@ -341,7 +339,7 @@ class RLConfig(BaseConfig):
         for wandb in (self.monitors.wandb, self.trainer.monitors.wandb, self.orchestrator.monitors.wandb):
             if wandb is not None and wandb.name is None:
                 wandb.name = self.run.name
-        for prime in (self.monitors.prime, self.orchestrator.monitors.prime):
+        for prime in (self.monitors.prime, self.trainer.monitors.prime, self.orchestrator.monitors.prime):
             if prime is not None and prime.name is None:
                 prime.name = self.run.name
         return self
