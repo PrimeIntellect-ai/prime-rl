@@ -56,7 +56,7 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
@@ -105,6 +105,7 @@ transformers_modeling_utils_logger.addFilter(
 
 DTYPE_MAP = {
     "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
     "float32": torch.float32,
 }
 
@@ -152,22 +153,20 @@ def freeze_moe_router(model: nn.Module) -> None:
 
 
 def apply_fp32_moe_router(model: nn.Module) -> None:
-    """Cast MoE router gates to fp32 so routing runs in fp32 in forward and backward.
+    """Keep persistent router parameters in FP32.
 
-    The FSDP bf16 cast exemption is applied separately in `setup_fsdp`.
+    The gate's compute dtype is selected by the separate FSDP policy in `setup_fsdp`.
     """
     logger = get_logger()
     num_routers = 0
     for moe in iter_moe_blocks(model):
         moe.router.to(torch.float32)
-        if isinstance(moe.router, TokenChoiceTopKRouter):
-            moe.router.fp32_gate = True
         num_routers += 1
 
     # No-op for non-MoE models: moe_router_dtype='float32' is the default,
     # so absence of MoE routers is the common case, not an error.
     if num_routers > 0:
-        logger.info(f"Running {num_routers} MoE router gates in fp32")
+        logger.info(f"Keeping {num_routers} MoE router gates' persistent parameters in fp32")
 
 
 def get_full_offload_dtype_policy(
@@ -182,7 +181,7 @@ def get_full_offload_dtype_policy(
         if param.is_floating_point():
             dtype = torch.float32 if keep_in_fp32 is not None and keep_in_fp32(name) else torch.bfloat16
             policy[id(param)] = (dtype, dtype)
-    if config.moe_router_dtype == "float32":
+    if config.moe_router_dtype in ("float32", "float16"):
         for moe in iter_moe_blocks(model):
             for param in moe.router.parameters():
                 if param.is_floating_point():
@@ -583,18 +582,19 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 ),
             }
 
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
+        if config.moe_router_dtype in ("float32", "float16") and isinstance(block_mlp, MoE):
             if fullgraph:
                 raise ValueError(
-                    "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16': the fp32 router is "
+                    "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16': the router is "
                     "its own FSDP unit inside the compiled block, and dynamo cannot trace FSDP hooks."
                 )
-            # Own FSDP unit with an fp32 policy so the gate weight is not cast to
-            # bf16 for forward and its gradients reduce in fp32.
+            # Cast directly from the FP32 parameter to the router dtype, without BF16 rounding.
             fully_shard(
                 block_mlp.router,
                 mesh=hsdp_mesh,
-                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
+                mp_policy=MixedPrecisionPolicy(
+                    param_dtype=DTYPE_MAP[config.moe_router_dtype], reduce_dtype=torch.float32
+                ),
                 offload_policy=offload_policy,
                 reshard_after_forward=config.reshard_after_forward,
                 shard_placement_fn=shard_placement_fn,
@@ -967,7 +967,7 @@ def setup_model(
     if config.freeze_moe_router:
         freeze_moe_router(model)
 
-    if config.moe_router_dtype == "float32":
+    if config.moe_router_dtype in ("float32", "float16"):
         apply_fp32_moe_router(model)
 
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never

@@ -5,6 +5,7 @@ This page covers the specialized features layered on top of the core training st
 ## Table of Contents
 
 - [Custom Modeling](#custom-modeling)
+  - [Router Precision](#router-precision)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
   - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
@@ -111,6 +112,33 @@ Backend shape checks and token alignment apply only to the selected compute path
 In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
 
 GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
+
+### Router precision
+
+`trainer.model.moe_router_dtype` selects the router's operand dtype independently of expert compute.
+Router logits are produced in FP32 directly from the gate GEMM, and score functions, normalization
+and routing weights remain FP32.
+
+| Setting | Gate operands | FSDP policy |
+|---|---|---|
+| `"bfloat16"` | BF16 | Shares the transformer block's unit; supports full-block compilation with activation checkpointing. |
+| `"float16"` | FP16 | Separate unit casts FP32 router parameters directly to FP16. |
+| `"float32"` | FP32 | Separate unit preserves FP32 router parameters and compute. |
+| `"auto"` | FP32 for RL, BF16 for SFT | Uses the corresponding policy above. |
+
+The separate FP16/FP32 FSDP units cause graph breaks inside a compiled checkpointed block.
+Use BF16 router operands when full-block compilation is required. All three settings produce FP32
+logits; BF16/FP16 operands do not imply a BF16/FP16 output rounded before scoring.
+
+For models that weight expert outputs after expert computation, local and Torch EP dispatch multiply
+by FP32 routing weights and sum the contributions in FP32, then cast once to the expert output dtype.
+This also covers MXFP8 expert compute with Torch dispatch. DeepEP and MegaMoE use their own combine
+kernels and do not share this accumulation guarantee.
+
+Inference precision follows vLLM's model and backend implementation. Native vLLM DeepSeek V4 excludes
+the gate from MXFP8 quantization and requests FP32 logits; with BF16 model parameters, the native gate
+uses BF16 operands. `inference.enable_fp32_router_logits` requests FP32 logits via an HF config override
+and does not by itself specify the gate's parameter precision or the expert-combine precision.
 
 ### Expert Parallelism Backends
 
