@@ -787,7 +787,8 @@ class BatchPacker:
     def __init__(self, config: OrchestratorConfig):
         self.seq_len = config.seq_len
         self.num_train_workers = config.num_train_workers
-        self.pad_to_multiple_of = config.pad_to_multiple_of
+        # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
+        self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
         # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
         model_config = ModelConfig(
             name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
