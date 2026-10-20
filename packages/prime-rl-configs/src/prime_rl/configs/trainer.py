@@ -5,7 +5,7 @@ from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
-from prime_rl.configs.monitors import MonitorsConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ControlConfig,
@@ -699,8 +699,13 @@ class TrainerConfig(BaseTrainerConfig):
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
 
-    monitors: MonitorsConfig = MonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``)."""
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``).
+
+    ``monitors.prime`` makes the trainer a metrics-only attach on the platform run
+    owned by the orchestrator (or the platform): it requires a managed launch
+    (``$RUN_ID``), uploads stepped trainer metrics, and never registers, finalizes,
+    or finishes a run. Selfhosted runs keep it unset (default)."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""

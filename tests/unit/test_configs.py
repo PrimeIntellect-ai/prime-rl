@@ -983,8 +983,26 @@ def test_shared_monitor_disable_and_prime_propagate():
     )
     assert config.trainer.monitors.wandb is None and config.trainer.monitors.file is None
     assert config.orchestrator.monitors.wandb is None and config.orchestrator.monitors.file is None
+    assert config.trainer.monitors.prime is None
     assert config.orchestrator.monitors.prime is not None
     assert config.orchestrator.monitors.prime.name == "shared-prime"
+
+
+def test_trainer_prime_block_parses_independently():
+    """A ``[trainer.monitors.prime]`` block enables the trainer's metrics-only
+    platform attach on its own: the shared ``[monitors.prime]`` never enables it,
+    and the orchestrator's monitor is untouched."""
+    config = RLConfig.model_validate(
+        {
+            "model": {"name": "Qwen/Qwen3-0.6B"},
+            "trainer": {"monitors": {"prime": {"name": "trainer-sink"}}},
+            "orchestrator": {"renderer": {"name": "default"}},
+        }
+    )
+
+    assert config.trainer.monitors.prime is not None
+    assert config.trainer.monitors.prime.name == "trainer-sink"
+    assert config.orchestrator.monitors.prime is None
 
 
 def test_empty_shared_ckpt_block_does_not_conflict_with_subconfig_ckpt():

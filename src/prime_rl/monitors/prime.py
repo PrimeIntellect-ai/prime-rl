@@ -143,12 +143,26 @@ class PrimeTrainMonitor(Monitor):
     ``init``/``finish`` do network I/O and run in worker threads; the log
     calls are queue puts onto the SDK's uploader thread, which owns retries
     and backpressure, so they never stall the loop.
+
+    ``metrics_only`` is the trainer's flavor of this monitor: it attaches to a
+    platform run another process owns (the managed launch's ``$RUN_ID``) and
+    posts stepped metrics. It never registers or finalizes a run, and it drops
+    the SDK's atexit crash hook so its process can exit while the owner is
+    still running without reporting the shared run crashed.
     """
 
     config: PrimeTrainMonitorConfig
     run: pr.Run
 
+    def __init__(self, config: PrimeTrainMonitorConfig, *, metrics_only: bool = False) -> None:
+        super().__init__(config)
+        self.metrics_only = metrics_only
+
     async def init(self, config: BaseConfig | None = None, output_dir: Path | None = None) -> None:
+        if self.metrics_only:
+            await self._init_metrics_only()
+            return
+
         init_kwargs: dict[str, Any]
         if run_id := os.getenv("RUN_ID"):
             # A managed launch pre-created the platform run and injected its id -
@@ -220,6 +234,34 @@ class PrimeTrainMonitor(Monitor):
         else:
             self.logger.info(f"Platform run disabled ({pr.MODE_ENV}=disabled)")
 
+    async def _init_metrics_only(self) -> None:
+        """Attach to the run another process owns, for stepped metrics only."""
+        run_id = os.getenv("RUN_ID")
+        if not run_id:
+            raise RuntimeError(
+                "A metrics-only Prime monitor needs $RUN_ID: it attaches to the platform "
+                "run the orchestrator (or the platform) owns and never registers one. "
+                "Selfhosted runs keep the trainer's monitors.prime unset."
+            )
+        self.run = await asyncio.to_thread(
+            pr.init,
+            kind="train",
+            mode=os.getenv(pr.MODE_ENV) or "online",
+            base_url=_base_url(),
+            id=run_id,
+            finish_timeout=FINISH_TIMEOUT,
+        )
+        # One writer among several: the SDK's atexit hook would report the shared
+        # run crashed when this process exits before the owner finishes it, and an
+        # explicit finish() acknowledges the platform's monitoring finalize - both
+        # belong to the run's owner alone (the PrimeEvalMonitor's parent attach
+        # drops the hook for the same reason).
+        atexit.unregister(self.run._atexit_hook)
+        if self.run.url:
+            self.logger.info(
+                f"Logging trainer metrics to platform run {self.run.id} ({self.run.url}) (metrics-only)"
+            )
+
     async def log_metrics(self, metrics: dict[str, Any], step: int | None) -> None:
         # The SDK also drops non-finite values, but silently; sanitize first so
         # the dropped paths are named in the log.
@@ -234,13 +276,21 @@ class PrimeTrainMonitor(Monitor):
         """Only the trained cohort ships to the platform. The upload cadence
         (every 10th step) and the Parquet encoding live in the SDK's training
         samples sink, which reads each episode's dispatch step off ``run.work``
-        - the ``TrainRunInfo`` the dispatcher stamps at emit time."""
-        if kind != "train" or subset != "effective" or not episodes:
+        - the ``TrainRunInfo`` the dispatcher stamps at emit time. A
+        metrics-only attach posts no episodes: their run owns them."""
+        if self.metrics_only or kind != "train" or subset != "effective" or not episodes:
             return
         # A queue put that can block briefly under backpressure - off the loop.
         await asyncio.to_thread(self.run.log_episodes, episodes)
 
     async def finalize(self, paused: bool = False) -> None:
+        if self.metrics_only:
+            # Drain only, paused or not: the run's owner finalizes it. A trainer's
+            # finish() acknowledges the platform's monitoring finalize even on an
+            # attached run, which could tear the hosted job down before the
+            # orchestrator is done with it.
+            await asyncio.to_thread(self.run.flush, timeout=FINISH_TIMEOUT)
+            return
         # Drains queued uploads so the final step's metrics and episodes land,
         # then finalizes (idempotent on the platform side); an attached run's
         # failure marking stays with the launcher. A paused run only drains and
