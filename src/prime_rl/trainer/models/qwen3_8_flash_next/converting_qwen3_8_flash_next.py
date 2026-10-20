@@ -1,13 +1,14 @@
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 import torch
 from torch import Tensor
 
-from prime_rl.trainer.models.conversion_ops import ConvOp, Drop, Rename, SplitConcat
+from prime_rl.trainer.models.conversion_ops import ChunkedConvOp, ConvOp, Drop, Rename, SplitConcat
 
 
 @dataclass
-class NGramEmbeddingWeights(ConvOp):
+class NGramEmbeddingWeights(ChunkedConvOp):
     checkpoint_prefix: str
     runtime_weight: str
     shard_count: int
@@ -25,15 +26,18 @@ class NGramEmbeddingWeights(ConvOp):
             dim=0,
         )
 
-    def prime_to_hf(self, state_dict: dict[str, Tensor]) -> None:
-        if self.runtime_weight not in state_dict:
-            return
+    @property
+    def packet_count(self) -> int:
+        return self.shard_count
 
-        weight = state_dict.pop(self.runtime_weight)
+    def iter_prime_to_hf(
+        self, weight: Tensor, resolve_rows: Callable[[Tensor, int, int], Tensor]
+    ) -> Iterator[dict[str, Tensor]]:
         shard_size = (weight.shape[0] + self.shard_count - 1) // self.shard_count
         for index in range(self.shard_count):
-            start = index * shard_size
-            state_dict[f"{self.checkpoint_prefix}.shard_{index}.weight"] = weight[start : start + shard_size]
+            start = min(index * shard_size, weight.shape[0])
+            stop = min(start + shard_size, weight.shape[0])
+            yield {f"{self.checkpoint_prefix}.shard_{index}.weight": resolve_rows(weight, start, stop)}
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:
