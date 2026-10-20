@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import ClassVar
 
 from prime_rl.utils.config import BaseConfig
 
@@ -46,6 +47,12 @@ class FileMonitorConfig(BaseConfig):
 class PrimeTrainMonitorConfig(BaseConfig):
     name: str | None = None
     """Run name shown on the platform. Inherits ``run.name`` when unset."""
+
+    # Capability marker, not a config field: this monitor merges cached wall-time
+    # gauges into step uploads (see PrimeTrainMonitor). Consumers gate on it via
+    # getattr(config, "supports_step_snapshots", False) — an older schema object
+    # without the attribute reads as False.
+    supports_step_snapshots: ClassVar[bool] = True
 
 
 class PrimeEvalMonitorConfig(BaseConfig):

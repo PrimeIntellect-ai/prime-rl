@@ -217,3 +217,19 @@ def test_no_wall_time_cache_means_unchanged_step_upload():
     (metrics, step), = run.rows
     assert metrics == {**train_row(3), "train/agg/effective/reward/mean": 0.6}
     assert step == 3
+
+
+def test_supports_step_snapshots_is_a_marker_not_a_config_field():
+    """The capability marker advertises the step-snapshot behavior to gating
+    consumers without widening the schema: not user-settable, not serialized,
+    and absent on older schema objects (getattr default False)."""
+    from pydantic import ValidationError
+
+    assert PrimeTrainMonitorConfig.supports_step_snapshots is True
+
+    assert "supports_step_snapshots" not in PrimeTrainMonitorConfig.model_fields
+    assert "supports_step_snapshots" not in PrimeTrainMonitorConfig(name="r").model_dump()
+    with pytest.raises(ValidationError):
+        PrimeTrainMonitorConfig.model_validate({"supports_step_snapshots": False})
+
+    assert getattr(object(), "supports_step_snapshots", False) is False  # older schema
