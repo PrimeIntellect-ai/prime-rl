@@ -2,9 +2,12 @@ name: Regression
 
 # Scheduled regression suites, one job group per suite. Dispatch with `suite`
 # to run one of them.
-#   rl:       every configs/rl/*.toml as a hosted RL run
-#   sft:      every configs/sft/*.toml as a hosted SFT run (the docs SFT
-#             examples; datasets are staged on a named volume)
+#   rl:       every configs/rl/*.toml as a hosted RL run. These are symlinks
+#             to examples/basic/*/rl.toml — the nightly runs the docs RL
+#             examples exactly as written.
+#   sft:      every configs/sft/*.toml as a hosted SFT run. These are symlinks
+#             to examples/basic/*/sft.toml (the docs SFT examples; their
+#             datasets are staged on a named volume).
 #   parallel: test_parallel_invariance.py on the 2xH200 runners
 #   eval:     every configs/eval/*.toml through `uv run eval` against Prime
 #             Inference, compared against baselines/eval/. reports/eval/ holds
@@ -251,11 +254,29 @@ jobs:
                   # secrets that were explicitly collected via `-e` / `--env-file`,
                   # not ambient env, so the workflow env: block alone is not
                   # enough to reach the hosted trainer/orchestrator pods.
-                  prime train "$dispatch_cfg" \
-                      --image-tag "${{ needs.image.outputs.tag }}" \
-                      -e WANDB_API_KEY \
-                      -e HF_TOKEN \
-                      --yes --output json
+                  # The platform's config validator 503s intermittently (see
+                  # the old nightly-fft: 17 failed scheduled nights in a row,
+                  # mostly this). A validator failure happens before the run
+                  # is created, so a bounded retry is safe. Never retry other
+                  # errors: e.g. a read timeout may have created the run after
+                  # the CLI gave up, and a retry would double-dispatch it.
+                  log=$(mktemp)
+                  attempt=1
+                  until prime train "$dispatch_cfg" \
+                          --image-tag "${{ needs.image.outputs.tag }}" \
+                          -e WANDB_API_KEY \
+                          -e HF_TOKEN \
+                          --yes --output json >"$log" 2>&1; do
+                      status=$?
+                      cat "$log"
+                      if [ "$attempt" -ge 3 ] || ! grep -q "Config validator" "$log"; then
+                          exit "$status"
+                      fi
+                      echo "Attempt $attempt hit the flaky config validator; retrying in 60s."
+                      attempt=$((attempt + 1))
+                      sleep 60
+                  done
+                  cat "$log"
 
     sft-plan:
         name: SFT / Plan
@@ -344,12 +365,27 @@ jobs:
                   printf 'name = "%s"\n\n' "$run_name" > "$dispatch_cfg"
                   cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
                   echo "Dispatched run name: $run_name"
-                  prime train "$dispatch_cfg" \
-                      --image-tag "${{ needs.image.outputs.tag }}" \
-                      --volume "$SFT_VOLUME" \
-                      -e WANDB_API_KEY \
-                      -e HF_TOKEN \
-                      --yes --output json
+                  # Bounded retry for the flaky platform config validator,
+                  # same rationale as the rl job above: validator errors fail
+                  # before the run is created, everything else is final.
+                  log=$(mktemp)
+                  attempt=1
+                  until prime train "$dispatch_cfg" \
+                          --image-tag "${{ needs.image.outputs.tag }}" \
+                          --volume "$SFT_VOLUME" \
+                          -e WANDB_API_KEY \
+                          -e HF_TOKEN \
+                          --yes --output json >"$log" 2>&1; do
+                      status=$?
+                      cat "$log"
+                      if [ "$attempt" -ge 3 ] || ! grep -q "Config validator" "$log"; then
+                          exit "$status"
+                      fi
+                      echo "Attempt $attempt hit the flaky config validator; retrying in 60s."
+                      attempt=$((attempt + 1))
+                      sleep 60
+                  done
+                  cat "$log"
 
     parallel:
         name: Parallel / Invariance
@@ -399,7 +435,11 @@ jobs:
 
     eval-plan:
         name: Eval / Plan
-        if: ${{ !inputs.suite || inputs.suite == 'all' || inputs.suite == 'eval' }}
+        # Fork PRs never receive the repo's Actions secrets, so the eval jobs
+        # can't authenticate to Prime Inference and always fail with
+        # "Model ... was not found in the inference pool". Only run the suite
+        # for same-repo PRs (and scheduled/dispatch events).
+        if: ${{ (!inputs.suite || inputs.suite == 'all' || inputs.suite == 'eval') && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
         runs-on: ubuntu-latest
         outputs:
             repeats: ${{ steps.plan.outputs.repeats }}
