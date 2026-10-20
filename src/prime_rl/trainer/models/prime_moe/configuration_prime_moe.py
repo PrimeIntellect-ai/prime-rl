@@ -55,7 +55,8 @@ class PrimeMoeConfig(PretrainedConfig):
             tables) or several of `ngram` / `bytes` joined by `_` (the last streams, e.g. `ngram_bytes`,
             `ngram_ngram`, `ngram_ngram_ngram`, `bytes_bytes`; a repeated kind is an independent copy).
         hc_byte_add (`str`, *optional*): Add an own byte embedding (`hc_byte_window` bytes, as the byte stream) to the
-            input of every token-table stream (`tables`) or every n-gram stream (`ngrams`); None for no addition.
+            input of every token-table stream (`tables`), every n-gram stream (`ngrams`) or both (`all`); None for no
+            addition.
         hc_ngram_vocab_size (`int`, *optional*): Rows per hash head of the n-gram stream.
         hc_byte_window (`int`, *optional*): Bytes per token of the byte stream.
         hc_byte_table (`str`, *optional*): Path of the tokenizer's token-to-bytes table for the byte stream.
