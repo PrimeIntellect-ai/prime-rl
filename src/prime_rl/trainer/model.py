@@ -59,9 +59,7 @@ from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_bl
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
 from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
-from prime_rl.trainer.models.qwen3_5.modeling_qwen3_5 import Qwen3_5Model
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
-from prime_rl.trainer.models.qwen3_8_flash_next.modeling_qwen3_8_flash_next import Qwen3_8FlashNextTextModel
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -783,8 +781,6 @@ def reshard_module(model: nn.Module):
 
 def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
     language_model = get_language_model(model)
-    if isinstance(language_model, (Qwen3_5Model, Qwen3_8FlashNextTextModel)):
-        fla.utils.FLA_DISABLE_TENSOR_CACHE = True
     wrap_block = get_activation_checkpoint_wrapper(ac_config)
     checkpointed_layers = 0
 
@@ -792,6 +788,9 @@ def apply_ac(model: nn.Module, ac_config: ActivationCheckpointConfig):
         if layer_id % ac_config.freq != 0:
             continue
 
+        # FLA's metadata cache must not skip operations during checkpoint replay.
+        if any(getattr(module, "uses_fla", False) for module in transformer_block.modules()):
+            fla.utils.FLA_DISABLE_TENSOR_CACHE = True
         language_model.layers.register_module(layer_name, wrap_block(transformer_block))
         checkpointed_layers += 1
 
