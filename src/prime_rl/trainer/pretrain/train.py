@@ -377,6 +377,16 @@ def train(config: PretrainConfig):
         run_val(step=0)
     if config.evals is not None and config.evals.eval_on_start:
         run_suite(step=checkpoint_step or 0)
+    if checkpoint_step == config.max_steps:
+        # The last step's checkpoint is written before its val and evals: resuming from it only runs those.
+        logger.info(f"Resuming from the last step ({checkpoint_step}): running its val and evals only")
+        if config.val is not None:
+            run_val(checkpoint_step)
+        if config.evals is not None and not config.evals.eval_on_start:
+            run_suite(checkpoint_step)
+        logger.success("Pretrain trainer finished")
+        asyncio.run(monitors.finalize())
+        return
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
     max_memory = torch.cuda.mem_get_info()[1] / 1024**3
@@ -457,10 +467,18 @@ def train(config: PretrainConfig):
             "perf/peak_memory/mean": peak_memory["sum"].item() / dist.get_world_size(dp_cp_group),
         }
 
-        # The last step's checkpoint is written once after the loop.
+        num_tokens = result.num_tokens
+        progress.total_tokens += num_tokens
+        step_tokens = source_tokens(train_dataset, next_window, next_window + config.data.batch_size)
+        next_window += config.data.batch_size
+        for name, tokens in step_tokens.items():
+            source_totals[name] += tokens
+        progress.total_samples = next_window
+
+        # The last step's checkpoint is written before its val and evals, so a timeout there does not lose it.
         save_ckpt_time = 0.0
         disk_metrics = {}
-        if config.ckpt and config.ckpt.interval and progress.step % config.ckpt.interval == 0 and not is_last_step:
+        if config.ckpt and (is_last_step or (config.ckpt.interval and progress.step % config.ckpt.interval == 0)):
             save_ckpt_start_time = time.perf_counter()
             ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
             ckpt_manager.maybe_clean()
@@ -474,13 +492,6 @@ def train(config: PretrainConfig):
             run_suite(progress.step)
         eval_time = time.perf_counter() - eval_start_time
 
-        num_tokens = result.num_tokens
-        progress.total_tokens += num_tokens
-        step_tokens = source_tokens(train_dataset, next_window, next_window + config.data.batch_size)
-        next_window += config.data.batch_size
-        for name, tokens in step_tokens.items():
-            source_totals[name] += tokens
-        progress.total_samples = next_window
         step_time = time.perf_counter() - step_start_time - eval_time
         perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
@@ -536,10 +547,6 @@ def train(config: PretrainConfig):
             break
         progress.step += 1
 
-    if config.ckpt is not None:
-        logger.info(f"Saving final checkpoint at step {progress.step}")
-        ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
-        ckpt_manager.maybe_clean()
     logger.success("Pretrain trainer finished")
     asyncio.run(monitors.finalize())
 
