@@ -314,12 +314,14 @@ class TrainSink:
             for episode in group
             if (policy := train_work(episode).policy) is None or policy.start >= min_version
         ]
-        if fresh and len(fresh) < len(group):
+        all_stale = bool(group) and not fresh
+        if len(fresh) < len(group):
             self.rollout_window.metrics.count(
                 "off_policy/dropped",
                 float(sum(len(episode.traces) for episode in group) - sum(len(episode.traces) for episode in fresh)),
             )
-            group = fresh
+            if fresh:
+                group = fresh
         traces = [trace for episode in group for trace in episode.traces]
         task_idx = next((trace.task.data.idx for trace in traces), None)
         num_errored = (
@@ -331,14 +333,15 @@ class TrainSink:
         # A stale drop voids the whole group: every member shares the dispatch
         # version, so the arrived episodes are exactly as stale as the
         # cancelled tail. Stale and shutdown groups bypass the curriculum — a
-        # pipeline decision is not a task result.
-        if cancellation is not None and cancellation.reason in ("stale", "shutdown"):
+        # pipeline decision is not a task result. A resumed group whose saved
+        # members all aged out is dropped the same way.
+        if all_stale or (cancellation is not None and cancellation.reason in ("stale", "shutdown")):
             self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=True)
             self._record_zero_output(group, [], n_owed)
             get_logger().debug(
                 f"Dropped group | env={env_name} task_idx={task_idx} | "
                 f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
-                f"reason=cancelled ({cancellation.reason})"
+                f"reason=cancelled ({'stale' if all_stale else cancellation.reason})"
             )
             return
 

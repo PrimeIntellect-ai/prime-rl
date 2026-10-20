@@ -247,6 +247,12 @@ def test_resumed_group_scores_only_members_within_max_off_policy_steps():
         assert s.pending_batch[right.id][0].advantages[-1] == 0.5
         assert s.rollout_window.metrics.to_dict()["off_policy/dropped"] == 1
 
+        s.on_result = lambda group: pytest.fail("an all-stale group reached the curriculum")
+        for _ in range(3):
+            await s.add(episode([trace()], group="old", version=7))
+        assert set(s.pending_batch) == {right.id, wrong.id}
+        assert s.rollout_window.metrics.to_dict()["off_policy/dropped"] == 4
+
     asyncio.run(run())
 
 
