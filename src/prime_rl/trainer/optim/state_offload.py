@@ -80,12 +80,27 @@ class CPUOffloadOptimizer(OffloadOptimizer):
             return result
         return self._chunked_step(closure)
 
+    @staticmethod
+    def _planned_numel(param: torch.Tensor) -> int:
+        """Per-rank element count estimated from the global shape: identical on every rank."""
+        if not isinstance(param, DTensor):
+            return param.numel()
+        shards = 1
+        for dim, placement in enumerate(param.placements):
+            if placement.is_shard():
+                shards *= param.device_mesh.size(dim)
+        return -(-param.numel() // shards)
+
     def _step_chunks(self, params: list[torch.Tensor]) -> list[list[torch.Tensor]]:
+        """Group parameters into passes of at most ``step_chunk_bytes`` of estimated state.
+
+        Sized from each parameter's global shape and placements rather than its local shard, so every
+        rank derives the same plan: uneven shards must not give ranks different numbers of
+        ``optimizer.step`` calls (optimizers such as Muon run collectives inside ``step``)."""
         chunks: list[list[torch.Tensor]] = [[]]
         chunk_bytes = 0
         for param in params:
-            local = param._local_tensor if isinstance(param, DTensor) else param
-            state_bytes = 8 * local.numel()
+            state_bytes = 8 * self._planned_numel(param)
             if chunks[-1] and chunk_bytes + state_bytes > self.step_chunk_bytes:
                 chunks.append([])
                 chunk_bytes = 0
@@ -97,7 +112,9 @@ class CPUOffloadOptimizer(OffloadOptimizer):
         """Step the parameters chunk by chunk, with only one chunk's states on GPU. Each pass sees
         only its chunk's gradients; the optimizer skips parameters without one, so every parameter
         is updated exactly once with the same element-wise math as a single step."""
-        params = [p for group in self.optimizer.param_groups for p in group["params"] if p.grad is not None]
+        # Plan over every parameter (not only those with a gradient) so the plan is identical on all
+        # ranks; parameters without a gradient are skipped by the optimizer within their pass.
+        params = [p for group in self.optimizer.param_groups for p in group["params"]]
         grads = {id(p): p.grad for p in params}
         result = None
         try:

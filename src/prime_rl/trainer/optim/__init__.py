@@ -93,7 +93,10 @@ def setup_optimizer(
 
     if cpu_offload:
         get_logger().info("Wrapping optimizer with CPUOffloadOptimizer for optimizer state CPU offloading")
-        return CPUOffloadOptimizer(optimizer), None
+        # Chunked stepping calls optimizer.step once per chunk, which is only safe for element-wise
+        # optimizers; Muon issues collectives inside step and keeps a single pass.
+        step_chunk_bytes = 4 << 30 if config.type in ("adamw", "sign_sgd") else None
+        return CPUOffloadOptimizer(optimizer, step_chunk_bytes=step_chunk_bytes), None
 
     return optimizer, None
 

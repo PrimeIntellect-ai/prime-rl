@@ -129,3 +129,23 @@ def test_chunked_steps_match_plain_adamw(step_chunk_bytes: int | None) -> None:
     assert_params_equal(reference_model, chunked_model)
     assert_states_offloaded(chunked_optimizer)
     assert all(param.grad is None for param in chunked_model.parameters())
+
+
+def test_chunk_plan_covers_params_without_grad(monkeypatch) -> None:
+    """The plan must not depend on which parameters have a gradient on this rank, or ranks can
+    disagree on the number of optimizer.step calls."""
+    params = [torch.nn.Parameter(torch.zeros(n)) for n in (64, 64, 64, 64)]
+    wrapper = CPUOffloadOptimizer(torch.optim.SGD(params, lr=0.1), step_chunk_bytes=8 * 128)
+    monkeypatch.setattr(wrapper, "_move_states", lambda *args, **kwargs: None)
+    plans = []
+    original = wrapper._step_chunks
+    monkeypatch.setattr(wrapper, "_step_chunks", lambda ps: plans.append(original(ps)) or plans[-1])
+    for with_grad in ((True, True, True, True), (True, False, True, False)):
+        for param, has_grad in zip(params, with_grad):
+            param.grad = torch.ones_like(param) if has_grad else None
+        wrapper._chunked_step()
+    assert [len(plan) for plan in plans] == [2, 2]
+    assert [[id(p) for p in chunk] for chunk in plans[0]] == [[id(p) for p in chunk] for chunk in plans[1]]
+    # The second pass leaves parameters without a gradient untouched and their grad None.
+    assert params[1].grad is None and torch.equal(params[1].data, torch.full((64,), -0.1))
+    assert torch.equal(params[0].data, torch.full((64,), -0.2))
