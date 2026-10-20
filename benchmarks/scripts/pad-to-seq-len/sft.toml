@@ -1,0 +1,39 @@
+max_steps = 10
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+attn = "flash_attention_3"
+ep = 8
+offload = "none"
+ac_offloading = "None"
+
+[model.debug]
+num_layers = 4
+
+[model.compile]
+
+[optim]
+lr = 1e-5
+
+[renderer]
+name = "glm-4.5"
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+splits = ["math"]
+seed = 0
+batch_size = 16
+micro_batch_size = 1
+seq_len = 16384
+pad_to_seq_len = true
+
+[monitors.wandb]
+entity = "primeintellect"
+project = "feat-rl-pad-to-seq-len"
+name = "sft-glm-4.5-air-4l-pad-to-seq-len"
+tags = ["sft", "glm-4.5-air", "4-layers", "pad-to-seq-len"]
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
