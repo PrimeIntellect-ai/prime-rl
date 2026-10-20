@@ -26,9 +26,8 @@ if TYPE_CHECKING:
 OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
 
 LIVE_NODE_EXCLUDE = frozenset(EXCLUDE_FIELDS["nodes"]["__all__"])
-"""Node fields that stay on the wire but out of live trace files, the same ones finished records
-drop (``Trace.to_record``): routed experts, sampling masks and top logprobs, which alone are
-``logprobs`` times the captured top-k per token."""
+"""Node fields that stay on the wire but out of live trace files: expensive per-token information
+only the trainer needs."""
 
 
 class FileMonitor(Monitor):
