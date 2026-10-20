@@ -2,7 +2,7 @@ import json
 import re
 import warnings
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Iterable, cast
 
 import torch
 import torch.distributed as dist
@@ -128,27 +128,38 @@ def resolve_fqn(model: nn.Module, key: str) -> str:
 _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
 
 
-def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
-    """Assign each state-dict key an owner rank, balanced by byte size.
+def group_by_layer(keys: Iterable[str]) -> dict[str, list[str]]:
+    """Group state-dict keys by decoder layer; keys outside any layer share the ``""`` group.
 
-    All keys of one decoder layer share an owner, so per-rank prime->HF conversion
-    (which stacks/unstacks tensors within a layer) always sees complete layers.
+    prime->HF conversion stacks/unstacks tensors within a layer, so it must always see
+    complete groups.
     """
-    key_to_unit: dict[str, str] = {}
-    unit_bytes: dict[str, int] = {}
-    for key, value in state_dict.items():
+    layer_to_keys: dict[str, list[str]] = {}
+    for key in keys:
         match = _LAYER_RE.match(key)
-        unit = match.group(1) if match else ""
-        key_to_unit[key] = unit
-        itemsize = dtype.itemsize if isinstance(value, DTensor) else value.element_size()
-        unit_bytes[unit] = unit_bytes.get(unit, 0) + value.numel() * itemsize
+        layer_to_keys.setdefault(match.group(1) if match else "", []).append(key)
+    return layer_to_keys
+
+
+def partition_weights(state_dict: dict[str, Tensor], world_size: int, dtype: torch.dtype) -> dict[str, int]:
+    """Assign each state-dict key an owner rank, balanced by byte size. All keys of one
+    decoder layer share an owner (see ``group_by_layer``)."""
+    layer_to_keys = group_by_layer(state_dict)
+    layer_to_bytes = {
+        layer: sum(
+            state_dict[key].numel()
+            * (dtype.itemsize if isinstance(state_dict[key], DTensor) else state_dict[key].element_size())
+            for key in keys
+        )
+        for layer, keys in layer_to_keys.items()
+    }
     loads = [0] * world_size
-    unit_owner: dict[str, int] = {}
-    for unit in sorted(unit_bytes, key=lambda unit: (-unit_bytes[unit], unit)):
+    key_to_owner: dict[str, int] = {}
+    for layer in sorted(layer_to_bytes, key=lambda layer: (-layer_to_bytes[layer], layer)):
         owner = min(range(world_size), key=lambda rank: loads[rank])
-        unit_owner[unit] = owner
-        loads[owner] += unit_bytes[unit]
-    return {key: unit_owner[unit] for key, unit in key_to_unit.items()}
+        key_to_owner.update(dict.fromkeys(layer_to_keys[layer], owner))
+        loads[owner] += layer_to_bytes[layer]
+    return key_to_owner
 
 
 def resolve_wire_dtype(keep_in_fp32: Callable[[str], bool] | None, key: str, default: torch.dtype) -> torch.dtype:

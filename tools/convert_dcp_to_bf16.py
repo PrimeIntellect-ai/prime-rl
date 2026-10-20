@@ -1,61 +1,46 @@
-"""Convert a DCP trainer checkpoint into bf16 HF-format weights offline.
+"""Convert a DCP trainer checkpoint into bf16 HF-format weights offline, on CPU.
 
 The trainer saves only DCP checkpoints; every HF export goes through this
-script. It mirrors the trainer's broadcast save path: build the model, DCP-load
-the checkpoint's model state, gather rank-parallel, convert to HF format, and
-write sharded safetensors plus config/tokenizer assets.
+script. The model is built on the meta device only for its parameter names and
+prime->HF conversion rules. Each decoder layer is then loaded, converted and
+written as its own shard by one of ``--workers`` threads, so host memory stays
+near ``workers`` times the largest layer and no GPU or process group is needed.
+The checkpoint metadata is read once and shared by every layer.
 
 The model and tokenizer configs are read from the run's resolved config
 (``<run>/configs/latest/resolved/trainer.json`` or ``sft.json``). LoRA checkpoints are not
 supported — the script exports full fine-tunes only.
 
-Usage (from the prime-rl repo; more ranks = faster gathers and writes, and
-models too big for one GPU need enough ranks to shard across):
-    uv run python tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
-    uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py \
-        <run>/checkpoints/step_{n} [output_dir]
+Usage (from the prime-rl repo):
+    uv run python tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir] [--workers 8]
 
 Writes to ``<ckpt_dir>/weights`` by default.
 """
 
 import argparse
 import json
-import os
 import shutil
-import socket
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-import torch.distributed as dist
-from torch.distributed.checkpoint import FileSystemReader
+from safetensors.torch import save_file
+from torch import Tensor, nn
+from torch.distributed.checkpoint import FileSystemReader, Metadata
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
-from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
-from prime_rl.trainer.ckpt import AppState
-from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
-from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
-from prime_rl.trainer.utils import setup_torch_distributed
-from prime_rl.trainer.world import get_world
+from prime_rl.configs.trainer import ModelConfig, TokenizerConfig
+from prime_rl.trainer.model import get_model, setup_processor, setup_tokenizer
 from prime_rl.utils.logger import get_logger, setup_logger
 from prime_rl.utils.pathing import get_config_dir
-from prime_rl.utils.weights import (
-    convert_state_dict_to_hf,
-    gather_weights_parallel,
-    save_state_dict_parallel,
-)
+from prime_rl.utils.weights import convert_state_dict_to_hf, group_by_layer, resolve_wire_dtype
 
-# Training kernels and parallelism settings do not apply to an offline export.
-# Resolve parallelism for the converter's world size and use portable kernels.
-CONVERSION_OVERRIDES = {
-    "compile": None,
-    "ac": None,
-    "dp_replicate": 1,
-    "cp": 1,
-    "ep": "auto",
-    "moe": MoERuntimeConfig(),
-    "attn": "flash_attention_2",
-}
+# The meta skeleton only provides names and conversion rules; any attention kernel builds it.
+CONVERSION_OVERRIDES = {"attn": "flash_attention_2"}
 
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
 
@@ -90,10 +75,9 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
     return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
 
 
-def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
+def check_not_lora(model_config: ModelConfig, metadata: Metadata) -> None:
     if model_config.lora is not None:
         raise ValueError("LoRA checkpoints are not supported - dcp_to_bf16 exports full fine-tunes only")
-    metadata = FileSystemReader(dcp_dir).read_metadata()
     lora_keys = [k for k in metadata.state_dict_metadata if "lora_A" in k or "lora_B" in k or ".base_layer." in k]
     if lora_keys:
         raise ValueError(
@@ -101,25 +85,10 @@ def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
         )
 
 
-def setup_single_process_env() -> None:
-    """Default the torchrun env vars so the script also runs under plain ``python``."""
-    if "RANK" in os.environ:
-        return
-    with socket.socket() as sock:
-        sock.bind(("localhost", 0))
-        free_port = sock.getsockname()[1]
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = str(free_port)
-    os.environ["RANK"] = "0"
-    os.environ["WORLD_SIZE"] = "1"
-    os.environ["LOCAL_RANK"] = "0"
-    os.environ["LOCAL_WORLD_SIZE"] = "1"
-
-
 def save_model_assets(model, model_config: ModelConfig, tokenizer_config: TokenizerConfig, output_dir: Path) -> None:
     """Save model config, generation config, processor and tokenizer next to the weights."""
     model.config.save_pretrained(output_dir)
-    if model.generation_config:
+    if getattr(model, "generation_config", None):
         # training sets use_cache=False which can conflict with cache_implementation —
         # save with use_cache=True without mutating the model's config
         gen_config = deepcopy(model.generation_config)
@@ -141,48 +110,107 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
             shutil.copyfile(path, output_dir / path.name)
 
 
-def load_and_convert(ckpt_dir: Path):
-    """DCP-load a checkpoint and gather it as a rank-partial HF-format bf16 state dict.
+@dataclass
+class Checkpoint:
+    """A DCP checkpoint opened for export: its metadata (read once) and the run's model
+    on the meta device, which provides the parameter names and prime->HF conversion rules."""
 
-    Returns ``(model, model_config, tokenizer_config, state_dict, step_dir)``.
-    """
+    dcp_dir: Path
+    metadata: Metadata
+    model: nn.Module
+    model_config: ModelConfig
+    tokenizer_config: TokenizerConfig
+
+
+class MetadataReader(FileSystemReader):
+    """Serves metadata read once, so loading one layer doesn't re-read the checkpoint's
+    ``.metadata``, which grows with the model."""
+
+    def __init__(self, path: Path, metadata: Metadata):
+        super().__init__(path)
+        self.metadata = metadata
+
+    def read_metadata(self, *args, **kwargs) -> Metadata:
+        return self.metadata
+
+
+def convert(ckpt_dir: Path, output_dir: Path | None = None, workers: int = 1) -> Path:
     logger = setup_logger("info")
+    checkpoint = open_checkpoint(ckpt_dir)
+    output_dir = output_dir if output_dir is not None else checkpoint.dcp_dir.parent / "weights"
 
-    dcp_dir = resolve_dcp_dir(ckpt_dir)
-    step_dir = dcp_dir.parent
-    model_config, tokenizer_config = resolve_run_configs(step_dir)
-    check_not_lora(model_config, dcp_dir)
-
-    setup_single_process_env()
-    setup_torch_distributed()
-
-    resolve_ep(model_config)
-    parallel_dims = get_parallel_dims(model_config)
-    model = setup_model(model_config, parallel_dims, loading_from_checkpoint_later=True)
-
-    logger.info(f"Loading DCP checkpoint from {dcp_dir}")
-    dcp_load(state_dict={"app": AppState(model, [], None, None)}, checkpoint_id=dcp_dir)
-
-    logger.info("Gathering and converting weights")
-    state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
-    if getattr(model.config, "tie_word_embeddings", False):
-        for key in getattr(model, "_tied_weights_keys", []):
-            state_dict.pop(key, None)
-    state_dict = convert_state_dict_to_hf(model, state_dict)
-    return model, model_config, tokenizer_config, state_dict, step_dir
-
-
-def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
-    logger = get_logger()
-    model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir)
-    output_dir = output_dir if output_dir is not None else step_dir / "weights"
-
-    logger.info(f"Writing HF weights to {output_dir}")
-    save_state_dict_parallel(state_dict, output_dir)
-    if get_world().is_master:
-        save_model_assets(model, model_config, tokenizer_config, output_dir)
-        logger.info(f"Done: {output_dir}")
+    logger.info(f"Converting {checkpoint.dcp_dir} to HF weights in {output_dir} with {workers} workers")
+    write_weights(checkpoint, output_dir, workers)
+    save_model_assets(checkpoint.model, checkpoint.model_config, checkpoint.tokenizer_config, output_dir)
+    logger.info(f"Done: {output_dir}")
     return output_dir
+
+
+def get_layers(model: nn.Module) -> list[list[str]]:
+    """The model's state-dict keys grouped by decoder layer, without tied duplicates."""
+    keys = list(model.state_dict())
+    if getattr(model.config, "tie_word_embeddings", False):
+        tied_keys = set(getattr(model, "_tied_weights_keys", []))
+        keys = [key for key in keys if key not in tied_keys]
+    return list(group_by_layer(keys).values())
+
+
+def load_hf_layer(checkpoint: Checkpoint, keys: list[str]) -> dict[str, Tensor]:
+    """Load one layer's weights from the checkpoint on CPU and convert them to HF format."""
+    model = checkpoint.model
+    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
+    skeleton = model.state_dict()
+    state_dict = {
+        key: torch.empty(skeleton[key].shape, dtype=resolve_wire_dtype(keep_in_fp32, key, torch.bfloat16))
+        for key in keys
+    }
+    dcp_load(
+        {"app": {"model": state_dict}},
+        storage_reader=MetadataReader(checkpoint.dcp_dir, checkpoint.metadata),
+        no_dist=True,
+    )
+    return convert_state_dict_to_hf(model, state_dict)
+
+
+def open_checkpoint(ckpt_dir: Path) -> Checkpoint:
+    dcp_dir = resolve_dcp_dir(ckpt_dir)
+    metadata = FileSystemReader(dcp_dir).read_metadata()
+    model_config, tokenizer_config = resolve_run_configs(dcp_dir.parent)
+    check_not_lora(model_config, metadata)
+    model = get_model(model_config, device=torch.device("meta"), dtype=torch.bfloat16)
+    return Checkpoint(dcp_dir, metadata, model, model_config, tokenizer_config)
+
+
+def write_weights(
+    checkpoint: Checkpoint,
+    output_dir: Path,
+    workers: int,
+    transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] = lambda shard: shard,
+) -> None:
+    """Write one safetensors shard per layer, ``workers`` layers at a time, then the
+    index last, so a complete index implies complete shards. ``transform`` maps each
+    converted layer to the tensors written for it."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    layers = get_layers(checkpoint.model)
+    names = [
+        SAFE_WEIGHTS_NAME.replace(".safetensors", f"-{index:05d}-of-{len(layers):05d}.safetensors")
+        for index in range(1, len(layers) + 1)
+    ]
+
+    def write_layer(name: str, keys: list[str]) -> dict[str, int]:
+        shard = transform(load_hf_layer(checkpoint, keys))
+        save_file(
+            {key: tensor.contiguous() for key, tensor in shard.items()}, output_dir / name, metadata={"format": "pt"}
+        )
+        return {key: tensor.nbytes for key, tensor in shard.items()}
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        key_to_size_per_shard = list(pool.map(write_layer, names, layers))
+
+    weight_map = {key: name for name, key_to_size in zip(names, key_to_size_per_shard) for key in key_to_size}
+    total_size = sum(sum(key_to_size.values()) for key_to_size in key_to_size_per_shard)
+    index_json = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+    (output_dir / SAFE_WEIGHTS_INDEX_NAME).write_text(json.dumps(index_json, indent=2, sort_keys=True) + "\n")
 
 
 def main() -> None:
@@ -191,9 +219,9 @@ def main() -> None:
         "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights")
+    parser.add_argument("--workers", type=int, default=1, help="layers converted at once")
     args = parser.parse_args()
-    convert(args.ckpt_dir, args.output_dir)
-    dist.destroy_process_group()
+    convert(args.ckpt_dir, args.output_dir, args.workers)
 
 
 if __name__ == "__main__":
