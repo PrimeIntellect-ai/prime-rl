@@ -83,13 +83,16 @@ def _model_entries(reader: FileSystemReader) -> dict[str, TensorStorageMetadata]
 
 
 def _validate_custom_layout(
-    entries: dict[str, TensorStorageMetadata], shapes: dict[str, tuple[int, ...]], config: dict
+    entries: dict[str, TensorStorageMetadata],
+    shapes: dict[str, tuple[int, ...]],
+    config: dict,
+    model_config: dict | None = None,
 ) -> set[str]:
     """Validate checkpoint keys/shapes/dtypes against the custom model's meta state.
 
     Tied aliases are the only optional names; returns them.
     """
-    schema, aliases, dtypes = prime_schema_details(config)
+    schema, aliases, dtypes = prime_schema_details(config, attn_implementation=(model_config or {}).get("attn"))
     missing = schema.keys() - shapes.keys() - aliases.keys()
     unexpected = shapes.keys() - schema.keys()
     mismatched = {name for name in shapes.keys() & schema.keys() if shapes[name] != schema[name]}
@@ -137,7 +140,7 @@ def _export_layout(
                 "Checkpoint does not match HF model schema: "
                 f"missing={sorted(missing)}, unexpected={sorted(unexpected)}, shapes={sorted(mismatched)}"
             )
-    aliases = _validate_custom_layout(entries, shapes, config)
+    aliases = _validate_custom_layout(entries, shapes, config, model_config)
     return conversion_chain(resolve_config(config)), aliases
 
 

@@ -36,12 +36,14 @@ def resolve_config(config):
     return _namespace(config)
 
 
-def prime_schema_details(config) -> tuple[dict[str, Shape], dict[str, str], dict[str, torch.dtype]]:
+def prime_schema_details(
+    config, *, attn_implementation: str | None = None
+) -> tuple[dict[str, Shape], dict[str, str], dict[str, torch.dtype]]:
     """Canonical PrimeRL state names, tied aliases and dtypes from a meta-model build."""
     resolved = resolve_config(config)
     model_cls = get_custom_causal_lm_cls(resolved)
     with torch.device("meta"):
-        model = model_cls._from_config(resolved)
+        model = model_cls._from_config(resolved, attn_implementation=attn_implementation)
     try:
         state = model.state_dict()
         nonmeta = [name for name, tensor in state.items() if tensor.device.type != "meta"]

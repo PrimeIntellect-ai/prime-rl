@@ -129,3 +129,32 @@ def test_rejects_bad_checkpoint_chunks(tiny_run, broken):
     config = json.loads((Path(config["model"]["name"]) / "config.json").read_text())
     with pytest.raises(ValueError):
         list(iter_cpu_hf_groups(checkpoint, config))
+
+
+def test_custom_vlm_schema_uses_trainer_attention():
+    from prime_rl.trainer.models.qwen3_5 import Qwen3_5Config
+    from prime_rl.utils.export_conversion import prime_schema_details
+
+    config = Qwen3_5Config(
+        text_config=dict(
+            vocab_size=32,
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            head_dim=8,
+            layer_types=["full_attention"],
+        ),
+        vision_config=dict(
+            depth=1,
+            hidden_size=16,
+            intermediate_size=32,
+            num_heads=2,
+            out_hidden_size=16,
+            num_position_embeddings=16,
+        ),
+    )
+    schema, _, dtypes = prime_schema_details(config.to_dict(), attn_implementation="flash_attention_2")
+    assert schema["model.visual.blocks.0.attn.qkv.weight"] == (48, 16)
+    assert dtypes["model.visual.blocks.0.attn.qkv.weight"].is_floating_point
