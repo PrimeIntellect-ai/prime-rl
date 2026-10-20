@@ -128,6 +128,9 @@ class FP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
+
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
@@ -136,6 +139,9 @@ class MXFP8Config(BaseConfig):
 
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from torchao MXFP8 replacement."""
+
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]

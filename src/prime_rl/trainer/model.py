@@ -836,20 +836,21 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     if quant is None:
         return
 
+    ignore_modules = quant.ignore_patterns + quant.extra_ignore_patterns
     if isinstance(quant, FP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] not in (9, 10):
             raise ValueError(
                 f"FP8 blockwise quantization (DeepGEMM) requires SM90 or SM100, but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=ignore_modules)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] < 10:
             raise ValueError(
                 f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
