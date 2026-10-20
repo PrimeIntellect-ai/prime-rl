@@ -21,16 +21,6 @@ def _weights(path: Path):
     }
 
 
-def test_fp8_scale_matches_cuda_scalar_division_rounding(monkeypatch):
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools"))
-    quantize = importlib.import_module("convert_bf16_to_fp8").quantize_to_fp8_blockwise
-    weight = torch.tensor([[13.0 * 448.0]])
-    _, scales = quantize(weight, block_size=1)
-    expected = weight * torch.tensor(1.0 / 448.0, dtype=torch.float32)
-    assert torch.equal(scales, expected)
-    assert not torch.equal(scales, weight / 448.0)
-
-
 def test_fp8_export_matches_quantizing_bf16_export(tmp_path, tiny_run, fp8_tool):
     bf16_tool, step, _, before = tiny_run
     output = fp8_tool.convert(step, block_size=2)

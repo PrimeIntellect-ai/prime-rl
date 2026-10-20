@@ -6,11 +6,10 @@ other HF-compatible layouts are validated against a meta-device HF model.
 
 Usage:
     uv run python tools/convert_dcp_to_bf16.py <run>/checkpoints/step_{n} [output_dir]
-    uv run python tools/convert_dcp_to_bf16.py <checkpoint> [output_dir] --device cuda
 
-CPU streaming is the default; --workers parallelizes independent CPU groups.
-CUDA uses the parallel GPU gather path.
-Multi-rank torchrun automatically selects CUDA for compatibility.
+CPU streaming is the only supported export path. Use ``--workers`` to
+parallelize independent CPU groups.
+WORLD_SIZE must be 1.
 Writes to <step_dir>/weights by default. Existing output files are overwritten.
 """
 
@@ -26,18 +25,22 @@ from prime_rl.utils.export_config import resolve_dcp_dir, resolve_run_configs
 from prime_rl.utils.logger import get_logger, setup_logger
 
 logger = get_logger()
+SINGLE_PROCESS_ERROR = (
+    "CPU-only DCP bf16 export does not support WORLD_SIZE>1. "
+    "Run it as a single process and use --workers for CPU parallelism."
+)
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None, *, device: str = "cpu", workers: int = 1) -> Path:
-    """Export a full trainer checkpoint using CPU streaming or the parallel CUDA gather."""
+def _require_single_process_export() -> None:
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise ValueError(SINGLE_PROCESS_ERROR)
+
+
+def convert(ckpt_dir: Path, output_dir: Path | None = None, *, workers: int = 1) -> Path:
+    """Export a full trainer checkpoint with CPU streaming only."""
+    _require_single_process_export()
     if workers <= 0:
         raise ValueError("workers must be positive")
-    if device not in ("cpu", "cuda"):
-        raise ValueError(f"Unsupported export device: {device}")
-    if device == "cuda" or int(os.environ.get("WORLD_SIZE", "1")) > 1:
-        from convert_dcp_to_bf16_gpu import convert as convert_cuda
-
-        return convert_cuda(ckpt_dir, output_dir)
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
@@ -70,11 +73,12 @@ def main() -> None:
         "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights")
-    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="export device (default: cpu)")
     parser.add_argument("--workers", type=int, default=1, help="CPU export threads (default: 1)")
     args = parser.parse_args()
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        parser.error(SINGLE_PROCESS_ERROR)
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, device=args.device, workers=args.workers)
+    convert(args.ckpt_dir, args.output_dir, workers=args.workers)
 
 
 if __name__ == "__main__":

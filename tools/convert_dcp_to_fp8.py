@@ -8,11 +8,10 @@ bf16 export on disk.
 
 Usage:
     uv run python tools/convert_dcp_to_fp8.py <run>/checkpoints/step_{n} [output_dir] [--block-size 128]
-    uv run python tools/convert_dcp_to_fp8.py <checkpoint> [output_dir] --device cuda
 
-CPU streaming is the default; --workers parallelizes independent CPU groups.
-CUDA gathers and quantizes each rank's slice on GPU.
-Multi-rank torchrun automatically selects CUDA for compatibility.
+CPU streaming is the only supported export path. Use ``--workers`` to
+parallelize independent CPU groups.
+WORLD_SIZE must be 1.
 Writes to <step_dir>/weights-FP8 by default. Existing output files are overwritten.
 """
 
@@ -31,22 +30,24 @@ from prime_rl.utils.export_config import resolve_dcp_dir, resolve_run_configs
 from prime_rl.utils.logger import get_logger, setup_logger
 
 logger = get_logger()
+SINGLE_PROCESS_ERROR = (
+    "CPU-only DCP fp8 export does not support WORLD_SIZE>1. "
+    "Run it as a single process and use --workers for CPU parallelism."
+)
 
 
-def convert(
-    ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, device: str = "cpu", workers: int = 1
-) -> Path:
-    """Export blockwise-FP8 weights using CPU streaming or the parallel CUDA gather."""
+def _require_single_process_export() -> None:
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise ValueError(SINGLE_PROCESS_ERROR)
+
+
+def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 128, *, workers: int = 1) -> Path:
+    """Export blockwise-FP8 weights with CPU streaming only."""
+    _require_single_process_export()
     if workers <= 0:
         raise ValueError("workers must be positive")
     if block_size <= 0:
         raise ValueError("block_size must be positive")
-    if device not in ("cpu", "cuda"):
-        raise ValueError(f"Unsupported export device: {device}")
-    if device == "cuda" or int(os.environ.get("WORLD_SIZE", "1")) > 1:
-        from convert_dcp_to_bf16_gpu import convert_fp8
-
-        return convert_fp8(ckpt_dir, output_dir, block_size)
     ckpt_dir = Path(ckpt_dir)
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
@@ -85,7 +86,6 @@ def convert(
         if num_scales == 0:
             raise ValueError(f"No quantizable weights found in {dcp_dir} - is this a bf16 checkpoint?")
         logger.info(f"Quantized {num_scales} weights to blockwise fp8")
-        # One canonical config file: assets wrote config.json, quantization metadata is added in place.
         config_path = staging_dir / "config.json"
         exported_config = json.loads(config_path.read_text())
         exported_config["quantization_config"] = quantization_config(modules_to_not_convert, block_size)
@@ -105,11 +105,12 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <step_dir>/weights-FP8")
     parser.add_argument("--block-size", type=int, default=128)
-    parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu", help="export device (default: cpu)")
     parser.add_argument("--workers", type=int, default=1, help="CPU export threads (default: 1)")
     args = parser.parse_args()
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        parser.error(SINGLE_PROCESS_ERROR)
     setup_logger("info")
-    convert(args.ckpt_dir, args.output_dir, args.block_size, device=args.device, workers=args.workers)
+    convert(args.ckpt_dir, args.output_dir, args.block_size, workers=args.workers)
 
 
 if __name__ == "__main__":
