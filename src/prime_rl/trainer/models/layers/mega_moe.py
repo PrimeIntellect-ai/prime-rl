@@ -22,10 +22,11 @@ if TYPE_CHECKING:
 
 
 MegaMoePrecision = Literal["bf16", "mxfp8", "fp8", "fp8_bwd"]
-# `deep_gemm` symbols each precision needs; only the prime-mega-moe build has the training kernels
+# `deep_gemm` symbols each precision needs, named `<precision>_mega_moe[_backward]`; only the prime-mega-moe
+# build has the training kernels
 _REQUIRED_KERNELS: dict[str, tuple[str, ...]] = {
     "bf16": ("bf16_mega_moe", "bf16_mega_moe_backward"),
-    "mxfp8": ("fp8_fp4_mega_moe", "fp8_mega_moe_backward"),
+    "mxfp8": ("mxfp8_mega_moe", "mxfp8_mega_moe_backward"),
     "fp8": (
         "fp8_mega_moe",
         "fp8_mega_moe_backward",
@@ -237,7 +238,7 @@ def mega_moe_forward_mxfp8(x, topk_idx, topk_weights, gate_up_proj, down_proj, b
     buffer.x_sf[:num_tokens].copy_(pack_ue8m0_k_major(x_sf))
     _stage_routing(buffer, num_tokens, topk_idx, topk_weights)
     y = torch.empty_like(x)
-    deep_gemm.fp8_fp4_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
+    deep_gemm.mxfp8_mega_moe(y, weights.l1, weights.l2, buffer, activation_clamp=activation_clamp)
     return y
 
 
@@ -248,7 +249,7 @@ def mega_moe_backward_mxfp8(dy, x, topk_idx, topk_weights, gate_up_proj, down_pr
     _stage_routing(buffer, x.shape[0], topk_idx, topk_weights)
     # The kernel writes dW1 in the natural [gate | up] row order, undoing the L1 interleave
     dx, dw1, dw2, dtopk = _grad_buffers(x, buffer, weights.l1[0].shape, weights.l2_t[0].shape, dw_dtype)
-    deep_gemm.fp8_mega_moe_backward(
+    deep_gemm.mxfp8_mega_moe_backward(
         dx, dw1, dw2, dtopk, dy, x, weights.l1, weights.l1_t, weights.l2_t, buffer, activation_clamp=activation_clamp
     )
     return dx, dw1, dw2, dtopk
