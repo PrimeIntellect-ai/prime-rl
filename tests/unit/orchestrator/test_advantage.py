@@ -307,7 +307,7 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
         return node_id
 
     root = turn(None, 100, 10)
-    child = turn(root, 115, 20, [(root, "subagent_call")])
+    child = turn(None, 115, 20, [(root, "subagent_call")])
     child_next = turn(child, 142, 30, [(child, "continuation")])
     summary = turn(None, 200, 40, [(child_next, "compaction_attempt")])
     resumed = turn(None, 60, 50, [(summary, "compaction")])
@@ -321,9 +321,9 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
     # A cancel closes a causal loop without changing which agent owns either turn.
     trace.nodes[child_next].semantic_parents.append(vf.ParentLink(node=root_next, type="subagent_cancel"))
 
-    # Shared physical prefixes count once; fresh compaction contexts retain their full input.
+    # Branches have separate physical roots; continued history is not recounted.
     expected_output = 90 + 200 * subagent_token_weight
-    expected_input = 115 + 342 * subagent_token_weight
+    expected_input = 115 + 452 * subagent_token_weight
     assert _length_penalty_tokens(trace, subagent_token_weight) == pytest.approx((expected_output, expected_input))
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert _length_penalty_tokens(restored, subagent_token_weight) == pytest.approx((expected_output, expected_input))
@@ -331,7 +331,7 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
     unlabelled = episode.model_copy(deep=True)
     for node in unlabelled.traces[0].nodes:
         node.semantic_parents.clear()
-    assert _length_penalty_tokens(unlabelled.traces[0], subagent_token_weight) == pytest.approx((290, 457))
+    assert _length_penalty_tokens(unlabelled.traces[0], subagent_token_weight) == pytest.approx((290, 567))
 
     cfg = LinearSubagentLengthPenaltyConfig(
         num_output_tokens_weight=0.0,
@@ -340,7 +340,7 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
         subagent_token_weight=subagent_token_weight,
     )
     setattr(cfg, term, 0.25)
-    expected = {"num_output_tokens_weight": expected_output / 290, "num_input_tokens_weight": expected_input / 457}
+    expected = {"num_output_tokens_weight": expected_output / 290, "num_input_tokens_weight": expected_input / 567}
     advantage = 0.125 * (1 - expected.get(term, 1.0))
     assert _grpo([episode, unlabelled], length_penalty=cfg) == pytest.approx([advantage, -advantage], abs=1e-6)
     assert trace.reward == 1.0

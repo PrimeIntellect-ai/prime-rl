@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tuple[float, float]:
-    """Weighted output and new input tokens, counted once per committed model call."""
+    """Weighted output and new input tokens for branches with no shared prefixes."""
     subagents: set[int] = set()
     successors: dict[int, list[int]] = {}
     for node_id, node in enumerate(trace.nodes):
@@ -32,14 +32,10 @@ def _length_penalty_tokens(trace: vf.Trace, subagent_token_weight: float) -> tup
                 pending.append(child)
 
     output_tokens = input_tokens = 0.0
-    seen: set[int] = set()
     for branch in trace.branches:
         # Compute increments before weighting: a discounted predecessor still
         # contributes its full history to the next call's prompt.
         for call, increment in min_new_input_tokens(branch.calls):
-            if id(call) in seen:
-                continue
-            seen.add(id(call))
             weight = subagent_token_weight if call.node in subagents else 1.0
             output_tokens += weight * call.usage.completion_tokens
             input_tokens += weight * increment

@@ -102,7 +102,7 @@ class LinearLengthPenaltyConfig(BaseConfig):
 
 
 class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
-    """Linear penalty using per-call output and new input tokens, counted once across shared prefixes and weighted by semantic subagent membership before group normalization."""
+    """Linear penalty using per-call output and new input tokens, weighted by semantic subagent membership before group normalization. Assumes branches do not share physical prefixes."""
 
     type: Literal["linear-subagent"] = "linear-subagent"  # type: ignore[assignment]
 

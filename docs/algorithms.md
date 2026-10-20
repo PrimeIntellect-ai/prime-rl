@@ -360,7 +360,7 @@ type = "grpo"
 type = "linear"
 ```
 
-The opt-in `linear-subagent` penalty uses the same coefficients and group normalization, counting output and new input tokens once per committed model call across shared branch prefixes. Its `subagent_token_weight` defaults to `0`, excluding subagent input and output tokens; `1` counts them fully. An empty length-penalty block selects `linear`.
+The opt-in `linear-subagent` penalty uses the same coefficients and group normalization, summing output and newly introduced input tokens within each branch. It assumes branches do not share physical prefixes. Its `subagent_token_weight` defaults to `0`, excluding subagent input and output tokens; `1` counts them fully. An empty length-penalty block selects `linear`.
 
 ```toml
 [orchestrator.train.algo.length_penalty]
