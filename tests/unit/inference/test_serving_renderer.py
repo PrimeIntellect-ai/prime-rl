@@ -10,7 +10,7 @@ import pytest
 from renderers import Qwen3RendererConfig, create_renderer
 from renderers.base import load_tokenizer
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateResponse, GenerateResponseChoice
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateTokensChoice, GenerateTokensResponse
 from vllm.entrypoints.serve.engine.protocol import UsageInfo
 from vllm.sampling_params import RequestOutputKind
 
@@ -42,9 +42,9 @@ class StubServingTokens:
 
     async def serve_tokens(self, request, raw_request):
         self.requests.append(request)
-        return GenerateResponse(
+        return GenerateTokensResponse(
             model=request.model,
-            choices=[GenerateResponseChoice(index=0, token_ids=self.completion_ids, finish_reason="stop")],
+            choices=[GenerateTokensChoice(index=0, token_ids=self.completion_ids, finish_reason="stop")],
             usage=UsageInfo(prompt_tokens=len(request.token_ids), completion_tokens=len(self.completion_ids)),
         )
 
@@ -134,6 +134,12 @@ def test_stream_sends_the_completion_as_one_chunk():
 
 def test_overlong_prompt_is_a_bad_request():
     stub, response = serve("Sunny.<|im_end|>", {}, max_model_len=8)
+    assert response.status_code == 400
+    assert not stub.requests
+
+
+def test_logprobs_are_a_bad_request():
+    stub, response = serve("Sunny.<|im_end|>", {"logprobs": True})
     assert response.status_code == 400
     assert not stub.requests
 

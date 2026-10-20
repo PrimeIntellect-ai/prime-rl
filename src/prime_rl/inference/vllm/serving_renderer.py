@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from renderers import create_renderer
 from renderers.base import ToolCallParseStatus, load_tokenizer, template_field_names
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest, GenerateResponseChoice
+from vllm.entrypoints.scale_out.token_in_token_out.protocol import GenerateRequest, GenerateTokensChoice
 from vllm.entrypoints.scale_out.token_in_token_out.serving import ServingTokens
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.utils.api_utils import get_max_tokens
@@ -91,6 +91,9 @@ class RendererChatCompletions:
     async def create_chat_completion(self, request: ChatCompletionRequest, raw_request: Request):
         if request.use_beam_search:
             return _error("Beam search is not supported with a renderer.")
+        # vLLM's token responses carry no OpenAI chat logprobs (PrimeRL packs them separately).
+        if request.logprobs or request.top_logprobs:
+            return _error("Logprobs are not supported with a renderer.")
         kwargs = self._template_kwargs(request)
         messages = [dict(message) for message in request.messages]
         tools = [tool.model_dump(exclude_none=True) for tool in request.tools] if request.tools else None
@@ -136,7 +139,7 @@ class RendererChatCompletions:
             return StreamingResponse(self._stream(completion, request), media_type="text/event-stream")
         return JSONResponse(completion)
 
-    async def _choice(self, kwargs, choice: GenerateResponseChoice, tools, prompt_ids, request) -> dict[str, Any]:
+    async def _choice(self, kwargs, choice: GenerateTokensChoice, tools, prompt_ids, request) -> dict[str, Any]:
         token_ids = choice.token_ids or []
         parsed = await self._run(self._parse, kwargs, token_ids, tools, prompt_ids)
         calls = [call for call in parsed.tool_calls if call.status == ToolCallParseStatus.OK]
@@ -160,7 +163,7 @@ class RendererChatCompletions:
         result: dict[str, Any] = {
             "index": choice.index,
             "message": message,
-            "logprobs": choice.logprobs.model_dump() if choice.logprobs is not None else None,
+            "logprobs": None,
             "finish_reason": finish_reason,
         }
         if request.return_token_ids:
