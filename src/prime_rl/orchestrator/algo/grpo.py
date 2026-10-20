@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import verifiers.v1 as vf
 from verifiers.v1.trace import min_new_input_tokens
 
-from prime_rl.configs.algorithm import GRPOAlgoConfig
+from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.orchestrator.algo.base import Algorithm, iter_trainable_traces
 from prime_rl.orchestrator.algo.routing import assign_advantages, trainable_nodes
 
@@ -66,9 +66,14 @@ class GRPOAlgorithm(Algorithm):
         if length_penalty is None:
             shaped_rewards = rewards
         else:
-            token_counts = [_length_penalty_tokens(trace, length_penalty.subagent_token_weight) for trace in traces]
-            output = torch.tensor([output for output, _ in token_counts], dtype=rewards.dtype)
-            input = torch.tensor([input for _, input in token_counts], dtype=rewards.dtype)
+            if isinstance(length_penalty, LinearSubagentLengthPenaltyConfig):
+                token_counts = [_length_penalty_tokens(trace, length_penalty.subagent_token_weight) for trace in traces]
+                output = torch.tensor([output for output, _ in token_counts], dtype=rewards.dtype)
+                input = torch.tensor([input for _, input in token_counts], dtype=rewards.dtype)
+            else:
+                output = torch.tensor([trace.num_output_tokens for trace in traces], dtype=rewards.dtype)
+                total = torch.tensor([trace.num_total_tokens for trace in traces], dtype=rewards.dtype)
+                input = total - output
             turns = torch.tensor([trace.num_turns for trace in traces], dtype=rewards.dtype)
             penalty_frac = (
                 length_penalty.num_output_tokens_weight * (output / output.max().clamp(min=1))

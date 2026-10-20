@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
+from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
@@ -146,6 +147,31 @@ def test_toml_discriminated_union_switch_variant(tmp_path):
     config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
     assert config.variant.type == "b"
     assert config.variant.beta == 0.2
+
+
+@pytest.mark.parametrize(
+    "penalty,expected_type",
+    [
+        ({}, LinearLengthPenaltyConfig),
+        ({"num_output_tokens_weight": 0.5}, LinearLengthPenaltyConfig),
+        ({"type": "linear"}, LinearLengthPenaltyConfig),
+        ({"type": "linear-subagent"}, LinearSubagentLengthPenaltyConfig),
+        ({"type": "linear-subagent", "subagent_token_weight": 0.2}, LinearSubagentLengthPenaltyConfig),
+    ],
+)
+def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
+    assert GRPOAlgoConfig().length_penalty is None
+    direct = GRPOAlgoConfig.model_validate({"length_penalty": penalty})
+    write_toml(tmp_path / "penalty.toml", {"length_penalty": penalty})
+    from_toml = cli(GRPOAlgoConfig, args=["@", str(tmp_path / "penalty.toml")])
+    assert type(direct.length_penalty) is expected_type
+    assert from_toml.length_penalty == direct.length_penalty
+    if expected_type is LinearSubagentLengthPenaltyConfig:
+        assert direct.length_penalty.subagent_token_weight == penalty.get("subagent_token_weight", 0.0)
+    else:
+        assert "subagent_token_weight" not in direct.length_penalty.model_dump()
+    with pytest.raises(ValidationError):
+        GRPOAlgoConfig.model_validate({"length_penalty": {"type": "linear", "subagent_token_weight": 0.0}})
 
 
 def test_toml_discriminated_union_override_switch_variant(tmp_path):

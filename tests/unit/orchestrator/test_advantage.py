@@ -6,6 +6,7 @@ import verifiers.v1 as vf
 from prime_rl.configs.algorithm import (
     GRPOAlgoConfig,
     LinearLengthPenaltyConfig,
+    LinearSubagentLengthPenaltyConfig,
     MaxRLAlgoConfig,
 )
 from prime_rl.orchestrator.algo.grpo import GRPOAlgorithm, _length_penalty_tokens
@@ -332,7 +333,7 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
         node.semantic_parents.clear()
     assert _length_penalty_tokens(unlabelled.traces[0], subagent_token_weight) == pytest.approx((290, 457))
 
-    cfg = LinearLengthPenaltyConfig(
+    cfg = LinearSubagentLengthPenaltyConfig(
         num_output_tokens_weight=0.0,
         num_input_tokens_weight=0.0,
         num_turns_weight=0.0,
@@ -345,6 +346,24 @@ def test_linear_subagent_tokens_follow_semantic_edges(subagent_token_weight, ter
     assert trace.reward == 1.0
     assert trace.num_turns == 7
     assert sum(sum(node.mask) for node in trace.nodes) == 290
+
+    # The plain linear penalty keeps its trace metrics and ignores semantic labels.
+    linear = LinearLengthPenaltyConfig.model_validate(
+        {k: v for k, v in cfg.model_dump().items() if k not in ("type", "subagent_token_weight")}
+    )
+    assert _grpo([episode, unlabelled], length_penalty=linear) == pytest.approx([0.0, 0.0], abs=1e-6)
+    peer = _build_episode(1.0, sampled_lengths=[10])
+    traces = [trace, peer.traces[0]]
+    counts = {
+        "num_output_tokens_weight": [t.num_output_tokens for t in traces],
+        "num_input_tokens_weight": [t.num_total_tokens - t.num_output_tokens for t in traces],
+        "num_turns_weight": [t.num_turns for t in traces],
+    }[term]
+    penalties = [0.25 * count / max(max(counts), 1) for count in counts]
+    mean_penalty = sum(penalties) / len(penalties)
+    assert _grpo([episode, peer], length_penalty=linear) == pytest.approx(
+        [mean_penalty - penalty for penalty in penalties], abs=1e-6
+    )
 
 
 # --------------------------------------------------------------------------
