@@ -96,9 +96,11 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 "low_rank": config.hc_lowrank,
                 "norm_eps": config.rms_norm_eps,
             }
+            self.qkv_read_count = 3 if config.hc_qkv_reads else 1
+            self.gate_read = config.hc_gate_read
             self.attn_hyper_connection = HyperConnection(
                 **connection_args,
-                read_count=3 if config.hc_qkv_reads else 1,
+                read_count=self.qkv_read_count + self.gate_read,
                 separate_down=config.hc_qkv_separate_down,
                 conv_kernel_size=config.hc_qkv_conv,
             )
@@ -118,7 +120,10 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
         max_seqlen: int,
     ) -> torch.Tensor:
         if self.gated_residual:
-            block_input, residual_state = self.attn_hyper_connection.mix(hidden_states, cu_seqlens)
+            reads, residual_state = self.attn_hyper_connection.read(hidden_states)
+            block_input = self.attn_hyper_connection.attention_inputs(reads[: self.qkv_read_count], cu_seqlens)
+            if self.gate_read:
+                block_input = (*block_input, reads[-1])
             block_output, _ = self.self_attn(
                 hidden_states=block_input,
                 position_embeddings=position_embeddings,

@@ -40,6 +40,8 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_qkv_reads (`bool`): Separate Gated Residual reads (gates) for the attention's query, key and value inputs.
         hc_qkv_separate_down (`bool`): With `hc_qkv_reads`, an own low-rank bottleneck (down-projection) for each of the
             attention's reads instead of one shared by them.
+        hc_gate_read (`bool`): With `hc_qkv_reads` and `attn_output_gate`, an own read for the attention output gate
+            instead of the query read.
         hc_moe_reads (`bool`): Separate reads for the MoE router and the experts (routed and shared).
         hc_qkv_conv (`int`): Kernel size of causal depthwise convolutions after the attention read, one per query, key
             and value input; 0 for none.
@@ -104,6 +106,7 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_lowrank=None,
         hc_qkv_reads=False,
         hc_qkv_separate_down=False,
+        hc_gate_read=False,
         hc_moe_reads=False,
         hc_qkv_conv=0,
         hc_stream_inputs="copy",
@@ -155,6 +158,7 @@ class PrimeMoeConfig(PretrainedConfig):
         self.hc_lowrank = hc_lowrank
         self.hc_qkv_reads = hc_qkv_reads
         self.hc_qkv_separate_down = hc_qkv_separate_down
+        self.hc_gate_read = hc_gate_read
         self.hc_moe_reads = hc_moe_reads
         self.hc_qkv_conv = hc_qkv_conv
         self.hc_stream_inputs = hc_stream_inputs
