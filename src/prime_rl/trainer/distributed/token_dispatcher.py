@@ -205,11 +205,12 @@ def _combine_routed_output(
     route_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
 ) -> torch.Tensor:
+    output_dtype = routed_output.dtype
     if scores_after_experts is not None:
-        routed_output = (routed_output.float() * scores_after_experts.reshape(-1, 1)).to(routed_output.dtype)
+        routed_output = routed_output * scores_after_experts.float().reshape(-1, 1)
 
     if num_tokens == 0:
-        return routed_output
+        return routed_output.to(output_dtype)
 
     dim = routed_output.shape[-1]
     # There is one output row per selected expert per token.
@@ -220,7 +221,7 @@ def _combine_routed_output(
     # Copy source row i to its original slot, route_indices_experts_sorted[i].
     output[route_indices_experts_sorted] = routed_output
     accumulation_dtype = torch.float32 if output.dtype in (torch.bfloat16, torch.float16) else output.dtype
-    return output.view(num_tokens, top_k, dim).sum(dim=1, dtype=accumulation_dtype).to(output.dtype)
+    return output.view(num_tokens, top_k, dim).sum(dim=1, dtype=accumulation_dtype).to(output_dtype)
 
 
 class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):

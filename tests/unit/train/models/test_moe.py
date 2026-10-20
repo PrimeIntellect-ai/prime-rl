@@ -8,11 +8,13 @@ from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
+from prime_rl.trainer.models.layers.fp32_linear import fp32_linear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
     MoE,
     MoEArgs,
+    TokenChoiceTopKRouter,
 )
 from prime_rl.trainer.models.qwen3_5 import (
     Qwen3_5Config,
@@ -22,6 +24,112 @@ from prime_rl.trainer.models.qwen3_5 import (
 )
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("trainable_weight", [False, True])
+def test_router_linear_preserves_fp32_output_and_gradients(dtype, compiled, trainable_weight):
+    from torch.utils.checkpoint import checkpoint
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for low-precision GEMM with FP32 output")
+
+    def forward(x, weight, bias):
+        return checkpoint(fp32_linear, x, weight, bias, use_reentrant=False)
+
+    forward = torch.compile(forward, fullgraph=True, dynamic=True) if compiled else forward
+    weight = torch.zeros(8, 64, device="cuda", dtype=dtype)
+    weight[:, 0] = 1
+    weight[:, 1] = 2**-12
+    weight.requires_grad_(trainable_weight)
+    bias = torch.zeros(8, device="cuda", dtype=dtype, requires_grad=True)
+
+    for length in (17, 33, 65):
+        x = torch.ones(length, 64, device="cuda", dtype=dtype, requires_grad=True)
+        actual = forward(x, weight, bias)
+        expected = F.linear(x.float(), weight.float(), bias.float())
+        assert actual.dtype == torch.float32
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert not torch.equal(actual, F.linear(x, weight, bias).float())
+
+        grad_output = torch.linspace(-0.25, 0.25, actual.numel(), device="cuda").reshape_as(actual)
+        parameters = (x, weight, bias) if trainable_weight else (x, bias)
+        actual_grads = torch.autograd.grad(actual, parameters, grad_output)
+        expected_grads = torch.autograd.grad(expected, parameters, grad_output)
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("trainable_input", [False, True])
+def test_fp32_linear_under_autocast(dtype, trainable_input):
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for low-precision GEMM with FP32 output")
+    torch.manual_seed(7)
+    x = torch.randn(2, 64, 19, device="cuda").transpose(1, 2).requires_grad_(trainable_input)
+    weight = torch.randn(8, 64, device="cuda", dtype=dtype, requires_grad=True)
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        actual = fp32_linear(x, weight)
+    expected = F.linear(x.to(dtype).float(), weight.float())
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+    grad_output = torch.randn_like(actual)
+    parameters = (x, weight) if trainable_input else (weight,)
+    actual_grads = torch.autograd.grad(actual, parameters, grad_output)
+    expected_grads = torch.autograd.grad(expected, parameters, grad_output)
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+        torch.testing.assert_close(actual_grad, expected_grad)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("score_func", ["softmax", "sigmoid", "topk_softmax", "sqrtsoftplus"])
+def test_router_scores_stay_fp32(dtype, score_func):
+    torch.manual_seed(0)
+    router = TokenChoiceTopKRouter(
+        dim=8, num_experts=4, top_k=2, score_func=score_func, route_norm=True, route_scale=1.5, gate_bias=True
+    ).to(dtype)
+    x = torch.randn(3, 8, dtype=dtype)
+    selected = torch.tensor([[0, 1], [2, 3], [1, 3]])
+    scores, indices, _, _ = router(x, routed_experts=selected)
+
+    logits = F.linear(x.float(), router.gate.weight.float(), router.gate.bias.float())
+    if score_func == "softmax":
+        expected = logits.softmax(dim=-1).gather(1, selected)
+    elif score_func == "sigmoid":
+        expected = logits.sigmoid().gather(1, selected)
+    elif score_func == "sqrtsoftplus":
+        expected = F.softplus(logits).sqrt().gather(1, selected)
+    else:
+        expected = logits.gather(1, selected).softmax(dim=-1)
+    expected = expected / (expected.sum(dim=-1, keepdim=True) + 1e-20) * 1.5
+    assert scores.dtype == torch.float32
+    torch.testing.assert_close(indices, selected)
+    torch.testing.assert_close(scores, expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_expert_weighting_rounds_only_after_sum(dtype):
+    from prime_rl.trainer.distributed.token_dispatcher import _combine_routed_output
+
+    output = torch.tensor([[10.0], [1.0], [-20.0], [-1.0]], dtype=dtype, requires_grad=True)
+    scores = torch.tensor([0.3333, 0.5001, 0.6667, 0.4999], requires_grad=True)
+    routes = torch.tensor([2, 0, 3, 1])
+    actual = _combine_routed_output(
+        output, num_tokens=2, route_indices_experts_sorted=routes, scores_after_experts=scores
+    )
+    weighted = output.float() * scores[:, None]
+    expected = weighted[torch.argsort(routes)].reshape(2, 2, 1).sum(dim=1).to(dtype)
+    rounded = weighted.to(dtype)[torch.argsort(routes)].reshape(2, 2, 1).sum(dim=1, dtype=torch.float32).to(dtype)
+    assert actual.dtype == dtype
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert not torch.equal(actual, rounded)
+    actual_grads = torch.autograd.grad(actual.sum(), (output, scores))
+    expected_grads = torch.autograd.grad(expected.sum(), (output, scores))
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+        torch.testing.assert_close(actual_grad, expected_grad)
 
 
 @pytest.mark.parametrize(
@@ -153,9 +261,10 @@ def test_local_token_dispatcher(score_before_experts):
     torch.testing.assert_close(scores.grad, scores_ref.grad)
 
 
-def test_local_token_dispatcher_handles_empty_input_and_unused_experts():
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_local_token_dispatcher_handles_empty_input_and_unused_experts(dtype):
     dispatcher = LocalTokenDispatcher(num_experts=3, top_k=1, token_group_alignment=1)
-    x = torch.randn(2, 4)
+    x = torch.randn(2, 4, dtype=dtype)
     scores = torch.ones(2, 1)
     selected = torch.tensor([[0], [2]])
 
@@ -171,6 +280,7 @@ def test_local_token_dispatcher_handles_empty_input_and_unused_experts():
         score_before_experts=False,
     )
     assert empty.shape == (0, 4)
+    assert empty.dtype == dtype
 
 
 @pytest.mark.parametrize(

@@ -376,7 +376,7 @@ def test_moe_router_dtype_auto_resolves_per_trainer():
     assert SFTConfig.model_validate({}).model.moe_router_dtype == "bfloat16"
 
     for config_cls in (TrainerConfig, SFTConfig):
-        for dtype in ("bfloat16", "float32"):
+        for dtype in ("bfloat16", "float16", "float32"):
             assert config_cls.model_validate({"model": {"moe_router_dtype": dtype}}).model.moe_router_dtype == dtype
 
 

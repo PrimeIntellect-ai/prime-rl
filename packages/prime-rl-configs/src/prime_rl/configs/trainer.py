@@ -54,7 +54,7 @@ OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
-    """Compile transformer blocks with ``fullgraph=True``. Custom MoE models need ``moe_router_dtype="bfloat16"``: the fp32 router is its own FSDP unit inside the block, and dynamo cannot trace FSDP hooks."""
+    """Compile transformer blocks with ``fullgraph=True``. Custom MoE models need ``moe_router_dtype="bfloat16"``: FP32/FP16 routers have a separate FSDP unit inside the block, and dynamo cannot trace FSDP hooks."""
 
     mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
     """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
@@ -301,8 +301,8 @@ class ModelConfig(BaseModelConfig):
     reduce_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for gradient/parameter reductions."""
 
-    moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
-    """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
+    moe_router_dtype: Literal["bfloat16", "float16", "float32", "auto"] = "auto"
+    """Operand dtype for MoE router gates; logits and scores are always FP32. ``bfloat16`` uses the block's FSDP policy and a BF16×BF16 → FP32 GEMM. ``float32`` and ``float16`` keep FP32 router parameters in a separate FSDP unit, casting directly to the selected compute dtype; this nested unit prevents full-block compilation with activation checkpointing. ``auto`` resolves to ``float32`` for RL and ``bfloat16`` for SFT. A no-op for non-MoE models."""
 
     reduce_scatter_max_input_buffers: int = Field(1, ge=1)
     """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
