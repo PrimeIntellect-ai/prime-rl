@@ -296,5 +296,8 @@ class ZMQTransportConfig(BaseTransportConfig):
     port: int = 5555
     """Port for ZMQ transport."""
 
+    persist: bool = False
+    """Also write every batch the trainer receives to ``<output_dir>/batches/step_N/rank_K.bin``, the filesystem transport's layout, so the run can be replayed from disk."""
+
 
 TransportConfig: TypeAlias = Annotated[FileSystemTransportConfig | ZMQTransportConfig, Field(discriminator="type")]

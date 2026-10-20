@@ -260,11 +260,8 @@ class TokenChoiceTopKRouter(nn.Module):
 
         # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
         num_tokens_per_expert = torch.histc(
-            selected_experts_indices.reshape(-1).float(),
-            bins=self.num_experts,
-            min=0,
-            max=self.num_experts,
-        ).to(torch.int64)
+            selected_experts_indices.reshape(-1), bins=self.num_experts, min=0, max=self.num_experts
+        )
 
         return top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum
 

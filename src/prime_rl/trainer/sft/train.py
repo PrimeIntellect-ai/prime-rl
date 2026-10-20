@@ -54,6 +54,7 @@ from prime_rl.trainer.utils import (
     prepare_gradient_offload,
     print_sample,
     scale_gradients_,
+    setup_deterministic,
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
@@ -109,6 +110,8 @@ def train(config: SFTConfig):
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
     torch.set_float32_matmul_precision(config.matmul_precision)
+    if config.deterministic:
+        setup_deterministic()
 
     # Resolve ep="auto" to a concrete integer before creating parallel dims
     resolve_ep(config.model)
@@ -526,6 +529,14 @@ def train(config: SFTConfig):
         current_lr = optimizer.param_groups[0]["lr"]
         scheduler.step()
 
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
+        progress.total_tokens += num_tokens
+        dataset_progress = get_dataset_progress(dataloader)
+        progress.total_samples = dataset_progress["step"]
+
         # Checkpoint the step we just finished. The last step's checkpoint is written once after
         # the loop, so skip it here to avoid a double-save. Weight broadcasts land at
         # online-eval steps — they are how the inference server picks up the new policy.
@@ -550,13 +561,6 @@ def train(config: SFTConfig):
         if memory_profiler is not None:
             memory_profiler.step()
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens = global_num_tokens.item()
-        progress.total_tokens += num_tokens
-        dataset_progress = get_dataset_progress(dataloader)
-        progress.total_samples = dataset_progress["step"]
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time

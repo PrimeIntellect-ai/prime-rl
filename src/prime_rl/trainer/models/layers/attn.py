@@ -106,6 +106,7 @@ def _flash_attn_4_varlen_backward(
         cu_seqlens_k=cu_seqlens_k,
         max_seqlen_q=max_seqlen_q,
         max_seqlen_k=max_seqlen_k,
+        deterministic=torch.are_deterministic_algorithms_enabled(),
     )
     return dq, dk, dv
 
@@ -228,6 +229,7 @@ def _flash_attn_3_varlen_backward(
         is_causal=causal,
         window_size_left=window_size_left,
         window_size_right=window_size_right,
+        deterministic=torch.are_deterministic_algorithms_enabled(),
     )
     return dq, dk, dv
 
@@ -329,7 +331,7 @@ def _flash_attn_2_varlen_backward(
         window_size_right,
         0.0,
         None,
-        False,
+        torch.are_deterministic_algorithms_enabled(),
     )
     return dq[..., :head_dim], dk[..., :head_dim], dv[..., :head_dim]
 

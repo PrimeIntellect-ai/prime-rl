@@ -61,6 +61,7 @@ from prime_rl.trainer.utils import (
     get_ckpt_disk_metrics,
     prepare_gradient_offload,
     scale_gradients_,
+    setup_deterministic,
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
@@ -117,6 +118,8 @@ def train(config: TrainerConfig):
     # matmul corrupts softmax over large vocabularies. Override via config
     # (e.g. matmul_precision = "highest") on ROCm.
     torch.set_float32_matmul_precision(config.matmul_precision)
+    if config.deterministic:
+        setup_deterministic()
 
     # Resolve ep="auto" to a concrete integer before creating parallel dims
     resolve_ep(config.model)
@@ -179,10 +182,9 @@ def train(config: TrainerConfig):
     logger.info(f"Initializing scheduler ({config.scheduler})")
     scheduler = setup_scheduler(optimizer, config.scheduler, config.max_steps, config.optim.lr)
 
-    # Set up weight broadcast (skip when using fake data since there's no inference server)
-    if config.data.fake:
+    if config.data.fake or config.weight_broadcast is None:
         weight_sender = None
-        logger.info("Skipping weight broadcast setup (fake data mode)")
+        logger.info("Skipping weight broadcast setup (no inference consumer)")
     else:
         logger.info(f"Initializing weight broadcast ({config.weight_broadcast})")
         t0 = time.perf_counter()
@@ -601,6 +603,13 @@ def train(config: TrainerConfig):
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_weights_start_time
 
+        # The dp mesh excludes cp, whose ranks hold the same rows.
+        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
+        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens = global_num_tokens.item()
+        progress.total_tokens += num_tokens
+        progress.total_samples += batch_size
+
         # Checkpoint the step we just finished (model = policy v{progress.step}).
         if (
             (config.ckpt and config.ckpt.interval)
@@ -626,12 +635,6 @@ def train(config: TrainerConfig):
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
-        # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens = global_num_tokens.item()
-        progress.total_tokens += num_tokens
-        progress.total_samples += batch_size
         perf_counter = get_perf_counter(model, seq_len)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, forward_backward_time)
         mfu = perf_counter.get_step_mfu(num_tokens, forward_backward_time)
