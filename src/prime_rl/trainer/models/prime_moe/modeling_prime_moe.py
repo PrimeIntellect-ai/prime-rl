@@ -183,8 +183,8 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
         # Per-stream inputs: the first stream is the token embedding, the others extra token tables, and with
         # `ngram`, `bytes` or several of them joined by `_` (e.g. `ngram_bytes`, `ngram_ngram`) the last stream(s) hashed
         # token n-grams and / or the token's preceding bytes. A repeated kind is an independent copy (own parameters;
-        # every n-gram stream hashes with its own layout). With `hc_byte_add`, an own byte embedding is added to the
-        # input of every token-table stream (`tables`), every n-gram stream (`ngrams`) or both (`all`).
+        # every n-gram stream hashes with its own layout). With `hc_byte_add = "ngrams"`, an own byte embedding is added to
+        # the input of every n-gram stream.
         kinds = [] if config.hc_stream_inputs in ("copy", "tables") else config.hc_stream_inputs.split("_")
         tables = 0 if config.hc_stream_inputs == "copy" else config.hc_count - 1 - len(kinds)
         self.extra_tables = tables
@@ -212,8 +212,7 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
         self.ngram_embed_tokens_3 = ngram_stream(2) if kinds.count("ngram") >= 3 else None
         self.byte_embed_tokens = byte_stream() if "bytes" in kinds else None
         self.byte_embed_tokens_2 = byte_stream() if kinds.count("bytes") >= 2 else None
-        ngrams = kinds.count("ngram")
-        added_to = {None: 0, "tables": 1 + tables, "ngrams": ngrams, "all": 1 + tables + ngrams}[config.hc_byte_add]
+        added_to = {None: 0, "ngrams": kinds.count("ngram")}[config.hc_byte_add]
         self.byte_add_embed_tokens = nn.ModuleList(byte_stream() for _ in range(added_to)) if added_to else None
         self.layers = nn.ModuleList(
             [PrimeMoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
@@ -278,11 +277,7 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
             ]
             if self.config.hc_byte_add is not None:
                 added = [stream(input_ids, cu_seqlens) for stream in self.byte_add_embed_tokens]
-                if self.config.hc_byte_add in ("tables", "all"):
-                    table_streams = [stream + bytes_ for stream, bytes_ in zip(table_streams, added)]
-                    added = added[len(table_streams) :]
-                if self.config.hc_byte_add in ("ngrams", "all"):
-                    ngram_streams = [stream + bytes_ for stream, bytes_ in zip(ngram_streams, added)]
+                ngram_streams = [stream + bytes_ for stream, bytes_ in zip(ngram_streams, added)]
             streams = table_streams + ngram_streams + byte_streams
             hidden_states = torch.cat(streams, dim=-1)
         for decoder_layer in self.layers:
