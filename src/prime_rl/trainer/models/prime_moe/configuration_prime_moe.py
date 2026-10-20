@@ -38,8 +38,6 @@ class PrimeMoeConfig(PretrainedConfig):
             pre-norms and the final norm.
         hc_lowrank (`int`, *optional*): Rank of the Gated Residual read gates; required when `hc_count` is above 1.
         hc_qkv_reads (`bool`): Separate Gated Residual reads (gates) for the attention's query, key and value inputs.
-        hc_gate_read (`bool`): With `hc_qkv_reads` and `attn_output_gate`, an own read for the attention output gate
-            instead of the query read.
         hc_qkv_conv (`int`): Kernel size of causal depthwise convolutions after the attention read, one per query, key
             and value input; 0 for none.
         hc_stream_inputs (`str`): What the residual streams start from: `copy` (the token embedding in every stream),
@@ -102,7 +100,6 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_count=1,
         hc_lowrank=None,
         hc_qkv_reads=False,
-        hc_gate_read=False,
         hc_qkv_conv=0,
         hc_stream_inputs="copy",
         hc_byte_add=None,
@@ -152,7 +149,6 @@ class PrimeMoeConfig(PretrainedConfig):
         self.hc_count = hc_count
         self.hc_lowrank = hc_lowrank
         self.hc_qkv_reads = hc_qkv_reads
-        self.hc_gate_read = hc_gate_read
         self.hc_qkv_conv = hc_qkv_conv
         self.hc_stream_inputs = hc_stream_inputs
         self.hc_byte_add = hc_byte_add
