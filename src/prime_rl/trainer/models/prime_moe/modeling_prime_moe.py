@@ -261,7 +261,8 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
             seq_lens.to(device=inputs_embeds.device),
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
-        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        # maybe_: a micro-batch of one document (cu_seqlens of size 2) specializes the size in fla's causal_conv1d.
+        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
 
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
         if self.config.hc_stream_inputs == "copy":
