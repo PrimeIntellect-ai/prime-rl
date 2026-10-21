@@ -15,7 +15,8 @@ class PrimeFlashAttention(FlashAttention):
       multiply the output elementwise by ``sigmoid(g_proj(x))``, computed from the block input.
 
     The block input can also be a (query, key, value) triple of separate inputs (Gated Residual reads); the gate then
-    reads the query input. Separate inputs need unfused q, k and v projections.
+    reads the query input, or a fourth input (its own read) if given. Separate inputs need unfused q, k and v
+    projections.
     """
 
     def __init__(self, config: AttentionConfig, flash_attn_version: int, *, exclusive: bool, output_gate: bool):
@@ -25,7 +26,7 @@ class PrimeFlashAttention(FlashAttention):
 
     def forward(
         self,
-        hidden_states: torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        hidden_states: torch.Tensor | tuple[torch.Tensor, ...],
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
         max_seqlen: int | None = None,
@@ -33,7 +34,7 @@ class PrimeFlashAttention(FlashAttention):
         if not isinstance(hidden_states, tuple):
             return super().forward(hidden_states, position_embeddings, cu_seqlens, max_seqlen)
         assert self.qkv_proj is None, "separate query, key and value inputs need model.fusions without qkv"
-        query_input, key_input, value_input = hidden_states
+        query_input, key_input, value_input, *gate_input = hidden_states
         hidden_shape = (*query_input.shape[:-1], -1, self.head_dim)
         query_states, key_states = self.q_proj(query_input), self.k_proj(key_input)
         if self.use_qk_norm and self.qk_norm_type == "per_layer":
@@ -49,7 +50,7 @@ class PrimeFlashAttention(FlashAttention):
             )
             query_states, key_states = query_states.transpose(1, 2), key_states.transpose(1, 2)
         out = self._compute_attention(query_states[0], key_states[0], value_states[0], cu_seqlens, max_seqlen)
-        return self.project_output(out, value_states[0], query_input), None
+        return self.project_output(out, value_states[0], gate_input[0] if gate_input else query_input), None
 
     def project_output(self, out: torch.Tensor, values: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
         if self.exclusive:
