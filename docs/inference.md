@@ -19,6 +19,7 @@ This page covers the inference configuration and the supported features/deployme
     - [Optimized P/D disaggregation deployment](#optimized-pd-disaggregation-deployment)
     - [Other vLLM features](#other-vllm-features)
     - [Router Replay](#router-replay)
+    - [Training arrays by reference](#training-arrays-by-reference)
 
 
 ## Overview
@@ -345,3 +346,21 @@ That's all — there are no replay flags. Truncated train sampling makes the inf
 Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run together with router replay, including under disaggregated P/D. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
 
 When launching the inference server standalone, set `inference.enable_return_sampling_mask = true` yourself; clients must sample with `0 < top_k <= 512`.
+
+### Training arrays by reference
+
+Router replay, score centering and sampling replay give every token a training array: routing rows (layers × experts), the top-k sampler head (~1 KB per sampled token at k = 128) and sampling-mask ids. Inline, the env servers send them to the orchestrator, which packs them into the trainer batch, so the orchestrator node holds every buffered episode's arrays.
+
+`[payloads]` keeps them with the env servers:
+
+```toml
+[payloads]
+max_gib = 32  # most memory one env-server worker holds for arrays
+```
+
+- vLLM returns the arrays inline to the env server as before.
+- When a train episode finishes, each env-server worker keeps its trainable branches' arrays, serves them over HTTP, and sends the orchestrator only `{url, branch -> id}` (in `trace.info["payload"]`).
+- The orchestrator packs references (`batch/bytes` drops accordingly); each trainer rank fetches its micro batches' arrays before the step and assembles them exactly as the packer assembles inline arrays.
+- Every train dispatch stamps its policy version and the oldest version a pending batch can still train on; workers drop arrays below that version, and their oldest arrays past `max_gib` (with a warning). A micro batch whose arrays cannot be fetched is dropped from the loss on every rank that trains it (`payload/dropped_micro_batches`), never trained on zeros.
+
+On multi-node SLURM runs the env servers always run on the inference nodes (round robin over sources), so their memory and CPU spread over those nodes; without inference nodes they run next to the orchestrator. Eval and frozen-source rollouts stay inline.

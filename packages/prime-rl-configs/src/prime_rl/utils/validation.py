@@ -129,6 +129,10 @@ def propagate_shared_fields(data: Any) -> Any:
     # [rollout_transport] → both sub-configs (host is launcher-injected for zmq multi-node).
     propagate("rollout_transport", "trainer.rollout_transport", "orchestrator.rollout_transport")
 
+    # [payloads] → the orchestrator requests references, the trainer fetches them (the
+    # launcher hands it to the train env servers, which keep the arrays).
+    propagate("payloads", "trainer.payloads", "orchestrator.payloads")
+
     # Top-level scalars.
     propagate("max_steps", "trainer.max_steps", "orchestrator.max_steps")
     propagate("seq_len", "trainer.model.seq_len", "orchestrator.seq_len")

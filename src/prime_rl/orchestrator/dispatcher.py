@@ -144,6 +144,7 @@ class Dispatcher:
         run_id: str,
         run_name: str | None,
         policy_weights_change: bool = True,
+        payloads: bool = False,
         on_episode_complete: Callable[[int], None] | None = None,
     ) -> None:
         self.policy = policy
@@ -157,6 +158,7 @@ class Dispatcher:
         self.train_source = train_source
         self.eval_source = eval_source
         self.max_off_policy_steps = max_off_policy_steps
+        self.payloads = payloads
         self.run_id = run_id
         self.run_name = run_name
         # Called with ``total_tokens`` per completed episode
@@ -567,6 +569,16 @@ class Dispatcher:
         else:
             cache_salt = None
 
+        payload = None
+        if self.payloads and group.kind == "train" and live_sourced:
+            # The env servers free arrays of episodes dispatched below `release_below`.
+            # Inference applying v{S} means the trainer consumed batch S; later batches
+            # train on dispatch versions >= S - max_off_policy_steps (one of slack kept).
+            payload = {
+                "epoch": group.policy_version_at_start,
+                "release_below": self.policy.version - self.max_off_policy_steps - 1,
+            }
+
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
@@ -599,6 +611,7 @@ class Dispatcher:
                     client=client,
                     model_name=model_name,
                     cache_salt=cache_salt,
+                    payload=payload,
                     task_data=group.task.data.model_dump(mode="json"),
                     on_delta=on_delta,
                 )

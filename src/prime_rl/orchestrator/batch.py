@@ -14,6 +14,7 @@ from prime_rl.transports.batch.types import (
     MicroBatch,
     MMImageRef,
     MMRefs,
+    PayloadSlice,
     RoutedExperts,
     SamplingMask,
     TopLogprobs,
@@ -281,6 +282,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     top_logprobs = training_example.top_logprobs
     if top_logprobs is not None:
         _validate_top_logprobs(top_logprobs, len(input_ids))
+    payload = training_example.payload
 
     if len(input_ids) > seq_len:
         cut = seq_len
@@ -308,6 +310,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             top_logprobs = _slice_top_logprobs(top_logprobs, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
+        if payload is not None:
+            payload = PayloadSlice(url=payload.url, id=payload.id, num_tokens=cut, fields=payload.fields)
         env_names = env_names[:cut]
 
     assert (
@@ -366,6 +370,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
+        payloads=[payload] if payload is not None else None,
     )
 
 
@@ -394,6 +399,10 @@ class _MicroBatchBin:
         if self.length + len(sample.input_ids) > max_seq_len:
             return False
         if (first_sample.routed_experts is None) != (sample.routed_experts is None):
+            return False
+        # The trainer fetches a micro batch's arrays into its inline fields, so samples with
+        # arrays kept by env servers never share a micro batch with inline ones.
+        if (first_sample.payloads is None) != (sample.payloads is None):
             return False
 
         return True
@@ -453,6 +462,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
+    payloads: list[PayloadSlice] = []
 
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -508,6 +518,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
                 top_logprobs.counts += head.counts
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
+        payloads.extend(sample.payloads or [])
 
     sequence_lengths = [len(sample.input_ids) for sample in bin_content.samples]
     assert sum(sequence_lengths) == len(input_ids), (sequence_lengths, len(input_ids))
@@ -534,6 +545,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
+        payloads=payloads or None,
     )
 
 
