@@ -1,4 +1,4 @@
-"""Per-token training arrays passed by reference (``[payloads]``).
+"""Per-token training arrays passed by reference.
 
 An env-server worker keeps each finished train episode's per-branch arrays (exactly what
 `trace_to_samples` would put on the sample) and serves them over HTTP; the trace carries

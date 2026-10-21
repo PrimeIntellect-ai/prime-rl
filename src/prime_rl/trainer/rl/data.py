@@ -8,7 +8,6 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from prime_rl.configs.shared import PayloadsConfig
 from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
@@ -223,7 +222,6 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
-        payloads: PayloadsConfig | None = None,
     ):
         self.world = get_world()
 
@@ -231,7 +229,7 @@ class DataLoader:
         dp_rank = self.world.rank // non_dp_world_size
         self.dp_rank = dp_rank
         self.dp_world_size = dp_world_size
-        self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload") if payloads is not None else None
+        self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload")
         self.failed_micro_batches: list[int] = []
         """Micro batches of the last batch whose arrays could not be fetched on this rank."""
         self.payload_urls: list[str] = []
@@ -253,24 +251,22 @@ class DataLoader:
         start = time.perf_counter()
         micro_batches = self.receiver.receive()
         received = time.perf_counter()
-        if self.payload_pool is not None:
-            self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
+        self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
         fetched = time.perf_counter()
         tensors = [self._micro_batch_to_tensor(mb) for mb in micro_batches]
         num_tokens = sum(tensor["input_ids"].shape[1] for tensor in tensors)
-        fetch = f", fetched payloads in {format_time(fetched - received)}" if self.payload_pool is not None else ""
         get_logger().info(
             f"Loaded {len(tensors)} micro batches ({num_tokens:,} tokens): decoded in "
-            f"{format_time(received - start)}{fetch}, converted in {format_time(time.perf_counter() - fetched)}"
+            f"{format_time(received - start)}, fetched payloads in {format_time(fetched - received)}, "
+            f"converted in {format_time(time.perf_counter() - fetched)}"
         )
         return tensors
 
     def release_payloads(self) -> None:
         """Free the last batch's arrays on the env servers. Call once every rank that may
         read them has fetched them."""
-        if self.payload_pool is not None:
-            delete_payloads(self.payload_urls, self.payload_pool)
-            self.payload_urls = []
+        delete_payloads(self.payload_urls, self.payload_pool)
+        self.payload_urls = []
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""

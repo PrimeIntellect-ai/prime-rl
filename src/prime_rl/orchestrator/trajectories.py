@@ -170,7 +170,7 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     placeholder ranges and `mm_token_type_ids`. Branches with no sampled tokens yield nothing.
     """
     samples: list[TrainingSample] = []
-    # Set by the env server when it keeps the arrays (`[payloads]`).
+    # Set by the env server when it keeps the arrays (`prime_rl.transports.payload`).
     payload = trace.info.get("payload")
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
