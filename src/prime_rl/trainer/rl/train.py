@@ -310,6 +310,11 @@ def train(config: TrainerConfig):
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
             failed[dataloader.dp_rank, dataloader.failed_micro_batches] = 1
             dist.all_reduce(failed, op=dist.ReduceOp.MAX)
+            # Every rank has fetched its arrays now, so one rank per data rank frees them
+            # (dummy micro batches may reuse another data rank's, hence after the world
+            # all-reduce).
+            if world.rank % (world.world_size // dataloader.dp_world_size) == 0:
+                dataloader.release_payloads()
             dropped = failed[dataloader.dp_rank].nonzero().flatten().tolist()
             drop_micro_batches(micro_batches, dropped)
             dropped_micro_batches = len(dropped)
