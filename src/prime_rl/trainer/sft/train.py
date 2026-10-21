@@ -35,6 +35,7 @@ from prime_rl.trainer.model import (
     setup_tokenizer,
     setup_model,
 )
+from prime_rl.trainer.moe_runtime import get_dist_moe_compute
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import (
@@ -144,6 +145,7 @@ def train(config: SFTConfig):
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
     model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    dist_moe_compute = get_dist_moe_compute(model)
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -486,6 +488,9 @@ def train(config: SFTConfig):
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
                 step_tokens_per_expert += tokens_per_expert
 
+        if dist_moe_compute is not None:
+            dist_moe_compute.begin_overflow_check()
+
         # Wait for the queued backward kernels so this times GPU work, not kernel launches.
         torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
@@ -521,6 +526,7 @@ def train(config: SFTConfig):
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+        dist_moe_metrics = dist_moe_compute.finish_overflow_check() if dist_moe_compute is not None else {}
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -651,7 +657,9 @@ def train(config: SFTConfig):
         disk_metrics["step"] = progress.step
         asyncio.run(monitors.log(disk_metrics, step=progress.step))
 
-        moe_log_metrics = {name: value.item() for name, value in moe_stats.items()} | expert_load_stats
+        moe_log_metrics = (
+            {name: value.item() for name, value in moe_stats.items()} | expert_load_stats | dist_moe_metrics
+        )
         if moe_log_metrics:
             asyncio.run(monitors.log({**moe_log_metrics, "step": progress.step}, step=progress.step))
 

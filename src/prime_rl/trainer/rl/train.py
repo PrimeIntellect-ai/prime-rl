@@ -49,6 +49,7 @@ from prime_rl.trainer.model import (
     setup_model,
     setup_processor,
 )
+from prime_rl.trainer.moe_runtime import get_dist_moe_compute
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.utils import (
@@ -197,6 +198,7 @@ def train(config: TrainerConfig):
         setup_context_parallel(model, config.model, parallel_dims)
 
     is_moe_model = is_tt_moe_model(model)
+    dist_moe_compute = get_dist_moe_compute(model)
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
 
     # Fresh adapter init after FSDP materialization (the pretrained checkpoint
@@ -592,6 +594,9 @@ def train(config: TrainerConfig):
                 micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
             logger.debug(micro_step_message)
 
+        if dist_moe_compute is not None:
+            dist_moe_compute.begin_overflow_check()
+
         annotation_writer.flush()
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
@@ -603,6 +608,8 @@ def train(config: TrainerConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+
+        dist_moe_metrics = dist_moe_compute.finish_overflow_check() if dist_moe_compute is not None else {}
 
         # Update the model parameters
         optimizer.step()
@@ -711,6 +718,9 @@ def train(config: TrainerConfig):
         if grad_norm is not None:
             optim_metrics["optim/grad_norm"] = grad_norm.item()
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
+
+        if dist_moe_metrics:
+            asyncio.run(monitors.log({**dist_moe_metrics, "step": progress.step}, step=progress.step))
 
         # Compute derived metrics
         entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)

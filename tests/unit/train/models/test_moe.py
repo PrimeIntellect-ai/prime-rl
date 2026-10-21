@@ -7,6 +7,7 @@ from prime_rl.trainer.distributed.token_dispatcher import LocalTokenDispatcher
 from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
+from prime_rl.trainer.models.layers.dist_moe_experts import validate_dist_moe_experts
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
 from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import FeedForward
@@ -108,6 +109,41 @@ def test_mega_moe_dispatch_requires_expert_parallelism():
 
     with pytest.raises(ValueError, match="expert-parallel group"):
         configure_moe_runtime(model, config, dims)
+
+
+def test_dist_moe_dispatch_requires_expert_parallelism():
+    moe = MoE.from_args(MoEArgs(num_experts=2, score_before_experts=False), dim=512, hidden_dim=512, shared_expert=None)
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([moe])
+    config = ModelConfig.model_validate({"ac_offloading": None, "moe": {"dispatch": {"type": "dist_moe"}}})
+    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+
+    with pytest.raises(ValueError, match="dist_moe dispatch requires an expert-parallel group"):
+        configure_moe_runtime(model, config, dims)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "fused", "error"),
+    [
+        pytest.param({}, True, None, id="swiglu"),
+        pytest.param({}, False, "fused gate/up", id="unfused"),
+        pytest.param({"expert_type": "non_gated"}, False, "gated experts", id="non-gated"),
+        pytest.param({"bias": True}, True, "expert biases", id="bias"),
+        pytest.param({"activation": "relu2"}, True, "standard SwiGLU", id="relu2"),
+        pytest.param({"activation": ClampedSilu(10.0)}, True, "standard SwiGLU", id="deepseek-v4"),
+    ],
+)
+def test_validate_dist_moe_experts(kwargs, fused, error):
+    experts = GroupedExperts(dim=64, hidden_dim=8, num_experts=2, **kwargs)
+    if fused:
+        fuse_gate_up_projections(experts)
+
+    if error is None:
+        validate_dist_moe_experts(experts)
+    else:
+        with pytest.raises(ValueError, match=error):
+            validate_dist_moe_experts(experts)
 
 
 @pytest.mark.parametrize(

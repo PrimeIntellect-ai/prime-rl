@@ -32,6 +32,7 @@ MANDATORY_SAVE_NAMESPACES = frozenset({"deepep"})
 MANDATORY_SAVE_OPERATIONS = frozenset(
     {
         "aten::topk",
+        "prime_rl::dist_moe_forward",
         "prime_rl::fp8_indexer",
         "prime_kernels::select_indexed_blocks",
         "prime_rl::record_moe_routing_statistics",
