@@ -54,7 +54,7 @@ OffloadMode: TypeAlias = Literal["none", "optimizer", "full"]
 
 class CompileConfig(BaseConfig):
     fullgraph: bool = False
-    """Compile transformer blocks with ``fullgraph=True``. Custom MoE models need ``moe_router_dtype="bfloat16"``: the fp32 router is its own FSDP unit inside the block, and dynamo cannot trace FSDP hooks."""
+    """Compile transformer blocks with ``fullgraph=True``."""
 
     mode: Literal["reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs", "lite"] | None = None
     """``torch.compile`` mode. ``reduce-overhead`` records CUDA graphs to cut kernel launch overhead; ``max-autotune`` modes trade longer compile times for tuned kernels (``max-autotune`` also records CUDA graphs, ``max-autotune-no-cudagraphs`` does not). CUDA-graphed layers re-record on new input shapes. ``None`` uses PyTorch's default mode."""
@@ -128,6 +128,9 @@ class FP8Config(BaseConfig):
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from DeepGEMM FP8 replacement."""
 
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
+
 
 class MXFP8Config(BaseConfig):
     type: Literal["mxfp8"] = "mxfp8"
@@ -136,6 +139,9 @@ class MXFP8Config(BaseConfig):
 
     ignore_patterns: list[str] = _DEFAULT_FP8_IGNORE_PATTERNS
     """Dense linear module names excluded from torchao MXFP8 replacement."""
+
+    extra_ignore_patterns: list[str] = []
+    """Patterns appended to `ignore_patterns`, to exclude model-specific modules while keeping the defaults."""
 
 
 QuantizationConfig: TypeAlias = Annotated[FP8Config | MXFP8Config, Field(discriminator="type")]
@@ -301,9 +307,6 @@ class ModelConfig(BaseModelConfig):
 
     reduce_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for gradient/parameter reductions."""
-
-    moe_router_dtype: Literal["bfloat16", "float32", "auto"] = "auto"
-    """Compute dtype for MoE router gates. ``float32`` keeps router gate weights in fp32 through forward and backward (exempt from FSDP bf16 parameter casting) and computes the gate GEMM and routing logits in fp32, matching models trained with fp32 routing (e.g. GLM-5.x via Megatron's ``--moe-router-dtype fp32``). ``bfloat16`` computes the gate GEMM in the model compute dtype. ``auto`` (default) resolves to ``float32`` for RL and ``bfloat16`` for SFT. Router score functions (sigmoid/softmax) run in fp32 regardless. A no-op for non-MoE models."""
 
     reduce_scatter_max_input_buffers: int = Field(1, ge=1)
     """Maximum number of FSDP gradient reduce-scatter input buffers kept in flight. Raising it trades memory (about one layer's gradients per extra buffer) for overlap when reduce-scatters are exposed, e.g. MoE without EP or full activation checkpointing."""
@@ -599,7 +602,6 @@ class DataLoaderConfig(BaseConfig):
 class BaseTrainerConfig(BaseConfig):
     """Fields and validators shared by the RL trainer (``TrainerConfig``) and SFT (``SFTConfig``)."""
 
-    auto_moe_router_dtype: ClassVar[Literal["float32", "bfloat16"]]
     auto_freeze_moe_router: ClassVar[bool]
     auto_weight_decay: ClassVar[float]
 
@@ -645,8 +647,6 @@ class BaseTrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def resolve_auto_defaults(self):
-        if self.model.moe_router_dtype == "auto":
-            self.model.moe_router_dtype = self.auto_moe_router_dtype
         if self.model.freeze_moe_router == "auto":
             self.model.freeze_moe_router = self.auto_freeze_moe_router
         if self.optim.weight_decay == "auto":
@@ -716,8 +716,6 @@ class BaseTrainerConfig(BaseConfig):
 
 
 class TrainerConfig(BaseTrainerConfig):
-    # fp32 routing matches the fp32-routed checkpoints RL trains from (e.g. GLM-5.x).
-    auto_moe_router_dtype = "float32"
     # RL keeps the pretrained router.
     auto_freeze_moe_router = True
     # RL optimizes the reward objective, not a fixed dataset; L2 decay toward zero fights it.

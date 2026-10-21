@@ -19,6 +19,7 @@ from prime_rl.transports.batch.types import (
     TopLogprobs,
     TrainingSample,
 )
+from prime_rl.utils.sequence import repeat_to_length
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -156,7 +157,7 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts = micro_batch.routed_experts
     assert routed_experts is not None
     row_size = _routed_experts_row_size(routed_experts)
-    routed_experts.data += b"\0" * (padding_size * row_size)
+    routed_experts.data += repeat_to_length(routed_experts.data, padding_size * row_size)
     routed_experts.shape[0] += padding_size
 
 
@@ -628,7 +629,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
-    micro_batch.input_ids.extend([1] * padding_size)
+    # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text rows pad with their
+    # own tokens. Multimodal rows keep a constant id: a repeated image placeholder would have no feature to receive.
+    if micro_batch.mm_refs is None:
+        micro_batch.input_ids.extend(repeat_to_length(micro_batch.input_ids, padding_size))
+    else:
+        micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
@@ -787,7 +793,8 @@ class BatchPacker:
     def __init__(self, config: OrchestratorConfig):
         self.seq_len = config.seq_len
         self.num_train_workers = config.num_train_workers
-        self.pad_to_multiple_of = config.pad_to_multiple_of
+        # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
+        self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
         # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
         model_config = ModelConfig(
             name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code

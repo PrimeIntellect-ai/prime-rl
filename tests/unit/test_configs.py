@@ -396,16 +396,6 @@ def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     assert config.model.offload == "optimizer"
 
 
-def test_moe_router_dtype_auto_resolves_per_trainer():
-    """``moe_router_dtype='auto'`` (the default) resolves to fp32 for RL and bf16 for SFT; explicit values are kept."""
-    assert TrainerConfig.model_validate({}).model.moe_router_dtype == "float32"
-    assert SFTConfig.model_validate({}).model.moe_router_dtype == "bfloat16"
-
-    for config_cls in (TrainerConfig, SFTConfig):
-        for dtype in ("bfloat16", "float32"):
-            assert config_cls.model_validate({"model": {"moe_router_dtype": dtype}}).model.moe_router_dtype == dtype
-
-
 def test_freeze_moe_router_auto_resolves_per_trainer():
     """``freeze_moe_router='auto'`` (the default) freezes the router for RL, not SFT; explicit values are kept."""
     assert TrainerConfig.model_validate({}).model.freeze_moe_router is True
