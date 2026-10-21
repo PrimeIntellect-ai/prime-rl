@@ -5,9 +5,8 @@ from typing import Callable
 import pytest
 import torch
 
+from tests.regression.distributed.sft.cases import NUM_GPUS
 from tests.regression.distributed.tiny_models import write_tiny_checkpoint
-
-NUM_GPUS = 8
 
 
 def pytest_configure(config: pytest.Config) -> None:
