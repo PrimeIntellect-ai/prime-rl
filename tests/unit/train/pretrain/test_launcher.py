@@ -13,7 +13,7 @@ def test_multi_node_dry_run_writes_trainer_sbatch(tmp_path, monkeypatch):
             "output_dir": tmp_path,
             "model": {"name": "configs/debug/fake/pretrain-model"},
             "tokenizer": {"name": "PrimeIntellect/Qwen3-0.6B"},
-            "data": {"type": "fake", "seq_len": 8, "batch_tokens": 16, "micro_batch_tokens": 8},
+            "data": {"type": "fake", "seq_len": 8, "batch_size": 2, "micro_batch_size": 1},
             "optim": {"lr": 1e-3},
             "max_steps": 1,
             "deployment": {"type": "multi_node", "num_train_nodes": 2},

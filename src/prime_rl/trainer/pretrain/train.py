@@ -39,12 +39,7 @@ from prime_rl.trainer.pretrain.balance import (
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.optim import param_groups
 from prime_rl.trainer.pretrain.data import (
-    TokenShards,
-    check_eos,
-    setup_dataloader,
-    setup_train_dataset,
-    source_tokens,
-    setup_val_dataset,
+    TrainData,
     starts_with_bos,
 )
 from prime_rl.trainer.pretrain.suite import (
@@ -160,24 +155,7 @@ def train(config: PretrainConfig):
     scheduler_steps = config.max_steps - checkpoint_step if skip_scheduler and checkpoint_step else config.max_steps
     scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
 
-    train_dataset = setup_train_dataset(
-        config.data, config.max_steps, len(tokenizer), tokenizer.eos_token_id, non_dp_size=config.model.cp
-    )
-    dataloader = setup_dataloader(train_dataset, config.data.micro_batch_size, config.data.num_workers)
-
-    val_sources = {}
-    if config.val is not None:
-        val_sources = {name: TokenShards(source) for name, source in config.val.sources.items()}
-        check_eos(val_sources, tokenizer.eos_token_id)
-        byte_lengths = token_byte_lengths(tokenizer).to("cuda")
-        # Whole micro-batches on every data-parallel rank, as every forward is a collective.
-        windows_per_round = parallel_dims.get_mesh("dp").size() * config.data.micro_batch_size
-        val_windows = {}
-        for name, source in val_sources.items():
-            val_windows[name] = (source.num_tokens - 1) // config.data.seq_len // windows_per_round * windows_per_round
-            if val_windows[name] == 0:
-                raise ValueError(f"Val source {name!r} has fewer than {windows_per_round} windows of data.seq_len")
-            logger.info(f"Val source {name!r}: {val_windows[name] * config.data.seq_len:,} tokens")
+    data = TrainData(config.data, config.max_steps, len(tokenizer), tokenizer.eos_token_id, config.model.cp)
 
     progress = Progress()
     restore_dataloader = checkpoint_step is not None and not (config.ckpt or CheckpointConfig()).skip_dataloader
@@ -188,32 +166,14 @@ def train(config: PretrainConfig):
             [optimizer],
             None if skip_scheduler else scheduler,
             progress,
-            dataloader=dataloader if restore_dataloader else None,
+            dataloader=data if restore_dataloader else None,
             path=config.resume.dir / "trainer" if config.resume.dir is not None else None,
         )
         progress.step += 1
         if skip_scheduler:
             # Loading the optimizer state replaces the param groups the scheduler was built on.
             scheduler = setup_scheduler(optimizer, config.scheduler, scheduler_steps, config.optim.lr)
-        logger.info(f"Resuming from step {checkpoint_step} (dataset_state={get_dataset_state(dataloader)})")
-
-    # Step s trains on the global windows [(s - 1) * batch_size, s * batch_size). The tokens per source are counted
-    # from the window sequence itself, which every data rank walks, so they are global without communication.
-    next_window = 0
-    source_totals = dict.fromkeys(train_dataset.names, 0)
-    if restore_dataloader:
-        next_window = checkpoint_step * config.data.batch_size
-        # The loaded state counts the windows before its own position, which is near next_window.
-        state = next(iter(get_dataset_state(dataloader).values()))
-        source_totals = dict(state["tokens"])
-        start, end = sorted((state["step"], next_window))
-        sign = 1 if next_window > state["step"] else -1
-        for name, tokens in source_tokens(train_dataset, start, end).items():
-            source_totals[name] += sign * tokens
-
-    # Create the iterator only after a potential resume: iter() forks the workers with the
-    # dataset's current state.
-    dataiter = iter(dataloader)
+        logger.info(f"Resuming from step {checkpoint_step} (dataset_state={get_dataset_state(data.loader)})")
 
     cp_enabled = parallel_dims.cp_enabled
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank() if cp_enabled else 0
@@ -228,7 +188,7 @@ def train(config: PretrainConfig):
     seq_balance_sums: dict[str, torch.Tensor] = {}
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens and, in training, the MoE
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens and the MoE
         sequence-wise balance loss summed over tokens (each token carries its row's loss, so after the division
         by the token count it is the mean over rows)."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
@@ -246,14 +206,13 @@ def train(config: PretrainConfig):
                 model, input_ids, position_ids, seq_lens=seq_lens, labels=labels, seq_lens_are_pre_shard=cp_enabled
             )
         aux_loss_sum = torch.zeros((), device="cuda")
-        if torch.is_grad_enabled():
-            row_len = input_ids.shape[1] // config.data.micro_batch_size
-            for moe in moes_with_seq_balance:
-                aux_loss_sum += balance.seq_aux_coeff * moe.seq_balance.sum() * row_len
-                seq_balance_sums["balance"] = seq_balance_sums.get("balance", 0) + moe.seq_balance.detach().sum()
-                seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + moe.seq_balance.new_tensor(
-                    moe.seq_balance.numel()
-                )
+        row_len = input_ids.shape[1] // config.data.micro_batch_size
+        for moe in moes_with_seq_balance:
+            aux_loss_sum += balance.seq_aux_coeff * moe.seq_balance.sum() * row_len
+            seq_balance_sums["balance"] = seq_balance_sums.get("balance", 0) + moe.seq_balance.detach().sum()
+            seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + moe.seq_balance.new_tensor(
+                moe.seq_balance.numel()
+            )
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     def finish_no_grad_forwards() -> None:
@@ -263,35 +222,17 @@ def train(config: PretrainConfig):
         if is_moe_model:
             take_routing_counts(model)
 
-    @torch.no_grad()
-    def run_val(step: int) -> None:
-        """Held-out loss, perplexity and bits per byte on the weights after ``step`` optimizer updates."""
-        metrics = {}
-        for name, source in val_sources.items():
-            val_dataset = setup_val_dataset(source, config.data.seq_len, val_windows[name], config.model.cp)
-            totals = torch.zeros(3, dtype=torch.float64, device="cuda")  # loss sum, tokens, bytes
-            for micro_batch in setup_dataloader(val_dataset, config.data.micro_batch_size, num_workers=1):
-                loss_sum, token_count, _ = compute_loss(micro_batch)
-                # The bytes are counted on the unsharded targets, so every CP rank counts them once.
-                num_bytes = byte_lengths[micro_batch["target_ids"].to("cuda")].sum() / cp_size
-                totals += torch.stack([loss_sum.double(), token_count.double(), num_bytes.double()])
-            dist.all_reduce(totals, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            loss_sum, num_tokens, num_bytes = totals.tolist()
-            loss = loss_sum / num_tokens
-            metrics[f"val/{name}/loss"] = loss
-            metrics[f"val/{name}/ppl"] = math.exp(min(loss, 20))
-            metrics[f"val/{name}/bpb"] = loss_sum / (math.log(2) * num_bytes)
-        finish_no_grad_forwards()
-        logger.success(f"Val | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
-        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
-
     eval_sets = []
     if config.evals is not None:
         start_time = time.perf_counter()
-        bos = config.data.type == "tokens" and starts_with_bos(train_dataset.sources, tokenizer.bos_token_id)
+        bos = config.data.type == "tokens" and starts_with_bos(data.source, tokenizer.bos_token_id)
+        has_token_sets = any(not isinstance(eval_set, str) for eval_set in config.evals.sets)
+        byte_lengths = token_byte_lengths(tokenizer).numpy() if has_token_sets else None
         eval_sets = [
-            prepare_multi_length_set(name, config.evals.data_dir, tokenizer, config.evals.seq_lens, bos)
-            for name in config.evals.sets
+            prepare_multi_length_set(
+                eval_set, config.evals.data_dir, tokenizer, config.evals.seq_lens, bos, byte_lengths
+            )
+            for eval_set in config.evals.sets
         ]
         logger.info(f"Prepared {len(eval_sets)} eval sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s")
 
@@ -320,15 +261,11 @@ def train(config: PretrainConfig):
         logger.success(f"Eval suite | Step {step} | {metrics['time/eval_suite']:.0f}s | {len(eval_sets)} sets")
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
-    if checkpoint_step is None and config.val is not None and config.val.eval_on_start:
-        run_val(step=0)
     if config.evals is not None and config.evals.eval_on_start:
         run_suite(step=checkpoint_step or 0)
     if checkpoint_step == config.max_steps:
-        # The last step's checkpoint is written before its val and evals: resuming from it only runs those.
-        logger.info(f"Resuming from the last step ({checkpoint_step}): running its val and evals only")
-        if config.val is not None:
-            run_val(checkpoint_step)
+        # The last step's checkpoint is written before its evals: resuming from it only runs those.
+        logger.info(f"Resuming from the last step ({checkpoint_step}): running its evals only")
         if config.evals is not None and not config.evals.eval_on_start:
             run_suite(checkpoint_step)
         logger.success("Pretrain trainer finished")
@@ -355,7 +292,7 @@ def train(config: PretrainConfig):
         seq_balance_sums.clear()
         result = run_micro_batches(
             model,
-            dataiter,
+            data,
             compute_loss,
             grad_accum_steps,
             parallel_dims,
@@ -421,25 +358,19 @@ def train(config: PretrainConfig):
 
         num_tokens = result.num_tokens
         progress.total_tokens += num_tokens
-        step_tokens = source_tokens(train_dataset, next_window, next_window + config.data.batch_size)
-        next_window += config.data.batch_size
-        for name, tokens in step_tokens.items():
-            source_totals[name] += tokens
-        progress.total_samples = next_window
+        progress.total_samples = data.windows
 
-        # The last step's checkpoint is written before its val and evals, so a timeout there does not lose it.
+        # The last step's checkpoint is written before its evals, so a timeout there does not lose it.
         save_ckpt_time = 0.0
         disk_metrics = {}
         if config.ckpt and (is_last_step or (config.ckpt.interval and progress.step % config.ckpt.interval == 0)):
             save_ckpt_start_time = time.perf_counter()
-            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=dataloader)
+            ckpt_manager.save(progress.step, model, [optimizer], scheduler, progress, dataloader=data)
             ckpt_manager.maybe_clean()
             save_ckpt_time = time.perf_counter() - save_ckpt_start_time
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
 
         eval_start_time = time.perf_counter()
-        if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
-            run_val(progress.step)
         if config.evals is not None and (is_last_step or progress.step % config.evals.interval == 0):
             run_suite(progress.step)
         eval_time = time.perf_counter() - eval_start_time
@@ -465,13 +396,7 @@ def train(config: PretrainConfig):
             "loss/spike": loss_spikes.update(result.loss),
             "optim/lr": current_lr,
             **{f"optim/grad_norm/{group}": norm.item() for group, norm in group_grad_norms.items()},
-            **{f"progress/{name}/step_tokens": tokens for name, tokens in step_tokens.items()},
-            **{f"progress/{name}/num_tokens": tokens for name, tokens in source_totals.items()},
-            **{
-                f"progress/{name}/epochs": tokens / train_dataset.sources[name].num_tokens
-                for name, tokens in source_totals.items()
-            },
-            "progress/num_samples": progress.total_samples,
+            **data.metrics(),
             "progress/num_tokens": progress.total_tokens,
             "perf/throughput": throughput,
             "perf/throughput_per_gpu": throughput / world.world_size,

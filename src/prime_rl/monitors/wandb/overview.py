@@ -93,7 +93,7 @@ SFT_PERFORMANCE_METRICS = [
 
 # Pretrain flavor: loss and held-out evals, training stability, MoE balance, performance.
 PRETRAIN_TRAIN_METRICS = ["loss/mean", "loss/spike"]
-PRETRAIN_TRAIN_REGEXES = ["val/.*/bpb", "eval/.*/bpb"]
+PRETRAIN_TRAIN_REGEXES = ["eval/.*/bpb"]
 PRETRAIN_STABILITY_METRICS = ["optim/grad_norm", "optim/grad_norm_spike", "optim/lr", "loss/nan_count"]
 PRETRAIN_STABILITY_REGEXES = ["optim/grad_norm/.*"]
 PRETRAIN_MOE_METRICS = [

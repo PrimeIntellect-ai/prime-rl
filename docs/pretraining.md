@@ -91,51 +91,42 @@ The metrics are `expert_load/*` (global balance of the step), `loss/seq_balance`
 
 ## Data
 
-`data.type = "tokens"` reads [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: per source, a folder of `*.ds` token files with their `.ds.index` (document ends) and `.ds.metadata`. The files of a source are read as one stream. Each epoch reads every row of a source once, in a random order over the whole source and from a random start offset, both drawn from `data.seed`, the source and the epoch (the last `seq_len` tokens or fewer of an epoch are skipped). So every epoch has a new order and new row boundaries, and part of an epoch is a sample of the whole source, whatever the order of the files. Every row is a random read (about 33 ms each from a cold cache on CephFS); at the screening shapes, `data.num_workers = 2` with the default prefetch hides this (`time/data` stays at 0). Check `time/data` on other storage. Documents continue across rows, and attention restarts at every document and every row. Held-out sources are read in file-name order. Every document must end with the tokenizer's EOS; the trainer checks the first document of every source, which catches shards made with another tokenizer.
+`data.type = "tokens"` reads [datatrove](https://github.com/huggingface/datatrove) `DocumentTokenizer` output: folders of `*.ds` token files with their `.ds.index` (document ends) and `.ds.metadata`. The files of all folders in `data.paths` (in folder order, then file-name order) are read as one token pool. Each epoch reads every row of the pool once, in a random order over the whole pool and from a random start offset, both drawn from `data.seed` and the epoch (the last `seq_len` tokens or fewer of an epoch are skipped). So every epoch has a new order and new row boundaries, and part of an epoch is a sample of the whole pool, whatever the order of the files. Every row is a random read (about 33 ms each from a cold cache on CephFS); at the screening shapes, `data.num_workers = 2` with the default prefetch hides this (`time/data` stays at 0). Check `time/data` on other storage. Documents continue across rows, and attention and positions restart at every document and every row; with `data.document_masking = false`, a row is one sequence (attention spans the whole row and positions run over it, as in GPT-style training without document masking). Every document must end with the tokenizer's EOS; the trainer checks the first document of every folder, which catches shards made with another tokenizer.
 
-Each row comes from one source, drawn with the mixture `data.weights`. At startup the trainer computes how many passes over each source the run makes and fails above `data.max_epochs`.
+Every folder contributes rows in proportion to its tokens, so mixtures are made offline, as folders whose token counts follow the mixture weights. At startup the trainer computes how many passes over the pool the run makes and fails above `data.max_epochs`.
 
 ```toml
 [data]
 type = "tokens"
-seq_len = 4096
-batch_tokens = 262144       # per optimizer step, over all GPUs
-micro_batch_tokens = 65536  # per forward pass on one GPU
-max_epochs = 3
-weights = { web = 0.8, code = 0.2 }
-
-[data.sources]
-web = { path = "data/web" }
-code = { path = "data/code" }
+seq_len = 8192        # tokens per row
+batch_size = 32       # rows per optimizer step, over all GPUs
+micro_batch_size = 8  # rows per forward pass on one GPU
+paths = ["data/web", "data/code"]
 ```
 
-Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and the number of steps. Resume restores the data position on the same GPU layout and `data.num_workers`; resuming on a different layout is not supported yet. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
+Batch sizes are in rows, as in SFT: a step trains on `batch_size * seq_len` tokens, so changing `seq_len` changes the tokens per step. Resume restores the data position on the same GPU layout and `data.num_workers`; resuming on a different layout is not supported yet. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
 
 ## Monitoring
 
-Every step logs the loss, learning rate, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, per-source token counts and epochs (`progress/<source>/*`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
+Every step logs the loss, learning rate, gradient norms (total and per parameter group, `optim/grad_norm/<group>`), loss and grad-norm spike flags, the rows, tokens and epochs trained on (`progress/num_samples`, `progress/num_tokens`, `progress/epochs`), throughput, MFU, data wait and peak memory (max and mean over ranks). MoE models add the expert balance of the step's global counts (`expert_load/*`, also per layer), `router/*` and `loss/seq_balance`. The step statistics are reduced once per step.
 
 ## Evals
 
-`[val]` computes the held-out loss (nats per token), perplexity and bits per UTF-8 byte (comparable across tokenizers) of every source in `val.sources`, through the same loss code as training, so it also works with context parallelism. Each eval reads the same leading windows of every source: as many as fill whole micro-batches on every data-parallel rank. Evals run after the optimizer update, so the metrics at step N describe the same weights as the step-N checkpoint. With `eval_on_start` (default), they also run before the first step (logged as step 0), and they always run at the last step.
+`[evals]`: every `interval` steps, at the last step and (with `eval_on_start`, default) on the weights the run starts from, the trainer scores its eval sets with forward passes without gradients on the training model itself (same sharding, dtype and fusions). Evals run after the optimizer update, so the metrics at step N describe the same weights as the step-N checkpoint. A set is either
 
-```toml
-[val]
-interval = 500
+- the name of a log-likelihood set of the pretrain-evals offline suite (`ppl`, `ctxcont` or `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`), or
+- a held-out folder of datatrove token shards (`{ name = ..., path = ... }`), scored like a `ppl` set: every document of the folder as stored, in windows of each of `seq_lens`, every token after its first scored (loss in nats per token and bits per UTF-8 byte, comparable across tokenizers). Each eval scores the whole folder, so keep held-out folders small.
 
-[val.sources]
-web = { path = "data/web-val" }
-```
-
-**Eval suite (`[evals]`).** Every `interval` steps, at the last step and (with `eval_on_start`) on the weights the run starts from, the trainer scores the eval suite: log-likelihood sets (`ppl`, `ctxcont` and `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`, the format of the pretrain-evals offline suite) with forward passes without gradients on the training model itself (same sharding, dtype and fusions). Requests are packed into document-masked rows of `evals.micro_batch_tokens` tokens (default: `data.micro_batch_tokens` or the longest of `seq_lens`, whichever is larger) that are dealt over the ranks; the LM head returns fp32 per-token log-probs for the duration of the evals. Every set is scored at each context length in `seq_lens` and logged as `eval/{set}/{metric}@{length}` (e.g. `eval/fwedu-holdout/bpb@4k`, plus accuracies and greedy exact match for multiple-choice and gold-answer sets); requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once. Requests start with BOS only if the training documents do (read off the first document of every training source at startup), so the evals see the training format; without BOS, the first token of a `ppl` document or `pairs` sentence is only context (`ppl` bpb leaves out its bytes). Requires `model.cp = 1`. Evals run without gradients, so longer rows can fit: in our tests, eval memory stayed at most 0.6x the training peak, and at d512 (8k training micro-batches), rows of 32k instead of 16k tokens cut the eval time by 19%.
+Requests are packed into document-masked rows of `evals.micro_batch_tokens` tokens (default: the training micro-batch, `data.micro_batch_size * data.seq_len`, or the longest of `seq_lens`, whichever is larger) that are dealt over the ranks; the LM head returns fp32 per-token log-probs for the duration of the evals. Every set is scored at each context length in `seq_lens` (default: `data.seq_len`) and logged as `eval/{set}/{metric}@{length}` (e.g. `eval/fwedu-holdout/bpb@4k`, plus accuracies and greedy exact match for multiple-choice and gold-answer sets); requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once. Requests of the pretrain-evals sets start with BOS only if the training documents do (read off the first document of every training folder at startup), so the evals see the training format; without BOS, the first token of a `ppl` document or `pairs` sentence is only context (`ppl` bpb leaves out its bytes). Requires `model.cp = 1`. Evals run without gradients, so longer rows can fit: in our tests, eval memory stayed at most 0.6x the training peak, and at d512 (8k training micro-batches), rows of 32k instead of 16k tokens cut the eval time by 19%.
 
 ```toml
 [evals]
 interval = 1000
 data_dir = "/shared/evals-data"
-sets = ["fwedu-holdout", "lambada", "math"]
+sets = ["fwedu-holdout", "lambada", "math", { name = "web-val", path = "data/web-val" }]
 seq_lens = [2048, 4096, 16384]
 ```
+
 
 ## Multi-Node
 

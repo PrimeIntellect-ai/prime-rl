@@ -10,11 +10,13 @@ import torch.distributed as dist
 from torch import nn
 
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.pretrain.data import TokenShards
 from prime_rl.trainer.pretrain.suite import (
     head_logprobs,
     pack_requests,
     prepare_multi_length_set,
     prepare_set,
+    prepare_token_set,
     score_requests,
     score_sets,
     set_metrics,
@@ -70,6 +72,25 @@ def test_multi_length_set_scores_shared_requests_once(tmp_path):
     assert len(multi.versions[8].requests) == 4 and len(multi.versions[32].requests) == 2
     assert len(multi.requests) == 5
     assert multi.index[8][0] == multi.index[32][0]
+
+
+def test_token_set_scores_documents_like_a_ppl_set_without_bos(tmp_path):
+    texts = ["short", "a much longer document"]
+    (tmp_path / "docs").mkdir()
+    pq.write_table(pa.table({"text": texts}), tmp_path / "docs" / "test.parquet")
+    (tmp_path / "docs" / "meta.json").write_text(json.dumps({"kind": "ppl", "parquet_sha256": "x"}))
+    documents = [[ord(char) for char in text] + [CharTokenizer.eos_token_id] for text in texts]
+    (tmp_path / "shards").mkdir()
+    np.array([token for document in documents for token in document], dtype="<u4").tofile(tmp_path / "shards" / "00.ds")
+    np.cumsum([len(document) for document in documents], dtype="<u8").tofile(tmp_path / "shards" / "00.ds.index")
+    (tmp_path / "shards" / "00.ds.metadata").write_text("chars|4\n0\n0")
+    byte_lengths = np.ones(256, dtype=np.int64)
+    byte_lengths[CharTokenizer.eos_token_id] = 0
+    tokens = prepare_token_set("docs", TokenShards([tmp_path / "shards"]), 8, byte_lengths)
+    ppl = prepare_set("docs", tmp_path, CharTokenizer(), seq_len=8, bos=False)
+    assert tokens.requests == ppl.requests
+    assert tokens.context["owner"] == ppl.context["owner"]
+    assert tokens.context["bytes"].tolist() == ppl.context["bytes"].tolist()
 
 
 def test_head_logprobs_chunks_match_the_full_softmax():

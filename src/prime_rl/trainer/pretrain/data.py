@@ -1,40 +1,41 @@
-import zlib
 from pathlib import Path
 
 import numpy as np
 import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from prime_rl.configs.pretrain import PretrainDataConfig, TokenSourceConfig
+from prime_rl.configs.pretrain import PretrainDataConfig
 from prime_rl.trainer.sft.data import StatefulIterableDataset
+from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 
 
 class TokenShards:
-    """Datatrove tokenized shards in one folder, the ``num_tokens`` first tokens of the files in name order, read as
-    one cyclic token stream.
+    """Datatrove tokenized shards in one or more folders, the ``num_tokens`` first tokens of their files (in folder
+    order, then file name order), read as one cyclic token stream.
 
     ``<name>.ds`` holds the token ids (little-endian, 2 or 4 bytes as recorded on the first line of
     ``<name>.ds.metadata``) and ``<name>.ds.index`` the uint64 end offset of every document. File
     boundaries are document boundaries.
 
-    With a ``seed``, each epoch reads all ``num_tokens // seq_len`` windows of the source once, in a seeded random
-    order and from a seeded random offset, so epochs differ in order and window boundaries, and part of an epoch is a
-    sample of the whole source (``window_start``). The last ``num_tokens % seq_len`` tokens of an epoch are skipped.
-    Without one (held-out sets), the windows are read in order."""
+    Each epoch reads all ``num_tokens // seq_len`` windows of the stream once, in a random order and from a random
+    offset drawn from ``seed`` and the epoch, so epochs differ in order and window boundaries, and part of an epoch is
+    a sample of the whole stream (``window_start``). The last ``num_tokens % seq_len`` tokens of an epoch are
+    skipped."""
 
-    def __init__(self, config: TokenSourceConfig, seed: tuple[int, str] | None = None):
-        self.files = sorted(config.path.glob("*.ds"))
-        if not self.files:
-            raise FileNotFoundError(f"No datatrove .ds files in {config.path}")
+    def __init__(self, paths: list[Path], seed: int = 0):
+        self.files, self.first_files = [], []
+        for path in paths:
+            files = sorted(path.glob("*.ds"))
+            if not files:
+                raise FileNotFoundError(f"No datatrove .ds files in {path}")
+            self.first_files.append(len(self.files))
+            self.files += files
         self.dtypes = [token_dtype(file) for file in self.files]
         sizes = [file.stat().st_size // dtype.itemsize for file, dtype in zip(self.files, self.dtypes)]
         self.starts = np.cumsum([0, *sizes])
-        total = int(self.starts[-1])
-        if config.max_tokens is not None and config.max_tokens > total:
-            raise ValueError(f"{config.path} has {total:,} tokens, fewer than max_tokens={config.max_tokens:,}")
-        self.num_tokens = total if config.max_tokens is None else config.max_tokens
-        self.seed = None if seed is None else [seed[0], zlib.crc32(seed[1].encode())]
+        self.num_tokens = int(self.starts[-1])
+        self.seed = seed
         self.memmaps: dict[int, tuple[np.memmap, np.memmap]] = {}
         # The current epoch, its window order and its offset.
         self.epoch_order: tuple[int | None, np.ndarray | None, int] = (None, None, 0)
@@ -75,23 +76,22 @@ class TokenShards:
 
     def window_start(self, position: int, seq_len: int) -> int:
         """Stream offset of the window to read when ``position`` tokens have been read."""
-        if self.seed is None:
-            return position % self.num_tokens
         num_windows = self.num_tokens // seq_len
         epoch, window = divmod(position // seq_len, num_windows)
         if self.epoch_order[0] != epoch:
-            rng = np.random.default_rng([*self.seed, epoch])
+            rng = np.random.default_rng([self.seed, epoch])
             order = rng.permutation(num_windows).astype(np.uint32)
             self.epoch_order = epoch, order, int(rng.integers(self.num_tokens))
         _, order, offset = self.epoch_order
         return (offset + int(order[window]) * seq_len) % self.num_tokens
 
-    def first_token(self) -> int:
-        return int(self.open(0)[0][0])
-
-    def last_token_of_first_document(self) -> int:
-        tokens, doc_ends = self.open(0)
-        return int(tokens[int(doc_ends[0]) - 1])
+    def first_documents(self) -> list[np.ndarray]:
+        """The first document of every folder."""
+        documents = []
+        for file_index in self.first_files:
+            tokens, doc_ends = self.open(file_index)
+            documents.append(np.asarray(tokens[: int(doc_ends[0])]))
+        return documents
 
 
 def token_dtype(file: Path) -> np.dtype:
@@ -116,79 +116,41 @@ class RandomTokens:
 
 
 class TokenDataset(StatefulIterableDataset):
-    """``seq_len`` windows of token sources, each window from one source of a weighted mixture.
+    """``seq_len`` windows of a token source, window ``w`` read from ``source.window_start(w * seq_len)``.
 
-    Window ``w``'s source is drawn from the mixture ``weights`` with an RNG keyed by ``(seed, w)``, and it is that
-    source's next window (``TokenShards.window_start``). Every data rank walks the whole window sequence but reads only
-    its own windows; the state is the window counter and the tokens read per source. Each window reads one token past
-    its end for the last target. With ``num_windows`` the dataset stops after that many windows."""
+    Every data rank walks the whole window sequence but reads only its own windows; the state is the window counter.
+    Each window reads one token past its end for the last target. Without ``document_masking``, a window is one
+    sequence: attention and positions run over the whole window."""
 
     def __init__(
         self,
-        sources: dict[str, TokenShards | RandomTokens],
-        weights: dict[str, float],
+        source: TokenShards | RandomTokens,
         seq_len: int,
-        seed: int = 0,
         non_dp_size: int = 1,
-        num_windows: int | None = None,
+        document_masking: bool = True,
     ):
         super().__init__(non_dp_size)
-        self.sources = sources
-        self.names = list(sources)
-        self.weights = np.array([weights.get(name, 0.0) for name in self.names])
-        self.cdf = np.cumsum(self.weights)
+        self.source = source
         self.seq_len = seq_len
-        self.seed = seed
-        self.num_windows = num_windows
-        self.tokens = dict.fromkeys(self.names, 0)
-
-    def epochs(self) -> dict[str, float]:
-        return {name: self.tokens[name] / self.sources[name].num_tokens for name in self.names}
+        self.document_masking = document_masking
 
     def state_dict(self) -> dict:
-        return {"dataset": {"step": self.step, "tokens": dict(self.tokens), "epochs": self.epochs()}}
+        return {"dataset": {"step": self.step}}
 
     def load_state_dict(self, state_dict: dict):
         self.step = state_dict["dataset"]["step"]
-        self.tokens.update(state_dict["dataset"]["tokens"])
-
-    def planned_epochs(self, num_tokens: int) -> dict[str, float]:
-        """Expected passes over each source's tokens when ``num_tokens`` tokens are read."""
-        return {
-            name: num_tokens * float(weight) / self.sources[name].num_tokens
-            for name, weight in zip(self.names, self.weights)
-        }
-
-    def source(self, window: int) -> str:
-        if len(self.names) == 1:
-            return self.names[0]
-        draw = np.random.default_rng([self.seed, window]).random() * self.cdf[-1]
-        return self.names[min(int(np.searchsorted(self.cdf, draw, side="right")), len(self.names) - 1)]
 
     def __iter__(self):
         self._setup_world_info()
-        while self.num_windows is None or self.step < self.num_windows:
+        while True:
             window = self.step
-            name = self.source(window)
-            start = self.sources[name].window_start(self.tokens[name], self.seq_len)
-            self.tokens[name] += self.seq_len
             self.step += 1
             if window % self.data_world_size != self.data_rank:
                 continue
-            tokens, doc_starts = self.sources[name].read(start, self.seq_len + 1)
-            yield {
-                "tokens": tokens,
-                "seq_lens": np.diff([0, *(s for s in doc_starts if s < self.seq_len), self.seq_len]),
-            }
-
-
-def source_tokens(dataset: TokenDataset, start: int, end: int) -> dict[str, int]:
-    """Tokens each source contributes to windows ``[start, end)``. Every data rank walks the same window
-    sequence, so these are global counts, computed without communication."""
-    tokens = dict.fromkeys(dataset.names, 0)
-    for window in range(start, end):
-        tokens[dataset.source(window)] += dataset.seq_len
-    return tokens
+            start = self.source.window_start(window * self.seq_len, self.seq_len)
+            tokens, doc_starts = self.source.read(start, self.seq_len + 1)
+            doc_starts = [s for s in doc_starts if s < self.seq_len] if self.document_masking else []
+            yield {"tokens": tokens, "seq_lens": np.diff([0, *doc_starts, self.seq_len])}
 
 
 def collate_rows(rows: list[dict]) -> dict:
@@ -207,52 +169,86 @@ def collate_rows(rows: list[dict]) -> dict:
     }
 
 
-def setup_dataloader(dataset: TokenDataset, micro_batch_size: int, num_workers: int) -> StatefulDataLoader:
-    return StatefulDataLoader(
-        dataset, batch_size=micro_batch_size, collate_fn=collate_rows, num_workers=num_workers, pin_memory=True
-    )
+class TrainData:
+    """The training data: windows of the token pool (or of fake tokens), their dataloader and the count of windows
+    trained on. Iterating yields this rank's micro-batches; every data rank walks the same window sequence, so the
+    count is global without communication. ``state_dict`` holds the dataloader position and the count, for
+    checkpoints."""
+
+    def __init__(
+        self, config: PretrainDataConfig, max_steps: int, vocab_size: int, eos_token_id: int, non_dp_size: int
+    ):
+        if config.type == "fake":
+            self.source = RandomTokens(vocab_size, config.seed)
+        else:
+            self.source = TokenShards(config.paths, seed=config.seed)
+            check_eos(self.source, eos_token_id)
+            epochs = max_steps * config.batch_size * config.seq_len / self.source.num_tokens
+            get_logger().info(f"Token pool: {self.source.num_tokens:,} tokens, {epochs:.3f} planned epochs")
+            if epochs > config.max_epochs:
+                raise ValueError(f"Planned epochs {epochs:.3f} exceed data.max_epochs={config.max_epochs}")
+        dataset = TokenDataset(
+            self.source,
+            config.seq_len,
+            non_dp_size=non_dp_size,
+            document_masking=config.type == "fake" or config.document_masking,
+        )
+        self.loader = StatefulDataLoader(
+            dataset,
+            batch_size=config.micro_batch_size,
+            collate_fn=collate_rows,
+            num_workers=config.num_workers,
+            pin_memory=True,
+        )
+        self.seq_len = config.seq_len
+        self.windows_per_micro_batch = config.micro_batch_size * get_world().world_size // non_dp_size
+        self.windows = 0
+        self.iterator = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> dict:
+        # Created at the first micro-batch, after a potential resume: iter() forks the workers with the dataset's
+        # current state.
+        if self.iterator is None:
+            self.iterator = iter(self.loader)
+        micro_batch = next(self.iterator)
+        self.windows += self.windows_per_micro_batch
+        return micro_batch
+
+    def state_dict(self) -> dict:
+        return {"dataloader": self.loader.state_dict(), "windows": self.windows}
+
+    def load_state_dict(self, state_dict: dict):
+        self.loader.load_state_dict(state_dict["dataloader"])
+        self.windows = state_dict["windows"]
+
+    def metrics(self) -> dict[str, float]:
+        return {
+            "progress/num_samples": self.windows,
+            "progress/epochs": self.windows * self.seq_len / self.source.num_tokens,
+        }
 
 
-def setup_train_dataset(
-    config: PretrainDataConfig, max_steps: int, vocab_size: int, eos_token_id: int, non_dp_size: int
-) -> TokenDataset:
-    if config.type == "fake":
-        sources = {"fake": RandomTokens(vocab_size, config.seed)}
-        weights = {"fake": 1.0}
-    else:
-        sources = {name: TokenShards(source, seed=(config.seed, name)) for name, source in config.sources.items()}
-        check_eos(sources, eos_token_id)
-        weights = config.weights
-    dataset = TokenDataset(sources, weights, config.seq_len, seed=config.seed, non_dp_size=non_dp_size)
-    if config.type == "tokens":
-        epochs = dataset.planned_epochs(max_steps * config.batch_tokens)
-        get_logger().info(f"Planned epochs per source: {epochs}")
-        if over := {name: epoch for name, epoch in epochs.items() if epoch > config.max_epochs}:
-            raise ValueError(f"Planned epochs {over} exceed data.max_epochs={config.max_epochs}")
-    return dataset
-
-
-def setup_val_dataset(source: TokenShards, seq_len: int, num_windows: int, non_dp_size: int) -> TokenDataset:
-    """One pass over the first ``num_windows`` windows of a held-out source."""
-    return TokenDataset({"val": source}, {"val": 1.0}, seq_len, non_dp_size=non_dp_size, num_windows=num_windows)
-
-
-def check_eos(sources: dict[str, TokenShards], eos_token_id: int) -> None:
+def check_eos(shards: TokenShards, eos_token_id: int) -> None:
     """Every document ends with the tokenizer's EOS. A different token there means the shards were made with
-    another tokenizer."""
-    for name, source in sources.items():
-        last = source.last_token_of_first_document()
-        if last != eos_token_id:
+    another tokenizer. Checked on the first document of every folder."""
+    for file_index, document in zip(shards.first_files, shards.first_documents()):
+        if document[-1] != eos_token_id:
             raise ValueError(
-                f"The first document of source {name!r} ends with token {last}, not the tokenizer's EOS "
-                f"{eos_token_id}. Were the shards tokenized with tokenizer.name?"
+                f"The first document of {shards.files[file_index].parent} ends with token {document[-1]}, not the "
+                f"tokenizer's EOS {eos_token_id}. Were the shards tokenized with tokenizer.name?"
             )
 
 
-def starts_with_bos(sources: dict[str, TokenShards], bos_token_id: int | None) -> bool:
-    """Whether the documents of the sources start with the tokenizer's BOS, read off the first document of every
-    source. The eval suite formats its requests the same way."""
-    starts = {name: source.first_token() == bos_token_id for name, source in sources.items()}
+def starts_with_bos(shards: TokenShards, bos_token_id: int | None) -> bool:
+    """Whether the documents start with the tokenizer's BOS, read off the first document of every folder. The eval
+    suite formats its requests the same way."""
+    starts = {
+        shards.files[i].parent.as_posix(): int(doc[0]) == bos_token_id
+        for i, doc in zip(shards.first_files, shards.first_documents())
+    }
     if len(set(starts.values())) > 1:
-        raise ValueError(f"Only some token sources start their documents with BOS: {starts}")
+        raise ValueError(f"Only some token folders start their documents with BOS: {starts}")
     return all(starts.values())
