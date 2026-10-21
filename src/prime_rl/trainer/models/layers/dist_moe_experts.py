@@ -296,7 +296,7 @@ class DistMoEExpertCompute:
         peaks = {
             name: value
             for name, value in dataclasses.asdict(scratch_info).items()
-            if value is not None and name != "scratch_min_free"
+            if value is not None and name.endswith("_used")
         }
         values = torch.tensor(list(peaks.values()), dtype=torch.float64, device="cuda")
         dist.all_reduce(values, op=dist.ReduceOp.MAX, group=self.group)
