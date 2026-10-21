@@ -106,6 +106,10 @@ class TokensDataConfig(BaseBatchConfig):
     max_epochs: float = Field(1.0, gt=0)
     """Most passes over a source's available tokens that the run (``max_steps``) may make. Checked at startup."""
 
+    document_masking: bool = True
+    """Attention and positions restart at every document. If False, a row is one sequence: attention spans the
+    whole row and positions run over it."""
+
     @model_validator(mode="after")
     def validate_weights(self):
         if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):

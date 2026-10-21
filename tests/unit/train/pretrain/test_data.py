@@ -78,6 +78,15 @@ def test_source_tokens_count_every_window_of_the_mixture(tmp_path):
     assert sum(source_tokens(dataset, 8, 16).values()) == 8 * 4
 
 
+def test_without_document_masking_every_window_is_one_sequence(tmp_path):
+    write_shard(tmp_path / "a" / "00.ds", [[1, 2, 3], [4, 5], [6, 7, 8, 9]])
+    sources = {"a": TokenShards(TokenSourceConfig(path=tmp_path / "a"))}
+    masked = [window["seq_lens"].tolist() for window in TokenDataset(sources, {"a": 1.0}, seq_len=4, num_windows=2)]
+    assert masked == [[3, 1], [1, 3]]
+    dataset = TokenDataset(sources, {"a": 1.0}, seq_len=4, num_windows=2, document_masking=False)
+    assert [window["seq_lens"].tolist() for window in dataset] == [[4], [4]]
+
+
 def test_collate_rows_restarts_positions_at_documents():
     rows = [
         {"tokens": np.arange(5), "seq_lens": np.array([3, 1])},

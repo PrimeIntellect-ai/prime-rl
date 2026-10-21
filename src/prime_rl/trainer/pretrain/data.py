@@ -121,7 +121,8 @@ class TokenDataset(StatefulIterableDataset):
     Window ``w``'s source is drawn from the mixture ``weights`` with an RNG keyed by ``(seed, w)``, and it is that
     source's next window (``TokenShards.window_start``). Every data rank walks the whole window sequence but reads only
     its own windows; the state is the window counter and the tokens read per source. Each window reads one token past
-    its end for the last target. With ``num_windows`` the dataset stops after that many windows."""
+    its end for the last target. With ``num_windows`` the dataset stops after that many windows. Without
+    ``document_masking``, a window is one sequence: attention and positions run over the whole window."""
 
     def __init__(
         self,
@@ -131,6 +132,7 @@ class TokenDataset(StatefulIterableDataset):
         seed: int = 0,
         non_dp_size: int = 1,
         num_windows: int | None = None,
+        document_masking: bool = True,
     ):
         super().__init__(non_dp_size)
         self.sources = sources
@@ -140,6 +142,7 @@ class TokenDataset(StatefulIterableDataset):
         self.seq_len = seq_len
         self.seed = seed
         self.num_windows = num_windows
+        self.document_masking = document_masking
         self.tokens = dict.fromkeys(self.names, 0)
 
     def epochs(self) -> dict[str, float]:
@@ -176,10 +179,8 @@ class TokenDataset(StatefulIterableDataset):
             if window % self.data_world_size != self.data_rank:
                 continue
             tokens, doc_starts = self.sources[name].read(start, self.seq_len + 1)
-            yield {
-                "tokens": tokens,
-                "seq_lens": np.diff([0, *(s for s in doc_starts if s < self.seq_len), self.seq_len]),
-            }
+            doc_starts = [s for s in doc_starts if s < self.seq_len] if self.document_masking else []
+            yield {"tokens": tokens, "seq_lens": np.diff([0, *doc_starts, self.seq_len])}
 
 
 def source_tokens(dataset: TokenDataset, start: int, end: int) -> dict[str, int]:
@@ -223,7 +224,14 @@ def setup_train_dataset(
         sources = {name: TokenShards(source, seed=(config.seed, name)) for name, source in config.sources.items()}
         check_eos(sources, eos_token_id)
         weights = config.weights
-    dataset = TokenDataset(sources, weights, config.seq_len, seed=config.seed, non_dp_size=non_dp_size)
+    dataset = TokenDataset(
+        sources,
+        weights,
+        config.seq_len,
+        seed=config.seed,
+        non_dp_size=non_dp_size,
+        document_masking=config.type == "fake" or config.document_masking,
+    )
     if config.type == "tokens":
         epochs = dataset.planned_epochs(max_steps * config.batch_size * config.seq_len)
         get_logger().info(f"Planned epochs per source: {epochs}")
