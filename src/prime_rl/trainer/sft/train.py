@@ -566,6 +566,7 @@ def train(config: SFTConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
+        mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
@@ -612,6 +613,7 @@ def train(config: SFTConfig):
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
             "perf/mfu": mfu,
+            "perf/mfu_6dn": mfu_6dn,
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))
