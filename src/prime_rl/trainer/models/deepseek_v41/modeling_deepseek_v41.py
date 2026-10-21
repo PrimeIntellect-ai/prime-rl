@@ -72,11 +72,12 @@ class DeepseekV41DecoderLayer(nn.Module):
         state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
 
         attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
-        attn_out, state = self.self_attn(self.input_layernorm(attn_in), packed=packed, state=state)
+        dtype = mhc_states.dtype
+        attn_out, state = self.self_attn(self.input_layernorm(attn_in).to(dtype), packed=packed, state=state)
         mhc_states = self.attn_hc.update_states(post, comb, attn_out, streams)
 
         ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
-        mlp_out = self.mlp(self.post_attention_layernorm(ffn_in), routed_experts=routed_experts)
+        mlp_out = self.mlp(self.post_attention_layernorm(ffn_in).to(dtype), routed_experts=routed_experts)
         mhc_states = self.ffn_hc.update_states(post, comb, mlp_out, streams)
         return (mhc_states, ffn_pre, *state.as_tuple())
 
@@ -217,7 +218,8 @@ class DeepseekV41Model(nn.Module):
             mhc_states, pre_mix, *shared = decoder_layer(
                 mhc_states, pre_mix, *shared, routed_experts_layer, packed=packed
             )
-        return MoeModelOutputWithPast(last_hidden_state=self.norm(collapse_streams(mhc_states, pre_mix)))
+        hidden_states = self.norm(collapse_streams(mhc_states, pre_mix)).to(mhc_states.dtype)
+        return MoeModelOutputWithPast(last_hidden_state=hidden_states)
 
 
 class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):

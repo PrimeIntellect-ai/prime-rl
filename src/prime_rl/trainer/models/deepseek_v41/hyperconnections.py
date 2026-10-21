@@ -102,9 +102,9 @@ class DeepseekV41HyperConnection(nn.Module):
     def update_states(
         post: torch.Tensor, comb: torch.Tensor, sublayer_out: torch.Tensor, mhc_states: torch.Tensor
     ) -> torch.Tensor:
-        """Broadcast the sublayer output over the streams via `post` and remix them via `comb`."""
-        dtype = mhc_states.dtype
-        return dsv4_mhc.fused_post_bda(comb.to(dtype), mhc_states, post.to(dtype), sublayer_out)
+        """Broadcast the sublayer output over the streams via `post` and remix them via `comb`, both
+        fp32 as vLLM applies them."""
+        return dsv4_mhc.fused_post_bda(comb, mhc_states, post, sublayer_out)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.fn, mean=0.0, std=init_std)
@@ -113,8 +113,12 @@ class DeepseekV41HyperConnection(nn.Module):
 
 
 def collapse_streams(mhc_states: torch.Tensor, pre: torch.Tensor) -> torch.Tensor:
-    """`(b, t, hc, d)` streams weighted by `(b, t, hc)` fp32 `pre` into one `(b, t, d)` sequence."""
-    return (pre.unsqueeze(-1) * mhc_states.float()).sum(dim=2).to(mhc_states.dtype)
+    """`(b, t, hc, d)` streams weighted by `(b, t, hc)` fp32 `pre` into one fp32 `(b, t, d)` sequence.
+
+    It stays fp32 into the next RMSNorm, so collapse and norm round to bf16 once, as vLLM's fused
+    collapse-norm kernel does.
+    """
+    return (pre.unsqueeze(-1) * mhc_states.float()).sum(dim=2)
 
 
 def identity_pre_mix(mhc_states: torch.Tensor) -> torch.Tensor:
