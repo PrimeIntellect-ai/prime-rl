@@ -13,7 +13,6 @@ from prime_rl.configs.trainer import (
     ModelConfig,
     MoERuntimeConfig,
     MuonConfig,
-    ParametrizationConfig,
     SchedulerConfig,
     TrainerLaunchConfig,
 )
@@ -27,9 +26,19 @@ class MoEBalanceConfig(BaseConfig):
     bias_update: Literal["sign", "quantile"] = "quantile"
     """``quantile`` (default): quantile balancing (Su 2026; Kimi K3, Marin): every step, each layer's bias is set to
     the value with which every expert would have been selected by ``top_k / num_experts`` of the step's tokens (null
-    experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Marin found it
+    experts included), estimated as ``quantile_estimator`` sets; no rate. Marin found it
     works best on the router logits (``router_bias_on_logits`` in the model config, on by default). ``sign``: every
     step, each layer's bias moves by ``bias_update_rate`` towards underloaded experts."""
+
+    quantile_estimator: Literal["histogram", "micro_batch_mean"] = "histogram"
+    """How ``quantile`` estimates the thresholds. ``histogram`` (default; Kimi K3 report, §2.3.3): per expert, a
+    histogram of the step's margins summed over the micro-batches and ranks (one all-reduce per step), read with in-bin
+    interpolation; the quantile of the pooled step, independent of how the tokens are split. Its grid is the previous
+    step's global margin range (``[-1, 1]`` on the first step after a start or resume). ``micro_batch_mean``: each
+    micro-batch's exact quantile, averaged over the micro-batches and ranks."""
+
+    quantile_bins: int = Field(1024, ge=2)
+    """Bins of the ``histogram`` estimator's grid."""
 
     bias_update_rate: float = Field(3e-3, ge=0)
     """Step size of the sign update (gamma): every step, each layer's bias moves by this towards underloaded experts,
@@ -54,10 +63,9 @@ class PretrainModelConfig(ModelConfig):
 
     moe: PretrainMoEConfig = PretrainMoEConfig()
 
-    moe_router_fsdp: Literal["unit", "replicated"] = "replicated"
-
-    offload: Literal["none"] = "none"
-    """CPU offloading is not supported: pretraining's per-role parameter groups need ``none``."""
+    offload: Literal["none", "optimizer"] = "none"
+    """``optimizer`` keeps the optimizer states in CPU RAM between steps, as in SFT and RL. ``full`` (CPU optimizer
+    steps during backward) is not supported by the pretraining step."""
 
 
 class TokenSourceConfig(BaseConfig):
@@ -179,22 +187,11 @@ class EvalsConfig(BaseConfig):
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
 
 
-class PretrainAdamWConfig(AdamWConfig):
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon of the base shape (scaled per role under CompleteP)."""
-
-
-class PretrainMuonConfig(MuonConfig):
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon of the base shape for the AdamW groups (scaled per role under CompleteP)."""
-
-
-PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
+PretrainOptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig, Field(discriminator="type")]
 
 
 class PretrainConfig(TrainerLaunchConfig):
-    # A trainable fp32 router, and weight decay 0.1.
-    auto_moe_router_dtype = "float32"
+    # A trainable router, and weight decay 0.1.
     auto_freeze_moe_router = False
     auto_weight_decay = 0.1
 
@@ -210,7 +207,7 @@ class PretrainConfig(TrainerLaunchConfig):
     evals: EvalsConfig | None = None
     """The eval suite, scored inside the trainer. If None, it never runs."""
 
-    optim: PretrainOptimizerConfig = PretrainMuonConfig()
+    optim: PretrainOptimizerConfig = MuonConfig()
     """Optimizer. ``optim.lr`` is required."""
 
     scheduler: SchedulerConfig = LinearSchedulerConfig(warmup_steps=0.1, decay_steps=0.9)
@@ -221,10 +218,6 @@ class PretrainConfig(TrainerLaunchConfig):
 
     max_steps: int = Field(ge=1)
     """Training steps."""
-
-    parametrization: ParametrizationConfig | None = None
-    """CompleteP relative to a base shape. If None, the standard parametrization: the same per-role parameter
-    groups with every multiplier at 1 (norms and biases without weight decay)."""
 
     def default_run_name(self) -> str:
         return f"{Path(self.model.name).name}--{uuid.uuid4().hex[:8]}"

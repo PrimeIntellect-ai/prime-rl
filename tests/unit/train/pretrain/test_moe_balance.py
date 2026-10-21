@@ -1,7 +1,7 @@
 import torch
 
 from prime_rl.trainer.models.layers.moe import MoE, MoEArgs
-from prime_rl.trainer.models.prime_moe.moe import PrimeRouter, sequence_balance
+from prime_rl.trainer.models.prime_moe.moe import PrimeRouter, histogram_quantile_biases, sequence_balance
 from prime_rl.trainer.pretrain.train import update_selection_biases
 
 
@@ -45,6 +45,38 @@ def test_quantile_balancing_balances_the_recorded_batch():
     # One quantile update brings every expert, null experts included, close to 400 * 2 / 8 = 100 tokens.
     thresholds = router.quantile_sum / router.quantile_count
     router.selection_bias.copy_(thresholds.mean() - thresholds)
+    with torch.no_grad():
+        counts = router(x)[2]
+    assert counts.max() / counts.float().mean() < 1.15
+
+
+def test_histogram_quantile_balancing_balances_the_recorded_batch_however_it_is_split():
+    torch.manual_seed(0)
+    router = PrimeRouter(
+        dim=16, num_experts=6, num_null_experts=2, top_k=2, route_norm=True, route_scale=1.0, bias_on_logits=True
+    )
+    with torch.no_grad():
+        router.gate.weight[0] += 0.5  # expert 0 is preferred
+    router.quantile_balance = True
+    router.quantile_grid = torch.tensor([-4.0, 4.0])
+    x = torch.randn(400, 16)
+    hists = []
+    for chunks in (1, 4):
+        router.quantile_hist = torch.zeros(8, 1024)
+        router.quantile_range = torch.tensor([float("inf"), float("-inf")])
+        for part in x.chunk(chunks):
+            router(part)
+        hists.append(router.quantile_hist)
+    torch.testing.assert_close(hists[0], hists[1])
+    # Each token counts once per expert, in the bin of its required bias.
+    biased = router.gate(x) + router.selection_bias
+    required = biased.topk(router.top_k + 1, dim=1).values[:, -1:] - router.gate(x)
+    bins = ((required + 4.0) * (1024 / 8.0)).floor().clamp(0, 1023).long()
+    expected = torch.stack([torch.bincount(bins[:, j], minlength=1024) for j in range(8)]).float()
+    torch.testing.assert_close(hists[0], expected)
+
+    # One update brings every expert, null experts included, close to 400 * 2 / 8 = 100 tokens.
+    router.selection_bias.copy_(histogram_quantile_biases(hists[0], router.quantile_grid, router.top_k))
     with torch.no_grad():
         counts = router(x)[2]
     assert counts.max() / counts.float().mean() < 1.15

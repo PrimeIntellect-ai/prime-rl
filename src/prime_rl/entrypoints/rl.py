@@ -23,7 +23,7 @@ from prime_rl.utils.pathing import (
     launcher_attempt_env,
     prepare_attempt_dirs,
     prepare_run,
-    resolve_resume_step,
+    resolve_latest_ckpt_step,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -487,8 +487,15 @@ def rl(config: RLConfig):
     # stale — without this, a fresh run in a dirty run dir would pick up rollouts
     # from a previous run and the orchestrator would see a negative async level.
     get_logger().info("Starting RL run")
-    ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
-    resume_step = resolve_resume_step(config.resume, get_ckpt_dir(ckpt_base))
+    resume_step: int | None = None
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            resume_step = config.resume.dir_step
+        else:
+            resume_step = config.resume.step
+            if resume_step is None:
+                ckpt_base = ckpt_output_dir if ckpt_output_dir is not None else config.run_dir
+                resume_step = resolve_latest_ckpt_step(get_ckpt_dir(ckpt_base))
 
     if resume_step is not None:
         get_logger().info(f"Resuming from step {resume_step}, cleaning future rollouts and broadcasts")

@@ -7,7 +7,7 @@
 - [Launch](#launch)
 - [Model](#model)
 - [Initialization](#initialization)
-- [Parametrization](#parametrization)
+- [Optimizer Groups](#optimizer-groups)
 - [Learning-Rate Schedule](#learning-rate-schedule)
 - [MoE Load Balancing](#moe-load-balancing)
 - [Data](#data)
@@ -53,36 +53,12 @@ Weights start from a random init, unless the run resumes from a checkpoint. The 
 
 | Field | Meaning |
 |---|---|
-| `model.init.std` | Every weight matrix and the embedding start from N(0, std) (default 0.02), scaled per role under CompleteP (below). Norm weights start at 1, biases at 0. |
+| `model.init.std` | Every weight matrix and embedding (including the LM head, the router, expert and Gated Residual projections) starts from N(0, std) (default 0.02), with no width or depth scaling. Norm weights start at 1, biases at 0; zero-centred norm gains and the MoE selection biases start at 0. |
 | `model.init.seed` | Seed. Every rank initializes only its own shard, and the values depend only on the seed and the parameter name, not on the number of GPUs. |
 
-## Parametrization
+## Optimizer
 
-The optimizer gets one parameter group per role (embedding, hidden matrices, `o_proj`/`down_proj`, LM head, norms, biases; with MoE also experts and the router). By default (standard parametrization) every role uses `optim.lr`, `optim.eps` and `optim.weight_decay`, except norms and biases, which get no weight decay.
-
-`[parametrization]` trains with [CompleteP](https://arxiv.org/abs/2505.01618) (muP extended to depth, alpha = 1), so that hyperparameters tuned on a small base shape carry over to wider and deeper models. `optim.lr`, `optim.eps`, `optim.weight_decay` and `model.init.std` are the base-shape values, and the base shape is set by `parametrization.base_hidden_size` and `parametrization.base_num_layers`. With `m_N = hidden_size / base_hidden_size` and `m_L = num_layers / base_num_layers`:
-
-| Parameters | Init std | Learning rate | Adam eps | Weight decay |
-|---|---|---|---|---|
-| Embedding | std | lr | eps / m_N | wd |
-| Hidden matrices | std / sqrt(m_N) | lr / m_N | eps / (m_N m_L) | wd m_N |
-| `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (m_N m_L) | eps / m_N | wd m_N m_L |
-| LM head | std / m_N | lr / m_N | eps | wd m_N |
-| Norm weights | 1 | lr | eps / m_N | 0 |
-
-CompleteP scales each residual branch by 1/m_L and the logits by 1/m_N. These multipliers are folded into `o_proj`, `down_proj` and the LM head, so the model, its checkpoints and the exported weights are plain Llama.
-
-With `optim.type = "muon"`, the hidden matrices and `o_proj`/`down_proj` are trained by Muon (`rms_norm` learning-rate adjustment), the rest by AdamW with the rules above. Muon's `rms_norm` update grows as sqrt(m_N), so its groups use:
-
-| Parameters | Init std | Learning rate | Weight decay |
-|---|---|---|---|
-| Hidden matrices | std / sqrt(m_N) | lr / sqrt(m_N) | wd sqrt(m_N) |
-| `o_proj`, `down_proj` | std / (sqrt(m_N) m_L) | lr / (sqrt(m_N) m_L) | wd sqrt(m_N) m_L |
-| MoE router | std / sqrt(m_N) | lr / m_N | wd m_N |
-
-In MoE models, the expert matrices follow the hidden and `down_proj` rules per expert. The router maps the width to a fixed number of experts, so under Muon its learning rate falls as 1/m_N (with AdamW it follows the hidden rule).
-
-Use QK-norm (`"use_qk_norm": true` in the model config) with CompleteP. Without it, CompleteP's attention collapses one or two LR steps above the optimum (the norm gains get no weight decay), and the cliff moves down with width. With QK-norm, CompleteP and the standard parametrization reach the same loss, and CompleteP's optimal LR stays fixed across widths (MoE QK-norm sweep). The per-role groups need AdamW or Muon and `model.offload = "none"`. The standard parametrization is CompleteP with the base shape equal to the model shape. Keep `head_dim` and the ratios `intermediate_size / hidden_size` (and `moe_intermediate_size / hidden_size`) and `num_attention_heads / num_key_value_heads` fixed across shapes.
+Pretraining uses the optimizer setup of SFT and RL. With `optim.type = "muon"` (the default), every weight matrix except the embedding and the LM head is trained by Muon (`rms_norm` learning-rate adjustment; expert matrices per expert), and the embedding, the LM head, norms and biases by AdamW with `optim.eps`. `optim.type = "adamw"` trains everything with AdamW. `model.offload = "optimizer"` keeps the optimizer states in CPU RAM between steps; `"full"` is not supported.
 
 ## Learning-Rate Schedule
 
@@ -104,7 +80,9 @@ The schedule scales every param group's own learning rate, so ratios between gro
 
 | Field | Meaning |
 |---|---|
-| `bias_update` | `quantile` (default): quantile balancing. Every step, each layer's bias is set so that every expert would have been selected by `num_experts_per_tok / num_experts` of the step's tokens (null experts included), estimated per micro-batch and averaged over the micro-batches and ranks; no rate. Best with `router_bias_on_logits` (on by default). `sign`: the update below. The bias starts at 0. |
+| `bias_update` | `quantile` (default): quantile balancing. Every step, each layer's bias is set so that every expert would have been selected by `num_experts_per_tok / num_experts` of the step's tokens (null experts included), estimated as `quantile_estimator` sets; no rate. Best with `router_bias_on_logits` (on by default). `sign`: the update below. The bias starts at 0. |
+| `quantile_estimator` | How `quantile` estimates the thresholds. `histogram` (default; Kimi K3 report, §2.3.3): one histogram of the margins per expert over the whole step, summed over the ranks with one all-reduce, read with in-bin interpolation; the quantile of the pooled step, independent of how the tokens are split. `micro_batch_mean`: each micro-batch's exact quantile, averaged over the micro-batches and ranks. |
+| `quantile_bins` | Bins of the `histogram` estimator (default 1024). Its grid is the previous step's global margin range, `[-1, 1]` on the first step after a start or resume. |
 | `bias_update_rate` | With `sign`: every step, each layer's selection bias moves by this step size (gamma) towards underloaded experts, using the step's global expert counts. The update is mean-centred. Default 3e-3; 0 turns it off. |
 | `bias_freeze` | Fraction of `max_steps` at the end during which the biases stop updating. Default 0.1. |
 | `seq_aux_coeff` | Weight (alpha) of the sequence-wise balance loss, computed per packed row of `data.seq_len` tokens and added to the training loss. Default 1e-3; 0 turns it off. |

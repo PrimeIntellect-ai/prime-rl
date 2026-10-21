@@ -57,7 +57,7 @@ def setup_optimizer(
     param_groups: list[dict] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     """``param_groups`` replaces the default parameter groups (for Muon, each group needs an
-    ``algorithm`` key). It is not supported with CPU offloading."""
+    ``algorithm`` key). It is not supported with full offload."""
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
     if full_offload and config.type not in ("adamw", "sign_sgd"):
@@ -126,6 +126,7 @@ def _create_optimizer(
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
+                eps=config.eps,
                 fused=fused_adamw,
             )
         case "muon":
@@ -241,6 +242,7 @@ def _create_muon_optimizer(
         mu=config.mu,
         nesterov=config.nesterov,
         betas=(config.betas1, config.betas2),
+        epsilon=config.eps,
         weight_decay=config.weight_decay,
         adjust_lr="rms_norm",
         distributed_mesh=distributed_mesh,

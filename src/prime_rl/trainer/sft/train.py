@@ -155,9 +155,7 @@ def train(config: SFTConfig):
         parallel_dims,
         offload=config.model.offload,
         model=model,
-        full_offload_dtype_policy=(
-            get_full_offload_dtype_policy(model, config.model) if config.model.offload == "full" else None
-        ),
+        full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
     )
 
     # Set up the learning rate scheduler
@@ -440,9 +438,12 @@ def train(config: SFTConfig):
             )
 
         step_tokens_per_expert = 0
+        perf_counter = get_perf_counter(model)
         step_local_num_tokens = 0
+        step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batches):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
+            step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             if config.log.log_data:
                 print_sample(
                     micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
@@ -475,6 +476,8 @@ def train(config: SFTConfig):
                         moe_stats["max_vio/max"] = torch.maximum(moe_stats["max_vio/max"], value)
                 step_tokens_per_expert += tokens_per_expert
 
+        # Wait for the queued backward kernels so this times GPU work, not kernel launches.
+        torch.cuda.synchronize()
         forward_backward_time = time.perf_counter() - forward_backward_start_time
         expert_load_stats = get_expert_load_stats(step_tokens_per_expert, dp_cp_group) if is_moe_model else {}
 
@@ -541,19 +544,19 @@ def train(config: SFTConfig):
             memory_profiler.step()
 
         # The dp mesh excludes cp, whose ranks hold the same rows.
-        global_num_tokens = torch.tensor(step_local_num_tokens, dtype=torch.int64, device="cuda")
-        dist.all_reduce(global_num_tokens, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
-        num_tokens = global_num_tokens.item()
+        global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
+        dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
         progress.total_samples = dataset_progress["step"]
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
         step_time = time.perf_counter() - step_start_time
-        perf_counter = get_perf_counter(model, config.data.seq_len)
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
-        mfu = perf_counter.get_step_mfu(num_tokens, step_time)
+        mfu = perf_counter.get_step_mfu(num_flops, step_time)
+        mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 
@@ -561,7 +564,7 @@ def train(config: SFTConfig):
         step_message = f"Step {progress.step} | {format_time(step_time):>7} | Loss {batch_loss:.4f}"
         if grad_norm is not None:
             step_message += f" | Grad. Norm {grad_norm:.4f}"
-        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
+        step_message += f" | LR {current_lr:.2e} | Throughput {throughput:.0f} tokens/s | MFU {mfu:.1f}% | MFU 6DN {mfu_6dn:.1f}% | Peak Mem. {peak_memory:.1f}/{max_memory:.1f} GiB ({peak_memory / max_memory * 100:.1f}%)"
         if is_moe_model:
             for name, label in (("max_vio/mean", "Max Vio"), ("routing_confidence/mean", "Routing Conf.")):
                 value = moe_stats[name].item()
@@ -600,6 +603,7 @@ def train(config: SFTConfig):
             "perf/throughput_per_gpu": throughput / world.world_size,
             "perf/peak_memory": peak_memory,
             "perf/mfu": mfu,
+            "perf/mfu_6dn": mfu_6dn,
             "step": progress.step,
         }
         asyncio.run(monitors.log(perf_metrics, step=progress.step))
