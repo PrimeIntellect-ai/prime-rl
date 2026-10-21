@@ -209,8 +209,6 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 
 
 class SFTConfig(BaseTrainerConfig):
-    # bf16 routing skips the fp32 gate GEMM and its fp32 FSDP unit.
-    auto_moe_router_dtype = "bfloat16"
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
