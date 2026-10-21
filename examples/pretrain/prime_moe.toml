@@ -35,11 +35,8 @@ max_norm = 1.0
 
 [evals]
 interval = 512
-sets = [
-  { name = "web-val", path = "data/dolma3-50b-dsv4/web-val" },
-  { name = "code-val", path = "data/dolma3-50b-dsv4/code-val" },
-  { name = "math-val", path = "data/dolma3-50b-dsv4/math-val" },
-]
+# 5M held-out tokens of the five sources, at their training shares.
+sets = [{ name = "heldout", path = "data/dolma3-50b-dsv4/mix-val-5M" }]
 
 [ckpt]
 interval = 1024

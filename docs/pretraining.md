@@ -115,7 +115,7 @@ Every step logs the loss, learning rate, gradient norms (total and per parameter
 `[evals]`: every `interval` steps, at the last step and (with `eval_on_start`, default) on the weights the run starts from, the trainer scores its eval sets with forward passes without gradients on the training model itself (same sharding, dtype and fusions). Evals run after the optimizer update, so the metrics at step N describe the same weights as the step-N checkpoint. A set is either
 
 - the name of a log-likelihood set of the pretrain-evals offline suite (`ppl`, `ctxcont` or `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`), or
-- a held-out folder of datatrove token shards (`{ name = ..., path = ... }`), scored like a `ppl` set: every document of the folder as stored, in windows of each of `seq_lens`, every token after its first scored (loss in nats per token and bits per UTF-8 byte, comparable across tokenizers). Each eval scores the whole folder, so keep held-out folders small.
+- a held-out folder of datatrove token shards (`{ name = ..., path = ... }`), scored like a `ppl` set: every document of the folder as stored, in windows of each of `seq_lens`, every token after its first scored (loss in nats per token and bits per UTF-8 byte, comparable across tokenizers). Each eval scores the whole folder at every length, so keep held-out folders small: at d512 on one H200, a token set costs about 1 s per 200K tokens per length (5M tokens at `seq_lens = [2048, 8192]`: 40 s, against 280 s for the 58-set suite). Because every document is scored from its start, these losses are lower than those of the former `[val]` (by 0.014-0.027 nats at d512), which started rows mid-document and predicted each document's first token across the document boundary: don't compare old `val/*` numbers with `eval/*` token-set numbers.
 
 Requests are packed into document-masked rows of `evals.micro_batch_tokens` tokens (default: the training micro-batch, `data.micro_batch_size * data.seq_len`, or the longest of `seq_lens`, whichever is larger) that are dealt over the ranks; the LM head returns fp32 per-token log-probs for the duration of the evals. Every set is scored at each context length in `seq_lens` (default: `data.seq_len`) and logged as `eval/{set}/{metric}@{length}` (e.g. `eval/fwedu-holdout/bpb@4k`, plus accuracies and greedy exact match for multiple-choice and gold-answer sets); requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once. Requests of the pretrain-evals sets start with BOS only if the training documents do (read off the first document of every training folder at startup), so the evals see the training format; without BOS, the first token of a `ppl` document or `pairs` sentence is only context (`ppl` bpb leaves out its bytes). Requires `model.cp = 1`. Evals run without gradients, so longer rows can fit: in our tests, eval memory stayed at most 0.6x the training peak, and at d512 (8k training micro-batches), rows of 32k instead of 16k tokens cut the eval time by 19%.
 
@@ -123,7 +123,7 @@ Requests are packed into document-masked rows of `evals.micro_batch_tokens` toke
 [evals]
 interval = 1000
 data_dir = "/shared/evals-data"
-sets = ["fwedu-holdout", "lambada", "math", { name = "web-val", path = "data/web-val" }]
+sets = ["fwedu-holdout", "lambada", "math", { name = "heldout", path = "data/dolma3-50b-dsv4/mix-val-5M" }]
 seq_lens = [2048, 4096, 16384]
 ```
 
