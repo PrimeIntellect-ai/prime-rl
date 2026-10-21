@@ -19,15 +19,14 @@ type = "tokens"
 seq_len = 8192
 batch_size = 32
 micro_batch_size = 8
-max_epochs = 3
-weights = { web = 0.60, pdfs = 0.20, code = 0.12, math = 0.05, reference = 0.03 }
-
-[data.sources]
-web = { path = "data/dolma3-50b-dsv4/web" }
-pdfs = { path = "data/dolma3-50b-dsv4/pdfs" }
-code = { path = "data/dolma3-50b-dsv4/code" }
-math = { path = "data/dolma3-50b-dsv4/math" }
-reference = { path = "data/dolma3-50b-dsv4/reference" }
+# The five source folders pooled: the mixture at the token shares they were made with.
+paths = [
+  "data/dolma3-50b-dsv4/web",
+  "data/dolma3-50b-dsv4/pdfs",
+  "data/dolma3-50b-dsv4/code",
+  "data/dolma3-50b-dsv4/math",
+  "data/dolma3-50b-dsv4/reference",
+]
 
 [optim]
 type = "muon"

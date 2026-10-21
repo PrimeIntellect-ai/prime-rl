@@ -1,6 +1,6 @@
 # Tiny prime_moe with the base components (Gated Residual, null experts, gated attention, XSA, LatentMoE, quantile
 # balancing) in FP8 on 2 GPUs. The test writes the token shards (Reverse-Text-SFT, Qwen3 tokenizer) and passes their
-# folder as --data.sources.reverse.path. Resumes the start run from its step-20 checkpoint.
+# folder as --data.paths. Resumes the start run from its step-20 checkpoint.
 max_steps = 30
 
 [model]
@@ -25,10 +25,7 @@ seq_len = 2048
 batch_size = 8
 micro_batch_size = 2
 max_epochs = 100
-weights = { reverse = 1.0 }
-
-[data.sources]
-reverse = { path = "set-by-the-test" }
+paths = ["set-by-the-test"]
 
 [optim]
 type = "muon"

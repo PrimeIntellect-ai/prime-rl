@@ -49,7 +49,7 @@ def pretrain_command(config: str, token_dir: Path, wandb_project: str, wandb_nam
         "pretrain",
         "@",
         f"configs/ci/integration/pretrain-moe/{config}",
-        "--data.sources.reverse.path",
+        "--data.paths",
         token_dir.as_posix(),
         "--deployment.num-train-gpus",
         "2",

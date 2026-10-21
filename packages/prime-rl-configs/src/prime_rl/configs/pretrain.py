@@ -1,4 +1,3 @@
-import math
 import uuid
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
@@ -82,7 +81,7 @@ class BaseBatchConfig(BaseDataConfig):
     """Tokens per row. Documents continue across rows; attention restarts at every document and every row."""
 
     seed: int = 0
-    """Seed for choosing each row's source, the per-epoch order of every source (and the fake tokens)."""
+    """Seed for the per-epoch window order of the pool (and the fake tokens)."""
 
 
 class FakeDataConfig(BaseBatchConfig):
@@ -92,30 +91,21 @@ class FakeDataConfig(BaseBatchConfig):
 
 
 class TokensDataConfig(BaseBatchConfig):
-    """Rows of pre-tokenized datatrove shards, each row drawn from one source of a weighted mixture."""
+    """Rows of pre-tokenized datatrove shards: random windows of one token pool. Mixtures are made offline, as shard
+    folders."""
 
     type: Literal["tokens"] = "tokens"
 
-    sources: dict[str, TokenSourceConfig]
-    """Token sources by name. The name labels the source's metrics."""
-
-    weights: dict[str, float]
-    """Token share of each source. Shares are non-negative and sum to 1; unlisted sources get 0."""
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
+    The files of all folders (in folder order, then file name order) are read as one token pool."""
 
     max_epochs: float = Field(1.0, gt=0)
-    """Most passes over a source's available tokens that the run (``max_steps``) may make. Checked at startup."""
+    """Most passes over the pool that the run (``max_steps``) may make. Checked at startup."""
 
     document_masking: bool = True
     """Attention and positions restart at every document. If False, a row is one sequence: attention spans the
     whole row and positions run over it."""
-
-    @model_validator(mode="after")
-    def validate_weights(self):
-        if any(weight < 0 for weight in self.weights.values()) or not math.isclose(sum(self.weights.values()), 1.0):
-            raise ValueError(f"data.weights must be non-negative and sum to 1, got {self.weights}")
-        if unknown := self.weights.keys() - self.sources.keys():
-            raise ValueError(f"data.weights name unknown sources {sorted(unknown)}")
-        return self
 
 
 PretrainDataConfig: TypeAlias = Annotated[FakeDataConfig | TokensDataConfig, Field(discriminator="type")]
