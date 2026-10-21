@@ -187,17 +187,7 @@ class EvalsConfig(BaseConfig):
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
 
 
-class PretrainAdamWConfig(AdamWConfig):
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon."""
-
-
-class PretrainMuonConfig(MuonConfig):
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon of the AdamW groups."""
-
-
-PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
+PretrainOptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig, Field(discriminator="type")]
 
 
 class PretrainConfig(TrainerLaunchConfig):
@@ -217,7 +207,7 @@ class PretrainConfig(TrainerLaunchConfig):
     evals: EvalsConfig | None = None
     """The eval suite, scored inside the trainer. If None, it never runs."""
 
-    optim: PretrainOptimizerConfig = PretrainMuonConfig()
+    optim: PretrainOptimizerConfig = MuonConfig()
     """Optimizer. ``optim.lr`` is required."""
 
     scheduler: SchedulerConfig = LinearSchedulerConfig(warmup_steps=0.1, decay_steps=0.9)
