@@ -637,7 +637,7 @@ def test_policy_sources_accept_different_top_p_values():
             }
         )
 
-    assert [source.sampling.top_k for source in config.train.source] == [512, 512]
+    assert [source.sampling.top_k for source in config.train.source] == [128, 128]
 
 
 @pytest.mark.parametrize("frozen", [False, True])

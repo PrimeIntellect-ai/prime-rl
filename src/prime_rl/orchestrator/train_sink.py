@@ -259,7 +259,8 @@ class TrainSink:
                         "the inference server config (the rl entrypoint does this automatically) - "
                         "it requires vLLM's native sampling-mask capture (>= 0.28)."
                     )
-                if env.requires_top_logprobs and sample.top_logprobs is None:
+                mask_logprobs = sample.sampling_mask.logprobs if sample.sampling_mask is not None else None
+                if env.requires_top_logprobs and sample.top_logprobs is None and mask_logprobs is None:
                     raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
                 stamp_loss_routing(sample, env.algorithm.action_loss_type)
             if self.config.constant_trainer_batch_size:
