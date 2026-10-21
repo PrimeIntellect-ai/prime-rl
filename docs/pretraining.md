@@ -53,12 +53,12 @@ Weights start from a random init, unless the run resumes from a checkpoint. The 
 
 | Field | Meaning |
 |---|---|
-| `model.init.std` | Every weight matrix and embedding (including the LM head, the router, expert and Gated Residual projections) starts from N(0, std) (default 0.02), with no per-role, width or depth scaling. Norm weights start at 1, biases at 0; zero-centred norm gains and the MoE selection biases start at 0. |
+| `model.init.std` | Every weight matrix and embedding (including the LM head, the router, expert and Gated Residual projections) starts from N(0, std) (default 0.02), with no width or depth scaling. Norm weights start at 1, biases at 0; zero-centred norm gains and the MoE selection biases start at 0. |
 | `model.init.seed` | Seed. Every rank initializes only its own shard, and the values depend only on the seed and the parameter name, not on the number of GPUs. |
 
-## Optimizer Groups
+## Optimizer
 
-The optimizer gets one parameter group per role (embedding, hidden matrices, `o_proj`/`down_proj`, LM head, norms, biases; with MoE also experts and the router; with Gated Residual its projections). Every group uses `optim.lr`, `optim.eps` and `optim.weight_decay`, except norms and biases, which get no weight decay. With `optim.type = "muon"` (the default), the hidden matrices (expert matrices per expert), `o_proj`/`down_proj` and the MoE router are trained by Muon (`rms_norm` learning-rate adjustment), the rest by AdamW. The groups need AdamW or Muon. `model.offload = "optimizer"` keeps the optimizer states in CPU RAM between steps, as in SFT and RL; `"full"` is not supported.
+Pretraining uses the optimizer setup of SFT and RL. With `optim.type = "muon"` (the default), every weight matrix except the embedding and the LM head is trained by Muon (`rms_norm` learning-rate adjustment; expert matrices per expert), and the embedding, the LM head, norms and biases by AdamW with `optim.eps`. `optim.type = "adamw"` trains everything with AdamW. `model.offload = "optimizer"` keeps the optimizer states in CPU RAM between steps; `"full"` is not supported.
 
 ## Learning-Rate Schedule
 

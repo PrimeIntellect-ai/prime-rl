@@ -30,7 +30,6 @@ from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
-from prime_rl.trainer.pretrain.parametrization import param_groups
 from prime_rl.trainer.pretrain.balance import (
     histogram_quantile_update_selection_biases,
     quantile_update_selection_biases,
@@ -149,7 +148,6 @@ def train(config: PretrainConfig):
         parallel_dims,
         offload=config.model.offload,
         model=model,
-        param_groups=param_groups(model, config.optim, parallel_dims.ep_enabled),
     )
 
     # With ckpt.skip_scheduler, the schedule is rebuilt over the remaining steps.

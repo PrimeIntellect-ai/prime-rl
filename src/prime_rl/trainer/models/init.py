@@ -1,6 +1,5 @@
 import hashlib
 import math
-from typing import Literal
 
 import torch
 from torch import nn
@@ -12,29 +11,9 @@ from prime_rl.trainer.models.layers.hyper_connection import ExpandedRMSNorm
 from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
 from prime_rl.utils.weights import resolve_fqn
 
-ParamRole = Literal["embedding", "output", "residual_out", "hidden", "norm", "bias"]
-
 # Elements per random block. Blocks are seeded independently, so each rank draws only the
 # blocks that overlap its shard and the values do not depend on how the tensor is sharded.
 BLOCK_NUMEL = 1 << 22
-
-
-def param_role(name: str, param: torch.Tensor) -> ParamRole:
-    """Classify a parameter by its canonical name: the initialization and the pretraining optimizer groups are defined
-    over these roles."""
-    if "embed_tokens" in name:
-        return "embedding"
-    if "lm_head" in name:
-        return "output"
-    if param.ndim == 1:
-        if name.endswith("bias"):
-            return "bias"
-        if "norm" in name:
-            return "norm"
-        raise ValueError(f"No init role for 1-D parameter {name!r}")
-    if name.endswith(("o_proj.weight", "down_proj.weight", "down_proj")):
-        return "residual_out"
-    return "hidden"
 
 
 def block_seed(seed: int, name: str, block: int) -> int:
@@ -78,13 +57,14 @@ def init_weights(model: nn.Module, config: InitConfig) -> None:
     for name, param in model.named_parameters():
         # Canonical names, so wrappers such as activation checkpointing don't change the values.
         name = resolve_fqn(model, name)
-        role = param_role(name, param)
         local = param.to_local() if isinstance(param, DTensor) else param
-        if role == "norm":
-            local.fill_(1.0)
-            continue
-        if role == "bias":
-            local.zero_()
+        if param.ndim == 1:
+            if name.endswith("bias"):
+                local.zero_()
+            elif "norm" in name:
+                local.fill_(1.0)
+            else:
+                raise ValueError(f"No init for 1-D parameter {name!r}")
             continue
         if isinstance(param, DTensor):
             local_shape, global_offset = compute_local_shape_and_global_offset(
