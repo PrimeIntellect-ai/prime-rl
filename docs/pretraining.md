@@ -98,9 +98,9 @@ Each row comes from one source, drawn with the mixture `data.weights`. At startu
 ```toml
 [data]
 type = "tokens"
-seq_len = 4096
-batch_tokens = 262144       # per optimizer step, over all GPUs
-micro_batch_tokens = 65536  # per forward pass on one GPU
+seq_len = 8192        # tokens per row
+batch_size = 32       # rows per optimizer step, over all GPUs
+micro_batch_size = 8  # rows per forward pass on one GPU
 max_epochs = 3
 weights = { web = 0.8, code = 0.2 }
 
@@ -109,7 +109,7 @@ web = { path = "data/web" }
 code = { path = "data/code" }
 ```
 
-Batch sizes are in tokens, so changing `seq_len` keeps the tokens per step and the number of steps. Resume restores the data position on the same GPU layout and `data.num_workers`; resuming on a different layout is not supported yet. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
+Batch sizes are in rows, as in SFT: a step trains on `batch_size * seq_len` tokens, so changing `seq_len` changes the tokens per step. Resume restores the data position on the same GPU layout and `data.num_workers`; resuming on a different layout is not supported yet. `data.type = "fake"` trains on random tokens, for smoke and throughput tests.
 
 ## Monitoring
 
@@ -127,7 +127,7 @@ interval = 500
 web = { path = "data/web-val" }
 ```
 
-**Eval suite (`[evals]`).** Every `interval` steps, at the last step and (with `eval_on_start`) on the weights the run starts from, the trainer scores the eval suite: log-likelihood sets (`ppl`, `ctxcont` and `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`, the format of the pretrain-evals offline suite) with forward passes without gradients on the training model itself (same sharding, dtype and fusions). Requests are packed into document-masked rows of `evals.micro_batch_tokens` tokens (default: `data.micro_batch_tokens` or the longest of `seq_lens`, whichever is larger) that are dealt over the ranks; the LM head returns fp32 per-token log-probs for the duration of the evals. Every set is scored at each context length in `seq_lens` and logged as `eval/{set}/{metric}@{length}` (e.g. `eval/fwedu-holdout/bpb@4k`, plus accuracies and greedy exact match for multiple-choice and gold-answer sets); requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once. Requests start with BOS only if the training documents do (read off the first document of every training source at startup), so the evals see the training format; without BOS, the first token of a `ppl` document or `pairs` sentence is only context (`ppl` bpb leaves out its bytes). Requires `model.cp = 1`. Evals run without gradients, so longer rows can fit: in our tests, eval memory stayed at most 0.6x the training peak, and at d512 (8k training micro-batches), rows of 32k instead of 16k tokens cut the eval time by 19%.
+**Eval suite (`[evals]`).** Every `interval` steps, at the last step and (with `eval_on_start`) on the weights the run starts from, the trainer scores the eval suite: log-likelihood sets (`ppl`, `ctxcont` and `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`, the format of the pretrain-evals offline suite) with forward passes without gradients on the training model itself (same sharding, dtype and fusions). Requests are packed into document-masked rows of `evals.micro_batch_tokens` tokens (default: the training micro-batch, `data.micro_batch_size * data.seq_len`, or the longest of `seq_lens`, whichever is larger) that are dealt over the ranks; the LM head returns fp32 per-token log-probs for the duration of the evals. Every set is scored at each context length in `seq_lens` (default: `data.seq_len`) and logged as `eval/{set}/{metric}@{length}` (e.g. `eval/fwedu-holdout/bpb@4k`, plus accuracies and greedy exact match for multiple-choice and gold-answer sets); requests that are the same at several lengths (e.g. documents shorter than the smallest window) are scored once. Requests start with BOS only if the training documents do (read off the first document of every training source at startup), so the evals see the training format; without BOS, the first token of a `ppl` document or `pairs` sentence is only context (`ppl` bpb leaves out its bytes). Requires `model.cp = 1`. Evals run without gradients, so longer rows can fit: in our tests, eval memory stayed at most 0.6x the training peak, and at d512 (8k training micro-batches), rows of 32k instead of 16k tokens cut the eval time by 19%.
 
 ```toml
 [evals]

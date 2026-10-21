@@ -22,8 +22,8 @@ name = "PrimeIntellect/Qwen3-0.6B"
 [data]
 type = "tokens"
 seq_len = 2048
-batch_tokens = 16384
-micro_batch_tokens = 4096
+batch_size = 8
+micro_batch_size = 2
 max_epochs = 100
 weights = { reverse = 1.0 }
 

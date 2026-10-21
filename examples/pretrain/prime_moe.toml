@@ -16,9 +16,9 @@ name = "tokenizers/deepseek-v4-flash-base"  # a local copy of deepseek-ai/DeepSe
 
 [data]
 type = "tokens"
-seq_len = 4096
-batch_tokens = 262144
-micro_batch_tokens = 65536
+seq_len = 8192
+batch_size = 32
+micro_batch_size = 8
 max_epochs = 3
 weights = { web = 0.60, pdfs = 0.20, code = 0.12, math = 0.05, reference = 0.03 }
 

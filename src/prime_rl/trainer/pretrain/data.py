@@ -225,7 +225,7 @@ def setup_train_dataset(
         weights = config.weights
     dataset = TokenDataset(sources, weights, config.seq_len, seed=config.seed, non_dp_size=non_dp_size)
     if config.type == "tokens":
-        epochs = dataset.planned_epochs(max_steps * config.batch_tokens)
+        epochs = dataset.planned_epochs(max_steps * config.batch_size * config.seq_len)
         get_logger().info(f"Planned epochs per source: {epochs}")
         if over := {name: epoch for name, epoch in epochs.items() if epoch > config.max_epochs}:
             raise ValueError(f"Planned epochs {over} exceed data.max_epochs={config.max_epochs}")

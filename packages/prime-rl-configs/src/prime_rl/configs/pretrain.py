@@ -5,6 +5,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
+from prime_rl.configs.sft import BaseDataConfig
 from prime_rl.configs.trainer import (
     AdamWConfig,
     CheckpointConfig,
@@ -77,39 +78,12 @@ class TokenSourceConfig(BaseConfig):
     """Tokens available from this source: the first ``max_tokens`` of its stream. Defaults to all tokens in the shards."""
 
 
-class BaseBatchConfig(BaseConfig):
-    seq_len: int = Field(4096, ge=1)
+class BaseBatchConfig(BaseDataConfig):
+    seq_len: int = Field(8192, ge=1)
     """Tokens per row. Documents continue across rows; attention restarts at every document and every row."""
-
-    batch_tokens: int = Field(ge=1)
-    """Tokens per optimizer step, over all GPUs. Fixed when ``seq_len`` changes, so the number of steps stays the same."""
-
-    micro_batch_tokens: int = Field(ge=1)
-    """Tokens per forward pass on one GPU."""
-
-    num_workers: int = Field(1, ge=1)
-    """Dataloader worker processes per GPU."""
 
     seed: int = 0
     """Seed for choosing each row's source, the per-epoch order of every source (and the fake tokens)."""
-
-    @property
-    def batch_size(self) -> int:
-        """Rows per optimizer step."""
-        return self.batch_tokens // self.seq_len
-
-    @property
-    def micro_batch_size(self) -> int:
-        """Rows per forward pass."""
-        return self.micro_batch_tokens // self.seq_len
-
-    @model_validator(mode="after")
-    def validate_batch_tokens(self):
-        if self.batch_tokens % self.seq_len or self.micro_batch_tokens % self.seq_len:
-            raise ValueError("data.batch_tokens and data.micro_batch_tokens must be multiples of data.seq_len")
-        if self.batch_tokens % self.micro_batch_tokens:
-            raise ValueError("data.batch_tokens must be a multiple of data.micro_batch_tokens")
-        return self
 
 
 class FakeDataConfig(BaseBatchConfig):
@@ -175,14 +149,15 @@ class EvalsConfig(BaseConfig):
     sets: list[str]
     """Names of the sets to score."""
 
-    seq_lens: list[int] = [2048]
+    seq_lens: list[int] | None = None
     """Context lengths to score every set at: the window length for ``ppl`` sets and the context limit for
-    ``ctxcont`` sets. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g. ``bpb@4k``). Requests that are the
+    ``ctxcont`` sets. Defaults to ``data.seq_len``. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g. ``bpb@4k``). Requests that are the
     same at several lengths are scored once."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
-    """Tokens per packed eval row (one forward pass on one GPU). Defaults to ``data.micro_batch_tokens`` or the
-    longest of ``seq_lens``, whichever is larger; must be at least the longest of ``seq_lens``."""
+    """Tokens per packed eval row (one forward pass on one GPU). Defaults to the training micro-batch
+    (``data.micro_batch_size * data.seq_len``) or the longest of ``seq_lens``, whichever is larger; must be at least
+    the longest of ``seq_lens``."""
 
     save_arrays: bool = False
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
@@ -253,17 +228,19 @@ class PretrainConfig(TrainerLaunchConfig):
             if self.data.seq_len % self.model.cp != 0:
                 raise ValueError("data.seq_len must be divisible by model.cp")
             if self.data.micro_batch_size != 1:
-                raise ValueError("data.micro_batch_tokens must equal data.seq_len with context parallelism")
+                raise ValueError("data.micro_batch_size must be 1 with context parallelism")
             if self.evals is not None:
                 raise ValueError("[evals] does not support context parallelism yet")
         return self
 
     @model_validator(mode="after")
-    def auto_setup_eval_micro_batch_tokens(self):
+    def auto_setup_evals(self):
         if self.evals is not None:
+            if self.evals.seq_lens is None:
+                self.evals.seq_lens = [self.data.seq_len]
             longest = max(self.evals.seq_lens)
             if self.evals.micro_batch_tokens is None:
-                self.evals.micro_batch_tokens = max(self.data.micro_batch_tokens, longest)
+                self.evals.micro_batch_tokens = max(self.data.micro_batch_size * self.data.seq_len, longest)
             elif self.evals.micro_batch_tokens < longest:
                 raise ValueError(f"evals.micro_batch_tokens must be at least the longest of evals.seq_lens ({longest})")
         return self
