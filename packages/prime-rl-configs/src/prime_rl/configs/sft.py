@@ -32,11 +32,6 @@ class BaseDataConfig(BaseConfig):
     num_workers: int = Field(1, ge=1)
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
 
-    pad_to_seq_len: bool = False
-    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
-    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
-    at the cost of extra padding."""
-
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.micro_batch_size != 0:
@@ -46,7 +41,16 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
-class FakeDataConfig(BaseDataConfig):
+class PackedDataConfig(BaseDataConfig):
+    """Samples packed into rows of ``seq_len * micro_batch_size`` tokens."""
+
+    pad_to_seq_len: bool = False
+    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
+    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
+    at the cost of extra padding."""
+
+
+class FakeDataConfig(PackedDataConfig):
     type: Literal["fake"] = "fake"
 
     length: Literal["fixed", "variable"] = "fixed"
@@ -95,7 +99,7 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
-class SFTDataConfig(BaseDataConfig):
+class SFTDataConfig(PackedDataConfig):
     type: Literal["sft"] = "sft"
 
     name: str = "PrimeIntellect/Reverse-Text-SFT"
