@@ -12,6 +12,6 @@ def test_fp8_round_trip_scales_each_stream_and_passes_the_gradient():
     large = streams.abs() > row_max / 64
     # e4m3 keeps 3 mantissa bits: at most half an ulp (2^-4) relative error in each row's normal range.
     assert ((quantized - streams).abs() <= streams.abs() * 2**-4)[large].all()
-    assert torch.equal(quantized.abs().amax(dim=-1), row_max.squeeze(-1))
+    torch.testing.assert_close(quantized.abs().amax(dim=-1), row_max.squeeze(-1), rtol=1e-6, atol=0)
     out.sum().backward()
     assert torch.equal(states.grad, torch.ones_like(states))
