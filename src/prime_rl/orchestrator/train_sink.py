@@ -215,6 +215,16 @@ class TrainSink:
         await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
 
     async def process_group(self, group_id: str) -> None:
+        traces = [trace for episode in self.pending_groups.get(group_id, []) for trace in episode.traces]
+        try:
+            await self._process_group(group_id)
+        finally:
+            # Every delivered trace's arrays are either queued for a batch or deleted here.
+            for trace in traces:
+                queued = set(sample_payload_urls(self.pending_batch.get(trace.id, [])))
+                self._release(url for url in trace_payload_urls(trace) if url not in queued)
+
+    async def _process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         failures = self.pending_group_failures.pop(group_id, [])
         cancellation = self.pending_group_cancellations.pop(group_id, None)
@@ -226,97 +236,87 @@ class TrainSink:
         )
         env = self.train_envs.get(env_name)
         traces = [trace for episode in group for trace in episode.traces]
-        try:
-            task_idx = next((trace.task.data.idx for trace in traces), None)
-            num_errored = (
-                sum(trace.has_error for trace in traces)
-                + sum(not episode.ok for episode in group if not episode.traces)
-                + len(failures)
+        task_idx = next((trace.task.data.idx for trace in traces), None)
+        num_errored = (
+            sum(trace.has_error for trace in traces)
+            + sum(not episode.ok for episode in group if not episode.traces)
+            + len(failures)
+        )
+        n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
+        # A stale drop voids the whole group: every member shares the dispatch
+        # version, so the arrived episodes are exactly as stale as the
+        # cancelled tail. Stale and shutdown groups bypass the curriculum — a
+        # pipeline decision is not a task result.
+        if cancellation is not None and cancellation.reason in ("stale", "shutdown"):
+            self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=True)
+            self._record_zero_output(group, [], n_owed)
+            get_logger().debug(
+                f"Dropped group | env={env_name} task_idx={task_idx} | "
+                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
+                f"reason=cancelled ({cancellation.reason})"
             )
-            n_owed = len(group) + len(failures) + (cancellation.count if cancellation is not None else 0)
-            # A stale drop voids the whole group: every member shares the dispatch
-            # version, so the arrived episodes are exactly as stale as the
-            # cancelled tail. Stale and shutdown groups bypass the curriculum — a
-            # pipeline decision is not a task result.
-            if cancellation is not None and cancellation.reason in ("stale", "shutdown"):
-                self._record_group(group, failures, cancellation, env_name, admitted=False, cancelled=True)
-                self._record_zero_output(group, [], n_owed)
-                get_logger().debug(
-                    f"Dropped group | env={env_name} task_idx={task_idx} | "
-                    f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | "
-                    f"reason=cancelled ({cancellation.reason})"
-                )
-                return
+            return
 
-            survivors = [trace for _, trace in iter_trainable_traces(group)]
-            if survivors:
-                await env.algorithm.score_group(group)
-            admitted = self._admit(group) if group else False
-            if not survivors or not admitted:
-                self._record_group(group, failures, cancellation, env_name, admitted=admitted)
-                self._record_zero_output(group, survivors, n_owed)
-                reason = "no trainable survivors" if not survivors else "rejected by curriculum"
-                get_logger().debug(
-                    f"Dropped group | env={env_name} task_idx={task_idx} | "
-                    f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason={reason}"
-                )
-                return
+        survivors = [trace for _, trace in iter_trainable_traces(group)]
+        if survivors:
+            await env.algorithm.score_group(group)
+        admitted = self._admit(group) if group else False
+        if not survivors or not admitted:
+            self._record_group(group, failures, cancellation, env_name, admitted=admitted)
+            self._record_zero_output(group, survivors, n_owed)
+            reason = "no trainable survivors" if not survivors else "rejected by curriculum"
+            get_logger().debug(
+                f"Dropped group | env={env_name} task_idx={task_idx} | "
+                f"episodes={len(group)} traces={len(traces)} (errored={num_errored}) | reason={reason}"
+            )
+            return
 
-            samples_by_trace: dict[str, list[TrainingSample]] = {}
-            temperature = env.config.sampling.temperature
-            for trace in survivors:
-                samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
-                for sample in samples:
-                    sample.temperatures = [temperature] * len(sample.token_ids)
-                    if (
-                        env.requires_sampling_masks
-                        and sample.sampling_mask is None
-                        and not _kept(sample, "sampling_mask")
-                    ):
-                        # Rollout logprobs are mask-renormalized; training without the masks
-                        # silently biases every importance ratio.
-                        raise RuntimeError(
-                            f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
-                            "carry no sampling masks. Set `enable_return_sampling_mask = true` on "
-                            "the inference server config (the rl entrypoint does this automatically) - "
-                            "it requires vLLM's native sampling-mask capture (>= 0.28)."
-                        )
-                    if env.requires_top_logprobs and sample.top_logprobs is None and not _kept(sample, "top_logprobs"):
-                        raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
-                    stamp_loss_routing(sample, env.algorithm.action_loss_type)
-                if self.config.constant_trainer_batch_size:
-                    samples = [sample for sample in samples if _prune_zero_advantages(sample)]
-                if samples:
-                    samples_by_trace[trace.id] = samples
+        samples_by_trace: dict[str, list[TrainingSample]] = {}
+        temperature = env.config.sampling.temperature
+        for trace in survivors:
+            samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            for sample in samples:
+                sample.temperatures = [temperature] * len(sample.token_ids)
+                if env.requires_sampling_masks and sample.sampling_mask is None and not _kept(sample, "sampling_mask"):
+                    # Rollout logprobs are mask-renormalized; training without the masks
+                    # silently biases every importance ratio.
+                    raise RuntimeError(
+                        f"env '{env_name}' samples with truncation (top_p/top_k) but its rollouts "
+                        "carry no sampling masks. Set `enable_return_sampling_mask = true` on "
+                        "the inference server config (the rl entrypoint does this automatically) - "
+                        "it requires vLLM's native sampling-mask capture (>= 0.28)."
+                    )
+                if env.requires_top_logprobs and sample.top_logprobs is None and not _kept(sample, "top_logprobs"):
+                    raise RuntimeError(f"env {env_name!r} requested sampler top logprobs but returned none")
+                stamp_loss_routing(sample, env.algorithm.action_loss_type)
+            if self.config.constant_trainer_batch_size:
+                samples = [sample for sample in samples if _prune_zero_advantages(sample)]
+            if samples:
+                samples_by_trace[trace.id] = samples
 
-            if not samples_by_trace:
-                self._record_group(group, failures, cancellation, env_name)
-                self._record_zero_output(group, survivors, n_owed)
-                return
+        if not samples_by_trace:
+            self._record_group(group, failures, cancellation, env_name)
+            self._record_zero_output(group, survivors, n_owed)
+            return
 
-            self.pending_batch.update(samples_by_trace)
-            for episode in group:
-                for trace in episode.traces:
-                    if trace.id in samples_by_trace:
-                        self.episode_by_trace[trace.id] = episode.model_copy(update={"traces": [trace]})
-            self._drop_stale(samples_by_trace)
-            queued = set(samples_by_trace) & self.pending_batch.keys()
-            self._record_group(group, failures, cancellation, env_name, queued_trace_ids=queued, cancelled=not queued)
-            # A group's traces share one dispatch version, so the insertion sweep
-            # voids all or none of them. A fully-voided group shipped nothing —
-            # advance the zero-output tally instead of resetting it, or a stalled
-            # trainer plus a tight bound could void groups forever without ever
-            # surfacing the warning.
-            if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
-                self._record_zero_output(group, [], n_owed)
-                return
-            self.zero_output_units = 0
-            self.reported_zero_output_windows = 0
-        finally:
-            # Every delivered trace's arrays are either queued for a batch or deleted here.
-            for trace in traces:
-                kept = set(sample_payload_urls(self.pending_batch.get(trace.id, [])))
-                self._release(url for url in trace_payload_urls(trace) if url not in kept)
+        self.pending_batch.update(samples_by_trace)
+        for episode in group:
+            for trace in episode.traces:
+                if trace.id in samples_by_trace:
+                    self.episode_by_trace[trace.id] = episode.model_copy(update={"traces": [trace]})
+        self._drop_stale(samples_by_trace)
+        queued = set(samples_by_trace) & self.pending_batch.keys()
+        self._record_group(group, failures, cancellation, env_name, queued_trace_ids=queued, cancelled=not queued)
+        # A group's traces share one dispatch version, so the insertion sweep
+        # voids all or none of them. A fully-voided group shipped nothing —
+        # advance the zero-output tally instead of resetting it, or a stalled
+        # trainer plus a tight bound could void groups forever without ever
+        # surfacing the warning.
+        if not any(trace_id in self.pending_batch for trace_id in samples_by_trace):
+            self._record_zero_output(group, [], n_owed)
+            return
+        self.zero_output_units = 0
+        self.reported_zero_output_windows = 0
 
     def _record_group(
         self,
