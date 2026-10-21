@@ -34,6 +34,22 @@ class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True)
     counts: bytes
 
 
+# A sample's training arrays kept by the env-server worker at ``url`` (see
+# ``[payloads]``): the trainer fetches them by ``id`` and keeps the first ``num_tokens``.
+class PayloadSlice(msgspec.Struct, array_like=True, gc=False):
+    url: str
+    id: str
+    num_tokens: int
+    fields: list[str]  # which of routed_experts / sampling_mask / top_logprobs it holds
+
+
+# One branch's training arrays as an env-server worker serves them.
+class BranchArrays(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
+    routed_experts: RoutedExperts | None = None
+    sampling_mask: SamplingMask | None = None
+    top_logprobs: TopLogprobs | None = None
+
+
 # Produced by the orchestrator's train sink; consumed in-process by
 # ``prepare_batch``, which packs samples into per-rank ``MicroBatch``es.
 class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
@@ -87,6 +103,7 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
     top_logprobs: TopLogprobs | None = None
+    payload: PayloadSlice | None = None  # the arrays above, kept by an env server
 
 
 # Orchestrator -> Trainer
@@ -125,3 +142,6 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
     top_logprobs: TopLogprobs | None = None
+    # The samples' arrays kept by env servers, in packing order; the trainer fetches them
+    # into the fields above.
+    payloads: list[PayloadSlice] | None = None

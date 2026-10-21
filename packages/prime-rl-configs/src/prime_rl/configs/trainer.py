@@ -12,6 +12,7 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
+    PayloadsConfig,
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
@@ -739,6 +740,11 @@ class TrainerConfig(BaseTrainerConfig):
 
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
+
+    payloads: PayloadsConfig | None = None
+    """Fetch the training arrays of each micro batch from the env servers that hold them.
+    Set by the ``rl`` entrypoint's shared ``[payloads]``. None means batches carry the
+    arrays inline."""
 
     monitors: MonitorsConfig = MonitorsConfig()
     """Metric monitors (``monitors.wandb``, ``monitors.file``)."""

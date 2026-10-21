@@ -338,6 +338,7 @@ class Orchestrator:
             max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
+            payloads=config.payloads is not None,
             on_episode_complete=self.concurrency.record_episode,
         )
         self.concurrency.bind(
