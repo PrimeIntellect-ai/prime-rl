@@ -286,10 +286,11 @@ class PayloadsConfig(BaseConfig):
     vLLM returns the arrays inline to the env servers as without ``[payloads]``. When an
     episode finishes, each env-server worker keeps every trainable branch's arrays and
     serves them over HTTP; the orchestrator packs and ships only references, and each
-    trainer rank fetches the arrays of its micro batches from the workers. The trainer
-    deletes arrays once every rank fetched them; arrays no batch fetches are swept once no
-    pending batch can train on them. Arrays the trainer cannot fetch drop their micro
-    batches."""
+    trainer rank fetches the arrays of its micro batches from the workers. Each kept
+    array is deleted exactly once: by the trainer after every rank fetched it, by the
+    orchestrator when it drops the sample without shipping it, or by the env server
+    when the episode never reached the orchestrator. Arrays the trainer cannot fetch drop
+    their micro batches."""
 
 
 class BaseTransportConfig(BaseConfig):

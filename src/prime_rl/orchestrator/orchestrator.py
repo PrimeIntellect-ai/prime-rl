@@ -338,7 +338,6 @@ class Orchestrator:
             max_off_policy_steps=config.max_off_policy_steps,
             run_id=self.run_id,
             run_name=self.run_name,
-            payloads=config.payloads is not None,
             on_episode_complete=self.concurrency.record_episode,
         )
         self.concurrency.bind(
@@ -582,6 +581,7 @@ class Orchestrator:
         if self.draining or self.stopped.is_set():
             if batch is not None:
                 self.train_sink.rollout_window.metrics.count("rollout/queued/cancelled", float(batch.cohort.num_traces))
+                self.train_sink.release_samples(batch.samples)
             self.train_sink.discard_queued()
 
     def take_rollout_metrics(self) -> dict[str, float]:
