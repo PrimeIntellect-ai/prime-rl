@@ -8,7 +8,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 MODELEXPRESS_REPOSITORY="https://github.com/ai-dynamo/modelexpress.git"
 # Must match the modelexpress client rev pinned in pyproject.toml.
-MODELEXPRESS_REF="8512b8c7130db34721a0b2ec57c23198fed3ef4f"
+MODELEXPRESS_REF="f24c721563eac8a7b172d46069512dbb2d6da0cc"
 PROTOC_VERSION="29.3"
 REDIS_VERSION="7.4.2"
 REDIS_SHA256="4ddebbf09061cbb589011786febdb34f29767dd7f89dbe712d2b68e808af6a1f"
