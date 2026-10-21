@@ -342,22 +342,22 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
     ulimit -l unlimited
 {%- if train_env_names or eval_env_names %}
 
-    # Env servers run on the inference nodes, round robin over sources, so their memory
-    # and CPU spread over the nodes instead of piling up next to the orchestrator. Each binds
-    # this node so the orchestrator connects across nodes. They take the orchestrator env vars.
+    # Every inference node runs a replica of every env server, and the orchestrator spreads
+    # each source's episodes over them, so env-server memory and CPU spread over all inference
+    # nodes instead of piling up next to the orchestrator. Each binds this node so the
+    # orchestrator connects across nodes. They take the orchestrator env vars.
     # NOTE: keep this block free of single quotes (see the orchestrator block).
-{%- for split, names, offset in [("train", train_env_names, 0), ("eval", eval_env_names, train_env_names | length)] %}
+{%- for split, names in [("train", train_env_names), ("eval", eval_env_names)] %}
 {%- for name in names %}
-    if [ $(({{ loop.index0 + offset }} % NUM_INFER_NODES)) -eq "$INFER_NODE_RANK" ]; then
-        mkdir -p $LOG_DIR/envs/{{ split }}
-        (
+    mkdir -p $LOG_DIR/envs/{{ split }}
+    (
 {%- for key, value in orchestrator_env_vars.items() %}
-            export {{ key }}="{{ value }}"
+        export {{ key }}="{{ value }}"
 {%- endfor %}
-            exec uv run env-server @ $CONFIG_DIR/envs/{{ split }}/{{ name }}.json --serve.address tcp://$LOCAL_IP:0 \
-                > $LOG_DIR/envs/{{ split }}/{{ name }}.log 2>&1
-        ) &
-    fi
+        exec uv run env-server @ $CONFIG_DIR/envs/{{ split }}/{{ name }}.json --serve.address tcp://$LOCAL_IP:0 \
+            --address-file $CONFIG_DIR/envs/{{ split }}/{{ name }}.$INFER_NODE_RANK.address \
+            > $LOG_DIR/envs/{{ split }}/{{ name }}.$INFER_NODE_RANK.log 2>&1
+    ) &
 {%- endfor %}
 {%- endfor %}
 {%- endif %}

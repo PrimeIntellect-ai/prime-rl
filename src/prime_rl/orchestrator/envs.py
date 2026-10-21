@@ -1,9 +1,10 @@
 """Env wrappers over a v1 env server.
 
-Each ``Env`` is an ``EnvClient`` onto its source's env server. Each server's address
-is derived from the source's position in the config
-(``OrchestratorConfig.env_addresses``); the launcher runs the servers at
-exactly those addresses, and the orchestrator connects. The
+Each ``Env`` holds an ``EnvClient`` onto each replica of its source's env server
+(``OrchestratorConfig.env_server_replicas``; multi-node runs start one per inference
+node) and routes each run to the least loaded one. A source's own ``serve.address``
+names a single external server (``OrchestratorConfig.env_addresses``); otherwise each
+launcher-managed replica publishes the address it bound, and the orchestrator connects. The
 orchestrator never *runs* an environment — the agents and their runtimes live only
 in the server — but it does own the *taskset*: a v1 env's tasks are loaded here,
 once, and each dispatched episode ships its task's data on the request
@@ -61,12 +62,12 @@ class Env:
     """Client onto a v1 env server. The orchestrator owns the taskset (loaded once,
     client-side); the server owns agent/harness execution."""
 
-    def __init__(self, config: EnvConfig, address: str | None, address_file: Path):
+    def __init__(self, config: EnvConfig, address: str | None, address_files: list[Path]):
         self.config = config
         self.address = address
-        self.address_file = address_file
-        """Where a launcher-managed server publishes its address; read when ``address``
-        is None."""
+        self.address_files = address_files
+        """Where the replicas of a launcher-managed server publish their addresses; read
+        when ``address`` is None."""
         self.sampling = vf.SamplingConfig()
         self.num_tasks: int | None = 0
         """Task count; ``None`` means the selected tasks never end."""
@@ -75,28 +76,37 @@ class Env:
         ``start()``. A bounded selection is materialized (``num_tasks`` is its count)
         and iterated from there; an unbounded one streams off the taskset. Consumed once — by ``TrainSource`` (train) or
         ``EvalEnv.start`` (eval)."""
-        self._env_client: EnvClient | None = None
+        self._env_clients: list[EnvClient] = []
+        self._in_flight: list[int] = []
+        """Runs in flight per replica, to route each run to the least loaded one."""
 
     @property
     def name(self) -> str:
         return self.config.resolved_name
 
     @property
-    def env_client(self) -> EnvClient:
-        if self._env_client is None:
+    def env_clients(self) -> list[EnvClient]:
+        if not self._env_clients:
             raise RuntimeError(f"Env {self.name} not started — call start() first.")
-        return self._env_client
+        return self._env_clients
 
     async def start(self) -> None:
-        """Connect to the env server and load the taskset client-side."""
+        """Connect to the env server's replicas and load the taskset client-side."""
         t0 = time.perf_counter()
-        if self.address is None:
-            self.address = await wait_for_address(self.address_file, timeout=ENV_SERVER_STARTUP_TIMEOUT)
-        get_logger().debug(f"Connecting {self.name} to env server {self.address}")
-        self._env_client = EnvClient(address=self.address)
-        # The server may still be coming up (the launcher spawns it concurrently with
-        # the orchestrator), so poll until it answers.
-        await self.env_client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT)
+        if self.address is not None:
+            addresses = [self.address]
+        else:
+            addresses = await asyncio.gather(
+                *(wait_for_address(path, timeout=ENV_SERVER_STARTUP_TIMEOUT) for path in self.address_files)
+            )
+        get_logger().debug(f"Connecting {self.name} to env servers {addresses}")
+        self._env_clients = [EnvClient(address=address) for address in addresses]
+        self._in_flight = [0] * len(addresses)
+        # The servers may still be coming up (the launcher spawns them concurrently with
+        # the orchestrator), so poll until they answer.
+        await asyncio.gather(
+            *(client.wait_for_server_startup(timeout=ENV_SERVER_STARTUP_TIMEOUT) for client in self.env_clients)
+        )
         taskset = vf.load_taskset(self.config.env.taskset).select(self.config.select)
         if taskset.bounded:
             # Materialize off the event loop — iterating may pull a dataset.
@@ -125,14 +135,20 @@ class Env:
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
-        change of one of the episode's traces — as it lands."""
-        return await self.env_client.run(
-            task_data=task_data,
-            client=client,
-            model=model_name,
-            sampling=self._sampling(cache_salt),
-            on_delta=on_delta,
-        )
+        change of one of the episode's traces — as it lands. The run goes to the replica
+        with the fewest runs in flight."""
+        replica = min(range(len(self.env_clients)), key=self._in_flight.__getitem__)
+        self._in_flight[replica] += 1
+        try:
+            return await self.env_clients[replica].run(
+                task_data=task_data,
+                client=client,
+                model=model_name,
+                sampling=self._sampling(cache_salt),
+                on_delta=on_delta,
+            )
+        finally:
+            self._in_flight[replica] -= 1
 
 
 class TrainEnv(Env):
@@ -142,12 +158,12 @@ class TrainEnv(Env):
         self,
         config: TrainSourceConfig,
         address: str | None,
-        address_file: Path,
+        address_files: list[Path],
         clients: InferenceClient,
         renderer_config: RendererConfig | None,
         algorithm: Algorithm,
     ):
-        super().__init__(config, address, address_file)
+        super().__init__(config, address, address_files)
         # Train rollouts are generated from `clients`: the policy, or the frozen
         # `sampling.source` connected in setup() with the renderer (token-in/out) client.
         self.clients = clients
@@ -182,8 +198,8 @@ class TrainEnv(Env):
 class EvalEnv(Env):
     config: EvalSourceConfig
 
-    def __init__(self, config: EvalSourceConfig, address: str | None, address_file: Path):
-        super().__init__(config, address, address_file)
+    def __init__(self, config: EvalSourceConfig, address: str | None, address_files: list[Path]):
+        super().__init__(config, address, address_files)
         self.sampling = config.sampling
         self.examples: list[vf.Task] = []
 
@@ -196,6 +212,12 @@ class EvalEnv(Env):
 
 
 EnvT = TypeVar("EnvT", bound=Env)
+
+
+def replica_address_files(config_dir: Path, split: str, name: str, replicas: int) -> list[Path]:
+    if replicas == 1:
+        return [env_address_file(config_dir, split, name)]
+    return [env_address_file(config_dir, split, name, replica) for replica in range(replicas)]
 
 
 class Envs(Generic[EnvT]):
@@ -245,6 +267,7 @@ class TrainEnvs(Envs[TrainEnv]):
         *,
         clients,
         renderer_config=None,
+        replicas: int = 1,
     ):
         self._envs: dict[str, TrainEnv] = {}
         for config in configs:
@@ -252,7 +275,7 @@ class TrainEnvs(Envs[TrainEnv]):
             env = TrainEnv(
                 config,
                 addresses[("train", config.resolved_name)],
-                env_address_file(config_dir, "train", config.resolved_name),
+                replica_address_files(config_dir, "train", config.resolved_name, replicas),
                 clients,
                 renderer_config,
                 build_algorithm(config.algo, clients),
@@ -264,10 +287,15 @@ class EvalEnvs(Envs[EvalEnv]):
     """Collection of evaluation environments."""
 
     def __init__(
-        self, configs: Sequence[EvalSourceConfig], addresses: dict[tuple[str, str], str | None], config_dir: Path
+        self,
+        configs: Sequence[EvalSourceConfig],
+        addresses: dict[tuple[str, str], str | None],
+        config_dir: Path,
+        replicas: int = 1,
     ):
         self._envs: dict[str, EvalEnv] = {}
         for config in configs:
             name = config.resolved_name
-            env = EvalEnv(config, addresses[("eval", name)], env_address_file(config_dir, "eval", name))
+            files = replica_address_files(config_dir, "eval", name, replicas)
+            env = EvalEnv(config, addresses[("eval", name)], files)
             self._envs[env.name] = env
