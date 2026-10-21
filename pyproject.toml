@@ -269,8 +269,8 @@ torchao = [
     { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.1/torchao-0.18.0+git5f2baf9d5-cp310-abi3-linux_aarch64.whl", marker = "platform_machine == 'aarch64'" },
 ]
 dion = { git = "https://github.com/samsja/dion.git", rev = "0c801b0" }
-# TrainerMesh refit APIs from ai-dynamo/modelexpress#835; no published release yet.
-modelexpress = { git = "https://github.com/ai-dynamo/modelexpress.git", rev = "8512b8c", subdirectory = "modelexpress_client/python" }
+# TrainerMesh refit APIs (ai-dynamo/modelexpress#835) with warm transfer-plan reuse (#882); no release yet.
+modelexpress = { git = "https://github.com/ai-dynamo/modelexpress.git", rev = "f24c721", subdirectory = "modelexpress_client/python" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }

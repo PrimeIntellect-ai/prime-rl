@@ -276,8 +276,9 @@ For inference-only multi-node, set `[deployment] type = "multi_node"` on an infe
 Select `[weight_broadcast] type = "modelexpress"` for FSDP full-weight updates through
 the public ModelExpress control, trainer and generator clients. The MX client and
 server must use matching revisions with TrainerMesh, per-tensor wire dtypes and
-bounded streaming support. This integration targets MX revision `8512b8c`,
-including the TrainerMesh API from ai-dynamo/modelexpress#835.
+bounded streaming support. This integration targets MX revision `f24c721`,
+which includes the TrainerMesh API (ai-dynamo/modelexpress#835) and reuses
+transfer plans across updates (ai-dynamo/modelexpress#882).
 
 The trainer supplies the model identity from `model.name` when constructing the
 weight sender; it is not a separate field in `[weight_broadcast]`.
