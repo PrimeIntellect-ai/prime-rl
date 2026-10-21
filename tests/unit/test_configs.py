@@ -1,4 +1,7 @@
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated, Literal, get_args
 
@@ -1316,3 +1319,35 @@ def test_custom_renderer_rejects_unknown_fields(tmp_path, custom_renderer_import
 
     with pytest.raises(ConfigFileError, match="depth"):
         cli(SFTConfig, args=["@", str(config_file)])
+
+
+# Hosted training validates configs in an environment holding only these packages.
+CONFIG_SCHEMA_PACKAGES = {
+    "annotated_types",
+    "prime_rl",
+    "pydantic",
+    "pydantic_config",
+    "pydantic_core",
+    "renderers",
+    "tomli",
+    "tomli_w",
+    "typing_extensions",
+    "typing_inspection",
+    "verifiers",
+}
+
+IMPORT_CONFIG_SCHEMA = """
+import json, sys
+import prime_rl.configs.env_server, prime_rl.configs.eval, prime_rl.configs.rl, prime_rl.configs.sft
+import prime_rl.utils.config
+packages = {name.partition(".")[0] for name in sys.modules if not name.startswith("_")}
+print(json.dumps(sorted(packages - sys.stdlib_module_names)))
+"""
+
+
+def test_config_schema_imports_without_runtime_dependencies():
+    result = subprocess.run(
+        [sys.executable, "-c", IMPORT_CONFIG_SCHEMA], capture_output=True, check=True, text=True, timeout=60
+    )
+
+    assert set(json.loads(result.stdout)) - CONFIG_SCHEMA_PACKAGES == set()
