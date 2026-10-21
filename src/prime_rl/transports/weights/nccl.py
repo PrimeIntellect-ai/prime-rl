@@ -21,7 +21,9 @@ from prime_rl.utils.vlm import get_layer_prefix
 from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
 
 
-def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
+def _gather_row_chunk_to_master(
+    value: Tensor, start: int, stop: int, dtype: torch.dtype, initialized_groups: set[dist.ProcessGroup]
+) -> Tensor | None:
     """Assemble one fragment on trainer rank 0, using only its replica's row owners."""
     rank = dist.get_rank()
     if not isinstance(value, DTensor):
@@ -45,11 +47,15 @@ def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: tor
     if rank not in owners:
         return None
     group = mesh.get_group(mesh_dim)
+    if group not in initialized_groups:
+        # The first batched P2P call may involve only a subset of this group.
+        dist.all_reduce(torch.zeros((), device=value.device), group=group)
+        initialized_groups.add(group)
     rows_per_rank = (value.shape[0] + len(owners) - 1) // len(owners)
     local = value.to_local()
     offset = min(rows_per_rank * owners.index(rank), value.shape[0])
     chunk = torch.empty((stop - start, *value.shape[1:]), dtype=dtype, device=value.device) if rank == 0 else None
-    requests = []
+    ops = []
     send_buffers = []
     for owner_index, owner in enumerate(owners):
         owner_start = min(rows_per_rank * owner_index, value.shape[0])
@@ -62,11 +68,12 @@ def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: tor
         elif owner == rank:
             # Retain dtype-conversion buffers until the asynchronous sends complete.
             send_buffers.append(local[left - offset : right - offset].to(dtype).contiguous())
-            requests.append(dist.isend(send_buffers[-1], dst=0, group=group))
+            ops.append(dist.P2POp(dist.isend, send_buffers[-1], peer=0, group=group))
         elif rank == 0:
-            requests.append(dist.irecv(chunk[left - start : right - start], src=owner, group=group))
-    for request in requests:
-        request.wait()
+            ops.append(dist.P2POp(dist.irecv, chunk[left - start : right - start], peer=owner, group=group))
+    if ops:
+        for request in dist.batch_isend_irecv(ops):
+            request.wait()
     return chunk
 
 
@@ -214,6 +221,7 @@ class NCCLBroadcaster:
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
+        initialized_groups: set[dist.ProcessGroup] = set()
         for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
             chunked_weights = {key: layer_state_dict.pop(key) for key in chunked_ops if key in layer_state_dict}
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
@@ -224,7 +232,7 @@ class NCCLBroadcaster:
             for key, value in chunked_weights.items():
                 op = chunked_ops[key]
                 dtype = resolve_wire_dtype(keep_in_fp32, key, self.dtype) if isinstance(value, DTensor) else value.dtype
-                resolve_rows = partial(_gather_row_chunk_to_master, dtype=dtype)
+                resolve_rows = partial(_gather_row_chunk_to_master, dtype=dtype, initialized_groups=initialized_groups)
                 for packet in op.iter_prime_to_hf(value, resolve_rows):
                     if self.world.is_master:
                         assert packet is not None
