@@ -25,6 +25,7 @@ from prime_rl.utils.weights import load_state_dict, save_state_dict
 SEED = 0
 
 TOKENIZERS = {
+    "llama": "unsloth/Llama-3.2-1B-Instruct",
     "qwen3_moe": "Qwen/Qwen3-30B-A3B",
     "glm_moe_dsa": "zai-org/GLM-5",
     "deepseek_v4": "deepseek-ai/DeepSeek-V4-Flash-0731",
