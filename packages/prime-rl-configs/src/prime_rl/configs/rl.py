@@ -14,7 +14,6 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
-    PayloadsConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -145,9 +144,6 @@ class MultiNodeDeploymentConfig(BaseDeploymentConfig):
     nodes_per_fsdp_group: int | None = None
     """Training nodes per FSDP island. Auto-sets ``trainer.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
 
-    orchestrator_on_inference: bool = False
-    """Run the orchestrator on the last inference node instead of trainer rank 0 (frees host RAM on the trainer node)."""
-
     @property
     def infer_nodes_per_replica(self) -> int:
         return self.num_infer_nodes or 0
@@ -226,12 +222,6 @@ class RLConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig | None = None
 
     rollout_transport: TransportConfig | None = None
-
-    payloads: PayloadsConfig | None = None
-    """Pass per-token training arrays (router-replay rows, the score-centering top-k head,
-    sampling masks) by reference: the train env servers keep them and trainer ranks fetch
-    them. Propagated to trainer and orchestrator, and handed to the train env servers.
-    None keeps them inline."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 

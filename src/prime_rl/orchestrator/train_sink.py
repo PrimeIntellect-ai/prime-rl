@@ -31,7 +31,7 @@ from prime_rl.utils.logger import get_logger
 
 
 def _kept(sample: TrainingSample, field: str) -> bool:
-    """Whether an env server keeps this array of the sample (see `[payloads]`)."""
+    """Whether an env server keeps this array of the sample (see `prime_rl.transports.payload`)."""
     return sample.payload is not None and field in sample.payload.fields
 
 
@@ -96,13 +96,12 @@ class TrainSink:
         self._swept_step = 0
         self.zero_output_units = 0
         self.reported_zero_output_windows = 0
-        # Env servers keep the arrays of delivered traces (`[payloads]`); the sink deletes
-        # those of every sample and trace it drops without shipping.
-        self.payload_pool = ThreadPoolExecutor(8, thread_name_prefix="payload") if config.payloads else None
+        # Train env servers keep the arrays of delivered traces; the sink deletes those of
+        # every sample and trace it drops without shipping.
+        self.payload_pool = ThreadPoolExecutor(8, thread_name_prefix="payload")
 
     def _release(self, urls: Iterable[str]) -> None:
-        if self.payload_pool is not None:
-            delete_payloads(list(urls), self.payload_pool)
+        delete_payloads(list(urls), self.payload_pool)
 
     def release_samples(self, samples: Iterable[TrainingSample]) -> None:
         """Delete the env-server arrays of samples that will never ship."""
