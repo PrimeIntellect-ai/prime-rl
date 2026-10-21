@@ -120,7 +120,9 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 )
                 moe_reads = config.hc_moe_reads and isinstance(self.mlp, PrimeMoE)
                 self.mlp_hyper_connection = HyperConnection(
-                    **connection_args, read_count=2 if moe_reads else 1, write_mode=config.hc_write
+                    **connection_args,
+                    read_count=2 + config.hc_shared_expert_read if moe_reads else 1,
+                    write_mode=config.hc_write,
                 )
         else:
             self.input_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
