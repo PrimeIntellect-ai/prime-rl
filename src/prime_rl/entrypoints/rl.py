@@ -95,7 +95,9 @@ def write_subconfigs(config: RLConfig, output_dir: Path) -> None:
     # OS-assigned port and publishes it to the source's address file, where the
     # orchestrator picks it up.
     for split, source in env_servers(config):
-        write_env_server_config(output_dir, split, source, config.orchestrator.log)
+        # Eval rollouts never ask the env servers to keep arrays.
+        payloads = config.payloads if split == "train" else None
+        write_env_server_config(output_dir, split, source, config.orchestrator.log, payloads)
 
 
 def rl_local(config: RLConfig):

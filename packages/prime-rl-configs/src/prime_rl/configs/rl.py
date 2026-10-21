@@ -14,6 +14,7 @@ from prime_rl.configs.shared import (
     EnvVars,
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
+    PayloadsConfig,
     ResumeConfig,
     RunConfig,
     SlurmConfig,
@@ -225,6 +226,12 @@ class RLConfig(BaseConfig):
     weight_broadcast: WeightBroadcastConfig | None = None
 
     rollout_transport: TransportConfig | None = None
+
+    payloads: PayloadsConfig | None = None
+    """Pass per-token training arrays (router-replay rows, the score-centering top-k head,
+    sampling masks) by reference: the train env servers keep them and trainer ranks fetch
+    them. Propagated to trainer and orchestrator, and handed to the train env servers.
+    None keeps them inline."""
 
     deployment: DeploymentConfig = SingleNodeDeploymentConfig()
 

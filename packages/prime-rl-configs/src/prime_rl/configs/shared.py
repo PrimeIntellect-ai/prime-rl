@@ -279,6 +279,23 @@ class HeartbeatConfig(BaseConfig):
     rate limit. Size it well under the monitor's period."""
 
 
+class PayloadsConfig(BaseConfig):
+    """Keep per-token training arrays (router-replay rows, the score-centering top-k head,
+    sampling masks) out of the orchestrator and pass references to them instead.
+
+    vLLM returns the arrays inline to the env servers as without ``[payloads]``. When an
+    episode finishes, each env-server worker keeps every trainable branch's arrays and
+    serves them over HTTP; the orchestrator packs and ships only references, and each
+    trainer rank fetches the arrays of its micro batches from the workers. A worker frees
+    arrays once no pending batch can still train on them (``max_off_policy_steps`` after
+    the trainer consumed them); arrays the trainer cannot fetch drop their micro batches."""
+
+    max_gib: Annotated[int, Field(ge=1)] = 32
+    """Most host memory one env-server worker holds for arrays, in GiB. Past it the worker
+    drops its oldest arrays (and logs a warning); batches that still reference them lose
+    those micro batches."""
+
+
 class BaseTransportConfig(BaseConfig):
     pass
 

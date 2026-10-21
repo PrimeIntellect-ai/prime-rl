@@ -20,6 +20,7 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
+    PayloadsConfig,
     PolicyClientConfig,
     ResumeConfig,
     TransportConfig,
@@ -514,6 +515,11 @@ class OrchestratorConfig(BaseConfig):
 
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
+
+    payloads: PayloadsConfig | None = None
+    """Ask the train env servers to keep rollouts' training arrays and hand over references
+    to them. Set by the ``rl`` entrypoint's shared ``[payloads]``. None means the arrays
+    travel inline."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
