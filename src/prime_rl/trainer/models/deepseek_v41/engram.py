@@ -17,6 +17,7 @@ from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v41.configuration_deepseek_v41 import DeepseekV41TextConfig
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import is_prime
+from prime_rl.utils.cp import CPContext, gather_for_cp_wo_grad
 
 LAYER_SEED_PRIME = 10007
 
@@ -99,7 +100,9 @@ class EngramHasher(nn.Module):
     """Maps every token of a packed row to its row ids in each engram layer's table.
 
     Look-back stops at the start of the token's document: the missing history is filled with the
-    compressed pad token, as at the start of a sequence in the reference.
+    compressed pad token, as at the start of a sequence in the reference. Under context parallelism
+    the whole row's token ids are gathered (they are tiny), so the first tokens of a shard can look
+    back into the previous one.
 
     The token map is built from the checkpoint's tokenizer (`tokenizer_path`), and it has to be
     the one the tables were hashed with: the compressed vocabulary size it yields is checked
@@ -124,6 +127,7 @@ class EngramHasher(nn.Module):
             "multipliers", torch.zeros(n_layers, self.max_ngram_size, dtype=torch.long), persistent=False
         )
         self.pad_id = 0
+        self.cp_context = CPContext()
 
     def init_buffers_post_meta(self) -> None:
         if not self.tokenizer_path:
@@ -158,10 +162,15 @@ class EngramHasher(nn.Module):
 
     @torch.no_grad()
     def forward(self, input_ids: Tensor, tok_doc_start: Tensor) -> Tensor:
-        """`input_ids` is the `(1, t)` packed row, `tok_doc_start` each token's document start.
-        Returns `(t, n_engram_layers, n_hash_cols)` int64 row ids."""
+        """`input_ids` is this rank's `(1, t)` shard of the packed row, `tok_doc_start` its tokens'
+        document starts counted from the start of the row. Returns `(t, n_engram_layers, n_hash_cols)`
+        int64 row ids."""
+        n_local = input_ids.shape[1]
+        q_start = self.cp_context.cp_rank * n_local
+        if self.cp_context.cp_enabled:
+            input_ids = gather_for_cp_wo_grad(input_ids, self.cp_context.cp_world_size, self.cp_context.cp_group)
         compressed = self.token_map[input_ids[0]]
-        positions = torch.arange(compressed.shape[0], device=compressed.device)
+        positions = torch.arange(q_start, q_start + n_local, device=compressed.device)
 
         tokens = []
         for shift in range(self.max_ngram_size):

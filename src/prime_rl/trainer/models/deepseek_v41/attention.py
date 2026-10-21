@@ -22,13 +22,19 @@ by the decoder stack. They must not live on a Python object the layers mutate: a
 checkpointed layer recomputes its forward during backward, long after later layers would have
 replaced such an object's contents.
 
-Packed sequences follow V4 (see `deepseek_v4/attention.py`): entries are laid out per document by
-`CompressionLayout`, so a packed row gives each document what running it alone would.
+Packed sequences and context parallelism follow V4 (see `deepseek_v4/attention.py`): entries are
+laid out per document by `CompressionLayout`, so a packed row gives each document what running it
+alone would. Under CP each rank holds a contiguous run of queries; the token KV stream, the
+compressed entries and the index keys are all-gathered and global, as are the indices addressing
+them, while every per-query field (positions, window, picks, candidate blocks) covers this rank's
+run alone.
 """
 
 from dataclasses import dataclass
 
 import torch
+import torch.distributed as dist
+import torch.distributed._functional_collectives as funcol
 from torch import Tensor, nn
 
 from prime_rl.trainer.models.deepseek_v4.attention import (
@@ -49,6 +55,7 @@ from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
 from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
@@ -72,33 +79,51 @@ def _index_topk_op(num_heads: int, head_dim: int, block_size: int):
 
 @dataclass(frozen=True)
 class PackedContext:
-    """Document-aware bookkeeping for one packed row, derived once per forward from `seq_lens`."""
+    """Document-aware bookkeeping for one packed row, derived once per forward from `seq_lens`.
 
-    position_ids: Tensor  # (1, seq_len) int64 - token position within its own document
-    tok_doc_idx: Tensor  # (seq_len,) int64 - which document each token belongs to
-    tok_doc_start: Tensor  # (seq_len,) int64 - row index of each token's document start
-    window_indices: Tensor  # (seq_len, sliding_window) int32, IGNORE_SLOT if unused
+    Under context parallelism the per-token fields cover this rank's `n_queries` tokens while
+    `compression_layouts` covers the whole row. Token indices count from the start of the whole row.
+    """
+
+    position_ids: Tensor  # (1, n_queries) int64 - token position within its own document
+    tok_doc_idx: Tensor  # (n_queries,) int64 - which document each query token belongs to
+    tok_doc_start: Tensor  # (n_queries,) int64 - row index of each query token's document start
+    window_indices: Tensor  # (n_queries, sliding_window) int32, IGNORE_SLOT if unused
     compression_layouts: dict[int, CompressionLayout]  # keyed by compress ratio
     use_candidates: bool  # whether some document is long enough for candidate blocks to bind
     # Per compress ratio, the documents as cuDNN's fused indexer reads them; None off Blackwell.
     indexer_segments: dict[int, IndexerSegments] | None = None
 
     @classmethod
-    def build(cls, *, config: DeepseekV41TextConfig, seq_lens: Tensor, device: torch.device) -> "PackedContext":
+    def build(
+        cls,
+        *,
+        config: DeepseekV41TextConfig,
+        seq_lens: Tensor,
+        device: torch.device,
+        cp_rank: int = 0,
+        cp_world_size: int = 1,
+    ) -> "PackedContext":
         """Derive every field from one `seq_lens`, so they cannot disagree about document boundaries.
 
         The row is as long as `seq_lens` says, padding included: both packers fold their padding
-        into the last document.
+        into the last document. `seq_lens` always describes the whole row; `cp_rank` and
+        `cp_world_size` say which contiguous shard of it this rank holds the queries of.
         """
         # Read the width before `seq_lens` moves: on a CPU `seq_lens` that costs no device sync.
         total_tokens = int(seq_lens.sum())
+        assert total_tokens % cp_world_size == 0, (
+            f"{total_tokens} tokens do not split evenly across {cp_world_size} CP ranks"
+        )
         # Document-local positions stay below the row's length; the RoPE kernels index the cache unchecked.
         assert total_tokens <= config.max_position_embeddings, (
             f"{total_tokens} tokens exceed the {config.max_position_embeddings} positions of the RoPE cache"
         )
+        n_queries = total_tokens // cp_world_size
+        q_start = cp_rank * n_queries
         cu_seqlens, _ = get_cu_seqlens_from_seq_lens(seq_lens.to(device=device))
 
-        tok_idx = torch.arange(total_tokens, device=device)
+        tok_idx = torch.arange(q_start, q_start + n_queries, device=device)
         tok_doc_idx = torch.searchsorted(cu_seqlens[1:].to(tok_idx.dtype), tok_idx, right=True)
         tok_doc_start = cu_seqlens[tok_doc_idx].to(torch.int64)
         position_ids = (tok_idx - tok_doc_start)[None]
@@ -120,7 +145,7 @@ class PackedContext:
         if cudnn_indexer_available(config.index_n_heads, config.index_head_dim):
             indexer_segments = {
                 rate: IndexerSegments.build(
-                    cu_seqlens=cu_seqlens, q_start=0, n_queries=total_tokens, compress_rate=rate
+                    cu_seqlens=cu_seqlens, q_start=q_start, n_queries=n_queries, compress_rate=rate
                 )
                 for rate in config.compress_rates
             }
@@ -151,8 +176,8 @@ class SharedAttnState:
 
     compressed_kv: Tensor | None = None  # (1, 1, n_entries, head_dim) rotated entries
     index_k: Tensor | None = None  # (n_entries, index_head_dim) rotated index keys
-    top_k_indices: Tensor | None = None  # (1, seq_len, index_topk) entry index, IGNORE_SLOT if none
-    candidates: Tensor | None = None  # (seq_len, candidate_topk_blocks) int32 doc-local block, -1 if unused
+    top_k_indices: Tensor | None = None  # (1, n_queries, index_topk) entry index, IGNORE_SLOT if none
+    candidates: Tensor | None = None  # (n_queries, candidate_topk_blocks) int32 doc-local block, -1 if unused
 
     def as_tuple(self) -> tuple[Tensor | None, ...]:
         return (self.compressed_kv, self.index_k, self.top_k_indices, self.candidates)
@@ -176,15 +201,27 @@ class DeepseekV41Compressor(nn.Module):
         self.kv_norm = RMSNorm(RMSNormConfig(hidden_size=self.head_dim, eps=config.rms_norm_eps))
         self.rotary_emb = rotary_emb
 
-    def forward(self, hidden_states: Tensor, packed: PackedContext) -> tuple[Tensor, Tensor]:
-        """`(1, t, hidden)` -> unrotated and rotated `(n_entries, head_dim)` entries."""
+    def forward(
+        self,
+        hidden_states: Tensor,
+        packed: PackedContext,
+        cp_group: dist.ProcessGroup | None = None,
+        cp_world_size: int = 1,
+    ) -> tuple[Tensor, Tensor]:
+        """`(1, t, hidden)` -> unrotated and rotated `(n_entries, head_dim)` entries over the whole row."""
         layout = packed.compression_layouts[self.compress_ratio]
         if self.gate_proj is None:
             # One entry per token, so the entries are the token stream itself.
-            latent = self.kv_norm(self.kv_proj(hidden_states))[0]
+            latent = self.kv_norm(self.kv_proj(hidden_states))
+            if cp_world_size > 1:
+                latent = gather_for_cp(latent, cp_group)
+            latent = latent[0]
         else:
-            x = hidden_states[0].float()
-            kv, gate = x @ self.kv_proj.weight.float().t(), x @ self.gate_proj.weight.float().t()
+            x = hidden_states.float()
+            proj = torch.cat([x @ self.kv_proj.weight.float().t(), x @ self.gate_proj.weight.float().t()], dim=-1)
+            if cp_world_size > 1:
+                proj = gather_for_cp(proj, cp_group)
+            kv, gate = proj[0].split(self.head_dim, dim=-1)
             kv, gate = kv[layout.entry_tok_idx], gate[layout.entry_tok_idx]  # (n_entries, ratio, head_dim)
             latent = self.kv_norm((kv * gate.softmax(dim=1)).sum(dim=1).to(hidden_states.dtype))
 
@@ -350,6 +387,8 @@ class DeepseekV41Attention(nn.Module):
             else None
         )
 
+        self.cp_context = CPContext()
+
     def attention_flops(self, seq_len: int) -> int:
         # Each query attends its window plus, on a compressed layer, at most `index_topk` entries. The
         # indexer scores all of them forward only, under no_grad, and only on its source layers.
@@ -371,14 +410,21 @@ class DeepseekV41Attention(nn.Module):
     def forward(
         self, hidden_states: Tensor, packed: PackedContext, state: SharedAttnState
     ) -> tuple[Tensor, SharedAttnState]:
-        """`hidden_states` is `(1, t, hidden)`; returns the output and the shared state as this layer leaves it."""
+        """`hidden_states` is `(1, t, hidden)` for this rank's queries; returns the output and the shared
+        state as this layer leaves it. `T` below is the whole row, which is `t` unless CP is on."""
         input_shape = hidden_states.shape[:-1]
         cos_sin_cache = self.rotary_emb.cos_sin_cache(self.rope_layer_type)
+        cp = self.cp_context
 
         kv = self.kv_norm(self.kv_proj(hidden_states)).unsqueeze(2)  # (b, t, 1, d)
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
         if self.kv_precision == "fp8":
             kv = kv_fake_quant(kv, self.config.qk_rope_head_dim)
+        if cp.cp_enabled:
+            # Launch on NCCL's communication stream; query/compressor/indexer work does not read KV.
+            kv = torch.ops._c10d_functional.all_gather_into_tensor(
+                kv.movedim(1, 0).contiguous(), cp.cp_world_size, cp.cp_group.group_name
+            )
 
         q_residual = self.q_a_norm(self.q_a_proj(hidden_states))
         q = self.q_b_proj(q_residual).view(*input_shape, self.num_heads, self.head_dim)
@@ -387,7 +433,9 @@ class DeepseekV41Attention(nn.Module):
         if self.compress_ratio:
             latent = None
             if self.compressor is not None:
-                latent, entries = self.compressor(hidden_states, packed)
+                latent, entries = self.compressor(
+                    hidden_states, packed, cp_group=cp.cp_group, cp_world_size=cp.cp_world_size
+                )
                 if self.kv_precision == "fp8":
                     entries = kv_fake_quant(entries, self.config.qk_rope_head_dim)
                 state = SharedAttnState(entries[None, None], state.index_k, state.top_k_indices, state.candidates)
@@ -395,6 +443,8 @@ class DeepseekV41Attention(nn.Module):
                 top_k, index_k, candidates = self.indexer(hidden_states, q_residual, latent, packed, state)
                 state = SharedAttnState(state.compressed_kv, index_k, top_k, candidates)
 
+        if cp.cp_enabled:
+            kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         inputs = SparseAttnInputs.build(
             kv=kv.transpose(1, 2),
             compressed_kv=state.compressed_kv if self.compress_ratio else None,

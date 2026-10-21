@@ -37,6 +37,7 @@ from prime_rl.trainer.models.deepseek_v41.hyperconnections import (
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
+from prime_rl.utils.cp import CPContext
 
 
 class DeepseekV41DecoderLayer(nn.Module):
@@ -104,7 +105,9 @@ class DeepseekV41PreTrainedModel(PreTrainedModelPrimeRL):
 
     @classmethod
     def cp_blocker(cls, config, cp: int) -> str | None:
-        return "context parallelism is not implemented for DeepSeek-V4.1"
+        # CP all-gathers the keys, entries and token ids inside the model and keeps every head, so
+        # no head constraint. The trainer already requires the row to split evenly across ranks.
+        return None
 
     def _init_weights(self, module: nn.Module) -> None:
         super()._init_weights(module)
@@ -170,6 +173,7 @@ class DeepseekV41Model(nn.Module):
             }
         )
         self.norm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
+        self.cp_context = CPContext()
 
     def forward(
         self,
@@ -182,23 +186,36 @@ class DeepseekV41Model(nn.Module):
     ) -> MoeModelOutputWithPast:
         """
         input_ids (`torch.LongTensor` of shape `(1, sequence_length)`):
-            One packed row of token ids. Besides the embedding, the engram hash reads them.
+            One packed row of token ids, this rank's shard of it under context parallelism. Besides
+            the embedding, the engram hash reads them.
         position_ids (`torch.LongTensor` of shape `(1, sequence_length)`, *optional*):
             Each token's position within its own document. Only checked: every position is derived
             from `seq_lens`, so the two cannot disagree.
         routed_experts (`torch.LongTensor` of shape `(1, sequence_length, num_hidden_layers, num_experts_per_tok)`, *optional*):
             Routed experts for each token in the sequence. Only used for router replay.
         seq_lens (`torch.LongTensor` of shape `(num_documents,)`):
-            Per-document lengths of the packed row. Clips the sliding window, the compressed entries,
-            the indexer's picks and the engram look-back at document boundaries.
+            Per-document lengths of the whole packed row. Clips the sliding window, the compressed
+            entries, the indexer's picks and the engram look-back at document boundaries.
         seq_lens_are_pre_shard (`bool`, *optional*, defaults to `False`):
-            Only `False` is accepted: V4.1 does not support context parallelism.
+            Whether `seq_lens` holds pre-CP-shard (global) document boundaries. V4.1 shards the
+            queries alone and keeps every key, entry and index value global, so it needs the whole
+            row's boundaries: this must be set exactly when context parallelism is on.
         """
-        assert not seq_lens_are_pre_shard, "DeepSeek-V4.1 does not support context parallelism"
+        cp_rank, cp_world_size = self.cp_context.cp_rank, self.cp_context.cp_world_size
+        assert seq_lens_are_pre_shard == (cp_world_size > 1), (
+            f"seq_lens_are_pre_shard={seq_lens_are_pre_shard} disagrees with cp_world_size={cp_world_size}"
+        )
         inputs_embeds = self.embed_tokens(input_ids)
-        packed = PackedContext.build(config=self.config, seq_lens=seq_lens, device=inputs_embeds.device)
+        packed = PackedContext.build(
+            config=self.config,
+            seq_lens=seq_lens,
+            device=inputs_embeds.device,
+            cp_rank=cp_rank,
+            cp_world_size=cp_world_size,
+        )
         assert packed.position_ids.shape[1] == inputs_embeds.shape[1], (
-            f"seq_lens covers {packed.position_ids.shape[1]} tokens, but the row holds {inputs_embeds.shape[1]}"
+            f"seq_lens covers {packed.position_ids.shape[1]} tokens per CP rank, but this rank holds "
+            f"{inputs_embeds.shape[1]}"
         )
         if position_ids is not None:
             packed.check_position_ids(position_ids)

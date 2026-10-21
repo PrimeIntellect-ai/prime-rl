@@ -1,10 +1,14 @@
+import os
+
 import pytest
 import torch
+import torch.distributed as dist
 from torch import nn
 
 from prime_rl.trainer.models.deepseek_v41 import DeepseekV41Config, DeepseekV41ForCausalLM, DeepseekV41TextConfig
 from prime_rl.trainer.models.deepseek_v41 import attention as dsv41_attention
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
+from prime_rl.utils.cp import CPContext
 from prime_rl.utils.utils import default_dtype
 from tests.unit.train.models.test_deepseek_v41_cpu import PUBLISHED_CONFIG, _published_keys
 
@@ -189,3 +193,83 @@ def test_deepseek_v41_model_names_are_the_published_ones():
     expected = {key for key in _published_keys(config.text_config) if not key.startswith(dropped)}
     expected = {key for key in expected if not key.endswith("bias_vl")}
     assert set(state_dict) == expected
+
+
+@pytest.fixture(scope="module")
+def cp_process_group():
+    if int(os.environ.get("WORLD_SIZE", 1)) not in (2, 4):
+        pytest.skip("run with torchrun --nproc-per-node=2 (or 4)")
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    dist.init_process_group("nccl")
+    yield dist.group.WORLD
+    dist.destroy_process_group()
+
+
+def test_deepseek_v41_context_parallel_matches_the_whole_row(cp_process_group):
+    """Every CP rank holding a contiguous shard of the queries reproduces the unsharded loss and
+    gradients, on a packed row whose documents cross the shard boundaries: the window, the shared
+    entries and index keys, the picks, the candidate blocks and the engram look-back all reach
+    back into the previous rank's tokens and stop at document boundaries."""
+    cp_rank, cp_world_size = dist.get_rank(), dist.get_world_size()
+    model = get_model()
+    with torch.no_grad():
+        for tensor in [*model.parameters(), *model.buffers()]:
+            dist.broadcast(tensor, src=0)
+
+    # 192 tokens: at cp = 2 the cut at 96 falls inside the second document, at cp = 4 the cuts at
+    # 48 and 144 fall inside the first and second; every document is long enough for candidates.
+    doc_lens = (70, 90, 32)
+    seq_len = sum(doc_lens)
+    input_ids = torch.randint(0, MODEL["vocab_size"], (1, seq_len), device="cuda")
+    labels = torch.randint(0, MODEL["vocab_size"], (1, seq_len), device="cuda")
+    dist.broadcast(input_ids, src=0)
+    dist.broadcast(labels, src=0)
+    position_ids, seq_lens = _packed(doc_lens)
+
+    with torch.no_grad():
+        reference_logits = model(input_ids=input_ids, position_ids=position_ids, seq_lens=seq_lens)["logits"]
+    reference_loss = model(input_ids=input_ids, position_ids=position_ids, seq_lens=seq_lens, labels=labels)["loss"]
+    reference_loss.backward()
+    reference_grads = {name: param.grad.clone() for name, param in model.named_parameters() if param.grad is not None}
+    model.zero_grad(set_to_none=True)
+
+    cp_context = CPContext(cp_process_group, cp_rank, cp_world_size)
+    for module in model.modules():
+        if hasattr(module, "cp_context"):
+            module.cp_context = cp_context
+    shard = slice(cp_rank * seq_len // cp_world_size, (cp_rank + 1) * seq_len // cp_world_size)
+    kwargs = dict(
+        input_ids=input_ids[:, shard],
+        position_ids=position_ids[:, shard],
+        seq_lens=seq_lens,
+        seq_lens_are_pre_shard=True,
+    )
+
+    with torch.no_grad():
+        logits = model(**kwargs)["logits"]
+    torch.testing.assert_close(logits, reference_logits[:, shard], rtol=1e-3, atol=1e-3)
+
+    loss = model(**kwargs, labels=labels[:, shard])["loss"]
+    loss.backward()
+    total_loss = loss.detach().clone()
+    dist.all_reduce(total_loss)
+    torch.testing.assert_close(total_loss, reference_loss.detach(), rtol=1e-5, atol=1e-5)
+
+    # The forward is exact, but each rank rounds its partial bf16 gradients before they are summed.
+    # Splitting the unsharded loss into the same token shards, with no CP at all, moves the
+    # gradients just as much: ~0.4% overall and up to ~10% on the 3-element mHC scales, whose
+    # gradient sums many cancelling per-token terms. A rank missing another rank's contribution
+    # would be off by order `1 / cp_world_size` (at least 25% here), which the per-parameter bound catches.
+    diff_sq, reference_sq = 0.0, 0.0
+    for name, param in model.named_parameters():
+        assert (param.grad is None) == (name not in reference_grads), name
+        if param.grad is None:
+            continue
+        grad = param.grad.float()
+        dist.all_reduce(grad)
+        reference = reference_grads[name].float()
+        diff_sq += (grad - reference).square().sum().item()
+        reference_sq += reference.square().sum().item()
+        relative = (grad - reference).norm() / reference.norm().clamp_min(1e-12)
+        assert relative < 0.2, f"{name}: gradient differs by {relative:.3e} relative to the whole row"
+    assert (diff_sq / reference_sq) ** 0.5 < 1e-2

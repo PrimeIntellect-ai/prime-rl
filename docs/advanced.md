@@ -32,7 +32,7 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 | GLM-4 / GLM-4.5 / INTELLECT-3 | `THUDM/GLM-4-9B-0414`, `zai-org/GLM-4.5`, `PrimeIntellect/INTELLECT-3`, … | ✅ | ✅ |
 | GPT-OSS | `unsloth/gpt-oss-20b-BF16`, … | ✅ | ✅ |
 | DeepSeek V4 | `deepseek-ai/DeepSeek-V4-Flash-0731` | ✅ | ✅ |
-| DeepSeek V4.1 (`deepseek_v41`) | `deepseek-ai/DeepSeek-V4.1-Flash` (text model) | ✅ | ❌ |
+| DeepSeek V4.1 (`deepseek_v41`) | `deepseek-ai/DeepSeek-V4.1-Flash` (text model) | ✅ | ✅ |
 
 DeepSeek V4.1's two engram n-gram tables (~98B parameters each) are row-sharded across the FSDP ranks and looked up
 with all-to-alls instead of being managed by FSDP; `model.freeze_engram_tables` freezes them. Start from the bf16

@@ -8,7 +8,7 @@ V4.1 is V4's architecture (shared-KV latent attention, mHC residual streams, sqr
 - **Delayed mHC gates.** Each sublayer's `pre` gate collapses the residual streams for the next sublayer.
 - **Engram.** Two hashed n-gram tables (~384M rows x 256 each, ~98B parameters per table) add a gated lookup into the residual streams before layers 1 and 14. The trainer row-shards each table over the FSDP ranks and serves lookups with all-to-alls, outside FSDP. `model.freeze_engram_tables = true` freezes them (their projections still train).
 
-Context parallelism and pipeline parallelism are not supported for this model yet.
+Context parallelism (`model.cp`) is supported: queries are sharded across the CP ranks and the KV stream, compressed entries and index keys are all-gathered, so long sequences split their activations across GPUs. Pipeline parallelism is not supported for this model yet.
 
 ## Convert the checkpoint
 
@@ -39,7 +39,7 @@ uv run sft @ examples/advanced/deepseek-v4.1-flash/sft/base.toml @ examples/adva
 - For a fake-data dry run, append [`sft/fake.toml`](sft/fake.toml) instead of the data overlay.
 - Chats are rendered with the `deepseek-v4.1` renderer from `renderers` (text conversations without tools).
 
-Without context or pipeline parallelism every GPU holds a shard of the whole model state, so the run needs enough GPUs for ~550B non-engram parameters (fp32 masters and gradients) plus the frozen engram shards: on 80 GB GPUs, 24 is not enough. `num_train_nodes = 12` assumes 8-GPU nodes with more memory per GPU; size it to your hardware.
+Without pipeline parallelism every GPU, CP ranks included, holds a shard of the whole model state, so the run needs enough GPUs for ~550B non-engram parameters (fp32 masters and gradients) plus the frozen engram shards: on 80 GB GPUs, 24 is not enough. `num_train_nodes = 12` assumes 8-GPU nodes with more memory per GPU; size it to your hardware.
 
 ## RL
 
