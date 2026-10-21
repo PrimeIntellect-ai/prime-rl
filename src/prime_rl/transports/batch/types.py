@@ -11,10 +11,15 @@ class MMRefs(msgspec.Struct, array_like=True, gc=False):
     images: list[MMImageRef]
 
 
+# Per-token arrays travel as raw buffers. The orchestrator fills them with bytes; the trainer
+# decodes them as memoryviews into the received frame, so the gigabytes of routing and top
+# logprobs in a step are never copied by the decoder.
+
+
 # Routed experts are large per-token arrays. tolist() is too expensive, so we
 # send raw bytes through msgpack and carry the shape/dtype needed to rebuild.
 class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    data: bytes
+    data: memoryview
     shape: list[int]  # [seq_len, layers, topk]
     dtype: str
 
@@ -22,16 +27,16 @@ class RoutedExperts(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tru
 # Sampling masks for top-p/top-k replay: flat int32 token-id bytes plus an
 # int32 count per token position (0 = no mask); len(ids) == 4 * counts.sum().
 class SamplingMask(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    ids: bytes
-    counts: bytes
+    ids: memoryview
+    counts: memoryview
 
 
 class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     """Flat int32 ids, float32 logprobs and int32 row counts (zero for context)."""
 
-    ids: bytes
-    logprobs: bytes
-    counts: bytes
+    ids: memoryview
+    logprobs: memoryview
+    counts: memoryview
 
 
 # A sample's training arrays kept by the env-server worker at ``url`` (see

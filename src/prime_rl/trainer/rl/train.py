@@ -297,7 +297,7 @@ def train(config: TrainerConfig):
         wait_for_batch_start_time = time.perf_counter()
         dataloader.wait_for_batch()
         wait_for_batch_time = time.perf_counter() - wait_for_batch_start_time
-        logger.debug(f"Waited for batch for {format_time(wait_for_batch_time)}")
+        logger.info(f"Waited for batch for {format_time(wait_for_batch_time)}")
 
         # Load the training batch
         logger.debug("Loading batch")
@@ -393,6 +393,13 @@ def train(config: TrainerConfig):
             )
             # Stays on the host in its wire dtype (uint8/uint16) until after the CP shard below
             routed_experts = micro_batch["routed_experts"]
+            if micro_step == 0:
+                # Includes the global loss-scale all-reduce, so a rank still loading its batch shows up
+                # here on every other rank
+                logger.info(
+                    f"First micro batch on the GPU {format_time(time.perf_counter() - forward_backward_start_time)} "
+                    f"after loading ({batch_size} micro batches)"
+                )
 
             if routed_experts is None and config.enable_router_replay:
                 raise ValueError(
