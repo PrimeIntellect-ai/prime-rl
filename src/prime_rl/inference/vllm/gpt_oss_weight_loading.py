@@ -4,16 +4,13 @@ import torch
 
 
 def patch_gpt_oss_weight_loading() -> None:
-    """Route GPT-OSS BF16 expert and sink weights through vLLM loaders.
+    """Route GPT-OSS BF16 expert weights through vLLM loaders.
 
     Remove this patch when the pinned vLLM version uses weight loaders for these
     prepared tensors in ``GptOssModel._load_weights_other``.
     """
     from vllm.model_executor.layers.fused_moe.routed_experts import RoutedExperts
-    from vllm.model_executor.model_loader.weight_utils import (
-        default_weight_loader,
-        maybe_remap_moe_expert_param_name,
-    )
+    from vllm.model_executor.model_loader.weight_utils import maybe_remap_moe_expert_param_name
     from vllm.model_executor.models import gpt_oss
 
     original_load_weights = gpt_oss.GptOssModel._load_weights_other
@@ -57,8 +54,6 @@ def patch_gpt_oss_weight_loading() -> None:
         self,
         ep_rank_end: int,
         ep_rank_start: int,
-        heads_per_rank: int,
-        head_start: int,
         weights: Iterable[tuple[str, torch.Tensor]],
         stacked_params_mapping: list[tuple[str, ...]],
     ) -> set[str]:
@@ -79,9 +74,7 @@ def patch_gpt_oss_weight_loading() -> None:
 
         def remaining_weights():
             for name, weight in weights:
-                if not (
-                    name.endswith((".w13_weight", ".w2_weight", ".w13_bias", ".w2_bias")) or name.endswith(".sinks")
-                ):
+                if not name.endswith((".w13_weight", ".w2_weight", ".w13_bias", ".w2_bias")):
                     yield name, weight
                     continue
 
@@ -112,12 +105,6 @@ def patch_gpt_oss_weight_loading() -> None:
                         weight = weight[ep_rank_start:ep_rank_end]
                     elif tp_rank != 0:
                         weight = weight.zero_()
-                else:
-                    weight = weight.narrow(0, head_start, heads_per_rank)
-                    weight_loader = getattr(param, "weight_loader", default_weight_loader)
-                    weight_loader(param, weight)
-                    loaded_params.add(name)
-                    continue
 
                 param.weight_loader(
                     param,
@@ -133,8 +120,6 @@ def patch_gpt_oss_weight_loading() -> None:
                 self,
                 ep_rank_end,
                 ep_rank_start,
-                heads_per_rank,
-                head_start,
                 remaining_weights(),
                 stacked_params_mapping,
             )
