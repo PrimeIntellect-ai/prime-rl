@@ -5,7 +5,7 @@ from typing import Callable
 import pytest
 import torch
 
-from tests.nightly.distributed.tiny_models import write_tiny_checkpoint
+from tests.regression.distributed.tiny_models import write_tiny_checkpoint
 
 NUM_GPUS = 8
 
