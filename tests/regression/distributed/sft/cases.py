@@ -11,11 +11,11 @@ removes a layout (along with the feature cases pinned to it) or a single feature
 pytest report. Case ids read `{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k`
 selects cases by arch, layout or feature name. For example, one case:
 
-    uv run pytest tests/nightly/distributed -k "qwen3_moe and cp2_ep4 and base"
+    uv run pytest tests/regression/distributed -k "qwen3_moe and cp2_ep4 and base"
 
 or every case on one layout, including the feature cases pinned to it:
 
-    uv run pytest tests/nightly/distributed -k cp2_ep4
+    uv run pytest tests/regression/distributed -k cp2_ep4
 
 `scripts/ci/run_distributed_nightly.sh` runs the same pytest command and passes extra args through to it.
 """
@@ -28,9 +28,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.nightly.distributed.tiny_models import TOKENIZERS
+from tests.regression.distributed.tiny_models import TOKENIZERS
 
-CONFIG_DIR = Path("configs/ci/nightly/distributed/sft")
+CONFIG_DIR = Path("tests/regression/configs/distributed/sft")
 Overrides = dict[str, object]
 
 

@@ -4,7 +4,7 @@
 .codex/
 *.ipynb
 *.jsonl
-!configs/ci/nightly/distributed/sft/data/train.jsonl
+!tests/regression/configs/distributed/sft/data/train.jsonl
 configs/endpoints.py
 
 # Run artifacts

@@ -5,7 +5,7 @@ from pydantic_config import cli
 
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.trainer.parallel_dims import ParallelDims
-from tests.nightly.distributed.sft.cases import CASES, sft_args
+from tests.regression.distributed.sft.cases import CASES, sft_args
 
 
 @pytest.mark.parametrize("case", [case.param() for case in CASES])
