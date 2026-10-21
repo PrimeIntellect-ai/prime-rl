@@ -6,11 +6,10 @@ only `{url, branch -> id}` in `trace.info["payload"]`. The orchestrator packs `P
 references, and each trainer rank fetches its micro batches' arrays before the step and
 assembles them as the packer assembles inline arrays.
 
-Once every trainer rank has fetched a step's arrays, the trainer deletes them from the
-workers. Arrays no batch ever fetches (dropped or pruned samples, untrained branches) are
-swept by policy version: every train dispatch stamps its version (`epoch`) and the oldest
-version a pending batch can still train on (`release_below`), and the worker drops arrays
-of episodes dispatched before that, which no batch can train on anymore.
+Every kept blob is deleted exactly once, by whoever holds it last: the trainer deletes a
+step's blobs once every rank fetched them; the orchestrator deletes the blobs of samples
+and traces it drops without shipping; the env server deletes the blobs of episodes it
+kept but did not deliver (`PayloadHook.discard`).
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from __future__ import annotations
 import socket
 import threading
 import urllib.request
-from collections import OrderedDict
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -28,7 +27,14 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.trajectories import _encode_routed_experts, _encode_sampling_mask, _encode_top_logprobs
-from prime_rl.transports.batch.types import BranchArrays, MicroBatch, RoutedExperts, SamplingMask, TopLogprobs
+from prime_rl.transports.batch.types import (
+    BranchArrays,
+    MicroBatch,
+    RoutedExperts,
+    SamplingMask,
+    TopLogprobs,
+    TrainingSample,
+)
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sequence import repeat_to_length
 
@@ -41,8 +47,7 @@ class PayloadServer:
     `DELETE <url>/<id>`."""
 
     def __init__(self):
-        self.blobs: OrderedDict[str, tuple[int, bytes]] = OrderedDict()
-        self.release_below = 0
+        self.blobs: dict[str, bytes] = {}
         self.lock = threading.Lock()
         server = self
 
@@ -68,14 +73,9 @@ class PayloadServer:
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
         self.url = f"http://{socket.gethostbyname(socket.gethostname())}:{self.http.server_port}"
 
-    def put(self, key: str, blob: bytes, epoch: int, release_below: int) -> None:
+    def put(self, key: str, blob: bytes) -> None:
         with self.lock:
-            # Blobs arrive in dispatch-version order up to in-flight overlap, so dropping
-            # from the oldest end frees every unfetched blob too old to train.
-            self.release_below = max(self.release_below, release_below)
-            while self.blobs and next(iter(self.blobs.values()))[0] < self.release_below:
-                self.blobs.popitem(last=False)
-            self.blobs[key] = (epoch, blob)
+            self.blobs[key] = blob
 
     def delete(self, key: str) -> None:
         with self.lock:
@@ -83,8 +83,7 @@ class PayloadServer:
 
     def get(self, key: str) -> bytes | None:
         with self.lock:
-            entry = self.blobs.get(key)
-        return entry[1] if entry is not None else None
+            return self.blobs.get(key)
 
 
 class PayloadHook:
@@ -93,34 +92,47 @@ class PayloadHook:
     def __init__(self):
         self.server: PayloadServer | None = None
 
-    def __call__(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
-        stamp = (getattr(sampling, "extra_args", None) or {}).get("prl_payload")
+    def keep(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
         for trace in episode.traces:
             branches: dict[str, str] = {}
             fields: set[str] = set()
-            if stamp is not None:
-                for branch in trace.branches:
-                    if not branch.trainable:
-                        continue
-                    num_tokens = len(branch.token_ids)
-                    arrays = BranchArrays(
-                        routed_experts=_encode_routed_experts(branch.routed_experts, num_tokens),
-                        sampling_mask=_encode_sampling_mask(branch.sampling_mask, num_tokens),
-                        top_logprobs=_encode_top_logprobs(branch.top_logprobs, num_tokens),
-                    )
-                    present = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
-                    if not present:
-                        continue
-                    if self.server is None:
-                        self.server = PayloadServer()
-                    key = f"{trace.id}-{branch.index}"
-                    self.server.put(key, _encoder.encode(arrays), stamp["epoch"], stamp["release_below"])
-                    branches[str(branch.index)] = key
-                    fields |= present
+            for branch in trace.branches:
+                if not branch.trainable:
+                    continue
+                num_tokens = len(branch.token_ids)
+                arrays = BranchArrays(
+                    routed_experts=_encode_routed_experts(branch.routed_experts, num_tokens),
+                    sampling_mask=_encode_sampling_mask(branch.sampling_mask, num_tokens),
+                    top_logprobs=_encode_top_logprobs(branch.top_logprobs, num_tokens),
+                )
+                present = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
+                if not present:
+                    continue
+                if self.server is None:
+                    self.server = PayloadServer()
+                key = f"{trace.id}-{branch.index}"
+                self.server.put(key, _encoder.encode(arrays))
+                branches[str(branch.index)] = key
+                fields |= present
             if branches:
                 trace.info["payload"] = {"url": self.server.url, "branches": branches, "fields": sorted(fields)}
             for node in trace.nodes:
                 node.routed_experts = node.sampling_mask = node.top_logprobs = None
+
+    def discard(self, episode: vf.Episode) -> None:
+        for trace in episode.traces:
+            for key in (trace.info.get("payload") or {}).get("branches", {}).values():
+                self.server.delete(key)
+
+
+def trace_payload_urls(trace: vf.Trace) -> list[str]:
+    """URLs of every blob an env server kept for the trace."""
+    payload = trace.info.get("payload")
+    return [f"{payload['url']}/{key}" for key in payload["branches"].values()] if payload else []
+
+
+def sample_payload_urls(samples: Iterable[TrainingSample]) -> list[str]:
+    return [f"{s.payload.url}/{s.payload.id}" for s in samples if s.payload is not None]
 
 
 def _fetch(url: str) -> BranchArrays | None:
