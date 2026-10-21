@@ -267,8 +267,3 @@ class PretrainConfig(TrainerLaunchConfig):
             elif self.evals.micro_batch_tokens < longest:
                 raise ValueError(f"evals.micro_batch_tokens must be at least the longest of evals.seq_lens ({longest})")
         return self
-
-    @model_validator(mode="after")
-    def auto_setup_model_seq_len(self):
-        self.model.seq_len = self.data.seq_len
-        return self
