@@ -1,8 +1,8 @@
 import pytest
 from huggingface_hub import snapshot_download
 
-from tests.nightly.distributed.sft.cases import CASES, assert_training_rows, load_metrics, sft_args
-from tests.nightly.distributed.tiny_models import TOKENIZERS
+from tests.regression.distributed.sft.cases import CASES, assert_training_rows, load_metrics, sft_args
+from tests.regression.distributed.tiny_models import TOKENIZERS
 
 pytestmark = [pytest.mark.distributed, pytest.mark.gpu]
 

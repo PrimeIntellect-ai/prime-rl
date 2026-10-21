@@ -3,7 +3,7 @@ name: Regression
 # Scheduled regression suites, one job group per suite. Dispatch with `suite`
 # to run one of them.
 #   rl:       every configs/rl/*.toml as a hosted RL run
-#   parallel: test_parallel_invariance.py on the 2xH200 runners
+#   parallel: distributed/test_parallel_invariance.py on the 2xH200 runners
 #   eval:     every configs/eval/*.toml through `uv run eval` against Prime
 #             Inference, compared against baselines/eval/. reports/eval/ holds
 #             the error bars of each baseline. Also runs on PRs that touch the
@@ -277,7 +277,7 @@ jobs:
                   WANDB_MODE: offline
                   HF_TOKEN: ${{ secrets.HF_TOKEN }}
                   PYTEST_OUTPUT_DIR: /tmp/outputs
-              run: uv run pytest -vvs tests/regression/test_parallel_invariance.py
+              run: uv run pytest -vvs tests/regression/distributed/test_parallel_invariance.py
             - name: Upload run logs on failure
               if: failure()
               uses: actions/upload-artifact@v7

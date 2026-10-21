@@ -3,4 +3,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-uv run pytest tests/nightly/distributed --durations=0 "$@"
+uv run pytest tests/regression/distributed --durations=0 "$@"
