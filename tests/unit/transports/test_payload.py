@@ -12,10 +12,9 @@ from verifiers.v1 import graph
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.types import TopLogprobs, TurnTokens
 
-from prime_rl.configs.shared import PayloadsConfig
 from prime_rl.orchestrator.batch import prepare_batch
 from prime_rl.orchestrator.trajectories import trace_to_samples
-from prime_rl.transports.payload import PayloadHook, PayloadServer, resolve_payloads
+from prime_rl.transports.payload import PayloadHook, PayloadServer, delete_payloads, resolve_payloads
 
 
 def _episode(rng: np.random.Generator, prompt_len: int, completion_len: int) -> vf.Episode:
@@ -71,7 +70,7 @@ def test_fetched_batches_equal_inline_batches():
     episodes = [_episode(rng, prompt, completion) for prompt, completion in [(40, 300), (5, 30), (20, 90), (8, 12)]]
     inline = _samples(copy.deepcopy(episodes))
 
-    hook = PayloadHook(PayloadsConfig())
+    hook = PayloadHook()
     sampling = vf.SamplingConfig(extra_args={"prl_payload": {"epoch": 0, "release_below": 0}})
     for episode in episodes:
         hook(episode, sampling)
@@ -85,7 +84,8 @@ def test_fetched_batches_equal_inline_batches():
         packed = prepare_batch(copy.deepcopy(by_ref), **kwargs)
         with ThreadPoolExecutor(4) as pool:
             for want_rank, got_rank in zip(expected, packed, strict=True):
-                assert resolve_payloads(got_rank, pool) == []
+                failed, urls = resolve_payloads(got_rank, pool)
+                assert failed == [] and urls
                 for want, got in zip(want_rank, got_rank, strict=True):
                     assert got.input_ids == want.input_ids
                     assert got.routed_experts == want.routed_experts
@@ -96,25 +96,24 @@ def test_fetched_batches_equal_inline_batches():
 def test_unfetchable_micro_batches_are_reported():
     rng = np.random.default_rng(1)
     episode = _episode(rng, 10, 20)
-    PayloadHook(PayloadsConfig())(
-        episode, vf.SamplingConfig(extra_args={"prl_payload": {"epoch": 0, "release_below": 0}})
-    )
+    PayloadHook()(episode, vf.SamplingConfig(extra_args={"prl_payload": {"epoch": 0, "release_below": 0}}))
     [sample] = _samples([episode])
     sample.payload.id = "missing"
     [[micro_batch]] = prepare_batch([sample], seq_len=64, num_train_workers=1, bin_cost=sum)
     with ThreadPoolExecutor(1) as pool:
-        assert resolve_payloads([micro_batch], pool) == [0]
+        assert resolve_payloads([micro_batch], pool)[0] == [0]
     assert micro_batch.routed_experts.shape[0] == len(micro_batch.input_ids)
 
 
-def test_store_serves_releases_and_caps():
-    server = PayloadServer(max_bytes=100)
+def test_store_serves_deletes_and_sweeps_old_versions():
+    server = PayloadServer()
     server.put("a", b"x" * 40, epoch=0, release_below=0)
     server.put("b", b"y" * 40, epoch=1, release_below=0)
     with urllib.request.urlopen(f"{server.url}/b") as response:
         assert response.read() == b"y" * 40
+    with ThreadPoolExecutor(1) as pool:
+        delete_payloads([f"{server.url}/b"], pool)
+    assert server.get("b") is None and server.get("a") is not None
+    # Arrays nobody fetched go once no pending batch can train on their version.
     server.put("c", b"z" * 10, epoch=2, release_below=1)
-    assert server.get("a") is None and server.get("b") is not None
-    server.put("d", b"w" * 80, epoch=2, release_below=1)
-    assert server.get("b") is None and server.evicted == 1
-    assert server.get("c") is not None and server.get("d") is not None
+    assert server.get("a") is None and server.get("c") is not None

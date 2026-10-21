@@ -27,7 +27,7 @@ def setup_worker(
 
         from prime_rl.transports.payload import PayloadHook
 
-        set_episode_hook(PayloadHook(payloads))
+        set_episode_hook(PayloadHook())
 
 
 def publish_address(addresses: queue.SimpleQueue, path: Path) -> None:

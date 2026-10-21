@@ -6,9 +6,11 @@ only `{url, branch -> id}` in `trace.info["payload"]`. The orchestrator packs `P
 references, and each trainer rank fetches its micro batches' arrays before the step and
 assembles them as the packer assembles inline arrays.
 
-Arrays live until no pending batch can train on them: every train dispatch stamps its
-policy version (`epoch`) and the oldest version a pending batch can still train on
-(`release_below`), and the worker drops arrays of episodes dispatched before that.
+Once every trainer rank has fetched a step's arrays, the trainer deletes them from the
+workers. Arrays no batch ever fetches (dropped or pruned samples, untrained branches) are
+swept by policy version: every train dispatch stamps its version (`epoch`) and the oldest
+version a pending batch can still train on (`release_below`), and the worker drops arrays
+of episodes dispatched before that, which no batch can train on anymore.
 """
 
 from __future__ import annotations
@@ -25,7 +27,6 @@ import msgspec
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.configs.shared import PayloadsConfig
 from prime_rl.orchestrator.trajectories import _encode_routed_experts, _encode_sampling_mask, _encode_top_logprobs
 from prime_rl.transports.batch.types import BranchArrays, MicroBatch, RoutedExperts, SamplingMask, TopLogprobs
 from prime_rl.utils.logger import get_logger
@@ -36,14 +37,12 @@ _decoder = msgspec.msgpack.Decoder(BranchArrays)
 
 
 class PayloadServer:
-    """One env-server worker's arrays, served at `GET <url>/<id>`."""
+    """One env-server worker's arrays, served at `GET <url>/<id>` and freed by
+    `DELETE <url>/<id>`."""
 
-    def __init__(self, max_bytes: int):
-        self.max_bytes = max_bytes
+    def __init__(self):
         self.blobs: OrderedDict[str, tuple[int, bytes]] = OrderedDict()
-        self.nbytes = 0
         self.release_below = 0
-        self.evicted = 0
         self.lock = threading.Lock()
         server = self
 
@@ -56,6 +55,11 @@ class PayloadServer:
                 if blob is not None:
                     self.wfile.write(blob)
 
+            def do_DELETE(self) -> None:
+                server.delete(self.path.lstrip("/"))
+                self.send_response(204)
+                self.end_headers()
+
             def log_message(self, *args: Any) -> None:
                 pass
 
@@ -67,20 +71,15 @@ class PayloadServer:
     def put(self, key: str, blob: bytes, epoch: int, release_below: int) -> None:
         with self.lock:
             # Blobs arrive in dispatch-version order up to in-flight overlap, so dropping
-            # from the oldest end frees every released blob that has reached it.
+            # from the oldest end frees every unfetched blob too old to train.
             self.release_below = max(self.release_below, release_below)
             while self.blobs and next(iter(self.blobs.values()))[0] < self.release_below:
-                self.nbytes -= len(self.blobs.popitem(last=False)[1][1])
+                self.blobs.popitem(last=False)
             self.blobs[key] = (epoch, blob)
-            self.nbytes += len(blob)
-            while self.nbytes > self.max_bytes and len(self.blobs) > 1:
-                self.nbytes -= len(self.blobs.popitem(last=False)[1][1])
-                self.evicted += 1
-                if self.evicted == 1 or self.evicted % 1000 == 0:
-                    get_logger().warning(
-                        f"Payload store is over {self.max_bytes / 2**30:.0f} GiB and dropped "
-                        f"{self.evicted} unreleased arrays; raise [payloads] max_gib"
-                    )
+
+    def delete(self, key: str) -> None:
+        with self.lock:
+            self.blobs.pop(key, None)
 
     def get(self, key: str) -> bytes | None:
         with self.lock:
@@ -91,8 +90,7 @@ class PayloadServer:
 class PayloadHook:
     """`verifiers.v1.serve.set_episode_hook` hook: keep a finished train episode's arrays."""
 
-    def __init__(self, config: PayloadsConfig):
-        self.config = config
+    def __init__(self):
         self.server: PayloadServer | None = None
 
     def __call__(self, episode: vf.Episode, sampling: vf.SamplingConfig) -> None:
@@ -114,7 +112,7 @@ class PayloadHook:
                     if not present:
                         continue
                     if self.server is None:
-                        self.server = PayloadServer(self.config.max_gib << 30)
+                        self.server = PayloadServer()
                     key = f"{trace.id}-{branch.index}"
                     self.server.put(key, _encoder.encode(arrays), stamp["epoch"], stamp["release_below"])
                     branches[str(branch.index)] = key
@@ -133,14 +131,29 @@ def _fetch(url: str) -> BranchArrays | None:
         return None
 
 
-def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) -> list[int]:
+def _delete(url: str) -> None:
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, method="DELETE"), timeout=60).close()
+    except OSError:
+        pass
+
+
+def delete_payloads(urls: list[str], pool: ThreadPoolExecutor) -> None:
+    """Free fetched arrays on their workers, without waiting. Call only once every rank
+    that may read them has fetched them."""
+    for url in urls:
+        pool.submit(_delete, url)
+
+
+def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) -> tuple[list[int], list[str]]:
     """Fetch the micro batches' arrays into their inline fields, assembled as the packer
     assembles inline arrays: each sample truncated to its slice, concatenated in packing
     order, and the padding tail filled (routing repeats the micro batch's own rows, as
     `pad_micro_batch` does; masks and heads get empty rows).
 
-    Returns the indices of micro batches whose arrays could not be fetched; they get
-    arrays of the right shapes, and the caller must keep them out of the loss."""
+    Returns the indices of micro batches whose arrays could not be fetched (they get
+    arrays of the right shapes, and the caller must keep them out of the loss) and the
+    fetched URLs, for `delete_payloads`."""
     urls = {f"{s.url}/{s.id}" for mb in micro_batches for s in mb.payloads or []}
     fetched = dict(zip(urls, pool.map(_fetch, urls)))
     failed = []
@@ -154,7 +167,7 @@ def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) 
         mb.payloads = None
     if failed:
         get_logger().warning(f"Could not fetch the payloads of {len(failed)} micro batches")
-    return failed
+    return failed, sorted(urls)
 
 
 def _assemble(mb: MicroBatch, parts: list[BranchArrays | None]) -> None:

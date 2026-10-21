@@ -20,7 +20,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
-from prime_rl.transports.payload import resolve_payloads
+from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
 
 
@@ -234,6 +234,8 @@ class DataLoader:
         self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload") if payloads is not None else None
         self.failed_micro_batches: list[int] = []
         """Micro batches of the last batch whose arrays could not be fetched on this rank."""
+        self.payload_urls: list[str] = []
+        """The last batch's fetched arrays, for `release_payloads`."""
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
@@ -251,11 +253,18 @@ class DataLoader:
         micro_batches = self.receiver.receive()
         if self.payload_pool is not None:
             start = time.perf_counter()
-            self.failed_micro_batches = resolve_payloads(micro_batches, self.payload_pool)
+            self.failed_micro_batches, self.payload_urls = resolve_payloads(micro_batches, self.payload_pool)
             get_logger().debug(
                 f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
             )
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+
+    def release_payloads(self) -> None:
+        """Free the last batch's arrays on the env servers. Call once every rank that may
+        read them has fetched them."""
+        if self.payload_pool is not None:
+            delete_payloads(self.payload_urls, self.payload_pool)
+            self.payload_urls = []
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
