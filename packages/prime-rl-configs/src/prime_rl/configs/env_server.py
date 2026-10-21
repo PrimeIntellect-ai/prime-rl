@@ -3,7 +3,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 from pydantic import Field, SerializeAsAny, model_validator
 
-from prime_rl.configs.shared import LogConfig, PayloadsConfig
+from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
@@ -25,9 +25,10 @@ class EnvServerConfig(BaseConfig):
 
     log: LogConfig = LogConfig()
 
-    payloads: PayloadsConfig | None = None
-    """Keep the training arrays of finished train episodes and serve them to the trainer
-    (see ``[payloads]``). Set by the ``rl`` launcher for train sources."""
+    keep_training_arrays: bool = False
+    """Keep the per-token training arrays of finished episodes and serve them to the
+    trainer by reference (``prime_rl.transports.payload``). Set by the ``rl`` launcher
+    for train sources."""
 
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — logs and any generated artifacts are written as subdirectories. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""

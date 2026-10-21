@@ -1,5 +1,5 @@
 """Training arrays kept by env servers: the trainer must assemble exactly the arrays the
-inline path packs, and the store must free them by version and under its cap."""
+inline path packs, and the store must serve and free them."""
 
 import base64
 import copy

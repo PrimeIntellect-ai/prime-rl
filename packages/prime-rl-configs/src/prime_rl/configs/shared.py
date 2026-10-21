@@ -279,20 +279,6 @@ class HeartbeatConfig(BaseConfig):
     rate limit. Size it well under the monitor's period."""
 
 
-class PayloadsConfig(BaseConfig):
-    """Keep per-token training arrays (router-replay rows, the score-centering top-k head,
-    sampling masks) out of the orchestrator and pass references to them instead.
-
-    vLLM returns the arrays inline to the env servers as without ``[payloads]``. When an
-    episode finishes, each env-server worker keeps every trainable branch's arrays and
-    serves them over HTTP; the orchestrator packs and ships only references, and each
-    trainer rank fetches the arrays of its micro batches from the workers. Each kept
-    array is deleted exactly once: by the trainer after every rank fetched it, by the
-    orchestrator when it drops the sample without shipping it, or by the env server
-    when the episode never reached the orchestrator. Arrays the trainer cannot fetch drop
-    their micro batches."""
-
-
 class BaseTransportConfig(BaseConfig):
     pass
 

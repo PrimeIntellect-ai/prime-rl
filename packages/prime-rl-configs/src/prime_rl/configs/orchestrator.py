@@ -20,7 +20,6 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
-    PayloadsConfig,
     PolicyClientConfig,
     ResumeConfig,
     TransportConfig,
@@ -515,11 +514,6 @@ class OrchestratorConfig(BaseConfig):
 
     rollout_transport: TransportConfig = ZMQTransportConfig()
     """Transport used to ship rollouts from orchestrator to trainer."""
-
-    payloads: PayloadsConfig | None = None
-    """Ask the train env servers to keep rollouts' training arrays and hand over references
-    to them. Set by the ``rl`` entrypoint's shared ``[payloads]``. None means the arrays
-    travel inline."""
 
     env_server_replicas: int = Field(1, ge=1)
     """Replicas of each launcher-managed env server; the orchestrator spreads each source's

@@ -152,12 +152,10 @@ echo "WEIGHT_BROADCAST_HOST=${WEIGHT_BROADCAST_HOST}"
 echo "MODEL_EXPRESS_PORT=${MODEL_EXPRESS_PORT}"
 {% endif %}
 
-# The orchestrator runs on trainer rank 0's node (SLURM_PROCID == NUM_INFER_NODES) by
-# default; with orchestrator_on_inference it moves to the last inference node (a decode
-# node) to keep its rollout buffer + env workers off host-RAM-saturated trainer nodes.
+# The orchestrator runs on trainer rank 0's node (SLURM_PROCID == NUM_INFER_NODES).
 # The ZMQ rollout transport binds in the orchestrator process, so both sides must
 # address the orchestrator's node.
-{% if num_infer_nodes > 0 and orchestrator_on_inference %}ORCH_PROCID=$((NUM_INFER_NODES - 1)){% else %}ORCH_PROCID=$NUM_INFER_NODES{% endif %}
+ORCH_PROCID=$NUM_INFER_NODES
 export ORCH_PROCID
 export ORCH_ADDR="${HOSTNAMES[$ORCH_PROCID]}"
 echo "ORCH_ADDR=${ORCH_ADDR}"

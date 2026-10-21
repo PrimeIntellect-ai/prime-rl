@@ -242,7 +242,6 @@ def train(config: TrainerConfig):
             progress.step,
             parallel_dims.get_mesh("dp").size(),
             config.rollout_transport,
-            config.payloads,
         )
     logger.debug(f"Initialized data loader in {format_time(time.perf_counter() - t0)}")
 
@@ -304,7 +303,7 @@ def train(config: TrainerConfig):
         load_data_start_time = time.perf_counter()
         micro_batches = dataloader.get_batch()
         dropped_micro_batches = 0
-        if config.payloads is not None and not config.data.fake:
+        if not config.data.fake:
             # Ranks that share a data rank train the same micro batches, so they must drop
             # the same ones even when only one of them failed to fetch.
             failed = torch.zeros(dataloader.dp_world_size, len(micro_batches), device="cuda")
@@ -750,7 +749,7 @@ def train(config: TrainerConfig):
             "time/step": step_time,
             "time/wait_for_batch": wait_for_batch_time,
             "time/load_data": load_data_time,
-            **({"payload/dropped_micro_batches": dropped_micro_batches} if config.payloads is not None else {}),
+            "payload/dropped_micro_batches": dropped_micro_batches,
             "time/broadcast_weights": broadcast_weights_time,
             "time/save_ckpt": save_ckpt_time,
             "time/forward_backward": forward_backward_time,
