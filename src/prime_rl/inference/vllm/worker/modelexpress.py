@@ -34,10 +34,15 @@ class ModelExpressWeightUpdateWorker(Worker):
         staging_buffer_bytes=None,
         staging_buffers_count=1,
     ):
+        from transformers import AutoConfig
+
         from prime_rl.trainer.models import get_custom_causal_lm_cls
         from prime_rl.trainer.models.conversion_ops import apply_prime_to_hf
 
-        hf_config = self.model_runner.model_config.hf_config
+        # The trainer publishes PrimeRL-native tensors, so the conversion chain must come from the
+        # PrimeRL config class registered on import above, not vLLM's own config class.
+        model_config = self.model_runner.model_config
+        hf_config = AutoConfig.from_pretrained(model_config.model, trust_remote_code=model_config.trust_remote_code)
         chain = get_custom_causal_lm_cls(hf_config).conversion_chain(hf_config)
         worker_id = f"{session_id}:{rank_offset + self.rank}"
         self._generator = ModelExpressGeneratorClient.initialize(
