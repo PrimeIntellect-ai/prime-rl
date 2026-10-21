@@ -27,13 +27,15 @@ class NGramEmbeddingWeights(ChunkedConvOp):
         )
 
     def iter_prime_to_hf(
-        self, weight: Tensor, resolve_rows: Callable[[Tensor, int, int], Tensor]
-    ) -> Iterator[dict[str, Tensor]]:
+        self, weight: Tensor, resolve_rows: Callable[[Tensor, int, int], Tensor | None]
+    ) -> Iterator[dict[str, Tensor] | None]:
         shard_size = (weight.shape[0] + self.shard_count - 1) // self.shard_count
         for index in range(self.shard_count):
             start = min(index * shard_size, weight.shape[0])
             stop = min(start + shard_size, weight.shape[0])
-            yield {f"{self.checkpoint_prefix}.shard_{index}.weight": resolve_rows(weight, start, stop)}
+            chunk = resolve_rows(weight, start, stop)
+            yield {f"{self.checkpoint_prefix}.shard_{index}.weight": chunk} if chunk is not None else None
+            del chunk
 
 
 def is_hf_state_dict(state_dict: dict[str, Tensor]) -> bool:

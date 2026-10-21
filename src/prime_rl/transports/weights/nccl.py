@@ -4,9 +4,10 @@ from pathlib import Path
 from typing import Callable, Generator
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
-from torch.distributed.tensor import DTensor
+from torch.distributed.tensor import DTensor, Replicate, Shard
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 from vllm.distributed.utils import StatelessProcessGroup
 
@@ -17,7 +18,56 @@ from prime_rl.transports.weights.base import WeightReceiver, WeightSender
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.nccl import disable_nccl_p2p_if_unavailable, iter_tensor_buckets
 from prime_rl.utils.vlm import get_layer_prefix
-from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_row_chunk, resolve_wire_dtype
+from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtype
+
+
+def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
+    """Assemble one fragment on trainer rank 0, using only its replica's row owners."""
+    rank = dist.get_rank()
+    if not isinstance(value, DTensor):
+        return value[start:stop].to(dtype) if rank == 0 else None
+    mesh = value.device_mesh
+    active_dims = [
+        i for i, placement in enumerate(value.placements) if mesh.size(i) > 1 and not isinstance(placement, Replicate)
+    ]
+    if len(active_dims) > 1 or (active_dims and value.placements[active_dims[0]] != Shard(0)):
+        raise ValueError("Embedding transfer requires replicated weights or a single row-sharding dimension")
+    mesh_dim = active_dims[0] if active_dims else None
+    destination_coordinates = (mesh.mesh == 0).nonzero().tolist()
+    if len(destination_coordinates) != 1:
+        raise ValueError("Trainer rank 0 must belong to the embedding mesh")
+    if mesh_dim is None:
+        return value.to_local()[start:stop].to(dtype) if rank == 0 else None
+    coordinate = destination_coordinates[0]
+    row_group_index = list(coordinate)
+    row_group_index[mesh_dim] = slice(None)
+    owners = mesh.mesh[tuple(row_group_index)].tolist()
+    if rank not in owners:
+        return None
+    group = mesh.get_group(mesh_dim)
+    rows_per_rank = (value.shape[0] + len(owners) - 1) // len(owners)
+    local = value.to_local()
+    offset = min(rows_per_rank * owners.index(rank), value.shape[0])
+    chunk = torch.empty((stop - start, *value.shape[1:]), dtype=dtype, device=value.device) if rank == 0 else None
+    requests = []
+    send_buffers = []
+    for owner_index, owner in enumerate(owners):
+        owner_start = min(rows_per_rank * owner_index, value.shape[0])
+        owner_stop = min(owner_start + rows_per_rank, value.shape[0])
+        left, right = max(start, owner_start), min(stop, owner_stop)
+        if left >= right:
+            continue
+        if owner == rank == 0:
+            chunk[left - start : right - start].copy_(local[left - offset : right - offset])
+        elif owner == rank:
+            # Retain dtype-conversion buffers until the asynchronous sends complete.
+            send_buffers.append(local[left - offset : right - offset].to(dtype).contiguous())
+            requests.append(dist.isend(send_buffers[-1], dst=0, group=group))
+        elif rank == 0:
+            requests.append(dist.irecv(chunk[left - start : right - start], src=owner, group=group))
+    for request in requests:
+        request.wait()
+    return chunk
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
@@ -174,9 +224,10 @@ class NCCLBroadcaster:
             for key, value in chunked_weights.items():
                 op = chunked_ops[key]
                 dtype = resolve_wire_dtype(keep_in_fp32, key, self.dtype) if isinstance(value, DTensor) else value.dtype
-                resolve_rows = partial(resolve_row_chunk, dtype=dtype)
+                resolve_rows = partial(_gather_row_chunk_to_master, dtype=dtype)
                 for packet in op.iter_prime_to_hf(value, resolve_rows):
                     if self.world.is_master:
+                        assert packet is not None
                         broadcast_state_dict(packet, self.communicator)
                     del packet
 

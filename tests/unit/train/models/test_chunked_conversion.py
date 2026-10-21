@@ -22,8 +22,10 @@ class PairChunks(ChunkedConvOp):
 
     def iter_prime_to_hf(self, weight, resolve_rows):
         middle = (weight.shape[0] + 1) // 2
-        yield {"checkpoint.part0": resolve_rows(weight, 0, middle)}
-        yield {"checkpoint.part1": resolve_rows(weight, middle, weight.shape[0])}
+        for name, start, stop in (("checkpoint.part0", 0, middle), ("checkpoint.part1", middle, weight.shape[0])):
+            chunk = resolve_rows(weight, start, stop)
+            yield {name: chunk} if chunk is not None else None
+            del chunk
 
 
 class ChunkedTestModel(PreTrainedModelPrimeRL):
