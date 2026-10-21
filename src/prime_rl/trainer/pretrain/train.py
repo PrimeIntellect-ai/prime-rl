@@ -38,11 +38,7 @@ from prime_rl.trainer.pretrain.balance import (
 )
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
 from prime_rl.trainer.pretrain.data import (
-    TokenShards,
     TrainData,
-    check_eos,
-    setup_dataloader,
-    setup_val_dataset,
     starts_with_bos,
 )
 from prime_rl.trainer.pretrain.suite import (
@@ -156,23 +152,6 @@ def train(config: PretrainConfig):
 
     data = TrainData(config.data, config.max_steps, len(tokenizer), tokenizer.eos_token_id, config.model.cp)
 
-    val_sources = {}
-    if config.val is not None:
-        val_sources = {
-            name: TokenShards([source.path], source.max_tokens) for name, source in config.val.sources.items()
-        }
-        for source in val_sources.values():
-            check_eos(source, tokenizer.eos_token_id)
-        byte_lengths = token_byte_lengths(tokenizer).to("cuda")
-        # Whole micro-batches on every data-parallel rank, as every forward is a collective.
-        windows_per_round = parallel_dims.get_mesh("dp").size() * config.data.micro_batch_size
-        val_windows = {}
-        for name, source in val_sources.items():
-            val_windows[name] = (source.num_tokens - 1) // config.data.seq_len // windows_per_round * windows_per_round
-            if val_windows[name] == 0:
-                raise ValueError(f"Val source {name!r} has fewer than {windows_per_round} windows of data.seq_len")
-            logger.info(f"Val source {name!r}: {val_windows[name] * config.data.seq_len:,} tokens")
-
     progress = Progress()
     restore_dataloader = checkpoint_step is not None and not (config.ckpt or CheckpointConfig()).skip_dataloader
     if checkpoint_step is not None:
@@ -204,7 +183,7 @@ def train(config: PretrainConfig):
     seq_balance_sums: dict[str, torch.Tensor] = {}
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass returning (loss_sum, token_count) over unmasked tokens and, in training, the MoE
+        """Forward pass returning (loss_sum, token_count) over unmasked tokens and the MoE
         sequence-wise balance loss summed over tokens (each token carries its row's loss, so after the division
         by the token count it is the mean over rows)."""
         input_ids = micro_batch["input_ids"].to("cuda", non_blocking=True)
@@ -222,14 +201,13 @@ def train(config: PretrainConfig):
                 model, input_ids, position_ids, seq_lens=seq_lens, labels=labels, seq_lens_are_pre_shard=cp_enabled
             )
         aux_loss_sum = torch.zeros((), device="cuda")
-        if torch.is_grad_enabled():
-            row_len = input_ids.shape[1] // config.data.micro_batch_size
-            for moe in moes_with_seq_balance:
-                aux_loss_sum += balance.seq_aux_coeff * moe.seq_balance.sum() * row_len
-                seq_balance_sums["balance"] = seq_balance_sums.get("balance", 0) + moe.seq_balance.detach().sum()
-                seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + moe.seq_balance.new_tensor(
-                    moe.seq_balance.numel()
-                )
+        row_len = input_ids.shape[1] // config.data.micro_batch_size
+        for moe in moes_with_seq_balance:
+            aux_loss_sum += balance.seq_aux_coeff * moe.seq_balance.sum() * row_len
+            seq_balance_sums["balance"] = seq_balance_sums.get("balance", 0) + moe.seq_balance.detach().sum()
+            seq_balance_sums["rows"] = seq_balance_sums.get("rows", 0) + moe.seq_balance.new_tensor(
+                moe.seq_balance.numel()
+            )
         return out["loss"], loss_mask.sum(dtype=torch.int64), aux_loss_sum
 
     def finish_no_grad_forwards() -> None:
@@ -239,35 +217,17 @@ def train(config: PretrainConfig):
         if is_moe_model:
             take_routing_counts(model)
 
-    @torch.no_grad()
-    def run_val(step: int) -> None:
-        """Held-out loss, perplexity and bits per byte on the weights after ``step`` optimizer updates."""
-        metrics = {}
-        for name, source in val_sources.items():
-            val_dataset = setup_val_dataset(source, config.data.seq_len, val_windows[name], config.model.cp)
-            totals = torch.zeros(3, dtype=torch.float64, device="cuda")  # loss sum, tokens, bytes
-            for micro_batch in setup_dataloader(val_dataset, config.data.micro_batch_size, num_workers=1):
-                loss_sum, token_count, _ = compute_loss(micro_batch)
-                # The bytes are counted on the unsharded targets, so every CP rank counts them once.
-                num_bytes = byte_lengths[micro_batch["target_ids"].to("cuda")].sum() / cp_size
-                totals += torch.stack([loss_sum.double(), token_count.double(), num_bytes.double()])
-            dist.all_reduce(totals, op=dist.ReduceOp.SUM, group=dp_cp_group)
-            loss_sum, num_tokens, num_bytes = totals.tolist()
-            loss = loss_sum / num_tokens
-            metrics[f"val/{name}/loss"] = loss
-            metrics[f"val/{name}/ppl"] = math.exp(min(loss, 20))
-            metrics[f"val/{name}/bpb"] = loss_sum / (math.log(2) * num_bytes)
-        finish_no_grad_forwards()
-        logger.success(f"Val | Step {step} | " + " | ".join(f"{k} {v:.4f}" for k, v in sorted(metrics.items())))
-        asyncio.run(monitors.log({**metrics, "step": step}, step=step))
-
     eval_sets = []
     if config.evals is not None:
         start_time = time.perf_counter()
         bos = config.data.type == "tokens" and starts_with_bos(data.source, tokenizer.bos_token_id)
+        has_token_sets = any(not isinstance(eval_set, str) for eval_set in config.evals.sets)
+        byte_lengths = token_byte_lengths(tokenizer).numpy() if has_token_sets else None
         eval_sets = [
-            prepare_multi_length_set(name, config.evals.data_dir, tokenizer, config.evals.seq_lens, bos)
-            for name in config.evals.sets
+            prepare_multi_length_set(
+                eval_set, config.evals.data_dir, tokenizer, config.evals.seq_lens, bos, byte_lengths
+            )
+            for eval_set in config.evals.sets
         ]
         logger.info(f"Prepared {len(eval_sets)} eval sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s")
 
@@ -296,15 +256,11 @@ def train(config: PretrainConfig):
         logger.success(f"Eval suite | Step {step} | {metrics['time/eval_suite']:.0f}s | {len(eval_sets)} sets")
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
-    if checkpoint_step is None and config.val is not None and config.val.eval_on_start:
-        run_val(step=0)
     if config.evals is not None and config.evals.eval_on_start:
         run_suite(step=checkpoint_step or 0)
     if checkpoint_step == config.max_steps:
-        # The last step's checkpoint is written before its val and evals: resuming from it only runs those.
-        logger.info(f"Resuming from the last step ({checkpoint_step}): running its val and evals only")
-        if config.val is not None:
-            run_val(checkpoint_step)
+        # The last step's checkpoint is written before its evals: resuming from it only runs those.
+        logger.info(f"Resuming from the last step ({checkpoint_step}): running its evals only")
         if config.evals is not None and not config.evals.eval_on_start:
             run_suite(checkpoint_step)
         logger.success("Pretrain trainer finished")
@@ -396,7 +352,7 @@ def train(config: PretrainConfig):
         progress.total_tokens += num_tokens
         progress.total_samples = data.windows
 
-        # The last step's checkpoint is written before its val and evals, so a timeout there does not lose it.
+        # The last step's checkpoint is written before its evals, so a timeout there does not lose it.
         save_ckpt_time = 0.0
         disk_metrics = {}
         if config.ckpt and (is_last_step or (config.ckpt.interval and progress.step % config.ckpt.interval == 0)):
@@ -407,8 +363,6 @@ def train(config: PretrainConfig):
             disk_metrics = get_ckpt_disk_metrics(config.run_dir)
 
         eval_start_time = time.perf_counter()
-        if config.val is not None and (is_last_step or progress.step % config.val.interval == 0):
-            run_val(progress.step)
         if config.evals is not None and (is_last_step or progress.step % config.evals.interval == 0):
             run_suite(progress.step)
         eval_time = time.perf_counter() - eval_start_time

@@ -33,13 +33,13 @@ type = "muon"
 lr = 0.0078125
 max_norm = 1.0
 
-[val]
+[evals]
 interval = 512
-
-[val.sources]
-web = { path = "data/dolma3-50b-dsv4/web-val" }
-code = { path = "data/dolma3-50b-dsv4/code-val" }
-math = { path = "data/dolma3-50b-dsv4/math-val" }
+sets = [
+  { name = "web-val", path = "data/dolma3-50b-dsv4/web-val" },
+  { name = "code-val", path = "data/dolma3-50b-dsv4/code-val" },
+  { name = "math-val", path = "data/dolma3-50b-dsv4/math-val" },
+]
 
 [ckpt]
 interval = 1024

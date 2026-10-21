@@ -58,12 +58,13 @@ def test_token_dataset_resumes(tmp_path):
 
 
 def test_without_document_masking_every_window_is_one_sequence(tmp_path):
-    write_shard(tmp_path / "a" / "00.ds", [[1, 2, 3], [4, 5], [6, 7, 8, 9]])
+    write_shard(tmp_path / "a" / "00.ds", [[1, 2], [3, 4], [5, 6], [7, 8]])
     shards = TokenShards([tmp_path / "a"])
-    masked = [window["seq_lens"].tolist() for window in TokenDataset(shards, seq_len=4, num_windows=2)]
-    assert masked == [[3, 1], [1, 3]]
-    dataset = TokenDataset(shards, seq_len=4, num_windows=2, document_masking=False)
-    assert [window["seq_lens"].tolist() for window in dataset] == [[4], [4]]
+    # Every window of 4 holds a document start.
+    masked = [window["seq_lens"] for window in islice(TokenDataset(shards, seq_len=4), 8)]
+    assert all(len(seq_lens) > 1 for seq_lens in masked)
+    unmasked = islice(TokenDataset(shards, seq_len=4, document_masking=False), 8)
+    assert [window["seq_lens"].tolist() for window in unmasked] == [[4]] * 8
 
 
 def test_collate_rows_restarts_positions_at_documents():

@@ -12,6 +12,9 @@ Requests start with BOS only if the training documents do (``bos``), so evals se
   continuation span is found by character offsets.
 - ``pairs``: ``good``/``bad`` sentences, each scored as [BOS +] sentence from its second token.
 
+Held-out token shards (``TokenEvalSetConfig``) are scored as a ``ppl`` set (``prepare_token_set``): every document
+as stored, cut into windows the same way; bpb counts the bytes of the scored tokens.
+
 A set is tokenized once (`prepare_set`); every round scores its requests (`score_requests`, the model's LM head
 replaced by `scoring_head`) and summarizes them (`summarize`)."""
 
@@ -31,7 +34,9 @@ import torch.distributed as dist
 from torch import nn
 from transformers.tokenization_utils import PreTrainedTokenizer
 
+from prime_rl.configs.pretrain import TokenEvalSetConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
+from prime_rl.trainer.pretrain.data import TokenShards, check_eos
 from prime_rl.trainer.world import get_world
 
 POSITION_BINS = (0, 128, 512, 2048, 4096, 16384)
@@ -48,7 +53,7 @@ class EvalSet:
     table: Any
     requests: list[Request]
     context: dict
-    sha256: str
+    sha256: str | None
 
 
 def head_logprobs(hidden, weight, targets, chunk: int = 2048):
@@ -228,6 +233,24 @@ def prepare_set(name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_l
     return EvalSet(name, kind, table, requests, context, meta["parquet_sha256"])
 
 
+def prepare_token_set(name: str, shards: TokenShards, seq_len: int, byte_lengths: np.ndarray) -> EvalSet:
+    """Every document of held-out token shards as a ``ppl`` set: cut into non-overlapping windows of ``seq_len``
+    scored tokens (later windows start cold), every token after the first scored. ``byte_lengths``: the UTF-8 bytes
+    of every token id, for bpb."""
+    requests, owner, num_bytes = [], [], []
+    for file_index in range(len(shards.files)):
+        tokens, doc_ends = shards.open(file_index)
+        begin = 0
+        for end in doc_ends.tolist():
+            ids = tokens[begin:end]
+            for window in range(0, len(ids) - 1, seq_len):
+                requests.append((ids[window : window + seq_len + 1].tolist(), 1))
+                owner.append(len(num_bytes))
+            num_bytes.append(int(byte_lengths[ids[1:]].sum()))
+            begin = end
+    return EvalSet(name, "ppl", None, requests, {"owner": owner, "bytes": np.array(num_bytes)}, None)
+
+
 @dataclass
 class MultiLengthSet:
     """One eval set at several context lengths (``ppl`` window / ``ctxcont`` context limit). A request that is the
@@ -242,9 +265,22 @@ class MultiLengthSet:
 
 
 def prepare_multi_length_set(
-    name: str, data_dir: Path, tokenizer: PreTrainedTokenizer, seq_lens: list[int], bos: bool
+    eval_set: str | TokenEvalSetConfig,
+    data_dir: Path | None,
+    tokenizer: PreTrainedTokenizer,
+    seq_lens: list[int],
+    bos: bool,
+    byte_lengths: np.ndarray | None = None,
 ) -> MultiLengthSet:
-    versions = {seq_len: prepare_set(name, data_dir, tokenizer, seq_len, bos) for seq_len in seq_lens}
+    """A pretrain-evals set (by name, in ``data_dir``) or held-out token shards at every length of ``seq_lens``."""
+    if isinstance(eval_set, str):
+        name = eval_set
+        versions = {seq_len: prepare_set(name, data_dir, tokenizer, seq_len, bos) for seq_len in seq_lens}
+    else:
+        name = eval_set.name
+        shards = TokenShards([eval_set.path])
+        check_eos(shards, tokenizer.eos_token_id)
+        versions = {seq_len: prepare_token_set(name, shards, seq_len, byte_lengths) for seq_len in seq_lens}
     distinct: dict[tuple[tuple[int, ...], int], int] = {}
     index = {
         seq_len: [distinct.setdefault((tuple(ids), start), len(distinct)) for ids, start in version.requests]

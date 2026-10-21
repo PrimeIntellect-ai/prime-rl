@@ -68,14 +68,6 @@ class PretrainModelConfig(ModelConfig):
     steps during backward) is not supported by the pretraining step."""
 
 
-class TokenSourceConfig(BaseConfig):
-    path: Path
-    """Folder of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``. The files are read in name order as one token stream."""
-
-    max_tokens: int | None = Field(None, ge=1)
-    """Tokens available from this source: the first ``max_tokens`` of its stream. Defaults to all tokens in the shards."""
-
-
 class BaseBatchConfig(BaseDataConfig):
     seq_len: int = Field(8192, ge=1)
     """Tokens per row. Documents continue across rows; attention restarts at every document and every row."""
@@ -111,41 +103,39 @@ class TokensDataConfig(BaseBatchConfig):
 PretrainDataConfig: TypeAlias = Annotated[FakeDataConfig | TokensDataConfig, Field(discriminator="type")]
 
 
-class ValConfig(BaseConfig):
-    """Held-out loss, perplexity and bits per byte, computed like the training loss on held-out token shards."""
+class TokenEvalSetConfig(BaseConfig):
+    """A held-out folder of datatrove tokenized shards, scored like a ``ppl`` set: every document on its own (in
+    windows of each of ``seq_lens``), all documents of the folder."""
 
-    interval: int = Field(500, ge=1)
-    """Evaluate every N steps, after that step's optimizer update."""
+    name: str
+    """Names the metrics, ``eval/<name>/<metric>@<length>``."""
 
-    eval_on_start: bool = True
-    """Evaluate the initial weights before the first step (logged as step 0)."""
-
-    sources: dict[str, TokenSourceConfig]
-    """Held-out sources by name, logged as ``val/<name>/loss``, ``/ppl`` and ``/bpb``. Each eval reads the same
-    windows: as many as fill whole micro-batches on every data-parallel rank."""
+    path: Path
+    """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``, as for training."""
 
 
 class EvalsConfig(BaseConfig):
-    """The eval suite, scored inside the trainer: forward passes without gradients on the training model, every
-    ``interval`` steps. The sets are log-likelihood evals in the format of the pretrain-evals offline suite."""
+    """The evals, scored inside the trainer: forward passes without gradients on the training model, every
+    ``interval`` steps. The sets are log-likelihood evals in the format of the pretrain-evals offline suite, and
+    held-out token shards."""
 
     interval: int = Field(ge=1)
-    """Score the suite every N steps (after that step's optimizer update), and at the last step."""
+    """Score the sets every N steps (after that step's optimizer update), and at the last step."""
 
     eval_on_start: bool = True
     """Also score the weights the run starts from (the initial weights, logged as step 0, or the checkpoint it
     resumes from, logged at that step)."""
 
-    data_dir: Path
-    """Eval sets, one directory per set with ``test.parquet`` and ``meta.json``."""
+    data_dir: Path | None = None
+    """Directory of the pretrain-evals sets, one directory per set with ``test.parquet`` and ``meta.json``."""
 
-    sets: list[str]
-    """Names of the sets to score."""
+    sets: list[str | TokenEvalSetConfig] = Field(min_length=1)
+    """The sets to score: the name of a pretrain-evals set in ``data_dir``, or a held-out token folder."""
 
     seq_lens: list[int] | None = None
-    """Context lengths to score every set at: the window length for ``ppl`` sets and the context limit for
-    ``ctxcont`` sets. Defaults to ``data.seq_len``. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g. ``bpb@4k``). Requests that are the
-    same at several lengths are scored once."""
+    """Context lengths to score every set at: the window length for ``ppl`` and token sets and the context limit for
+    ``ctxcont`` sets. Defaults to ``data.seq_len``. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g.
+    ``bpb@4k``). Requests that are the same at several lengths are scored once."""
 
     micro_batch_tokens: int | None = Field(None, ge=1)
     """Tokens per packed eval row (one forward pass on one GPU). Defaults to the training micro-batch
@@ -154,6 +144,12 @@ class EvalsConfig(BaseConfig):
 
     save_arrays: bool = False
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
+
+    @model_validator(mode="after")
+    def validate_data_dir(self):
+        if self.data_dir is None and any(isinstance(eval_set, str) for eval_set in self.sets):
+            raise ValueError("evals.data_dir is required for pretrain-evals sets")
+        return self
 
 
 PretrainOptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig, Field(discriminator="type")]
@@ -170,11 +166,8 @@ class PretrainConfig(TrainerLaunchConfig):
 
     data: PretrainDataConfig
 
-    val: ValConfig | None = None
-    """Held-out loss on token shards (``val/*``). If None, it never runs."""
-
     evals: EvalsConfig | None = None
-    """The eval suite, scored inside the trainer. If None, it never runs."""
+    """The evals, scored inside the trainer. If None, they never run."""
 
     optim: PretrainOptimizerConfig = MuonConfig()
     """Optimizer. ``optim.lr`` is required."""

@@ -18,12 +18,12 @@ class TokenShards:
     ``<name>.ds.metadata``) and ``<name>.ds.index`` the uint64 end offset of every document. File
     boundaries are document boundaries.
 
-    With a ``seed``, each epoch reads all ``num_tokens // seq_len`` windows of the stream once, in a seeded random
-    order and from a seeded random offset, so epochs differ in order and window boundaries, and part of an epoch is a
-    sample of the whole stream (``window_start``). The last ``num_tokens % seq_len`` tokens of an epoch are skipped.
-    Without one (held-out sets), the windows are read in order."""
+    Each epoch reads all ``num_tokens // seq_len`` windows of the stream once, in a random order and from a random
+    offset drawn from ``seed`` and the epoch, so epochs differ in order and window boundaries, and part of an epoch is
+    a sample of the whole stream (``window_start``). The last ``num_tokens % seq_len`` tokens of an epoch are
+    skipped."""
 
-    def __init__(self, paths: list[Path], max_tokens: int | None = None, seed: int | None = None):
+    def __init__(self, paths: list[Path], seed: int = 0):
         self.files, self.first_files = [], []
         for path in paths:
             files = sorted(path.glob("*.ds"))
@@ -34,10 +34,7 @@ class TokenShards:
         self.dtypes = [token_dtype(file) for file in self.files]
         sizes = [file.stat().st_size // dtype.itemsize for file, dtype in zip(self.files, self.dtypes)]
         self.starts = np.cumsum([0, *sizes])
-        total = int(self.starts[-1])
-        if max_tokens is not None and max_tokens > total:
-            raise ValueError(f"{paths} have {total:,} tokens, fewer than max_tokens={max_tokens:,}")
-        self.num_tokens = total if max_tokens is None else max_tokens
+        self.num_tokens = int(self.starts[-1])
         self.seed = seed
         self.memmaps: dict[int, tuple[np.memmap, np.memmap]] = {}
         # The current epoch, its window order and its offset.
@@ -79,8 +76,6 @@ class TokenShards:
 
     def window_start(self, position: int, seq_len: int) -> int:
         """Stream offset of the window to read when ``position`` tokens have been read."""
-        if self.seed is None:
-            return position % self.num_tokens
         num_windows = self.num_tokens // seq_len
         epoch, window = divmod(position // seq_len, num_windows)
         if self.epoch_order[0] != epoch:
@@ -124,22 +119,19 @@ class TokenDataset(StatefulIterableDataset):
     """``seq_len`` windows of a token source, window ``w`` read from ``source.window_start(w * seq_len)``.
 
     Every data rank walks the whole window sequence but reads only its own windows; the state is the window counter.
-    Each window reads one token past its end for the last target. With ``num_windows`` the dataset stops after that
-    many windows. Without ``document_masking``, a window is one sequence: attention and positions run over the whole
-    window."""
+    Each window reads one token past its end for the last target. Without ``document_masking``, a window is one
+    sequence: attention and positions run over the whole window."""
 
     def __init__(
         self,
         source: TokenShards | RandomTokens,
         seq_len: int,
         non_dp_size: int = 1,
-        num_windows: int | None = None,
         document_masking: bool = True,
     ):
         super().__init__(non_dp_size)
         self.source = source
         self.seq_len = seq_len
-        self.num_windows = num_windows
         self.document_masking = document_masking
 
     def state_dict(self) -> dict:
@@ -150,7 +142,7 @@ class TokenDataset(StatefulIterableDataset):
 
     def __iter__(self):
         self._setup_world_info()
-        while self.num_windows is None or self.step < self.num_windows:
+        while True:
             window = self.step
             self.step += 1
             if window % self.data_world_size != self.data_rank:
@@ -177,12 +169,6 @@ def collate_rows(rows: list[dict]) -> dict:
     }
 
 
-def setup_dataloader(dataset: TokenDataset, micro_batch_size: int, num_workers: int) -> StatefulDataLoader:
-    return StatefulDataLoader(
-        dataset, batch_size=micro_batch_size, collate_fn=collate_rows, num_workers=num_workers, pin_memory=True
-    )
-
-
 class TrainData:
     """The training data: windows of the token pool (or of fake tokens), their dataloader and the count of windows
     trained on. Iterating yields this rank's micro-batches; every data rank walks the same window sequence, so the
@@ -207,7 +193,13 @@ class TrainData:
             non_dp_size=non_dp_size,
             document_masking=config.type == "fake" or config.document_masking,
         )
-        self.loader = setup_dataloader(dataset, config.micro_batch_size, config.num_workers)
+        self.loader = StatefulDataLoader(
+            dataset,
+            batch_size=config.micro_batch_size,
+            collate_fn=collate_rows,
+            num_workers=config.num_workers,
+            pin_memory=True,
+        )
         self.seq_len = config.seq_len
         self.windows_per_micro_batch = config.micro_batch_size * get_world().world_size // non_dp_size
         self.windows = 0
@@ -237,11 +229,6 @@ class TrainData:
             "progress/num_samples": self.windows,
             "progress/epochs": self.windows * self.seq_len / self.source.num_tokens,
         }
-
-
-def setup_val_dataset(source: TokenShards, seq_len: int, num_windows: int, non_dp_size: int) -> TokenDataset:
-    """One pass over the first ``num_windows`` windows of a held-out source."""
-    return TokenDataset(source, seq_len, non_dp_size=non_dp_size, num_windows=num_windows)
 
 
 def check_eos(shards: TokenShards, eos_token_id: int) -> None:
