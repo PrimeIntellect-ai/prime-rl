@@ -8,6 +8,7 @@ from prime_rl.trainer.model import compute_expert_load_stats, is_tt_moe_model
 from prime_rl.trainer.models.fusions import fuse_gate_up_projections
 from prime_rl.trainer.models.layers.activations import ActivationDispatch, ClampedSilu
 from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, GroupedGemmExpertCompute
+from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import (
     GroupedExperts,
@@ -22,6 +23,44 @@ from prime_rl.trainer.models.qwen3_5 import (
 )
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("trainable_weight", [False, True])
+def test_router_linear_preserves_fp32_output_and_gradients(compiled, trainable_weight):
+    from torch.utils.checkpoint import checkpoint
+
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required for low-precision GEMM with FP32 output")
+
+    linear = FP32Linear(64, 8, device="cuda", dtype=torch.bfloat16)
+    with torch.no_grad():
+        linear.weight.zero_()
+        linear.weight[:, 0] = 1
+        linear.weight[:, 1] = 2**-12
+        linear.bias.zero_()
+    linear.weight.requires_grad_(trainable_weight)
+
+    def forward(x):
+        return checkpoint(linear, x, use_reentrant=False)
+
+    forward = torch.compile(forward, fullgraph=True, dynamic=True) if compiled else forward
+
+    for length in (17, 33, 65):
+        x = torch.ones(length, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        actual = forward(x)
+        expected = F.linear(x.float(), linear.weight.float(), linear.bias.float())
+        assert actual.dtype == torch.float32
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert not torch.equal(actual, F.linear(x, linear.weight, linear.bias).float())
+
+        grad_output = torch.linspace(-0.25, 0.25, actual.numel(), device="cuda").reshape_as(actual)
+        parameters = (x, linear.weight, linear.bias) if trainable_weight else (x, linear.bias)
+        actual_grads = torch.autograd.grad(actual, parameters, grad_output)
+        expected_grads = torch.autograd.grad(expected, parameters, grad_output)
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
+            torch.testing.assert_close(actual_grad, expected_grad)
 
 
 @pytest.mark.parametrize(
@@ -57,6 +96,18 @@ def test_unselected_moe_uses_bf16_without_loading_compute_backend(selection, com
     assert isinstance(moe.token_dispatcher, LocalTokenDispatcher)
     assert moe.token_dispatcher.token_group_alignment == moe.experts.compute.token_group_alignment
     assert all(moe.get_parameter(name) is parameter for name, parameter in parameters.items())
+
+
+def test_mega_moe_dispatch_requires_expert_parallelism():
+    moe = MoE.from_args(MoEArgs(num_experts=2, score_before_experts=False), dim=512, hidden_dim=512, shared_expert=None)
+    model = torch.nn.Module()
+    model.model = torch.nn.Module()
+    model.model.layers = torch.nn.ModuleList([moe])
+    config = ModelConfig.model_validate({"moe": {"dispatch": {"type": "mega_moe"}}})
+    dims = ParallelDims(dp_replicate=1, dp_shard=1, cp=1, pp=1, ep=1, world_size=1)
+
+    with pytest.raises(ValueError, match="expert-parallel group"):
+        configure_moe_runtime(model, config, dims)
 
 
 @pytest.mark.parametrize(
@@ -143,7 +194,7 @@ def test_local_token_dispatcher(score_before_experts):
 
 def test_local_token_dispatcher_handles_empty_input_and_unused_experts():
     dispatcher = LocalTokenDispatcher(num_experts=3, top_k=1, token_group_alignment=1)
-    x = torch.randn(2, 4)
+    x = torch.randn(2, 4, dtype=torch.bfloat16)
     scores = torch.ones(2, 1)
     selected = torch.tensor([[0], [2]])
 
@@ -159,6 +210,7 @@ def test_local_token_dispatcher_handles_empty_input_and_unused_experts():
         score_before_experts=False,
     )
     assert empty.shape == (0, 4)
+    assert empty.dtype == x.dtype
 
 
 @pytest.mark.parametrize(

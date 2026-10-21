@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import torch
 import torch.distributed as dist
 from torch import Tensor, nn
-from torch.distributed.tensor import DTensor
 
 from prime_rl.trainer.model import is_tt_moe_model, iter_moe_blocks
 from prime_rl.trainer.parallel_dims import ParallelDims
@@ -89,13 +88,6 @@ def run_micro_batches(
             micro_max_mean = counts.amax(dim=1) / counts.mean(dim=1)
             sums["micro_max_mean"] = sums.get("micro_max_mean", zero) + micro_max_mean.mean()
             maxes["micro_max_mean_max"] = torch.maximum(maxes.get("micro_max_mean_max", zero), micro_max_mean.amax())
-
-    if is_moe_model:
-        # Router gates kept out of FSDP (``model.moe_router_fsdp = "replicated"``) average like FSDP's reduction.
-        for moe in iter_moe_blocks(model):
-            for param in moe.router.parameters():
-                if param.grad is not None and not isinstance(param, DTensor):
-                    dist.all_reduce(param.grad, op=dist.ReduceOp.AVG, group=dp_cp_group)
 
     sums["data_time"] = zero + data_time
     maxes["data_time_max"] = zero + data_time

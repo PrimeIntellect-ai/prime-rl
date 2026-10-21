@@ -39,7 +39,6 @@ attn = "flash_attention_3"
 # Hybrid-Mamba model: CP is capped at 8 by n_groups.
 cp = 8
 ep = 8
-fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
 

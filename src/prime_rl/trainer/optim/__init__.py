@@ -57,7 +57,7 @@ def setup_optimizer(
     param_groups: list[dict] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
     """``param_groups`` replaces the default parameter groups (for Muon, each group needs an
-    ``algorithm`` key). It is not supported with CPU offloading."""
+    ``algorithm`` key). It is not supported with full offload."""
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
     if full_offload and config.type not in ("adamw", "sign_sgd"):

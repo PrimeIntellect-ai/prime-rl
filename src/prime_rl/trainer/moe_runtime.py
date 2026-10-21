@@ -2,12 +2,14 @@ import importlib.util
 
 import torch
 from torch import nn
+from torch.distributed import ProcessGroup
 from torch.distributed.tensor.parallel import parallelize_module
 
 from prime_rl.configs.trainer import (
     BF16MoEComputeConfig,
     DeepEPMoEDispatchConfig,
     DeepGemmFP8MoEComputeConfig,
+    MegaMoeMoEDispatchConfig,
     ModelConfig,
     MoERuntimeConfig,
     MXFP8MoEComputeConfig,
@@ -15,6 +17,7 @@ from prime_rl.configs.trainer import (
 )
 from prime_rl.trainer.distributed.expert_parallel import ExpertWeightParallel
 from prime_rl.trainer.distributed.token_dispatcher import (
+    FusedTokenDispatcher,
     LocalTokenDispatcher,
     MXFP8TorchTokenDispatcher,
     TorchTokenDispatcher,
@@ -25,6 +28,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     MXFP8ExpertCompute,
 )
+from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, reserve_sms_for_comm
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger
@@ -59,6 +63,26 @@ def _resolve_expert_compute(config: ModelConfig) -> ExpertCompute:
     raise TypeError(f"Unsupported MoE compute config: {type(compute).__name__}")
 
 
+def _resolve_mega_moe_compute(
+    moe: MoE, dispatch: MegaMoeMoEDispatchConfig, group: ProcessGroup
+) -> MegaMoEExpertCompute:
+    if dispatch.max_tokens_per_rank is None:
+        raise ValueError(
+            "Mega MoE dispatch needs `model.moe.dispatch.max_tokens_per_rank`; the trainer configs derive it from "
+            "the micro batch, set it explicitly when configuring the model on its own."
+        )
+    return MegaMoEExpertCompute(
+        num_experts=moe.experts.num_experts,
+        top_k=moe.router.top_k,
+        hidden=moe.experts.down_proj.shape[1],
+        intermediate_hidden=moe.experts.hidden_dim,
+        group=group,
+        max_tokens_per_rank=dispatch.max_tokens_per_rank,
+        num_sms=reserve_sms_for_comm(dispatch.num_reserved_sms),
+        precision=dispatch.precision,
+    )
+
+
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
     moe_layers = [module for module in model.modules() if isinstance(module, MoE)]
     if not moe_layers:
@@ -82,16 +106,33 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
         }
         get_logger().debug(f"Selected model layers for MoE compute: {sorted(selected_layers)}")
     bf16_compute = BF16ExpertCompute()
-    selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
-    ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
     dispatch = config.moe.dispatch
+    is_mega_moe = isinstance(dispatch, MegaMoeMoEDispatchConfig)
+    ep_mesh = parallel_dims.get_mesh("ep") if parallel_dims.ep_enabled else None
+    if is_mega_moe:
+        if ep_mesh is None:
+            raise ValueError(
+                "Mega MoE dispatch requires an expert-parallel group (model.ep > 1); it has no single-rank mode."
+            )
+        # Mega MoE fuses the expert compute into dispatch, so `model.moe.compute` does not apply to it.
+        selected_moes = set(moe_layers)
+        selected_compute = _resolve_mega_moe_compute(moe_layers[0], dispatch, ep_mesh.get_group())
+    else:
+        selected_compute = _resolve_expert_compute(config) if selected_moes else bf16_compute
 
     for moe in moe_layers:
-        compute = selected_compute if moe in selected_moes else bf16_compute
         if ep_mesh is not None and moe.experts.num_experts % parallel_dims.ep:
             raise ValueError(
                 f"MoE expert count {moe.experts.num_experts} must be divisible by model.ep={parallel_dims.ep}."
             )
+        if is_mega_moe and moe.score_before_experts:
+            raise ValueError(
+                "Mega MoE dispatch requires `score_before_experts=False` on the MoE layer "
+                "(router weights are applied at combine time, after both expert GEMMs)."
+            )
+        if is_mega_moe:
+            selected_compute.validate_top_k(moe.router.top_k)
+        compute = selected_compute if moe in selected_moes else bf16_compute
         moe.experts.set_compute(compute)
         if ep_mesh is None:
             token_dispatcher = LocalTokenDispatcher(
@@ -124,6 +165,8 @@ def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: 
                 num_sms=dispatch.num_sms,
                 token_chunk_size=dispatch.token_chunk_size,
             )
+        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+            token_dispatcher = FusedTokenDispatcher()
         else:
             raise TypeError(f"Unsupported MoE dispatch config: {type(dispatch).__name__}")
         moe.set_token_dispatcher(token_dispatcher)
