@@ -66,6 +66,8 @@ The trainer runs the PrimeRL model implementations under `src/prime_rl/trainer/m
 
 Currently, you **need at least one NVIDIA GPU to use prime-rl**. If you don't already have access to one, we recommend our [compute platform](https://app.primeintellect.ai) for everything from renting on-demand single GPUs for developing, debugging and small ablations, to [reserving 1000+ GPU clusters](https://app.primeintellect.ai/dashboard/quotes) for production-scale training.
 
+> *NOTE*: Intel GPUs (XPU) run prime-rl from [`Dockerfile.xpu`](Dockerfile.xpu), whose header has the build and `docker run` commands. Until XCCL weight broadcast is supported, pass `--weight-broadcast.type filesystem` to `rl` and `sft`, or uncomment the `[weight_broadcast]` block in the reverse-text example configs.
+
 ### Quick Setup
 
 Set up prime-rl in a single command.

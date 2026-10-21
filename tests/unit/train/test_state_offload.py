@@ -5,6 +5,7 @@ import torch
 from torch.optim import Optimizer
 
 from prime_rl.trainer.optim.state_offload import CPUOffloadOptimizer
+from prime_rl.utils.device import DEVICE_TYPE
 
 pytestmark = [pytest.mark.gpu]
 
@@ -19,13 +20,13 @@ class TrainedPair(NamedTuple):
 def make_model(seed: int) -> torch.nn.Sequential:
     torch.manual_seed(seed)
     model = torch.nn.Sequential(torch.nn.Linear(64, 128), torch.nn.GELU(), torch.nn.Linear(128, 32))
-    return model.cuda()
+    return model.to(DEVICE_TYPE)
 
 
 def run_steps(model: torch.nn.Module, optimizer: Optimizer, num_steps: int, seed: int) -> None:
     torch.manual_seed(seed)
     for _ in range(num_steps):
-        batch = torch.randn(16, 64, device="cuda")
+        batch = torch.randn(16, 64, device=DEVICE_TYPE)
         loss = model(batch).square().mean()
         loss.backward()
         optimizer.step()

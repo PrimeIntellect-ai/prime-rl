@@ -30,6 +30,10 @@ env.agent.runtime.type = "subprocess"
 
 [inference]
 
+# Intel GPUs (XPU): uncomment until XCCL weight broadcast is supported.
+# [weight_broadcast]
+# type = "filesystem"
+
 [deployment]
 num_train_gpus = 1
 num_infer_gpus = 1

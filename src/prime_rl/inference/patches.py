@@ -308,6 +308,12 @@ def monkey_patch_glm5_next_kda_conv_weights():
     Remove when vLLM keeps the q/k/v conv weights in one merged parameter
     (https://github.com/vllm-project/vllm/pull/60991).
     """
+    from vllm.platforms import current_platform
+
+    # vLLM's glm5next package raises on import under XPU, where it has no GLM-5.3 Flash model to patch.
+    if current_platform.is_xpu():
+        return
+
     from vllm.models.glm5next.common.kda import Glm5NextLinearAttention
     from vllm.models.glm5next.common.model import Glm5NextForCausalLM, Glm5NextForConditionalGeneration
 
