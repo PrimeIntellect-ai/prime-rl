@@ -64,8 +64,8 @@ class PretrainModelConfig(ModelConfig):
     moe: PretrainMoEConfig = PretrainMoEConfig()
 
     offload: Literal["none", "optimizer"] = "none"
-    """``optimizer`` keeps the optimizer states in CPU RAM between steps, as in SFT and RL. ``full`` is not supported:
-    its CPU optimizer handles only AdamW and SignSGD, without pretraining's per-role parameter groups."""
+    """``optimizer`` keeps the optimizer states in CPU RAM between steps, as in SFT and RL. ``full`` (CPU optimizer
+    steps during backward) is not supported by the pretraining step."""
 
 
 class TokenSourceConfig(BaseConfig):

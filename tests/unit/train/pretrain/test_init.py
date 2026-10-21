@@ -2,10 +2,9 @@ import itertools
 
 import torch
 
-from prime_rl.configs.trainer import MuonConfig
 from prime_rl.trainer.models.init import normal_shard
 from prime_rl.trainer.models.prime_moe import PrimeMoeConfig, PrimeMoeForCausalLM
-from prime_rl.trainer.pretrain.parametrization import param_groups
+from prime_rl.trainer.utils import count_parameters
 
 
 def test_normal_shard_is_independent_of_sharding():
@@ -24,7 +23,7 @@ def test_normal_shard_is_independent_of_sharding():
     assert not torch.equal(normal_shard("w", shape, shape, (0, 0, 0), seed=1, device=torch.device("cpu")), full)
 
 
-def test_moe_param_groups_cover_every_parameter():
+def test_count_parameters_moe():
     config = PrimeMoeConfig(
         vocab_size=128,
         hidden_size=512,
@@ -41,11 +40,10 @@ def test_moe_param_groups_cover_every_parameter():
     config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
         model = PrimeMoeForCausalLM._from_config(config)
-    groups = param_groups(model, MuonConfig(lr=1.0, weight_decay=0.1), ep_enabled=False)
-    group_of = {param: group for group in groups for param in group["params"]}
-    assert sum(len(group["params"]) for group in groups) == len(group_of) == len(list(model.parameters()))
-    moe = model.model.layers[1].mlp
-    assert group_of[moe.experts.up_proj]["algorithm"] == group_of[moe.router.gate.weight]["algorithm"] == "muon"
-    assert group_of[model.lm_head.weight]["algorithm"] == "adamw"
-    assert group_of[model.model.norm.weight]["weight_decay"] == 0.0
-    assert all(group["lr"] == 1.0 for group in groups)
+    counts = count_parameters(model)
+    embedding = model.model.embed_tokens.weight.numel() + model.lm_head.weight.numel()
+    experts = sum(param.numel() for param in model.model.layers[1].mlp.experts.parameters())
+    assert counts["total"] == sum(param.numel() for param in model.parameters())
+    assert counts["embedding"] == embedding
+    assert counts["non_embedding"] == counts["total"] - embedding
+    assert counts["active_non_embedding"] == counts["non_embedding"] - experts * 6 // 8
