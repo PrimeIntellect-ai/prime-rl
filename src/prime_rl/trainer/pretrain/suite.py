@@ -64,7 +64,7 @@ def head_logprobs(hidden, weight, targets, chunk: int = 2048):
     return torch.cat(logprobs), torch.cat(hits)
 
 
-def scoring_head(self, hidden_states, labels, temperature=None, sampling_mask=None):
+def scoring_head(self, hidden_states, labels, temperature=None, sampling_mask=None, topk_ids=None):
     """Replaces the forward of prime-rl's LM head: log-prob and greedy hit of every label that is not
     IGNORE_INDEX, in fp32 without TF32, returned in the ``logprobs`` / ``entropy`` slots of its output dict."""
     hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
