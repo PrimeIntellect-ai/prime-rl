@@ -13,7 +13,7 @@ def test_remote_prefill_rows_start_at_first_forward():
     from vllm.distributed.aux_output_connector.connector import AuxOutputSchedulerConnector
 
     monkey_patch_routed_experts_with_pd_connectors()
-    connector = AuxOutputSchedulerConnector()
+    connector = AuxOutputSchedulerConnector(hash_block_size=4)
     request = SimpleNamespace(
         request_id="r",
         block_hashes=[b"a" * 32],
