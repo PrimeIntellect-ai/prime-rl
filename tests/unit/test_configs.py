@@ -27,7 +27,7 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
-from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.configs.trainer import TrainerConfig, dist_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, cli, dump_resolved_config
 
 # All config config classes
@@ -367,11 +367,64 @@ def test_moe_compute_apply_to_cli(selection, selected):
             },
             "does not support DeepEP",
         ),
+        (
+            {"ep": 2, "ac_offloading": None, "lora": {}, "moe": {"dispatch": {"type": "dist_moe"}}},
+            "does not support LoRA",
+        ),
+        (
+            {"ep": 2, "moe": {"dispatch": {"type": "dist_moe"}}},
+            "does not support activation offloading",
+        ),
+        (
+            {
+                "ep": 2,
+                "ac_offloading": None,
+                "moe": {"dispatch": {"type": "dist_moe", "scratch_capacity_factor": 2.0, "vmm_capacity_factor": 2.0}},
+            },
+            "vmm_capacity_factor .* must exceed",
+        ),
     ],
 )
 def test_invalid_moe_runtime_configs_fail(model, message):
     with pytest.raises(ValidationError, match=message):
         TrainerModelConfig.model_validate(model)
+
+
+@pytest.mark.parametrize(
+    ("explicit", "micro_batch_tokens", "cp", "expected"),
+    [(None, 4096, 1, 4096), (None, 4096, 2, 2048), (2048, 4096, 2, 2048), (4096, 4096, 2, None)],
+)
+def test_dist_moe_max_tokens_per_rank(explicit, micro_batch_tokens, cp, expected):
+    if expected is None:
+        with pytest.raises(ValueError, match="must equal the padded micro batch per CP rank"):
+            dist_moe_max_tokens_per_rank(explicit, micro_batch_tokens, cp)
+    else:
+        assert dist_moe_max_tokens_per_rank(explicit, micro_batch_tokens, cp) == expected
+
+
+DIST_MOE_MODEL = {"ac_offloading": None, "moe": {"dispatch": {"type": "dist_moe"}}}
+
+
+@pytest.mark.parametrize(
+    ("trainer_seq_len", "orchestrator", "message"),
+    [
+        (2048, {"seq_len": 2048}, "requires `orchestrator.pad_to_seq_len = true`"),
+        (4096, {"seq_len": 2048, "pad_to_seq_len": True}, "to equal orchestrator.seq_len"),
+    ],
+)
+def test_rl_dist_moe_requires_padded_micro_batches(trainer_seq_len, orchestrator, message):
+    with pytest.raises(ValidationError, match=message):
+        RLConfig.model_validate(
+            {
+                "trainer": {"model": {**DIST_MOE_MODEL, "seq_len": trainer_seq_len}},
+                "orchestrator": {"renderer": {"name": "default"}, **orchestrator},
+            }
+        )
+
+
+def test_sft_dist_moe_requires_padded_micro_batches():
+    with pytest.raises(ValidationError, match="requires `data.pad_to_seq_len = true`"):
+        SFTConfig.model_validate({"data": {"type": "fake"}, "model": DIST_MOE_MODEL})
 
 
 @pytest.mark.parametrize(

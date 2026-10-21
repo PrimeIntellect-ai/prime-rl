@@ -248,8 +248,58 @@ def mega_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_to
     return max_tokens_per_rank
 
 
+class DistMoeMoEDispatchConfig(BaseConfig):
+    """Dispatch, compute and combine routed experts with meta-pytorch dist_moe (SM100+, EP within one NVLink domain)."""
+
+    type: Literal["dist_moe"] = "dist_moe"
+
+    max_tokens_per_rank: int | None = Field(None, ge=1)
+    """Tokens per rank per MoE call that the context is sized for. Defaults to the padded micro batch after CP
+    sharding (``model.seq_len // model.cp`` for RL, ``data.micro_batch_size * data.seq_len // model.cp`` for SFT)
+    and must equal it."""
+
+    scratch_capacity_factor: float = Field(2.0, gt=0)
+    """Routing imbalance, relative to balanced routing, that fits in device scratch. Exceeding the total scratch
+    capacity is a fatal device trap."""
+
+    vmm_capacity_factor: float | None = Field(None, gt=0)
+    """Total device plus pinned-host scratch capacity, relative to balanced routing. Routing beyond
+    ``scratch_capacity_factor`` spills to host memory. ``None`` disables host scratch."""
+
+    activation_slot_capacity_factor: float | None = Field(None, ge=0)
+    """Saved-activation capacity relative to balanced routing. Layers that do not fit recompute their
+    intermediates in backward. ``None`` saves only the layer inputs and always recomputes."""
+
+    num_reserved_sms: int | None = Field(None, ge=1)
+    """SMs left free for concurrent NCCL kernels. ``NCCL_MAX_CTAS`` must be set to at most this value. ``None``
+    lets the dist_moe kernels use every SM."""
+
+    @model_validator(mode="after")
+    def validate_vmm_capacity_factor(self):
+        if self.vmm_capacity_factor is not None and self.vmm_capacity_factor <= self.scratch_capacity_factor:
+            raise ValueError(
+                f"model.moe.dispatch.vmm_capacity_factor ({self.vmm_capacity_factor}) must exceed "
+                f"scratch_capacity_factor ({self.scratch_capacity_factor}), otherwise host scratch is empty."
+            )
+        return self
+
+
+def dist_moe_max_tokens_per_rank(max_tokens_per_rank: int | None, micro_batch_tokens: int, cp: int) -> int:
+    """Every EP rank must pass dist_moe the same token count, so the context holds exactly one padded micro batch
+    after CP sharding."""
+    tokens_per_rank = micro_batch_tokens // cp
+    if max_tokens_per_rank is None:
+        return tokens_per_rank
+    if max_tokens_per_rank != tokens_per_rank:
+        raise ValueError(
+            f"model.moe.dispatch.max_tokens_per_rank ({max_tokens_per_rank}) must equal the padded micro batch per "
+            f"CP rank ({micro_batch_tokens} // {cp} = {tokens_per_rank} tokens)."
+        )
+    return max_tokens_per_rank
+
+
 MoEDispatchConfig: TypeAlias = Annotated[
-    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig,
+    TorchMoEDispatchConfig | DeepEPMoEDispatchConfig | MegaMoeMoEDispatchConfig | DistMoeMoEDispatchConfig,
     Field(discriminator="type"),
 ]
 
@@ -353,11 +403,28 @@ class ModelConfig(BaseModelConfig):
         if isinstance(dispatch, DeepEPMoEDispatchConfig):
             if isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 expert compute does not support DeepEP dispatch.")
-        elif isinstance(dispatch, MegaMoeMoEDispatchConfig):
+        elif isinstance(dispatch, (MegaMoeMoEDispatchConfig, DistMoeMoEDispatchConfig)):
             pass  # Compute is fused into dispatch; `model.moe.compute` is ignored for these layers.
         elif dispatch.transport == "mxfp8":
             if not isinstance(compute, MXFP8MoEComputeConfig):
                 raise ValueError("MXFP8 transport requires model.moe.compute.type='mxfp8'.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_dist_moe(self):
+        if not isinstance(self.moe.dispatch, DistMoeMoEDispatchConfig):
+            return self
+        if self.lora is not None:
+            raise ValueError("dist_moe dispatch does not support LoRA: LoRA experts bypass the fused expert compute.")
+        if self.ac_offloading is not None:
+            raise ValueError(
+                "dist_moe dispatch does not support activation offloading yet; disable `model.ac_offloading`."
+            )
+        if self.compile is not None and self.compile.mode in ("reduce-overhead", "max-autotune"):
+            raise ValueError(
+                f"dist_moe dispatch does not support the CUDA-graph compile mode {self.compile.mode!r}; use "
+                "`max-autotune-no-cudagraphs`, `lite` or the default mode."
+            )
         return self
 
 
@@ -759,5 +826,14 @@ class TrainerConfig(BaseTrainerConfig):
         if dispatch.type == "mega_moe":
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank, self.model.seq_len
+            )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_dist_moe_max_tokens_per_rank(self):
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "dist_moe":
+            dispatch.max_tokens_per_rank = dist_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, self.model.seq_len, self.model.cp
             )
         return self

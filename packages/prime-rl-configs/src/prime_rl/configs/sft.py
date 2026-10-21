@@ -20,7 +20,7 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
+from prime_rl.configs.trainer import BaseTrainerConfig, dist_moe_max_tokens_per_rank, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -489,6 +489,27 @@ class SFTConfig(BaseTrainerConfig):
             data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
             dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
                 dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
+            )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_dist_moe_max_tokens_per_rank(self):
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "dist_moe":
+            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            if not all(data.pad_to_seq_len for data in data_configs):
+                raise ValueError(
+                    "dist_moe dispatch requires `data.pad_to_seq_len = true` (and `val.data.pad_to_seq_len = true` "
+                    "with validation): every EP rank must pass it the same token count."
+                )
+            micro_batch_tokens = {data.micro_batch_size * data.seq_len for data in data_configs}
+            if len(micro_batch_tokens) > 1:
+                raise ValueError(
+                    "dist_moe dispatch requires validation micro batches the size of training micro batches "
+                    "(`val.data.micro_batch_size * val.data.seq_len == data.micro_batch_size * data.seq_len`)."
+                )
+            dispatch.max_tokens_per_rank = dist_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, micro_batch_tokens.pop(), self.model.cp
             )
         return self
 

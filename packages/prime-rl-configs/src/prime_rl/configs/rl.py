@@ -395,6 +395,17 @@ class RLConfig(BaseConfig):
                 f"trainer.model.seq_len ({trainer.model.seq_len}) must be >= orchestrator.seq_len "
                 f"({orchestrator.seq_len}) so the trainer can handle every sequence the orchestrator produces."
             )
+        if trainer.model.moe.dispatch.type == "dist_moe":
+            if not orchestrator.pad_to_seq_len:
+                raise ValueError(
+                    "dist_moe dispatch requires `orchestrator.pad_to_seq_len = true`: every EP rank must pass it "
+                    "the same token count."
+                )
+            if trainer.model.seq_len != orchestrator.seq_len:
+                raise ValueError(
+                    f"dist_moe dispatch requires trainer.model.seq_len ({trainer.model.seq_len}) to equal "
+                    f"orchestrator.seq_len ({orchestrator.seq_len}), the length micro batches are padded to."
+                )
         if (trainer.ckpt is None) != (orchestrator.ckpt is None):
             raise ValueError(
                 "Checkpointing must be configured on both trainer and orchestrator. Use the shared [ckpt]."
