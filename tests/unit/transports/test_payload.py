@@ -71,9 +71,8 @@ def test_fetched_batches_equal_inline_batches():
     inline = _samples(copy.deepcopy(episodes))
 
     hook = PayloadHook()
-    sampling = vf.SamplingConfig(extra_args={"prl_payload": {"epoch": 0, "release_below": 0}})
     for episode in episodes:
-        hook(episode, sampling)
+        hook.keep(episode, vf.SamplingConfig())
         assert all(node.routed_experts is None for node in episode.traces[0].nodes)
     by_ref = _samples(episodes)
     assert all(s.payload is not None and s.routed_experts is None and s.top_logprobs is None for s in by_ref)
@@ -96,7 +95,7 @@ def test_fetched_batches_equal_inline_batches():
 def test_unfetchable_micro_batches_are_reported():
     rng = np.random.default_rng(1)
     episode = _episode(rng, 10, 20)
-    PayloadHook()(episode, vf.SamplingConfig(extra_args={"prl_payload": {"epoch": 0, "release_below": 0}}))
+    PayloadHook().keep(episode, vf.SamplingConfig())
     [sample] = _samples([episode])
     sample.payload.id = "missing"
     [[micro_batch]] = prepare_batch([sample], seq_len=64, num_train_workers=1, bin_cost=sum)
@@ -105,15 +104,21 @@ def test_unfetchable_micro_batches_are_reported():
     assert micro_batch.routed_experts.shape[0] == len(micro_batch.input_ids)
 
 
-def test_store_serves_deletes_and_sweeps_old_versions():
+def test_store_serves_and_deletes():
     server = PayloadServer()
-    server.put("a", b"x" * 40, epoch=0, release_below=0)
-    server.put("b", b"y" * 40, epoch=1, release_below=0)
+    server.put("a", b"x" * 40)
+    server.put("b", b"y" * 40)
     with urllib.request.urlopen(f"{server.url}/b") as response:
         assert response.read() == b"y" * 40
     with ThreadPoolExecutor(1) as pool:
-        delete_payloads([f"{server.url}/b"], pool)
+        delete_payloads([f"{server.url}/b", f"{server.url}/missing"], pool)
     assert server.get("b") is None and server.get("a") is not None
-    # Arrays nobody fetched go once no pending batch can train on their version.
-    server.put("c", b"z" * 10, epoch=2, release_below=1)
-    assert server.get("a") is None and server.get("c") is not None
+
+
+def test_discard_frees_what_keep_kept():
+    hook = PayloadHook()
+    episode = _episode(np.random.default_rng(2), 6, 8)
+    hook.keep(episode, vf.SamplingConfig())
+    assert hook.server.blobs
+    hook.discard(episode)
+    assert not hook.server.blobs
