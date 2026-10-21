@@ -57,7 +57,7 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
@@ -152,40 +152,10 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
-def apply_fp32_moe_router(model: nn.Module) -> None:
-    """Cast MoE router gates to fp32 so routing runs in fp32 in forward and backward.
-
-    The FSDP bf16 cast exemption is applied separately in `setup_fsdp`.
-    """
-    logger = get_logger()
-    num_routers = 0
-    for moe in iter_moe_blocks(model):
-        moe.router.to(torch.float32)
-        if isinstance(moe.router, TokenChoiceTopKRouter):
-            moe.router.fp32_gate = True
-        num_routers += 1
-
-    # No-op for non-MoE models: moe_router_dtype='float32' is the default,
-    # so absence of MoE routers is the common case, not an error.
-    if num_routers > 0:
-        logger.info(f"Running {num_routers} MoE router gates in fp32")
-
-
-def get_full_offload_dtype_policy(
-    model: nn.Module,
-    config: ModelConfig,
-) -> dict[int, tuple[torch.dtype, torch.dtype]]:
+def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
-    if config.moe_router_dtype != "float32":
-        return policy
-
-    for moe in iter_moe_blocks(model):
-        for param in moe.router.parameters():
-            if param.is_floating_point():
-                policy[id(param)] = (torch.float32, torch.float32)
-    return policy
+    return {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -546,7 +516,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
-    fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
             if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
@@ -571,23 +540,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                     block_mlp.experts, expert_mesh_info, shard_placement_fn
                 ),
             }
-
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
-            if fullgraph:
-                raise ValueError(
-                    "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16': the fp32 router is "
-                    "its own FSDP unit inside the compiled block, and dynamo cannot trace FSDP hooks."
-                )
-            # Own FSDP unit with an fp32 policy so the gate weight is not cast to
-            # bf16 for forward and its gradients reduce in fp32.
-            fully_shard(
-                block_mlp.router,
-                mesh=hsdp_mesh,
-                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
-                reshard_after_forward=config.reshard_after_forward,
-                shard_placement_fn=shard_placement_fn,
-            )
 
         fully_shard(
             transformer_block,
@@ -839,20 +791,21 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     if quant is None:
         return
 
+    ignore_modules = quant.ignore_patterns + quant.extra_ignore_patterns
     if isinstance(quant, FP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] not in (9, 10):
             raise ValueError(
                 f"FP8 blockwise quantization (DeepGEMM) requires SM90 or SM100, but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=ignore_modules)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] < 10:
             raise ValueError(
                 f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
@@ -957,9 +910,6 @@ def setup_model(
     if config.freeze_moe_router:
         freeze_moe_router(model)
 
-    if config.moe_router_dtype == "float32":
-        apply_fp32_moe_router(model)
-
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
     # No-op for models without a sparse indexer.
@@ -1014,6 +964,7 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
+    topk_ids: Int[Tensor, "batch seq head"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
@@ -1027,6 +978,9 @@ def forward(
         "temperature": temperature,
         "sampling_mask": sampling_mask,
     }
+
+    if topk_ids is not None:
+        kwargs["topk_ids"] = topk_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)
