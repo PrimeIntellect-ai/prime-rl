@@ -169,7 +169,10 @@ class PrimeMoE(MoE):
     With ``latent_dim`` (LatentMoE), the routed experts work in that width: the token is projected down before the
     dispatch and the combined expert output is projected back up, with an RMS norm on the expert input
     (``latent_norm = "input"``, Marin) or on the combined output before the up-projection (``"output"``, Kimi K3's
-    Stable LatentMoE). The router and the shared experts read the full-width token."""
+    Stable LatentMoE). The router and the shared experts read the full-width token.
+
+    The input can also be a (router input, expert input) pair (Gated Residual reads): the router scores the first, the
+    routed experts (via the latent projection) and the shared experts process the second."""
 
     def __init__(
         self,
@@ -230,11 +233,16 @@ class PrimeMoE(MoE):
         token_dispatcher.top_k = 1 if self.variable_k else self.router.top_k
         self.token_dispatcher = token_dispatcher
 
-    def forward(self, x: torch.Tensor, routed_experts: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor | tuple[torch.Tensor, torch.Tensor], routed_experts: torch.Tensor | None = None
+    ) -> torch.Tensor:
         assert routed_experts is None, "PrimeMoE does not support router replay"
+        router_input, x = x if isinstance(x, tuple) else (x, x)
         bs, slen, dim = x.shape
         x = x.view(-1, dim)
-        top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, scores = self.router(x)
+        top_scores, selected_experts_indices, num_tokens_per_expert, routing_confidence_sum, scores = self.router(
+            router_input.reshape(-1, dim)
+        )
 
         if self.balance_rows is not None and torch.is_grad_enabled():
             self.seq_balance = sequence_balance(scores, selected_experts_indices, self.balance_rows)
