@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
@@ -17,6 +18,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.utils.logger import format_time, get_logger
 
 
 class TensorMicroBatch(TypedDict):
@@ -226,23 +228,31 @@ class DataLoader:
         self.receiver.wait()
 
     def get_batch(self) -> list[TensorMicroBatch]:
+        start = time.perf_counter()
         micro_batches = self.receiver.receive()
-        return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        received = time.perf_counter()
+        tensors = [self._micro_batch_to_tensor(mb) for mb in micro_batches]
+        num_tokens = sum(tensor["input_ids"].shape[1] for tensor in tensors)
+        get_logger().info(
+            f"Loaded {len(tensors)} micro batches ({num_tokens:,} tokens): decoded in "
+            f"{format_time(received - start)}, converted in {format_time(time.perf_counter() - received)}"
+        )
+        return tensors
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
         """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
-            routed_experts = (
-                torch.frombuffer(
-                    packed_routed_experts.data,
-                    dtype=_torch_dtype(packed_routed_experts.dtype),
-                )
-                .reshape(packed_routed_experts.shape)
-                .to(torch.int32)
-                .unsqueeze(0)
-            )
+            routed_experts = torch.frombuffer(
+                packed_routed_experts.data,
+                dtype=_torch_dtype(packed_routed_experts.dtype),
+            ).reshape(packed_routed_experts.shape)
+            # uint8 expert ids stay a view of the received frame and widen on the GPU (a quarter of
+            # the bytes over PCIe); wider wire dtypes widen here
+            if routed_experts.dtype != torch.uint8:
+                routed_experts = routed_experts.to(torch.int32)
+            routed_experts = routed_experts.unsqueeze(0)
         sampling_mask = None
         packed_sampling_mask = micro_batch.sampling_mask
         if packed_sampling_mask is not None:
@@ -257,11 +267,20 @@ class DataLoader:
         if (head := micro_batch.top_logprobs) is not None:
             counts = np.frombuffer(head.counts, dtype=np.int32)
             width = max(int(counts.max(initial=0)), 1)
-            valid = np.arange(width)[None, :] < counts[:, None]
+            flat_ids = np.frombuffer(head.ids, dtype=np.int32)
+            flat_values = np.frombuffer(head.logprobs, dtype=np.float32)
             ids = np.full((len(counts), width), -1, dtype=np.int32)
             values = np.zeros((len(counts), width), dtype=np.float32)
-            ids[valid] = np.frombuffer(head.ids, dtype=np.int32)
-            values[valid] = np.frombuffer(head.logprobs, dtype=np.float32)
+            full = counts == width
+            if flat_ids.size == int(full.sum()) * width:
+                # Every sampled row carries the whole head and context rows none: copy rows
+                # instead of scattering element by element
+                ids[full] = flat_ids.reshape(-1, width)
+                values[full] = flat_values.reshape(-1, width)
+            else:
+                valid = np.arange(width)[None, :] < counts[:, None]
+                ids[valid] = flat_ids
+                values[valid] = flat_values
             top_ids = torch.from_numpy(ids).unsqueeze(0)
             top_values = torch.from_numpy(values).unsqueeze(0)
         return TensorMicroBatch(
