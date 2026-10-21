@@ -244,12 +244,14 @@ def write_launch_artifacts(config_dir: Path, name: str) -> None:
     write_launch_toml(config_dir, name)
 
 
-def env_address_file(config_dir: Path, split: str, name: str) -> Path:
+def env_address_file(config_dir: Path, split: str, name: str, replica: int | None = None) -> Path:
     """Where a launcher-managed env server publishes the address it bound
-    (``envs/<split>/<name>.address``, next to its config). The server binds an
-    OS-assigned port, so two runs on one host never race for the same one; a client
-    waits for this file instead of assuming a port."""
-    return config_dir / "envs" / split / f"{name}.address"
+    (``envs/<split>/<name>.address``, next to its config, or ``<name>.<replica>.address``
+    for one of several replicas). The server binds an OS-assigned port, so two runs on one
+    host never race for the same one; a client waits for this file instead of assuming a
+    port."""
+    stem = name if replica is None else f"{name}.{replica}"
+    return config_dir / "envs" / split / f"{stem}.address"
 
 
 def write_env_server_config(
