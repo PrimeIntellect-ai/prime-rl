@@ -355,12 +355,11 @@ Router replay, score centering and sampling replay give every token a training a
 
 ```toml
 [payloads]
-max_gib = 32  # most memory one env-server worker holds for arrays
 ```
 
 - vLLM returns the arrays inline to the env server as before.
 - When a train episode finishes, each env-server worker keeps its trainable branches' arrays, serves them over HTTP, and sends the orchestrator only `{url, branch -> id}` (in `trace.info["payload"]`).
 - The orchestrator packs references (`batch/bytes` drops accordingly); each trainer rank fetches its micro batches' arrays before the step and assembles them exactly as the packer assembles inline arrays.
-- Every train dispatch stamps its policy version and the oldest version a pending batch can still train on; workers drop arrays below that version, and their oldest arrays past `max_gib` (with a warning). A micro batch whose arrays cannot be fetched is dropped from the loss on every rank that trains it (`payload/dropped_micro_batches`), never trained on zeros.
+- Once every trainer rank has fetched a step's arrays, the trainer deletes them from the workers (`DELETE`). Arrays no batch fetches (dropped or pruned samples, untrained branches) are swept by policy version: every train dispatch stamps its version and the oldest version a pending batch can still train on, and workers drop arrays below it. A micro batch whose arrays cannot be fetched is dropped from the loss on every rank that trains it (`payload/dropped_micro_batches`), never trained on zeros.
 
 On multi-node SLURM runs the env servers always run on the inference nodes (round robin over sources), so their memory and CPU spread over those nodes; without inference nodes they run next to the orchestrator. Eval and frozen-source rollouts stay inline.
