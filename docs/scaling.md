@@ -122,6 +122,29 @@ CUDA_HOME = "/usr/local/cuda-13.0"
 PATH = "/usr/local/cuda-13.0/bin:${PATH}"
 ```
 
+dist_moe (`type = "dist_moe"`) runs dispatch, the SwiGLU expert MLP, and combine through [meta-pytorch dist_moe](https://github.com/meta-pytorch/dist_moe), which pipelines the expert-parallel communication with the GEMMs over NVLink peer memory. It runs BF16 only, needs an SM100+ (Blackwell) GPU and the `dist-moe` extra, and `[trainer.model.moe.compute]` does not apply to those layers. EP must be larger than 1 and the EP group must fit inside one node (one NVLink domain). Experts must be gated SwiGLU (`silu`) without biases, with the default `gate_up` fusion and `hidden_size` divisible by 64. Qwen3-MoE, Qwen3.5 MoE, GLM-4.x MoE, GLM-5, MiniMax-M2 and Laguna qualify. DeepSeek V4 (its clamped SwiGLU differs from dist_moe's), GPT-OSS (expert biases), Nemotron-H (non-gated experts) and LoRA are rejected, as are activation offloading and the CUDA-graph compile modes (`reduce-overhead`, `max-autotune`), so set `model.ac_offloading = "None"`.
+
+Every EP rank must pass dist_moe the same number of tokens, so micro batches must be padded to a fixed length. For RL, set `orchestrator.pad_to_seq_len = true` and keep `trainer.model.seq_len` equal to `orchestrator.seq_len`. For SFT, set `data.pad_to_seq_len = true`, and with validation also `val.data.pad_to_seq_len = true` with the same micro batch size and sequence length as `data`. The context is sized once at startup for `max_tokens_per_rank` tokens, the padded micro batch after CP sharding: `seq_len // cp` for RL and `data.micro_batch_size * data.seq_len // cp` for SFT. An explicit value must equal it.
+
+Each rank receives its routed tokens into a scratch region sized at `scratch_capacity_factor` (default 2.0) times the balanced count (`max_tokens_per_rank * top_k`). Routing more imbalanced than the scratch holds hits a device-side trap that kills the run, so raise the factor for skewed routing. A `vmm_capacity_factor` above `scratch_capacity_factor` backs the excess up to that factor with pinned host memory, which is correct but slower. `activation_slot_capacity_factor` sizes the saved intermediate activations relative to balanced routing, and layers that do not fit recompute them in backward. The default `None` saves only each layer's input. The trainer logs dist_moe's memory plan at startup. After the last backward of each step it checks the activation buffer for overflow, which means corrupted numerics, and raises before the optimizer step if one occurred. It logs the run's peak scratch use in bytes, maxed over the EP ranks (`dist_moe/scratch_max_used`, `dist_moe/device_scratch_used` and, with VMM, `dist_moe/host_scratch_used`), so the factors can be tuned from data.
+
+Outside that memory plan, every MoE layer keeps dist_moe's routing state for backward under every AC mode, about `24 * num_experts * max_tokens_per_rank` bytes per layer. Qwen3-30B-A3B (128 experts, 48 layers) at 65536 tokens per rank holds about 9 GiB of it. The startup log reports this estimate next to the plan.
+
+`num_reserved_sms` is unset by default, which lets the dist_moe kernels use every SM. Set it if dist_moe kernels and concurrent NCCL kernels (FSDP all-gathers, gradient reductions) deadlock, and then set `NCCL_MAX_CTAS` to at most that value, as for Mega MoE.
+
+```toml
+[trainer.model]
+ac_offloading = "None"
+
+[trainer.model.moe.dispatch]
+type = "dist_moe"
+scratch_capacity_factor = 2.0  # routing imbalance device scratch absorbs
+# vmm_capacity_factor = 4.0    # spill imbalance beyond the scratch to pinned host memory
+
+[orchestrator]
+pad_to_seq_len = true
+```
+
 ### Context Parallelism
 
 CP shards a single sequence across multiple GPUs along the token dimension — for long-context sequences. It uses Ulysses: an all-to-all turns sequence-sharded Q/K/V into head-sharded Q/K/V over the full sequence, attention runs locally, and a second all-to-all shards the output back. Hybrid linear-attention/Mamba models (Qwen3.5, NemotronH) redistribute their recurrent layers the same way. The sparse-attention models (DeepSeek-V4, GLM-5 DSA) keep queries sequence-sharded and all-gather their keys instead, which needs no head sharding.
