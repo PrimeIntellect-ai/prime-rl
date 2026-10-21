@@ -17,6 +17,7 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
+certifi = false
 deep-ep = false
 deep-gemm = false
 dion = false
@@ -239,7 +240,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -254,7 +255,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -269,7 +270,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -437,7 +438,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -627,7 +628,7 @@ dependencies = [
 requires-dist = [
     { name = "bfcl-eval", git = "https://github.com/mikasenghaas/gorilla.git?subdirectory=berkeley-function-call-leaderboard&rev=898763a" },
     { name = "soundfile", specifier = ">=0.13.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -730,7 +731,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pystemmer" },
     { name = "tokenizers" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -785,11 +786,11 @@ wheels = [
 
 [[package]]
 name = "certifi"
-version = "2026.5.20"
+version = "2026.10.19"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f3/ce/ee2ecad540810a79593028e88299baeae54d346cc7a0d94b6199988b89b1/certifi-2026.5.20.tar.gz", hash = "sha256:69dea482ab64caa7b9f6aba1c6bf48bb6a5448d1c0f1b17ab42ad8c763a5344d", size = 135422, upload-time = "2026-05-20T11:46:50.073Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz", hash = "sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae", size = 137598, upload-time = "2026-10-20T02:24:16.604Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/59/8c/57e832b7af6d7c5abe66eb3fbe3a3a32f4d11ea23a1aa7131371035be991/certifi-2026.5.20-py3-none-any.whl", hash = "sha256:3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897", size = 134134, upload-time = "2026-05-20T11:46:48.578Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464, upload-time = "2026-10-20T02:24:15.072Z" },
 ]
 
 [[package]]
@@ -857,7 +858,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -919,7 +920,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -1305,14 +1306,14 @@ wheels = [
 
 [[package]]
 name = "deep-swe"
-version = "0.1.2"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/deep_swe" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "deepdive"
@@ -1366,7 +1367,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.20" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -1486,7 +1487,7 @@ wheels = [
 
 [[package]]
 name = "drug-discovery-bench"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/science/drug_discovery_bench" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -1496,7 +1497,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -1532,7 +1533,7 @@ wheels = [
 
 [[package]]
 name = "enterprise-ops-gym"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/tool_use/enterprise_ops_gym" }
 dependencies = [
     { name = "datasets" },
@@ -1544,7 +1545,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -1818,6 +1819,146 @@ wheels = [
 ]
 
 [[package]]
+name = "flashinfer-cubin"
+version = "0.7.0.post1"
+source = { registry = "https://flashinfer.ai/whl" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_cubin-0.7.0.post1-py3-none-any.whl", hash = "sha256:f5b5fbf6e914b358219b845ed3ee586ffc1ae3c9768c8b135115ac14afbceed3" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache"
+version = "0.7.0.post1+cu130"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }
+resolution-markers = [
+    "platform_machine == 'aarch64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "flashinfer-jit-cache-sm100a" },
+    { name = "flashinfer-jit-cache-sm103a" },
+    { name = "flashinfer-jit-cache-sm110a" },
+    { name = "flashinfer-jit-cache-sm120f" },
+    { name = "flashinfer-jit-cache-sm121a" },
+    { name = "flashinfer-jit-cache-sm80" },
+    { name = "flashinfer-jit-cache-sm89" },
+    { name = "flashinfer-jit-cache-sm90a" },
+]
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:dcad7b6519e85b9332d1a18c84046797ce26206d4f15b9e484e2abc66f50d6fb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm110a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm121a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.0.post1+cu130" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache"
+version = "0.7.0.post1+cu130"
+source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }
+resolution-markers = [
+    "platform_machine == 'x86_64' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "flashinfer-jit-cache-sm100a" },
+    { name = "flashinfer-jit-cache-sm103a" },
+    { name = "flashinfer-jit-cache-sm120f" },
+    { name = "flashinfer-jit-cache-sm80" },
+    { name = "flashinfer-jit-cache-sm89" },
+    { name = "flashinfer-jit-cache-sm90a" },
+]
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:9630eeb32396adb89ce8ffa8465fedd14549eb2e2ad3aff182d9e69be4a12075" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "flashinfer-jit-cache-sm100a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm103a", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm120f", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm80", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm89", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache-sm90a", specifier = "==0.7.0.post1+cu130" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm100a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm100a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:09d34f7a7ac5ef0ffeceefcb02c3926b9812d79d1922b3eda09a28902c98ef96" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm100a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:3654aad2bbaebf7ede45590e5fc241035fec92219e505ea2d2d8b77b0d88ee91" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm103a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm103a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f68545c055e52d674df5ba590a7e35414ccdd0fc6817e697fa0c302129f75f17" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm103a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:cd1e327d17be3e9683595d9461e1cf594a069923c940a5c91e7ed809dd7f8f1f" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm110a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm110a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:a77273cb80cb81a98b827f495ca0204e8db83a3aabbbacdc576ecd4808fbd92f" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm120f"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm120f-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:bfa5e2025a7a09755bdaa102b3ddc03809081a5c0bf06bb5e910407a43bb3acb" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm120f-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:1c8b5a3614fdc9ad4f0e26502c5438657e28d667d165b05ff0383ca8d208568f" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm121a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm121a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:1bf568b1c7452a697ad313a82aed8102b15204d9843ad2247d9778ca84513f75" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm80"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm80-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:aebb89a7781caa17e42e5b43782f88cc679f8bc9a5e218d9d4a3fe5f91800a65" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm80-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:b142aef0b32682a80ff2fd55aa74630678820776ffe03ecc183f4a01ada1c02a" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm89"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm89-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:284f4be6e2ce311b2666903d49fd21f9e6318f1c99bbfdaccf1bbdce28512970" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm89-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:056a86546f8970ad4f345eecc4cccb3f36e9b4491109a26cc0fcc3703578a0ca" },
+]
+
+[[package]]
+name = "flashinfer-jit-cache-sm90a"
+version = "0.7.0.post1+cu130"
+source = { registry = "https://flashinfer.ai/whl/cu130" }
+wheels = [
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm90a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:a5b1eb7505895d799896ba4f206bdbead53ca3300c6659dd5a91d3be547df918" },
+    { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache_sm90a-0.7.0.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:9f6398cf38d3d772ce9244f5c7882ee572ec3dbcb495313839d6f908b1ea3ea6" },
+]
+
+[[package]]
 name = "flashinfer-python"
 version = "0.7.0.post1"
 source = { registry = "https://pypi.org/simple" }
@@ -1870,7 +2011,7 @@ requires-dist = [
 
 [[package]]
 name = "forth-lang"
-version = "0.2.1"
+version = "0.3.2"
 source = { editable = "deps/prime-envs/environments/code/forth_lang" }
 dependencies = [
     { name = "datasets" },
@@ -1880,7 +2021,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -1895,7 +2036,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2070,7 +2211,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2085,7 +2226,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2224,7 +2365,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow", specifier = ">=10.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2243,7 +2384,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pillow", specifier = ">=12.3.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2381,7 +2522,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2523,7 +2664,7 @@ requires-dist = [
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "nltk" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -2939,14 +3080,14 @@ requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "lab"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/tool_use/lab" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "langdetect"
@@ -2981,14 +3122,14 @@ wheels = [
 
 [[package]]
 name = "lean-common"
-version = "0.1.2"
+version = "0.1.3"
 source = { editable = "deps/prime-envs/packages/lean_common" }
 dependencies = [
     { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "litellm"
@@ -3028,7 +3169,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3089,7 +3230,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0" },
     { name = "pytrec-eval-terrier" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3133,7 +3274,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "longcot", git = "https://github.com/LongHorizonReasoning/longcot.git?rev=6a569ab" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3253,7 +3394,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3309,7 +3450,7 @@ wheels = [
 
 [[package]]
 name = "mcp-atlas"
-version = "0.4.1"
+version = "0.5.0"
 source = { editable = "deps/prime-envs/environments/tool_use/mcp_atlas" }
 dependencies = [
     { name = "datasets" },
@@ -3321,7 +3462,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=4.0.0,<5" },
     { name = "mcp", specifier = ">=2,<3" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3463,7 +3604,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3480,7 +3621,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3497,7 +3638,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "pillow" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3602,7 +3743,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "filelock" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -3710,7 +3851,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "multi-swe-bench", url = "https://files.pythonhosted.org/packages/48/ad/6b7cda600a50392c790b14ee420b9a3bb318a982a298c05f2d1c066a434f/multi_swe_bench-1.1.2.tar.gz" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -3818,14 +3959,14 @@ wheels = [
 
 [[package]]
 name = "nl2repobench"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "deps/prime-envs/environments/code/nl2repobench" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "nltk"
@@ -4197,7 +4338,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.34.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4230,7 +4371,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4245,7 +4386,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4262,7 +4403,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "python-dateutil" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4343,7 +4484,7 @@ dependencies = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "huggingface-hub" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -4627,14 +4768,14 @@ wheels = [
 
 [[package]]
 name = "pi-deepswe"
-version = "0.2.9"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/swe/pi_deepswe" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pi-officeqa-pro-v2"
@@ -4645,40 +4786,40 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pi-programbench"
-version = "0.1.2"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/code/pi_programbench" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "pi-swe-sweep"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/pi_swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pi-terminalbench2-1"
-version = "0.2.2"
+version = "0.3.1"
 source = { editable = "deps/prime-envs/environments/terminal/pi_terminalbench2_1" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "pillow"
@@ -4705,7 +4846,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.1" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -4814,7 +4955,7 @@ wheels = [
 [[package]]
 name = "prime-kernels"
 version = "0.1.0+cu130torch2.13.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }
 resolution-markers = [
     "platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
@@ -4822,7 +4963,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:cf54e247e161e22a91e654db32f34320cf26bfb7b4124ed6afd76d95d5eae034" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl", hash = "sha256:21f826110588e60bb0b7374d989be5430019b2d977e4de3b23015bc10e361b4c" },
 ]
 
 [package.metadata]
@@ -4831,7 +4972,7 @@ requires-dist = [{ name = "torch", specifier = ">=2.9.0" }]
 [[package]]
 name = "prime-kernels"
 version = "0.1.0+cu130torch2.13.0"
-source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }
+source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
@@ -4839,7 +4980,7 @@ dependencies = [
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 wheels = [
-    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:e2deffdc3b1b7c4e848e44171eaf4d742da602ad4cbaaf8a3cbe9f3811b0b7f2" },
+    { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:a03cb868008c8299c61ffc636a469246a1635f40ccaa7c59cb0d50524bee318d" },
 ]
 
 [package.metadata]
@@ -4924,6 +5065,9 @@ all = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
@@ -4977,6 +5121,9 @@ gpu = [
     { name = "dion", marker = "sys_platform == 'linux'" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux'" },
     { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "flashinfer-jit-cache", version = "0.7.0.post1+cu130", source = { url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux'" },
     { name = "modelexpress", marker = "sys_platform == 'linux'" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux'" },
@@ -4996,8 +5143,8 @@ gpu = [
     { name = "vllm", version = "0.32.0", source = { url = "https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0-cp38-abi3-manylinux_2_28_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 kernels = [
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
-    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" }, marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
+    { name = "prime-kernels", version = "0.1.0+cu130torch2.13.0", source = { url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 quack = [
     { name = "quack-kernels", marker = "sys_platform == 'linux'" },
@@ -5038,6 +5185,10 @@ requires-dist = [
     { name = "flash-attn-4", marker = "sys_platform == 'linux' and extra == 'flash-attn-cute'", git = "https://github.com/Dao-AILab/flash-attention.git?subdirectory=flash_attn%2Fcute&rev=0251105" },
     { name = "flash-linear-attention", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/fla-org/flash-linear-attention" },
     { name = "flash-mla", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/NovaSky-AI/skyrl-wheels/releases/download/cu13torch2.13-flashmla-b7643bd/flash_mla-1.0.0%2Bcu.13.0.torch.2.13.b7643bd-cp312-cp312-linux_x86_64.whl" },
+    { name = "flashinfer-cubin", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.0.post1", index = "https://flashinfer.ai/whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_aarch64.whl" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.7.0.post1+cu130" },
+    { name = "flashinfer-jit-cache", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'gpu'", url = "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.7.0.post1/flashinfer_jit_cache-0.7.0.post1%2Bcu130-cp39-abi3-manylinux_2_28_x86_64.whl" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
@@ -5052,9 +5203,9 @@ requires-dist = [
     { name = "openai", specifier = ">=1.106.1" },
     { name = "orjson", specifier = ">=3.11.0" },
     { name = "prime", specifier = ">=0.8.0" },
-    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_aarch64.whl" },
     { name = "prime-kernels", marker = "platform_machine != 'aarch64' and platform_machine != 'x86_64' and sys_platform == 'linux' and extra == 'kernels'" },
-    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-6f48176/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" },
+    { name = "prime-kernels", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kernels'", url = "https://github.com/PrimeIntellect-ai/prime-kernels/releases/download/v0.1.0-3101960/prime_kernels-0.1.0+cu130torch2.13.0-cp312-cp312-linux_x86_64.whl" },
     { name = "prime-pydantic-config", editable = "deps/pydantic-config" },
     { name = "prime-rl", extras = ["disagg"], marker = "extra == 'all'" },
     { name = "prime-rl", extras = ["flash-attn"], marker = "extra == 'all'" },
@@ -5155,7 +5306,7 @@ train = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.4.3"
+version = "0.4.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -5167,9 +5318,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/1b/01e02c9d2346956f5ed77d269f836905a017ad796a4b4c719debd8942dc4/prime_sandboxes-0.4.3.tar.gz", hash = "sha256:a2169182f74307485c73f897e224c978eba3276133ddb40715be4d346594c487", size = 140588, upload-time = "2026-10-08T00:24:03.668Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/63/95f7b0e0e99566c0889125e5eca90bfc1beaafa8de4d2e6d3d8367bebe06/prime_sandboxes-0.4.7.tar.gz", hash = "sha256:72382facabe083b5f9618bfcc057cf1b0211fe103d66cad06d0310567b416adb", size = 150626, upload-time = "2026-10-18T21:44:11.863Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/5f/d0b5cd1dabdb6e5cb1ab5d84c8ba9a96e2a9a0be8913ec9db9177c9645fb/prime_sandboxes-0.4.3-py3-none-any.whl", hash = "sha256:dd26007838c25b5d38a8b7af0514c07027b783406c0ea5b9fcf0eb74a45139bd", size = 75515, upload-time = "2026-10-08T00:24:02.208Z" },
+    { url = "https://files.pythonhosted.org/packages/17/4a/7b6c90fb950ce5d9d4e8e2493fd461e2abd78595a0c49526d02b68440794/prime_sandboxes-0.4.7-py3-none-any.whl", hash = "sha256:309600da3ee596ce36ed75a7b0956d7883f3e4fc385f026e80c9df887ea1a948", size = 81661, upload-time = "2026-10-18T21:44:10.272Z" },
 ]
 
 [[package]]
@@ -5891,7 +6042,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -6225,7 +6376,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -6395,7 +6546,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -6410,7 +6561,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -6596,36 +6747,36 @@ wheels = [
 
 [[package]]
 name = "swe-atlas-qna"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_qna" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "swe-atlas-rf"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_rf" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "swe-atlas-tw"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_atlas_tw" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev18" }]
 
 [[package]]
 name = "swe-rex"
@@ -6648,14 +6799,14 @@ wheels = [
 
 [[package]]
 name = "swe-sweep"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "deps/prime-envs/environments/swe/swe_sweep" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "swebench"
@@ -6684,25 +6835,25 @@ wheels = [
 
 [[package]]
 name = "swebench-multilingual"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "deps/prime-envs/environments/swe/swebench_multilingual" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "swebench-pro"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "deps/prime-envs/environments/swe/swebench_pro" }
 dependencies = [
     { name = "verifiers", extra = ["harbor"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" }]
+requires-dist = [{ name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" }]
 
 [[package]]
 name = "swebench-verified"
@@ -6766,7 +6917,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
     { name = "swebench", specifier = ">=4.1.0,<5" },
     { name = "swesmith", git = "https://github.com/SWE-bench/SWE-smith.git?rev=9b74ac0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev18" },
 ]
 
 [[package]]
@@ -6863,7 +7014,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub" },
-    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.0" },
+    { name = "verifiers", extras = ["harbor"], specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -7348,7 +7499,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=3.0.0" },
-    { name = "verifiers", specifier = ">=0.4.0" },
+    { name = "verifiers", specifier = ">=0.4.1.dev48" },
 ]
 
 [[package]]
@@ -7603,7 +7754,6 @@ ta = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "anthropic", specifier = ">=1.0.0" },
-    { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.35.0,<3" },
     { name = "gepa", specifier = ">=0.0.6" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "harbor", marker = "python_full_version >= '3.12' and extra == 'harbor'", specifier = "==0.24.0" },
@@ -7612,7 +7762,6 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "mcp", specifier = "==2.0.0" },
-    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.5.4" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nltk", marker = "extra == 'ta'", specifier = ">=3.9.2" },
     { name = "numpy", specifier = ">=2.1.0" },
@@ -7620,7 +7769,7 @@ requires-dist = [
     { name = "openenv", marker = "extra == 'openenv'", specifier = ">=0.4.1" },
     { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.4.3" },
     { name = "prime-runs", specifier = ">=0.1.4" },
-    { name = "prime-sandboxes", specifier = ">=0.4.2" },
+    { name = "prime-sandboxes", specifier = ">=0.4.7" },
     { name = "prime-tunnel", specifier = ">=0.1.14" },
     { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pyzmq", specifier = ">=27.1.0" },
@@ -7632,7 +7781,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12.2" },
     { name = "uvicorn", specifier = ">=0.52.0" },
 ]
-provides-extras = ["e2b", "harbor", "modal", "openenv", "ta"]
+provides-extras = ["harbor", "openenv", "ta"]
 
 [package.metadata.requires-dev]
 dev = [

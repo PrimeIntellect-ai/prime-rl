@@ -58,7 +58,7 @@ Weights start from a random init, unless the run resumes from a checkpoint. The 
 
 ## Optimizer Groups
 
-The optimizer gets one parameter group per role (embedding, hidden matrices, `o_proj`/`down_proj`, LM head, norms, biases; with MoE also experts and the router; with Gated Residual its projections). Every group uses `optim.lr`, `optim.eps` and `optim.weight_decay`, except norms and biases, which get no weight decay. With `optim.type = "muon"` (the default), the hidden matrices (expert matrices per expert), `o_proj`/`down_proj` and the MoE router are trained by Muon (`rms_norm` learning-rate adjustment), the rest by AdamW. The groups need AdamW or Muon and `model.offload = "none"`.
+The optimizer gets one parameter group per role (embedding, hidden matrices, `o_proj`/`down_proj`, LM head, norms, biases; with MoE also experts and the router; with Gated Residual its projections). Every group uses `optim.lr`, `optim.eps` and `optim.weight_decay`, except norms and biases, which get no weight decay. With `optim.type = "muon"` (the default), the hidden matrices (expert matrices per expert), `o_proj`/`down_proj` and the MoE router are trained by Muon (`rms_norm` learning-rate adjustment), the rest by AdamW. The groups need AdamW or Muon. `model.offload = "optimizer"` keeps the optimizer states in CPU RAM between steps, as in SFT and RL; `"full"` is not supported.
 
 ## Learning-Rate Schedule
 

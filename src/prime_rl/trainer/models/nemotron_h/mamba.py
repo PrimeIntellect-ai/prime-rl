@@ -127,6 +127,11 @@ class NemotronHMamba2(nn.Module):
 
         self.cp_context = CPContext()
 
+    def attention_flops(self, seq_len: int) -> int:
+        # Per token and head, the state update (x outer B) and the readout (state @ C) are two
+        # `head_dim * state_size` products.
+        return 6 * 2 * self.num_heads * self.head_dim * self.state_size * seq_len
+
     def forward(self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         projected_states = self.in_proj(hidden_states)

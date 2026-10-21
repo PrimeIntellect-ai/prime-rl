@@ -1,0 +1,168 @@
+# DeepSeek-V4-Flash RL on the `scaleswe` SWE taskset at 131k context, with online MXFP8 vLLM
+# inference and a trainer quantized the same way, on 4 trainer nodes and 4 one-node inference
+# replicas.
+#
+# The checkpoint's dense weights sit exactly on the e4m3 grid (DeepSeek ships them as FP8), so an
+# lr-1e-6 update mostly rounds back to the base value when vLLM re-quantizes. A bf16 trainer then
+# drifts away from inference step by step; quantizing the trainer's forward identically keeps
+# both on the same weights.
+#
+# Experiment config, as used for the DeepSeek-V4 MXFP8 SWE run. It should be run on B300 GPUs.
+#
+#   uv run rl @ configs/advanced/deepseek-v4-flash/swe_mxfp8.toml
+
+max_steps = 2000
+seq_len = 131072
+
+# Only the latest checkpoint stays on disk; the full trainer state is several TB.
+[ckpt]
+interval = 100
+keep_last = 1
+
+# FlashInfer autotuning takes ~20 min of each replica's startup. Its results are keyed by the vLLM
+# config hash and only rank 0 reads them, so a cache on shared storage is safe across nodes. It sits
+# at the top level because only these vars are exported by the sbatch, where $HOME expands.
+[env_vars]
+VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR = "$HOME/.cache/vllm-flashinfer-autotune"
+
+[model]
+name = "PrimeIntellect/DeepSeek-V4-Flash-0731-bf16"
+
+[monitors.wandb]
+project = "deepseek-v4-flash"
+group = "dsv4-mxfp8-swe"
+
+# Router replay rules out disaggregated prefill/decode, so inference is independent one-node replicas.
+[deployment]
+type = "multi_node"
+num_train_nodes = 4
+num_infer_nodes = 1
+num_infer_replicas = 4
+
+[slurm]
+job_name = "dsv4-swe-mxfp8"
+partition = "all"
+
+[weight_broadcast]
+type = "nccl"
+port = 29501
+timeout = 3600
+
+[orchestrator]
+batch_size = 128
+# Episodes run long enough to span many trainer steps.
+max_off_policy_steps = 64
+
+[orchestrator.model.client]
+# Loading and quantizing the 1.1 TB bf16 checkpoint over NFS takes well over the default 30 min.
+wait_for_ready_timeout = 7200
+
+# No ceiling: the orchestrator sizes concurrency from KV-cache pressure. SWE episodes spend most of
+# their time in sandbox tool calls, so a fixed per-replica cap leaves the replicas mostly idle.
+[orchestrator.concurrency]
+max_inflight = "None"
+# Start where the 256-cap run settled instead of ramping up from ~47 over ~45 min.
+initial_inflight = 256
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.algo]
+type = "grpo"
+
+[orchestrator.train.algo.length_penalty]
+type = "linear"
+num_output_tokens_weight = 0.0
+num_input_tokens_weight = 0.1
+num_turns_weight = 0.1
+
+[orchestrator.renderer]
+name = "deepseek-v4"
+enable_thinking = true
+reasoning_effort = "low"
+# With tools present the encoder keeps all reasoning anyway; these make the settings agree.
+drop_thinking = false
+thinking_retention = "all"
+
+[[orchestrator.train.source]]
+name = "scaleswe"
+env.taskset.id = "scaleswe"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["dsv4-swe-mxfp8"]
+
+[orchestrator.eval]
+interval = 50
+skip_first_step = true
+
+[[orchestrator.eval.source]]
+name = "swebench-verified"
+env.taskset.id = "swebench-verified"
+env.agent.harness.id = "bash"
+env.agent.harness.compaction.summarize_at_tokens = 98304
+env.agent.runtime.labels = ["dsv4-swe-mxfp8"]
+env.agent.timeout.rollout = 3600
+
+[trainer]
+enable_router_replay = true
+dist_timeout_seconds = 14400
+
+[trainer.model]
+freeze_moe_router = false
+ep = 8
+# DeepSeek V4 only supports ring CP. 131k / 8 = 16k tokens per rank.
+cp = 8
+
+[trainer.model.compile]
+
+[trainer.model.moe.dispatch]
+type = "torch"
+
+[trainer.model.moe.compute]
+type = "mxfp8"
+
+# Every linear vLLM runs in MXFP8 (wq_a, wkv, wq_b, wo_b, shared experts) runs in MXFP8 here too;
+# what vLLM keeps bf16 (wo_a, compressors, router, lm_head) stays bf16. Both quantize 1x32 with
+# power-of-two scales rounded up, so weights match bit for bit. The indexer stays bf16 on both
+# sides: its top-k key selection is discrete, so FP8 rounding differences flip selected keys once
+# sequences are long, and at 131k nearly every token is in that regime.
+[trainer.model.quantization]
+type = "mxfp8"
+recipe = "mxfp8_rceil_wgrad_with_hp"
+extra_ignore_patterns = ["o_a_proj", 'compressor\.', 'indexer\.']
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.ac_offloading]
+max_inflight_activations = 5
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.01
+
+# Pinned off: vLLM derives it from `scale_fmt`, and this checkpoint has no `quantization_config`.
+[inference.env_vars]
+VLLM_USE_DEEP_GEMM_E8M0 = "0"
+
+[inference.vllm]
+dtype = "bfloat16"
+quantization = "mxfp8"
+tensor_parallel_size = 8
+enable_expert_parallel = true
+# Headroom for the NCCL weight-receive staging buffer, which OOMed at 0.85.
+gpu_memory_utilization = 0.75
+max_model_len = 131072
+# Required: DeepSeek V4 sets `use_fp8_ds_mla_layout`, and sparse MLA asserts against `auto`.
+kv_cache_dtype = "fp8"
+block_size = 256
+# Eval goes through chat completions, which needs both parsers. Their auto-resolution only matches
+# `deepseek-ai/DeepSeek-V4`, not this re-export.
+tool_call_parser = "deepseek_v4"
+reasoning_parser = "deepseek_v4"
+
+[inference.vllm.quantization_config]
+# wo_a: vLLM's deep_gemm_fp8_o_proj treats an MXFP8 `wo_a` as blockwise FP8 and fails a DeepGEMM
+# assert. indexer: kept bf16 to match the trainer.
+ignore = ["*.wo_a", "*.indexer.*"]

@@ -1,7 +1,6 @@
 from typing import Literal
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from prime_rl.trainer.distributed.token_dispatcher import TokenDispatcher
@@ -99,12 +98,8 @@ class PrimeRouter(TokenChoiceTopKRouter):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Like ``TokenChoiceTopKRouter.forward`` with sigmoid scores; also returns the ``(bs*slen, num_experts)``
         scores of all experts."""
-        if self.fp32_gate:
-            gate_bias = self.gate.bias.float() if self.gate.bias is not None else None
-            logits = F.linear(x.float(), self.gate.weight.float(), gate_bias)
-        else:
-            logits = self.gate(x)
-        scores = torch.sigmoid(logits.float())
+        logits = self.gate(x)
+        scores = torch.sigmoid(logits)
         # The selection bias only affects which experts are selected, not their scores.
         selection_scores = logits.float() if self.bias_on_logits else scores
         biased_scores = selection_scores + self.selection_bias

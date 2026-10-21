@@ -34,6 +34,9 @@ class LossInputs:
     advantages: Float[Tensor, " seq"]
     loss_mask: Bool[Tensor, " seq"]
     loss_weights: Float[Tensor, " seq"] | None = field(default=None)
+    trainer_topk_logprobs: Float[Tensor, "seq head"] | None = None
+    sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
+    topk_valid: Bool[Tensor, "seq head"] | None = None
 
 
 @dataclass
@@ -68,6 +71,20 @@ def selective_log_softmax(
 ) -> Float[Tensor, "batch seq"]:
     logprobs = logits.log_softmax(dim=-1)
     return torch.gather(logprobs, dim=-1, index=index.unsqueeze(-1)).squeeze(-1)
+
+
+def selective_topk_log_softmax(
+    logits: Tensor, topk_ids: Tensor, sampling_mask: Tensor | None = None, labels: Tensor | None = None
+) -> Tensor:
+    """Gather head logprobs under the same normalization as the sampled token."""
+    logz = logits.logsumexp(-1, keepdim=True)
+    if sampling_mask is not None:
+        replay = sampling_replay_mask(sampling_mask, labels).unsqueeze(-1)
+        mask_logits = logits.gather(-1, sampling_mask.clamp_min(0).long()).masked_fill(sampling_mask < 0, -torch.inf)
+        mask_logits = torch.where(replay, mask_logits, 0.0)
+        logz = torch.where(replay, mask_logits.logsumexp(-1, keepdim=True), logz)
+    head = logits.gather(-1, topk_ids.clamp_min(0).long()) - logz
+    return head.masked_fill(topk_ids < 0, 0.0)
 
 
 @jaxtyped(typechecker=typechecker)
@@ -147,6 +164,18 @@ def _capped_importance_ratio(log_importance_ratio: Tensor, max_ratio: float) -> 
     return torch.exp(capped_log_ratio + (log_importance_ratio - log_importance_ratio.detach()))
 
 
+def _centering_head(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor]:
+    if inputs.trainer_topk_logprobs is None or inputs.sampler_topk_logprobs is None or inputs.topk_valid is None:
+        raise ValueError("Score centering requires sampler top logprobs on every RL token")
+    mask = inputs.loss_mask
+    trainer = inputs.trainer_topk_logprobs[mask]
+    valid = inputs.topk_valid[mask]
+    sampler = inputs.sampler_topk_logprobs[mask].detach()
+    if not bool(valid.any(-1).all()):
+        raise ValueError("Score centering is missing sampler heads on RL tokens")
+    return trainer, sampler, valid
+
+
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
@@ -214,14 +243,44 @@ class IcePopLoss:
         if weights is not None:
             per_token_loss = per_token_loss * weights[keep_mask]
 
+        loss = per_token_loss.sum()
+        centering_metrics = {}
+        if loss_config.score_centering and log_importance_ratio.numel():
+            head, sampler, valid = _centering_head(inputs)
+            with torch.no_grad():
+                p = head.exp().masked_fill(~valid, 0.0)
+                q = sampler.exp().masked_fill(~valid, 0.0)
+                head_log_ratio = head - sampler
+                accepted = valid & (head_log_ratio >= log_ratio_low) & (head_log_ratio <= log_ratio_high)
+                # q * (p/q) * mask = p * mask, without unstable exponentiation.
+                mass = p.masked_fill(~accepted, 0.0)
+                p_tail = (1.0 - p.sum(-1)).clamp_min(1e-6)
+                q_tail = (1.0 - q.sum(-1)).clamp_min(1e-6)
+                rho = q_tail / p_tail
+                tail_log_ratio = -rho.log()
+                # The proportional tail has one ratio; MIS accepts all or none.
+                alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
+                mass = mass - alpha.unsqueeze(-1) * p
+                centering_metrics["score_centering/tail_scale"] = alpha
+                centering_metrics["score_centering/head_mass"] = q.sum(-1)
+                centering_metrics["score_centering/logit_correction_l1"] = (
+                    mass - p * mass.sum(-1, keepdim=True)
+                ).abs().sum(-1) + (1.0 - p.sum(-1)).clamp_min(0.0) * mass.sum(-1).abs()
+            correction = loss_config.adv_tau * advantages.detach() * (mass * head).sum(-1)
+            if weights is not None:
+                correction = correction * weights
+            # Rejected sampled actions still contribute the centering correction.
+            loss = loss + correction.sum()
+
         mismatch_kl = _mismatch_kl_from_log_ratio(log_importance_ratio)
 
         metrics = {
             "masked_mismatch_kl": _safe_mean(mismatch_kl, is_masked),
             "unmasked_mismatch_kl": _safe_mean(mismatch_kl, keep_mask),
             "is_masked": is_masked.sum() / max(is_masked.numel(), 1),
+            **centering_metrics,
         }
-        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+        return LossOutputs(loss=loss, metrics=metrics)
 
 
 class PPOLoss:
@@ -387,6 +446,9 @@ def compute_loss(
     rl_scale: float,
     ce_scale: float,
     ref_kl_scale: float,
+    trainer_topk_logprobs: list[Tensor] | None = None,
+    sampler_topk_logprobs: list[Tensor] | None = None,
+    topk_valid: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -435,6 +497,10 @@ def compute_loss(
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
 
+    trainer_topk_logprobs = trainer_topk_logprobs if trainer_topk_logprobs is not None else [None] * n
+    sampler_topk_logprobs = sampler_topk_logprobs if sampler_topk_logprobs is not None else [None] * n
+    topk_valid = topk_valid if topk_valid is not None else [None] * n
+
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
         for k, v in result.metrics.items():
@@ -448,7 +514,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -457,6 +523,10 @@ def compute_loss(
         rl_weights,
         ce_weights,
         ref_kl_weights,
+        trainer_topk_logprobs,
+        sampler_topk_logprobs,
+        topk_valid,
+        strict=True,
     ):
 
         def make_inputs(component_mask: Bool[Tensor, " seq"], weights: Float[Tensor, " seq"] | None) -> LossInputs:
@@ -467,6 +537,9 @@ def compute_loss(
                 advantages=adv,
                 loss_mask=component_mask,
                 loss_weights=weights,
+                trainer_topk_logprobs=t_head,
+                sampler_topk_logprobs=q_head,
+                topk_valid=valid,
             )
 
         if rl_w is None:

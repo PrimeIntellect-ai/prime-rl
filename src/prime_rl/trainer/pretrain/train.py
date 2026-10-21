@@ -213,6 +213,7 @@ def train(config: PretrainConfig):
         config.optim,
         list(model.named_parameters()),
         parallel_dims,
+        offload=config.model.offload,
         model=model,
         param_groups=param_groups(model, config.optim, parallel_dims.ep_enabled),
     )

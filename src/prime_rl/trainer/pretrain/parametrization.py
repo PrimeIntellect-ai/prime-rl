@@ -2,7 +2,7 @@ from collections import defaultdict
 
 from torch import nn
 
-from prime_rl.configs.pretrain import PretrainAdamWConfig, PretrainMuonConfig
+from prime_rl.configs.trainer import AdamWConfig, MuonConfig
 from prime_rl.trainer.models.init import param_role
 from prime_rl.utils.weights import resolve_fqn
 
@@ -11,7 +11,7 @@ from prime_rl.utils.weights import resolve_fqn
 MUON_ROLES = ("hidden", "router", "residual_out")
 
 
-def param_groups(model: nn.Module, optim: PretrainAdamWConfig | PretrainMuonConfig, ep_enabled: bool) -> list[dict]:
+def param_groups(model: nn.Module, optim: AdamWConfig | MuonConfig, ep_enabled: bool) -> list[dict]:
     """Optimizer parameter groups per role, all with ``optim.lr`` and ``optim.eps``, and ``optim.weight_decay``
     except for norms and biases (no weight decay). With Muon, the hidden matrices (expert matrices per expert), the
     residual output projections and the MoE router are Muon groups; the embedding, the LM head, norms, biases and the

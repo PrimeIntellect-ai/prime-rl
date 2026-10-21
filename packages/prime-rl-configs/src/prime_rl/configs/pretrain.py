@@ -64,10 +64,9 @@ class PretrainModelConfig(ModelConfig):
 
     moe: PretrainMoEConfig = PretrainMoEConfig()
 
-    moe_router_fsdp: Literal["unit", "replicated"] = "replicated"
-
-    offload: Literal["none"] = "none"
-    """CPU offloading is not supported: pretraining's per-role parameter groups need ``none``."""
+    offload: Literal["none", "optimizer"] = "none"
+    """``optimizer`` keeps the optimizer states in CPU RAM between steps, as in SFT and RL. ``full`` is not supported:
+    its CPU optimizer handles only AdamW and SignSGD, without pretraining's per-role parameter groups."""
 
 
 class TokenSourceConfig(BaseConfig):
@@ -167,22 +166,11 @@ class EvalsConfig(BaseConfig):
     """Write per-document arrays (npz) and summaries to ``<run_dir>/evals/step_N/``."""
 
 
-class PretrainAdamWConfig(AdamWConfig):
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon."""
-
-
-class PretrainMuonConfig(MuonConfig):
-    eps: float = Field(1e-8, gt=0)
-    """Adam epsilon of the AdamW groups."""
-
-
-PretrainOptimizerConfig: TypeAlias = Annotated[PretrainAdamWConfig | PretrainMuonConfig, Field(discriminator="type")]
+PretrainOptimizerConfig: TypeAlias = Annotated[AdamWConfig | MuonConfig, Field(discriminator="type")]
 
 
 class PretrainConfig(TrainerLaunchConfig):
-    # A trainable fp32 router, and weight decay 0.1.
-    auto_moe_router_dtype = "float32"
+    # A trainable router, and weight decay 0.1.
     auto_freeze_moe_router = False
     auto_weight_decay = 0.1
 
@@ -198,7 +186,7 @@ class PretrainConfig(TrainerLaunchConfig):
     evals: EvalsConfig | None = None
     """The eval suite, scored inside the trainer. If None, it never runs."""
 
-    optim: PretrainOptimizerConfig = PretrainMuonConfig()
+    optim: PretrainOptimizerConfig = MuonConfig()
     """Optimizer. ``optim.lr`` is required."""
 
     scheduler: SchedulerConfig = LinearSchedulerConfig(warmup_steps=0.1, decay_steps=0.9)

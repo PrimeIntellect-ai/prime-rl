@@ -2,7 +2,7 @@ import itertools
 
 import torch
 
-from prime_rl.configs.pretrain import PretrainMuonConfig
+from prime_rl.configs.trainer import MuonConfig
 from prime_rl.trainer.models.init import normal_shard
 from prime_rl.trainer.models.prime_moe import PrimeMoeConfig, PrimeMoeForCausalLM
 from prime_rl.trainer.pretrain.parametrization import param_groups
@@ -41,7 +41,7 @@ def test_moe_param_groups_cover_every_parameter():
     config._attn_implementation = "flash_attention_2"
     with torch.device("meta"):
         model = PrimeMoeForCausalLM._from_config(config)
-    groups = param_groups(model, PretrainMuonConfig(lr=1.0, weight_decay=0.1), ep_enabled=False)
+    groups = param_groups(model, MuonConfig(lr=1.0, weight_decay=0.1), ep_enabled=False)
     group_of = {param: group for group in groups for param in group["params"]}
     assert sum(len(group["params"]) for group in groups) == len(group_of) == len(list(model.parameters()))
     moe = model.model.layers[1].mlp
