@@ -1,0 +1,85 @@
+# Step 3: end-to-end RL on easy math with the fewest nodes that fit. Normal RL (lr > 0) with the
+# stateless sign-SGD optimizer and full CPU offload, 8k context, 100 steps. Its job is to show that
+# mismatch KL between the trainer and vLLM is low and stays flat. Fill every `<...>` and every
+# line marked FILL.
+#
+#   uv run rl @ skills/add-model/rl-math.toml --dry-run --output-dir <scratch> --run.name check
+#   uv run rl @ skills/add-model/rl-math.toml
+#   uv run rl @ skills/add-model/rl-math.toml @ skills/add-model/mxfp8.toml   # quantized arm
+
+max_steps = 100
+seq_len = 8192
+
+[model]
+name = "<org>/<model>"
+
+[monitors.wandb]
+project = "<project>"
+group = "<model>-add-model"
+name = "<model>-math-bf16"
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 1 # FILL: 1 if the model fits, else 2
+num_infer_nodes = 1 # FILL: 1 or 2
+
+[slurm]
+job_name = "<model>-math"
+partition = "<partition>"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 3600
+
+[orchestrator]
+batch_size = 64
+
+[orchestrator.concurrency]
+max_inflight = 128
+
+[orchestrator.train]
+group_size = 8
+
+[orchestrator.train.algo]
+type = "grpo"
+
+# Set explicitly when `auto` does not resolve the model name (re-exports under another org).
+# [orchestrator.renderer]
+# name = "<renderer>"
+
+[orchestrator.train.sampling]
+max_completion_tokens = 7168
+
+# Hendrycks MATH by default.
+[[orchestrator.train.source]]
+name = "math"
+env.taskset.id = "math-env"
+# Deterministic scoring: the default judge calls out to an LLM whenever math-verify scores 0.
+env.taskset.task.judge = "None"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[trainer]
+# MoE only, and only if vLLM's model returns routed experts. Also turns on
+# `inference.vllm.enable_return_routed_experts`.
+enable_router_replay = true
+dist_timeout_seconds = 3600
+
+[trainer.model]
+ep = 8 # FILL: MoE only; must divide the number of trainer GPUs
+offload = "full"
+freeze_moe_router = false
+
+[trainer.model.compile]
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+type = "sign_sgd"
+lr = 1e-6
+
+[inference.vllm]
+max_model_len = 8192
+tensor_parallel_size = 8 # FILL
+enable_expert_parallel = true # MoE only

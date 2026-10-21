@@ -63,6 +63,8 @@ uv run pre-commit install
 
 ## Adding a New Model
 
+> **AI agents working in this repo:** the full bring-up and validation recipe (bf16 checkpoint, MFU check, vLLM vs trainer survey, math and SWE RL runs, PR report) is at [`skills/add-model/SKILL.md`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/skills/add-model/SKILL.md).
+
 Bringing up a new model family is three steps: implement the modeling code, register a mini preset, and run the smoke test. The preset and smoke test let you iterate on the modeling code at ~0.5B scale on 1–2 GPUs instead of paying the cost of the full-size model — useful for catching bugs in modeling code, state-dict conversions, and pipeline integration before scaling.
 
 ### Implement the Modeling Code

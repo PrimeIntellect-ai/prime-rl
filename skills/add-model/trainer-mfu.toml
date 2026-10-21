@@ -1,0 +1,57 @@
+# Step 1: trainer smoke test and MFU for a new model on one node. Random-init weights, the model
+# cut to a few layers, fake data, and round-robin MoE routing so expert load (and step time) does
+# not depend on untrained routing. Fill every `<...>` and every line marked FILL.
+#
+#   uv run sft @ skills/add-model/trainer-mfu.toml --model.name <org>/<model>
+#   uv run sft @ skills/add-model/trainer-mfu.toml --model.name <reference-model> --model.debug.num-layers <n>
+#
+# Run the same file on a reference model of the closest existing family (e.g. Qwen/Qwen3-30B-A3B,
+# zai-org/GLM-4.5-Air) at the same layer count so the MFU number has something to compare to.
+# Read MFU, tokens/s and peak memory from the step lines in the trainer log (`perf/mfu`,
+# `perf/throughput`, `perf/peak_memory` in metrics.jsonl). Ignore the loss: weights are random.
+
+max_steps = 20
+
+[model]
+name = "<org>/<model>"
+seq_len = 16384
+ep = 8 # FILL: MoE only; must divide 8
+offload = "none"
+ac_offloading = "None"
+
+[model.ac]
+freq = 1
+
+[model.compile]
+
+[model.debug]
+# FILL: keep every layer kind the model has. Truncation keeps the first N layers, so cover the
+# leading dense layers plus at least two MoE layers, and use a multiple of the layer-type period
+# for hybrid models (e.g. 4 for 3 linear-attention + 1 full-attention).
+num_layers = 4
+random_init = true
+force_balanced_routing = true # MoE only
+
+# Uncomment to measure the quantized trainer the RL runs will use (SM100, see mxfp8.toml).
+# [model.quantization]
+# type = "mxfp8"
+# recipe = "mxfp8_rceil_wgrad_with_hp"
+#
+# [model.moe.compute]
+# type = "mxfp8"
+#
+# [model.moe.dispatch]
+# type = "torch"
+
+[data]
+type = "fake"
+seq_len = 16384
+batch_size = 8
+micro_batch_size = 1
+
+[optim]
+type = "adamw"
+lr = 1e-6
+
+[deployment]
+num_train_gpus = 8
