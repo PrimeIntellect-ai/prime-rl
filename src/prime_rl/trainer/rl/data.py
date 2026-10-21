@@ -1,3 +1,5 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
@@ -6,6 +8,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+from prime_rl.configs.shared import PayloadsConfig
 from prime_rl.configs.trainer import FakeDataLoaderConfig
 from prime_rl.multimodal import ForwardPolicy, MultimodalAdapter
 from prime_rl.trainer.multimodal import materialize_mm_refs
@@ -17,6 +20,8 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.payload import resolve_payloads
+from prime_rl.utils.logger import format_time, get_logger
 
 
 class TensorMicroBatch(TypedDict):
@@ -198,6 +203,17 @@ def prepare_micro_batch(
     return micro_batch
 
 
+def drop_micro_batches(micro_batches: list[TensorMicroBatch], indices: list[int]) -> None:
+    """Keep micro batches out of every loss component (they still run forward/backward,
+    so all ranks issue the same collectives)."""
+    for index in indices:
+        micro_batch = micro_batches[index]
+        micro_batch["loss_mask"] = torch.zeros_like(micro_batch["loss_mask"])
+        for name in ("rl_weights", "ce_weights", "ref_kl_weights"):
+            if micro_batch[name] is not None:
+                micro_batch[name] = torch.zeros_like(micro_batch[name])
+
+
 class DataLoader:
     """Receives packed micro batches from the orchestrator, one stream per DP rank."""
 
@@ -207,11 +223,17 @@ class DataLoader:
         start_step: int,
         dp_world_size: int,
         config: TransportConfig,
+        payloads: PayloadsConfig | None = None,
     ):
         self.world = get_world()
 
         non_dp_world_size = self.world.world_size // dp_world_size
         dp_rank = self.world.rank // non_dp_world_size
+        self.dp_rank = dp_rank
+        self.dp_world_size = dp_world_size
+        self.payload_pool = ThreadPoolExecutor(32, thread_name_prefix="payload") if payloads is not None else None
+        self.failed_micro_batches: list[int] = []
+        """Micro batches of the last batch whose arrays could not be fetched on this rank."""
 
         self.receiver: BatchReceiver = setup_batch_receiver(
             output_dir,
@@ -227,6 +249,12 @@ class DataLoader:
 
     def get_batch(self) -> list[TensorMicroBatch]:
         micro_batches = self.receiver.receive()
+        if self.payload_pool is not None:
+            start = time.perf_counter()
+            self.failed_micro_batches = resolve_payloads(micro_batches, self.payload_pool)
+            get_logger().debug(
+                f"Fetched payloads of {len(micro_batches)} micro batches in {format_time(time.perf_counter() - start)}"
+            )
         return [self._micro_batch_to_tensor(mb) for mb in micro_batches]
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:

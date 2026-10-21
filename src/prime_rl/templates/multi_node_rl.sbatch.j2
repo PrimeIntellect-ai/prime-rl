@@ -340,6 +340,27 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
 
     # NIXL/RDMA registers pinned host memory (KV offload pools, the HiSparse host pool).
     ulimit -l unlimited
+{%- if train_env_names or eval_env_names %}
+
+    # Env servers run on the inference nodes, round robin over sources, so their memory
+    # and CPU spread over the nodes instead of piling up next to the orchestrator. Each binds
+    # this node so the orchestrator connects across nodes. They take the orchestrator env vars.
+    # NOTE: keep this block free of single quotes (see the orchestrator block).
+{%- for split, names, offset in [("train", train_env_names, 0), ("eval", eval_env_names, train_env_names | length)] %}
+{%- for name in names %}
+    if [ $(({{ loop.index0 + offset }} % NUM_INFER_NODES)) -eq "$INFER_NODE_RANK" ]; then
+        mkdir -p $LOG_DIR/envs/{{ split }}
+        (
+{%- for key, value in orchestrator_env_vars.items() %}
+            export {{ key }}="{{ value }}"
+{%- endfor %}
+            exec uv run env-server @ $CONFIG_DIR/envs/{{ split }}/{{ name }}.json --serve.address tcp://$LOCAL_IP:0 \
+                > $LOG_DIR/envs/{{ split }}/{{ name }}.log 2>&1
+        ) &
+    fi
+{%- endfor %}
+{%- endfor %}
+{%- endif %}
 {%- if mooncake_offloads %}
 {% include "_mooncake_store.sh.j2" %}
 {%- endif %}
@@ -543,9 +564,9 @@ if [ "$SLURM_PROCID" -eq "$ORCH_PROCID" ]; then
     export {{ key }}="{{ value }}"
 {%- endfor %}
 {%- endif %}
-{%- if train_env_names or eval_env_names %}
+{%- if (train_env_names or eval_env_names) and num_infer_nodes == 0 %}
 
-    # Launch one env server per source next to the orchestrator, which connects to each
+    # Without inference nodes, launch one env server per source next to the orchestrator, which connects to each
     # source on this node; each publishes the loopback address it bound, polling until they are
     # up — the servers and the orchestrator start in parallel.
     # NOTE: keep this block free of single quotes. The whole srun body is one

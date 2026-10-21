@@ -109,11 +109,14 @@ class Env:
         num_tasks = self.num_tasks if self.num_tasks is not None else "infinite"
         get_logger().info(f"Env {self.name} ready in {format_time(time.perf_counter() - t0)} (num_tasks={num_tasks})")
 
-    def _sampling(self, cache_salt: str | None) -> vf.SamplingConfig:
-        sampling = self.sampling
+    def _sampling(self, cache_salt: str | None, payload: dict[str, int] | None = None) -> vf.SamplingConfig:
+        update: dict = {}
         if cache_salt is not None:
-            sampling = sampling.model_copy(update={"cache_salt": cache_salt})
-        return sampling
+            update["cache_salt"] = cache_salt
+        if payload is not None:
+            extra_args = getattr(self.sampling, "extra_args", None) or {}
+            update["extra_args"] = {**extra_args, "prl_payload": payload}
+        return self.sampling.model_copy(update=update) if update else self.sampling
 
     async def run(
         self,
@@ -122,15 +125,18 @@ class Env:
         cache_salt: str | None,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        payload: dict[str, int] | None = None,
     ) -> vf.WireEpisode:
         """Run and return the native typed episode.
         ``on_delta`` sees each delta of the env server's stream — a turn or a phase
-        change of one of the episode's traces — as it lands."""
+        change of one of the episode's traces — as it lands. ``payload`` asks the env
+        server to keep the episode's training arrays (``extra_args.prl_payload``, see
+        ``[payloads]``)."""
         return await self.env_client.run(
             task_data=task_data,
             client=client,
             model=model_name,
-            sampling=self._sampling(cache_salt),
+            sampling=self._sampling(cache_salt, payload),
             on_delta=on_delta,
         )
 

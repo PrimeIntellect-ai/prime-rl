@@ -20,7 +20,7 @@ import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.transports.batch import MMImageRef, MMRefs, TrainingSample
-from prime_rl.transports.batch.types import RoutedExperts, SamplingMask, TopLogprobs
+from prime_rl.transports.batch.types import PayloadSlice, RoutedExperts, SamplingMask, TopLogprobs
 from prime_rl.utils.logger import get_logger
 
 
@@ -170,6 +170,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
     placeholder ranges and `mm_token_type_ids`. Branches with no sampled tokens yield nothing.
     """
     samples: list[TrainingSample] = []
+    # Set by the env server when it keeps the arrays (`[payloads]`).
+    payload = trace.info.get("payload")
     trained_loss_nodes: dict[str, set[int]] = {"rl": set(), "ce": set(), "ref_kl": set()}
     for branch, mask in iter_trainable_branches(trace):
         token_ids = branch.token_ids
@@ -200,6 +202,14 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 top_logprobs=_encode_top_logprobs(branch.top_logprobs, len(token_ids)),
                 trace_id=trace.id,
                 branch_index=branch.index,
+                payload=PayloadSlice(
+                    url=payload["url"],
+                    id=payload["branches"][str(branch.index)],
+                    num_tokens=len(token_ids),
+                    fields=payload["fields"],
+                )
+                if payload is not None and str(branch.index) in payload["branches"]
+                else None,
             )
         )
     if not samples:
