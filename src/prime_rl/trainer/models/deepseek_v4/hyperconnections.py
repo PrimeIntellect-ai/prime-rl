@@ -76,7 +76,7 @@ class DeepseekV4HyperConnection(nn.Module):
 
         The write-back runs in fp32 and rounds once to the residual's dtype.
         """
-        return dsv4_mhc.fused_post_bda(comb, mhc_states, post, sublayer_out)
+        return dsv4_mhc.fused_post_bda(comb.float(), mhc_states, post.float(), sublayer_out)
 
     def init_weights(self, init_std: float) -> None:
         nn.init.normal_(self.fn, mean=0.0, std=init_std)
