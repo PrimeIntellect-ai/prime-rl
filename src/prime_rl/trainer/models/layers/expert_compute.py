@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
 from collections.abc import Callable
 from functools import partial
 from types import ModuleType
@@ -18,6 +19,18 @@ if TYPE_CHECKING:
 
 def to_local(tensor: torch.Tensor) -> torch.Tensor:
     return tensor.to_local() if isinstance(tensor, DTensor) else tensor
+
+
+def reserve_sms_for_comm(num_reserved_sms: int) -> int:
+    """SMs the fused MoE kernels run on: ``total - num_reserved_sms``"""
+    nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
+    if nccl_max_ctas is None or int(nccl_max_ctas) > num_reserved_sms:
+        raise ValueError(
+            f"The MoE kernels reserve {num_reserved_sms} SMs for NCCL, so `NCCL_MAX_CTAS` must be set to at most "
+            f"{num_reserved_sms} (got {nccl_max_ctas!r}); set it in `env_vars` or raise `num_reserved_sms`."
+        )
+    total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+    return max(total - num_reserved_sms, 1)
 
 
 class ExpertCompute(Protocol):

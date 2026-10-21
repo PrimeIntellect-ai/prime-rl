@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal
@@ -61,18 +60,6 @@ def check_mega_moe_dims(hidden: int, intermediate_hidden: int) -> None:
             f"Mega MoE requires hidden ({hidden}) to be a multiple of 256 and intermediate_hidden "
             f"({intermediate_hidden}) a multiple of 128."
         )
-
-
-def reserve_sms_for_comm(num_reserved_sms: int) -> int:
-    """SMs the Mega MoE grids run on: ``total - num_reserved_sms``"""
-    nccl_max_ctas = os.environ.get("NCCL_MAX_CTAS")
-    if nccl_max_ctas is None or int(nccl_max_ctas) > num_reserved_sms:
-        raise ValueError(
-            f"Mega MoE reserves {num_reserved_sms} SMs for NCCL, so `NCCL_MAX_CTAS` must be set to at most "
-            f"{num_reserved_sms} (got {nccl_max_ctas!r}); set it in `env_vars` or raise `num_reserved_sms`."
-        )
-    total = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-    return max(total - num_reserved_sms, 1)
 
 
 @contextmanager

@@ -27,8 +27,9 @@ from prime_rl.trainer.models.layers.expert_compute import (
     DeepGemmFP8ExpertCompute,
     ExpertCompute,
     MXFP8ExpertCompute,
+    reserve_sms_for_comm,
 )
-from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, reserve_sms_for_comm
+from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.utils.logger import get_logger

@@ -19,8 +19,8 @@ import torch
 import torch.distributed as dist
 
 from prime_rl.trainer.distributed.token_dispatcher import FusedTokenDispatcher, TorchTokenDispatcher
-from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute
-from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, mega_moe_available, reserve_sms_for_comm
+from prime_rl.trainer.models.layers.expert_compute import BF16ExpertCompute, reserve_sms_for_comm
+from prime_rl.trainer.models.layers.mega_moe import MegaMoEExpertCompute, mega_moe_available
 from prime_rl.trainer.models.layers.moe import GroupedExperts
 
 
