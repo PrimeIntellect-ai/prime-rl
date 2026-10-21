@@ -25,23 +25,14 @@ class ExpandedRMSNorm(nn.Module):
         return (normalized.flatten(-2) * (1.0 + self.weight.float())).to(input_dtype)
 
 
-class _Fp8RoundTrip(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, states: torch.Tensor, stream_count: int) -> torch.Tensor:
-        streams = states.float().unflatten(-1, (stream_count, -1))
-        scale = streams.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / torch.finfo(torch.float8_e4m3fn).max
-        quantized = (streams / scale).to(torch.float8_e4m3fn).float() * scale
-        return quantized.flatten(-2).to(states.dtype)
-
-    @staticmethod
-    def backward(ctx, grad: torch.Tensor) -> tuple[torch.Tensor, None]:
-        return grad, None
-
-
 def fp8_round_trip(states: torch.Tensor, stream_count: int) -> torch.Tensor:
     """The expanded residual through FP8 e4m3, each (token, stream) row with its own absmax scale; the backward passes
-    the gradient straight through."""
-    return _Fp8RoundTrip.apply(states, stream_count)
+    the gradient straight through. Written as x + (q(x) - x).detach() rather than a custom autograd Function, which
+    the per-layer compiled training graphs dropped."""
+    streams = states.float().unflatten(-1, (stream_count, -1))
+    scale = streams.detach().abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / torch.finfo(torch.float8_e4m3fn).max
+    quantized = (streams.detach() / scale).to(torch.float8_e4m3fn).float() * scale
+    return (streams + (quantized - streams.detach())).flatten(-2).to(states.dtype)
 
 
 class HyperConnection(nn.Module):
