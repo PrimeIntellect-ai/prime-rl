@@ -1,12 +1,12 @@
 # Qwen3-30B-A3B
 
-RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The Thinking checkpoint trains math and SWE; the tool config trains the Instruct checkpoint with colocated tools on [Modal](https://modal.com). All configs use the custom MoE trainer implementation with expert parallelism (`ep = 8`), the AdamW optimizer, NCCL weight broadcast, and W&B logging. `swe.toml` adds `cp = 2` context parallelism for its 131k context; the other two run at 32k.
+RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The Thinking checkpoint trains math and SWE; the tool config trains the Instruct checkpoint with colocated tools on Prime Intellect Sandboxes. All configs use the custom MoE trainer implementation with expert parallelism (`ep = 8`), the AdamW optimizer, NCCL weight broadcast, and W&B logging. `swe.toml` adds `cp = 2` context parallelism for its 131k context; the other two run at 32k.
 
 | Config | Trains on | Evals on | Runtime | Topology |
 |---|---|---|---|---|
 | [`math.toml`](math.toml) | `i3_math` | `aime2025` (every 25 steps) | `subprocess` — runs locally, no sandbox | 2 train + 2 infer nodes |
 | [`swe.toml`](swe.toml) | `r2e-gym` (`bash` harness) | `swebench-verified` (every 25 steps) | sandbox (Prime Intellect by default) | 2 train + 2 infer nodes |
-| [`tool.toml`](tool.toml) | `general-agent` (colocated tools) | — | `modal` | 1 train + 1 infer node |
+| [`tool.toml`](tool.toml) | `general-agent` (colocated tools) | — | `prime` | 1 train + 1 infer node |
 | [`sft/h200/`](sft/h200) | SFT on `PrimeIntellect/INTELLECT-3-SFT-10K` (math) | — | — | 2 train nodes |
 
 `tool.toml` is the odd one out: 400 steps, `group_size = 16`, checkpoints every 50 steps with `keep_last = 1`, and inference at `dp = 2` / `tp = 4`. `math.toml` and `swe.toml` run 512-task batches with checkpoints every 100 steps.
@@ -14,7 +14,7 @@ RL on the 30B-A3B MoE across three domains: math, SWE, and agentic tool use. The
 ## Requirements
 
 - A Slurm cluster with 8-GPU nodes and a shared filesystem. This guide assumes the shared filesystem is mounted at `/shared` — adjust to your own path.
-- **Sandboxes** (`swe.toml` only) — the SWE agents run in sandboxes, wired for [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview) by default. If you use those, install the `prime` CLI separately and log in:
+- **Sandboxes** (`swe.toml` and `tool.toml`) — these agents run in [Prime Intellect Sandboxes](https://docs.primeintellect.ai/sandboxes/overview). Install the `prime` CLI separately and log in:
 
 ```bash
 uv tool install prime
@@ -22,12 +22,6 @@ prime login   # or: prime config set-api-key <your-key>
 ```
 
   To run on your own infrastructure instead, swap `env.agent.runtime` on the source for a runtime your environments support (e.g. a local Docker backend).
-- **Modal** (`tool.toml` only) — the tool agents run on Modal (`env.agent.runtime.type = "modal"`). Authenticate once:
-
-```bash
-uv run modal setup   # or export MODAL_TOKEN_ID / MODAL_TOKEN_SECRET
-```
-
 - Environment variables, exported in the shell you launch from — the launcher passes its environment to every component:
 
   - `WANDB_API_KEY` — every config logs to W&B (`[monitors.wandb]`).

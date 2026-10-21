@@ -132,12 +132,20 @@ from prime_rl.trainer.models.deepseek_v4.configuration_deepseek_v4 import Deepse
 from prime_rl.trainer.models.deepseek_v4.hyperconnections import DeepseekV4UnweightedRMSNorm
 from prime_rl.trainer.models.deepseek_v4.rotary import DeepseekV4RotaryEmbedding
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
+from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_kv_fake_quant import (
+    dsv4_compressed_kv_fake_quant,
+    dsv4_swa_kv_fake_quant,
+)
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_rope import dsv4_q_norm_rope, dsv4_rope
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.cp import CPContext, gather_for_cp
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+
+VLLM_INDEXER_FP8_AMAX_FLOOR = 1e-4
+"""The floor vLLM puts on each DeepSeek V4 indexer key's and query head's absolute maximum before taking its FP8 scale."""
 
 # Guarded because tilelang ships in the linux-gated `gpu` extra, so some installs lack it.
 try:
@@ -302,27 +310,6 @@ class PackedContext:
             },
             window_indices=window_indices,
         )
-
-    def check_position_ids(self, position_ids: Tensor) -> None:
-        """Raise unless `position_ids` agrees with the document boundaries this context came from.
-
-        A document starts exactly where the derived positions are zero, so the check is that the
-        caller's positions vanish there too. A padded micro-batch restarts `position_ids` at 0
-        inside its last document, which this permits: padding sits mid-document, never at a start.
-        A sequence-global `arange` over a packed row never restarts, and a 1-based one never
-        reaches zero at all; both are rejected. Under CP the comparison is against this rank's
-        queries alone, which lines up because the trainer shards the caller's `position_ids` the
-        same way.
-        """
-        disagrees = (self.position_ids == 0) & (position_ids != 0)
-        if disagrees.any():
-            token = int(disagrees.any(dim=0).nonzero()[0])
-            raise ValueError(
-                f"position_ids must restart at 0 at every document boundary of seq_lens: token "
-                f"{token} starts a document but carries {position_ids[:, token].tolist()}. A caller "
-                "that passes none of its own gets the 1-based arange the injected LM head "
-                "substitutes (see `prime_rl.trainer.models.layers.lm_head`), which this rejects."
-            )
 
 
 @dataclass(frozen=True)
@@ -538,7 +525,15 @@ class DeepseekV4Indexer(nn.Module):
         entry_stop = (entry_start + self.compressor.causal_threshold(packed.position_ids)[0]).int()
 
         # fp8_indexer has no batch axis
-        top_k_indices = fp8_indexer(q[0], compressed_kv[0], w[0], entry_start, entry_stop, self.index_topk).unsqueeze(0)
+        top_k_indices = fp8_indexer(
+            q[0],
+            compressed_kv[0],
+            w[0],
+            entry_start,
+            entry_stop,
+            self.index_topk,
+            amax_floor=VLLM_INDEXER_FP8_AMAX_FLOOR,
+        ).unsqueeze(0)
 
         # Mark indices-to-ignore with IGNORE_SLOT
         in_range = top_k_indices < n_entries
@@ -666,7 +661,6 @@ class DeepseekV4Attention(nn.Module):
         self.rope_layer_type = "main" if self.layer_type == "sliding_attention" else "compress"
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
-        self.attention_dropout = config.attention_dropout
         self.scaling = self.head_dim**-0.5
 
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)
@@ -685,7 +679,7 @@ class DeepseekV4Attention(nn.Module):
         self.rotary_emb = rotary_emb
         # Raised here rather than from the first forward, where it would surface as an ImportError
         # or a tilelang compile failure a long way from the config that caused it.
-        self.dsa_backend = getattr(config, "dsa_backend", "tilelang")
+        self.dsa_backend = getattr(config, "dsa_backend", "cudnn_flashmla")
         if dsv4_sparse_attn is not None and self.dsa_backend not in FORWARD_BACKENDS:
             raise ValueError(
                 f"DeepSeek V4 has no {self.dsa_backend!r} sparse-attention backend, "
@@ -694,12 +688,38 @@ class DeepseekV4Attention(nn.Module):
         self.max_slots = max_sparse_attn_slots(config)
         blocker = _kernel_blocker(self.num_heads, self.head_dim, self.dsa_backend)
         if blocker is not None:
-            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}")
+            hint = (
+                ' Set `model.dsa_backend = "tilelang"` to use the TileLang kernels instead.'
+                if self.dsa_backend == "cudnn_flashmla"
+                else ""
+            )
+            raise ValueError(f"DeepSeek V4 cannot run the fused sparse-attention kernel: {blocker}.{hint}")
         assert config.attention_dropout == 0.0, "the fused sparse attention kernel implements no dropout"
         compressor_class = COMPRESSOR_CLASSES[self.layer_type]
         self.compressor = compressor_class(config, rotary_emb) if compressor_class is not None else None
+        self.kv_precision = config.kv_precision
 
         self.cp_context = CPContext()
+
+    def attention_flops(self, seq_len: int) -> int:
+        # Each query attends the local window plus the compressed entries (CSA: the indexer scores
+        # all of them forward only, under no_grad; attention reads `index_topk`).
+        attended_tokens = min(seq_len, self.config.sliding_window)
+        indexer_flops = 0
+        if self.compressor is not None:
+            compressed_len = seq_len // self.compressor.compress_rate
+            indexer = getattr(self.compressor, "indexer", None)
+            if indexer is not None:
+                indexer_flops = 2 * indexer.num_heads * indexer.head_dim * seq_len * compressed_len
+                compressed_len = min(compressed_len, indexer.index_topk)
+            attended_tokens += compressed_len
+        return indexer_flops + quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=attended_tokens,
+        )
 
     def forward(self, hidden_states: torch.Tensor, packed: PackedContext) -> tuple[torch.Tensor, None]:
         """`packed` carries the document boundaries every pathway below is clipped at."""
@@ -724,6 +744,8 @@ class DeepseekV4Attention(nn.Module):
         kv = self.kv_norm(self.kv_proj(hidden_states))  # (b, t, d)
         kv = kv.view(*kv.shape[:2], 1, self.head_dim)  # (b, t, 1, d)
         kv = dsv4_rope(kv, cos_sin_cache, packed.position_ids)
+        if self.kv_precision == "fp8":
+            kv = dsv4_swa_kv_fake_quant(kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             # Launch on NCCL's communication stream; query/compressor work does not read KV.
             kv = torch.ops._c10d_functional.all_gather_into_tensor(
@@ -750,6 +772,9 @@ class DeepseekV4Attention(nn.Module):
             else None
         )
         compressed_kv, top_k_indices = compressed if compressed is not None else (None, None)
+        if self.kv_precision == "fp8" and compressed_kv is not None:
+            # Not the sliding-window fake quant: vLLM's compressor store floors the scale, not the amax.
+            compressed_kv = dsv4_compressed_kv_fake_quant(compressed_kv, self.config.qk_rope_head_dim)
         if self.cp_context.cp_enabled:
             kv = funcol.wait_tensor(kv).movedim(0, 1).contiguous()  # (b, T, 1, d)
         kv = kv.transpose(1, 2)  # (b, 1, T, d)

@@ -1,35 +1,75 @@
 import pytest
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, GenerationConfig
 
-from prime_rl.trainer.perf import PerfCounter
-
-
-@pytest.mark.parametrize(
-    "model_name, active_params, flops_per_token",
-    [("Qwen/Qwen3-0.6B", 595_984_384, 4_280_549_376), ("Jackmin108/debug-moe-0.5B", 256_442_368, 1_840_644_096)],
+from prime_rl.trainer.models import (
+    AutoModelForCausalLMPrimeRL,
+    GlmMoeDsaConfig,
+    Qwen3_5TextConfig,
+    Qwen3Config,
 )
-def test_perf_counter(model_name: str, active_params: int, flops_per_token: int):
-    # This speeds up the model loading as its a fake device
-    with torch.device("meta"):
-        config = AutoConfig.from_pretrained(model_name)
-        if getattr(config, "pad_token_id", None) is None:
-            gen_config = GenerationConfig.from_model_config(config)
-            # Use `is not None` instead of truthiness: token ID 0 is valid.
-            config.pad_token_id = next(
-                (
-                    v
-                    for v in [gen_config.pad_token_id, gen_config.eos_token_id, getattr(config, "eos_token_id", None)]
-                    if v is not None
-                ),
-                None,
-            )
-        model = AutoModelForCausalLM.from_config(config)
-    perf_counter = PerfCounter(model, seq_len=1024)
+from prime_rl.trainer.perf import FlopCounter
 
-    assert perf_counter.get_active_mm_params(config) == active_params, (
-        f"Expected {active_params:,} active parameters, got {perf_counter.get_active_mm_params(config):,} active parameters"
-    )
-    assert perf_counter.num_flop_per_token == flops_per_token, (
-        f"Expected {flops_per_token:,} FLOPS per token, got {perf_counter.num_flop_per_token:,} FLOPS per token"
-    )
+N = 256  # document length; sparse attention reads 32 tokens
+DIMS = dict(
+    hidden_size=64, intermediate_size=128, vocab_size=128, num_attention_heads=4, num_key_value_heads=2, pad_token_id=0
+)
+MOE = dict(moe_intermediate_size=32, num_experts_per_tok=2)
+# Softmax attention of 4 heads of qk/v dim 16 over all N keys per query, 6 FLOPs per multiply-add.
+FULL = 6 * 4 * (16 + 16) * N * N
+
+MODELS = {
+    "qwen3": (Qwen3Config(**DIMS, head_dim=16, num_hidden_layers=2), 2 * FULL),
+    # Gated delta rule: 4 value heads, key/value head dim 8; three key * value products per token and head.
+    "qwen3_5": (
+        Qwen3_5TextConfig(
+            **DIMS,
+            head_dim=16,
+            layer_types=["linear_attention", "full_attention"],
+            num_hidden_layers=2,
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+            linear_key_head_dim=8,
+            linear_value_head_dim=8,
+        ),
+        6 * 3 * 4 * 8 * 8 * N + FULL,
+    ),
+    # MLA with qk = 16 nope + 8 rope, v = 16, reading index_topk = 32 tokens; the indexer (2 heads of dim 8)
+    # scores all N tokens forward only (no_grad) on the "full" layer, and the "shared" layer reuses its indices.
+    "glm_moe_dsa": (
+        GlmMoeDsaConfig(
+            **DIMS,
+            **MOE,
+            n_routed_experts=4,
+            num_hidden_layers=2,
+            q_lora_rank=32,
+            kv_lora_rank=16,
+            qk_nope_head_dim=16,
+            qk_rope_head_dim=8,
+            v_head_dim=16,
+            index_n_heads=2,
+            index_head_dim=8,
+            index_topk=32,
+            indexer_types=["full", "shared"],
+            use_index_cache=True,
+            dsa_backend="tilelang",
+        ),
+        2 * 6 * 4 * (24 + 16) * N * 32 + 2 * 2 * 8 * N * N,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", MODELS)
+def test_attention_flops_match_hand_count(name: str):
+    config, attention_flops = MODELS[name]
+    with torch.device("meta"):
+        model = AutoModelForCausalLMPrimeRL.from_config(config, attn_implementation="flash_attention_3")
+    counter = FlopCounter(model)
+    assert counter([N]) - N * counter.matmul_flops_per_token == attention_flops > 0
+
+
+def test_active_params_count_attention_and_mlp_weights():
+    with torch.device("meta"):
+        model = AutoModelForCausalLMPrimeRL.from_config(MODELS["qwen3"][0], attn_implementation="flash_attention_3")
+    # Per layer: q/o 64x64, k/v 64x32, q/k norms 16, MLP 3x64x128, two norms 64; then final norm and lm_head.
+    layer = 2 * 64 * 64 + 2 * 64 * 32 + 2 * 16 + 3 * 64 * 128 + 2 * 64
+    assert model.num_active_params() == 2 * layer + 64 + 128 * 64
