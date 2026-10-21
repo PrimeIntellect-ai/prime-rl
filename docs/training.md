@@ -429,7 +429,7 @@ prime-rl deliberately logs a **large number of metrics** for maximum observabili
 
 ### Platform Monitoring
 
-Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. Turn it off with `--no-monitors.prime`:
+Every `rl` and `sft` run registers on the Prime Intellect platform (Prime Lab) and streams training metrics and episodes to the platform dashboard. The launcher prints the platform link next to the local dashboard link once the run registers. Turn it off with `--no-monitors.prime`:
 
 ```bash
 uv run rl @ rl.toml --no-monitors.prime

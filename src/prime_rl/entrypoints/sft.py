@@ -9,7 +9,7 @@ from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
+from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, platform_links
 from prime_rl.utils.config import cli, dump_resolved_config, find_package_resource
 from prime_rl.utils.logger import setup_logger
 from prime_rl.utils.pathing import (
@@ -20,6 +20,7 @@ from prime_rl.utils.pathing import (
     get_ckpt_dir,
     get_launcher_dir,
     get_launcher_log_dir,
+    launcher_attempt_env,
     prepare_attempt_dirs,
     prepare_run,
     resolve_latest_ckpt_step,
@@ -295,7 +296,7 @@ def sft_slurm(config: SFTConfig):
         sys.exit(1)
 
     logger.success(f"{result.stdout.strip()}\n\n{log_message}")
-    log_dashboard_url(logger, dashboard_url)
+    log_run_links(dashboard_url)
 
 
 def sft_local(config: SFTConfig):
@@ -409,6 +410,7 @@ def sft_local(config: SFTConfig):
             **DEFAULT_TRAINER_ENV_VARS,
             **config.env_vars,
             **wandb_shared_env,
+            **launcher_attempt_env(config_dir, log_dir),
         }
         if config.eval is not None:
             trainer_env["LOGURU_FORCE_COLORS"] = "1"
@@ -429,7 +431,11 @@ def sft_local(config: SFTConfig):
         )
 
         logger.success("Launcher complete")
-        log_dashboard_url(logger, dashboard_url)
+        prime = config.monitors.prime
+        log_run_links(
+            dashboard_url,
+            platform_links(config.run_dir, log_dir, 1, lambda: bool(processes.error_queue)) if prime else None,
+        )
 
         # Wait for the trainer (and the online-eval process, which drains its final evals
         # after the trainer's last checkpoint) while surfacing any process failure.

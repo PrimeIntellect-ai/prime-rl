@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import tomllib
 from pathlib import Path
 from subprocess import Popen
@@ -119,7 +120,7 @@ def main():
     config = cli(EvalConfig)
     sys.argv = [sys.argv[0], *argv]
 
-    from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
+    from prime_rl.entrypoints.dashboard import ensure_dashboard, log_run_links, platform_links
     from prime_rl.utils.logger import setup_logger
     from prime_rl.utils.pathing import (
         format_config_message,
@@ -186,14 +187,23 @@ def main():
         sys.exit(1)
 
     signal.signal(signal.SIGTERM, sigterm_handler)
-    log_dashboard_url(logger, dashboard_url)
 
     # Like the rl/sft launchers, the console stays quiet while the eval runs: results
     # live in the dashboard and the log file, only errors surface here.
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file, console_level="ERROR")
+    # Each source's platform evaluation opens once the eval counts its tasks, so the
+    # banner waits for the links next to the running eval.
+    eval_done = threading.Event()
+    platform = (
+        platform_links(config.run_dir, log_dir, len(config.source), eval_done.is_set) if config.monitors.prime else None
+    )
+    banner = threading.Thread(target=log_run_links, args=(dashboard_url, platform), daemon=True)
+    banner.start()
     try:
         asyncio.run(run_eval(config))
     finally:
+        eval_done.set()
+        banner.join()
         cleanup_processes(processes)
     setup_logger(config.log.level, json_logging=config.log.json_logging, log_file=log_file).success("Eval finished!")
 

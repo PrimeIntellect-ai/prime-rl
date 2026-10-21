@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 
 BASE_URL_VAR = "PRIME_API_BASE"
 EVAL_ID_VAR = "PRIME_RUNS_EVAL_ID"
+# Stamped on each link in the platform record, so the launcher can tell this
+# attempt's links from a previous attempt's.
+ATTEMPT_VAR = "PRL_ATTEMPT_LOG_DIR"
 # How long finish() and the SDK's atexit crash hook let queued uploads drain. The SDK
 # default (300 s) is sized for eval sample batches; a crashed training process should
 # not linger that long, and a clean finish rarely has more than the last step queued.
@@ -121,18 +124,22 @@ def update_platform_record(output_dir: Path, update: dict[str, Any]) -> None:
     _merge_platform_record(output_dir, lambda record: {**record, **update})
 
 
-def _mode() -> str:
+def platform_mode() -> str:
     """$PRIME_RUNS_MODE when set, else online with a Prime API key and disabled without
     one: the monitor is on by default, so a run without a key goes untracked instead of
     failing."""
     if mode := os.getenv(pr.MODE_ENV):
         return mode
-    if os.getenv("PRIME_API_KEY") or PrimeConfig().api_key:
-        return "online"
-    get_logger().warning(
-        "No Prime API key found (set PRIME_API_KEY or run `prime login`) - the run is not tracked on the Prime platform"
-    )
-    return "disabled"
+    return "online" if os.getenv("PRIME_API_KEY") or PrimeConfig().api_key else "disabled"
+
+
+def _mode() -> str:
+    mode = platform_mode()
+    if mode == "disabled" and not os.getenv(pr.MODE_ENV):
+        get_logger().warning(
+            "No Prime API key found (set PRIME_API_KEY or run `prime login`) - the run is not tracked on the Prime platform"
+        )
+    return mode
 
 
 def _base_url() -> str | None:
@@ -230,7 +237,7 @@ class PrimeTrainMonitor(Monitor):
                 await asyncio.to_thread(
                     update_platform_record,
                     output_dir,
-                    {"kind": "train", "id": self.run.id, "url": self.run.url},
+                    {"kind": "train", "id": self.run.id, "url": self.run.url, "attempt": os.getenv(ATTEMPT_VAR)},
                 )
         else:
             self.logger.info("Platform run disabled")
@@ -407,6 +414,7 @@ class PrimeEvalMonitor(Monitor):
                         "step": step,
                         "id": run.id,
                         "url": run.url,
+                        "attempt": os.getenv(ATTEMPT_VAR),
                     }
                     return record
 

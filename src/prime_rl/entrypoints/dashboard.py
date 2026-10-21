@@ -15,6 +15,7 @@ to the actual server.
 """
 
 import fcntl
+import functools
 import importlib.util
 import json
 import os
@@ -25,14 +26,20 @@ import time
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable
 
-from prime_rl.utils.pathing import CACHE_DIR
+from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import CACHE_DIR, get_platform_run_path
 
 STATE_DIR = CACHE_DIR / "dashboard"
 DAEMON_FILE = STATE_DIR / "daemon.json"
 DIRS_FILE = STATE_DIR / "dirs.json"
 DAEMON_LOG = STATE_DIR / "daemon.log"
 SPAWN_TIMEOUT_S = 10.0
+# The components register the run on the platform once they are up, which takes
+# seconds to a few minutes (imports, model and tokenizer loads).
+PLATFORM_LINK_TIMEOUT_S = 300.0
+PLATFORM_LINK_POLL_S = 0.5
 
 
 @contextmanager
@@ -78,7 +85,7 @@ def find_daemon(timeout: float = 1.0) -> dict | None:
 def ensure_dashboard(output_dir: Path, logger) -> str | None:
     """Register the run's output dir and make sure one dashboard daemon serves it.
 
-    Returns the dashboard URL (log it with ``log_dashboard_url``), or None when no
+    Returns the dashboard URL (log it with ``log_run_links``), or None when no
     daemon could be found or started (missing extra, non-interactive session, or
     startup failure).
     """
@@ -114,11 +121,60 @@ def ensure_dashboard(output_dir: Path, logger) -> str | None:
     return None
 
 
-def log_dashboard_url(logger, url: str | None) -> None:
-    """Banner pointing at the dashboard - meant as the launcher's last startup log."""
-    if url is None:
-        return
-    logger.opt(raw=True, colors=True).info(f"\n  <b>Dashboard</b> · <green><u>{url}</u></green>\n\n")
+def log_run_links(dashboard_url: str | None, platform: Callable[[], list[str]] | None = None) -> None:
+    """Banner pointing at the dashboard and the run's platform pages - meant as the
+    launcher's last startup log. ``platform`` blocks until the platform links are known
+    (the components register the run after they start). Bound with ``console`` so it
+    reaches a console that only shows errors while the run is in flight."""
+    logger = get_logger().bind(console=True).opt(raw=True, colors=True)
+    if dashboard_url is not None:
+        logger.info(f"\n  <b>Dashboard</b> · <green><u>{dashboard_url}</u></green>\n")
+    links = platform() if platform is not None else []
+    for i, url in enumerate(links):
+        lead = "\n" if dashboard_url is None and i == 0 else ""
+        logger.info(f"{lead}  <b>Platform</b>  · <green><u>{url}</u></green>\n")
+    if dashboard_url is not None or links:
+        logger.info("\n")
+
+
+def platform_links(
+    run_dir: Path, attempt_log_dir: Path, expected: int, stop: Callable[[], bool]
+) -> Callable[[], list[str]] | None:
+    """The ``platform`` argument of ``log_run_links`` for a run whose prime monitor is
+    on, or None when the monitor opens no platform pages (no API key, or
+    ``$PRIME_RUNS_MODE=disabled``)."""
+    from prime_rl.monitors.prime import platform_mode
+
+    if platform_mode() != "online":
+        return None
+    return functools.partial(wait_for_platform_links, run_dir, attempt_log_dir, expected, stop)
+
+
+def wait_for_platform_links(
+    output_dir: Path,
+    attempt_log_dir: Path,
+    expected: int,
+    stop: Callable[[], bool],
+    timeout: float = PLATFORM_LINK_TIMEOUT_S,
+) -> list[str]:
+    """The platform links this attempt's prime monitors leave in the run's platform
+    record: the training run's, or one per eval source. Polls until ``expected`` links
+    are in, ``stop()`` turns true or ``timeout`` passes, and returns what is in by then.
+    Links stamped with another attempt are a previous launch's and never count."""
+    path = get_platform_run_path(output_dir)
+    attempt = str(attempt_log_dir)
+    deadline = time.monotonic() + timeout
+    links: list[str] = []
+    while True:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            record = {}
+        entries = [record, *(record.get("evaluations") or {}).values()]
+        links = [entry["url"] for entry in entries if entry.get("url") and entry.get("attempt") == attempt]
+        if len(links) >= expected or stop() or time.monotonic() >= deadline:
+            return links
+        time.sleep(PLATFORM_LINK_POLL_S)
 
 
 def main() -> None:

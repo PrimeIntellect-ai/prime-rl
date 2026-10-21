@@ -110,7 +110,7 @@ The dashboard's overview tab reads the trace stream directly. It shows one env a
 
 ### Prime
 
-Each source's epoch streams as an evaluation on the Prime platform. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the run logs a warning and stays local. Turn it off with `--no-monitors.prime`:
+Each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link once the evaluation opens. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the run logs a warning and stays local. Turn it off with `--no-monitors.prime`:
 
 ```bash
 uv run eval gsm8k -n 32 -r 4 -c 8 --no-monitors.prime
