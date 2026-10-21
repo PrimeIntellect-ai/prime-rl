@@ -98,7 +98,6 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
         input_ids: torch.LongTensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         cu_seqlens: torch.LongTensor,
-        cu_seqlens_cpu: torch.LongTensor,
         routed_experts: torch.LongTensor | None = None,
     ) -> torch.Tensor:
         if self.ple is not None:
@@ -106,7 +105,7 @@ class Qwen3_8FlashNextDecoderLayer(nn.Module):
 
         block_input, residual_state = self.attn_hyper_connection.mix(hidden_states)
         if self.layer_type == "linear_attention":
-            block_output = self.linear_attn(block_input, cu_seqlens, cu_seqlens_cpu)
+            block_output = self.linear_attn(block_input, cu_seqlens)
         else:
             block_output = self.self_attn(block_input, position_embeddings, cu_seqlens)
         hidden_states = self.attn_hyper_connection.combine(block_output, residual_state)
@@ -191,8 +190,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
         torch._dynamo.mark_dynamic(cu_seqlens, 0)
-        cu_seqlens_cpu = cu_seqlens.cpu()
-        torch._dynamo.mark_dynamic(cu_seqlens_cpu, 0)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
@@ -203,7 +200,6 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
                 input_ids,
                 position_embeddings,
                 cu_seqlens,
-                cu_seqlens_cpu,
                 routed_experts=layer_routed_experts,
             )
         hidden_states, _ = self.hyper_connection_mixer(hidden_states)
