@@ -1,15 +1,16 @@
 """The SFT functionality matrix, rendered as `uv run sft` arguments.
 
-Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which is the `ModelConfig` defaults plus an fp32 MoE router.
-Each arch contributes two kinds of case:
+Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which is the `ModelConfig` defaults plus an fp32
+MoE router. Each arch contributes two kinds of case:
 
 - A base case on every layout in its `layouts`. It trains, saves a checkpoint, then resumes in a fresh process.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
 
 `Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1). `Arch.skip`
 removes a layout (along with the feature cases pinned to it) or a single feature, and the reason shows in the
-pytest report. Case ids read `{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k`
-selects cases by arch, layout or feature name. For example, one case:
+pytest report. `Arch.overrides` holds arch-wide config, such as an explicit renderer. Case ids read
+`{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k` selects cases by arch, layout or
+feature name. For example, one case:
 
     uv run pytest tests/regression/distributed -k "qwen3_moe and cp2_ep4 and base"
 
@@ -87,6 +88,7 @@ class Arch:
     layouts: tuple[Layout, ...] = MOE_LAYOUTS
     features: tuple[Feature, ...] = ()
     skip: dict[Layout | Feature, str] = field(default_factory=dict)
+    overrides: Overrides = field(default_factory=dict)
 
 
 @dataclass(frozen=True, eq=False)
@@ -104,7 +106,7 @@ class Case:
         return self.feature is None
 
     def overrides(self) -> Overrides:
-        return self.layout.overrides() | (self.feature.overrides if self.feature else {})
+        return self.arch.overrides | self.layout.overrides() | (self.feature.overrides if self.feature else {})
 
     def param(self):
         reason = self.arch.skip.get(self.layout) or self.arch.skip.get(self.feature)
@@ -129,11 +131,7 @@ def check_k_selectable(names: list[str]) -> None:
 QWEN3_MOE = Arch("qwen3_moe", features=FEATURES)
 GLM_MOE_DSA = Arch("glm_moe_dsa")
 DEEPSEEK_V4 = Arch("deepseek_v4")
-LLAMA = Arch(
-    "llama",
-    layouts=DENSE_LAYOUTS,
-    skip={layout: "SFT's llama renderer key is the gated meta-llama repo, not accessible" for layout in DENSE_LAYOUTS},
-)
+LLAMA = Arch("llama", layouts=DENSE_LAYOUTS, overrides={"renderer.name": "llama-3"})
 QWEN3_DENSE = Arch("qwen3_dense", layouts=DENSE_LAYOUTS)
 QWEN3_5_DENSE = Arch("qwen3_5_dense", layouts=DENSE_LAYOUTS)
 GLM4_MOE = Arch("glm4_moe")
