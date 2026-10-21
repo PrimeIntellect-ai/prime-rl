@@ -50,6 +50,7 @@ class HyperConnection(nn.Module):
         write_count: int = 1,
         conv_kernel_size: int = 0,
         write_mode: str | None = None,
+        write_output_zero_init: bool = True,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -72,18 +73,23 @@ class HyperConnection(nn.Module):
             self.input_mix_weight_up = nn.Linear(low_rank, read_count * self.chunk_count * expanded_size, bias=False)
         self.block_inject_weight = (
             nn.Linear(expanded_size, write_count * stream_count * self.chunk_count, bias=False)
-            if with_residual_injection
+            if with_residual_injection and write_mode != "output_only"
             else None
         )
         self.read_conv_weight = (
             nn.Parameter(torch.empty(3 * hidden_size, conv_kernel_size)) if conv_kernel_size else None
         )
         # Write variants (sequential blocks, full-width streams): `norm` RMS-normalizes the block output before the write;
-        # `output` adds a term from the normalized block output to the write logits (zero-initialized, so it starts as
-        # GR); `channel` replaces the scalar per stream by a gate per stream and channel from the read's bottleneck.
+        # `output` adds W_o g(y) to the write logits, g an RMS norm of the block output y used only for the logits (y is
+        # written as is; with `write_output_zero_init` W_o starts at 0, so the write starts as GR); `output_only` takes
+        # the logits from W_o g(y) alone (no dependence on the streams); `channel` replaces the scalar per stream by a
+        # gate per stream and channel from the read's bottleneck.
         self.write_mode = write_mode
-        self.write_norm = ExpandedRMSNorm(hidden_size, 1, norm_eps) if write_mode else None
-        self.write_output_weight = nn.Linear(hidden_size, stream_count, bias=False) if write_mode == "output" else None
+        self.write_output_zero_init = write_output_zero_init
+        logit_norm = write_mode in ("norm", "output", "output_only")
+        self.write_norm = ExpandedRMSNorm(hidden_size, 1, norm_eps) if logit_norm else None
+        output_term = write_mode in ("output", "output_only")
+        self.write_output_weight = nn.Linear(hidden_size, stream_count, bias=False) if output_term else None
         self.write_gate_weight_up = nn.Linear(low_rank, expanded_size, bias=False) if write_mode == "channel" else None
 
     def read(self, expanded_states: torch.Tensor) -> tuple[list[torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
@@ -134,15 +140,18 @@ class HyperConnection(nn.Module):
     ) -> torch.Tensor:
         expanded_states, normalized_states = residual_state[:2]
         residual_streams = expanded_states.unflatten(-1, (self.stream_count, self.stream_width))
-        if self.write_norm is not None:
+        if self.write_mode == "norm":
             block_output = self.write_norm(block_output)
         if self.write_mode == "channel":
             gates = 2.0 * torch.sigmoid(self.write_gate_weight_up(residual_state[2]))
             gates = gates.unflatten(-1, (self.stream_count, self.stream_width))
             return (residual_streams + block_output.unsqueeze(-2) * gates).flatten(-2)
-        logits = self.block_inject_weight(normalized_states)
+        if self.write_mode == "output_only":
+            logits = self.write_output_weight(self.write_norm(block_output))
+        else:
+            logits = self.block_inject_weight(normalized_states)
         if self.write_mode == "output":
-            logits = logits + self.write_output_weight(block_output)
+            logits = logits + self.write_output_weight(self.write_norm(block_output))
         injection_weights = 2.0 * torch.sigmoid(logits / self.stream_count)
         injection_weights = injection_weights.unflatten(-1, (self.write_count, self.stream_count, self.chunk_count))
         block_outputs = block_output if isinstance(block_output, tuple) else (block_output,)

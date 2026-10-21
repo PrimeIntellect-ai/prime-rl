@@ -86,5 +86,5 @@ def init_weights(model: nn.Module, config: InitConfig) -> None:
             module.weight.zero_()
         if isinstance(module, HyperConnection) and module.read_conv_weight is not None:
             module.read_conv_weight.zero_()
-        if isinstance(module, HyperConnection) and module.write_output_weight is not None:
+        if isinstance(module, HyperConnection) and module.write_mode == "output" and module.write_output_zero_init:
             module.write_output_weight.weight.zero_()

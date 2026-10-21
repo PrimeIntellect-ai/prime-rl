@@ -48,8 +48,12 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_shared_expert_read (`bool`): With `hc_moe_reads`, a third read for the shared experts instead of the experts'
             read.
         hc_write (`str`, *optional*): Gated Residual write variant of sequential blocks: `norm` (RMS-normalize the block
-            output before the write), `output` (write scalars also from the normalized block output) or `channel` (a
-            gate per stream and channel instead of one scalar per stream). None for the plain write.
+            output before the write), `output` (write logits also from the RMS-normalized block output; the output
+            itself is written unnormalized), `output_only` (write logits only from the normalized block output, not from
+            the streams) or `channel` (a gate per stream and channel instead of one scalar per stream). None for the
+            plain write.
+        hc_write_output_zero_init (`bool`): With `hc_write = output`, the output term starts at 0 (the write starts as
+            plain GR); False uses the default normal init.
         hc_parallel_block (`str`, *optional*): Parallel attention and MLP with Gated Residual: `shared_read` (both
             take the same read; the MLP the query read with `hc_qkv_reads`) or `separate_reads` (an own read for the
             MLP); both outputs are written to all streams with their own scalars. None for sequential blocks.
@@ -122,6 +126,7 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_shared_expert_read=False,
         hc_qkv_conv=0,
         hc_write=None,
+        hc_write_output_zero_init=True,
         hc_parallel_block=None,
         hc_stream_inputs="copy",
         hc_byte_add=None,
@@ -178,6 +183,7 @@ class PrimeMoeConfig(PretrainedConfig):
         self.hc_shared_expert_read = hc_shared_expert_read
         self.hc_qkv_conv = hc_qkv_conv
         self.hc_write = hc_write
+        self.hc_write_output_zero_init = hc_write_output_zero_init
         self.hc_parallel_block = hc_parallel_block
         self.hc_stream_inputs = hc_stream_inputs
         self.hc_byte_add = hc_byte_add
