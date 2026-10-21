@@ -57,6 +57,12 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_parallel_block (`str`, *optional*): Parallel attention and MLP with Gated Residual: `shared_read` (both
             take the same read; the MLP the query read with `hc_qkv_reads`) or `separate_reads` (an own read for the
             MLP); both outputs are written to all streams with their own scalars. None for sequential blocks.
+        hc_stream_dtype (`str`, *optional*): `fp8_e4m3` stores the expanded residual in FP8 between blocks (after the
+            embedding and after every write): each stream of each token goes through e4m3 with its own absmax scale;
+            the backward passes the gradient straight through. Reads and writes compute in the model dtype. None keeps
+            the model dtype.
+        hc_stream_stats (`bool`): Record the absmax and RMS of the expanded residual after every layer (training
+            forwards), logged as `gr/stream_absmax/<layer>` and `gr/stream_rms/<layer>`.
         hc_qkv_conv (`int`): Kernel size of causal depthwise convolutions after the attention read, one per query, key
             and value input; 0 for none.
         hc_stream_inputs (`str`): What the residual streams start from: `copy` (the token embedding in every stream),
@@ -125,6 +131,8 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_moe_reads=False,
         hc_shared_expert_read=False,
         hc_qkv_conv=0,
+        hc_stream_dtype=None,
+        hc_stream_stats=False,
         hc_write=None,
         hc_write_output_zero_init=True,
         hc_parallel_block=None,
@@ -182,6 +190,8 @@ class PrimeMoeConfig(PretrainedConfig):
         self.hc_moe_reads = hc_moe_reads
         self.hc_shared_expert_read = hc_shared_expert_read
         self.hc_qkv_conv = hc_qkv_conv
+        self.hc_stream_dtype = hc_stream_dtype
+        self.hc_stream_stats = hc_stream_stats
         self.hc_write = hc_write
         self.hc_write_output_zero_init = hc_write_output_zero_init
         self.hc_parallel_block = hc_parallel_block

@@ -13,7 +13,7 @@ from transformers.utils import TransformersKwargs
 from prime_rl.trainer.models.base import PreTrainedModelPrimeRL
 from prime_rl.trainer.models.glm4_moe.converting_glm4_moe import conversion_chain
 from prime_rl.trainer.models.layers.attn import ATTN_IMPL2CLASS, AttentionConfig
-from prime_rl.trainer.models.layers.hyper_connection import HyperConnection
+from prime_rl.trainer.models.layers.hyper_connection import HyperConnection, fp8_round_trip
 from prime_rl.trainer.models.layers.lm_head import PrimeLmOutput
 from prime_rl.trainer.models.layers.mlp import FeedForward
 from prime_rl.trainer.models.layers.moe import GroupedExperts
@@ -97,6 +97,12 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 "norm_eps": config.rms_norm_eps,
                 "stream_width": config.hc_stream_width,
             }
+            self.stream_count = config.hc_count
+            self.stream_dtype = config.hc_stream_dtype
+            self.stream_stats = config.hc_stream_stats
+            if self.stream_stats:
+                for name in ("stream_absmax", "stream_square_sum", "stream_numel"):
+                    self.register_buffer(name, torch.zeros((), dtype=torch.float32), persistent=False)
             self.qkv_read_count = 3 if config.hc_qkv_reads else 1
             self.gate_read = config.hc_gate_read
             self.parallel_block = config.hc_parallel_block
@@ -132,6 +138,19 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps)
             )
 
+    def store(self, expanded_states: torch.Tensor, stats: bool = False) -> torch.Tensor:
+        """The expanded residual as stored between blocks: through FP8 with `hc_stream_dtype`, and its absmax and
+        mean square recorded with `hc_stream_stats` (training forwards, after the layer's last write)."""
+        if self.stream_dtype == "fp8_e4m3":
+            expanded_states = fp8_round_trip(expanded_states, self.stream_count)
+        if stats and self.stream_stats and torch.is_grad_enabled():
+            with torch.no_grad():
+                values = expanded_states.float()
+                self.stream_absmax.copy_(torch.maximum(self.stream_absmax, values.abs().amax()))
+                self.stream_square_sum.add_(values.square().sum())
+                self.stream_numel.add_(values.numel())
+        return expanded_states
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -148,7 +167,7 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 max_seqlen=max_seqlen,
             )
             mlp_output = self.mlp(reads[-1] if self.parallel_block == "separate_reads" else reads[0])
-            return self.hyper_connection.combine((attention_output, mlp_output), residual_state)
+            return self.store(self.hyper_connection.combine((attention_output, mlp_output), residual_state), stats=True)
 
         if self.gated_residual:
             reads, residual_state = self.attn_hyper_connection.read(hidden_states)
@@ -161,10 +180,10 @@ class PrimeMoeDecoderLayer(GradientCheckpointingLayer):
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
-            hidden_states = self.attn_hyper_connection.combine(block_output, residual_state)
+            hidden_states = self.store(self.attn_hyper_connection.combine(block_output, residual_state))
             block_input, residual_state = self.mlp_hyper_connection.mix(hidden_states)
             block_output = self.mlp(block_input)
-            return self.mlp_hyper_connection.combine(block_output, residual_state)
+            return self.store(self.mlp_hyper_connection.combine(block_output, residual_state), stats=True)
 
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -325,6 +344,8 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
                     ngram_streams = [stream + bytes_ for stream, bytes_ in zip(ngram_streams, added)]
             streams = table_streams + ngram_streams + byte_streams
             hidden_states = torch.cat(streams, dim=-1)
+        if self.config.hc_stream_dtype == "fp8_e4m3":
+            hidden_states = fp8_round_trip(hidden_states, self.config.hc_count)
         for decoder_layer in self.layers:
             hidden_states = decoder_layer(
                 hidden_states, position_embeddings=position_embeddings, cu_seqlens=cu_seqlens, max_seqlen=max_seqlen

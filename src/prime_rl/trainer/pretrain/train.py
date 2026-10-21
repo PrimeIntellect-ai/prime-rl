@@ -61,7 +61,10 @@ from prime_rl.trainer.pretrain.metrics import (
     SpikeDetector,
     grad_norms_by_group,
     reduce_stats,
+    reset_stream_stats,
     routed_k_metrics,
+    stream_stats_layers,
+    stream_stats_metrics,
     take_routing_counts,
 )
 from prime_rl.trainer.sft.data import get_dataset_state
@@ -339,6 +342,8 @@ def train(config: PretrainConfig):
     last_bias_moves = None
     # Per-expert selection bias, router-row norm and load of every MoE layer, every MOE_TRACE_INTERVAL steps.
     moe_trace: dict[str, list] = {"step": [], "bias": [], "router_norm": [], "load": []}
+    stream_layers = stream_stats_layers(model)
+    reset_stream_stats(stream_layers)
     logger.info(f"Starting training loop (max_steps={config.max_steps})")
     while True:
         torch.cuda.reset_peak_memory_stats()
@@ -398,6 +403,7 @@ def train(config: PretrainConfig):
                     )
                     moe_trace["load"].append(result.tokens_per_expert.float().cpu().numpy())
             moe_metrics |= routed_k_metrics(model, dp_cp_group)
+        moe_metrics |= stream_stats_metrics(stream_layers, dp_cp_group)
 
         group_grad_norms = grad_norms_by_group(model)
         grad_norm = clip_grad_norm_(None, model, config.optim.max_norm) if config.optim.max_norm else None

@@ -70,6 +70,36 @@ def routed_k_metrics(model: nn.Module, group: dist.ProcessGroup) -> dict[str, fl
     }
 
 
+def stream_stats_layers(model: nn.Module) -> list[nn.Module]:
+    """The layers recording Gated Residual stream statistics (`hc_stream_stats`)."""
+    return [layer for layer in get_language_model(model).layers if getattr(layer, "stream_stats", False)]
+
+
+def reset_stream_stats(layers: list[nn.Module]) -> None:
+    for layer in layers:
+        layer.stream_absmax.zero_()
+        layer.stream_square_sum.zero_()
+        layer.stream_numel.zero_()
+
+
+def stream_stats_metrics(layers: list[nn.Module], group: dist.ProcessGroup) -> dict[str, float]:
+    """Absmax and RMS of the Gated Residual streams after every layer since the last call, over all ranks, and reset
+    them."""
+    if not layers:
+        return {}
+    absmax = torch.stack([layer.stream_absmax for layer in layers])
+    square_sum = torch.stack([layer.stream_square_sum for layer in layers])
+    numel = torch.stack([layer.stream_numel for layer in layers])
+    reset_stream_stats(layers)
+    reduced = reduce_stats({"square_sum": square_sum, "numel": numel}, {"absmax": absmax}, group)
+    rms = (reduced["square_sum"] / reduced["numel"].clamp(min=1)).sqrt()
+    metrics = {}
+    for index, (layer_absmax, layer_rms) in enumerate(zip(reduced["absmax"].tolist(), rms.tolist())):
+        metrics[f"gr/stream_absmax/{index}"] = layer_absmax
+        metrics[f"gr/stream_rms/{index}"] = layer_rms
+    return metrics
+
+
 def moe_layer_indices(model: nn.Module) -> list[int]:
     """The decoder-layer index of every MoE layer, in the order of `iter_moe_blocks`."""
     return [
