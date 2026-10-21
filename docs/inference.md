@@ -337,7 +337,7 @@ Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-top_k = 512   # optional, defaults to 512 under truncation (bounds each sampling mask)
+top_k = 128   # optional, defaults to 128 under truncation (bounds each sampling mask)
 ```
 
 That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.

@@ -14,7 +14,7 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     import msgspec
 
     from prime_rl.trainer.rl.data import DataLoader
-    from prime_rl.transports.batch.types import TopLogprobs
+    from prime_rl.transports.batch.types import SamplingMask, TopLogprobs
 
     sample = make_training_example()
     sample.top_logprobs = TopLogprobs(
@@ -25,23 +25,65 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     truncated = prepare_sample(sample, seq_len=3)
     np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.counts, np.int32), [0, 0, 2])
     np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
+    replayed = make_training_example()
+    replayed.sampling_mask = SamplingMask(
+        ids=np.array([5, 6, 8], np.int32).tobytes(),
+        counts=np.array([0, 0, 1, 2], np.int32).tobytes(),
+        logprobs=np.log(np.array([1.0, 0.75, 0.25], np.float32)).tobytes(),
+    )
+    truncated = prepare_sample(replayed, seq_len=3)
+    np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.ids, np.int32), [5])
+    np.testing.assert_array_equal(np.frombuffer(truncated.sampling_mask.logprobs, np.float32), [0.0])
     plain = make_training_example(rl_weights=[0.0] * 4)
-    batches = prepare_batch([sample, plain], seq_len=12, num_train_workers=2, bin_cost=sum)
-    packed = next(b for worker in batches for b in worker if any(b.loss_mask) and b.top_logprobs is not None)
+    plain.sampling_mask = SamplingMask(
+        ids=np.array([9], np.int32).tobytes(), counts=np.array([0, 0, 0, 1], np.int32).tobytes()
+    )
+    batches = prepare_batch([sample, replayed, plain], seq_len=12, num_train_workers=1, bin_cost=sum)
+    [[packed]] = batches
     packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed), type=MicroBatch)
+    assert len(packed.top_logprobs.ids) == 3 * 4
     tensor = DataLoader._micro_batch_to_tensor(None, packed)
-    ids, values = tensor["top_logprobs_ids"], tensor["top_logprobs_values"]
+    ids, values = tensor["top_logprobs_ids"][0], tensor["top_logprobs_values"][0]
     assert ids.shape == values.shape
-    assert ids.shape[1] == len(packed.input_ids)
-    assert (ids >= 0).sum() == 3
-    np.testing.assert_allclose(values[ids >= 0].numpy(), [-0.3, -1.8, -0.2])
+    assert ids.shape[0] == len(packed.input_ids)
+    rows = {
+        tuple(row[row >= 0].tolist()): value[row >= 0].tolist() for row, value in zip(ids, values) if (row >= 0).any()
+    }
+    expected = {(3, 7): [-0.3, -1.8], (4,): [-0.2], (5,): [0.0], (6, 8): np.log([0.75, 0.25]), (9,): [np.nan]}
+    assert rows.keys() == expected.keys()
+    for key, value in expected.items():
+        np.testing.assert_allclose(rows[key], value, rtol=1e-6)
     # The source evidence is immutable under truncation and packing.
     np.testing.assert_array_equal(np.frombuffer(sample.top_logprobs.counts, np.int32), [0, 0, 2, 1])
+    np.testing.assert_array_equal(np.frombuffer(replayed.sampling_mask.counts, np.int32), [0, 0, 1, 2])
 
 
-@pytest.mark.parametrize(
-    "corruption", [None, "missing", "duplicate", "vocab", "mass", "support", "support_mass", "sampled"]
-)
+@pytest.mark.parametrize("support", ["complete", "mismatch"])
+def test_sampler_evidence_moves_masked_top_logprobs_onto_the_mask(support):
+    import verifiers.v1 as vf
+
+    from prime_rl.orchestrator.trajectories import _encode_sampler_evidence
+
+    mask = vf.SamplingMask(ids=np.array([5, 6, 8], np.int32), counts=np.array([0, 0, 1, 2], np.int32))
+    head = vf.TopLogprobs(
+        ids=np.array([1, 2, 5, 8, 6 if support == "complete" else 7], np.int32),
+        logprobs=np.array([-0.1, -2.5, 0.0, -0.3, -1.4], np.float32),
+        counts=np.array([0, 2, 1, 2], np.int32),
+    )
+    if support == "mismatch":
+        with pytest.raises(ValueError):
+            _encode_sampler_evidence(mask, head, 4)
+        return
+    sampling_mask, top_logprobs = _encode_sampler_evidence(mask, head, 4)
+    np.testing.assert_array_equal(np.frombuffer(sampling_mask.ids, np.int32), [5, 8, 6])
+    np.testing.assert_array_equal(np.frombuffer(sampling_mask.counts, np.int32), [0, 0, 1, 2])
+    np.testing.assert_array_equal(np.frombuffer(sampling_mask.logprobs, np.float32), np.float32([0.0, -0.3, -1.4]))
+    np.testing.assert_array_equal(np.frombuffer(top_logprobs.ids, np.int32), [1, 2])
+    np.testing.assert_array_equal(np.frombuffer(top_logprobs.logprobs, np.float32), np.float32([-0.1, -2.5]))
+    np.testing.assert_array_equal(np.frombuffer(top_logprobs.counts, np.int32), [0, 2, 0, 0])
+
+
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support_mass", "sampled"])
 def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
     import torch
 
@@ -70,8 +112,6 @@ def test_top_logprobs_validate_only_rl_tokens_and_complete_support(corruption):
             batch["top_logprobs_ids"][0, 1, 1] = 9
         case "mass":
             batch["top_logprobs_values"][0, 1] = 0
-        case "support":
-            batch["sampling_mask"][0, 1, 1] = 7
         case "support_mass":
             batch["sampling_mask"][0, 1] = torch.tensor([7, 3])
             batch["top_logprobs_values"][0, 1] = torch.tensor([0.5, 0.25]).log()

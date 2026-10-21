@@ -254,14 +254,23 @@ class DataLoader:
             padded[np.arange(max_mask_size)[None, :] < counts[:, None]] = ids
             sampling_mask = torch.from_numpy(padded).unsqueeze(0)
         top_ids = top_values = None
-        if (head := micro_batch.top_logprobs) is not None:
-            counts = np.frombuffer(head.counts, dtype=np.int32)
+        # Masked tokens carry their sampler logprobs on the mask, the others on top_logprobs.
+        heads = [
+            head
+            for head in (micro_batch.top_logprobs, packed_sampling_mask)
+            if head is not None and head.logprobs is not None
+        ]
+        if heads:
+            head_counts = [np.frombuffer(head.counts, dtype=np.int32) for head in heads]
+            counts = sum(head_counts)
+            rows = np.concatenate([np.repeat(np.arange(len(c)), c) for c in head_counts])
+            order = np.argsort(rows, kind="stable")
             width = max(int(counts.max(initial=0)), 1)
             valid = np.arange(width)[None, :] < counts[:, None]
             ids = np.full((len(counts), width), -1, dtype=np.int32)
             values = np.zeros((len(counts), width), dtype=np.float32)
-            ids[valid] = np.frombuffer(head.ids, dtype=np.int32)
-            values[valid] = np.frombuffer(head.logprobs, dtype=np.float32)
+            ids[valid] = np.concatenate([np.frombuffer(head.ids, dtype=np.int32) for head in heads])[order]
+            values[valid] = np.concatenate([np.frombuffer(head.logprobs, dtype=np.float32) for head in heads])[order]
             top_ids = torch.from_numpy(ids).unsqueeze(0)
             top_values = torch.from_numpy(values).unsqueeze(0)
         return TensorMicroBatch(
@@ -324,11 +333,6 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -
     if batch["sampling_mask"] is not None:
         support = batch["sampling_mask"][mask]
         replay = (support >= 0).any(-1)
-        width = max(ids.shape[-1], support.shape[-1])
-        head_ids = torch.nn.functional.pad(ids, (0, width - ids.shape[-1]), value=-1).sort(-1).values
-        support_ids = torch.nn.functional.pad(support, (0, width - support.shape[-1]), value=-1).sort(-1).values
-        if (head_ids[replay] != support_ids[replay]).any():
-            raise ValueError("Score centering requires exactly the complete recorded sampling support")
         if not torch.isclose(q.sum(-1)[replay], torch.ones_like(q.sum(-1)[replay]), atol=1e-4, rtol=0).all():
             raise ValueError("Sampler probabilities must normalize over the recorded support")
         sampled = batch["input_ids"][mask]
