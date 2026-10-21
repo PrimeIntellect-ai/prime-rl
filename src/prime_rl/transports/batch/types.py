@@ -35,7 +35,8 @@ class TopLogprobs(msgspec.Struct, array_like=True, gc=False, omit_defaults=True)
 
 
 # A sample's training arrays kept by the env-server worker at ``url`` (see
-# ``[payloads]``): the trainer fetches them by ``id`` and keeps the first ``num_tokens``.
+# ``prime_rl.transports.payload``): the trainer fetches them by ``id`` and keeps the first
+# ``num_tokens``.
 class PayloadSlice(msgspec.Struct, array_like=True, gc=False):
     url: str
     id: str

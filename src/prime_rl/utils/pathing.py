@@ -12,7 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
-from prime_rl.configs.shared import LogConfig, PayloadsConfig
+from prime_rl.configs.shared import LogConfig
 from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 
@@ -255,7 +255,7 @@ def env_address_file(config_dir: Path, split: str, name: str, replica: int | Non
 
 
 def write_env_server_config(
-    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, payloads: PayloadsConfig | None = None
+    config_dir: Path, split: str, source: EnvConfig, log: LogConfig, keep_training_arrays: bool = False
 ) -> Path:
     """Write the ``EnvServerConfig`` of a launcher-managed source
     (``envs/<split>/<name>.json``) and return its path. The source's env and serve
@@ -269,9 +269,8 @@ def write_env_server_config(
         "serve": source_dict.get("serve") or {},
         "address_file": env_address_file(config_dir, split, source.resolved_name).as_posix(),
         "log": {"level": log.vf_level, "json_logging": log.json_logging},
+        "keep_training_arrays": keep_training_arrays,
     }
-    if payloads is not None:
-        server_config["payloads"] = payloads.model_dump()
     path = env_dir / f"{source.resolved_name}.json"
     path.write_text(json.dumps(server_config, indent=2))
     return path

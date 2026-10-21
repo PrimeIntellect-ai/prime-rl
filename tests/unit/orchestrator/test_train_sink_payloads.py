@@ -10,7 +10,6 @@ import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.configs.shared import PayloadsConfig
 from prime_rl.orchestrator.algo.base import Algorithm
 from prime_rl.orchestrator.train_sink import TrainSink
 from prime_rl.orchestrator.types import Progress
@@ -28,9 +27,7 @@ def kept(hook: PayloadHook, **kwargs) -> vf.Trace:
 
 
 def payload_sink(*, constant=True, batch_size=100) -> TrainSink:
-    config = OrchestratorConfig(
-        batch_size=batch_size, constant_trainer_batch_size=constant, max_off_policy_steps=1, payloads=PayloadsConfig()
-    )
+    config = OrchestratorConfig(batch_size=batch_size, constant_trainer_batch_size=constant, max_off_policy_steps=1)
     env = SimpleNamespace(
         config=SimpleNamespace(group_size=1, sampling=SimpleNamespace(temperature=1.0)),
         requires_sampling_masks=False,
