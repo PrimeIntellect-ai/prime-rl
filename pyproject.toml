@@ -104,6 +104,7 @@ quack = [
     "quack-kernels>=0.4.1 ; sys_platform == 'linux'",
 ]
 sonic-moe = ["sonic-moe ; sys_platform == 'linux'"]
+dist-moe = ["dist-moe ; sys_platform == 'linux'"]
 # Prebuilt `prime-kernels` wheels from a release (see the `kernels` skill). Compiled for
 # sm_100a; on other GPUs the package installs fine and reports its kernels unavailable.
 kernels = [
@@ -267,6 +268,7 @@ nixl-cu13 = false
 torchao = false
 prime-kernels = false
 flash-mla = false
+dist-moe = false
 
 [tool.uv.sources]
 prime-rl-configs = { path = "packages/prime-rl-configs", editable = true }
@@ -285,6 +287,7 @@ torchao = [
 ]
 dion = { git = "https://github.com/samsja/dion.git", rev = "0c801b0" }
 sonic-moe = { git = "https://github.com/S1ro1/sonic-moe", rev = "0bf06ac" }
+dist-moe = { git = "https://github.com/meta-pytorch/dist_moe", rev = "caf454c" }
 quack-kernels = { git = "https://github.com/S1ro1/quack", rev = "f62009f" }
 flash-attn-4 = { git = "https://github.com/Dao-AILab/flash-attention.git", subdirectory = "flash_attn/cute", rev = "0251105" }
 vllm-router = [
