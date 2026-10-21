@@ -7,7 +7,6 @@
 Adds `<arch>` (`<HF config model_type>`) to prime-rl: <dense | MoE, total / active params, attention type, anything unusual>.
 
 - Checkpoint: [`PrimeIntellect/<Model>-BF16`](https://huggingface.co/PrimeIntellect/<Model>-BF16), converted from [`<org>/<Model>`](https://huggingface.co/<org>/<Model>) (<source format>) | upstream bf16 checkpoint used as-is
-- Inference precision: <bf16 | MXFP8 online | FP8 blockwise>; trainer precision: <same>
 - EP: <yes/no>, CP: <yes/no>, router replay: <yes/no>
 
 ## 0. Checkpoint
@@ -27,11 +26,10 @@ Parity tests: <pass/fail, max abs diff of logits/grads>
 
 `trainer-mfu.toml`, 1 × 8 <GPU>, `num_layers = <n>`, seq len <n>, random init, forced balanced routing:
 
-| Model | Precision | MFU | Tokens/s/GPU | Peak memory (GiB) |
-|---|---|---|---|---|
-| `<new model>` | bf16 | | | |
-| `<new model>` | mxfp8 | | | |
-| `<reference model>` | bf16 | | | |
+| Model | MFU | Tokens/s/GPU | Peak memory (GiB) |
+|---|---|---|---|
+| `<new model>` | | | |
+| `<reference model>` | | | |
 
 ## 2. vLLM vs trainer
 
@@ -49,7 +47,7 @@ vLLM self-consistency (decode vs prefill KL): <value>
 
 `rl-math.toml`: `math-env`, 8k, batch 64 × group 8, sign-SGD lr <lr>, 100 steps, <n> trainer + <n> inference nodes. W&B: <link>
 
-Step-1 mismatch KL: <bf16 arm> / <quantized arm>. Max over all steps: <value> (bar: < 0.015).
+Step-1 mismatch KL: <value>. Max over all steps: <value> (bar: < 0.015).
 
 <paste `uv run python skills/add-model/report.py <run_dir> ...` output>
 
@@ -57,7 +55,7 @@ Verdict: <flat / drifting, with numbers>
 
 ## 4. SWE ablation
 
-`rl-swe.toml`: `scaleswe`, 65k, `max_turns = 30`, reasoning effort <level | n/a>, <precision>, <steps> steps, <n> trainer + <n> × <n> inference nodes. W&B: <link>
+`rl-swe.toml`: `scaleswe`, 65k, `max_turns = 30`, reasoning effort <level | n/a>, <steps> steps, <n> trainer + <n> × <n> inference nodes. W&B: <link>
 
 <paste `report.py --block 20` output>
 

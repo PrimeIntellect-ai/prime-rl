@@ -5,7 +5,6 @@
 #
 #   uv run rl @ skills/add-model/rl-math.toml --dry-run --output-dir <scratch> --run.name check
 #   uv run rl @ skills/add-model/rl-math.toml
-#   uv run rl @ skills/add-model/rl-math.toml @ skills/add-model/mxfp8.toml   # quantized arm
 
 max_steps = 100
 seq_len = 8192

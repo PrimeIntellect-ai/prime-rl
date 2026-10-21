@@ -4,7 +4,6 @@
 #
 #   uv run rl @ skills/add-model/rl-swe.toml --dry-run --output-dir <scratch> --run.name check
 #   uv run rl @ skills/add-model/rl-swe.toml
-#   uv run rl @ skills/add-model/rl-swe.toml @ skills/add-model/mxfp8.toml   # if step 3 picked MXFP8
 
 max_steps = 200 # FILL
 seq_len = 65536
@@ -49,7 +48,7 @@ batch_size = 64 # FILL: match the rollout throughput of the replicas
 max_off_policy_steps = 32
 
 [orchestrator.model.client]
-# Must cover loading (and online quantization of) the checkpoint on every replica.
+# Must cover loading the checkpoint on every replica.
 wait_for_ready_timeout = 7200
 
 [orchestrator.train]

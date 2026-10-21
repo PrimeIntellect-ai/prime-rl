@@ -32,17 +32,6 @@ num_layers = 4
 random_init = true
 force_balanced_routing = true # MoE only
 
-# Uncomment to measure the quantized trainer the RL runs will use (SM100, see mxfp8.toml).
-# [model.quantization]
-# type = "mxfp8"
-# recipe = "mxfp8_rceil_wgrad_with_hp"
-#
-# [model.moe.compute]
-# type = "mxfp8"
-#
-# [model.moe.dispatch]
-# type = "torch"
-
 [data]
 type = "fake"
 seq_len = 16384
