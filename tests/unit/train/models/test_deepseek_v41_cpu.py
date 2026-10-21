@@ -158,12 +158,6 @@ def test_deepseek_v41_config_rejects_an_unsourced_compressed_layer():
         DeepseekV41TextConfig(**{**HASH_CONFIG, "index_source_layer_ids": [0, 1, 3]})
 
 
-def test_deepseek_v41_active_mm_params_counts_the_low_rank_projections():
-    """The published model activates ~16B parameters per token in matmuls (embedding excluded)."""
-    text = DeepseekV41Config(**PUBLISHED_CONFIG).text_config
-    assert 15e9 < text.active_mm_params() < 17e9
-
-
 def _published_keys(text: DeepseekV41TextConfig) -> list[str]:
     """Every bf16 key of the published checkpoint for `text`'s layers, plus keys the trainer drops."""
     keys = ["embed.weight", "head.weight", "norm.weight", "mtp.0.hc_attn_base", "vision.blocks.0.w", "image_start"]

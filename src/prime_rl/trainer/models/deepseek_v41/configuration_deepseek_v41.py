@@ -256,32 +256,6 @@ class DeepseekV41TextConfig(PretrainedConfig):
     def active_engram_layer_ids(self) -> list[int]:
         return [layer_idx for layer_idx in self.engram_layer_ids if layer_idx < self.num_hidden_layers]
 
-    def active_mm_params(self) -> int:
-        """Parameters a token passes through in matmuls, for the trainer's MFU.
-
-        The generic count in `perf.py` would read V4.1's low-rank query and grouped low-rank output
-        projections as full-rank `hidden x heads x head_dim` matrices and miss the compressors,
-        indexers, mHC projections and engram projections, so the architecture counts its own.
-        """
-        h, hd, nh = self.hidden_size, self.head_dim, self.num_attention_heads
-        mhc_params = (2 + self.hc_mult) * self.hc_mult**2 * h
-        params = self.vocab_size * h  # lm head
-        for layer_idx in range(self.num_hidden_layers):
-            ratio = self.compress_ratios[layer_idx]
-            params += h * self.q_lora_rank + self.q_lora_rank * nh * hd + h * hd
-            params += nh * hd * self.o_lora_rank + self.o_groups * self.o_lora_rank * h
-            params += (self.num_experts_per_tok + self.n_shared_experts) * 3 * h * self.moe_intermediate_size
-            params += self.n_routed_experts * h + 2 * mhc_params
-            if layer_idx in self.kv_source_layer_ids:
-                params += h * hd * (2 if ratio > 1 else 1)
-            if layer_idx in self.index_source_layer_ids:
-                params += self.q_lora_rank * self.index_n_heads * self.index_head_dim + h * self.index_n_heads
-                if layer_idx in self.kv_source_layer_ids:
-                    params += hd * self.index_head_dim
-        n_hash_cols = (self.engram_max_ngram_size - 1) * self.engram_n_heads
-        params += len(self.active_engram_layer_ids) * n_hash_cols * self.engram_head_dim * h * (self.hc_mult + 1)
-        return params
-
 
 @strict
 class DeepseekV41Config(PretrainedConfig):

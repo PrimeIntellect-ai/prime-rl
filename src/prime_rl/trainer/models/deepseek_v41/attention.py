@@ -46,6 +46,7 @@ from prime_rl.trainer.models.kernels.dsv41_indexer_cudnn import (
     cudnn_indexer_available,
     dsv41_index_topk_cudnn,
 )
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.grouped_linear import GroupedLinear
 from prime_rl.trainer.models.layers.norms import RMSNorm, RMSNormConfig
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
@@ -347,6 +348,24 @@ class DeepseekV41Attention(nn.Module):
             DeepseekV41Indexer(config, layer_idx, self.compress_ratio, rotary_emb)
             if layer_idx in config.index_source_layer_ids
             else None
+        )
+
+    def attention_flops(self, seq_len: int) -> int:
+        # Each query attends its window plus, on a compressed layer, at most `index_topk` entries. The
+        # indexer scores all of them forward only, under no_grad, and only on its source layers.
+        attended_tokens = min(seq_len, self.config.sliding_window)
+        indexer_flops = 0
+        if self.compress_ratio:
+            compressed_len = seq_len // self.compress_ratio
+            if self.indexer is not None:
+                indexer_flops = 2 * self.indexer.num_heads * self.indexer.head_dim * seq_len * compressed_len
+            attended_tokens += min(compressed_len, self.config.index_topk)
+        return indexer_flops + quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.head_dim,
+            v_head_dim=self.head_dim,
+            seq_len=seq_len,
+            attended_tokens=attended_tokens,
         )
 
     def forward(
