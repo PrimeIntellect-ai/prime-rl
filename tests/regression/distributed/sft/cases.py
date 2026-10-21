@@ -1,6 +1,6 @@
 """The SFT functionality matrix, rendered as `uv run sft` arguments.
 
-Every case runs on one 8-GPU node from `base.toml`, which is the `ModelConfig` defaults plus an fp32 MoE router.
+Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which is the `ModelConfig` defaults plus an fp32 MoE router.
 Each arch contributes two kinds of case:
 
 - A base case on every layout in its `layouts`. It trains, saves a checkpoint, then resumes in a fresh process.
@@ -31,6 +31,7 @@ import pytest
 from tests.regression.distributed.tiny_models import TOKENIZERS
 
 CONFIG_DIR = Path("tests/regression/configs/distributed/sft")
+NUM_GPUS = 4
 Overrides = dict[str, object]
 
 
@@ -49,24 +50,24 @@ class Layout:
         }
 
 
-FSDP8_EP8 = Layout("fsdp8_ep8", dp_replicate=1, cp=1, ep=8)
-HSDP2X4_EP4 = Layout("hsdp2x4_ep4", dp_replicate=2, cp=1, ep=4)
+FSDP4_EP4 = Layout("fsdp4_ep4", dp_replicate=1, cp=1, ep=4)
+HSDP2X2_EP2 = Layout("hsdp2x2_ep2", dp_replicate=2, cp=1, ep=2)
 CP2_EP4 = Layout("cp2_ep4", dp_replicate=1, cp=2, ep=4)
-CP4_EP8 = Layout("cp4_ep8", dp_replicate=1, cp=4, ep=8)
-MOE_LAYOUTS = (FSDP8_EP8, HSDP2X4_EP4, CP2_EP4, CP4_EP8)
+CP4_EP4 = Layout("cp4_ep4", dp_replicate=1, cp=4, ep=4)
+MOE_LAYOUTS = (FSDP4_EP4, HSDP2X2_EP2, CP2_EP4, CP4_EP4)
 
-FSDP8_EP1 = Layout("fsdp8_ep1", dp_replicate=1, cp=1, ep=1)
-HSDP2X4_EP1 = Layout("hsdp2x4_ep1", dp_replicate=2, cp=1, ep=1)
+FSDP4_EP1 = Layout("fsdp4_ep1", dp_replicate=1, cp=1, ep=1)
+HSDP2X2_EP1 = Layout("hsdp2x2_ep1", dp_replicate=2, cp=1, ep=1)
 CP2_EP1 = Layout("cp2_ep1", dp_replicate=1, cp=2, ep=1)
 CP4_EP1 = Layout("cp4_ep1", dp_replicate=1, cp=4, ep=1)
-DENSE_LAYOUTS = (FSDP8_EP1, HSDP2X4_EP1, CP2_EP1, CP4_EP1)
+DENSE_LAYOUTS = (FSDP4_EP1, HSDP2X2_EP1, CP2_EP1, CP4_EP1)
 
 
 @dataclass(frozen=True, eq=False)
 class Feature:
     name: str
     overrides: Overrides
-    layout: Layout = FSDP8_EP8
+    layout: Layout = FSDP4_EP4
 
 
 AC_OFF = Feature("ac_off", {"model.ac": None})
@@ -181,7 +182,7 @@ def sft_args(case: Case, model_name: str) -> list[str]:
         "--tokenizer.name",
         TOKENIZERS[case.arch.name],
         "--deployment.num-train-gpus",
-        "8",
+        str(NUM_GPUS),
         *to_cli(case.overrides()),
     ]
 
