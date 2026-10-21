@@ -37,6 +37,7 @@ from prime_rl.trainer.pretrain.balance import (
     update_selection_biases,
 )
 from prime_rl.trainer.pretrain.bytes import token_byte_lengths
+from prime_rl.trainer.pretrain.optim import param_groups
 from prime_rl.trainer.pretrain.data import (
     TrainData,
     starts_with_bos,
@@ -143,6 +144,7 @@ def train(config: PretrainConfig):
         parallel_dims,
         offload=config.model.offload,
         model=model,
+        param_groups=param_groups(model, config.optim, parallel_dims),
     )
 
     # With ckpt.skip_scheduler, the schedule is rebuilt over the remaining steps.

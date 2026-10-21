@@ -58,7 +58,7 @@ Weights start from a random init, unless the run resumes from a checkpoint. The 
 
 ## Optimizer
 
-Pretraining uses the optimizer setup of SFT and RL. With `optim.type = "muon"` (the default), every weight matrix except the embedding and the LM head is trained by Muon (`rms_norm` learning-rate adjustment; expert matrices per expert), and the embedding, the LM head, norms and biases by AdamW with `optim.eps`. `optim.type = "adamw"` trains everything with AdamW. `model.offload = "optimizer"` keeps the optimizer states in CPU RAM between steps; `"full"` is not supported.
+Pretraining uses the optimizer setup of SFT and RL. With `optim.type = "muon"` (the default), every weight matrix except the embedding and the LM head is trained by Muon (`rms_norm` learning-rate adjustment; expert matrices per expert), and the embedding, the LM head, norms, biases and the Gated Residual projections (`hyper_connection`) by AdamW with `optim.eps`. `optim.type = "adamw"` trains everything with AdamW. `model.offload = "optimizer"` keeps the optimizer states in CPU RAM between steps; `"full"` is not supported.
 
 ## Learning-Rate Schedule
 
