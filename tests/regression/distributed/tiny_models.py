@@ -568,8 +568,11 @@ def write_tiny_checkpoint(arch: str, out_dir: Path) -> Path:
         _init_moe_weights(model, config.initializer_range)
         _fill_hash_tables(model)
 
-    prime_state_dict = {key: value.clone() for key, value in model.state_dict().items()}
-    hf_state_dict = model.convert_to_hf(dict(model.state_dict()))
+    state_dict = dict(model.state_dict())
+    if config.tie_word_embeddings:
+        state_dict.pop("lm_head.weight")
+    prime_state_dict = {key: value.clone() for key, value in state_dict.items()}
+    hf_state_dict = model.convert_to_hf(state_dict)
     save_state_dict(hf_state_dict, out_dir)
     config.save_pretrained(out_dir)
 
