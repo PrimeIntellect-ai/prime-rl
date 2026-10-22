@@ -1,27 +1,21 @@
-
 max_steps = 200
 seq_len = 2048
 
 [ckpt] # Checkpoint at the end of training
 
-[model]
-name = "Qwen/Qwen3-4B-Instruct-2507"
+[deployment]
+num_train_gpus = 4
+num_infer_gpus = 4
 
 [monitors.wandb]
 project = "alphabet-sort"
 name = "alphabet-sort"
 
-[trainer.model.ac]
-
-[trainer.model.lora]
-rank = 32
-alpha = 64
-
-[trainer.optim]
-lr = 1e-5
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
 
 [orchestrator]
-batch_size = 256
+batch_size = 512
 
 [orchestrator.train]
 group_size = 16
@@ -38,4 +32,10 @@ env.taskset.task.power_per_turn = false
 env.agent.harness.id = "null"
 env.agent.runtime.type = "subprocess"
 
-[inference] # Default inference config
+[trainer] # Default trainer config
+
+[orchestrator.concurrency]
+max_inflight = 128
+
+[inference.vllm]
+data_parallel_size = 4

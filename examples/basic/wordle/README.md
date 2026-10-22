@@ -36,7 +36,7 @@ We got an **average reward of ~0.2** across the 20x3 rollouts. From the summary,
 
 ## SFT
 
-We will fine-tune `PrimeIntellect/Qwen3-1.7B` ([HF](https://huggingface.co/PrimeIntellect/Qwen3-1.7B)), which is a clone of `Qwen/Qwen3-1.7B` ([HF](https://huggingface.co/Qwen/Qwen3-1.7B)) with a chat template suitable for multi-turn RL, on `willcb/V3-wordle` ([HF](https://huggingface.co/datasets/willcb/V3-wordle)). It is a multi-SFT dataset with traces of Wordle games from the environment. A few steps should be enough to get the model to learn the expected response format of the environment.
+We will fine-tune `Qwen/Qwen3.5-2B` ([HF](https://huggingface.co/Qwen/Qwen3.5-2B)) on `willcb/V3-wordle` ([HF](https://huggingface.co/datasets/willcb/V3-wordle)). It is a multi-SFT dataset with traces of Wordle games from the environment. The published Wordle checkpoints below were trained from `PrimeIntellect/Qwen3-1.7B`, a clone of `Qwen/Qwen3-1.7B` with a chat template suitable for multi-turn RL; `Qwen3.5-2B` is the closest base pre-cached on Prime hosted-training clusters. A few steps should be enough to get the model to learn the expected response format of the environment.
 
 *Check out the logs of the SFT run on [W&B](https://wandb.ai/primeintellect/examples?nw=h8yesgpmst).*
 
