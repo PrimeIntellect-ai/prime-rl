@@ -539,6 +539,9 @@ class OrchestratorConfig(BaseConfig):
     pad_to_multiple_of: int = Field(1, ge=1)
     """Pad each packed micro batch to a multiple of this value (the trainer's cp degree). Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs with cp > 1."""
 
+    pad_to_seq_len: bool = False
+    """Pad every packed micro batch to ``seq_len`` instead of to a multiple of ``pad_to_multiple_of``. Rows then have one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding."""
+
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 

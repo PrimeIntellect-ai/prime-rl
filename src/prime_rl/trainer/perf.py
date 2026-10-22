@@ -14,10 +14,14 @@ class FlopCounter:
 
     6 FLOPs per active parameter per token, plus each sequence-mixing layer's FLOPs per document (a
     token attends only within its own document). The model is walked once, at construction.
+
+    `flops_per_token_6dn` is the plain 6 * active params estimate (no attention, no LoRA discount), for
+    MFU comparable with the common 6ND convention.
     """
 
     def __init__(self, model: PreTrainedModelPrimeRL):
         active_params = model.num_active_params()
+        self.flops_per_token_6dn = 6 * active_params
         lora_params = [param for name, param in model.named_parameters() if "lora_A" in name or "lora_B" in name]
         if lora_params:
             # Frozen base matmuls cost forward (2x) and dX (2x); adapters cost 6x.
