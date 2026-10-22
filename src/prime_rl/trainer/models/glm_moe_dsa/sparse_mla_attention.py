@@ -5,7 +5,9 @@ import torch.distributed as dist
 from torch import nn
 
 from prime_rl.configs.trainer import DSABackend
+from prime_rl.trainer.models.kernels import cudnn_flashmla_error
 from prime_rl.trainer.models.kernels.fp8_indexer import fp8_indexer
+from prime_rl.trainer.models.layers.attn import quadratic_attention_flops
 from prime_rl.trainer.models.layers.norms import LayerNorm, RMSNorm, RMSNormConfig
 from prime_rl.trainer.models.layers.rotary_emb import rotate_half
 from prime_rl.utils.cp import CPContext, gather_for_cp
@@ -146,8 +148,28 @@ class GlmMoeDsaAttention(nn.Module):
         self.use_index_cache = args.use_index_cache
         self.skip_topk = args.skip_topk
         self.scaling = self.qk_head_dim ** (-0.5)
+        if args.dsa_backend == "cudnn_flashmla" and (
+            error := cudnn_flashmla_error(self.num_heads, 1, self.kv_lora_rank)
+        ):
+            raise ValueError(
+                f'GLM DSA sparse attention cannot run the cudnn_flashmla backend: {error}. Set `model.dsa_backend = "tilelang"` to use the TileLang kernels instead.'
+            )
 
         self.cp_context = CPContext()
+
+    def attention_flops(self, seq_len: int) -> int:
+        # MLA counted un-absorbed (qk = nope + rope); sparse attention attends `index_topk` tokens, and
+        # the indexer scores every token with its own heads, forward only (it runs under no_grad).
+        flops = quadratic_attention_flops(
+            num_heads=self.num_heads,
+            qk_head_dim=self.qk_head_dim,
+            v_head_dim=self.v_head_dim,
+            seq_len=seq_len,
+            attended_tokens=min(seq_len, self.args.index_topk),
+        )
+        if self.indexer is not None:
+            flops += 2 * self.args.index_n_heads * self.args.index_head_dim * seq_len * seq_len
+        return flops
 
     def mla_latents(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q_latent = self.q_a_layernorm(self.q_a_proj(hidden_states))

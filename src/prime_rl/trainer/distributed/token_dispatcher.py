@@ -14,7 +14,7 @@ from prime_rl.trainer.distributed.collectives import (
 
 
 class ExpertFunction(Protocol):
-    def __call__(self, x: torch.Tensor, num_tokens_per_expert: torch.Tensor) -> torch.Tensor: ...
+    def __call__(self, x: torch.Tensor, *routing: torch.Tensor) -> torch.Tensor: ...
 
 
 class TokenDispatcher(Protocol):
@@ -29,6 +29,28 @@ class TokenDispatcher(Protocol):
     ) -> torch.Tensor: ...
 
     def synchronize(self) -> None: ...
+
+
+class FusedTokenDispatcher:
+    """Passes undispatched tokens and their routing to an expert compute that dispatches and combines them itself."""
+
+    def run(
+        self,
+        x: torch.Tensor,
+        top_scores: torch.Tensor,
+        selected_experts_indices: torch.Tensor,
+        experts: ExpertFunction,
+        *,
+        score_before_experts: bool,
+    ) -> torch.Tensor:
+        if score_before_experts:
+            raise ValueError(
+                "Fused dispatch applies router weights at combine time and requires score_before_experts=False."
+            )
+        return experts(x, top_scores, selected_experts_indices)
+
+    def synchronize(self) -> None:
+        return None
 
 
 DispatchState = TypeVar("DispatchState")
@@ -183,11 +205,12 @@ def _combine_routed_output(
     route_indices_experts_sorted: torch.Tensor,
     scores_after_experts: torch.Tensor | None,
 ) -> torch.Tensor:
+    output_dtype = routed_output.dtype
     if scores_after_experts is not None:
-        routed_output = (routed_output.float() * scores_after_experts.reshape(-1, 1)).to(routed_output.dtype)
+        routed_output = routed_output * scores_after_experts.float().reshape(-1, 1)
 
     if num_tokens == 0:
-        return routed_output
+        return routed_output.to(output_dtype)
 
     dim = routed_output.shape[-1]
     # There is one output row per selected expert per token.
@@ -198,7 +221,7 @@ def _combine_routed_output(
     # Copy source row i to its original slot, route_indices_experts_sorted[i].
     output[route_indices_experts_sorted] = routed_output
     accumulation_dtype = torch.float32 if output.dtype in (torch.bfloat16, torch.float16) else output.dtype
-    return output.view(num_tokens, top_k, dim).sum(dim=1, dtype=accumulation_dtype).to(output.dtype)
+    return output.view(num_tokens, top_k, dim).sum(dim=1, dtype=accumulation_dtype).to(output_dtype)
 
 
 class LocalTokenDispatcher(TokenDispatcherBase[LocalDispatchState]):

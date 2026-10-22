@@ -20,7 +20,7 @@ from prime_rl.configs.shared import (
     SlurmConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import BaseTrainerConfig
+from prime_rl.configs.trainer import BaseTrainerConfig, mega_moe_max_tokens_per_rank
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
@@ -36,6 +36,11 @@ class BaseDataConfig(BaseConfig):
 
     num_workers: int = Field(1, ge=1)
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
+
+    pad_to_seq_len: bool = False
+    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
+    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
+    at the cost of extra padding."""
 
     @model_validator(mode="after")
     def validate_batch_size(self):
@@ -204,8 +209,6 @@ SFTDeploymentConfig: TypeAlias = Annotated[
 
 
 class SFTConfig(BaseTrainerConfig):
-    # bf16 routing skips the fp32 gate GEMM and its fp32 FSDP unit.
-    auto_moe_router_dtype = "bfloat16"
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
@@ -477,6 +480,16 @@ class SFTConfig(BaseTrainerConfig):
                 raise ValueError("Sequence length must be divisible by CP degree")
             if self.val is not None and self.val.data.seq_len % self.model.cp != 0:
                 raise ValueError("Validation sequence length must be divisible by CP degree")
+        return self
+
+    @model_validator(mode="after")
+    def resolve_mega_moe_max_tokens_per_rank(self):
+        dispatch = self.model.moe.dispatch
+        if dispatch.type == "mega_moe":
+            data_configs = [self.data] + ([self.val.data] if self.val is not None else [])
+            dispatch.max_tokens_per_rank = mega_moe_max_tokens_per_rank(
+                dispatch.max_tokens_per_rank, max(data.micro_batch_size * data.seq_len for data in data_configs)
+            )
         return self
 
     @model_validator(mode="after")

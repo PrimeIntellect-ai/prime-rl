@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -25,8 +24,8 @@ from prime_rl.utils.pathing import (
     get_trainer_step_path,
     launcher_attempt_env,
     prepare_attempt_dirs,
+    prepare_run,
     resolve_latest_ckpt_step,
-    validate_run_dir,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -490,23 +489,9 @@ def rl_slurm(config: RLConfig):
 
 
 def rl(config: RLConfig):
-    # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
-    # the vehicle for runtime info between processes, and every spawned process inherits
-    # them. Components launched standalone have no run identity. TODO: fetch the id from
-    # the Prime SDK once runs are registered there.
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None  # resolved at construction
-    os.environ["PRL_RUN_NAME"] = config.run.name
-
-    resuming = config.resume is not None
-    clean = config.clean and not os.environ.get("NEVER_CLEAN")
+    # TODO: fetch the run id from the Prime SDK once runs are registered there.
     ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_run_dir(
-        config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
-    )
-    config.run_dir.mkdir(parents=True, exist_ok=True)
-    if ckpt_output_dir is not None:
-        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_run(config, ckpt_output_dir)
 
     # Clean stale rollouts and broadcasts. When resuming, anything past the resume
     # step is stale. When training from scratch, every existing step directory is
@@ -515,7 +500,7 @@ def rl(config: RLConfig):
     get_logger().info("Starting RL run")
     resume_step: int | None = None
     own_ckpt_dir: Path | None = None
-    if resuming:
+    if config.resume is not None:
         if config.resume.dir is not None:
             resume_step = config.resume.dir_step
         else:

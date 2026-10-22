@@ -1,0 +1,401 @@
+name: Regression
+
+# Scheduled regression suites, one job group per suite. Dispatch with `suite`
+# to run one of them.
+#   rl:       every configs/rl/*.toml as a hosted RL run
+#   parallel: test_parallel_invariance.py on the 2xH200 runners
+#   eval:     every configs/eval/*.toml through `uv run eval` against Prime
+#             Inference, compared against baselines/eval/. reports/eval/ holds
+#             the error bars of each baseline. Also runs on PRs that touch the
+#             suite.
+# All paths are relative to tests/regression/.
+
+on:
+    workflow_dispatch:
+        inputs:
+            suite:
+                description: "Suite to run"
+                type: choice
+                options: [all, rl, parallel, eval]
+                default: all
+            rl_config_file:
+                description: "rl: config to dispatch (e.g. tests/regression/configs/rl/wordle.toml). Leave empty to run all."
+                required: false
+                default: ""
+            rl_image_tag:
+                description: "rl: prime-rl image tag to pin (e.g. v0.7.1.dev58). Leave empty to auto-resolve the newest v*.dev* with a published manifest."
+                required: false
+                default: ""
+            eval_repeats:
+                description: "eval: independent runs. Use 5 to produce a new baseline."
+                required: false
+                default: "1"
+            eval_model:
+                description: "eval: model id on Prime Inference (empty: the config's model)"
+                required: false
+                default: ""
+            eval_set_baseline:
+                description: "eval: open a PR that makes these runs the new baseline (needs 2+ runs)"
+                type: boolean
+                default: false
+    pull_request:
+        paths:
+            - .github/workflows/regression.yml
+            - tests/regression/**
+
+    # 3AM PST (11AM UTC)
+    schedule:
+        - cron: "0 11 * * *"
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+    cancel-in-progress: true
+
+env:
+    EVAL_REPEATS: ${{ inputs.eval_repeats || '1' }}
+    EVAL_NAME: gsm8k
+
+jobs:
+    rl-plan:
+        name: RL / Plan
+        if: ${{ github.event_name != 'pull_request' && (!inputs.suite || inputs.suite == 'all' || inputs.suite == 'rl') }}
+        runs-on: ubuntu-latest
+
+        outputs:
+            matrix: ${{ steps.build-matrix.outputs.matrix }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+
+            - name: Build matrix from nightly RL configs
+              id: build-matrix
+              run: |
+                  # Find all nightly RL configs
+                  files=$(ls tests/regression/configs/rl/*.toml)
+
+                  # Filter to specific config if provided in workflow_dispatch
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.rl_config_file }}" ]; then
+                      filtered=$(echo "$files" | grep -F "${{ inputs.rl_config_file }}" || true)
+                      if [ -z "$filtered" ]; then
+                          echo "Error: Config file '${{ inputs.rl_config_file }}' not found"
+                          exit 1
+                      fi
+                      files="$filtered"
+                  fi
+
+                  echo "Discovered nightly RL configs:"
+                  echo "$files"
+
+                  # Build JSON of the form: [{"config_file": "tests/regression/configs/rl/foo-bar.toml", "name": "Foo Bar"}, ...]
+                  json=$(printf '%s\n' "$files" | jq -R . | jq -sc 'map({
+                      config_file: .,
+                      name: (split("/")[-1] | rtrimstr(".toml") | split("-") | map((.[:1] | ascii_upcase) + .[1:]) | join(" "))
+                  })')
+
+                  echo "matrix=$json" >> "$GITHUB_OUTPUT"
+
+    rl:
+        name: RL / ${{ matrix.name }}
+        needs: rl-plan
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: read
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix:
+                include: ${{ fromJSON(needs.rl-plan.outputs.matrix) }}
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+
+            - name: Resolve prime-rl image tag
+              id: image
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  # Pass the dispatch input through env so a malicious value
+                  # cannot break out of shell context via $(...) or embedded
+                  # quotes — the GitHub expression is substituted before Bash
+                  # parses the script.
+                  REQUESTED_IMAGE_TAG: ${{ inputs.rl_image_tag }}
+              run: |
+                  # If workflow_dispatch passed an explicit image_tag, validate
+                  # it as a Docker/OCI tag, verify its manifest is pullable,
+                  # and use it as-is (skip resolution).
+                  requested="$REQUESTED_IMAGE_TAG"
+                  if [ -n "$requested" ]; then
+                      # OCI/Docker tag charset: [A-Za-z0-9._-], max 128, no
+                      # leading '.' or '-'. Reject anything else before it
+                      # reaches curl or GITHUB_OUTPUT.
+                      if ! printf '%s' "$requested" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'; then
+                          echo "Invalid image_tag: only [A-Za-z0-9._-] allowed, max 128 chars, no leading '.' or '-'." >&2
+                          exit 1
+                      fi
+                      registry_token=$(curl -fsSL \
+                          "https://ghcr.io/token?scope=repository:primeintellect-ai/prime-rl:pull" \
+                          | jq -r .token)
+                      code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                          -H "Authorization: Bearer $registry_token" \
+                          -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                          "https://ghcr.io/v2/primeintellect-ai/prime-rl/manifests/$requested")
+                      if [ "$code" != "200" ]; then
+                          echo "Requested image_tag '$requested' has no published manifest (HTTP $code)." >&2
+                          exit 1
+                      fi
+                      echo "Using pinned prime-rl image tag: $requested"
+                      echo "tag=$requested" >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  # No dispatch input: auto-resolve the newest v*.dev* tag on
+                  # GHCR (the point of a nightly is to catch regressions on
+                  # tip-of-main). The GHCR versions API can list a tag before
+                  # its manifest is actually pullable (build in-flight, or
+                  # manifest step didn't finish), so pull the top N candidates
+                  # and verify each with a manifest HEAD via the anonymous
+                  # registry token flow; take the newest one that resolves.
+                  # Disable pipefail locally: `grep` may exit 1 on no matches
+                  # (empty tag list) and `head` may SIGPIPE `sort` after
+                  # reading its 10 lines. Both would abort the step before the
+                  # explicit no-candidates guard below runs.
+                  set +o pipefail
+                  candidates=$(gh api --paginate \
+                      "/orgs/primeintellect-ai/packages/container/prime-rl/versions" \
+                      --jq '.[].metadata.container.tags[]' \
+                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' \
+                      | sort -Vru | head -n 10)
+                  set -o pipefail
+                  if [ -z "$candidates" ]; then
+                      echo "No v*.dev* tag listed on GHCR." >&2
+                      exit 1
+                  fi
+                  registry_token=$(curl -fsSL \
+                      "https://ghcr.io/token?scope=repository:primeintellect-ai/prime-rl:pull" \
+                      | jq -r .token)
+                  tag=""
+                  for cand in $candidates; do
+                      code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                          -H "Authorization: Bearer $registry_token" \
+                          -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+                          "https://ghcr.io/v2/primeintellect-ai/prime-rl/manifests/$cand")
+                      if [ "$code" = "200" ]; then
+                          tag="$cand"
+                          break
+                      fi
+                      echo "Skip $cand — manifest HEAD returned $code"
+                  done
+                  if [ -z "$tag" ]; then
+                      echo "None of the top v*.dev* tags have a published manifest." >&2
+                      exit 1
+                  fi
+                  echo "Latest published prime-rl image tag on GHCR: $tag"
+                  echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v10.0.1
+
+            - name: Install prime CLI (latest)
+              run: uv tool install prime
+
+            - name: Dispatch run
+              env:
+                  PRIME_API_KEY: ${{ secrets.PRIME_FFT_API_KEY }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_FFT_TEAM_ID }}
+                  PRIME_BASE_URL: ${{ secrets.PRIME_BASE_URL }}
+                  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+              run: |
+                  echo "Dispatching config: ${{ matrix.config_file }}"
+                  echo "Image tag:          ${{ steps.image.outputs.tag }}"
+                  # Tag the RFTRun so it's identifiable on the platform as
+                  # coming from this workflow. Injected here rather than in
+                  # the checked-in toml because a top-level `name` field
+                  # breaks tests/unit/test_configs.py::test_load_configs
+                  # (RLConfig has no top-level name).
+                  config_base=$(basename "${{ matrix.config_file }}" .toml)
+                  run_name="nightly-${config_base}-$(date -u +%Y-%m-%d)-${{ github.run_id }}"
+                  dispatch_cfg=$(mktemp --suffix=.toml)
+                  printf 'name = "%s"\n\n' "$run_name" > "$dispatch_cfg"
+                  cat "${{ matrix.config_file }}" >> "$dispatch_cfg"
+                  echo "Dispatched run name: $run_name"
+                  # Forward WANDB_API_KEY / HF_TOKEN into the hosted payload:
+                  # the hosted dispatch path (`prime train`) only picks up
+                  # secrets that were explicitly collected via `-e` / `--env-file`,
+                  # not ambient env, so the workflow env: block alone is not
+                  # enough to reach the hosted trainer/orchestrator pods.
+                  prime train "$dispatch_cfg" \
+                      --image-tag "${{ steps.image.outputs.tag }}" \
+                      -e WANDB_API_KEY \
+                      -e HF_TOKEN \
+                      --yes --output json
+
+    parallel:
+        name: Parallel / Invariance
+        if: ${{ github.event_name != 'pull_request' && (!inputs.suite || inputs.suite == 'all' || inputs.suite == 'parallel') }}
+        runs-on: prime-rl-2xh200
+        container:
+            image: pytorch/pytorch:2.10.0-cuda13.0-cudnn9-devel
+            options: --gpus all
+        timeout-minutes: 60
+        steps:
+            - name: Install Git
+              run: |
+                  apt-get update
+                  apt-get install -y git
+                  git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+            - parallel:
+                  - name: Init public submodules
+                    run: |
+                        git config --global url."https://github.com/".insteadOf "git@github.com:"
+                        git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+                  - name: Install uv
+                    uses: astral-sh/setup-uv@v10.0.1
+                    with:
+                        enable-cache: true
+                        cache-dependency-glob: "uv.lock"
+            - name: Install dependencies
+              run: uv sync --all-extras --all-packages --locked
+            - name: Run invariance test
+              env:
+                  USERNAME_CI: CI_RUNNER
+                  WANDB_MODE: offline
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+                  PYTEST_OUTPUT_DIR: /tmp/outputs
+              run: uv run pytest -vvs tests/regression/test_parallel_invariance.py
+            - name: Upload run logs on failure
+              if: failure()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: parallel-invariance-logs
+                  path: /tmp/outputs/**/*.log
+                  retention-days: 7
+                  if-no-files-found: ignore
+
+    eval-plan:
+        name: Eval / Plan
+        if: ${{ !inputs.suite || inputs.suite == 'all' || inputs.suite == 'eval' }}
+        runs-on: ubuntu-latest
+        outputs:
+            repeats: ${{ steps.plan.outputs.repeats }}
+        steps:
+            - id: plan
+              run: echo "repeats=$(jq -nc "[range(1; $EVAL_REPEATS + 1)]")" >> "$GITHUB_OUTPUT"
+
+    eval:
+        name: ${{ strategy.job-total > 1 && format('Eval / Run ({0})', matrix.repeat) || 'Eval / Run' }}
+        needs: eval-plan
+        runs-on: ubuntu-latest
+        timeout-minutes: 60
+        strategy:
+            fail-fast: false
+            matrix:
+                repeat: ${{ fromJSON(needs.eval-plan.outputs.repeats) }}
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+            - parallel:
+                  - name: Init public submodules
+                    run: |
+                        git config --global url."https://github.com/".insteadOf "git@github.com:"
+                        git submodule update --init --recursive -- deps/verifiers deps/renderers deps/prime-envs deps/pydantic-config
+                  - name: Install uv
+                    uses: astral-sh/setup-uv@v10.0.1
+                    with:
+                        enable-cache: true
+                        cache-dependency-glob: "uv.lock"
+            - name: Install dependencies
+              run: uv sync --all-packages --locked
+            - name: Run eval
+              env:
+                  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+                  PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+                  PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+                  MODEL: ${{ inputs.eval_model }}
+              run: |
+                  start=$(date +%s)
+                  uv run eval @ "tests/regression/configs/eval/$EVAL_NAME.toml" ${MODEL:+-m "$MODEL"} \
+                      --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
+                  python3 tests/regression/scripts/eval.py collect "outputs/repeat-${{ matrix.repeat }}" \
+                      --repeat ${{ matrix.repeat }} --wall-s "$(( $(date +%s) - start ))" --out result.json
+            - name: Upload result
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: eval-result-${{ matrix.repeat }}
+                  path: |
+                      result.json
+                      outputs/repeat-${{ matrix.repeat }}/logs
+                      outputs/repeat-${{ matrix.repeat }}/monitors/file/metrics.jsonl
+                      outputs/repeat-${{ matrix.repeat }}/monitors/file/traces/stream.index.jsonl
+                  if-no-files-found: ignore
+                  retention-days: 30
+
+    eval-summary:
+        name: Eval / Summary
+        needs: eval
+        if: ${{ !cancelled() && needs.eval.result != 'skipped' }}
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+            pull-requests: write
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
+            - name: Download results
+              uses: actions/download-artifact@v8
+              with:
+                  path: artifacts
+                  pattern: eval-result-*
+            - name: Compare against baseline
+              run: |
+                  # A single downloaded artifact lands in artifacts/ itself, several land in subdirectories.
+                  status=0
+                  python3 tests/regression/scripts/eval.py summarize $(find artifacts -name result.json) \
+                      --expected "$EVAL_REPEATS" --baseline "tests/regression/baselines/eval/$EVAL_NAME.json" \
+                      > summary.md || status=$?
+                  tee -a "$GITHUB_STEP_SUMMARY" < summary.md
+                  exit $status
+            - name: Open baseline PR
+              if: ${{ !cancelled() && inputs.eval_set_baseline && needs.eval.result == 'success' }}
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  branch="regression/eval-baseline-${{ github.run_id }}"
+                  python3 tests/regression/scripts/eval.py baseline $(find artifacts -name result.json) \
+                      --out "tests/regression/baselines/eval/$EVAL_NAME.json" \
+                      --report "tests/regression/reports/eval/$EVAL_NAME.md"
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+                  git checkout -b "$branch"
+                  git add tests/regression/baselines/eval tests/regression/reports/eval
+                  git commit -m "Refresh $EVAL_NAME eval regression baseline"
+                  git push origin "$branch"
+                  {
+                      echo "## Summary"
+                      echo
+                      echo "- Refresh the \`$EVAL_NAME\` eval regression baseline from [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+                      echo
+                      cat summary.md
+                  } > body.md
+                  gh pr create --base main --head "$branch" --body-file body.md \
+                      --title "chore: refresh $EVAL_NAME eval regression baseline"
