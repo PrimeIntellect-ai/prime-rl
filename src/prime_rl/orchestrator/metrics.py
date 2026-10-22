@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.orchestrator.algo.routing import is_trainable, scalar_advantage
@@ -114,6 +116,7 @@ class MetricWindow:
     distributions: dict[str, list[float]] = field(default_factory=dict)
     counts: dict[str, float] = field(default_factory=dict)
     rates: dict[str, tuple[dict[str, float], int]] = field(default_factory=dict)
+    histograms: dict[str, Counter[int]] = field(default_factory=dict)
 
     def distribution(self, key: str, stat: Stat) -> None:
         self.distributions.setdefault(key, []).extend(stat.values)
@@ -130,6 +133,8 @@ class MetricWindow:
     def extend(self, other: MetricWindow) -> None:
         for key, values in other.distributions.items():
             self.distributions.setdefault(key, []).extend(values)
+        for key, histogram in other.histograms.items():
+            self.histograms.setdefault(key, Counter()).update(histogram)
         for key, value in other.counts.items():
             self.count(key, value)
         for prefix, (counts, total) in other.rates.items():
@@ -137,6 +142,25 @@ class MetricWindow:
 
     def to_dict(self) -> dict[str, float]:
         out = dict(self.counts)
+        for key, histogram in self.histograms.items():
+            total = histogram.total()
+            if not total:
+                continue
+            values = sorted(histogram)
+            cumulative = np.cumsum([histogram[value] for value in values])
+
+            def percentile(q: float) -> float:
+                rank = q * (total - 1)
+                low, high = int(rank), min(int(rank) + 1, total - 1)
+                left = values[np.searchsorted(cumulative, low, side="right")]
+                right = values[np.searchsorted(cumulative, high, side="right")]
+                return float(left + (right - left) * (rank - low))
+
+            out |= {
+                f"{key}/mean": sum(value * count for value, count in histogram.items()) / total,
+                f"{key}/median": percentile(0.5),
+                f"{key}/p90": percentile(0.9),
+            }
         for key, values in self.distributions.items():
             out |= Stat(values).to_dict(key)
         for prefix, (counts, total) in self.rates.items():
@@ -305,6 +329,26 @@ class TraceMetrics(StatGroup):
                 out.count(f"{prefix}/error/{key}", float(value))
             num_groups = len({episode_group_id(record.episode) for record in self.records})
             out.rate(prefix, {key: value * num_groups for key, value in self.solve_rates().items()}, num_groups)
+        for trace in self.traces:
+            calls = {call.node: call for call in trace.calls if call.node is not None}
+            for index, node in enumerate(trace.nodes):
+                if node.sampling_mask is None:
+                    continue
+                counts = node.sampling_mask.counts
+                counts = counts[counts > 0]
+                if not len(counts):
+                    continue
+                sizes, frequencies = np.unique(counts, return_counts=True)
+                key = f"{prefix}/sampling_support"
+                out.histograms.setdefault(f"{key}/size", Counter()).update(
+                    {int(size): int(count) for size, count in zip(sizes, frequencies)}
+                )
+                out.count(f"{key}/num_tokens", len(counts))
+                out.rate(f"{key}/singleton_fraction", {"": int(np.count_nonzero(counts == 1))}, len(counts))
+                call = calls.get(index)
+                top_k = getattr(call.sampling, "top_k", None) if call is not None and call.sampling else None
+                if top_k is not None and top_k > 0:
+                    out.rate(f"{key}/top_k_fraction", {"": int(np.count_nonzero(counts == top_k))}, len(counts))
         # Truncation uses all traces; named stop conditions use only recorded conditions.
         out.rate(
             f"{prefix}/stop_condition/generation_truncated",
