@@ -33,6 +33,7 @@ class TensorMicroBatch(TypedDict):
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    policy_versions: Int[Tensor, "batch seq"] | None  # Per-token sampling policy version, -1 if unknown
     env_names: list[str]
     sequence_lengths: list[int]
 
@@ -40,7 +41,6 @@ class TensorMicroBatch(TypedDict):
     # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
     trace_ids: list[str] | None
     branch_indices: list[int] | None
-    policy_versions: list[int] | None
 
     # Batch level
     seq_lens: Int[Tensor, "segments"]
@@ -283,7 +283,9 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
-            policy_versions=micro_batch.policy_versions,
+            policy_versions=torch.tensor(micro_batch.policy_versions, dtype=torch.long).unsqueeze(0)
+            if micro_batch.policy_versions is not None
+            else None,
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)

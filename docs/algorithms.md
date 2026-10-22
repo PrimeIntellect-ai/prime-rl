@@ -315,9 +315,9 @@ top_k = 64
 | `score_centering_topk` | 128 | Captured head size; at least every policy env's `top_k`. |
 
 The default $\beta_0$ matches Tinker's StableReinforce. The SFC+KL blog uses `kl_coeff = 0.3` with
-`kl_staleness = "inv_sqrt"`. A sample's age is the trainer step's policy version minus the version at which its group
-was dispatched (`PolicySpan.start`), the same age as `off_policy/*`. It is per sample, so tokens sampled after a
-mid-rollout weight update count as older than they are.
+`kl_staleness = "inv_sqrt"`. A token's age is the trainer step's policy version minus the policy step whose weights
+sampled it, from the engines' `weight_versions` labels (the same age as `off_policy/token/*`). A rollout that spans
+a weight update therefore has older and younger tokens. Tokens without a label take their group's dispatch version.
 
 Metrics: `sfc_kl/kl` (KL over $S$), `sfc_kl/beta`, `sfc_kl/tail_mass` (sampler mass outside the captured head),
 `sfc_kl/age0` (fraction of tokens at age 0), and the trainer's `mismatch_kl/*`.

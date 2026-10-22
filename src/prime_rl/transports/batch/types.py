@@ -87,8 +87,9 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     trace_id: str | None = None
     branch_index: int | None = None
     top_logprobs: TopLogprobs | None = None
-    # Dispatch policy version of the rollout (``PolicySpan.start``); ``None`` for frozen-policy samples.
-    policy_version: int | None = None
+    # Per-token policy step whose weights sampled the token; ``-1`` on context tokens. ``None`` for
+    # frozen-policy samples.
+    policy_versions: list[int] | None = None
 
 
 # Orchestrator -> Trainer
@@ -127,5 +128,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     trace_ids: list[str] | None = None
     branch_indices: list[int] | None = None
     top_logprobs: TopLogprobs | None = None
-    # Per-sequence TrainingSample.policy_version; ``-1`` marks an unknown version.
+    # Per-token TrainingSample.policy_versions; ``-1`` marks an unknown version.
     policy_versions: list[int] | None = None

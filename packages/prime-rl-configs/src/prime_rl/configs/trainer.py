@@ -552,7 +552,7 @@ class SFCKLLossConfig(BaseConfig):
     ``kl_staleness = "inv_sqrt"``."""
 
     kl_staleness: Literal["none", "inv_sqrt"] = "none"
-    """KL coefficient schedule over sample age (trainer step minus the sample's dispatch policy version):
+    """KL coefficient schedule over token age (trainer step minus the policy step that sampled the token):
     ``none`` uses beta_0 for every token, ``inv_sqrt`` uses 0 at age 0 and beta_0 / sqrt(age) otherwise."""
 
     score_centering: Literal[True] = True

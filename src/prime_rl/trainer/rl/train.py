@@ -504,9 +504,8 @@ def train(config: TrainerConfig):
             policy_ages = None
             if config.loss.type == "sfc_kl" and micro_batch["policy_versions"] is not None:
                 # Batch ``progress.step`` trains policy v{progress.step - 1}.
-                versions = torch.tensor(micro_batch["policy_versions"])
-                ages = torch.where(versions >= 0, progress.step - 1 - versions, -1)
-                policy_ages = ages.repeat_interleave(torch.tensor(sequence_lengths)).to("cuda").split(sequence_lengths)
+                versions = micro_batch["policy_versions"].squeeze(0).to("cuda")
+                policy_ages = torch.where(versions >= 0, progress.step - 1 - versions, -1).split(sequence_lengths)
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
