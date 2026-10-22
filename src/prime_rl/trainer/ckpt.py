@@ -1,6 +1,8 @@
 import bisect
+import dataclasses
 import gc
 import json
+import math
 import shutil
 import time
 from dataclasses import asdict, dataclass
@@ -9,6 +11,8 @@ from typing import Any
 
 import torch
 from torch import nn
+from torch.distributed.checkpoint.filesystem import FileSystemWriter
+from torch.distributed.checkpoint.planner import SavePlan, SavePlanner, WriteItem
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
     get_state_dict,
@@ -18,6 +22,7 @@ from torch.distributed.checkpoint.state_dict import (
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
+from torch.futures import Future
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.optim.optimizer import Optimizer
@@ -45,6 +50,69 @@ class Progress:
     step: int = 1
     total_tokens: int = 0
     total_samples: int = 0
+
+
+# Tensor bytes a rank writes per group of checkpoint files; bounds the save's extra host memory per rank.
+DCP_SAVE_CHUNK_BYTES = 2 * 1024**3
+DCP_SAVE_THREADS = 4
+
+
+class ChunkedFileSystemWriter(FileSystemWriter):
+    """A DCP FileSystemWriter that writes each rank's items in chunks of at most ``chunk_bytes`` of tensor data.
+
+    torch's writer copies every tensor to CPU before writing it (GPU tensors to host memory, CPU views of a larger
+    storage are cloned) and keeps all copies of a file alive until the whole file is written. With its default one file
+    per rank, a save holds a second copy of the rank's entire state in host memory. Under full optimizer offload the
+    masters and AdamW moments are views of CPU slabs, so a save doubles the trainer's host RAM. Writing chunk by chunk
+    keeps only about one chunk of copies per rank.
+    """
+
+    def __init__(self, path: str | Path, *, chunk_bytes: int = DCP_SAVE_CHUNK_BYTES, **kwargs):
+        super().__init__(path, **kwargs)
+        self.chunk_bytes = chunk_bytes
+
+    def write_data(self, plan: SavePlan, planner: SavePlanner) -> Future:
+        results = []
+        prefix = plan.storage_data.prefix
+        thread_count = self.thread_count
+        try:
+            for index, items in enumerate(chunk_write_items(plan.items, self.chunk_bytes)):
+                # A distinct file prefix per chunk; the metadata records each item's file, so loading is unchanged.
+                storage_data = dataclasses.replace(plan.storage_data, prefix=f"{prefix}{index}_")
+                chunk_plan = dataclasses.replace(plan, items=items, storage_data=storage_data)
+                # The parent splits a plan into thread_count files; a chunk with fewer items would get empty files.
+                self.thread_count = min(thread_count, len(items))
+                results.extend(super().write_data(chunk_plan, planner).wait())
+        finally:
+            self.thread_count = thread_count
+        future: Future[list] = Future()
+        future.set_result(results)
+        return future
+
+
+def write_item_bytes(item: WriteItem) -> int:
+    """Bytes this rank writes for ``item``: its local chunk, not the whole (global) tensor."""
+    if item.tensor_data is None:
+        return 0
+    return math.prod(item.tensor_data.chunk.sizes) * item.tensor_data.properties.dtype.itemsize
+
+
+def chunk_write_items(items: list[WriteItem], chunk_bytes: int) -> list[list[WriteItem]]:
+    """Split a rank's write items, in order, into chunks of at most ``chunk_bytes`` (an item larger than that gets
+    a chunk of its own)."""
+    chunks: list[list[WriteItem]] = []
+    chunk: list[WriteItem] = []
+    size = 0
+    for item in items:
+        item_bytes = write_item_bytes(item)
+        if chunk and size + item_bytes > chunk_bytes:
+            chunks.append(chunk)
+            chunk, size = [], 0
+        chunk.append(item)
+        size += item_bytes
+    if chunk:
+        chunks.append(chunk)
+    return chunks
 
 
 def _try_rmtree(path: Path, logger) -> None:
@@ -227,7 +295,11 @@ class CheckpointManager:
 
         # Before the sharded state, so the mapping is in place once .metadata appears
         self._save_mapping(path, model)
-        dcp_save(state_dict, checkpoint_id=path, process_group=get_dcp_group())
+        dcp_save(
+            state_dict,
+            storage_writer=ChunkedFileSystemWriter(path, thread_count=DCP_SAVE_THREADS),
+            process_group=get_dcp_group(),
+        )
 
         self.logger.debug(f"Saved training checkpoint in {format_time(time.perf_counter() - start_time)}")
 
