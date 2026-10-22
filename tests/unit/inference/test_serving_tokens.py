@@ -14,6 +14,7 @@ deltas here:
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -47,6 +48,7 @@ from prime_rl.inference.vllm.serving_tokens import (
     encode_array,
     pack_sampled_logprobs,
 )
+from prime_rl.transports.payload import PayloadSegment, read_field, read_ragged
 
 
 def _decode_routed_experts(encoded: dict) -> np.ndarray:
@@ -87,7 +89,10 @@ def test_serialize_routed_experts_keeps_the_capture_dtype():
 def test_generate_response_post_process_preserves_prompt_metadata():
     compact_routed_experts = {"data": "AQID", "shape": [1, 1, 3], "start": 0}
     capture = _PackedOutputs(
-        _empty_request_outputs(), GenerateRequest(model="test", token_ids=[1], sampling_params=SamplingParams())
+        _empty_request_outputs(),
+        GenerateRequest(model="test", token_ids=[1], sampling_params=SamplingParams()),
+        None,
+        32,
     )
     capture.fields[0] = {"routed_experts": compact_routed_experts}
     usage = UsageInfo(prompt_tokens=4, completion_tokens=3, total_tokens=7)
@@ -106,7 +111,7 @@ def test_generate_response_post_process_preserves_prompt_metadata():
         mm_placeholders={"image": [PlaceholderRangeInfo(offset=1, length=2)]},
     )
 
-    processed = capture.post_process(response)
+    processed = asyncio.run(capture.post_process(response))
 
     assert processed.choices[0].routed_experts == compact_routed_experts
     assert processed.model == "test-model"
@@ -149,6 +154,7 @@ async def test_compact_formatter_matches_native_evidence_and_metadata(flat, repl
     )
     serving.enable_prompt_tokens_details = True
     serving.enable_log_outputs = False
+    serving._payload_layout = (None, 32)
     sampled_ids = [2, 3] if replay else [2, 7]
     probabilities = {1: 0.6, 2: 0.2, 3: 0.2, 4: 0.0} if replay else {1: 0.6, 2: 0.25, 3: 0.1, 4: 0.04, 7: 0.01}
     with np.errstate(divide="ignore"):
@@ -239,3 +245,41 @@ def test_pack_sampled_logprobs_takes_first_entry_and_clamps():
     logprobs.append({3: Logprob(float("-inf"), 9, None)})
 
     np.testing.assert_array_equal(pack_sampled_logprobs(logprobs), np.array([-0.5, -9999.0, -9999.0], np.float32))
+
+
+def test_payload_dir_writes_routing_and_masks_by_handle(tmp_path):
+    routed_experts = np.arange(4 * 2 * 3).reshape(4, 2, 3)
+    mask = PackedSamplingMask(ids=np.int32([7, 8, 9, 10]), counts=np.int32([1, 3, 0]))
+    output = SimpleNamespace(
+        index=0, token_ids=[1, 2, 3], routed_experts=routed_experts, logprobs=None, sampling_mask=mask
+    )
+
+    async def request_outputs():
+        yield SimpleNamespace(prompt_token_ids=[0] * 4, outputs=[output])
+
+    sampling_params = SimpleNamespace(
+        routed_experts_prompt_start=2, logprobs=None, extra_args={"payload_dir": str(tmp_path / "v3")}
+    )
+    # Layer 0 has no learned routing; mask ids are below 2**4.
+    capture = _PackedOutputs(request_outputs(), SimpleNamespace(sampling_params=sampling_params), [1], 4)
+    response = GenerateTokensResponse(choices=[GenerateTokensChoice(index=0, token_ids=[1, 2, 3])])
+
+    async def run():
+        async for _ in capture:
+            pass
+        return await capture.post_process(response)
+
+    processed = asyncio.run(run())
+
+    assert output.routed_experts is None and output.sampling_mask is None
+    choice = processed.choices[0]
+    assert choice.routed_experts is None and choice.sampling_mask is None
+    routing, mask_segment = choice.payload
+    # 4 prompt + 3 completion tokens; the last token is never forwarded, so rows end at position 6.
+    assert (routing["field"], routing["pos"], routing["rows"], routing["shape"]) == ("routed_experts", 2, 4, [1, 3])
+    assert (mask_segment["field"], mask_segment["pos"], mask_segment["rows"]) == ("sampling_mask", 4, 3)
+    segments = [PayloadSegment(**routing), PayloadSegment(**mask_segment)]
+    np.testing.assert_array_equal(read_field(segments, "routed_experts", 2, 6, 0), routed_experts[:, [1]])
+    np.testing.assert_array_equal(
+        read_ragged(segments, "sampling_mask", 4, 7, -1, 4), [[7, -1, -1], [8, 9, 10], [-1, -1, -1]]
+    )

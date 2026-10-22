@@ -17,6 +17,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.payload import PayloadSegment, read_field, read_ragged
 
 
 class TensorMicroBatch(TypedDict):
@@ -49,6 +50,13 @@ class TensorMicroBatch(TypedDict):
     sampling_mask: Int[Tensor, "batch seq mask"] | None
     top_logprobs_ids: Int[Tensor, "batch seq head"] | None
     top_logprobs_values: Float[Tensor, "batch seq head"] | None
+
+    # By-handle segments of routed_experts and sampling_mask. prepare_micro_batch reads them, so
+    # the reads of later micro batches overlap the current one's forward and backward.
+    payload: NotRequired[list[PayloadSegment] | None]
+    # True when routed_experts and sampling_mask were read by handle for this rank's CP
+    # window: already sharded, and the mask already shifted onto label positions.
+    payload_cp_window: bool
 
     # Multimodal inputs. The data loader sets mm_refs (undecoded image references), and prepare_micro_batch
     # replaces them with mm_kwargs (CPU tensors for the vision encoder) and mm_forward_policy.
@@ -138,6 +146,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "payload_cp_window": False,
             "top_logprobs_ids": None,
             "top_logprobs_values": None,
             "mm_refs": None,
@@ -171,6 +180,7 @@ class FakeDataLoader:
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
             "sampling_mask": None,
+            "payload_cp_window": False,
             "top_logprobs_ids": None,
             "top_logprobs_values": None,
             "mm_refs": None,
@@ -181,10 +191,46 @@ class FakeDataLoader:
         }
 
 
+def expand_routed_layers(routed_experts: Tensor, layer_ids: Tensor, num_layers: int) -> Tensor:
+    """Scatter rows sent for ``layer_ids`` only back to all ``num_layers`` layers. The others get
+    the zero rows the inference engine leaves for layers without learned routing."""
+    batch, seq, _, top_k = routed_experts.shape
+    return routed_experts.new_zeros(batch, seq, num_layers, top_k).index_copy_(2, layer_ids, routed_experts)
+
+
+def _read_payload(
+    micro_batch: TensorMicroBatch, segments: list[PayloadSegment], cp_rank: int, cp_size: int, mask_bits: int
+) -> None:
+    """Read the by-handle rows into the micro batch. Text micro batches read only this rank's CP
+    chunk, with the sampling mask taken one position ahead so it lands on the labels; multimodal
+    ones read the full sequence because the model may defer CP sharding."""
+    lo, hi, shift = 0, micro_batch["input_ids"].shape[1], 0
+    cp_window = micro_batch["mm_refs"] is None
+    if cp_window:
+        chunk = hi // cp_size
+        lo, hi, shift = chunk * cp_rank, chunk * (cp_rank + 1), 1
+    routed_experts = read_field(segments, "routed_experts", lo, hi, 0)
+    sampling_mask = read_ragged(segments, "sampling_mask", lo + shift, hi + shift, -1, mask_bits)
+    if routed_experts is not None:
+        micro_batch["routed_experts"] = torch.from_numpy(routed_experts).unsqueeze(0)
+    if sampling_mask is not None:
+        micro_batch["sampling_mask"] = torch.from_numpy(sampling_mask).unsqueeze(0)
+    micro_batch["payload_cp_window"] = cp_window
+
+
 def prepare_micro_batch(
-    micro_batch: TensorMicroBatch, processor: Any | None, mm_adapter: MultimodalAdapter | None
+    micro_batch: TensorMicroBatch,
+    processor: Any | None,
+    mm_adapter: MultimodalAdapter | None,
+    cp_rank: int,
+    cp_size: int,
+    mask_bits: int,
 ) -> TensorMicroBatch:
-    """Prepare a micro batch for the training loop. Currently only multimodal samples need preparation."""
+    """Prepare a micro batch for the training loop: read its by-handle payload (sampling-mask ids
+    packed at ``mask_bits`` bits) and materialize its images."""
+    segments = micro_batch.pop("payload", None)
+    if segments:
+        _read_payload(micro_batch, segments, cp_rank, cp_size, mask_bits)
     micro_batch["mm_kwargs"] = None
     micro_batch["mm_forward_policy"] = None
     mm_refs = micro_batch.get("mm_refs")
@@ -285,6 +331,8 @@ class DataLoader:
             else None,
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
+            payload=micro_batch.payload,
+            payload_cp_window=False,
             top_logprobs_ids=top_ids,
             top_logprobs_values=top_values,
             rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)

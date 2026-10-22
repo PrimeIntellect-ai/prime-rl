@@ -18,7 +18,13 @@ from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
 from prime_rl.trainer.scheduler import setup_scheduler
 from prime_rl.configs.trainer import TrainerConfig
-from prime_rl.trainer.rl.data import DataLoader, FakeDataLoader, prepare_micro_batch, validate_score_centering_data
+from prime_rl.trainer.rl.data import (
+    DataLoader,
+    FakeDataLoader,
+    expand_routed_layers,
+    prepare_micro_batch,
+    validate_score_centering_data,
+)
 from prime_rl.utils.cp import (
     gather_for_cp,
     gather_for_cp_wo_grad,
@@ -66,6 +72,7 @@ from prime_rl.trainer.utils import (
     setup_torch_distributed,
 )
 from prime_rl.trainer.world import get_world
+from prime_rl.transports.payload import id_bits, routed_layers
 from prime_rl.trainer.lora import get_lora_state
 from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl import monitors
@@ -152,7 +159,17 @@ def train(config: TrainerConfig):
         if processor is None:
             raise ValueError("Multimodal training requires a model image processor")
         mm_adapter = get_multimodal_adapter(model.config.model_type)
-    prepare = partial(prepare_micro_batch, processor=processor, mm_adapter=mm_adapter)
+    prepare = partial(
+        prepare_micro_batch,
+        processor=processor,
+        mm_adapter=mm_adapter,
+        cp_rank=parallel_dims.world_mesh["cp"].get_local_rank() if parallel_dims.cp_enabled else 0,
+        cp_size=parallel_dims.cp,
+        mask_bits=id_bits(model.config.get_text_config().vocab_size),
+    )
+    # The inference server sends routing rows only for these layers; the model indexes all layers.
+    num_layers = model.config.get_text_config().num_hidden_layers
+    routed_layer_ids = torch.tensor(routed_layers(model.config), device="cuda")
     micro_batch_workers = WorkerPool(config.data.num_workers)
 
     if config.model.vlm is not None and not getattr(model, "supports_packed_multimodal_training", False):
@@ -380,6 +397,9 @@ def train(config: TrainerConfig):
                 # we could've gotten routed experts from the inference server, but we didn't enable router replay
                 routed_experts = None
 
+            if routed_experts is not None and routed_experts.shape[2] != num_layers:
+                routed_experts = expand_routed_layers(routed_experts, routed_layer_ids, num_layers)
+
             sampling_mask = (
                 micro_batch["sampling_mask"].to("cuda") if micro_batch["sampling_mask"] is not None else None
             )
@@ -403,9 +423,10 @@ def train(config: TrainerConfig):
             seq_lens = micro_batch["seq_lens"].to("cuda")
 
             labels = shift_tensor_left(input_ids)
+            payload_cp_window = micro_batch["payload_cp_window"]
             if topk_ids is not None:
                 topk_ids = shift_tensor_left(topk_ids, pad_value=-1)
-            if sampling_mask is not None:
+            if sampling_mask is not None and not payload_cp_window:
                 # Sampling masks ride at the sampled token's own position (like inference
                 # logprobs); shift to align with the label each position predicts.
                 sampling_mask = shift_tensor_left(sampling_mask, pad_value=-1)
@@ -428,9 +449,9 @@ def train(config: TrainerConfig):
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if topk_ids is not None:
                     topk_ids = shard_for_cp(topk_ids, cp_rank=cp_rank, cp_world_size=cp_size)
-                if routed_experts is not None and not defer_vlm_cp_to_model:
+                if routed_experts is not None and not defer_vlm_cp_to_model and not payload_cp_window:
                     routed_experts = shard_for_cp(routed_experts, cp_rank=cp_rank, cp_world_size=cp_size)
-                if sampling_mask is not None:
+                if sampling_mask is not None and not payload_cp_window:
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)

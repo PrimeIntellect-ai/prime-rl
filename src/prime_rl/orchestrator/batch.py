@@ -3,6 +3,7 @@ import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+import msgspec
 import numpy as np
 import torch
 
@@ -19,6 +20,7 @@ from prime_rl.transports.batch.types import (
     TopLogprobs,
     TrainingSample,
 )
+from prime_rl.transports.payload import PayloadSegment, clip_segments
 from prime_rl.utils.sequence import repeat_to_length
 
 # Backfill value per component weight stream when a packed sample doesn't
@@ -164,6 +166,14 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
 _SAMPLING_MASK_ITEMSIZE = np.dtype(np.int32).itemsize
 
 
+def _pad_payload_routing(payload: list[PayloadSegment], num_tokens: int, padding_size: int) -> None:
+    """Repeat the by-handle routing rows over the padding, as `_pad_routed_experts` repeats inline rows."""
+    routing = [segment for segment in payload if segment.field == "routed_experts"]
+    for start in range(0, padding_size, num_tokens):
+        for segment in clip_segments(routing, 0, min(num_tokens, padding_size - start)):
+            payload.append(msgspec.structs.replace(segment, pos=segment.pos + num_tokens + start))
+
+
 def _empty_sampling_mask(num_tokens: int) -> SamplingMask:
     return SamplingMask(ids=b"", counts=b"\0" * (num_tokens * _SAMPLING_MASK_ITEMSIZE))
 
@@ -278,6 +288,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # No copy needed: SamplingMask holds immutable bytes, and _pad_sampling_mask only
     # ever mutates _materialize_bin's own accumulator.
     sampling_mask = training_example.sampling_mask
+    payload = training_example.payload
     top_logprobs = training_example.top_logprobs
     if top_logprobs is not None:
         _validate_top_logprobs(top_logprobs, len(input_ids))
@@ -304,6 +315,13 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if sampling_mask is not None:
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
+        if payload is not None:
+            clipped = clip_segments(payload, 0, cut)
+            # A mask cut out entirely stays present as a zero-row segment, so the trainer
+            # gets the same all -1 width-1 mask as for an inline mask cut to zero rows.
+            if "sampling_mask" not in {s.field for s in clipped} and any(s.field == "sampling_mask" for s in payload):
+                clipped.append(PayloadSegment("sampling_mask", "", 0, cut, 0, "int32", [1]))
+            payload = clipped
         if top_logprobs is not None:
             top_logprobs = _slice_top_logprobs(top_logprobs, cut)
         if mm_token_type_ids is not None:
@@ -366,7 +384,12 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         seq_lens=[len(input_ids)],
         trace_ids=[training_example.trace_id or ""],
         branch_indices=[training_example.branch_index if training_example.branch_index is not None else -1],
+        payload=payload,
     )
+
+
+def _has_routed_experts(sample: MicroBatch) -> bool:
+    return sample.routed_experts is not None or any(s.field == "routed_experts" for s in sample.payload or ())
 
 
 def _is_multimodal_sample(sample: MicroBatch) -> bool:
@@ -393,7 +416,10 @@ class _MicroBatchBin:
         first_sample = self.first_sample
         if self.length + len(sample.input_ids) > max_seq_len:
             return False
-        if (first_sample.routed_experts is None) != (sample.routed_experts is None):
+        if _has_routed_experts(first_sample) != _has_routed_experts(sample):
+            return False
+        # By-handle rows replace the micro batch's inline tensor of the same field.
+        if (first_sample.payload is None) != (sample.payload is None):
             return False
 
         return True
@@ -453,6 +479,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
+    payload = []
 
     for sample in bin_content.samples:
         sample_len = len(sample.input_ids)
@@ -498,6 +525,8 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+        for segment in sample.payload or ():
+            payload.append(msgspec.structs.replace(segment, pos=segment.pos + len(input_ids) - sample_len))
         if top_logprobs is not None:
             head = sample.top_logprobs
             if head is None:
@@ -534,6 +563,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         seq_lens=seq_lens,
         trace_ids=trace_ids,
         branch_indices=branch_indices,
+        payload=payload or None,
     )
 
 
@@ -629,6 +659,7 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
+    num_tokens = len(micro_batch.input_ids)
     # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text rows pad with their
     # own tokens. Multimodal rows keep a constant id: a repeated image placeholder would have no feature to receive.
     if micro_batch.mm_refs is None:
@@ -657,6 +688,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         micro_batch.mm_token_type_ids.extend([0] * padding_size)
     if micro_batch.routed_experts is not None:
         _pad_routed_experts(micro_batch, padding_size)
+    if micro_batch.payload is not None:
+        _pad_payload_routing(micro_batch.payload, num_tokens, padding_size)
     if micro_batch.sampling_mask is not None:
         _pad_sampling_mask(micro_batch, padding_size)
     if micro_batch.top_logprobs is not None:
@@ -729,6 +762,8 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.ref_kl_weights = None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
     dummy.sampling_mask = None
+    if dummy.payload is not None:
+        dummy.payload = [segment for segment in dummy.payload if segment.field != "sampling_mask"] or None
     dummy.top_logprobs = None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None

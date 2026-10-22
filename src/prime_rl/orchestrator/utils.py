@@ -2,7 +2,10 @@ import asyncio
 import ctypes
 import logging
 import math
+import shutil
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import verifiers.v1 as vf
@@ -42,6 +45,30 @@ def min_fresh_version(step: int, max_off_policy_steps: int) -> int:
     """Oldest dispatch version whose episodes may still train in batch
     ``step`` — anything older would ship past ``max_off_policy_steps``."""
     return (step - 1) - max_off_policy_steps
+
+
+def payload_files(episodes: Iterable[vf.Episode]) -> set[str]:
+    """The by-handle payload files the episodes' traces point into."""
+    return {entry.segment.file for episode in episodes for trace in episode.traces for entry in trace.payload}
+
+
+def delete_files(files: Iterable[str]) -> None:
+    for file in files:
+        Path(file).unlink(missing_ok=True)
+
+
+def delete_files_in_background(files: set[str]) -> None:
+    """Delete files off the event loop: on a shared filesystem, unlinking a step's ~10^4-10^5
+    payload files takes seconds."""
+    if files:
+        asyncio.get_running_loop().run_in_executor(None, delete_files, files)
+
+
+def delete_payloads_before(payload_root: Path, version: int) -> None:
+    """Delete the by-handle payload directories ``v<k>`` with ``k < version``."""
+    for path in payload_root.glob("v*"):
+        if int(path.name[1:]) < version:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) -> tuple[int, int, int]:

@@ -23,7 +23,14 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
-from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
+from prime_rl.orchestrator.utils import (
+    delete_files_in_background,
+    episode_env_name,
+    episode_group_id,
+    min_fresh_version,
+    payload_files,
+    train_work,
+)
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -176,14 +183,17 @@ class TrainSink:
         if min_version <= 0:
             return
         dropped = 0
+        files: set[str] = set()
         for trace_id in trace_ids:
             episode = self.episode_by_trace[trace_id]
             policy = train_work(episode).policy
             if policy is None or policy.start >= min_version:
                 continue
+            files.update(segment.file for sample in self.pending_batch[trace_id] for segment in sample.payload or ())
             del self.pending_batch[trace_id]
             del self.episode_by_trace[trace_id]
             dropped += 1
+        delete_files_in_background(files)
         if dropped:
             self.rollout_window.metrics.count("off_policy/dropped", float(dropped))
             get_logger().warning(
@@ -197,6 +207,17 @@ class TrainSink:
         await self.train_envs.get(env_name).algorithm.finalize_episode(episode)
 
     async def process_group(self, group_id: str) -> None:
+        """Process a finished group, then delete the payload files that none of its queued samples
+        point into (dropped groups, untrainable branches, pruned samples)."""
+        group = self.pending_groups.get(group_id, [])
+        files = payload_files(group)
+        await self._process_group(group_id)
+        if files:
+            queued = (self.pending_batch.get(trace.id, ()) for episode in group for trace in episode.traces)
+            files -= {segment.file for samples in queued for sample in samples for segment in sample.payload or ()}
+            delete_files_in_background(files)
+
+    async def _process_group(self, group_id: str) -> None:
         group = self.pending_groups.pop(group_id, [])
         failures = self.pending_group_failures.pop(group_id, [])
         cancellation = self.pending_group_cancellations.pop(group_id, None)
@@ -249,7 +270,11 @@ class TrainSink:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
-                if env.requires_sampling_masks and sample.sampling_mask is None:
+                if (
+                    env.requires_sampling_masks
+                    and sample.sampling_mask is None
+                    and not any(segment.field == "sampling_mask" for segment in sample.payload or ())
+                ):
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.
                     raise RuntimeError(
@@ -320,6 +345,14 @@ class TrainSink:
         """Release accepted traces that cannot ship after training stops."""
         if self.pending_batch:
             self.rollout_window.metrics.count("rollout/queued/cancelled", float(len(self.pending_batch)))
+        delete_files_in_background(
+            {
+                segment.file
+                for samples in self.pending_batch.values()
+                for sample in samples
+                for segment in sample.payload or ()
+            }
+        )
         self.pending_batch.clear()
         self.episode_by_trace.clear()
 
@@ -352,6 +385,9 @@ class TrainSink:
 
         selected_by_trace = dict(selected)
         selected_ids = set(selected_by_trace)
+        payload_files = {
+            segment.file for _, samples in selected for sample in samples for segment in sample.payload or ()
+        }
         for trace_id in selected_ids:
             del self.pending_batch[trace_id]
 
@@ -383,4 +419,4 @@ class TrainSink:
         ]
         cohort = TrainEpisodes(cohort_episodes, sampled_trace_ids=shipped_ids)
 
-        return TrainBatch(cohort=cohort, samples=samples)
+        return TrainBatch(cohort=cohort, samples=samples, payload_files=payload_files)

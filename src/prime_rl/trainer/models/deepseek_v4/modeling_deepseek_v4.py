@@ -250,8 +250,11 @@ class DeepseekV4Model(DeepseekV4PreTrainedModel):
 
         mhc_states = inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()
         for layer_idx, decoder_layer in enumerate(self.layers):
+            # Hash-routed layers route by token id; the inference server sends no rows for them.
             routed_experts_layer = (
-                routed_experts[:, :, layer_idx, :].contiguous() if routed_experts is not None else None
+                routed_experts[:, :, layer_idx, :].contiguous()
+                if routed_experts is not None and layer_idx >= self.config.num_hash_layers
+                else None
             )
             mhc_states = decoder_layer(
                 mhc_states,
