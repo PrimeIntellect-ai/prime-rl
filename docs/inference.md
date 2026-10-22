@@ -345,3 +345,18 @@ That's all — there are no replay flags. Truncated train sampling makes the inf
 Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run together with router replay, including under disaggregated P/D. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
 
 When launching the inference server standalone, set `inference.enable_return_sampling_mask = true` yourself; clients must sample with `0 < top_k <= 512`.
+
+### Top-p before the top-k cap
+
+Set `inference.top_p_before_top_k = true` to select the nucleus using the full
+probability distribution, then keep at most `top_k` candidates and renormalize.
+For example, with `top_p = 0.99` and `top_k = 128`, a nucleus smaller than 128 is
+unchanged; a larger nucleus is capped at 128 and may retain less than 99% of the
+original mass. Ties at the cap are broken by token ID (higher IDs retained).
+
+This is an engine-wide opt-in, including evaluation requests. It requires sampling
+mask capture and the V2 model runner. The recorded mask and processed logprobs
+reflect the final support, so trainer replay and score centering use that same
+distribution. The default remains vLLM's top-k-then-top-p order. This option uses a
+full-vocabulary sorting implementation; benchmark inference throughput before
+assuming the same performance as vLLM's optimized sampler.
