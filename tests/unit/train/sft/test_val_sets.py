@@ -5,7 +5,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
-from prime_rl.trainer.sft.ll_eval import head_logprobs, prepare_set, set_metrics, summarize
+from prime_rl.trainer.sft.val_sets import head_logprobs, prepare_set, set_metrics, summarize
 
 
 class CharTokenizer:
@@ -41,7 +41,7 @@ def test_pairs_requests_fit_the_window(tmp_path):
     assert all(len(ids) - 1 <= 8 for ids, _ in eval_set.requests)
     logprobs = [np.full(len(ids) - start, -1.0) for ids, start in eval_set.requests]
     summary, _ = summarize(eval_set, logprobs, [np.ones_like(lp, dtype=bool) for lp in logprobs])
-    assert set_metrics("pairs", 8, summary)["eval/pairs/acc@8"] == 0.0  # equal scores: good never beats bad
+    assert set_metrics("pairs", 8, summary)["val/pairs/acc@8"] == 0.0  # equal scores: good never beats bad
 
 
 def test_requests_without_bos_start_at_the_text(tmp_path):

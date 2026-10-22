@@ -1,4 +1,4 @@
-"""Log-likelihood evals inside the trainer (``[ll_eval]``): scoring of text eval sets, as in the
+"""The log-likelihood sets of ``[val]`` (``val.sets``): scoring of text eval sets inside the trainer, as in the
 `pretrain-evals` offline suite. A set lives in ``<data_dir>/<name>/`` as ``test.parquet`` plus ``meta.json``
 (``kind``, ``parquet_sha256``). Kinds:
 
@@ -16,7 +16,7 @@ Held-out token shards (``TokenEvalSetConfig``) are scored as a ``ppl`` set (``pr
 as stored, cut into windows the same way; bpb counts the bytes of the scored tokens.
 
 A set is tokenized once (`prepare_set`); every round scores its requests (`score_requests`, the model's LM head
-replaced by `scoring_head`) and summarizes them (`summarize`). `LogLikelihoodEval` runs the rounds."""
+replaced by `scoring_head`) and summarizes them (`summarize`). `ValSets` runs the rounds."""
 
 import json
 import math
@@ -35,7 +35,7 @@ import torch.distributed as dist
 from torch import nn
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.sft import LogLikelihoodEvalConfig, TokenEvalSetConfig
+from prime_rl.configs.sft import SFTValConfig, TokenEvalSetConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
 from prime_rl.trainer.sft.data import TokenShards, check_eos
 from prime_rl.trainer.utils import get_dcp_group
@@ -293,9 +293,9 @@ def prepare_multi_length_set(
 
 
 def set_metrics(name: str, seq_len: int, summary: dict) -> dict[str, float]:
-    """A set's summary as metrics ``eval/<set>/<metric>@<length>``, as Python floats (the summaries hold NumPy
+    """A set's summary as metrics ``val/<set>/<metric>@<length>``, as Python floats (the summaries hold NumPy
     scalars)."""
-    return {f"eval/{name}/{key}@{length_label(seq_len)}": float(value) for key, value in summary.items()}
+    return {f"val/{name}/{key}@{length_label(seq_len)}": float(value) for key, value in summary.items()}
 
 
 def length_label(seq_len: int) -> str:
@@ -414,11 +414,11 @@ def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> torch.Tensor:
     return lengths
 
 
-class LogLikelihoodEval:
-    """The ``[ll_eval]`` sets, tokenized once at startup and scored on the training model. Requests start with BOS if
+class ValSets:
+    """The ``val.sets``, tokenized once at startup and scored on the training model. Requests start with BOS if
     ``bos`` (the training documents do)."""
 
-    def __init__(self, config: LogLikelihoodEvalConfig, tokenizer: PreTrainedTokenizer, bos: bool, run_dir: Path):
+    def __init__(self, config: SFTValConfig, tokenizer: PreTrainedTokenizer, bos: bool, run_dir: Path):
         start_time = time.perf_counter()
         self.config = config
         self.run_dir = run_dir
@@ -429,13 +429,12 @@ class LogLikelihoodEval:
             for eval_set in config.sets
         ]
         get_logger().info(
-            f"Prepared {len(self.sets)} log-likelihood eval sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s"
+            f"Prepared {len(self.sets)} validation sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s"
         )
 
     @torch.no_grad()
     def run(self, model: nn.Module, step: int) -> dict[str, float]:
-        """Score every set on the weights after ``step`` optimizer updates. The metrics are on rank 0 only."""
-        start_time = time.perf_counter()
+        """Score every set at step ``step``. The metrics are on rank 0 only."""
         metrics = {}
         # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
         with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
@@ -446,11 +445,9 @@ class LogLikelihoodEval:
                 summary, arrays = summarize(version, [logprobs[i] for i in index], [hits[i] for i in index])
                 metrics |= set_metrics(eval_set.name, seq_len, summary)
                 if self.config.save_arrays:
-                    out = self.run_dir / "ll_eval" / f"step_{step}"
+                    out = self.run_dir / "val" / f"step_{step}"
                     out.mkdir(parents=True, exist_ok=True)
                     label = f"{eval_set.name}@{length_label(seq_len)}"
                     np.savez(out / f"{label}.npz", **arrays)
                     (out / f"{label}.json").write_text(json.dumps(summary, default=float))
-        metrics["time/ll_eval"] = time.perf_counter() - start_time
-        get_logger().success(f"Log-likelihood evals | Step {step} | {metrics['time/ll_eval']:.0f}s")
         return metrics

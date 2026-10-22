@@ -46,7 +46,7 @@ from prime_rl.trainer.sft.data import (
     setup_dataset,
     starts_with_bos,
 )
-from prime_rl.trainer.sft.ll_eval import LogLikelihoodEval
+from prime_rl.trainer.sft.val_sets import ValSets
 from prime_rl.trainer.utils import (
     GarbageCollection,
     MemoryProfiler,
@@ -211,7 +211,7 @@ def train(config: SFTConfig):
     dataloader = setup_dataloader(dataset, config.data, config.model.cp)
 
     val_raw_dataset = None
-    if config.val is not None:
+    if config.val is not None and config.val.data is not None:
         logger.info(f"Loading validation dataset ({config.val.data})")
         val_raw_dataset = load_sft_dataset(config.val.data)
 
@@ -335,48 +335,49 @@ def train(config: SFTConfig):
         mean_loss = (total_loss_sum / total_token_count).item() if total_token_count.item() > 0 else float("nan")
         return mean_loss, nan_count.item()
 
-    def run_validation(step: int) -> None:
-        val_dataset = setup_dataset(
-            tokenizer,
-            config.val.data,
-            config.model.cp,
-            max_epochs=1,
-            raw_dataset=val_raw_dataset,
-            renderer_config=config.renderer,
-            processor=processor,
-            multimodal=multimodal,
-        )
-        val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
-
-        # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
-        mean_loss, nan_count = run_eval_loop(val_dataloader)
-        if is_tt_moe_model(model):
-            # Keep validation routing out of the next training step's statistics.
-            get_load_balance_stats(model)
-        if nan_count > 0:
-            logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
-        if mean_loss != mean_loss:
-            logger.warning(f"Validation at step {step} had no valid tokens")
-        else:
-            logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
-        asyncio.run(
-            monitors.log(
-                {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
-            )
-        )
-
-    ll_eval = None
-    if config.ll_eval is not None:
+    val_sets = None
+    if config.val is not None and config.val.sets:
         bos = isinstance(dataset, TokenDataset) and starts_with_bos(dataset.shards, tokenizer.bos_token_id)
-        ll_eval = LogLikelihoodEval(config.ll_eval, tokenizer, bos, config.run_dir)
+        val_sets = ValSets(config.val, tokenizer, bos, config.run_dir)
 
-    def run_ll_eval(step: int) -> None:
-        metrics = ll_eval.run(model, step)
-        # The no-grad forwards leave the [lm_head, norm] FSDP group unsharded, and their routing must not count
-        # toward the next step's statistics.
-        reshard_module(model)
-        if moes:
-            take_routing_counts(moes)
+    def run_validation(step: int) -> None:
+        start_time = time.perf_counter()
+        if config.val.data is not None:
+            val_dataset = setup_dataset(
+                tokenizer,
+                config.val.data,
+                config.model.cp,
+                max_epochs=1,
+                raw_dataset=val_raw_dataset,
+                renderer_config=config.renderer,
+                processor=processor,
+                multimodal=multimodal,
+            )
+            val_dataloader = setup_dataloader(val_dataset, config.val.data, config.model.cp)
+
+            # No train/eval switch: no dropout in these models, and toggling would trigger torch.compile recompilation
+            mean_loss, nan_count = run_eval_loop(val_dataloader)
+            if is_tt_moe_model(model):
+                # Keep validation routing out of the next training step's statistics.
+                get_load_balance_stats(model)
+            if nan_count > 0:
+                logger.warning(f"Validation at step {step}: {nan_count} batches had NaN loss")
+            if mean_loss != mean_loss:
+                logger.warning(f"Validation at step {step} had no valid tokens")
+            else:
+                logger.success(f"Validation | Step {step} | Loss {mean_loss:.4f}")
+            asyncio.run(
+                monitors.log(
+                    {"val/loss": mean_loss, "val/perplexity": math.exp(min(mean_loss, 20)), "step": step}, step=step
+                )
+            )
+        metrics = {}
+        if val_sets is not None:
+            metrics = val_sets.run(model, step)
+            if moes:
+                take_routing_counts(moes)
+            logger.success(f"Validation sets | Step {step} | {len(val_sets.sets)} sets")
+        metrics["time/val"] = time.perf_counter() - start_time
         asyncio.run(monitors.log({**metrics, "step": step}, step=step))
 
     def logged_micro_batches(micro_batches):
@@ -385,9 +386,6 @@ def train(config: SFTConfig):
                 micro_batch["input_ids"].flatten().tolist(), micro_batch["loss_mask"].flatten().tolist(), tokenizer
             )
             yield micro_batch
-
-    if ll_eval is not None and config.ll_eval.eval_on_start:
-        run_ll_eval(checkpoint_step or 0)
 
     gc_handler = GarbageCollection(config.gc.interval) if config.gc else None
     dead_experts = DeadExperts()
@@ -529,12 +527,6 @@ def train(config: SFTConfig):
             weight_sender.broadcast(model, step=progress.step)
             broadcast_weights_time = time.perf_counter() - broadcast_start_time
 
-        ll_eval_time = 0.0
-        if ll_eval is not None and (is_last_step or progress.step % config.ll_eval.interval == 0):
-            ll_eval_start_time = time.perf_counter()
-            run_ll_eval(progress.step)
-            ll_eval_time = time.perf_counter() - ll_eval_start_time
-
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
@@ -545,7 +537,7 @@ def train(config: SFTConfig):
         progress.total_samples = dataset_progress["step"]
         # Throughput / MFU per step over the full step wall time, as torchtitan reports them with
         # log_freq=1 (tokens since last log / elapsed time), instead of a smoothed sliding window.
-        step_time = time.perf_counter() - step_start_time - ll_eval_time
+        step_time = time.perf_counter() - step_start_time
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
