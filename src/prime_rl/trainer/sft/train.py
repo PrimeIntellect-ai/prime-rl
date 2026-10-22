@@ -436,7 +436,7 @@ def train(config: SFTConfig):
             prepare_gradient_offload(
                 gradient_manager,
                 grad_scale,
-                overlap_optimizer=not run_validation_this_step,
+                overlap_optimizer=not run_validation_this_step and config.optim.max_norm is None,
             )
 
         routing_stats = []

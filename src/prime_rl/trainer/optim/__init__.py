@@ -60,7 +60,7 @@ def setup_optimizer(
     full_offload = offload == "full"
     if full_offload and config.type not in ("adamw", "sign_sgd"):
         raise ValueError("Full optimizer offload only supports AdamW and SignSGD")
-    if full_offload and config.max_norm is not None:
+    if full_offload and config.max_norm is not None and not config.clip_with_full_offload:
         get_logger().warning("Disabling gradient clipping because CPU optimizer offload updates during backward")
         config.max_norm = None
     optimizer_named_params = named_params

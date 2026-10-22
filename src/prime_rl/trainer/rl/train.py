@@ -377,7 +377,8 @@ def train(config: TrainerConfig):
         prepare_gradient_offload(
             gradient_manager,
             parallel_dims.fsdp_gradient_divide_factor,
-            overlap_optimizer=True,
+            # Clipping needs the global gradient norm before any CPU optimizer update.
+            overlap_optimizer=config.optim.max_norm is None,
         )
 
         logger.debug(f"Starting forward and backward pass ({batch_size=})")

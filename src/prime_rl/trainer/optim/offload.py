@@ -910,7 +910,7 @@ class FullCPUOffloadOptimizer(OffloadOptimizer):
             self.optimizer._opt_called = True
             self._initialized = True
             return
-        # Synchronous path (validation steps and checkpoint boundaries).
+        # Synchronous path (SFT validation steps and steps that clip gradients).
         gradients_by_chunk = [self._gradient_manager.load_cpu_chunk(i) for i in range(len(self._chunks))]
         for i in range(len(self._chunks)):
             output_slots, compute_params = self._gradient_manager.acquire_output_chunk(i)

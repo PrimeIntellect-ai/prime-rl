@@ -298,7 +298,7 @@ class ModelConfig(BaseModelConfig):
     """Activation offloading configuration. If None, activation offloading is disabled."""
 
     offload: OffloadMode = "optimizer"
-    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
+    """CPU offloading. ``optimizer`` keeps optimizer states (momentum, variance) in CPU RAM and weights on GPU. ``full`` keeps FP32 masters, optimizer states, and accumulated gradients in CPU RAM and runs each optimizer chunk on CPU as soon as its last gradient arrives, overlapped with backward; it supports AdamW and SignSGD only, disables gradient clipping unless ``optim.clip_with_full_offload`` is set, and rounds each gradient to BF16 once before the FP32 CPU update. ``none`` keeps everything on GPU."""
 
     reshard_after_forward: bool = True
     """Reshard the model after each forward pass."""
@@ -452,6 +452,12 @@ class BaseOptimizerConfig(BaseConfig):
 
     max_norm: float | None = Field(1.0, ge=0)
     """Maximum gradient norm to clip to. If None, gradient clipping is disabled."""
+
+    clip_with_full_offload: bool = False
+    """With ``model.offload = "full"``, keep gradient clipping at ``max_norm`` (and grad-norm logging). The CPU
+    optimizer then runs after the last backward instead of overlapped with it, because the global norm is only known
+    once every gradient has reached its CPU accumulator. This costs the optimizer/backward overlap of the final
+    micro-batch and no extra memory. If False, full offload disables gradient clipping."""
 
 
 class AdamWConfig(BaseOptimizerConfig):
@@ -669,10 +675,11 @@ class BaseTrainerConfig(BaseConfig):
 
     @model_validator(mode="after")
     def full_optimizer_offload_disables_grad_clipping(self):
-        if self.model.offload == "full" and self.optim.max_norm is not None:
+        if self.model.offload == "full" and self.optim.max_norm is not None and not self.optim.clip_with_full_offload:
             warnings.warn(
                 "Gradient clipping prevents optimizer-in-backward overlap with CPU optimizer offload. "
-                "Automatically setting optim.max_norm to None (disabled).",
+                "Automatically setting optim.max_norm to None (disabled). "
+                "Set optim.clip_with_full_offload = true to keep clipping.",
                 stacklevel=1,
             )
             self.optim.max_norm = None
