@@ -361,6 +361,12 @@ capture is enabled on the V2 model runner. Without capture, the flag has no effe
 The recorded mask and processed logprobs
 reflect the final support, so trainer replay and score centering use that same
 distribution. Set `inference.top_p_before_top_k = false` to use vLLM's
-top-k-then-top-p order instead. The default implementation uses a
-full-vocabulary sorting implementation; benchmark inference throughput before
-assuming the same performance as vLLM's optimized sampler.
+top-k-then-top-p order instead. Bounded batches compute the normalizer over the
+full vocabulary but sort only the top-k candidates. Single-row batches,
+unbounded requests, and ties across the extraction boundary use a full sort.
+
+Non-streaming compact replay requests capture support IDs and their normalized
+logprobs together, avoiding a separate full-vocabulary top-logprob extraction.
+The server returns the same compact-logprob and sampling-mask formats. Evaluation
+requests do not enable this capture. Aligned support evidence is encoded directly;
+reordered or mixed evidence still uses support matching and validation.

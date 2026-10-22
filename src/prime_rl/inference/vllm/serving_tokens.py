@@ -25,6 +25,7 @@ Everything else delegates to upstream so we track future vLLM changes for free.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from copy import copy
 from typing import Any
@@ -45,6 +46,7 @@ from vllm.logprobs import FlatLogprobs
 from vllm.outputs import RequestOutput
 
 from prime_rl.inference.vllm.compact_logprobs import serialize_compact_logprobs
+from prime_rl.inference.vllm.paired_capture import serialize_paired_support
 
 # vLLM's clamp for missing or -inf logprobs; renderers treat it as "no sampling evidence".
 LOGPROB_SENTINEL = -9999.0
@@ -89,6 +91,7 @@ class _PackedOutputs:
         self._request = request
         self._num_logprobs = request.sampling_params.logprobs
         self._compact = (request.sampling_params.extra_args or {}).get("prl_compact_logprobs", False)
+        self._paired = (request.sampling_params.extra_args or {}).get("prl_paired_capture", False)
         self.fields: dict[int, dict[str, Any]] = {}
 
     async def __aiter__(self):
@@ -104,7 +107,13 @@ class _PackedOutputs:
                         "start": num_tokens - 1 - len(output.routed_experts),
                     }
                     output.routed_experts = None
-                if self._compact:
+                if self._paired:
+                    mask = output.sampling_mask
+                    if mask is None or mask.ids.dtype != np.int64:
+                        raise ValueError("Missing paired sampling-support evidence")
+                    mask.ids, fields["compact_logprobs"] = serialize_paired_support(mask.ids, mask.counts)
+                    output.logprobs = None
+                elif self._compact:
                     assert output.logprobs is not None, "Did not output logprobs"
                     assert len(output.logprobs) == len(output.token_ids), "Logprob count does not match token count"
                     fields["compact_logprobs"] = serialize_compact_logprobs(
@@ -119,7 +128,10 @@ class _PackedOutputs:
                     self._request.sampling_params.logprobs = None
                 mask = output.sampling_mask
                 if mask is not None:
-                    fields["sampling_mask"] = {"ids": encode_array(mask.ids), "counts": encode_array(mask.counts)}
+                    fields["sampling_mask"] = {
+                        "ids": encode_array(mask.ids.astype(np.int32, copy=False)),
+                        "counts": encode_array(mask.counts),
+                    }
                     output.sampling_mask = None
             yield request_output
 
@@ -148,6 +160,17 @@ class PrimeRlServingTokens(ServingTokens):
                 return self.create_error_response(
                     "Compact logprobs require a non-streaming request with logprobs enabled"
                 )
+        extra_args = sampling_params.extra_args or {}
+        paired = (
+            not request.stream
+            and extra_args.get("prl_replay", False)
+            and extra_args.get("prl_compact_logprobs", False)
+            and os.environ.get("PRIME_TOP_P_BEFORE_TOP_K") == "1"
+        )
+        sampling_params.extra_args = {**extra_args, "prl_paired_capture": paired}
+        if paired:
+            # Full support evidence supplies both sampled and candidate logprobs.
+            sampling_params.logprobs = None
         if not request.stream:
             # Upstream's prompt-logprobs response path expects the per-token dicts.
             sampling_params.flat_logprobs = sampling_params.prompt_logprobs is None
