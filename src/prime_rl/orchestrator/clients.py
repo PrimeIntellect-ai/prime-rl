@@ -222,7 +222,7 @@ class AdminPlane:
         async with self._modelexpress_lock:
             if not version_uid:
                 raise ValueError("modelexpress requires version_uid")
-            await _pause_engines(self.clients, step=step)
+            await _pause_engines(self.clients, step=step, roles=self.roles)
             if on_paused is not None:
                 on_paused()
 

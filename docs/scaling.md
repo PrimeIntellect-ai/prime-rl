@@ -276,22 +276,21 @@ For inference-only multi-node, set `[deployment] type = "multi_node"` on an infe
 Select `[weight_broadcast] type = "modelexpress"` for FSDP full-weight updates through
 the public ModelExpress control, trainer and generator clients. The MX client and
 server must use matching revisions with TrainerMesh, per-tensor wire dtypes and
-bounded streaming support. This integration targets MX revision `8512b8c`,
-including the TrainerMesh API from ai-dynamo/modelexpress#835.
+bounded streaming support. The GPU extra pins the ModelExpress nightly
+`0.8.0.dev20261022`; use the matching server nightly.
+Each trainer binds its tensors and supplies the returned public
+`TrainerTensorsMetadata` to mesh creation. The mesh idempotency key is stable for
+the same model and physical worker membership; restarted workers receive a new
+mesh rather than reusing stale membership.
 
 The trainer supplies the model identity from `model.name` when constructing the
 weight sender; it is not a separate field in `[weight_broadcast]`.
 
-The GPU extra includes `modelexpress>=0.7.0`, but the published 0.7.0 package does
-not contain the APIs required by this transport. Install the compatible client
-revision into the same environment:
+Install the GPU extra, including the pinned ModelExpress nightly:
 
 ```bash
-uv pip install "modelexpress @ git+https://github.com/ai-dynamo/modelexpress.git@8512b8c7130db34721a0b2ec57c23198fed3ef4f#subdirectory=modelexpress_client/python"
+uv sync --extra gpu
 ```
-
-Run PrimeRL with `uv run --no-sync` after this manual installation. Running
-`uv sync` can replace the source-installed client with the locked distribution.
 
 ```toml
 [weight_broadcast]

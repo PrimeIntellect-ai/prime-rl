@@ -14,6 +14,7 @@ from modelexpress_rl import (
     ModelExpressTrainerClient,
     ModelExpressTrainerConfig,
     TrainerStagingMode,
+    TrainerTensorsMetadata,
     WeightPayloadFormat,
     WeightVersionRef,
     WeightVersionState,
@@ -52,16 +53,17 @@ class ModelExpressWeightSender(WeightSender):
             )
         )
         atexit.register(self._trainer.close)
-        binding = self._trainer.bind_tensors(tensors)
-        workers = [None] * self.world.world_size
-        dist.all_gather_object(workers, (self._trainer.worker_id, binding))
+        metadata = self._trainer.bind_tensors(tensors)
+        gathered_workers = [None] * self.world.world_size
+        dist.all_gather_object(gathered_workers, (self._trainer.worker_id, metadata))
         if self.world.is_master:
+            workers: dict[str, TrainerTensorsMetadata] = dict(gathered_workers)
             self._control = ModelExpressControlClient.connect(server_url=f"{self.config.host}:{self.config.port}")
             atexit.register(self._control.close)
             mesh = self._control.create_trainer_mesh(
                 model_name=self.model_name,
-                idempotency_key=uuid.uuid4().hex,
-                workers=dict(workers),
+                idempotency_key=uuid.uuid5(uuid.NAMESPACE_URL, repr((self.model_name, sorted(workers)))).hex,
+                workers=workers,
             )
             self._mesh_id = mesh.mesh_id
             atexit.register(self._control.delete_trainer_mesh, self._mesh_id)

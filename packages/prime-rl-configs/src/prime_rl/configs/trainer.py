@@ -767,4 +767,3 @@ class TrainerConfig(BaseTrainerConfig):
                 dispatch.max_tokens_per_rank, self.model.seq_len
             )
         return self
-

@@ -3,6 +3,7 @@
 import ast
 import pickle
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -48,6 +49,30 @@ def test_modelexpress_adapter_uses_only_public_clients(relative_path):
                 if isinstance(node.ctx, ast.Load) and node.attr in client_methods[owner.attr]:
                     continue
                 assert (owner.attr, node.attr) == ("_trainer", "worker_id")
+
+    if relative_path == "src/prime_rl/transports/weights/modelexpress.py":
+        mesh = next(
+            node
+            for node in ast.walk(source)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "create_trainer_mesh"
+        )
+        key = next(item.value for item in mesh.keywords if item.arg == "idempotency_key")
+        expression = compile(ast.Expression(key), "<mesh idempotency key>", "eval")
+        namespace = {
+            "uuid": uuid,
+            "self": SimpleNamespace(model_name="model-a"),
+            "workers": {"rank-0": None, "rank-1": None},
+        }
+        expected = eval(expression, namespace)
+        namespace["workers"] = {"rank-1": None, "rank-0": None}
+        assert eval(expression, namespace) == expected
+        namespace["workers"] = {"restarted-rank-0": None, "rank-1": None}
+        assert eval(expression, namespace) != expected
+        namespace["workers"] = {"rank-0": None, "rank-1": None}
+        namespace["self"].model_name = "model-b"
+        assert eval(expression, namespace) != expected
 
 
 @pytest.mark.parametrize("fail_install", [False, True])
