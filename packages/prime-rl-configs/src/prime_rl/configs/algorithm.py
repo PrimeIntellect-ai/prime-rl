@@ -37,7 +37,7 @@ executes them.
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 import verifiers.v1 as vf
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from renderers import AutoRendererConfig, RendererConfig
 
 from prime_rl.configs.shared import VLLMClientConfig
@@ -101,7 +101,19 @@ class LinearLengthPenaltyConfig(BaseConfig):
     """Scale on the turns term (``pass_rate * (rollout num_turns / group's max num_turns)``). 0 disables the term."""
 
 
-LengthPenaltyConfig: TypeAlias = LinearLengthPenaltyConfig
+class LinearSubagentLengthPenaltyConfig(LinearLengthPenaltyConfig):
+    """Linear penalty using per-call output and new input tokens, weighted by semantic subagent membership before group normalization. Assumes branches do not share physical prefixes."""
+
+    type: Literal["linear-subagent"] = "linear-subagent"  # type: ignore[assignment]
+
+    subagent_token_weight: float = Field(0.0, ge=0, le=1, allow_inf_nan=False)
+    """Multiplier on subagent input and output tokens before group normalization. Uses harness-declared ``subagent_call`` edges and their continuations, compaction attempts, and compacted contexts; unlabelled calls count at full weight. Nested subagents use the same multiplier. 0 excludes subagent tokens, 1 counts them fully. Does not change the turns term or training-token weights."""
+
+
+LengthPenaltyConfig: TypeAlias = Annotated[
+    LinearLengthPenaltyConfig | LinearSubagentLengthPenaltyConfig,
+    Field(discriminator="type"),
+]
 
 
 class EchoRoleConfig(BaseConfig):
@@ -193,15 +205,23 @@ class BaseAlgoConfig(BaseConfig):
 
 class GRPOAlgoConfig(BaseAlgoConfig):
     type: Literal["grpo"] = "grpo"
-    """GRPO: scalar advantage = reward minus the per-group token-length-weighted mean
-    ``sum_i(L_i * r_i) / sum_i(L_i)``, where ``L_i`` counts trainable (mask-True,
-    policy-sampled) tokens across all turns. Consumed by the ``rl`` loss component
-    on the rollout's action tokens."""
+    """GRPO: scalar advantage = reward minus the per-group mean baseline,
+    consumed by the ``rl`` loss component on the rollout's action tokens."""
 
     action_loss_type: ClassVar[ActionLossType] = "rl"
 
     length_penalty: LengthPenaltyConfig | None = None
-    """Linear length penalty subtracted from each reward before the GRPO baseline (see ``LinearLengthPenaltyConfig``): a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max for that quantity. None disables it."""
+    """Length penalty subtracted from each reward before the GRPO baseline: a ``pass_rate``-scaled sum of output-token, input-token, and turns terms, each normalized by the group's own max. ``linear`` uses trace token counts; opt-in ``linear-subagent`` discounts semantic subagent tokens. None disables it."""
+
+    @field_validator("length_penalty", mode="before")
+    @classmethod
+    def default_length_penalty_type(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {"type": "linear", **value}
+        return value
+
+    length_weighted_baseline: bool = False
+    """Use the token-length-weighted group mean reward ``sum_i(L_i * r_i) / sum_i(L_i)`` as the baseline instead of the plain mean, where ``L_i`` is the number of trainable (mask-True, policy-sampled) tokens of rollout ``i`` summed across all its turns."""
 
     loss_aggregation: Literal["token", "prompt"] = "token"
     """How the rl loss weights tokens across prompt groups. ``token``: every loss token in the batch weighs the same, so groups with more total tokens dominate the gradient. ``prompt``: prompt-mean (MiMo-V2.6 Eq. 1) — each trainable token of group ``q`` gets rl weight ``1 / T_q`` (``T_q`` = the group's trainable tokens), and the trainer divides the rl loss by the summed weights, i.e. the number of groups. All rl envs of a run must use the same value."""

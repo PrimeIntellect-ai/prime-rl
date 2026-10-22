@@ -23,6 +23,7 @@ import tilelang
 import torch
 import torch.nn.functional as F
 
+from prime_rl.trainer.models.kernels import cudnn_flashmla_error
 from prime_rl.trainer.models.kernels.deepseek_v4 import IGNORE_SLOT
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_bwd import bwd, postprocess, preprocess
 from prime_rl.trainer.models.kernels.deepseek_v4.dsv4_sparse_attn_fwd import dsv4_sparse_attn_fwd
@@ -93,22 +94,7 @@ def tilelang_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
     return None
 
 
-def cudnn_flashmla_shape_error(heads: int, kv_group: int, dim: int) -> str | None:
-    if kv_group != 1:
-        return f"FlashMLA and the cuDNN backward serve a single KV head, but this shape has {kv_group}"
-    if heads not in (64, 128):
-        return f"FlashMLA's sparse prefill serves 64 or 128 query heads, but this shape has {heads}"
-    if dim != 512:
-        return f"FlashMLA's sparse prefill and the cuDNN backward need head_dim 512 here, but it is {dim}"
-    if not torch.cuda.is_available():
-        return "the cudnn_flashmla backend needs a CUDA GPU"
-    capability = torch.cuda.get_device_capability()
-    if capability[0] != 9 and capability not in ((10, 0), (10, 3)):
-        return f"the cudnn_flashmla backend runs on SM90, SM100 and SM103, but this GPU is {capability}"
-    return None
-
-
-SHAPE_ERRORS = {"tilelang": tilelang_shape_error, "cudnn_flashmla": cudnn_flashmla_shape_error}
+SHAPE_ERRORS = {"tilelang": tilelang_shape_error, "cudnn_flashmla": cudnn_flashmla_error}
 
 
 def sparse_attn_shape_error(heads: int, kv_group: int, dim: int, backend: str = "tilelang") -> str | None:
