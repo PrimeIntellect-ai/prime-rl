@@ -639,9 +639,9 @@ _mhc_post_bda.register_autograd(_mhc_post_bda_autograd_backward, setup_context=_
 def fused_post_bda(
     h_res: torch.Tensor, original_residual: torch.Tensor, h_post: torch.Tensor, x: torch.Tensor
 ) -> torch.Tensor:
-    """Fused stream write-back `h_res.T @ original_residual + h_post * x`, in `original_residual`'s dtype.
+    """Fused stream write-back `h_res.T @ original_residual + h_post * x`.
 
-    The kernel applies the transpose internally, so `h_res` is passed untransposed. It accumulates in
-    fp32, so fp32 `h_res` and `h_post` enter unrounded.
+    The kernel applies the transpose internally, so `h_res` is passed untransposed. The math runs
+    in fp32 and the result takes `original_residual`'s dtype.
     """
     return _mhc_post_bda(h_res, original_residual, h_post, x)
