@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, TextIO
 
 import orjson
+from verifiers.v1.graph import _decode_ndarray
 from verifiers.v1.trace import EXCLUDE_FIELDS
 
 from prime_rl.configs.monitors import FileMonitorConfig
@@ -28,6 +29,16 @@ OPTS = orjson.OPT_APPEND_NEWLINE | orjson.OPT_SERIALIZE_NUMPY
 LIVE_NODE_EXCLUDE = frozenset(EXCLUDE_FIELDS["nodes"]["__all__"])
 """Node fields that stay on the wire but out of live trace files: expensive per-token information
 only the trainer needs."""
+
+
+def _live_value(value: Any) -> Any:
+    """A node field for a live trace file: per-token streams arrive as raw-bytes `__nd__` dicts
+    (a dict of them for `loss_weights`), which orjson writes as lists once decoded."""
+    if isinstance(value, dict):
+        if value.get("__nd__"):
+            return _decode_ndarray(value)
+        return {key: _live_value(item) for key, item in value.items()}
+    return value
 
 
 class FileMonitor(Monitor):
@@ -114,7 +125,7 @@ class FileMonitor(Monitor):
                 line = {key: value for key, value in delta.items() if key != "routing_repairs"}
                 if "nodes" in line:
                     line["nodes"] = [
-                        {key: value for key, value in node.items() if key not in LIVE_NODE_EXCLUDE}
+                        {key: _live_value(value) for key, value in node.items() if key not in LIVE_NODE_EXCLUDE}
                         for node in line["nodes"]
                     ]
                 if "open" in delta:
