@@ -1,6 +1,7 @@
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -60,9 +61,10 @@ def test_layer_export_matches_trainer_conversion(tmp_path, exporter, tied, fp8):
     expected = transform(expected)
     for workers in (1, 2):
         output = tmp_path / f"export-{workers}"
-        exporter.write_weights(checkpoint, output, workers, transform)
+        written = exporter.write_weights(checkpoint, output, workers, transform)
         index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
         actual = {name: tensor for file in set(index.values()) for name, tensor in load_file(output / file).items()}
+        assert written == index
         assert actual.keys() == expected.keys() == index.keys()
         for name, tensor in expected.items():
             assert actual[name].dtype == tensor.dtype
@@ -83,3 +85,13 @@ def test_export_rejects_multiple_processes(tmp_path, exporter, monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "2")
     with pytest.raises(ValueError, match="one process"):
         exporter.open_checkpoint(tmp_path)
+
+
+@pytest.mark.parametrize("head", ["lm_head.weight", "language_model.output.weight"])
+def test_export_skips_declared_tied_heads(exporter, head):
+    model = SimpleNamespace(
+        config=SimpleNamespace(tie_word_embeddings=True),
+        _tied_weights_keys={head: "model.embed_tokens.weight"},
+        state_dict=lambda: {"model.embed_tokens.weight": None, head: None},
+    )
+    assert exporter.get_layers(model) == [["model.embed_tokens.weight"]]

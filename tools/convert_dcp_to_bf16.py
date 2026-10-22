@@ -97,7 +97,8 @@ def get_layers(model: nn.Module) -> list[list[str]]:
     text_config = getattr(model.config, "text_config", model.config)
     keys = list(model.state_dict())
     if getattr(text_config, "tie_word_embeddings", False):
-        keys = [key for key in keys if key != "lm_head.weight"]
+        tied_keys = set(getattr(model, "_tied_weights_keys", None) or ()) | {"lm_head.weight"}
+        keys = [key for key in keys if key not in tied_keys]
     return list(group_by_layer(keys).values())
 
 
@@ -125,8 +126,8 @@ def write_weights(
     output_dir: Path,
     workers: int,
     transform: Callable[[dict[str, Tensor]], dict[str, Tensor]] = lambda shard: shard,
-) -> None:
-    """Write layer shards in parallel and the index after all workers finish."""
+) -> dict[str, str]:
+    """Write layer shards in parallel, then return their completed index."""
     output_dir.mkdir(parents=True, exist_ok=True)
     layers = get_layers(checkpoint.model)
     names = [f"model-{index:05d}-of-{len(layers):05d}.safetensors" for index in range(1, len(layers) + 1)]
@@ -145,6 +146,7 @@ def write_weights(
     total_size = sum(sum(sizes.values()) for sizes in key_to_size_per_shard)
     index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
     (output_dir / SAFE_WEIGHTS_INDEX_NAME).write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
+    return weight_map
 
 
 def _export_config(config: PretrainedConfig) -> None:

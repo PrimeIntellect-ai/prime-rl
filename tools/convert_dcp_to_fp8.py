@@ -26,13 +26,10 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
     output_dir = Path(output_dir) if output_dir is not None else checkpoint.dcp_dir.parent / "weights-FP8"
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     modules_to_not_convert: list[str] = []
-    num_scales = 0
 
     def quantize(shard):
-        nonlocal num_scales
         quantized, kept_in_bf16 = quantize_state_dict(shard, block_size, "cpu")
         modules_to_not_convert.extend(kept_in_bf16)
-        num_scales += sum(name.endswith("_scale_inv") for name in quantized)
         return quantized
 
     with tempfile.TemporaryDirectory(prefix=f".{output_dir.name}-", dir=output_dir.parent) as directory:
@@ -40,7 +37,8 @@ def convert(ckpt_dir: Path, output_dir: Path | None = None, block_size: int = 12
         logger.info(f"Saving model assets to {staging_dir}")
         save_model_assets(checkpoint.model, checkpoint.model_config, checkpoint.tokenizer_config, staging_dir)
         logger.info(f"Reading and quantizing model tensors from {checkpoint.dcp_dir} on CPU")
-        write_weights(checkpoint, staging_dir, workers, transform=quantize)
+        weight_map = write_weights(checkpoint, staging_dir, workers, transform=quantize)
+        num_scales = sum(name.endswith("_scale_inv") for name in weight_map)
         if num_scales == 0:
             raise ValueError(f"No quantizable weights found in {checkpoint.dcp_dir} - is this a bf16 checkpoint?")
         logger.info(f"Quantized {num_scales} weights to blockwise fp8")
