@@ -34,12 +34,12 @@ def _gather_row_chunk_to_master(
     ]
     if len(active_dims) > 1 or (active_dims and value.placements[active_dims[0]] != Shard(0)):
         raise ValueError("Embedding transfer requires replicated weights or a single row-sharding dimension")
-    mesh_dim = active_dims[0] if active_dims else None
+    if not active_dims:
+        return value.to_local()[start:stop].to(dtype) if rank == 0 else None
+    mesh_dim = active_dims[0]
     destination_coordinates = (mesh.mesh == 0).nonzero().tolist()
     if len(destination_coordinates) != 1:
         raise ValueError("Trainer rank 0 must belong to the embedding mesh")
-    if mesh_dim is None:
-        return value.to_local()[start:stop].to(dtype) if rank == 0 else None
     coordinate = destination_coordinates[0]
     row_group_index = list(coordinate)
     row_group_index[mesh_dim] = slice(None)
