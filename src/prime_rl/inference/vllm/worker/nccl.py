@@ -133,11 +133,7 @@ class NCCLWeightUpdateWorker(Worker):
 
     def update_weights_from_path(self, weight_dir: str) -> None:
         """Update weights with the nccl communicator."""
-        model_runner = self.model_runner
-        if hasattr(model_runner.model, "runnable"):
-            model = model_runner.model.runnable
-        else:
-            model = model_runner.model
+        model = self.model_runner.get_model()
         assert isinstance(model, Module)
 
         state_iter = self.nccl_broadcast_receiver.receive_state_dict()

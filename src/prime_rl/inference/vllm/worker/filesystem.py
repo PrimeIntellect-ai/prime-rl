@@ -23,13 +23,7 @@ class FileSystemWeightUpdateWorker(Worker):
 
     def update_weights_from_path(self, weight_path: str) -> None:
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
-        # Get vLLM model runner and model
-        # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
-        model_runner = self.model_runner
-        if hasattr(model_runner.model, "runnable"):
-            model = model_runner.model.runnable
-        else:
-            model = model_runner.model
+        model = self.model_runner.get_model()
         assert isinstance(model, Module)
 
         # Get vLLM model loader
