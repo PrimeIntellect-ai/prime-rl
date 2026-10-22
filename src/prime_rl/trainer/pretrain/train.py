@@ -123,7 +123,6 @@ def train(config: PretrainConfig):
         parallel_dims,
         loading_from_checkpoint_later=checkpoint_step is not None,
         init=config.model.init if checkpoint_step is None else None,
-        compile_inside_full_checkpoint=True,
     )
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
