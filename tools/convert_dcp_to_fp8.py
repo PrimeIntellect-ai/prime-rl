@@ -8,7 +8,7 @@ Usage (from the prime-rl repo; more ranks = faster gathers, quantization and wri
     uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_fp8.py \
         <run>/checkpoints/step_{n} [output_dir]
 
-Writes to ``<ckpt_dir>/weights-FP8`` by default.
+Writes to ``<ckpt_dir>/weights-FP8`` by default. ``--bf16-build`` works as in ``dcp_to_bf16``.
 """
 
 import argparse
@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 from convert_bf16_to_fp8 import quantization_config, quantize_state_dict
-from convert_dcp_to_bf16 import load_and_convert, save_model_assets
+from convert_dcp_to_bf16 import BF16_BUILD_HELP, load_and_convert, save_model_assets
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
@@ -32,9 +32,10 @@ def main() -> None:
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights-FP8")
     parser.add_argument("--block-size", type=int, default=128)
+    parser.add_argument("--bf16-build", action="store_true", help=BF16_BUILD_HELP)
     args = parser.parse_args()
 
-    model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(args.ckpt_dir)
+    model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(args.ckpt_dir, args.bf16_build)
     output_dir = args.output_dir if args.output_dir is not None else step_dir / "weights-FP8"
     logger = get_logger()
     world = get_world()

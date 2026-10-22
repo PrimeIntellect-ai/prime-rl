@@ -16,6 +16,11 @@ models too big for one GPU need enough ranks to shard across):
         <run>/checkpoints/step_{n} [output_dir]
 
 Writes to ``<ckpt_dir>/weights`` by default.
+
+The model is built in the run's ``optimization_dtype`` (fp32 by default). ``--bf16-build``
+builds it in bf16 instead, which roughly halves the model's GPU memory and writes the same
+weights (tensors exported in fp32 are read again from the checkpoint in fp32); the exported
+config.json then records bfloat16.
 """
 
 import argparse
@@ -43,6 +48,7 @@ from prime_rl.utils.pathing import get_config_dir
 from prime_rl.utils.weights import (
     convert_state_dict_to_hf,
     gather_weights_parallel,
+    resolve_fqn,
     save_state_dict_parallel,
 )
 
@@ -59,6 +65,11 @@ CONVERSION_OVERRIDES = {
 }
 
 RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
+
+BF16_BUILD_HELP = (
+    "build the model in bf16 instead of the run's optimization_dtype (fp32 by default): about half the GPU memory, "
+    "same exported weights, and config.json records bfloat16"
+)
 
 
 def resolve_dcp_dir(ckpt_dir: Path) -> Path:
@@ -102,6 +113,25 @@ def check_not_lora(model_config: ModelConfig, dcp_dir: Path) -> None:
         )
 
 
+def load_fp32_transfer_tensors(model, dcp_dir: Path) -> dict[str, torch.Tensor]:
+    """Full-precision copies of the tensors the export writes in fp32 but the bf16 build holds in bf16.
+
+    Some models build these (e.g. SSM ``A_log``) in the build dtype, so the bf16 DCP load rounds them.
+    They are small, so every rank reads them whole from the checkpoint.
+    """
+    keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
+    if keep_in_fp32 is None:
+        return {}
+    tensors = {
+        resolve_fqn(model, key): torch.empty(value.shape, dtype=torch.float32)
+        for key, value in model.state_dict().items()
+        if keep_in_fp32(key) and value.dtype != torch.float32
+    }
+    if tensors:
+        dcp_load(state_dict={"app": {"model": tensors}}, checkpoint_id=dcp_dir)
+    return tensors
+
+
 def setup_single_process_env() -> None:
     """Default the torchrun env vars so the script also runs under plain ``python``."""
     if "RANK" in os.environ:
@@ -142,9 +172,10 @@ def save_model_assets(model, model_config: ModelConfig, tokenizer_config: Tokeni
             shutil.copyfile(path, output_dir / path.name)
 
 
-def load_and_convert(ckpt_dir: Path):
+def load_and_convert(ckpt_dir: Path, bf16_build: bool = False):
     """DCP-load a checkpoint and gather it as a rank-partial HF-format bf16 state dict.
 
+    ``bf16_build`` builds the model in bf16 instead of the run's ``optimization_dtype``.
     Returns ``(model, model_config, tokenizer_config, state_dict, step_dir)``.
     """
     logger = setup_logger("info")
@@ -152,6 +183,8 @@ def load_and_convert(ckpt_dir: Path):
     dcp_dir = resolve_dcp_dir(ckpt_dir)
     step_dir = dcp_dir.parent
     model_config, tokenizer_config = resolve_run_configs(step_dir)
+    if bf16_build:
+        model_config = model_config.model_copy(update={"optimization_dtype": "bfloat16"})
     check_not_lora(model_config, dcp_dir)
 
     setup_single_process_env()
@@ -163,9 +196,14 @@ def load_and_convert(ckpt_dir: Path):
 
     logger.info(f"Loading DCP checkpoint from {dcp_dir}")
     dcp_load(state_dict={"app": AppState(model, [], None, None)}, checkpoint_id=dcp_dir)
+    fp32_tensors = load_fp32_transfer_tensors(model, dcp_dir) if bf16_build else {}
 
     logger.info("Gathering and converting weights")
     state_dict = gather_weights_parallel(model, dtype=torch.bfloat16)
+    for fqn, value in fp32_tensors.items():
+        # Each tensor lives on the one rank that owns it.
+        if fqn in state_dict:
+            state_dict[fqn] = value
     if getattr(model.config, "tie_word_embeddings", False):
         for key in getattr(model, "_tied_weights_keys", []):
             state_dict.pop(key, None)
@@ -173,9 +211,9 @@ def load_and_convert(ckpt_dir: Path):
     return model, model_config, tokenizer_config, state_dict, step_dir
 
 
-def convert(ckpt_dir: Path, output_dir: Path | None = None) -> Path:
+def convert(ckpt_dir: Path, output_dir: Path | None = None, bf16_build: bool = False) -> Path:
     logger = get_logger()
-    model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir)
+    model, model_config, tokenizer_config, state_dict, step_dir = load_and_convert(ckpt_dir, bf16_build)
     output_dir = output_dir if output_dir is not None else step_dir / "weights"
 
     logger.info(f"Writing HF weights to {output_dir}")
@@ -192,8 +230,9 @@ def main() -> None:
         "ckpt_dir", type=Path, help="the DCP checkpoint (<run>/checkpoints/step_{n} or .../step_{n}/trainer)"
     )
     parser.add_argument("output_dir", type=Path, nargs="?", default=None, help="default: <ckpt_dir>/weights")
+    parser.add_argument("--bf16-build", action="store_true", help=BF16_BUILD_HELP)
     args = parser.parse_args()
-    convert(args.ckpt_dir, args.output_dir)
+    convert(args.ckpt_dir, args.output_dir, args.bf16_build)
     dist.destroy_process_group()
 
 
