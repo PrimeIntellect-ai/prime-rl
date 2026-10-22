@@ -23,6 +23,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbe
 from prime_rl.trainer.models.qwen3_8_flash_next.position_learning import PositionLearningEnhancement
 from prime_rl.trainer.models.qwen3_8_flash_next.rotary_embedding import RotaryEmbedding
 from prime_rl.utils.sequence import get_cu_seqlens_from_seq_lens
+from prime_rl.utils.weights import resolve_fqn
 
 
 class Qwen3_8FlashNextDecoderLayer(nn.Module):
@@ -133,6 +134,13 @@ class Qwen3_8FlashNextPreTrainedModel(PreTrainedModelPrimeRL):
     @classmethod
     def conversion_chain(cls, config):
         return conversion_chain(config)
+
+    def frozen_weight_keys(self) -> set[str]:
+        return {
+            resolve_fqn(self, f"{name}.ngram_embedding.weight")
+            for name, module in self.named_modules()
+            if isinstance(module, NGramEmbedding) and not module.ngram_embedding.weight.requires_grad
+        }
 
 
 class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):

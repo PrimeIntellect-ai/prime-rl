@@ -150,7 +150,8 @@ class NCCLBroadcaster:
     @torch.no_grad()
     def send(self, model: nn.Module) -> None:
         """Broadcast the state dict of a model into the inference pool using NCCL."""
-        state_dict = model.state_dict()
+        frozen = model.frozen_weight_keys()
+        state_dict = {key: value for key, value in model.state_dict().items() if key not in frozen}
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
         num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights

@@ -8,7 +8,13 @@ from typing import Any
 
 import torch
 from torch import nn
-from torch.distributed.checkpoint.state_dict import get_state_dict, set_model_state_dict, set_state_dict
+from torch.distributed.checkpoint import FileSystemReader
+from torch.distributed.checkpoint.state_dict import (
+    StateDictOptions,
+    get_state_dict,
+    set_model_state_dict,
+    set_state_dict,
+)
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 from torch.distributed.checkpoint.state_dict_saver import save as dcp_save
 from torch.distributed.checkpoint.stateful import Stateful
@@ -85,6 +91,9 @@ class AppState(Stateful):
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
         checkpoint_optimizers = self._get_checkpoint_optimizers()
         model_state_dict, optimizer_state_dict = get_state_dict(self.model, checkpoint_optimizers)
+        # Frozen weights stay at their base values; setup_model loads them from the base checkpoint.
+        frozen = self.model.frozen_weight_keys()
+        model_state_dict = {key: value for key, value in model_state_dict.items() if key not in frozen}
         # Runtime fusions own one physical state tensor per fused parameter; the checkpoint
         # sees it under the canonical names. This dict is also the template dcp_load writes
         # into, and load_state_dict packs the loaded entries back into the runtime state.
@@ -126,7 +135,9 @@ class AppState(Stateful):
             # detaching optim.state from the tensors we just populated. So we only
             # apply the model side here and flip the wrappers to initialized so
             # subsequent steps take the steady-state path.
-            set_model_state_dict(self.model, model_state_dict=state_dict["model"])
+            set_model_state_dict(
+                self.model, model_state_dict=state_dict["model"], options=StateDictOptions(strict=False)
+            )
             # The template only aliases a packed parameter's state where the packing
             # dimension is unsharded, so the loaded logical entries are packed back in.
             write_back_loaded_packed_optimizer_state(self.model, checkpoint_optimizers, state_dict["optimizers"])
@@ -144,6 +155,7 @@ class AppState(Stateful):
                 optim_state_dict=join_loaded_optimizer_state_for_runtime(
                     self.model, state_dict["optimizers"], runtime_optimizer_state_dict
                 ),
+                options=StateDictOptions(strict=False),
             )
 
         if self.scheduler is not None:
@@ -151,6 +163,18 @@ class AppState(Stateful):
         if self.progress is not None:
             for key, value in state_dict["progress"].items():
                 setattr(self.progress, key, value)
+
+
+def check_frozen_weights_not_saved(model: nn.Module, path: Path) -> None:
+    """Fail on a checkpoint that holds weights the model freezes: it was saved with them trainable,
+    and loading the base values instead would silently drop that training."""
+    saved = FileSystemReader(path).read_metadata().state_dict_metadata
+    trained = sorted(key for key in model.frozen_weight_keys() if f"app.model.{key}" in saved)
+    if trained:
+        raise ValueError(
+            f"{path} holds trained weights this run freezes ({', '.join(trained)}). "
+            "Unfreeze them to resume from it (e.g. model.freeze_ngram_embedding = false)."
+        )
 
 
 class CheckpointManager:
@@ -218,6 +242,7 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
+        check_frozen_weights_not_saved(model, path)
         # Load sharded state
         app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
         state_dict = {"app": app_state}

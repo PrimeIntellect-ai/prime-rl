@@ -74,6 +74,14 @@ class PreTrainedModelPrimeRL(PreTrainedModel):
         """
         return False
 
+    def frozen_weight_keys(self) -> set[str]:
+        """State-dict keys of frozen weights that weight transfer and checkpoints skip.
+
+        They keep their values from the base checkpoint for the whole run, so the inference
+        engines keep the copy they loaded and a resume loads them from the base checkpoint again.
+        """
+        return set()
+
     @classmethod
     def from_config(cls, config, trust_remote_code: bool = False, **kwargs):
         """Public from_config that mirrors the Auto class API."""
