@@ -41,6 +41,9 @@ class ActivationCheckpointConfig(BaseConfig):
     targets: list[str] | None = None
     """Operator names or namespaces retained in selective mode. ``None`` uses the default targets; an explicit list replaces them."""
 
+    token_chunk_size: int | None = Field(None, ge=1)
+    """Checkpoint token-local blocks (Nemotron-H MoE layers) in chunks of this many tokens per rank, so their recompute and backward hold one chunk's activations at a time. ``None`` checkpoints every block whole."""
+
 
 class ActivationOffloadingConfig(BaseConfig):
     """Offload tensors saved for backward to pinned CPU memory during the forward pass."""
