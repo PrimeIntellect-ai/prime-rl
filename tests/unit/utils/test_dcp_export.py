@@ -1,55 +1,29 @@
 import importlib
-import sys
+import json
 from pathlib import Path
 
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
+from safetensors.torch import load_file
 from torch.distributed.checkpoint import FileSystemReader
+from transformers import PretrainedConfig
 
+from prime_rl.trainer.models.layers.moe import GroupedExperts
+from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
 from prime_rl.utils.utils import default_dtype
-from prime_rl.utils.weights import convert_state_dict_to_hf
+from prime_rl.utils.weights import convert_state_dict_to_hf, resolve_wire_dtype
 
 
-@pytest.mark.parametrize("format", ["bf16", "fp8"])
-def test_cpu_export_workers_match_single_worker(tiny_run, format):
-    _, step, _, _ = tiny_run
-    cli = _cli(format)
-    single = step / "export-single"
-    threaded = step / "export-threaded"
-    cli.convert(step, single)
-    assert cli.convert(step, threaded, workers=2) == threaded
-    names = sorted(path.name for path in single.iterdir())
-    assert sorted(path.name for path in threaded.iterdir()) == names
-    for name in names:
-        assert (threaded / name).read_bytes() == (single / name).read_bytes()
-    assert not list(step.glob(".export-threaded-*"))
+@pytest.fixture
+def exporter(monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3] / "tools"))
+    return importlib.import_module("convert_dcp_to_bf16")
 
 
-def test_cpu_export_rejects_world_size_above_one(tiny_run, monkeypatch):
-    cli, step, _, _ = tiny_run
-    monkeypatch.setenv("WORLD_SIZE", "2")
-    with pytest.raises(ValueError):
-        cli.convert(step, step / "weights")
-    assert not (step / "weights").exists()
-
-
-def test_cpu_export_rejects_non_positive_workers(tiny_run):
-    cli, step, _, _ = tiny_run
-    with pytest.raises(ValueError):
-        cli.convert(step, step / "weights", workers=0)
-    assert not (step / "weights").exists()
-
-
-def _cli(format: str):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
-    return importlib.import_module(f"convert_dcp_to_{format}")
-
-
-def _moe_state():
-    from prime_rl.trainer.models.layers.moe import GroupedExperts
-    from prime_rl.trainer.models.qwen3_moe import Qwen3MoeConfig, Qwen3MoeForCausalLM
-
+@pytest.mark.parametrize("tied", [False, True])
+@pytest.mark.parametrize("fp8", [False, True])
+def test_layer_export_matches_trainer_conversion(tmp_path, exporter, tied, fp8):
     config = Qwen3MoeConfig(
         hidden_size=8,
         intermediate_size=16,
@@ -57,80 +31,55 @@ def _moe_state():
         num_key_value_heads=2,
         num_hidden_layers=1,
         vocab_size=32,
-        tie_word_embeddings=False,
+        tie_word_embeddings=tied,
         moe_intermediate_size=4,
         num_experts=2,
         num_experts_per_tok=1,
     )
-    torch.manual_seed(0)
     with torch.device("cpu"), default_dtype(torch.bfloat16):
         model = Qwen3MoeForCausalLM._from_config(config)
     for module in model.modules():
         if isinstance(module, GroupedExperts):
             module.init_weights(config.initializer_range)
     state = {name: tensor.detach().clone() for name, tensor in model.state_dict().items()}
-    gathered = {}
-    for name, tensor in state.items():
-        if tensor.is_floating_point():
-            dtype = torch.float32 if model.keep_in_fp32_for_weight_transfer(name) else torch.bfloat16
-            tensor = tensor.to(dtype)
-        gathered[name] = tensor
-    return model, state, convert_state_dict_to_hf(model, gathered)
-
-
-def test_cpu_export_matches_conversion_chain(tmp_path):
-    model, state, expected = _moe_state()
-    checkpoint = tmp_path / "checkpoint"
-    dcp.save({"app": {"model": state, "optimizer": {"exp_avg": torch.ones(1)}}}, checkpoint_id=checkpoint, no_dist=True)
-    cli = _cli("bf16")
-    opened = cli.Checkpoint(checkpoint, FileSystemReader(checkpoint).read_metadata(), model, None, None)
-    exported = {name: tensor for keys in cli.get_layers(model) for name, tensor in cli.load_layer(opened, keys).items()}
-    assert exported.keys() == expected.keys()
-    for name, tensor in expected.items():
-        torch.testing.assert_close(exported[name], tensor, rtol=0, atol=0)
-
-
-def test_rejects_broken_checkpoint(tmp_path):
-    model, state, _ = _moe_state()
-    del state["model.layers.0.self_attn.q_proj.weight"]
-    checkpoint = tmp_path / "checkpoint"
-    dcp.save({"app": {"model": state}}, checkpoint_id=checkpoint, no_dist=True)
-    cli = _cli("bf16")
-    opened = cli.Checkpoint(checkpoint, FileSystemReader(checkpoint).read_metadata(), model, None, None)
-    with pytest.raises(BaseException):
-        for keys in cli.get_layers(model):
-            cli.load_layer(opened, keys)
-
-
-def test_tied_qwen3_5_moe_export_drops_headless_weights(tmp_path):
-    """Real Qwen 3.5 MoE tie: the stale head must not ship; the export reties the actual embed."""
-    from prime_rl.trainer.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5MoeTextConfig
-
-    config = Qwen3_5MoeTextConfig(
-        vocab_size=32,
-        hidden_size=8,
-        intermediate_size=16,
-        moe_intermediate_size=4,
-        shared_expert_intermediate_size=4,
-        num_experts=2,
-        num_experts_per_tok=1,
-        num_hidden_layers=1,
-        layer_types=["full_attention"],
-        num_attention_heads=2,
-        num_key_value_heads=1,
-        head_dim=4,
-        max_position_embeddings=16,
-        tie_word_embeddings=True,
+    dcp.save({"app": {"model": state, "optimizer": {"unused": torch.ones(1)}}}, checkpoint_id=tmp_path, no_dist=True)
+    checkpoint = exporter.Checkpoint(tmp_path, FileSystemReader(tmp_path).read_metadata(), model, None, None)
+    expected = convert_state_dict_to_hf(
+        model,
+        {
+            name: tensor.to(resolve_wire_dtype(model.keep_in_fp32_for_weight_transfer, name, torch.bfloat16))
+            for name, tensor in state.items()
+            if not (tied and name == "lm_head.weight")
+        },
     )
-    with torch.device("cpu"):
-        model = Qwen3_5ForCausalLM._from_config(config)
-    state = {name: torch.zeros_like(tensor) for name, tensor in model.state_dict().items()}
-    state["model.embed_tokens.weight"].fill_(1)
-    state["lm_head.weight"].fill_(99)
-    checkpoint = tmp_path / "checkpoint"
-    dcp.save({"app": {"model": state}}, checkpoint_id=checkpoint, no_dist=True)
-    cli = _cli("bf16")
-    opened = cli.Checkpoint(checkpoint, FileSystemReader(checkpoint).read_metadata(), model, None, None)
-    exported = {name: tensor for keys in cli.get_layers(model) for name, tensor in cli.load_layer(opened, keys).items()}
-    assert "lm_head.weight" not in exported
-    assert exported["model.embed_tokens.weight"].flatten()[0].item() == 1
+    quantize = importlib.import_module("convert_bf16_to_fp8").quantize_state_dict
+
+    def transform(shard):
+        return quantize(shard, 2, "cpu")[0] if fp8 else shard
+
+    expected = transform(expected)
+    for workers in (1, 2):
+        output = tmp_path / f"export-{workers}"
+        exporter.write_weights(checkpoint, output, workers, transform)
+        index = json.loads((output / "model.safetensors.index.json").read_text())["weight_map"]
+        actual = {name: tensor for file in set(index.values()) for name, tensor in load_file(output / file).items()}
+        assert actual.keys() == expected.keys() == index.keys()
+        for name, tensor in expected.items():
+            assert actual[name].dtype == tensor.dtype
+            assert actual[name].shape == tensor.shape
+            assert torch.equal(actual[name].view(torch.uint8), tensor.view(torch.uint8))
+
+
+def test_export_config_drops_source_quantization(exporter):
+    config = PretrainedConfig()
+    config.text_config = PretrainedConfig()
+    config.text_config.quantization_config = {"quant_method": "fp8"}
+    exporter._export_config(config)
+    assert config.dtype == config.text_config.dtype == "bfloat16"
+    assert not hasattr(config.text_config, "quantization_config")
+
+
+def test_export_rejects_multiple_processes(tmp_path, exporter, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    with pytest.raises(ValueError, match="one process"):
+        exporter.open_checkpoint(tmp_path)

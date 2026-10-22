@@ -356,14 +356,17 @@ Once paused, both keep serving the API until the run is stopped, so its owner ca
 
 ### Exporting Checkpoints
 
-Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes one safetensors shard per decoder layer plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected. Export runs in a single CPU process (`WORLD_SIZE` must be 1; `--workers` converts layers in parallel, with memory near `workers` decoder layers).
+Trainer checkpoints are DCP-sharded; export them to HF-format safetensors with `tools/convert_dcp_to_bf16.py`. The script reads the model config from the run's resolved config and writes sharded safetensors plus config/tokenizer assets to `<ckpt_dir>/weights` (or a second positional arg). It exports full fine-tunes only — LoRA checkpoints are rejected.
 
 ```bash
-# one CPU process; --workers converts decoder layers in parallel
-uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10 --workers 8
+# single process (1 GPU)
+uv run python tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
+
+# multi-rank for faster gathers and models that don't fit one GPU
+uv run torchrun --nproc-per-node 8 tools/convert_dcp_to_bf16.py outputs/my-run/checkpoints/step_10
 ```
 
-The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (quantizes each layer on the fly, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
+The exported directory loads directly into `uv run inference --vllm.model <dir>` or any HF consumer. Quantize it to blockwise FP8 (DeepSeek/GLM format, loads natively in vLLM) with `tools/convert_bf16_to_fp8.py <dir>`, or go straight from the checkpoint with `tools/convert_dcp_to_fp8.py <ckpt_dir>` (each rank quantizes its gathered slice, writes only `<ckpt_dir>/weights-FP8` — no intermediate bf16 export); dequantize an fp8-only release (e.g. GLM-5-FP8) for training with `tools/convert_fp8_to_bf16.py <dir>`.
 
 ## Observability
 

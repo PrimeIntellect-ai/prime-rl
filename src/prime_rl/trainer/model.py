@@ -23,7 +23,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, Shard
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
 from torch.distributed.tensor.parallel import parallelize_module
-from transformers import AutoConfig, GenerationConfig, PretrainedConfig
+from transformers import AutoConfig, AutoTokenizer, GenerationConfig, PretrainedConfig
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.import_utils import is_flash_attn_3_available
 
@@ -65,12 +65,6 @@ from prime_rl.trainer.parallel_dims import ParallelDims
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
-from prime_rl.utils.model_config import (
-    is_multimodal_processor,
-    load_tokenizer,
-    truncate_model_depth,
-    try_load_processor,
-)
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
 from prime_rl.utils.weights import (
@@ -408,11 +402,11 @@ def get_model(
     if config.debug.num_layers is not None:
         # VLM configs nest num_hidden_layers under text_config
         target_config = getattr(model_config, "text_config", model_config)
-        # Trim per-layer schedules with the depth so the first-N-layer layout stays consistent.
-        depth, original_depth = truncate_model_depth(target_config, config.debug.num_layers)
+        num_hidden_layers = min(config.debug.num_layers, target_config.num_hidden_layers)
         logger.warning(
-            f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {original_depth - depth} layers will not be loaded."
+            f"Setting the number of layers to {config.debug.num_layers} in the model config. This means {target_config.num_hidden_layers - num_hidden_layers} layers will not be loaded."
         )
+        target_config.num_hidden_layers = num_hidden_layers
 
     custom_vlm_cls = get_custom_vlm_cls(model_config) if is_vlm_arch else None
     if custom_vlm_cls is None and not supports_custom_impl(model_config):
@@ -457,17 +451,33 @@ def get_model(
 
 
 def setup_tokenizer(config: TokenizerConfig) -> PreTrainedTokenizer:
-    return load_tokenizer(config.name, trust_remote_code=config.trust_remote_code, chat_template=config.chat_template)
+    logger = get_logger()
+    tokenizer = AutoTokenizer.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    if config.chat_template is not None:
+        path = Path(config.chat_template)
+        if path.is_file():
+            logger.info(f"Loading custom chat template from file: {path}")
+            tokenizer.chat_template = path.read_text()
+            logger.debug(f"Chat template content:\n{tokenizer.chat_template}")
+        else:
+            logger.info("Using inline custom chat template")
+            tokenizer.chat_template = config.chat_template
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    return tokenizer
 
 
 def setup_processor(config: ModelConfig):
     """Load an ``AutoProcessor`` for VLM models. Returns ``None`` for text-only models."""
+    from transformers import AutoProcessor
+
     logger = get_logger()
-    processor = try_load_processor(config.name, trust_remote_code=config.trust_remote_code)
-    if processor is None:
-        logger.debug(f"No AutoProcessor available for {config.name}; treating as text-only.")
+    try:
+        processor = AutoProcessor.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
+    except (ValueError, OSError, KeyError) as e:
+        logger.debug(f"No AutoProcessor available for {config.name} ({type(e).__name__}); treating as text-only.")
         return None
-    if not is_multimodal_processor(processor):
+    if not (getattr(processor, "image_processor", None) or getattr(processor, "video_processor", None)):
         logger.debug(f"AutoProcessor for {config.name} has no image/video processor; treating as text-only.")
         return None
     logger.info(f"Loaded multimodal processor: {type(processor).__name__}")

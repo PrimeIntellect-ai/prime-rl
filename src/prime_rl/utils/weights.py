@@ -130,11 +130,7 @@ _LAYER_RE = re.compile(r"^(.*?\blayers\.\d+)\.")
 
 
 def group_by_layer(keys: Iterable[str]) -> dict[str, list[str]]:
-    """Group state-dict keys by decoder layer; keys outside any layer share the ``""`` group.
-
-    prime->HF conversion stacks/unstacks tensors within a layer, so it must always see
-    complete groups.
-    """
+    """Group complete decoder layers for conversion, with non-layer keys together."""
     layer_to_keys: dict[str, list[str]] = {}
     for key in keys:
         match = _LAYER_RE.match(key)
