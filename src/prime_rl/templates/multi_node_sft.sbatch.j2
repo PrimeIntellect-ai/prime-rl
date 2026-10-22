@@ -71,7 +71,7 @@ export WANDB_RUN_ID=$PRL_RUN_ID
 export WANDB_SHARED_MODE=1
 export WANDB_SHARED_PRIMARY=trainer
 export WANDB_SHARED_FINISHER=online-eval
-export WANDB_PROGRAM="uv run {{ entrypoint }}"
+export WANDB_PROGRAM="uv run sft"
 {% endif %}
 
 # Networking. Inference nodes occupy the first ranks, followed by trainer nodes.
@@ -241,7 +241,7 @@ else
             --tee=3 \
             --redirects=3 \
             --local-ranks-filter={{ ranks_filter }} \
-            -m prime_rl.trainer.{{ entrypoint }}.train \
+            -m prime_rl.trainer.sft.train \
             @ $TRAIN_CONFIG_PATH \
 {%- if use_nccl_broadcast %}
             --weight-broadcast.host 0.0.0.0 \

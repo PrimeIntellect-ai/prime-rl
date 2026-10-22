@@ -246,8 +246,6 @@ def main_config(run_dir: Path) -> tuple[str, dict]:
         return "rl", read_json(configs / "orchestrator.json") or read_json(configs / "trainer.json")
     if (configs / "eval.json").exists():
         return "eval", read_json(configs / "eval.json")
-    if (configs / "pretrain.json").exists():
-        return "pretrain", read_json(configs / "pretrain.json")
     return "other", {}
 
 
@@ -479,7 +477,7 @@ def read_log(run: str, file: str, start: int | None = None, end: int | None = No
 
 # ------------------------------------------------------------------------- configs
 
-CONFIG_ORDER = ["rl", "sft", "eval", "pretrain", "orchestrator", "trainer", "inference"]
+CONFIG_ORDER = ["rl", "sft", "eval", "orchestrator", "trainer", "inference"]
 
 
 def config_rank(name: str) -> tuple[int, str]:

@@ -480,6 +480,133 @@ class SFTDataset(StatefulIterableDataset):
             yield processed_example
 
 
+class TokenShards:
+    """Datatrove tokenized shards in one or more folders, the ``num_tokens`` first tokens of their files (in folder
+    order, then file name order), read as one cyclic token stream.
+
+    ``<name>.ds`` holds the token ids (little-endian, 2 or 4 bytes as recorded on the first line of
+    ``<name>.ds.metadata``) and ``<name>.ds.index`` the uint64 end offset of every document. File
+    boundaries are document boundaries.
+
+    Each epoch reads all ``num_tokens // seq_len`` windows of the stream once, in a random order and from a random
+    offset drawn from ``seed`` and the epoch, so epochs differ in order and window boundaries, and part of an epoch is
+    a sample of the whole stream (``window_start``). The last ``num_tokens % seq_len`` tokens of an epoch are
+    skipped."""
+
+    def __init__(self, paths: list[Path], seed: int = 0):
+        self.files, self.first_files = [], []
+        for path in paths:
+            files = sorted(path.glob("*.ds"))
+            if not files:
+                raise FileNotFoundError(f"No datatrove .ds files in {path}")
+            self.first_files.append(len(self.files))
+            self.files += files
+        self.dtypes = [token_dtype(file) for file in self.files]
+        sizes = [file.stat().st_size // dtype.itemsize for file, dtype in zip(self.files, self.dtypes)]
+        self.starts = np.cumsum([0, *sizes])
+        self.num_tokens = int(self.starts[-1])
+        self.seed = seed
+        self.memmaps: dict[int, tuple[np.memmap, np.memmap]] = {}
+        # The current epoch, its window order and its offset.
+        self.epoch_order: tuple[int | None, np.ndarray | None, int] = (None, None, 0)
+
+    def open(self, file_index: int) -> tuple[np.memmap, np.memmap]:
+        # Opened lazily, so every dataloader worker maps the files itself.
+        if file_index not in self.memmaps:
+            file = self.files[file_index]
+            tokens = np.memmap(file, dtype=self.dtypes[file_index], mode="r")
+            doc_ends = np.memmap(f"{file}.index", dtype="<u8", mode="r")
+            self.memmaps[file_index] = tokens, doc_ends
+        return self.memmaps[file_index]
+
+    def locate(self, position: int, length: int) -> tuple[int, int, int]:
+        """File index, offset in the file and length of the contiguous file run at stream ``position``,
+        at most ``length`` tokens."""
+        position %= self.num_tokens
+        length = min(length, self.num_tokens - position)
+        file_index = int(np.searchsorted(self.starts, position, side="right")) - 1
+        length = min(length, int(self.starts[file_index + 1]) - position)
+        return file_index, position - int(self.starts[file_index]), length
+
+    def read(self, start: int, length: int) -> tuple[np.ndarray, list[int]]:
+        """Tokens ``[start, start + length)`` of the cyclic stream and the offsets in them where a document starts.
+        The wrap from the end of the stream to its start begins a new document."""
+        pieces, doc_starts = [], []
+        offset = 0
+        while offset < length:
+            if offset > 0:
+                doc_starts.append(offset)
+            file_index, local, size = self.locate(start + offset, length - offset)
+            tokens, doc_ends = self.open(file_index)
+            pieces.append(tokens[local : local + size])
+            first, last = np.searchsorted(doc_ends, [local, local + size], side="right")
+            doc_starts.extend(offset + int(end) - local for end in doc_ends[first:last] if end < local + size)
+            offset += size
+        return np.concatenate(pieces).astype(np.int64), doc_starts
+
+    def window_start(self, position: int, seq_len: int) -> int:
+        """Stream offset of the window to read when ``position`` tokens have been read."""
+        num_windows = self.num_tokens // seq_len
+        epoch, window = divmod(position // seq_len, num_windows)
+        if self.epoch_order[0] != epoch:
+            rng = np.random.default_rng([self.seed, epoch])
+            order = rng.permutation(num_windows).astype(np.uint32)
+            self.epoch_order = epoch, order, int(rng.integers(self.num_tokens))
+        _, order, offset = self.epoch_order
+        return (offset + int(order[window]) * seq_len) % self.num_tokens
+
+    def first_documents(self) -> list[np.ndarray]:
+        """The first document of every folder."""
+        documents = []
+        for file_index in self.first_files:
+            tokens, doc_ends = self.open(file_index)
+            documents.append(np.asarray(tokens[: int(doc_ends[0])]))
+        return documents
+
+
+def token_dtype(file: Path) -> np.dtype:
+    first_line = Path(f"{file}.metadata").read_text().splitlines()[0]
+    return np.dtype(f"<u{int(first_line.rsplit('|', 1)[1])}")
+
+
+class TokenDataset(StatefulIterableDataset):
+    """``seq_len`` windows of a token pool, window ``w`` read from ``shards.window_start(w * seq_len)``. A window is
+    one sample with one segment per document (``seq_lens``), positions restarting at every document; without
+    ``document_masking`` it is one segment. Every data rank walks the whole window sequence but reads only its own
+    windows, so ``step`` counts the windows of all ranks and ``epoch`` is the fraction of the pool read."""
+
+    def __init__(self, shards: TokenShards, seq_len: int, non_dp_size: int = 1, document_masking: bool = True):
+        super().__init__(non_dp_size)
+        self.shards = shards
+        self.seq_len = seq_len
+        self.document_masking = document_masking
+
+    def __iter__(self):
+        self._setup_world_info()
+        while True:
+            window = self.step
+            self.step += 1
+            self.epoch = self.step * self.seq_len / self.shards.num_tokens
+            if window % self.data_world_size != self.data_rank:
+                continue
+            start = self.shards.window_start(window * self.seq_len, self.seq_len)
+            tokens, doc_starts = self.shards.read(start, self.seq_len + 1)
+            doc_starts = [s for s in doc_starts if s < self.seq_len] if self.document_masking else []
+            seq_lens = np.diff([0, *doc_starts, self.seq_len]).tolist()
+            ids = tokens.tolist()
+            self.num_samples["tokens"] += 1
+            self.num_tokens["tokens"] += self.seq_len
+            yield {
+                "input_ids": ids[:-1],
+                "target_ids": ids[1:],
+                "position_ids": [position for length in seq_lens for position in range(length)],
+                "loss_mask": [True] * self.seq_len,
+                "seq_lens": seq_lens,
+                "mm_kwargs": None,
+                "mm_token_type_ids": None,
+            }
+
+
 class CatDataset(StatefulIterableDataset):
     """Pack samples into rows of at most `seq_len` tokens, padded to a multiple of `pad_to_multiple_of`."""
 
@@ -540,7 +667,7 @@ class CatDataset(StatefulIterableDataset):
                 value = sample[key]
                 assert isinstance(value, list)
                 packed_samples[key].extend(value)
-            packed_samples["seq_lens"].append(sample_len)
+            packed_samples["seq_lens"].extend(sample["seq_lens"])
 
             sample_mm_kwargs = sample.get("mm_kwargs")
             sample_mm_type_ids = sample.get("mm_token_type_ids")
@@ -763,6 +890,11 @@ def setup_dataset(
             multimodal=multimodal,
             columns=config.columns,
         )
+    elif config.type == "tokens":
+        shards = TokenShards(config.paths, seed=config.seed)
+        check_eos(shards, tokenizer.eos_token_id)
+        get_logger().info(f"Token pool: {shards.num_tokens:,} tokens")
+        return TokenDataset(shards, config.seq_len, non_dp_size, config.document_masking)
     else:
         raise ValueError(f"Invalid dataset type: {config.type}")
 
@@ -812,3 +944,26 @@ def get_dataset_progress(dataloader: StatefulDataLoader) -> dict:
         "num_samples": dict(num_samples),
         "num_tokens": dict(num_tokens),
     }
+
+
+def check_eos(shards: TokenShards, eos_token_id: int) -> None:
+    """Every document ends with the tokenizer's EOS. A different token there means the shards were made with
+    another tokenizer. Checked on the first document of every folder."""
+    for file_index, document in zip(shards.first_files, shards.first_documents()):
+        if document[-1] != eos_token_id:
+            raise ValueError(
+                f"The first document of {shards.files[file_index].parent} ends with token {document[-1]}, not the "
+                f"tokenizer's EOS {eos_token_id}. Were the shards tokenized with tokenizer.name?"
+            )
+
+
+def starts_with_bos(shards: TokenShards, bos_token_id: int | None) -> bool:
+    """Whether the documents start with the tokenizer's BOS, read off the first document of every folder. The eval
+    suite formats its requests the same way."""
+    starts = {
+        shards.files[i].parent.as_posix(): int(doc[0]) == bos_token_id
+        for i, doc in zip(shards.first_files, shards.first_documents())
+    }
+    if len(set(starts.values())) > 1:
+        raise ValueError(f"Only some token folders start their documents with BOS: {starts}")
+    return all(starts.values())

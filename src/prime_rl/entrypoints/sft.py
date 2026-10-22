@@ -7,7 +7,6 @@ from pathlib import Path
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.monitors import EvalMonitorsConfig, PrimeEvalMonitorConfig, TrainMonitorsConfig
 from prime_rl.configs.orchestrator import OnlineEvalSourceConfig
-from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.shared import LogConfig
 from prime_rl.entrypoints.dashboard import ensure_dashboard, log_dashboard_url
@@ -23,7 +22,7 @@ from prime_rl.utils.pathing import (
     get_launcher_log_dir,
     prepare_attempt_dirs,
     prepare_run,
-    resolve_resume_step,
+    resolve_latest_ckpt_step,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -59,6 +58,16 @@ def get_ckpt_base(config: SFTConfig) -> Path:
     return (config.ckpt.output_dir if config.ckpt else None) or config.run_dir
 
 
+def resolve_resume_step(config: SFTConfig) -> int | None:
+    if config.resume is None:
+        return None
+    if config.resume.dir is not None:
+        return config.resume.dir_step
+    if config.resume.step is not None:
+        return config.resume.step
+    return resolve_latest_ckpt_step(get_ckpt_dir(get_ckpt_base(config)))
+
+
 def build_online_eval_monitors(monitors: TrainMonitorsConfig) -> EvalMonitorsConfig:
     """The online-eval process's monitors: same W&B and file config as the trainer's,
     with the platform monitor switched to the evaluation flavor under the same name."""
@@ -81,7 +90,7 @@ def build_online_eval_config(config: SFTConfig) -> SFTOnlineEvalConfig:
         weight_broadcast=config.weight_broadcast,
         broadcasts_dir=get_broadcast_dir(config.run_dir),
         max_steps=config.max_steps,
-        resume_step=resolve_resume_step(config.resume, get_ckpt_dir(get_ckpt_base(config))),
+        resume_step=resolve_resume_step(config),
         # Same run dir as the trainer: the dashboard reads the eval's
         # file-monitor artifacts from the run directory, so a separate
         # output dir would hide them. The train-vs-eval record collision
@@ -107,7 +116,7 @@ def sft_config_components(config: SFTConfig, config_dir: Path) -> list[tuple[str
     return components
 
 
-def write_config(config: SFTConfig | PretrainConfig, config_path: Path, exclude: set[str] | None = None) -> None:
+def write_config(config: SFTConfig, config_path: Path, exclude: set[str] | None = None) -> None:
     """Write resolved config to disk, excluding launcher-only fields."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(config_path, "w") as f:
@@ -138,17 +147,10 @@ def write_eval_subconfigs(config: SFTConfig, config_dir: Path, strip_router: boo
         write_env_server_config(config_dir, "eval", source, config.log)
 
 
-def write_trainer_slurm_script(
-    config: SFTConfig | PretrainConfig,
-    entrypoint: str,
-    config_path: Path,
-    log_dir: Path,
-    script_path: Path,
-    **template_vars,
+def write_slurm_script(
+    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, prl_run_id: str, wandb_shared: bool
 ) -> None:
-    """Write the SLURM script of a trainer entrypoint (``sft`` or ``pretrain``). Without
-    ``template_vars`` a multi-node job runs only trainer nodes; SFT passes its online-eval
-    variables on top."""
+    """Write the SLURM script to disk."""
     from jinja2 import Environment, FileSystemLoader
 
     assert config.slurm is not None
@@ -161,80 +163,78 @@ def write_trainer_slurm_script(
     env = Environment(loader=FileSystemLoader(template_dirs), keep_trailing_newline=True)
     template = env.get_template(config.slurm.template_path.name)
 
-    trainer_vars = {}
-    if config.deployment.type == "multi_node":
-        trainer_vars = dict(
-            trainer_env_vars={**DEFAULT_COMMON_ENV_VARS, **DEFAULT_TRAINER_ENV_VARS, **config.env_vars},
+    trainer_env_vars = {
+        **DEFAULT_COMMON_ENV_VARS,
+        **DEFAULT_TRAINER_ENV_VARS,
+        **config.env_vars,
+    }
+
+    if config.deployment.type == "single_node":
+        script = template.render(
+            **config.slurm.template_vars,
+            config_path=config_path,
+            config_dir=config_path.parent,
+            log_dir=log_dir,
+            output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
+            gpus_per_node=config.deployment.gpus_per_node,
+        )
+    else:
+        online_eval = config.eval is not None
+        eval_vars = {}
+        if online_eval:
+            assert config.inference is not None
+            inference_env_vars = {
+                **DEFAULT_COMMON_ENV_VARS,
+                **DEFAULT_INFERENCE_ENV_VARS,
+                **config.env_vars,
+                **config.inference.env_vars,
+            }
+            eval_vars = {
+                "router": config.inference.router,
+                "router_port": config.inference.server.port,
+                "backend_port": config.inference.backend_port,
+                "data_parallel_rpc_port": config.inference.vllm.data_parallel_rpc_port,
+                "dp_per_node": config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
+                "enable_expert_parallel": config.inference.vllm.enable_expert_parallel,
+                "inference_env_vars": inference_env_vars,
+                "online_eval_env_vars": {
+                    **DEFAULT_COMMON_ENV_VARS,
+                    "LOGURU_FORCE_COLORS": "1",
+                    **config.env_vars,
+                },
+                "eval_env_names": [source.resolved_name for source in eval_env_servers(config)],
+            }
+        script = template.render(
+            **config.slurm.template_vars,
+            config_path=config_path,
+            config_dir=config_path.parent,
+            log_dir=log_dir,
+            output_dir=config.run_dir,
+            launcher_dir=get_launcher_dir(config.run_dir),
+            launcher_log_dir=get_launcher_log_dir(config.run_dir),
+            trainer_env_vars=trainer_env_vars,
             num_nodes=config.deployment.num_train_nodes,
             num_train_nodes=config.deployment.num_train_nodes,
-            num_infer_nodes=0,
+            num_infer_nodes=config.deployment.num_infer_nodes if online_eval else 0,
+            gpus_per_node=config.deployment.gpus_per_node,
             ranks_filter=",".join(map(str, config.log.ranks_filter)),
-            prl_run_id=os.environ["PRL_RUN_ID"],
-            wandb_shared=False,
+            prl_run_id=prl_run_id,
+            wandb_shared=wandb_shared,
             run_name=config.run.name,
-            online_eval=False,
-            use_nccl_broadcast=False,
+            online_eval=online_eval,
+            use_nccl_broadcast=(
+                config.eval is not None
+                and config.weight_broadcast is not None
+                and config.weight_broadcast.type == "nccl"
+            ),
+            **eval_vars,
         )
-    script = template.render(
-        **config.slurm.template_vars,
-        entrypoint=entrypoint,
-        config_path=config_path,
-        config_dir=config_path.parent,
-        log_dir=log_dir,
-        output_dir=config.run_dir,
-        launcher_dir=get_launcher_dir(config.run_dir),
-        launcher_log_dir=get_launcher_log_dir(config.run_dir),
-        gpus_per_node=config.deployment.gpus_per_node,
-        **{**trainer_vars, **template_vars},
-    )
 
     script_path.parent.mkdir(parents=True, exist_ok=True)
     get_launcher_log_dir(config.run_dir).mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
-
-
-def submit_slurm_script(script_path: Path, log_message: str, logger) -> None:
-    logger.info(f"Submitting: sbatch {script_path}")
-    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"sbatch failed: {result.stderr.strip()}")
-        sys.exit(1)
-    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
-
-
-def write_slurm_script(
-    config: SFTConfig, config_path: Path, log_dir: Path, script_path: Path, wandb_shared: bool
-) -> None:
-    """Write the SLURM script to disk, with the online-eval nodes of a multi-node run."""
-    eval_vars = {}
-    if config.deployment.type == "multi_node" and config.eval is not None:
-        assert config.inference is not None
-        inference_env_vars = {
-            **DEFAULT_COMMON_ENV_VARS,
-            **DEFAULT_INFERENCE_ENV_VARS,
-            **config.env_vars,
-            **config.inference.env_vars,
-        }
-        eval_vars = {
-            "num_infer_nodes": config.deployment.num_infer_nodes,
-            "wandb_shared": wandb_shared,
-            "online_eval": True,
-            "use_nccl_broadcast": config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
-            "router": config.inference.router,
-            "router_port": config.inference.server.port,
-            "backend_port": config.inference.backend_port,
-            "data_parallel_rpc_port": config.inference.vllm.data_parallel_rpc_port,
-            "dp_per_node": config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
-            "enable_expert_parallel": config.inference.vllm.enable_expert_parallel,
-            "inference_env_vars": inference_env_vars,
-            "online_eval_env_vars": {
-                **DEFAULT_COMMON_ENV_VARS,
-                "LOGURU_FORCE_COLORS": "1",
-                **config.env_vars,
-            },
-            "eval_env_names": [source.resolved_name for source in eval_env_servers(config)],
-        }
-    write_trainer_slurm_script(config, "sft", config_path, log_dir, script_path, **eval_vars)
 
 
 def sft_slurm(config: SFTConfig):
@@ -268,7 +268,7 @@ def sft_slurm(config: SFTConfig):
         write_eval_subconfigs(config, config_dir, strip_router=True)
     logger.info(f"Configs:\n{format_config_message(config_dir, 'sft', sft_config_components(config, config_dir))}")
     script_path = launcher_dir / SFT_SBATCH
-    write_slurm_script(config, config_path, log_dir, script_path, wandb_shared)
+    write_slurm_script(config, config_path, log_dir, script_path, os.environ["PRL_RUN_ID"], wandb_shared)
     logger.info(f"Wrote SLURM script to {script_path}")
 
     num_nodes = config.deployment.num_train_nodes if config.deployment.type == "multi_node" else 1
@@ -288,7 +288,13 @@ def sft_slurm(config: SFTConfig):
 
     dashboard_url = ensure_dashboard(config.output_dir, logger) if config.dashboard else None
 
-    submit_slurm_script(script_path, log_message, logger)
+    logger.info(f"Submitting: sbatch {script_path}")
+    result = subprocess.run(["sbatch", str(script_path)], capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"sbatch failed: {result.stderr.strip()}")
+        sys.exit(1)
+
+    logger.success(f"{result.stdout.strip()}\n\n{log_message}")
     log_dashboard_url(logger, dashboard_url)
 
 
@@ -441,7 +447,7 @@ def clean_stale_eval_artifacts(config: SFTConfig) -> None:
     if os.environ.get("NEVER_CLEAN"):
         logger.warning("NEVER_CLEAN is set - keeping stale weight broadcasts; the online-eval process may replay them")
         return
-    resume_step = resolve_resume_step(config.resume, get_ckpt_dir(get_ckpt_base(config)))
+    resume_step = resolve_resume_step(config)
     clean_future_steps(config.run_dir, resume_step if resume_step is not None else -1)
 
 

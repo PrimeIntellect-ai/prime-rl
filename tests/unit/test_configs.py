@@ -24,7 +24,6 @@ from prime_rl.configs.orchestrator import (
 from prime_rl.configs.orchestrator import (
     ModelConfig as OrchestratorModelConfig,
 )
-from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import ModelConfig as TrainerModelConfig
@@ -36,7 +35,6 @@ CONFIG_CLASSES = [
     RLConfig,
     TrainerConfig,
     SFTConfig,
-    PretrainConfig,
     OrchestratorConfig,
     InferenceConfig,
     EnvServerConfig,

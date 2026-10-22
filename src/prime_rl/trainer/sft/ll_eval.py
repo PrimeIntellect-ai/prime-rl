@@ -1,5 +1,5 @@
-"""The pretraining eval suite: log-likelihood scoring of text eval sets, as in the offline studies
-(`pretrain-evals` offline suite). A set lives in ``<data_dir>/<name>/`` as ``test.parquet`` plus ``meta.json``
+"""Log-likelihood evals inside the trainer (``[ll_eval]``): scoring of text eval sets, as in the
+`pretrain-evals` offline suite. A set lives in ``<data_dir>/<name>/`` as ``test.parquet`` plus ``meta.json``
 (``kind``, ``parquet_sha256``). Kinds:
 
 Requests start with BOS only if the training documents do (``bos``), so evals see the training format.
@@ -16,10 +16,11 @@ Held-out token shards (``TokenEvalSetConfig``) are scored as a ``ppl`` set (``pr
 as stored, cut into windows the same way; bpb counts the bytes of the scored tokens.
 
 A set is tokenized once (`prepare_set`); every round scores its requests (`score_requests`, the model's LM head
-replaced by `scoring_head`) and summarizes them (`summarize`)."""
+replaced by `scoring_head`) and summarizes them (`summarize`). `LogLikelihoodEval` runs the rounds."""
 
 import json
 import math
+import time
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -34,10 +35,12 @@ import torch.distributed as dist
 from torch import nn
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.configs.pretrain import TokenEvalSetConfig
+from prime_rl.configs.sft import LogLikelihoodEvalConfig, TokenEvalSetConfig
 from prime_rl.trainer.models.layers.lm_head import IGNORE_INDEX
-from prime_rl.trainer.pretrain.data import TokenShards, check_eos
+from prime_rl.trainer.sft.data import TokenShards, check_eos
+from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world
+from prime_rl.utils.logger import get_logger
 
 POSITION_BINS = (0, 128, 512, 2048, 4096, 16384)
 """ppl loss is also reported per bin of the target's position in its window."""
@@ -378,3 +381,76 @@ def summarize_pairs(num_good: int, logprobs) -> tuple[dict, dict]:
     correct = good_logprob > bad_logprob
     summary = {"acc": correct.mean(), "items": num_good}
     return summary, {"good_logprob": good_logprob, "bad_logprob": bad_logprob, "acc": correct}
+
+
+def bytes_to_unicode() -> dict[int, str]:
+    """The byte -> character map of byte-level BPE tokenizers (GPT-2, Llama 3, Qwen, DeepSeek)."""
+    printable = (
+        list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    chars = printable[:]
+    n = 0
+    for byte in range(256):
+        if byte not in printable:
+            printable.append(byte)
+            chars.append(256 + n)
+            n += 1
+    return dict(zip(printable, map(chr, chars)))
+
+
+def token_byte_lengths(tokenizer: PreTrainedTokenizer) -> torch.Tensor:
+    """UTF-8 bytes each token id stands for. Special tokens count as 0 bytes. Exact for
+    byte-level BPE tokenizers, approximate otherwise."""
+    byte_chars = set(bytes_to_unicode().values())
+    special_ids = set(tokenizer.all_special_ids) | set(tokenizer.added_tokens_decoder)
+    lengths = torch.zeros(len(tokenizer), dtype=torch.long)
+    for token_id, token in enumerate(tokenizer.convert_ids_to_tokens(list(range(len(tokenizer))))):
+        if token is None or token_id in special_ids:
+            continue
+        if all(char in byte_chars for char in token):
+            lengths[token_id] = len(token)
+        else:
+            lengths[token_id] = len(tokenizer.convert_tokens_to_string([token]).encode())
+    return lengths
+
+
+class LogLikelihoodEval:
+    """The ``[ll_eval]`` sets, tokenized once at startup and scored on the training model. Requests start with BOS if
+    ``bos`` (the training documents do)."""
+
+    def __init__(self, config: LogLikelihoodEvalConfig, tokenizer: PreTrainedTokenizer, bos: bool, run_dir: Path):
+        start_time = time.perf_counter()
+        self.config = config
+        self.run_dir = run_dir
+        has_token_sets = any(not isinstance(eval_set, str) for eval_set in config.sets)
+        byte_lengths = token_byte_lengths(tokenizer).numpy() if has_token_sets else None
+        self.sets = [
+            prepare_multi_length_set(eval_set, config.data_dir, tokenizer, config.seq_lens, bos, byte_lengths)
+            for eval_set in config.sets
+        ]
+        get_logger().info(
+            f"Prepared {len(self.sets)} log-likelihood eval sets (BOS: {bos}) in {time.perf_counter() - start_time:.0f}s"
+        )
+
+    @torch.no_grad()
+    def run(self, model: nn.Module, step: int) -> dict[str, float]:
+        """Score every set on the weights after ``step`` optimizer updates. The metrics are on rank 0 only."""
+        start_time = time.perf_counter()
+        metrics = {}
+        # Eager, also for compiled layers: the packed rows vary in length and would recompile at every forward.
+        with scoring_head_active(model), torch.compiler.set_stance("force_eager"):
+            scored = score_sets(model, self.sets, self.config.micro_batch_tokens, get_dcp_group())
+        for eval_set, (logprobs, hits) in zip(self.sets, scored or []):
+            for seq_len, version in eval_set.versions.items():
+                index = eval_set.index[seq_len]
+                summary, arrays = summarize(version, [logprobs[i] for i in index], [hits[i] for i in index])
+                metrics |= set_metrics(eval_set.name, seq_len, summary)
+                if self.config.save_arrays:
+                    out = self.run_dir / "ll_eval" / f"step_{step}"
+                    out.mkdir(parents=True, exist_ok=True)
+                    label = f"{eval_set.name}@{length_label(seq_len)}"
+                    np.savez(out / f"{label}.npz", **arrays)
+                    (out / f"{label}.json").write_text(json.dumps(summary, default=float))
+        metrics["time/ll_eval"] = time.perf_counter() - start_time
+        get_logger().success(f"Log-likelihood evals | Step {step} | {metrics['time/ll_eval']:.0f}s")
+        return metrics

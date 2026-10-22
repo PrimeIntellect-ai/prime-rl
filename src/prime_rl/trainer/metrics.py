@@ -7,7 +7,7 @@ import torch.distributed as dist
 from torch import Tensor, nn
 from torch.distributed.tensor import DTensor, Partial, Replicate
 
-from prime_rl.trainer.model import compute_expert_load_stats, iter_moe_blocks
+from prime_rl.trainer.model import compute_expert_load_stats
 from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.utils.vlm import get_language_model
 
@@ -29,45 +29,15 @@ def reduce_stats(sums: dict[str, Tensor], maxes: dict[str, Tensor], group: dist.
     return reduced
 
 
-def take_routing_counts(model: nn.Module) -> tuple[Tensor, Tensor]:
+def take_routing_counts(moes: list[MoE]) -> tuple[Tensor, Tensor]:
     """This rank's `[num_moe_layers, num_experts]` expert counts and `[num_moe_layers]` routing-confidence sums
     since the last call, and reset them."""
-    moes = list(iter_moe_blocks(model))
     counts = torch.stack([moe.tokens_per_expert for moe in moes])
     confidence = torch.stack([moe.routing_confidence_sum for moe in moes])
     for moe in moes:
         moe.tokens_per_expert.zero_()
         moe.routing_confidence_sum.zero_()
     return counts, confidence
-
-
-def routed_k_metrics(model: nn.Module, group: dist.ProcessGroup) -> dict[str, float]:
-    """Routed experts per training token since the last call, for variable-k routing (null experts), over all ranks:
-    mean, std, share of tokens with none and with the maximum (the mean over MoE layers), the worst layer's std, and
-    the busiest rank's routed pairs per token over the mean."""
-    moes = [moe for moe in iter_moe_blocks(model) if moe.routed_k_counts is not None]
-    if not moes:
-        return {}
-    counts = torch.stack([moe.routed_k_counts for moe in moes])
-    for moe in moes:
-        moe.routed_k_counts.zero_()
-    k = torch.arange(counts.shape[1], device=counts.device)
-    # This rank's routed pairs per token, over the global mean: the load the data puts on one rank.
-    rank_mean = (counts * k).sum() / counts.sum()
-    rank_max = rank_mean.clone()
-    dist.all_reduce(rank_max, op=dist.ReduceOp.MAX, group=group)
-    dist.all_reduce(counts, group=group)
-    tokens = counts.sum(dim=1)
-    mean = (counts * k).sum(dim=1) / tokens
-    std = ((counts * (k - mean[:, None]) ** 2).sum(dim=1) / tokens).sqrt()
-    return {
-        "router/k/mean": mean.mean().item(),
-        "router/k/std": std.mean().item(),
-        "router/k/std/max": std.max().item(),
-        "router/k/zero_frac": (counts[:, 0] / tokens).mean().item(),
-        "router/k/max_frac": (counts[:, -1] / tokens).mean().item(),
-        "router/k/rank_max_mean": (rank_max / mean.mean()).item(),
-    }
 
 
 def moe_layer_indices(model: nn.Module) -> list[int]:

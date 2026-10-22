@@ -1,12 +1,11 @@
 import re
-import uuid
 import warnings
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
-from prime_rl.configs.monitors import MonitorsConfig, TrainMonitorsConfig
+from prime_rl.configs.monitors import MonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
     ControlConfig,
@@ -14,16 +13,12 @@ from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     ResumeConfig,
-    RunConfig,
-    SFTDeploymentConfig,
-    SingleNodeDeploymentConfig,
-    SlurmConfig,
     TrainerLogConfig,
     TransportConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
-from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
+from prime_rl.utils.config import BaseConfig, default_output_dir
 
 # -- Shared trainer configs (used by both SFT and RL trainers) --
 
@@ -268,7 +263,7 @@ class MoERuntimeConfig(BaseConfig):
 
 class InitConfig(BaseConfig):
     """Random weight initialization: every weight matrix and embedding from N(0, std). Norm weights start at 1,
-    biases at 0."""
+    biases and other 1-D parameters at 0."""
 
     std: float = Field(0.02, gt=0)
     """Standard deviation."""
@@ -733,98 +728,6 @@ class BaseTrainerConfig(BaseConfig):
             self.tokenizer.name = self.model.name
         if self.tokenizer.trust_remote_code is None:
             self.tokenizer.trust_remote_code = self.model.trust_remote_code
-        return self
-
-
-class TrainerLaunchConfig(BaseTrainerConfig):
-    """Fields and validators of the trainers that launch on their own (SFT and pretraining): run identity, output
-    directory, monitors, resume, deployment and SLURM."""
-
-    resume: ResumeConfig | None = None
-    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
-
-    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
-    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
-
-    run: RunConfig = Field(default_factory=RunConfig)
-    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
-
-    output_dir: Path = Field(default_factory=default_output_dir)
-    """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
-
-    clean: bool = False
-    """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
-
-    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
-
-    slurm: SlurmConfig | None = None
-    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
-
-    dry_run: bool = False
-    """Only validate and dump resolved configs, then exit early."""
-
-    @property
-    def run_dir(self) -> Path:
-        assert self.run.dir is not None  # resolved at construction
-        return self.output_dir / self.run.dir
-
-    def default_run_name(self) -> str:
-        return f"{self.model.name.split('/')[-1]}--{uuid.uuid4().hex[:8]}".lower()
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_deployment(cls, data):
-        if not isinstance(data, dict):
-            return data
-        deployment = data.get("deployment")
-        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
-            for key in ("num_train_gpus", "num_infer_gpus"):
-                deployment.pop(key, None)
-        return data
-
-    @model_validator(mode="after")
-    def auto_setup_run_identity(self):
-        """Default the run name (``default_run_name``) and the run directory, W&B run name and platform run name to it
-        when not set explicitly."""
-        if self.run.name is None:
-            self.run.name = self.default_run_name()
-        if self.run.dir is None:
-            self.run.dir = self.run.name
-        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
-            self.monitors.wandb.name = self.run.name
-        if self.monitors.prime is not None and self.monitors.prime.name is None:
-            self.monitors.prime.name = self.run.name
-        return self
-
-    @model_validator(mode="after")
-    def validate_deployment(self):
-        if self.deployment.type == "multi_node" and self.slurm is None:
-            raise ValueError("Must use SLURM for multi-node deployment.")
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_deployment(self):
-        if self.deployment.type == "multi_node":
-            if self.deployment.nodes_per_fsdp_group is not None:
-                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
-                    raise ValueError(
-                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
-                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
-                    )
-                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
-        return self
-
-    @model_validator(mode="after")
-    def auto_setup_slurm_template(self):
-        if self.slurm is not None and self.slurm.job_name is None:
-            self.slurm.job_name = self.run.name
-        if self.slurm is not None and self.slurm.template_path is None:
-            templates_dir = find_package_resource("templates")
-            if templates_dir is not None:
-                if self.deployment.type == "single_node":
-                    self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
-                else:
-                    self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
         return self
 
 

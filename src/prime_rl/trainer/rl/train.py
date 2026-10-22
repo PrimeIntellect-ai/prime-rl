@@ -75,7 +75,7 @@ from prime_rl.control.controller import Controller, broadcast_pause
 from prime_rl.control.server import ControlServer
 from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
-from prime_rl.utils.pathing import resolve_resume_step, write_resolved_config
+from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
 
 
@@ -127,10 +127,17 @@ def train(config: TrainerConfig):
     parallel_dims = get_parallel_dims(config.model)
 
     # Check for checkpoint to resume from
+    checkpoint_step = None
     logger.info(f"Initializing checkpoint manager ({config.ckpt})")
     ckpt_manager = setup_ckpt_manager(config.output_dir, config.ckpt, resume=config.resume)
 
-    checkpoint_step = resolve_resume_step(config.resume, ckpt_manager.ckpt_dir)
+    if config.resume is not None:
+        if config.resume.dir is not None:
+            checkpoint_step = config.resume.dir_step
+        else:
+            checkpoint_step = config.resume.step
+            if checkpoint_step is None:
+                checkpoint_step = resolve_latest_ckpt_step(ckpt_manager.ckpt_dir)
 
     # Initialize the model
     logger.info(f"Initializing model ({config.model})")

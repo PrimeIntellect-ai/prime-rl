@@ -170,13 +170,6 @@ jobs:
               - 'tests/integration/test_alphabet_sort.py'
               - 'configs/ci/integration/reverse-text{,-lora,-moe,-rl-opd,-rl-sft}/**'
               - 'configs/ci/integration/alphabet_sort.toml'
-            pretrain:
-              - *runtime
-              - 'packages/prime-rl-configs/src/prime_rl/configs/{pretrain,monitors}.py'
-              - 'src/prime_rl/entrypoints/pretrain.py'
-              - 'src/prime_rl/monitors/**'
-              - 'tests/integration/test_pretrain_moe.py'
-              - 'configs/ci/integration/pretrain-moe/**'
             eval:
               - *runtime
               - 'packages/prime-rl-configs/src/prime_rl/configs/{eval,orchestrator,inference,env_server,algorithm,monitors}.py'
@@ -191,14 +184,12 @@ jobs:
           RUN_ALL: ${{ github.event_name != 'pull_request' }}
           SFT: ${{ steps.filter.outputs.sft || 'false' }}
           RL: ${{ steps.filter.outputs.rl || 'false' }}
-          PRETRAIN: ${{ steps.filter.outputs.pretrain || 'false' }}
         run: |
-          tests=$(jq -cn --argjson all "$RUN_ALL" --argjson sft "$SFT" --argjson rl "$RL" --argjson pretrain "$PRETRAIN" '[
+          tests=$(jq -cn --argjson all "$RUN_ALL" --argjson sft "$SFT" --argjson rl "$RL" '[
               if $all or $sft then
                 {test: "reverse_text_sft", name: "Reverse Text SFT"},
                 {test: "reverse_text_sft_lora", name: "Reverse Text SFT LoRA"}
               else empty end,
-              if $all or $pretrain then {test: "pretrain_moe", name: "Pretrain MoE"} else empty end,
               if $all or $rl then
                 {test: "reverse_text", name: "Reverse Text"},
                 {test: "reverse_text_rl_opd", name: "Reverse Text RL OPD"},

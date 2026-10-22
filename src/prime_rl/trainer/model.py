@@ -206,6 +206,18 @@ def is_tt_moe_model(model: nn.Module) -> bool:
     return hasattr(config, "num_experts") or hasattr(config, "n_routed_experts")
 
 
+def compute_max_vio_and_routing_confidence(
+    tokens_per_expert: Tensor, routing_confidence_sum: Tensor, top_k: int
+) -> tuple[Tensor, Tensor]:
+    """Max violation and routing confidence of one MoE layer's expert counts (last dimension) and confidence sum.
+    Leading dimensions are batch dimensions."""
+    num_routed_tokens = tokens_per_expert.sum(dim=-1) / top_k
+    loads = tokens_per_expert.sort(dim=-1, descending=True).values[..., top_k:]
+    balanced_load = loads.mean(dim=-1)
+    max_vio = (loads.amax(dim=-1) - balanced_load) / balanced_load
+    return max_vio, routing_confidence_sum / num_routed_tokens
+
+
 def get_load_balance_stats(
     model: nn.Module,
     group: dist.ProcessGroup | None = None,
@@ -231,13 +243,10 @@ def get_load_balance_stats(
         layer_stats = [(stats[:-1], stats[-1]) for stats in packed_stats.split(sizes)]
 
     for block_mlp, (tokens_per_expert, routing_confidence_sum) in zip(block_mlps, layer_stats):
-        num_routed_tokens = tokens_per_expert.sum() / block_mlp.router.top_k
-        tokens_per_expert = tokens_per_expert.sort(dim=0, descending=True).values[block_mlp.router.top_k :]
-        balanced_load = tokens_per_expert.mean()
-        max_vio = (tokens_per_expert.max() - balanced_load) / balanced_load
+        max_vio, routing_confidence = compute_max_vio_and_routing_confidence(
+            tokens_per_expert, routing_confidence_sum, block_mlp.router.top_k
+        )
         per_layer_max_vio.append(max_vio.detach())
-
-        routing_confidence = routing_confidence_sum / num_routed_tokens
         per_layer_routing_confidence.append(routing_confidence.detach())
 
         block_mlp.tokens_per_expert.zero_()

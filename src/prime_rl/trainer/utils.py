@@ -17,7 +17,6 @@ from torch import Tensor, nn
 from torch.distributed.tensor import DTensor
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from prime_rl.trainer.models.base import count_active_params
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import format_time, get_logger
 from prime_rl.utils.pathing import get_ckpt_dir
@@ -364,30 +363,3 @@ class MemoryProfiler:
             f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds, load {file_path} at https://docs.pytorch.org/memory_viz to visualize the memory usage"
         )
         self.step_num += 1
-
-
-def get_grad_accum_steps(batch_size: int, micro_batch_size: int, cp: int, world_size: int) -> int:
-    """Micro-batches each rank runs per optimizer step: ``batch_size`` samples, each split over ``cp`` ranks, in
-    micro-batches of ``micro_batch_size`` on ``world_size`` ranks."""
-    total_micro_batches = batch_size * cp
-    micro_batches_per_step = world_size * micro_batch_size
-    assert total_micro_batches % micro_batches_per_step == 0, (
-        f"batch_size * cp ({total_micro_batches}) must be divisible by "
-        f"world_size * micro_batch_size ({micro_batches_per_step})"
-    )
-    return total_micro_batches // micro_batches_per_step
-
-
-def count_parameters(model: nn.Module) -> dict[str, int]:
-    """Total, embedding (input embedding and LM head), non-embedding and active non-embedding parameter counts."""
-    embedding_ids = {id(p) for p in (*model.get_input_embeddings().parameters(), *model.lm_head.parameters())}
-    params = list(model.parameters())
-    non_embedding = [p for p in params if id(p) not in embedding_ids]
-    total = sum(p.numel() for p in params)
-    num_non_embedding = sum(p.numel() for p in non_embedding)
-    return {
-        "total": total,
-        "embedding": total - num_non_embedding,
-        "non_embedding": num_non_embedding,
-        "active_non_embedding": count_active_params(model, non_embedding),
-    }

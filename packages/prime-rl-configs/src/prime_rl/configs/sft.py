@@ -1,22 +1,27 @@
 import uuid
 import warnings
+from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from renderers import AutoRendererConfig, DefaultRendererConfig, RendererConfig
 from renderers.base import MODEL_RENDERER_MAP
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
 from prime_rl.configs.inference import WeightBroadcastConfig as InferenceWeightBroadcastConfig
+from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     FileSystemWeightBroadcastConfig,
     NCCLWeightBroadcastConfig,
+    ResumeConfig,
+    RunConfig,
+    SlurmConfig,
     WeightBroadcastConfig,
 )
-from prime_rl.configs.trainer import TrainerLaunchConfig, mega_moe_max_tokens_per_rank
-from prime_rl.utils.config import BaseConfig
+from prime_rl.configs.trainer import BaseTrainerConfig, InitConfig, ModelConfig, mega_moe_max_tokens_per_rank
+from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
 
 
 class BaseDataConfig(BaseConfig):
@@ -32,6 +37,11 @@ class BaseDataConfig(BaseConfig):
     num_workers: int = Field(1, ge=1)
     """Number of dataloader worker processes. Batches are prepared and pinned in the background so tokenization/packing overlaps with training."""
 
+    pad_to_seq_len: bool = False
+    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
+    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
+    at the cost of extra padding."""
+
     @model_validator(mode="after")
     def validate_batch_size(self):
         if self.batch_size % self.micro_batch_size != 0:
@@ -41,16 +51,7 @@ class BaseDataConfig(BaseConfig):
         return self
 
 
-class PackedDataConfig(BaseDataConfig):
-    """Samples packed into rows of ``seq_len * micro_batch_size`` tokens."""
-
-    pad_to_seq_len: bool = False
-    """Pad every packed row to ``seq_len * micro_batch_size`` instead of to a multiple of ``model.cp``. Rows then have
-    one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...)
-    at the cost of extra padding."""
-
-
-class FakeDataConfig(PackedDataConfig):
+class FakeDataConfig(BaseDataConfig):
     type: Literal["fake"] = "fake"
 
     length: Literal["fixed", "variable"] = "fixed"
@@ -99,7 +100,7 @@ class SFTColumnsConfig(BaseConfig):
     """Per-sample renderer arguments as ``renderer field = dataset column``, e.g. ``reasoning_effort = "effort"``. A row's non-null value overrides the ``[renderer]`` setting; rows and datasets without the column use it unchanged."""
 
 
-class SFTDataConfig(PackedDataConfig):
+class SFTDataConfig(BaseDataConfig):
     type: Literal["sft"] = "sft"
 
     name: str = "PrimeIntellect/Reverse-Text-SFT"
@@ -154,6 +155,25 @@ class SFTDataConfig(PackedDataConfig):
         return self
 
 
+class TokensDataConfig(BaseDataConfig):
+    """Pretraining data: ``seq_len`` windows of pre-tokenized datatrove shards, read as one token pool. Every token
+    is trained on. Mixtures are made offline, as shard folders."""
+
+    type: Literal["tokens"] = "tokens"
+
+    paths: list[Path] = Field(min_length=1)
+    """Folders of datatrove tokenized shards: ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``.
+    The files of all folders (in folder order, then file name order) are read as one token pool."""
+
+    seed: int = 0
+    """Seed for the window order: each epoch reads every window of the pool once, in a new random order and from a
+    new random offset."""
+
+    document_masking: bool = True
+    """Attention and positions restart at every document. If False, a window is one sequence: attention spans the
+    whole window and positions run over it."""
+
+
 class SFTValConfig(BaseConfig):
     interval: int = Field(50, ge=1)
     """Run validation every N training steps."""
@@ -164,13 +184,113 @@ class SFTValConfig(BaseConfig):
     data: SFTDataConfig
 
 
-DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig, Field(discriminator="type")]
+DataConfig: TypeAlias = Annotated[FakeDataConfig | SFTDataConfig | TokensDataConfig, Field(discriminator="type")]
 
 
-class SFTConfig(TrainerLaunchConfig):
+class TokenEvalSetConfig(BaseConfig):
+    """A held-out folder of datatrove tokenized shards, scored like a ``ppl`` set: every document on its own, in
+    windows of each of ``seq_lens``."""
+
+    name: str
+    """Names the metrics, ``eval/<name>/<metric>@<length>``."""
+
+    path: Path
+    """Folder of ``*.ds`` token files, each with its ``.ds.index`` and ``.ds.metadata``, as for ``tokens`` data."""
+
+
+class LogLikelihoodEvalConfig(BaseConfig):
+    """Log-likelihood evals scored inside the trainer: forward passes without gradients on the training model, every
+    ``interval`` steps. A set is a pretrain-evals set (``ppl``, ``ctxcont`` or ``pairs``) or a folder of held-out
+    token shards."""
+
+    interval: int = Field(ge=1)
+    """Score the sets every N steps (after that step's optimizer update), and at the last step."""
+
+    eval_on_start: bool = True
+    """Also score the weights the run starts from (logged at step 0, or at the step a resumed run starts from)."""
+
+    data_dir: Path | None = None
+    """Directory of the pretrain-evals sets, one directory per set with ``test.parquet`` and ``meta.json``."""
+
+    sets: list[str | TokenEvalSetConfig] = Field(min_length=1)
+    """The sets to score: the name of a pretrain-evals set in ``data_dir``, or a held-out token folder."""
+
+    seq_lens: list[int] | None = None
+    """Context lengths to score every set at: the window length for ``ppl`` and token sets and the context limit for
+    ``ctxcont`` sets. Defaults to ``data.seq_len``. Metrics are named ``eval/<set>/<metric>@<length>`` (e.g.
+    ``bpb@4k``)."""
+
+    micro_batch_tokens: int | None = Field(None, ge=1)
+    """Tokens per packed eval row (one forward pass on one GPU). Defaults to the training micro-batch
+    (``data.micro_batch_size * data.seq_len``) or the longest of ``seq_lens``, whichever is larger; must be at least
+    the longest of ``seq_lens``."""
+
+    save_arrays: bool = False
+    """Write per-document arrays (npz) and summaries to ``<run_dir>/ll_eval/step_N/``."""
+
+    @model_validator(mode="after")
+    def validate_data_dir(self):
+        if self.data_dir is None and any(isinstance(eval_set, str) for eval_set in self.sets):
+            raise ValueError("ll_eval.data_dir is required for pretrain-evals sets")
+        return self
+
+
+class SFTModelConfig(ModelConfig):
+    init: InitConfig | None = None
+    """Initialize the weights from scratch (pretraining) instead of loading them from ``name``, which then only
+    supplies the model config. A resumed run loads the weights from the checkpoint."""
+
+    defer_grad_sync: bool = False
+    """Reduce-scatter the gradients once per optimizer step instead of after every micro-batch. Saves communication
+    with gradient accumulation, but keeps the unsharded parameters and gradients in memory across the micro-batches."""
+
+
+class BaseDeploymentConfig(BaseConfig):
+    gpus_per_node: int = 8
+    """GPUs per node."""
+
+
+class SingleNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["single_node"] = "single_node"
+
+    num_train_gpus: int = 1
+    """GPUs allocated to the trainer."""
+
+    num_infer_gpus: int = Field(1, validation_alias=AliasChoices("num_infer_gpus", "num_eval_gpus"))
+    """GPUs allocated to inference for online evals (alias: ``num_eval_gpus``). Only used when an ``[inference]`` block is configured."""
+
+    @model_validator(mode="after")
+    def validate_gpu_count(self):
+        if self.num_train_gpus > self.gpus_per_node:
+            raise ValueError(f"num_train_gpus ({self.num_train_gpus}) exceeds gpus_per_node ({self.gpus_per_node}).")
+        return self
+
+
+class MultiNodeDeploymentConfig(BaseDeploymentConfig):
+    type: Literal["multi_node"] = "multi_node"
+
+    num_train_nodes: int = Field(2, ge=1)
+    """Training nodes."""
+
+    num_infer_nodes: int = Field(0, ge=0, validation_alias=AliasChoices("num_infer_nodes", "num_eval_nodes"))
+    """Inference nodes for online evals (alias: ``num_eval_nodes``). These nodes share
+    one SLURM allocation with the trainer nodes."""
+
+    nodes_per_fsdp_group: int | None = None
+    """Nodes per FSDP island. Auto-sets ``model.dp_replicate = num_train_nodes / nodes_per_fsdp_group``."""
+
+
+SFTDeploymentConfig: TypeAlias = Annotated[
+    SingleNodeDeploymentConfig | MultiNodeDeploymentConfig, Field(discriminator="type")
+]
+
+
+class SFTConfig(BaseTrainerConfig):
     auto_freeze_moe_router = False
     # Standard L2 regularization for supervised training.
     auto_weight_decay = 0.01
+
+    model: SFTModelConfig = SFTModelConfig()
 
     renderer: RendererConfig = AutoRendererConfig()
     """Renderer config. Defaults to auto-selecting from the tokenizer model name."""
@@ -179,6 +299,9 @@ class SFTConfig(TrainerLaunchConfig):
 
     val: SFTValConfig | None = None
     """Validation configuration. If None, no validation runs."""
+
+    ll_eval: LogLikelihoodEvalConfig | None = None
+    """Log-likelihood evals scored inside the trainer. If None, they never run."""
 
     eval: SFTOnlineEvalConfig | None = None
     """Online evaluation configuration: rollout-based evals against a live inference
@@ -192,18 +315,68 @@ class SFTConfig(TrainerLaunchConfig):
     """Trainer-to-inference weight transport for online evals. Defaults to NCCL.
     LoRA and external inference use filesystem broadcast."""
 
-    def default_run_name(self) -> str:
-        """``<dataset>--<model>--<short-id>``."""
-        dataset = str(getattr(self.data, "name", "")).split("/")[-1]
-        model = self.model.name.split("/")[-1]
-        parts = [part for part in (dataset, model) if part]
-        return "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
+    resume: ResumeConfig | None = None
+    """Resume the run from a checkpoint (point at it with the previous run's ``run.name``). Without ``[ckpt]`` the run loads the checkpoint but saves no new ones. If None, does not resume."""
+
+    monitors: TrainMonitorsConfig = TrainMonitorsConfig()
+    """Metric monitors (``monitors.wandb``, ``monitors.file``, ``monitors.prime``)."""
+
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run metadata. ``run.name`` names the run directory under ``output_dir``."""
+
+    output_dir: Path = Field(default_factory=default_output_dir)
+    """Directory that groups related runs. Each run writes its artifacts (checkpoints, logs, ...) to ``output_dir / run.name``. Should be a persistent directory with enough disk space. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
+
+    clean: bool = False
+    """Delete the run directory (``output_dir / run.name``) before starting training. Required to overwrite a run directory that contains artifacts from a previous run when not resuming."""
+
+    @property
+    def run_dir(self) -> Path:
+        assert self.run.dir is not None  # resolved at construction
+        return self.output_dir / self.run.dir
+
+    @model_validator(mode="after")
+    def auto_setup_run_identity(self):
+        """Auto-generate the run name (``<dataset>--<model>--<short-id>``) when unset and
+        default the run directory, W&B run name and platform run name to it when not
+        set explicitly."""
+        if self.run.name is None:
+            dataset = str(getattr(self.data, "name", "")).split("/")[-1]
+            model = self.model.name.split("/")[-1]
+            parts = [part for part in (dataset, model) if part]
+            self.run.name = "--".join([*parts, uuid.uuid4().hex[:8]]).lower()
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        if self.monitors.wandb is not None and self.monitors.wandb.name is None:
+            self.monitors.wandb.name = self.run.name
+        if self.monitors.prime is not None and self.monitors.prime.name is None:
+            self.monitors.prime.name = self.run.name
+        return self
+
+    deployment: SFTDeploymentConfig = SingleNodeDeploymentConfig()
+
+    slurm: SlurmConfig | None = None
+    """SLURM configuration. When set, the run is submitted as a SLURM job instead of running locally."""
 
     dashboard: bool = True
     """Make sure a local dashboard daemon serves this run's output dir (started on
     demand in interactive sessions; an already-running daemon's URL is logged)."""
 
+    dry_run: bool = False
+    """Only validate and dump resolved configs, then exit early."""
+
     ### Pre-validation normalization
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_deployment(cls, data):
+        if not isinstance(data, dict):
+            return data
+        deployment = data.get("deployment")
+        if isinstance(deployment, dict) and deployment.get("type") == "multi_node":
+            for key in ("num_train_gpus", "num_infer_gpus"):
+                deployment.pop(key, None)
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -222,6 +395,12 @@ class SFTConfig(TrainerLaunchConfig):
         return data
 
     ### Validate configs (e.g. raise for unsupported (combinations of) configs)
+
+    @model_validator(mode="after")
+    def validate_deployment(self):
+        if self.deployment.type == "multi_node" and self.slurm is None:
+            raise ValueError("Must use SLURM for multi-node deployment.")
+        return self
 
     @model_validator(mode="after")
     def auto_setup_online_eval(self):
@@ -357,7 +536,7 @@ class SFTConfig(TrainerLaunchConfig):
     @model_validator(mode="after")
     def validate_typed_renderer(self):
         """Require a typed renderer whenever SFT renders real samples."""
-        if self.data.type == "fake" and self.val is None:
+        if self.data.type in ("fake", "tokens") and self.val is None:
             return self
 
         model_id = self.tokenizer.name or self.model.name
@@ -405,6 +584,27 @@ class SFTConfig(TrainerLaunchConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_defer_grad_sync(self):
+        if self.model.defer_grad_sync and self.model.offload == "full":
+            raise ValueError("model.defer_grad_sync is not supported with model.offload = 'full'")
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_ll_eval(self):
+        if self.ll_eval is None:
+            return self
+        if self.model.cp > 1:
+            raise ValueError("[ll_eval] does not support context parallelism yet")
+        if self.ll_eval.seq_lens is None:
+            self.ll_eval.seq_lens = [self.data.seq_len]
+        longest = max(self.ll_eval.seq_lens)
+        if self.ll_eval.micro_batch_tokens is None:
+            self.ll_eval.micro_batch_tokens = max(self.data.micro_batch_size * self.data.seq_len, longest)
+        elif self.ll_eval.micro_batch_tokens < longest:
+            raise ValueError(f"ll_eval.micro_batch_tokens must be at least the longest of ll_eval.seq_lens ({longest})")
+        return self
+
+    @model_validator(mode="after")
     def validate_vlm_constraints(self):
         if self.model.vlm is None:
             return self
@@ -416,4 +616,31 @@ class SFTConfig(TrainerLaunchConfig):
             raise ValueError("VLM SFT requires data.micro_batch_size = 1.")
         if self.val is not None and self.val.data.micro_batch_size != 1:
             raise ValueError("VLM SFT requires val.data.micro_batch_size = 1.")
+        return self
+
+    ### Auto-setup and validate shared configs
+
+    @model_validator(mode="after")
+    def auto_setup_deployment(self):
+        if self.deployment.type == "multi_node":
+            if self.deployment.nodes_per_fsdp_group is not None:
+                if self.deployment.num_train_nodes % self.deployment.nodes_per_fsdp_group != 0:
+                    raise ValueError(
+                        f"deployment.num_train_nodes ({self.deployment.num_train_nodes}) must be divisible by "
+                        f"deployment.nodes_per_fsdp_group ({self.deployment.nodes_per_fsdp_group})"
+                    )
+                self.model.dp_replicate = self.deployment.num_train_nodes // self.deployment.nodes_per_fsdp_group
+        return self
+
+    @model_validator(mode="after")
+    def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = self.run.name
+        if self.slurm is not None and self.slurm.template_path is None:
+            templates_dir = find_package_resource("templates")
+            if templates_dir is not None:
+                if self.deployment.type == "single_node":
+                    self.slurm.template_path = templates_dir / "single_node_sft.sbatch.j2"
+                else:
+                    self.slurm.template_path = templates_dir / "multi_node_sft.sbatch.j2"
         return self

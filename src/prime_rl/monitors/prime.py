@@ -14,7 +14,6 @@ import prime_runs as pr
 from prime_sandboxes import Config as PrimeConfig
 
 from prime_rl.configs.monitors import PrimeEvalMonitorConfig, PrimeTrainMonitorConfig
-from prime_rl.configs.pretrain import PretrainConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.monitors.base import Kind, Monitor, Subset
 from prime_rl.utils.config import BaseConfig
@@ -157,8 +156,8 @@ class PrimeTrainMonitor(Monitor):
             # attached run's failure/completion marking; a clean finish() is
             # delivered best-effort and does not by itself mark it completed.
             init_kwargs = {"id": run_id}
-        elif isinstance(config, SFTConfig | PretrainConfig):
-            # SFT and pretraining train on data, not on environments, and have no rollouts - the
+        elif isinstance(config, SFTConfig):
+            # SFT trains on a dataset, not on environments, and has no rollouts - the
             # platform run is registered without both.
             init_kwargs = dict(
                 name=self.config.name,
