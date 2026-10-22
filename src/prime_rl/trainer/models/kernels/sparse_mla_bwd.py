@@ -385,11 +385,16 @@ def cudnn_sparse_mla_backward(
 
         dq, dkv = flash_attn_bwd_sm90(*args, softmax_scale=sm_scale, topk_idxs=flat_indices)
     else:
-        # Untested: no SM100 hardware has run this path. A -inf sink leaves the softmax unchanged.
-        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import flash_attn_bwd_sm100
+        # A -inf sink leaves the softmax unchanged.
+        from cudnn.deepseek_sparse_attention.sparse_attention_backward._interface_sm100 import (
+            flash_attn_bwd_sm100,
+            flash_attn_bwd_sm100_workspace_size,
+        )
 
         no_sink = torch.full((H,), float("-inf"), dtype=torch.float32, device=q.device)
-        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale)
+        workspace_bytes = flash_attn_bwd_sm100_workspace_size(B * S, B * S_kv, D_qk, H)
+        workspace = torch.empty(workspace_bytes, dtype=torch.uint8, device=q.device)
+        dq, dkv, _ = flash_attn_bwd_sm100(*args, no_sink, flat_indices, softmax_scale=sm_scale, workspace=workspace)
     return dq.view_as(q), dkv.view_as(kv)
 
 

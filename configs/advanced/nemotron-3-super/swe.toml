@@ -36,11 +36,9 @@ enable_router_replay = true
 
 [trainer.model]
 attn = "flash_attention_3"
-# Hybrid-Mamba model: ring CP is unsupported, so use ulysses (capped at 8 by n_groups).
+# Hybrid-Mamba model: CP is capped at 8 by n_groups.
 cp = 8
-cp_style = "ulysses"
 ep = 8
-fused_lm_head_token_chunk_size = 1024
 
 [trainer.model.ac]
 

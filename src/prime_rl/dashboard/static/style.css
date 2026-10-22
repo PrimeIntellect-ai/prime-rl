@@ -1337,6 +1337,11 @@ details.entry[open] > summary .entry-chev { transform: rotate(90deg); }
   letter-spacing: var(--track-mono);
   white-space: nowrap;
 }
+details.entry.model-call.failed { border-color: var(--negative); }
+details.entry.model-call.failed > summary { background: rgba(255, 69, 57, 0.08); }
+details.entry.model-call.failed .entry-role, .chip.call-failed { color: var(--negative); }
+.chip.call-failed { border-color: var(--negative); }
+.model-call-error .trace-error-scope { color: var(--negative); }
 .icon-btn {
   background: none;
   border: none;

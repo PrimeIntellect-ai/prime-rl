@@ -1,9 +1,5 @@
 from transformers.configuration_utils import PretrainedConfig
 
-from prime_rl.utils.transformers_compat import allow_glm5_next_layer_types
-
-allow_glm5_next_layer_types()
-
 
 class Glm5NextTextConfig(PretrainedConfig):
     model_type = "glm5_next_text"

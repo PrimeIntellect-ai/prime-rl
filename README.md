@@ -16,14 +16,11 @@ prime-rl: Async RL Training at Scale
 
 </br>
 <p align="center">
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yaml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yaml/badge.svg" alt="Style" />
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yml">
+    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/style.yml/badge.svg" alt="Style" />
   </a>
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/cpu_tests.yaml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/cpu_tests.yaml/badge.svg" alt="Test" />
-  </a>
-  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/gpu_tests.yaml">
-    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/gpu_tests.yaml/badge.svg" alt="Test" />
+  <a href="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/tests.yml">
+    <img src="https://github.com/PrimeIntellect-ai/prime-rl/actions/workflows/tests.yml/badge.svg" alt="Tests" />
   </a>
 </p>
 

@@ -54,7 +54,8 @@ class Glm5NextDecoderLayer(GradientCheckpointingLayer):
                 gate_lower_bound=config.linear_lower_bound,
                 norm_eps=config.rms_norm_eps,
             )
-        elif self.layer_type == "deepseek_sparse_attention":
+        # transformers renames the checkpoint's `deepseek_sparse_attention` to `indexed_attention` on load.
+        elif self.layer_type == "indexed_attention":
             self.self_attn = SparseMlaAttention(
                 hidden_size=config.hidden_size,
                 num_heads=config.num_attention_heads,
