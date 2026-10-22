@@ -417,6 +417,15 @@ class Orchestrator:
             )
             ControlServer(self.controller, config.control).start()
             self.component_tasks.append(asyncio.create_task(self.serve_control(), name="control"))
+        # A failed component (e.g. the watcher after a weight update fails) cancels the step loop
+        # wherever it waits, instead of relying on the loop to poll for it.
+        main_task = asyncio.current_task()
+
+        def on_component_done(task: asyncio.Task) -> None:
+            self._on_component_done(task, main_task)
+
+        for task in self.component_tasks:
+            task.add_done_callback(on_component_done)
 
         # Anchor step-time clock so the first step measures startup → first batch
         self.last_batch_at = time.perf_counter()
@@ -431,7 +440,13 @@ class Orchestrator:
             loop_done = True
             await self.wait_for_final_broadcast()
             clean_exit = True
+        except asyncio.CancelledError:
+            self._raise_if_component_stopped()
+            raise
         finally:
+            # Teardown stops the components itself; one failing now must not cancel the teardown.
+            for task in self.component_tasks:
+                task.remove_done_callback(on_component_done)
             elapsed = format_time(time.perf_counter() - start_time)
             # ``progress.step`` points at the next (unshipped) step; the last finished step is
             # ``progress.step - 1``. Checkpoint it as ``step_{progress.step - 1}`` (no-op before the
@@ -605,6 +620,12 @@ class Orchestrator:
                 "Review max_off_policy_steps, episode errors, and reward signal."
             )
         return metrics
+
+    def _on_component_done(self, task: asyncio.Task, main_task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None or main_task.done():
+            return
+        get_logger().opt(exception=task.exception()).error(f"Orchestrator component {task.get_name()} failed")
+        main_task.cancel()
 
     def _raise_if_component_stopped(self) -> None:
         """Propagate unexpected background-component termination to the run."""
