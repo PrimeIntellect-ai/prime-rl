@@ -132,13 +132,12 @@ class PrimeTrainMonitor(Monitor):
 
     The run handle owns what ``TrainRun`` used to do by hand: the RFT
     lifecycle (register or attach, finalize), the per-step metrics POSTs, the
-    every-10th-step Parquet sample uploads (presign -> PUT -> confirm), and
-    the terminal status. Delivery is BEST-EFFORT: the SDK's atexit hook
-    reports a process that exits without finalizing, but an abrupt kill
-    (SIGKILL, OOM, node loss) skips the hook and a lost finalize is not
-    retried here — the platform owns the terminal state of attached
-    ($RUN_ID) and managed runs. `FINISH_TIMEOUT` bounds the queued-upload
-    drain, not the SDK's finalize HTTP retries.
+    episode uploads to Prime Traces, and the terminal status. Delivery is
+    BEST-EFFORT: the SDK's atexit hook reports a process that exits without
+    finalizing, but an abrupt kill (SIGKILL, OOM, node loss) skips the hook
+    and a lost finalize is not retried here — the platform owns the terminal
+    state of attached ($RUN_ID) and managed runs. `FINISH_TIMEOUT` bounds the
+    queued-upload drain, not the SDK's finalize HTTP retries.
 
     ``init``/``finish`` do network I/O and run in worker threads; the log
     calls are queue puts onto the SDK's uploader thread, which owns retries
@@ -231,10 +230,11 @@ class PrimeTrainMonitor(Monitor):
         await asyncio.to_thread(self.run.log_metrics, metrics, step=step)
 
     async def log_episodes(self, episodes: list[vf.Episode], step: int, kind: Kind, subset: Subset) -> None:
-        """Only the trained cohort ships to the platform. The upload cadence
-        (every 10th step) and the Parquet encoding live in the SDK's training
-        samples sink, which reads each episode's dispatch step off ``run.work``
-        - the ``TrainRunInfo`` the dispatcher stamps at emit time."""
+        """Only the trained cohort ships to the platform, every step, to Prime
+        Traces. A run opted out of Prime Traces goes to the SDK's legacy
+        training samples sink instead, which keeps every 10th step and reads
+        each episode's dispatch step off ``run.work`` - the ``TrainRunInfo``
+        the dispatcher stamps at emit time."""
         if kind != "train" or subset != "effective" or not episodes:
             return
         # A queue put that can block briefly under backpressure - off the loop.
