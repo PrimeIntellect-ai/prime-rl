@@ -1,5 +1,7 @@
 import pytest
 import torch
+from safetensors.torch import save_file
+from torch import nn
 
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import load_dcp_from_hf
@@ -47,3 +49,21 @@ def test_load_dcp_from_hf_keeps_checkpoint_selection_bias(model, tmp_path, monke
 
     selection_bias = model.model.layers[1].mlp.router.selection_bias
     torch.testing.assert_close(selection_bias.cpu(), expected.to(selection_bias.dtype))
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_load_dcp_from_hf_refuses_block_fp8_checkpoints(model, tmp_path, monkeypatch, rank):
+    """Every rank refuses FP8 weights with `*_scale_inv` scales before the master converts them or the others wait."""
+    monkeypatch.setenv("RANK", str(rank))
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    weight = "model.layers.1.mlp.experts.0.gate_proj.weight"
+    checkpoint = {weight: torch.ones(16, 32).to(torch.float8_e4m3fn), f"{weight}_scale_inv": torch.ones(1, 1)}
+    save_file(checkpoint, tmp_path / "model.safetensors")
+
+    monkeypatch.setattr(model, "to_empty", lambda device: nn.Module.to_empty(model, device="cpu"))
+    monkeypatch.setattr("torch.distributed.barrier", lambda *args, **kwargs: None)
+    monkeypatch.setattr("prime_rl.trainer.model.load_state_dict", lambda *args, **kwargs: pytest.fail("converted"))
+    monkeypatch.setattr("prime_rl.trainer.model.wait_for_master", lambda *args, **kwargs: pytest.fail("waited"))
+
+    with pytest.raises(ValueError, match="block-FP8 checkpoint.*convert_fp8_to_bf16.py"):
+        load_dcp_from_hf(model, ModelConfig(name=str(tmp_path)))

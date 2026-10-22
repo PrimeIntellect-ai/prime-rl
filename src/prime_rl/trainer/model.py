@@ -2,7 +2,7 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import cast
 
@@ -601,6 +601,23 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
+def check_not_block_fp8_checkpoint(keys: Iterable[str], path: Path) -> None:
+    """Raise if the checkpoint stores FP8 weights with `*_scale_inv` block scales, which the trainer cannot apply.
+
+    DeepSeek V4's FP8 release is not matched: its scales are `*.scale` tensors, which
+    `DeepseekV4ForCausalLM.convert_to_prime` dequantizes.
+    """
+    scale_keys = [key for key in keys if key.endswith("_scale_inv")]
+    if scale_keys:
+        raise ValueError(
+            f"{path} is a block-FP8 checkpoint: {len(scale_keys)} weights are stored in FP8 with separate "
+            f"`*_scale_inv` scales (e.g. {scale_keys[0]!r}). The trainer cannot apply these scales and would load "
+            "the raw FP8 values as weights. Train from a BF16 release of the model instead, or dequantize this "
+            f"checkpoint with `uv run python tools/convert_fp8_to_bf16.py {path} <output_dir>` and train from "
+            "<output_dir>."
+        )
+
+
 def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     device = "cuda"
     model.to_empty(device=device)
@@ -628,6 +645,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     source_path = snapshot_path
     convert_dir = config.conversion_dir or source_path
     snapshot_keys = dict.fromkeys(load_state_dict_keys(source_path))
+    # Every rank reads the keys, so every rank raises here instead of waiting for the master's conversion.
+    check_not_block_fp8_checkpoint(snapshot_keys, source_path)
     model_keys = dict.fromkeys(model.state_dict().keys())
 
     if source_path.name == "prime" and not (source_path / ".prime-v1").is_file():

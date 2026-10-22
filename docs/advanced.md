@@ -21,14 +21,14 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 
 | Family | HF config types | EP | CP |
 |---|---|---|---|
-| GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5-FP8`, `zai-org/GLM-5.2`, `zai-org/GLM-5.2-FP8` | ✅ | ✅ |
+| GLM-5 / GLM-5.2 (`glm_moe_dsa`) | `zai-org/GLM-5`, `zai-org/GLM-5.2` | ✅ | ✅ |
 | GLM-5.3 Flash, text only (`glm5_next`) | `zai-org/GLM-5.3-Flash-BF16` | ✅ | ✅ |
 | Qwen3 MoE | `Qwen/Qwen3-30B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 MoE | `Qwen/Qwen3.5-35B-A3B`, … | ✅ | ✅ |
 | Qwen3.5 VLMs | see [Multimodal training](#multimodal-training) | MoE only | ✅ |
 | Qwen3.8 Flash Next VLM | `Qwen/Qwen3.8-Flash-Next` | ✅ | ✅ |
 | Laguna | `poolside/Laguna-XS.2` | ✅ | ✅ |
-| MiniMax M2 | `MiniMax/MiniMax-M2` | ✅ | ✅ |
+| MiniMax M2 | `PrimeIntellect/MiniMax-M2.5-bf16` | ✅ | ✅ |
 | Muse Glimmer (text only) | `meta-models/Muse-Glimmer-30B` | — | ✅ |
 | Nemotron H | `nvidia/Nemotron-3-Nano-30B-A3B`, … | ✅ | ❌ |
 | Trinity (AFMoE) | `arcee-ai/Trinity-Mini`, … | ✅ | ✅ |
@@ -38,6 +38,11 @@ The trainer only runs `prime-rl`'s own model implementations, selected from the 
 
 GPT-OSS uses FlashAttention 4 with learned attention sinks. Training requires SM90 or SM100/SM110 GPUs
 and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 checkpoints are not supported.
+
+Block-FP8 releases, which store weights in FP8 with separate `*_scale_inv` scales (e.g. `zai-org/GLM-5-FP8` or
+`MiniMaxAI/MiniMax-M2`), are refused when the trainer loads weights. Train from a BF16 release, or dequantize the FP8
+release with `uv run python tools/convert_fp8_to_bf16.py <model_dir>` (writes `<model_dir>-BF16`) and train from that.
+DeepSeek V4's FP8 release is dequantized by the trainer.
 
 ### Low-precision training
 
