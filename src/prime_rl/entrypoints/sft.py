@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
 from prime_rl.configs.eval import SFTOnlineEvalConfig
@@ -23,8 +22,8 @@ from prime_rl.utils.pathing import (
     get_launcher_dir,
     get_launcher_log_dir,
     prepare_attempt_dirs,
+    prepare_run,
     resolve_latest_ckpt_step,
-    validate_run_dir,
     write_env_server_config,
     write_launch_artifacts,
 )
@@ -462,24 +461,9 @@ def sft(config: SFTConfig):
             "Add an [inference] block or set weight_broadcast.type = 'filesystem'."
         )
 
-    # The run identity is runtime-only, never sub-config: $PRL_RUN_ID / $PRL_RUN_NAME are
-    # the vehicle for runtime info between processes, and every spawned process inherits
-    # them. Components launched standalone have no run identity.
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None  # resolved at construction
-    os.environ["PRL_RUN_NAME"] = config.run.name
+    prepare_run(config, config.ckpt.output_dir if config.ckpt else None)
 
-    resuming = config.resume is not None
-    clean = config.clean and not os.environ.get("NEVER_CLEAN")
-    ckpt_output_dir = config.ckpt.output_dir if config.ckpt else None
-    validate_run_dir(
-        config.run_dir, output_dir=config.output_dir, resuming=resuming, clean=clean, ckpt_output_dir=ckpt_output_dir
-    )
-    config.run_dir.mkdir(parents=True, exist_ok=True)
-    if ckpt_output_dir is not None:
-        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
-
-    if resuming and config.resume.dir is None and not config.dry_run:
+    if config.resume is not None and config.resume.dir is None and not config.dry_run:
         resume_step = resolve_resume_step(config)
         if resume_step is not None:
             abandon_future_ckpts(get_ckpt_dir(get_ckpt_base(config)), resume_step)

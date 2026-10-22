@@ -252,7 +252,7 @@ def _triton_h_post_bda_fwd(
     s, b, n, C = original_residual.shape
     sb = s * b
     dev = h_res.device
-    out = torch.empty(sb, n, C, dtype=h_res.dtype, device=dev)
+    out = torch.empty(sb, n, C, dtype=original_residual.dtype, device=dev)
     hr_flat = h_res.contiguous().view(sb, n, n)
     orig_flat = original_residual.contiguous().view(sb, n, C)
     hp_flat = h_post.contiguous().view(sb, n)
@@ -586,7 +586,7 @@ def _mhc_post_bda(
 def _mhc_post_bda_fake(
     h_res: torch.Tensor, original_residual: torch.Tensor, h_post: torch.Tensor, x: torch.Tensor
 ) -> torch.Tensor:
-    return torch.empty_like(original_residual, dtype=h_res.dtype)
+    return torch.empty_like(original_residual)
 
 
 @torch.library.custom_op("prime_rl::dsv4_mhc_post_bda_backward", mutates_args=())
@@ -641,6 +641,7 @@ def fused_post_bda(
 ) -> torch.Tensor:
     """Fused stream write-back `h_res.T @ original_residual + h_post * x`.
 
-    The kernel applies the transpose internally, so `h_res` is passed untransposed.
+    The kernel applies the transpose internally, so `h_res` is passed untransposed. The math runs
+    in fp32 and the result takes `original_residual`'s dtype.
     """
     return _mhc_post_bda(h_res, original_residual, h_post, x)
