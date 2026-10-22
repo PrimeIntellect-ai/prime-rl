@@ -110,27 +110,35 @@ def test_selfhost_defers_until_record_appears(prime, monkeypatch, tmp_path):
     }
 
 
-def test_slurm_resume_waits_for_current_platform_record(prime, monkeypatch, tmp_path):
+@pytest.mark.parametrize("relative_output", [False, True])
+def test_slurm_resume_waits_for_current_platform_record(prime, monkeypatch, tmp_path, relative_output):
     monkeypatch.setenv("PRL_RUN_ID", "requeued-run")
+    project_dir, submit_dir = tmp_path / "project", tmp_path / "submit"
+    project_dir.mkdir()
+    submit_dir.mkdir()
+    monkeypatch.chdir(project_dir)
     config = RLConfig.model_validate(
         {
-            "output_dir": str(tmp_path),
+            "output_dir": "outputs" if relative_output else str(project_dir / "outputs"),
             "run": {"name": "resume"},
             "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 1},
             "trainer": {},
             "inference": {},
             "orchestrator": {"renderer": {"name": "default"}},
-            "slurm": {},
+            "slurm": {"project_dir": str(project_dir)},
             "dry_run": True,
         }
     )
     script = tmp_path / "rl.sbatch"
     write_slurm_script(config, tmp_path / "configs", tmp_path / "logs", script)
-    startup = script.read_text().split("# Networking", 1)[0]
+    startup = "scontrol() { printf '%s\\n' inference trainer; }\n" + script.read_text().split("[ -f .env ]", 1)[0]
+    unrelated_run = submit_dir / "outputs" / "resume"
 
     for _ in range(2):
         write_platform_record(config.run_dir, {"kind": "train", "id": "previous-run"})
-        subprocess.run(["bash"], input=startup, text=True, env=os.environ.copy(), check=True)
+        _train_record(unrelated_run)
+        subprocess.run(["bash"], input=startup, text=True, env=os.environ.copy(), cwd=submit_dir, check=True)
+        assert get_platform_run_path(unrelated_run).is_file()
         trainer = PrimeTrainMonitor(PrimeTrainMonitorConfig())
         _init(trainer, config.run_dir)
         assert trainer.run is None
