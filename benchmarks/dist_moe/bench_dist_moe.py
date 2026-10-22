@@ -34,27 +34,56 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scratch-capacity-factor", type=float, default=2.0)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=50)
+    parser.add_argument("--host-lead-ms", type=float, default=20.0)
     return parser.parse_args()
 
 
-def bench(fwd, bwd, warmup: int, iters: int) -> tuple[float, float]:
-    """Mean forward and backward ms, timed inside each fwd+bwd iteration since dist_moe pops its planner state
-    only in backward."""
+def sleep_cycles(ms: float) -> int:
+    """GPU clock cycles that ``torch.cuda._sleep`` needs to spin for about ``ms`` milliseconds."""
+    probe_cycles = 10_000_000
+    start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    torch.cuda._sleep(probe_cycles)
+    start.record()
+    torch.cuda._sleep(probe_cycles)
+    end.record()
+    end.synchronize()
+    return int(probe_cycles * ms / start.elapsed_time(end))
+
+
+def bench(fwd, bwd, warmup: int, iters: int, lead_cycles: int) -> torch.Tensor:
+    """Per-iteration (fwd, bwd, fwd+bwd, back-to-back fwd+bwd) ms, each the max over ranks.
+
+    A sleep kernel ahead of each GPU-timed iteration lets the host queue it all, so host launch time stays out of the
+    first three; the back-to-back loop keeps it in. dist_moe pops its planner state only in backward, so forward and
+    backward are timed within one iteration."""
     for _ in range(warmup):
         bwd(fwd())
-    torch.cuda.synchronize()
-    dist.barrier()
-    events = [[torch.cuda.Event(enable_timing=True) for _ in range(3)] for _ in range(iters)]
-    for start, mid, end in events:
+    gpu_ms = []
+    for _ in range(iters):
+        start, mid, end = (torch.cuda.Event(enable_timing=True) for _ in range(3))
+        torch.cuda.synchronize()
+        dist.barrier()
+        torch.cuda._sleep(lead_cycles)
         start.record()
         y = fwd()
         mid.record()
         bwd(y)
         end.record()
+        end.synchronize()
+        gpu_ms.append((start.elapsed_time(mid), mid.elapsed_time(end), start.elapsed_time(end)))
     torch.cuda.synchronize()
-    fwd_ms = sum(start.elapsed_time(mid) for start, mid, _ in events) / iters
-    bwd_ms = sum(mid.elapsed_time(end) for _, mid, end in events) / iters
-    return fwd_ms, bwd_ms
+    dist.barrier()
+    events = [[torch.cuda.Event(enable_timing=True) for _ in range(2)] for _ in range(iters)]
+    for start, end in events:
+        start.record()
+        bwd(fwd())
+        end.record()
+    torch.cuda.synchronize()
+    ms = torch.tensor(
+        [(*row, start.elapsed_time(end)) for row, (start, end) in zip(gpu_ms, events, strict=True)], device="cuda"
+    )
+    dist.all_reduce(ms, op=dist.ReduceOp.MAX)
+    return ms
 
 
 def rel_diff(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -126,6 +155,7 @@ def main() -> None:
         num_reserved_sms=None,
     )
     fused = (FusedTokenDispatcher(), dist_moe_compute)
+    lead_cycles = sleep_cycles(args.host_lead_ms)
 
     if rank == 0:
         print(
@@ -170,23 +200,29 @@ def main() -> None:
             "dw2": rel_diff(dp_fused[1], dp_ref[1]),
         }
 
-        base_fwd, base_bwd = bench(forward(baseline), backward, args.warmup, args.iters)
-        fused_fwd, fused_bwd = bench(forward(fused), backward, args.warmup, args.iters)
+        base_ms = bench(forward(baseline), backward, args.warmup, args.iters, lead_cycles)
+        fused_ms = bench(forward(fused), backward, args.warmup, args.iters, lead_cycles)
 
         if rank == 0:
+            base_med, fused_med = base_ms.median(dim=0).values.tolist(), fused_ms.median(dim=0).values.tolist()
             print(f"\nrouting={routing}")
-            print(f"{'':48} {'fwd':>10} {'bwd':>10} {'fwd+bwd':>10}")
             print(
-                f"{'bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)':48} "
-                f"{base_fwd:9.3f}ms {base_bwd:9.3f}ms {base_fwd + base_bwd:9.3f}ms"
+                "GPU time (fwd, bwd, fwd+bwd) and back-to-back loop time per fwd+bwd: median, then fwd+bwd min/max, "
+                f"over {args.iters} iterations of the max over ranks"
             )
+            print(f"{'':48} {'fwd':>10} {'bwd':>10} {'fwd+bwd':>10} {'min':>10} {'max':>10} {'loop':>10}")
+            for name, ms, med in (
+                ("bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)", base_ms, base_med),
+                ("dist_moe (fused bf16 fwd + fused bf16 bwd)", fused_ms, fused_med),
+            ):
+                print(
+                    f"{name:48} {med[0]:8.3f}ms {med[1]:8.3f}ms {med[2]:8.3f}ms "
+                    f"{ms[:, 2].min().item():8.3f}ms {ms[:, 2].max().item():8.3f}ms {med[3]:8.3f}ms"
+                )
+            speedup = [b / f for b, f in zip(base_med, fused_med, strict=True)]
             print(
-                f"{'dist_moe (fused bf16 fwd + fused bf16 bwd)':48} "
-                f"{fused_fwd:9.3f}ms {fused_bwd:9.3f}ms {fused_fwd + fused_bwd:9.3f}ms"
-            )
-            print(
-                f"{'speedup (bf16 EP time / dist_moe time)':48} {base_fwd / fused_fwd:9.2f}x "
-                f"{base_bwd / fused_bwd:9.2f}x {(base_fwd + base_bwd) / (fused_fwd + fused_bwd):9.2f}x"
+                f"{'speedup (bf16 EP time / dist_moe time)':48} {speedup[0]:9.2f}x {speedup[1]:9.2f}x "
+                f"{speedup[2]:9.2f}x {'':10} {'':10} {speedup[3]:9.2f}x"
             )
             print("relative diff vs bf16 EP path: " + ", ".join(f"{k}={v:.4f}" for k, v in diffs.items()))
 
