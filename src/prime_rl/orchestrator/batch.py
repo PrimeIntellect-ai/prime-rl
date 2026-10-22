@@ -10,7 +10,16 @@ from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.configs.trainer import ModelConfig
 from prime_rl.trainer.model import get_model
 from prime_rl.trainer.perf import FlopCounter
-from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
+from prime_rl.transports.batch.types import (
+    MicroBatch,
+    MMImageRef,
+    MMRefs,
+    RoutedExperts,
+    SamplingMask,
+    TopLogprobs,
+    TrainingSample,
+)
+from prime_rl.utils.sequence import repeat_to_length
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
@@ -148,7 +157,7 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts = micro_batch.routed_experts
     assert routed_experts is not None
     row_size = _routed_experts_row_size(routed_experts)
-    routed_experts.data += b"\0" * (padding_size * row_size)
+    routed_experts.data += repeat_to_length(routed_experts.data, padding_size * row_size)
     routed_experts.shape[0] += padding_size
 
 
@@ -165,6 +174,23 @@ def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingM
         ids=sampling_mask.ids[: int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE],
         counts=counts.tobytes(),
     )
+
+
+def _slice_top_logprobs(head: TopLogprobs, seq_len: int) -> TopLogprobs:
+    counts = np.frombuffer(head.counts, dtype=np.int32)[:seq_len]
+    size = int(counts.sum()) * 4
+    return TopLogprobs(ids=head.ids[:size], logprobs=head.logprobs[:size], counts=counts.tobytes())
+
+
+def _validate_top_logprobs(head: TopLogprobs, num_tokens: int) -> None:
+    counts = np.frombuffer(head.counts, dtype=np.int32)
+    if (
+        len(counts) != num_tokens
+        or (counts < 0).any()
+        or len(head.ids) != len(head.logprobs)
+        or len(head.ids) != int(counts.sum()) * 4
+    ):
+        raise ValueError("Top logprobs ids, values and counts must align with packed tokens")
 
 
 def _pad_sampling_mask(micro_batch: MicroBatch, padding_size: int) -> None:
@@ -252,6 +278,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # No copy needed: SamplingMask holds immutable bytes, and _pad_sampling_mask only
     # ever mutates _materialize_bin's own accumulator.
     sampling_mask = training_example.sampling_mask
+    top_logprobs = training_example.top_logprobs
+    if top_logprobs is not None:
+        _validate_top_logprobs(top_logprobs, len(input_ids))
 
     if len(input_ids) > seq_len:
         cut = seq_len
@@ -275,6 +304,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if sampling_mask is not None:
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
+        if top_logprobs is not None:
+            top_logprobs = _slice_top_logprobs(top_logprobs, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
@@ -325,6 +356,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        top_logprobs=top_logprobs,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_refs=mm_refs,
@@ -402,6 +434,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # Sampling masks are per-token optional (unlike routed_experts): samples
     # without them get zero-count backfill instead of constraining packing.
     has_sampling_mask = any(sample.sampling_mask is not None for sample in bin_content.samples)
+    has_top_logprobs = any(sample.top_logprobs is not None for sample in bin_content.samples)
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -417,6 +450,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
     sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
+    top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
 
@@ -464,6 +498,14 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+        if top_logprobs is not None:
+            head = sample.top_logprobs
+            if head is None:
+                top_logprobs.counts += b"\0" * (sample_len * 4)
+            else:
+                top_logprobs.ids += head.ids
+                top_logprobs.logprobs += head.logprobs
+                top_logprobs.counts += head.counts
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
 
@@ -482,6 +524,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        top_logprobs=top_logprobs,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_refs=mm_refs,
@@ -586,7 +629,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
-    micro_batch.input_ids.extend([1] * padding_size)
+    # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text rows pad with their
+    # own tokens. Multimodal rows keep a constant id: a repeated image placeholder would have no feature to receive.
+    if micro_batch.mm_refs is None:
+        micro_batch.input_ids.extend(repeat_to_length(micro_batch.input_ids, padding_size))
+    else:
+        micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
@@ -611,6 +659,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         _pad_routed_experts(micro_batch, padding_size)
     if micro_batch.sampling_mask is not None:
         _pad_sampling_mask(micro_batch, padding_size)
+    if micro_batch.top_logprobs is not None:
+        micro_batch.top_logprobs.counts += b"\0" * (padding_size * 4)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -663,6 +713,9 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
 
+    if micro_batch.top_logprobs is not None:
+        _validate_top_logprobs(micro_batch.top_logprobs, num_tokens)
+
 
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
@@ -676,6 +729,7 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.ref_kl_weights = None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
     dummy.sampling_mask = None
+    dummy.top_logprobs = None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None
@@ -739,7 +793,8 @@ class BatchPacker:
     def __init__(self, config: OrchestratorConfig):
         self.seq_len = config.seq_len
         self.num_train_workers = config.num_train_workers
-        self.pad_to_multiple_of = config.pad_to_multiple_of
+        # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
+        self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
         # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
         model_config = ModelConfig(
             name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code

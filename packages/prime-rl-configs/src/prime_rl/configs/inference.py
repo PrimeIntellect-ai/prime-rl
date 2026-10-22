@@ -467,7 +467,7 @@ class InferenceConfig(BaseConfig):
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 
     enable_fp32_router_logits: bool = True
-    """Emit fp32 MoE router logits: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented natively by vLLM, which reads ``moe_router_dtype`` off the HF config — this flag injects ``hf_overrides = {"moe_router_dtype": "float32"}`` (GLM-5.x gets fp32 routing regardless)."""
+    """Request FP32 MoE router logits via ``hf_overrides = {"moe_router_dtype": "float32"}``. Operand and weight precision depend on the serving model implementation; FP32 logits do not imply FP32 gate weights. Trainer routers use BF16 operands with FP32 logits; configure serving gate precision explicitly to match."""
 
     # Launcher-only fields
 

@@ -311,27 +311,6 @@ class PackedContext:
             window_indices=window_indices,
         )
 
-    def check_position_ids(self, position_ids: Tensor) -> None:
-        """Raise unless `position_ids` agrees with the document boundaries this context came from.
-
-        A document starts exactly where the derived positions are zero, so the check is that the
-        caller's positions vanish there too. A padded micro-batch restarts `position_ids` at 0
-        inside its last document, which this permits: padding sits mid-document, never at a start.
-        A sequence-global `arange` over a packed row never restarts, and a 1-based one never
-        reaches zero at all; both are rejected. Under CP the comparison is against this rank's
-        queries alone, which lines up because the trainer shards the caller's `position_ids` the
-        same way.
-        """
-        disagrees = (self.position_ids == 0) & (position_ids != 0)
-        if disagrees.any():
-            token = int(disagrees.any(dim=0).nonzero()[0])
-            raise ValueError(
-                f"position_ids must restart at 0 at every document boundary of seq_lens: token "
-                f"{token} starts a document but carries {position_ids[:, token].tolist()}. A caller "
-                "that passes none of its own gets the 1-based arange the injected LM head "
-                "substitutes (see `prime_rl.trainer.models.layers.lm_head`), which this rejects."
-            )
-
 
 @dataclass(frozen=True)
 class SparseAttnInputs:
@@ -682,7 +661,6 @@ class DeepseekV4Attention(nn.Module):
         self.rope_layer_type = "main" if self.layer_type == "sliding_attention" else "compress"
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
-        self.attention_dropout = config.attention_dropout
         self.scaling = self.head_dim**-0.5
 
         self.q_a_proj = nn.Linear(config.hidden_size, config.q_lora_rank, bias=False)
