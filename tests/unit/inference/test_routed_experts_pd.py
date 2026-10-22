@@ -18,6 +18,7 @@ def test_remote_prefill_rows_start_at_first_forward():
         request_id="r",
         block_hashes=[b"a" * 32],
         num_tokens=6,
+        num_prompt_tokens=6,
         num_output_tokens=0,
         num_computed_tokens=5,  # tokens [0, 5) were loaded from the prefill instance
         sampling_params=SimpleNamespace(routed_experts_prompt_start=0),

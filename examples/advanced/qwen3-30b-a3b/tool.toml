@@ -42,7 +42,7 @@ env.taskset.id = "general-agent"
 env.taskset.min_tier = 1
 env.taskset.task.tools.colocated = true
 env.agent.harness.id = "null"
-env.agent.runtime.type = "modal"
+env.agent.runtime.type = "prime"
 
 [inference]
 
