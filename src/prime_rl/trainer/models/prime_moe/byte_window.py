@@ -80,7 +80,7 @@ class ByteWindowEmbedding(nn.Module):
         table = torch.load(self.table_path)
         self.token_bytes.copy_(table["token_bytes"])
         self.token_lengths.copy_(table["token_lengths"])
-        positions = torch.arange(self.token_bytes.shape[1])
+        positions = torch.arange(self.token_bytes.shape[1], device=self.token_bytes.device)
         in_token = positions < self.token_lengths.unsqueeze(1)
         self.token_chars.copy_((in_token & (self.token_bytes & 0xC0 != 0x80)).sum(1))
         if self.units == "script":
