@@ -3811,8 +3811,8 @@ wheels = [
 
 [[package]]
 name = "modelexpress"
-version = "0.8.0"
-source = { git = "https://github.com/ai-dynamo/modelexpress.git?subdirectory=modelexpress_client%2Fpython&rev=f24c721#f24c721563eac8a7b172d46069512dbb2d6da0cc" }
+version = "0.8.0.dev20261022"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
     { name = "google-crc32c" },
@@ -3827,6 +3827,11 @@ dependencies = [
     { name = "safetensors" },
     { name = "torch", version = "2.13.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
     { name = "zstandard" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/27/2d6726066c7c2518c0e1abc565cd84a94e13f44e3a66792d3e61709cbfc2/modelexpress-0.8.0.dev20261022-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2b2b5c10e68d16cf7a664b71803dba86c88321cf412991bee0f1316671ce4ee8", size = 633586, upload-time = "2026-10-22T09:38:35.838Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/c5/a264e8c6e569327f7aa04409a7ccd3131eaadcb931d23680e52506c99f42/modelexpress-0.8.0.dev20261022-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:39f3b69af85a9ca89aabb83c0bbaf2e30cbf958c063534fded7d4e00bc2f6612", size = 633143, upload-time = "2026-10-22T09:38:47.062Z" },
+    { url = "https://files.pythonhosted.org/packages/04/8a/ec4e6ad3201413365f5f858a2e6869dffbeb00e9b97a532936b49f06844b/modelexpress-0.8.0.dev20261022-py3-none-any.whl", hash = "sha256:ea8632566c23813fb28e9c02fa0086f30b40711e068fd3215c70a597c131afc5", size = 547296, upload-time = "2026-10-22T09:39:22.418Z" },
 ]
 
 [[package]]
@@ -5347,7 +5352,7 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.3.2" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mamba-ssm", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/state-spaces/mamba?rev=f577286" },
-    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", git = "https://github.com/ai-dynamo/modelexpress.git?subdirectory=modelexpress_client%2Fpython&rev=f24c721" },
+    { name = "modelexpress", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = "==0.8.0.dev20261022" },
     { name = "mooncake-transfer-engine", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.3.10.post2" },
     { name = "msgspec", specifier = ">=0.18" },
     { name = "nixl", marker = "sys_platform == 'linux' and extra == 'disagg'" },

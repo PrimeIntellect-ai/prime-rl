@@ -276,16 +276,18 @@ For inference-only multi-node, set `[deployment] type = "multi_node"` on an infe
 Select `[weight_broadcast] type = "modelexpress"` for FSDP full-weight updates through
 the public ModelExpress control, trainer and generator clients. The MX client and
 server must use matching revisions with TrainerMesh, per-tensor wire dtypes and
-bounded streaming support. This integration targets MX revision `f24c721`,
-which includes the TrainerMesh API (ai-dynamo/modelexpress#835) and reuses
-transfer plans across updates (ai-dynamo/modelexpress#882).
+bounded streaming support. The GPU extra pins the ModelExpress nightly
+`0.8.0.dev20261022`, built from MX revision `446feec`.
+Each trainer binds its tensors and supplies the returned public
+`TrainerTensorsMetadata` to mesh creation. The mesh idempotency key is stable for
+the same model and physical worker membership; restarted workers receive a new
+mesh rather than reusing stale membership.
 
 The trainer supplies the model identity from `model.name` when constructing the
 weight sender; it is not a separate field in `[weight_broadcast]`.
 
-The GPU extra pins the client to that revision. Build the matching server and its
-Redis backend once on the shared filesystem (the script fetches Rust and `protoc`
-when the host has none):
+Build the matching server and its Redis backend once on the shared filesystem (the
+script fetches Rust and `protoc` when the host has none):
 
 ```bash
 bash scripts/install_modelexpress.sh
