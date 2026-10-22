@@ -165,14 +165,18 @@ class AppState(Stateful):
                 setattr(self.progress, key, value)
 
 
-def check_frozen_weights_not_saved(model: nn.Module, path: Path) -> None:
-    """Fail on a checkpoint that holds weights the model freezes: it was saved with them trainable,
-    and loading the base values instead would silently drop that training."""
+def check_frozen_weights_not_trained(model: nn.Module, path: Path) -> None:
+    """Fail on a checkpoint that trained weights the model freezes (it holds their optimizer state):
+    resuming loads frozen weights from the base checkpoint, which would silently drop that training."""
     saved = FileSystemReader(path).read_metadata().state_dict_metadata
-    trained = sorted(key for key in model.frozen_weight_keys() if f"app.model.{key}" in saved)
+    trained = sorted(
+        key
+        for key in model.frozen_weight_keys()
+        if any(name.startswith(f"app.optimizers.state.{key}.") for name in saved)
+    )
     if trained:
         raise ValueError(
-            f"{path} holds trained weights this run freezes ({', '.join(trained)}). "
+            f"{path} trained weights this run freezes ({', '.join(trained)}). "
             "Unfreeze them to resume from it (e.g. model.freeze_ngram_embedding = false)."
         )
 
@@ -242,7 +246,7 @@ class CheckpointManager:
         self.logger.debug(f"Loading training checkpoint from {path}")
         start_time = time.perf_counter()
 
-        check_frozen_weights_not_saved(model, path)
+        check_frozen_weights_not_trained(model, path)
         # Load sharded state
         app_state = AppState(model, optimizers if not self.skip_optimizer else [], scheduler, progress)
         state_dict = {"app": app_state}
