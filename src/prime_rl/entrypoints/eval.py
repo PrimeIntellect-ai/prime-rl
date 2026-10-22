@@ -11,7 +11,6 @@ import re
 import signal
 import sys
 import tomllib
-import uuid
 from pathlib import Path
 from subprocess import Popen
 from typing import Any
@@ -126,20 +125,13 @@ def main():
         format_config_message,
         format_log_message,
         prepare_attempt_dirs,
-        validate_run_dir,
+        prepare_run,
         write_env_server_config,
         write_launch_artifacts,
     )
 
-    # The run identity is runtime-only: $PRL_RUN_ID / $PRL_RUN_NAME are stamped on
-    # every episode and inherited by the env servers.
-    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
-    assert config.run.name is not None  # resolved at construction
-    os.environ["PRL_RUN_NAME"] = config.run.name
-
-    clean = config.clean and not os.environ.get("NEVER_CLEAN")
-    validate_run_dir(config.run_dir, output_dir=config.output_dir, resuming=config.resume, clean=clean)
-    config.run_dir.mkdir(parents=True, exist_ok=True)
+    # The run identity is stamped on every episode and inherited by the env servers.
+    prepare_run(config)
     config_dir, log_dir = prepare_attempt_dirs(config.run_dir)
     os.environ["PRL_ATTEMPT_CONFIG_DIR"] = str(config_dir)
     os.environ["PRL_ATTEMPT_LOG_DIR"] = str(log_dir)

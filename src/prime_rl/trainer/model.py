@@ -16,10 +16,9 @@ import torch.nn as nn
 from huggingface_hub import snapshot_download
 from jaxtyping import Int
 from torch import Tensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.checkpoint.hf_storage import HuggingFaceStorageReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
-from torch.distributed.fsdp import CPUOffloadPolicy, FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
+from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, OffloadPolicy, fully_shard
 from torch.distributed.fsdp._fully_shard._fsdp_common import FSDPMeshInfo, ShardPlacementResult
 from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import Shard
@@ -39,7 +38,7 @@ from prime_rl.configs.trainer import (
 from prime_rl.multimodal import ForwardPolicy
 from prime_rl.trainer.activation_checkpointing import get_activation_checkpoint_wrapper
 from prime_rl.trainer.distributed.embedding_parallel import EmbeddingParallel
-from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora_and_specified, strip_lora_from_state_dict
+from prime_rl.trainer.lora import apply_lora_to_model, freeze_all_except_lora, strip_lora_from_state_dict
 from prime_rl.trainer.models import (
     AutoModelForCausalLMPrimeRL,
     PrimeLmOutput,
@@ -57,13 +56,14 @@ from prime_rl.trainer.models.fusions import (
 from prime_rl.trainer.models.glm_moe_dsa.sparse_mla_attention import Indexer
 from prime_rl.trainer.models.layers.fp8_linear import replace_linear_with_fp8_blockwise_linear
 from prime_rl.trainer.models.layers.lm_head import inject_prime_lm_head
-from prime_rl.trainer.models.layers.moe import MoE, TokenChoiceTopKRouter
+from prime_rl.trainer.models.layers.moe import MoE
 from prime_rl.trainer.models.layers.mxfp8_linear import replace_linear_with_mxfp8_linear
 from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIndexer
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
-from prime_rl.trainer.world import get_world
+from prime_rl.trainer.utils import get_dcp_group
+from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.utils import format_time
 from prime_rl.utils.vlm import get_language_model, get_vision_encoder, is_vlm_architecture
@@ -108,6 +108,9 @@ DTYPE_MAP = {
     "float32": torch.float32,
 }
 
+# The one-time HF <-> PrimeRL conversion runs on the master alone and can take hours for large models.
+CONVERSION_TIMEOUT_S = 4 * 3600
+
 # We increase the torch.compile recompile limit and cache size as we found this
 # necessary for training INTELLECT-3 with Muon.
 torch._dynamo.config.recompile_limit = 16  # default: 8
@@ -148,40 +151,10 @@ def freeze_moe_router(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} MoE router parameters")
 
 
-def apply_fp32_moe_router(model: nn.Module) -> None:
-    """Cast MoE router gates to fp32 so routing runs in fp32 in forward and backward.
-
-    The FSDP bf16 cast exemption is applied separately in `setup_fsdp`.
-    """
-    logger = get_logger()
-    num_routers = 0
-    for moe in iter_moe_blocks(model):
-        moe.router.to(torch.float32)
-        if isinstance(moe.router, TokenChoiceTopKRouter):
-            moe.router.fp32_gate = True
-        num_routers += 1
-
-    # No-op for non-MoE models: moe_router_dtype='float32' is the default,
-    # so absence of MoE routers is the common case, not an error.
-    if num_routers > 0:
-        logger.info(f"Running {num_routers} MoE router gates in fp32")
-
-
-def get_full_offload_dtype_policy(
-    model: nn.Module,
-    config: ModelConfig,
-) -> dict[int, tuple[torch.dtype, torch.dtype]]:
+def get_full_offload_dtype_policy(model: nn.Module) -> dict[int, tuple[torch.dtype, torch.dtype]]:
     """Return persistent parameter and reduced-gradient dtypes for full offload."""
     # FSDP casts reduced gradients back to the persistent sharded-parameter dtype.
-    policy = {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
-    if config.moe_router_dtype != "float32":
-        return policy
-
-    for moe in iter_moe_blocks(model):
-        for param in moe.router.parameters():
-            if param.is_floating_point():
-                policy[id(param)] = (torch.float32, torch.float32)
-    return policy
+    return {id(param): (torch.bfloat16, torch.bfloat16) for param in model.parameters() if param.is_floating_point()}
 
 
 def freeze_sparse_indexer(model: nn.Module) -> None:
@@ -353,22 +326,17 @@ def get_model(
         if subconfig is not None and hasattr(subconfig, "use_cache"):
             subconfig.use_cache = False
     model_config.dsa_backend = config.dsa_backend
-    if config.index_cache is not None:
+    if model_config.model_type == "deepseek_v4":
+        model_config.kv_precision = config.dsv4_kv_precision
+    # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
+    # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
+    indexer_types = getattr(model_config, "indexer_types", None)
+    if indexer_types and any(t == "shared" for t in indexer_types):
         model_config.use_index_cache = True
-        model_config.index_topk_freq = config.index_cache.topk_freq
-        model_config.index_topk_pattern = config.index_cache.topk_pattern
-        # Explicit override supersedes the model's native IndexShare schedule.
-        model_config.indexer_types = None
-    else:
-        # Auto-enable IndexShare from the model's own indexer schedule (e.g. GLM-5.2). The model
-        # reads `indexer_types` directly: shared layers reuse cached indices and carry no indexer weights.
-        indexer_types = getattr(model_config, "indexer_types", None)
-        if indexer_types and any(t == "shared" for t in indexer_types):
-            model_config.use_index_cache = True
-            logger.info(
-                f"Auto-enabled IndexShare from indexer_types schedule "
-                f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
-            )
+        logger.info(
+            f"Auto-enabled IndexShare from indexer_types schedule "
+            f"({sum(t == 'full' for t in indexer_types)}/{len(indexer_types)} full layers)"
+        )
 
     # Ensure pad_token_id is set (some models like Qwen3MoE don't have it).
     # In transformers v5, token IDs moved from PretrainedConfig to GenerationConfig.
@@ -420,13 +388,9 @@ def get_model(
     # Queried here so a misconfigured job dies at setup rather than at the first forward.
     if config.cp > 1:
         cp_model_cls = custom_vlm_cls or get_custom_causal_lm_cls(model_config)
-        support = cp_model_cls.cp_support(model_config)
-        if config.cp_style not in support.styles:
-            supported = f"supported styles: {sorted(support.styles)}" if support.styles else "set cp=1"
-            raise ValueError(
-                f"{model_config.model_type!r} does not support cp_style={config.cp_style!r} "
-                f"({support.reason}); {supported}."
-            )
+        cp_blocker = cp_model_cls.cp_blocker(model_config, config.cp)
+        if cp_blocker is not None:
+            raise ValueError(f"{model_config.model_type!r} cannot train with context parallelism: {cp_blocker}")
 
     if config.vlm is not None and custom_vlm_cls is None:
         raise ValueError(
@@ -509,7 +473,7 @@ def _expert_shard_placement_fn(
 
 def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
     mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=DTYPE_MAP[config.reduce_dtype])
-    offload_policy: OffloadPolicy = CPUOffloadPolicy(pin_memory=True) if config.fsdp_cpu_offload else OffloadPolicy()
+    offload_policy: OffloadPolicy = OffloadPolicy()
 
     fused_shard_placement_fn = get_fsdp_shard_placement_fn(model) if config.fusions.shard_fused_on_dim1 else None
     hsdp_mesh = parallel_dims.get_mesh("hsdp")
@@ -551,7 +515,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     language_model = get_language_model(model, override=config.vlm.language_model_attr if is_vlm_training else None)
     transformer_layers = language_model.layers
 
-    fullgraph = config.compile is not None and config.compile.fullgraph
     for transformer_block in transformer_layers:
         for module in transformer_block.modules():
             if isinstance(module, NGramEmbedding) and parallel_dims.get_mesh("head").size() > 1:
@@ -576,25 +539,6 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                     block_mlp.experts, expert_mesh_info, shard_placement_fn
                 ),
             }
-
-        if config.moe_router_dtype == "float32" and isinstance(block_mlp, MoE):
-            if fullgraph:
-                raise ValueError(
-                    "model.compile.fullgraph=true requires model.moe_router_dtype='bfloat16': the fp32 router is "
-                    "its own FSDP unit inside the compiled block, and dynamo cannot trace FSDP hooks."
-                )
-            # Own FSDP unit with an fp32 policy so the gate weight is not cast to
-            # bf16 for forward and its gradients reduce in fp32.
-            fully_shard(
-                block_mlp.router,
-                mesh=hsdp_mesh,
-                mp_policy=MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32),
-                offload_policy=offload_policy,
-                reshard_after_forward=config.reshard_after_forward,
-                shard_placement_fn=shard_placement_fn,
-            )
-            # Keep the router reduction from waiting for the expert reduction's input buffer.
-            block_mlp.router.set_reduce_scatter_max_input_buffers(2)
 
         fully_shard(
             transformer_block,
@@ -640,6 +584,7 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
         reshard_after_forward=config.reshard_after_forward,
         shard_placement_fn=shard_placement_fn,
     )
+    model.set_reduce_scatter_max_input_buffers(config.reduce_scatter_max_input_buffers)
 
     if not parallel_dims.ep_enabled:
         return
@@ -694,8 +639,8 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
                 transformer_block.set_modules_to_backward_prefetch([embed_module])
 
 
-def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims):
-    device = "cpu" if config.fsdp_cpu_offload else "cuda"
+def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
+    device = "cuda"
     model.to_empty(device=device)
     torch.distributed.barrier()
 
@@ -705,7 +650,6 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     logger = get_logger()
     if config.debug.random_init:
         logger.warning("Randomly initializing model. Skipping loading weights from HF.")
-        _move_buffers_to_cuda(model, config)
         return
 
     if not Path(config.name).exists():
@@ -760,7 +704,7 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
             del snapshot_state_dict
 
     # All ranks wait for master rank to finish conversion
-    torch.distributed.barrier()
+    wait_for_master(f"model_conversion:{config.name}", timeout=CONVERSION_TIMEOUT_S)
     if snapshot_path.name == "prime" and not (snapshot_path / ".prime-v1").is_file():
         raise RuntimeError(f"PrimeRL conversion cache {snapshot_path} is missing the required .prime-v1 marker")
 
@@ -773,23 +717,10 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig, parallel_dims: Paral
     dcp_load(
         state_dict,
         storage_reader=HuggingFaceStorageReader(path=snapshot_path.as_posix()),
+        process_group=get_dcp_group(),
     )
     write_back_loaded_packed_parameters(model, state_dict)
-    _move_buffers_to_cuda(model, config)
 
-    lora_modules = [m for m in model.modules() if hasattr(m, "_init_lora_parameters")]
-    if lora_modules:
-        generator: torch.Generator | None = None
-        if parallel_dims.dp_replicate_enabled:
-            # Synchronize LoRA initialization across dp_replicate ranks by broadcasting a seed
-            dp_replicate_mesh = parallel_dims.world_mesh["dp_replicate"]
-            seed_tensor = torch.empty(1, dtype=torch.long, device="cuda")
-            if dp_replicate_mesh.get_local_rank() == 0:
-                seed_tensor.random_()
-            torch.distributed.broadcast(seed_tensor, src=0, group=dp_replicate_mesh.get_group())
-            generator = torch.Generator(device="cuda").manual_seed(seed_tensor.item())
-        for module in lora_modules:
-            module._init_lora_parameters(generator)
     logger.debug(f"Loaded weights using HF DCP in {format_time(time.perf_counter() - load_dcp_start_time)}")
 
 
@@ -841,16 +772,8 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
-        layer = language_model.layers[layer_id]
-        if isinstance(layer, CheckpointWrapper) and any(
-            isinstance(module, FSDPModule) for module in layer._checkpoint_wrapped_module.modules()
-        ):
-            # A nested FSDP unit's hooks always break the graph, and a break inside a compiled checkpoint
-            # sends the block to eager, so keep AC eager around the compiled block. pytorch/pytorch#196626
-            # removes the fp32 router's nested unit by letting it join the block's FSDP unit.
-            layer = layer._checkpoint_wrapped_module
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -865,15 +788,21 @@ def apply_quantization(model: nn.Module, config: ModelConfig) -> None:
     if quant is None:
         return
 
+    ignore_modules = quant.ignore_patterns + quant.extra_ignore_patterns
     if isinstance(quant, FP8Config):
-        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=quant.ignore_patterns)
+        capability = torch.cuda.get_device_capability()
+        if capability[0] not in (9, 10):
+            raise ValueError(
+                f"FP8 blockwise quantization (DeepGEMM) requires SM90 or SM100, but device is SM{capability[0]}{capability[1]}."
+            )
+        replace_linear_with_fp8_blockwise_linear(model, ignore_modules=ignore_modules)
     elif isinstance(quant, MXFP8Config):
         capability = torch.cuda.get_device_capability()
         if capability[0] < 10:
             raise ValueError(
                 f"MXFP8 quantization requires Blackwell (SM100+), but device is SM{capability[0]}{capability[1]}."
             )
-        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=quant.ignore_patterns)
+        replace_linear_with_mxfp8_linear(model, recipe=quant.recipe, ignore_modules=ignore_modules)
 
 
 def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.Module | None:
@@ -889,15 +818,6 @@ def configure_trainable_parameters(model: nn.Module, config: ModelConfig) -> nn.
     if config.lora is not None:
         apply_lora_to_model(model, config.lora)
     return frozen_vision_encoder
-
-
-def _move_buffers_to_cuda(model: nn.Module, config: ModelConfig) -> None:
-    """FSDP CPU offloading only manages parameters, not buffers. Move buffers to CUDA."""
-    if not config.fsdp_cpu_offload:
-        return
-    for _, buffer in model.named_buffers():
-        if buffer.device.type == "cpu":
-            buffer.data = buffer.data.to("cuda")
 
 
 def _reset_runtime_moe_buffers(model: nn.Module) -> None:
@@ -987,9 +907,6 @@ def setup_model(
     if config.freeze_moe_router:
         freeze_moe_router(model)
 
-    if config.moe_router_dtype == "float32":
-        apply_fp32_moe_router(model)
-
     # A sparse-attention indexer runs its forward under torch.no_grad(), so it is never
     # trainable. Freeze it so optimizer state stays symmetric across checkpoint save/resume.
     # No-op for models without a sparse indexer.
@@ -1003,7 +920,7 @@ def setup_model(
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
         if config.lora is not None:
-            freeze_all_except_lora_and_specified(model, config.lora)
+            freeze_all_except_lora(model)
 
     if frozen_vision_encoder is not None:
         freeze_vision_encoder(
@@ -1011,26 +928,24 @@ def setup_model(
             override_attr=config.vlm.vision_encoder_attr if config.vlm is not None else None,
         )
 
-    # the right order is AC -> FSDP -> Compile: compile needs to see which blocks hold nested FSDP units
+    # the right order is AC -> Compile -> FSDP
     if config.ac is not None:
         apply_ac(model, config.ac)
-
-    setup_fsdp(model, config, parallel_dims)
-
     if config.compile is not None:
         apply_compile(model, config.compile)
+
+    setup_fsdp(model, config, parallel_dims)
 
     if loading_from_checkpoint_later:
         logger.warning(
             "Skipping loading weights. Initializing an empty model on device, loading from checkpoint later."
         )
-        device = "cpu" if config.fsdp_cpu_offload else "cuda"
+        device = "cuda"
         model.to_empty(device=device)
         torch.distributed.barrier()
         model.init_buffers_post_meta()
-        _move_buffers_to_cuda(model, config)
     else:
-        load_dcp_from_hf(model, config, parallel_dims)
+        load_dcp_from_hf(model, config)
 
     _reset_runtime_moe_buffers(model)
     return model
@@ -1046,6 +961,7 @@ def forward(
     temperature: Tensor | None = None,
     routed_experts: Int[Tensor, "batch seq layers topk"] | None = None,
     sampling_mask: Int[Tensor, "batch seq mask"] | None = None,
+    topk_ids: Int[Tensor, "batch seq head"] | None = None,
     mm_kwargs: dict[str, Tensor] | None = None,
     mm_forward_policy: ForwardPolicy | None = None,
     mm_token_type_ids: Int[Tensor, "batch seq"] | None = None,
@@ -1059,6 +975,9 @@ def forward(
         "temperature": temperature,
         "sampling_mask": sampling_mask,
     }
+
+    if topk_ids is not None:
+        kwargs["topk_ids"] = topk_ids
 
     if mm_kwargs:
         kwargs.update(mm_kwargs)

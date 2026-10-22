@@ -29,16 +29,7 @@ class ServerConfig(BaseConfig):
 # not depend on vLLM, and importing it costs seconds in every config-parsing process.
 VALID_VLLM_LORA_RANKS = (8, 16, 32, 64, 128, 256, 320, 512)
 
-# vLLM all2all backend options for expert-parallel deployments.
-All2AllBackend = Literal[
-    "allgather_reducescatter",
-    "deepep_high_throughput",
-    "deepep_low_latency",
-    "flashinfer_nvlink_one_sided",
-    "flashinfer_nvlink_two_sided",
-]
-
-QuantizationType = Literal["fp8_per_block"]
+QuantizationType = Literal["fp8_per_block", "mxfp8"]
 
 
 class VllmConfig(BaseConfig):
@@ -59,17 +50,8 @@ class VllmConfig(BaseConfig):
     model: str = "Qwen/Qwen3-0.6B"
     """HF model name or local path."""
 
-    dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
-    """dtype for model weights and activations. ``auto`` uses FP16 for FP32/FP16 models and BF16 for BF16 models."""
-
     max_model_len: int | None = None
     """Maximum model context length. If None, uses the model config's value."""
-
-    enforce_eager: bool = False
-    """Enforce eager mode. When False, PyTorch eager and cuda graphs run hybrid for maximum performance."""
-
-    trust_remote_code: bool = False
-    """Trust remote code when loading the model."""
 
     chat_template: str | None = None
     """Chat template — a Jinja2 template string or path to a template file. If None, uses the model's default."""
@@ -98,9 +80,6 @@ class VllmConfig(BaseConfig):
     api_server_count: int = Field(1, ge=0)
     """API servers to run. Set to 0 for headless mode."""
 
-    seed: int = 0
-    """Seed the inference components."""
-
     gpu_memory_utilization: float = 0.9
     """GPU memory utilization."""
 
@@ -113,10 +92,6 @@ class VllmConfig(BaseConfig):
     enable_lora: bool = False
     """Enable LoRA."""
 
-    max_loras: int = 1
-    """Maximum number of concurrently served LoRAs. prime-rl serves one adapter and reloads
-    it in place every policy version (same name, same lora_int_id), so one slot suffices."""
-
     max_lora_rank: int | None = None
     """Maximum LoRA rank. Rounded up to the nearest value vLLM accepts."""
 
@@ -126,9 +101,6 @@ class VllmConfig(BaseConfig):
     enable_expert_parallel: bool = False
     """Enable expert parallelism for MoE models."""
 
-    all2all_backend: All2AllBackend = "allgather_reducescatter"
-    """All-to-all backend for expert-parallel communication."""
-
     enable_eplb: bool = False
     """Enable expert parallel load balancer (EPLB)."""
 
@@ -137,9 +109,6 @@ class VllmConfig(BaseConfig):
     rank reads only its own expert shard from disk. No-op for non-MoE models, when
     expert parallelism is disabled, or under EPLB (redundant expert slots need all
     logical expert weights)."""
-
-    enable_dbo: bool = False
-    """Enable dual batch overlap (DBO)."""
 
     enable_return_routed_experts: bool = False
     """Return routed experts in responses."""
@@ -222,8 +191,8 @@ class WeightBroadcastConfig(BaseConfig):
 
 
 class CPUOffloadTier(BaseConfig):
-    num_bytes: int = Field(..., gt=0)
-    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``)."""
+    num_bytes: int = Field(..., ge=0)
+    """CPU/DRAM offload capacity. For the ``native`` backend this is vLLM's aggregate ``cpu_bytes_to_use`` (scaled across workers internally; must be positive). For the ``mooncake`` backend this is the per-node store client's DRAM segment (``-global_segment_size``); 0 connects the node to the shared pool without contributing storage."""
 
 
 class DiskOffloadTier(BaseConfig):
@@ -251,6 +220,12 @@ class BaseKVCacheOffloadConfig(BaseConfig):
 class NativeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
     type: Literal["native"] = "native"
     """vLLM-native offloading. cpu-only uses ``OffloadingConnector`` + ``CPUOffloadingSpec``; cpu+disk uses ``TieringOffloadingSpec`` (CPU primary tier + ``fs`` disk secondary). Fully self-contained — no external processes."""
+
+    @model_validator(mode="after")
+    def positive_cpu_capacity(self):
+        if self.cpu is not None and self.cpu.num_bytes == 0:
+            raise ValueError("Native KV cache offload requires a positive cpu.num_bytes.")
+        return self
 
     def to_connector_dict(self) -> dict[str, Any]:
         assert self.cpu is not None
@@ -286,6 +261,13 @@ class MooncakeKVCacheOffloadConfig(BaseKVCacheOffloadConfig):
 KVCacheOffloadConfig: TypeAlias = Annotated[
     NativeKVCacheOffloadConfig | MooncakeKVCacheOffloadConfig, Field(discriminator="type")
 ]
+
+
+class HiSparseConfig(BaseConfig):
+    """vLLM HiSparse for DSA sparse-MLA models (e.g. GLM-5.x): the sparse-MLA KV lives in a pinned host pool and decode attention reads per-request GPU buffers of the indexer top-k rows."""
+
+    host_pool_gib: float = Field(..., gt=0)
+    """Pinned host pool per GPU worker, in GiB (``HiSparseConnector`` ``host_pool_gib``). Budget ``GPUs per node × host_pool_gib`` against node RAM."""
 
 
 # Known llm-d EPP scorer plugins (used to guard the ``scorers`` map against typos).
@@ -421,6 +403,12 @@ class DisaggregatedInferenceDeploymentConfig(BaseInferenceDeploymentConfig):
     decode_vllm_overrides: dict[str, Any] = {}
     """Extra vLLM config options merged into --vllm-extra only for decode ranks (SLURM only)."""
 
+    prefill_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
+    """KV cache offload on prefill instances. ``inherit`` uses ``inference.kv_cache_offload``; None disables it."""
+
+    decode_kv_cache_offload: KVCacheOffloadConfig | Literal["inherit"] | None = "inherit"
+    """KV cache offload on decode instances. ``inherit`` uses ``inference.kv_cache_offload``; None disables it."""
+
     @property
     def num_prefill_nodes(self) -> int:
         return self.prefill_nodes_per_replica * self.num_prefill_replicas
@@ -466,6 +454,9 @@ class InferenceConfig(BaseConfig):
     kv_cache_offload: KVCacheOffloadConfig | None = None
     """KV cache offload for inference workers, as composable CPU/disk tiers. Discriminated on ``type``: ``native`` (vLLM ``OffloadingConnector``/``TieringOffloadingSpec``, self-contained) or ``mooncake`` (per-node Mooncake distributed store). Disaggregated P/D combines the chosen connector with NIXL through ``MultiConnector``."""
 
+    hisparse: HiSparseConfig | None = None
+    """Enable vLLM HiSparse (experimental). Under disaggregated P/D it applies to decode instances only, and decode must not offload KV (``deployment.decode_kv_cache_offload = None``). vLLM checks its requirements at startup (a DSA model, the V2 model runner, no pipeline or decode context parallelism)."""
+
     use_pd_kv_transfer: bool = False
     """Auto-set for disaggregated P/D: emit the NIXL transfer connector. Persisted into the per-node config (which drops ``deployment``) so the connector is still built per worker. Not meant to be set by hand."""
 
@@ -476,7 +467,7 @@ class InferenceConfig(BaseConfig):
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 
     enable_fp32_router_logits: bool = True
-    """Emit fp32 MoE router logits: the bf16×bf16 gate GEMM writes its fp32 accumulator out unrounded instead of truncating logits to bf16 before expert scoring. Matches fp32-routed checkpoints (e.g. GLM-5.x, trained with Megatron ``--moe-router-dtype fp32``); pairs with ``trainer.model.moe_router_dtype = "float32"``. Implemented natively by vLLM, which reads ``moe_router_dtype`` off the HF config — this flag injects ``hf_overrides = {"moe_router_dtype": "float32"}`` (GLM-5.x gets fp32 routing regardless)."""
+    """Request FP32 MoE router logits via ``hf_overrides = {"moe_router_dtype": "float32"}``. Operand and weight precision depend on the serving model implementation; FP32 logits do not imply FP32 gate weights. Trainer routers use BF16 operands with FP32 logits; configure serving gate precision explicitly to match."""
 
     # Launcher-only fields
 
@@ -509,13 +500,17 @@ class InferenceConfig(BaseConfig):
         return self
 
     @model_validator(mode="after")
-    def validate_disaggregated_no_routed_experts(self):
-        """vLLM rejects routed-expert capture with NIXL KV transfer."""
-        if self.deployment.type == "disaggregated" and self.vllm.enable_return_routed_experts:
+    def validate_hisparse_decode_offload(self):
+        """A HiSparse decode instance keeps its sparse-MLA KV in a host-resident layout: native offload rejects it, and Mooncake stores it under the same keys as prefill's regular layout, so prefill fails to load it."""
+        if self.hisparse is None:
+            return self
+        if self.kv_cache_offload_by_role.get("decode") is not None:
             raise ValueError(
-                "Routed-expert return (enable_return_routed_experts) is not supported with disaggregated P/D: "
-                "vLLM does not capture routed experts across NIXL KV transfer."
+                "HiSparse runs on decode, which cannot also offload KV: set "
+                "inference.deployment.decode_kv_cache_offload = None (prefill offload is supported)."
             )
+        if isinstance(self.kv_cache_offload_by_role.get("all"), NativeKVCacheOffloadConfig):
+            raise ValueError("HiSparse does not work with native KV cache offload: use Mooncake or no offload.")
         return self
 
     @model_validator(mode="after")
@@ -535,7 +530,10 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_kv_cache_offload(self):
-        if self.kv_cache_offload is not None:
+        offloads = [offload for offload in self.kv_cache_offload_by_role.values() if offload is not None]
+        if len({offload.disk.path for offload in offloads if offload.type == "mooncake" and offload.disk}) > 1:
+            raise ValueError("Mooncake roles share one store master, so their disk tiers must use the same path.")
+        if offloads:
             if self.vllm.enable_prefix_caching is False:
                 raise ValueError("KV cache offloading requires inference.vllm.enable_prefix_caching to be true.")
             if "enable_prefix_caching" not in self.vllm.model_fields_set:
@@ -565,18 +563,40 @@ class InferenceConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_slurm_template(self):
+        if self.slurm is not None and self.slurm.job_name is None:
+            self.slurm.job_name = "inference"
         if self.slurm is not None and self.slurm.template_path is None:
             templates_dir = find_package_resource("templates")
             if templates_dir is not None:
                 self.slurm.template_path = templates_dir / "inference.sbatch.j2"
         return self
 
-    def build_kv_transfer_config(self) -> dict[str, Any] | None:
-        """Build the single vLLM ``kv_transfer_config`` from the transfer + offload connectors.
+    @property
+    def kv_cache_offload_by_role(self) -> dict[str, KVCacheOffloadConfig | None]:
+        """KV cache offload per P/D role (``prefill``/``decode``), or ``all`` for other deployments."""
+        if self.deployment.type != "disaggregated":
+            return {"all": self.kv_cache_offload}
+        overrides = {
+            "prefill": self.deployment.prefill_kv_cache_offload,
+            "decode": self.deployment.decode_kv_cache_offload,
+        }
+        return {role: self.kv_cache_offload if offload == "inherit" else offload for role, offload in overrides.items()}
 
-        Disaggregated P/D always uses NIXL for prefill→decode transfer. KV cache offload (if
-        configured) contributes its own connector. When both are present they are composed via
-        ``MultiConnector``. Returns None when neither applies.
+    def for_pd_role(self, role: Literal["prefill", "decode"]) -> "InferenceConfig":
+        """Engine config for one role of a disaggregated deployment: the role's KV cache offload, and HiSparse on decode only."""
+        assert self.deployment.type == "disaggregated"
+        config = self.model_copy(deep=True)
+        config.kv_cache_offload = self.kv_cache_offload_by_role[role]
+        if role == "prefill":
+            config.hisparse = None
+        return config
+
+    def build_kv_transfer_config(self) -> dict[str, Any] | None:
+        """Build the single vLLM ``kv_transfer_config`` from the transfer, offload and HiSparse connectors.
+
+        Disaggregated P/D always uses NIXL for prefill→decode transfer. KV cache offload and
+        HiSparse (if configured) contribute their own connectors. Several connectors are composed
+        via ``MultiConnector``. Returns None when none applies.
         """
         connectors: list[dict[str, Any]] = []
         if self.use_pd_kv_transfer:
@@ -588,7 +608,19 @@ class InferenceConfig(BaseConfig):
                 }
             )
         if self.kv_cache_offload is not None:
-            connectors.append(self.kv_cache_offload.to_connector_dict())
+            connector = self.kv_cache_offload.to_connector_dict()
+            if self.use_pd_kv_transfer and connector["kv_connector"] == "MooncakeStoreConnector":
+                # Decode instances also store the KV they generate, so the next turn's prefill can load it.
+                connector["kv_connector_extra_config"]["save_decode_cache"] = True
+            connectors.append(connector)
+        if self.hisparse is not None:
+            connectors.append(
+                {
+                    "kv_connector": "HiSparseConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {"host_pool_gib": self.hisparse.host_pool_gib},
+                }
+            )
 
         if not connectors:
             return None

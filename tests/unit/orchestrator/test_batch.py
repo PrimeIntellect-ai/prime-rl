@@ -1,16 +1,77 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
 from prime_rl.orchestrator.batch import (
     _is_multimodal_sample,
-    build_bin_cost,
     pad_micro_batch,
     prepare_batch,
     prepare_sample,
 )
 from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
+
+
+def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training_example):
+    import msgspec
+
+    from prime_rl.trainer.rl.data import DataLoader
+    from prime_rl.transports.batch.types import TopLogprobs
+
+    sample = make_training_example()
+    sample.top_logprobs = TopLogprobs(
+        ids=np.array([3, 7, 4], np.int32).tobytes(),
+        logprobs=np.array([-0.3, -1.8, -0.2], np.float32).tobytes(),
+        counts=np.array([0, 0, 2, 1], np.int32).tobytes(),
+    )
+    truncated = prepare_sample(sample, seq_len=3)
+    np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.counts, np.int32), [0, 0, 2])
+    np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
+    plain = make_training_example(rl_weights=[0.0] * 4)
+    batches = prepare_batch([sample, plain], seq_len=12, num_train_workers=2, bin_cost=sum)
+    packed = next(b for worker in batches for b in worker if any(b.loss_mask) and b.top_logprobs is not None)
+    packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed), type=MicroBatch)
+    tensor = DataLoader._micro_batch_to_tensor(None, packed)
+    ids, values = tensor["top_logprobs_ids"], tensor["top_logprobs_values"]
+    assert ids.shape == values.shape
+    assert ids.shape[1] == len(packed.input_ids)
+    assert (ids >= 0).sum() == 3
+    np.testing.assert_allclose(values[ids >= 0].numpy(), [-0.3, -1.8, -0.2])
+    # The source evidence is immutable under truncation and packing.
+    np.testing.assert_array_equal(np.frombuffer(sample.top_logprobs.counts, np.int32), [0, 0, 2, 1])
+
+
+@pytest.mark.parametrize("corruption", [None, "missing", "duplicate", "vocab", "mass", "support"])
+def test_top_logprobs_validate_only_rl_tokens_and_reject_truncation(corruption):
+    import torch
+
+    from prime_rl.trainer.rl.data import validate_score_centering_data
+
+    batch = {
+        "input_ids": torch.tensor([[0, 3, 6]]),
+        "loss_mask": torch.tensor([[False, True, True]]),
+        "rl_weights": torch.tensor([[0.0, 1.0, 0.0]]),
+        "top_logprobs_ids": torch.tensor([[[-1, -1], [3, 7], [-1, -1]]]),
+        "top_logprobs_values": torch.tensor([[[1.0, 1.0], [0.75, 0.25], [1.0, 1.0]]]).log(),
+        "inference_logprobs": torch.tensor([[1.0, 0.75, 1.0]]).log(),
+        "sampling_mask": torch.tensor([[[-1, -1], [-1, -1], [6, -1]]]),
+    }
+    validate_score_centering_data(batch, vocab_size=9)
+    if corruption is None:
+        batch["sampling_mask"][0, 1] = -1
+        validate_score_centering_data(batch, vocab_size=9)
+        return
+    match corruption:
+        case "missing":
+            batch["top_logprobs_ids"] = None
+        case "duplicate":
+            batch["top_logprobs_ids"][0, 1, 1] = 3
+        case "vocab":
+            batch["top_logprobs_ids"][0, 1, 1] = 9
+        case "mass":
+            batch["top_logprobs_values"][0, 1] = 0
+        case "support":
+            batch["sampling_mask"][0, 1, 1] = 7
+    with pytest.raises(ValueError):
+        validate_score_centering_data(batch, vocab_size=9)
 
 
 def _routed_experts(data, dtype=np.uint8):
@@ -69,16 +130,9 @@ def _has_loss_tokens(batch: MicroBatch) -> bool:
     return any(batch.loss_mask)
 
 
-def make_flops_config():
-    return SimpleNamespace(
-        hidden_size=16,
-        num_attention_heads=2,
-        num_key_value_heads=2,
-        vocab_size=32,
-        intermediate_size=64,
-        num_hidden_layers=2,
-        head_dim=8,
-    )
+def flop_cost(seq_lens: list[int]) -> int:
+    """A FlopCounter-shaped cost: a per-token term plus a per-document attention term."""
+    return sum(64 * n + n * n for n in seq_lens)
 
 
 def test_training_sample_requires_env_name():
@@ -104,7 +158,7 @@ def test_prepare_batch_balances_micro_batches_across_workers(
         rollouts=examples,
         seq_len=4,
         num_train_workers=num_train_workers,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     assert all(len(worker_batches) == expected_batches_per_worker for worker_batches in batches_per_gpu)
@@ -143,7 +197,7 @@ def test_prepare_batch_preserves_branch_identity(make_training_example):
         rollouts=examples,
         seq_len=4,
         num_train_workers=2,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
         pad_to_multiple_of=8,
     )
 
@@ -177,7 +231,7 @@ def test_randomized_packing_invariants():
         num_samples = int(rng.integers(1, 65))
         lengths = [int(x) for x in rng.integers(1, seq_len + 1, size=num_samples)]
         examples = [make_sized_training_example(length, env_name=f"env-{case_idx}") for length in lengths]
-        bin_cost = build_bin_cost(make_flops_config() if case_idx % 2 == 0 else None)
+        bin_cost = flop_cost if case_idx % 2 == 0 else sum
 
         batches_per_gpu = prepare_batch(
             rollouts=examples,
@@ -222,7 +276,7 @@ def test_split_to_align_avoids_dummy_micro_batches():
         rollouts=examples,
         seq_len=12,
         num_train_workers=4,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     assert all(_has_loss_tokens(batch) for batch in _flatten_batches(batches_per_gpu))
@@ -236,7 +290,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
         rollouts=examples,
         seq_len=100,
         num_train_workers=2,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     assert _worker_token_sums(balanced) == [170, 170]
@@ -244,7 +298,7 @@ def test_pack_first_then_balance_distributes_micro_batches_by_tokens_without_mod
 
 def test_flop_aware_balancing_pairs_long_and_short_sequence_workloads():
     examples = [make_sized_training_example(length) for length in [32, 32, 16, 16, 16, 16]]
-    bin_cost = build_bin_cost(make_flops_config())
+    bin_cost = flop_cost
 
     balanced = prepare_batch(
         rollouts=examples,
@@ -265,7 +319,7 @@ def test_flop_aware_split_to_align_splits_heaviest_flop_bin():
         rollouts=examples,
         seq_len=64,
         num_train_workers=4,
-        bin_cost=build_bin_cost(make_flops_config()),
+        bin_cost=flop_cost,
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
@@ -283,7 +337,7 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
         rollouts=[example1, example2],
         seq_len=16,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -342,7 +396,7 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
         rollouts=[longer, shorter],
         seq_len=16,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     flat_batches = _flatten_batches(batches_per_gpu)
@@ -381,7 +435,7 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
         seq_len=16,
         pad_to_multiple_of=1,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
     flat_batches = _flatten_batches(batches_per_gpu)
     assert len(flat_batches) == 1  # both samples share one bin
@@ -488,7 +542,7 @@ def test_prepare_batch_packs_multimodal_with_text():
         rollouts=[mm_sample, text_sample],
         seq_len=8,
         num_train_workers=1,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     real_batches = [batch for batch in _flatten_batches(batches_per_gpu) if _has_loss_tokens(batch)]
@@ -520,7 +574,7 @@ def test_split_to_align_splits_multimodal_bins():
         rollouts=[make_mm_sample(10), make_mm_sample(20)],
         seq_len=8,
         num_train_workers=2,
-        bin_cost=build_bin_cost(None),
+        bin_cost=sum,
     )
 
     batches = _flatten_batches(batches_per_gpu)
