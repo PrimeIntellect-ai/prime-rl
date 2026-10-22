@@ -546,7 +546,7 @@ class OrchestratorConfig(BaseConfig):
     """Maximum training steps. If None, runs indefinitely."""
 
     max_off_policy_steps: int = Field(8, ge=0)
-    """Maximum staleness of a trained rollout: the version a batch trains on (v{step-1}) minus the oldest version that generated the rollout (a rollout can span several weight updates), queue time included. Episodes past the bound are dropped, in-flight and queued; a group shares one dispatch version, so its episodes age out together. Higher values yield better throughput at the cost of off-policy noise."""
+    """Maximum staleness of a trained token: the version a batch trains on (v{step-1}) minus the policy version that sampled the token, queue time included. Engines label each sampled token with the policy step (vLLM ``weight_versions``); unlabelled tokens (Dynamo engines) count as old as their episode's dispatch version. Older tokens are masked out of every loss component; the rest of the sample still trains with its own advantage and inference logprobs. A sample is dropped only when nothing is left to train. Rollouts are never cancelled for staleness. Higher values yield better throughput at the cost of off-policy noise."""
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""

@@ -9,12 +9,12 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import ModelCall
-from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage
+from verifiers.v1.types import AssistantMessage, Tool, ToolMessage, Usage, UserMessage, WeightVersionSpan
 
 from prime_rl.configs.algorithm import GRPOAlgoConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
 from prime_rl.orchestrator.algo.base import Algorithm
-from prime_rl.orchestrator.train_sink import TrainSink
+from prime_rl.orchestrator.train_sink import TrainSink, mask_stale_tokens
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress
 from prime_rl.utils.logger import setup_logger
@@ -162,6 +162,20 @@ def test_stale_queue_releases_trace_without_recounting_arrivals():
     asyncio.run(run())
 
 
+def test_mask_stale_tokens_keeps_fresher_tokens():
+    t = trace()
+    # Unlabelled tokens take the episode's dispatch version (the fallback).
+    t.nodes[2].weight_versions = [
+        WeightVersionSpan(version="default", start=0, end=1),
+        WeightVersionSpan(version="3", start=1, end=2),
+    ]
+    [sample] = trace_to_samples(t, env_name="test")
+    sample.ref_kl_weights = [1.0] * 4
+    assert mask_stale_tokens(sample, t.branches[sample.branch_index], fallback=1, min_version=2) == 1
+    assert sample.mask == [False, False, False, True]
+    assert sample.ref_kl_weights == [1.0, 1.0, 0.0, 1.0]
+
+
 def test_deferred_pruning_and_multiple_batches_preserve_episode_boundaries():
     async def run():
         s = sink(constant=False, batch_size=2)
@@ -201,11 +215,11 @@ def test_failures_and_cancellations_accumulate_until_reporting():
             assert s.take_rollout_window() is None
             assert not s.pending_group_failures
         for i in range(4):
-            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "stale"))
+            await s.cancel(GroupCancellation("train", "test", f"cancel{i}", 1, 1, "overload"))
         assert s.take_rollout_window() is None
         window = s.take_rollout_window(force=True)
         assert window.attempts == window.discarded == 12
-        assert window.stale == 4
+        assert window.cancelled == 4
         assert window.errored == 8
         assert window.metrics.to_dict()["train/agg/all/dispatch_failure/mean"] == 1
         assert not s.pending_group_cancellations
