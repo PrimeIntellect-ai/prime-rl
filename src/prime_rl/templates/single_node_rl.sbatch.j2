@@ -20,6 +20,8 @@
 {%- if exclude %}
 #SBATCH --exclude={{ exclude }}
 {%- endif %}
+# A requeued job would rerun this script into the same attempt, overwriting its logs; relaunch instead.
+#SBATCH --no-requeue
 #SBATCH --output={{ launcher_log_dir }}/job_%j.log
 #SBATCH --error={{ launcher_log_dir }}/job_%j.log
 

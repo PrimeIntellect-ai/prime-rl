@@ -244,6 +244,8 @@ uv run rl @ base_rl.toml @ my_slurm.toml --dry-run   # writes launcher/rl.sbatch
 
 Every SLURM entrypoint stores its generated scripts and coordination files under `<run_dir>/launcher/`. SLURM stdout and stderr go to `launcher/logs/`. Local launches do not create `launcher/`.
 
+The bundled RL templates set `#SBATCH --no-requeue`, so SLURM does not rerun an RL job after a node failure. Relaunch it with `uv run rl` instead, which starts a new attempt.
+
 ### `[deployment]` Block
 
 `[deployment]` is a discriminated union picked by `type` — `single_node` or `multi_node` for RL/SFT, with an extra disaggregated variant for inference. RL multi-node:
