@@ -1,0 +1,3 @@
+[model.moe.dispatch]
+type = "torch"
+transport = "mxfp8"

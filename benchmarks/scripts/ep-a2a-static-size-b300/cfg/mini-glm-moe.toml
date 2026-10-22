@@ -1,0 +1,34 @@
+# PR 4205 workload 1: samsja/mini-glm-moe, ep 8, fake data, full AC, default compile, no offloading.
+max_steps = 20
+clean = true
+dashboard = false
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+
+[model]
+name = "samsja/mini-glm-moe"
+ep = 8
+offload = "none"
+ac_offloading = "None"
+
+[model.ac]
+mode = "full"
+freq = 1
+
+[data]
+type = "fake"
+length = "fixed"
+batch_size = 16
+micro_batch_size = 1
+seq_len = 8192
+pad_to_seq_len = true
+
+[optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.01
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
