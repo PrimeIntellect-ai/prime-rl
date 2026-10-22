@@ -193,7 +193,8 @@ class SFTValConfig(BaseConfig):
     """Run validation before the first training step."""
 
     eval_on_end: bool = False
-    """Run validation on the final weights, after the last optimizer step and the final checkpoint."""
+    """Run validation on the final weights, after the last optimizer step and the final checkpoint, instead of before
+    the last step's update."""
 
     data: SFTDataConfig | None = None
     """Validation dataset. Its mean loss is logged as ``val/loss`` and ``val/perplexity``."""

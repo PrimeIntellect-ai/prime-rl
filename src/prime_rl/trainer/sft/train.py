@@ -449,6 +449,9 @@ def train(config: SFTConfig):
             (is_first_step and config.val.eval_on_start)
             or (not is_first_step and progress.step % config.val.interval == 0)
         )
+        # The end round scores the final weights instead.
+        if config.val is not None and config.val.eval_on_end and progress.step == config.max_steps:
+            run_validation_this_step = False
         if gradient_manager is None:
             micro_batches = (next(dataiter) for _ in range(grad_accum_steps))
         else:
