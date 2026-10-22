@@ -1,6 +1,3 @@
-[model]
-moe_router_dtype = "float32"
-
 [data]
 name = "tests/regression/configs/distributed/sft/data"
 batch_size = 16
