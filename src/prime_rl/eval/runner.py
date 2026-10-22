@@ -88,7 +88,13 @@ class EvalRunner:
         self.run_name = os.environ.get("PRL_RUN_NAME")
 
         get_logger().info(f"Initializing inference pool (base_url={config.client.base_url}, model={config.model})")
-        self.clients = InferenceClient(config.client, model_name=config.model)
+        renderer = config.renderer if isinstance(config, EvalConfig) else None
+        self.clients = InferenceClient(
+            config.client,
+            model_name=config.model,
+            eval_client_type="renderer" if renderer is not None else "openai_chat_completions",
+            renderer_config=renderer,
+        )
         self.admin_plane = AdminPlane(config.client)
 
         get_logger().info("Loading eval environment(s)")

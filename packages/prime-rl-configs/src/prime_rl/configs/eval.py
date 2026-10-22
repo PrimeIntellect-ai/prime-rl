@@ -3,6 +3,7 @@ from pathlib import Path
 
 import verifiers.v1 as vf
 from pydantic import AliasChoices, Field, model_validator
+from renderers import RendererConfig
 
 from prime_rl.configs.monitors import EvalMonitorsConfig
 from prime_rl.configs.orchestrator import ConcurrencyConfig, EvalSourcesConfig, ScheduledEvalConfig
@@ -84,6 +85,13 @@ class EvalConfig(ServedEvalConfig):
 
     group_size: int = Field(1, ge=1, validation_alias=AliasChoices("group_size", "r"))
     """Default rollouts per example. Can be overridden per env."""
+
+    renderer: RendererConfig | None = None
+    """Roll episodes out through this renderer, token-in/token-out against the
+    ``/inference/v1/generate`` endpoint of a ``uv run inference`` server, like RL training.
+    Prompts are rendered and tool calls and reasoning parsed client-side by the renderer
+    instead of by the server's chat template and parsers; ``name = "auto"`` resolves the
+    renderer from ``model``. None uses chat completions."""
 
     run: RunConfig = Field(default_factory=RunConfig)
     """Run metadata. ``run.name`` names the run directory under ``output_dir``."""

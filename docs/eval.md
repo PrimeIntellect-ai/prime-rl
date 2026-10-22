@@ -35,6 +35,12 @@ uv run inference --vllm.model Qwen/Qwen3-4B
 uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1
 ```
 
+To roll episodes out through a renderer instead of chat completions, as RL training does, set `renderer` (`--renderer.name <name>` or a `[renderer]` table). The renderer builds the prompt tokens and parses tool calls and reasoning on the client, and requests go to the server's `/inference/v1/generate` endpoint, so this needs a `uv run inference` server and a `model` that names the model's tokenizer. `name = "auto"` picks the renderer from `model`. Template options, such as the GLM-5.3 renderers' `reasoning_effort`, are fields of the renderer config:
+
+```bash
+uv run eval gsm8k -n 32 -r 4 -m Qwen/Qwen3-4B --client.base_url http://localhost:8000/v1 --renderer.name auto
+```
+
 Single-source shorthands: `<taskset-id>` names the run's only source, `--env.<field> <value>` sets a field of that source's env block (`--env.agent.harness.id bash`, `--env.taskset.tasks '["fix-git"]'`), `-n`/`-s`/`-r` set `select.limit`/`select.shuffle`/`group_size`, `-m` the model, and `-c N` pins the concurrency band (`concurrency.min_inflight = max_inflight = N`). `<taskset-id>` cannot be combined with a TOML that defines `[[source]]` blocks; next to one, `--env.<field>` sets the shared [env block](#configuration) instead. `uv run eval -h` lists them.
 
 Against a local vLLM deployment, set `min_inflight < max_inflight` in `[concurrency]` to dynamically adjust the number of concurrent episodes for maximum throughput. An external API exposes no vLLM `/metrics` to adapt to, so pin the concurrency there (`-c N`, i.e. `min_inflight = max_inflight`).

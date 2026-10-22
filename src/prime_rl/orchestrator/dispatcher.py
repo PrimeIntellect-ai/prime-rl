@@ -511,8 +511,8 @@ class Dispatcher:
         """
         # Train rollouts use the env's generation source via the
         # renderer/token train client. Eval always evaluates the policy and
-        # goes through the eval client (chat-completions) so eval scores stay
-        # comparable.
+        # goes through the eval client (chat-completions, unless ``uv run eval``
+        # sets a renderer) so eval scores stay comparable.
         if group.kind == "eval":
             clients, model_name = self.policy_clients, self.policy.model_name
             live_sourced = True
