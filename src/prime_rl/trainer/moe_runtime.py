@@ -86,8 +86,7 @@ def _resolve_mega_moe_compute(
 def configure_moe_runtime(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
     moe_layers = [module for module in model.modules() if isinstance(module, MoE)]
     if not moe_layers:
-        default = MoERuntimeConfig()
-        if (config.moe.compute, config.moe.dispatch) != (default.compute, default.dispatch):
+        if config.moe != MoERuntimeConfig():
             raise ValueError("A non-default model.moe runtime was configured, but the model has no custom MoE layers.")
         return
 

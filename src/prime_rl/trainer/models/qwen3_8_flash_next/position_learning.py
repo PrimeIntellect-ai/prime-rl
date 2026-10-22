@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from prime_rl.trainer.models.layers.hyper_connection import ExpandedRMSNorm
+from prime_rl.trainer.models.qwen3_8_flash_next.hyper_connection import ExpandedRMSNorm
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.utils.cp import CPContext, gather_for_cp
 

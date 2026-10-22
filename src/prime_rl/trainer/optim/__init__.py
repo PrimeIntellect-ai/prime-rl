@@ -54,10 +54,7 @@ def setup_optimizer(
     offload: OffloadMode = "none",
     model: nn.Module | None = None,
     full_offload_dtype_policy: dict[int, tuple[torch.dtype, torch.dtype]] | None = None,
-    param_groups: list[dict] | None = None,
 ) -> tuple[OptimizerLike, GradientOffloadManager | None]:
-    """``param_groups`` replaces the default parameter groups (for Muon, each group needs an
-    ``algorithm`` key). It is not supported with full offload."""
     cpu_offload = offload == "optimizer"
     full_offload = offload == "full"
     if full_offload and config.type not in ("adamw", "sign_sgd"):
@@ -82,7 +79,6 @@ def setup_optimizer(
         parallel_dims,
         fused_adamw=config.type == "adamw" and not cpu_offload,
         model=model,
-        param_groups=param_groups,
     )
 
     if full_offload:
@@ -109,7 +105,6 @@ def _create_optimizer(
     lr: float | None = None,
     fused_adamw: bool = False,
     model: nn.Module | None = None,
-    param_groups: list[dict] | None = None,
 ) -> Optimizer:
     """Create optimizer. If lr is None, uses config.lr."""
     if lr is None:
@@ -122,7 +117,7 @@ def _create_optimizer(
     match config.type:
         case "adamw":
             return AdamW(
-                params=param_groups or trainable_params,
+                params=trainable_params,
                 lr=lr,
                 weight_decay=config.weight_decay,
                 betas=(config.betas1, config.betas2),
@@ -130,7 +125,7 @@ def _create_optimizer(
                 fused=fused_adamw,
             )
         case "muon":
-            return _create_muon_optimizer(config, named_params, parallel_dims, model, lr, param_groups)
+            return _create_muon_optimizer(config, named_params, parallel_dims, model, lr)
         case "sign_sgd":
             return SignSGD(
                 params=trainable_params,
@@ -139,12 +134,13 @@ def _create_optimizer(
             )
 
 
-def _default_muon_param_groups(
+def _create_muon_optimizer(
     config: OptimizerConfig,
     named_params: list[tuple[str, nn.Parameter]],
     parallel_dims: ParallelDims,
-    lr: float,
-) -> list[dict]:
+    model: nn.Module | None,
+    lr: float | None = None,
+) -> Optimizer:
     def muon_enabled(n, p):
         if p.ndim < 2:
             return False
@@ -173,6 +169,8 @@ def _default_muon_param_groups(
                 muon_params.append(p)
         elif p.requires_grad:
             adamw_params.append(p)
+        else:
+            pass
 
     param_groups = []
 
@@ -205,19 +203,6 @@ def _default_muon_param_groups(
         )
 
     param_groups.append(dict(params=adamw_params, algorithm="adamw", lr=lr, weight_decay=config.weight_decay))
-    return param_groups
-
-
-def _create_muon_optimizer(
-    config: OptimizerConfig,
-    named_params: list[tuple[str, nn.Parameter]],
-    parallel_dims: ParallelDims,
-    model: nn.Module | None,
-    lr: float | None = None,
-    param_groups: list[dict] | None = None,
-) -> Optimizer:
-    if param_groups is None:
-        param_groups = _default_muon_param_groups(config, named_params, parallel_dims, lr)
 
     if parallel_dims.dp_shard_enabled or parallel_dims.cp_enabled:
         distributed_mesh = parallel_dims.get_mesh("dp_shard_cp")
@@ -252,6 +237,6 @@ def _create_muon_optimizer(
     # Keep both warm-ups after Muon construction and before its first step. The
     # main and expert groups establish independent NCCL peer connections.
     _warmup_muon_mesh(distributed_mesh)
-    if any(group.get("distributed_mesh_name") == "dp_shard_mod_ep" for group in param_groups):
+    if expert_params and parallel_dims.ep_enabled:
         _warmup_muon_mesh(parallel_dims.get_mesh("dp_shard_mod_ep"))
     return optimizer

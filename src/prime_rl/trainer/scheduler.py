@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import math
-from collections.abc import Callable
-
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LambdaLR, LinearLR, LRScheduler, SequentialLR
+from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, LRScheduler, SequentialLR
 
-from prime_rl.configs.trainer import SchedulerConfig, resolve_steps
+from prime_rl.configs.trainer import SchedulerConfig
 from prime_rl.trainer.optim import OffloadOptimizer, OptimizerLike
 
 
@@ -22,20 +19,8 @@ def setup_constant_scheduler(optimizer: Optimizer) -> LRScheduler:
     return ConstantLR(optimizer, factor=1.0)
 
 
-DECAY_SHAPES: dict[str, Callable[[float], float]] = {
-    "cosine": lambda progress: 0.5 * (1 + math.cos(math.pi * progress)),
-    "1-sqrt": lambda progress: 1 - math.sqrt(progress),
-}
-
-
 def setup_linear_scheduler(
-    optimizer: Optimizer,
-    max_steps: int | None,
-    warmup_steps: int,
-    decay_steps: int,
-    lr: float,
-    min_lr: float,
-    decay_shape: str = "linear",
+    optimizer: Optimizer, max_steps: int | None, warmup_steps: int, decay_steps: int, lr: float, min_lr: float
 ) -> LRScheduler:
     """Create a linear (WSD) learning rate scheduler."""
     # Create schedulers for each phase
@@ -61,16 +46,7 @@ def setup_linear_scheduler(
         )
         constant_steps = decay_start_step - warmup_steps
         constant_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=constant_steps)
-        if decay_shape == "linear":
-            decay_scheduler = LinearLR(
-                optimizer, start_factor=1.0, end_factor=min_lr_factor, total_iters=decay_steps - 1
-            )
-        else:
-            shape = DECAY_SHAPES[decay_shape]
-            decay_scheduler = LambdaLR(
-                optimizer,
-                lambda step: min_lr_factor + (1 - min_lr_factor) * shape(min(step / max(decay_steps - 1, 1), 1.0)),
-            )
+        decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=min_lr_factor, total_iters=decay_steps - 1)
         schedulers.append(constant_scheduler)
         schedulers.append(decay_scheduler)
         milestones.append(decay_start_step)
@@ -128,11 +104,10 @@ def setup_scheduler(
             return setup_linear_scheduler(
                 base_optimizer,
                 max_steps=max_steps,
-                warmup_steps=resolve_steps(scheduler_config.warmup_steps, max_steps),
-                decay_steps=resolve_steps(scheduler_config.decay_steps, max_steps),
+                warmup_steps=scheduler_config.warmup_steps,
+                decay_steps=scheduler_config.decay_steps,
                 lr=lr,
                 min_lr=scheduler_config.min_lr,
-                decay_shape=scheduler_config.decay_shape,
             )
         case "cosine":
             return setup_cosine_scheduler(

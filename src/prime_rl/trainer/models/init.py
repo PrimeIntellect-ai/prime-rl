@@ -8,7 +8,6 @@ from torch.distributed.tensor import DTensor
 from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
 
 from prime_rl.configs.trainer import InitConfig
-from prime_rl.trainer.models.layers.hyper_connection import ExpandedRMSNorm
 from prime_rl.trainer.models.layers.moe import TokenChoiceTopKRouter
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.weights import resolve_fqn
@@ -84,9 +83,6 @@ def init_weights(model: nn.Module, config: InitConfig) -> None:
         names = sorted({re.sub(r"\.\d+\.", ".*.", name) for name in zeroed})
         get_logger().warning(f"No dedicated init for the 1-D parameters {names}: they start at 0")
     # MoE selection biases are buffers: they start at 0, so routing starts from the router scores alone.
-    # Gated Residual norm gains are zero-centred (scale 1 + w), so they start at 0.
     for module in model.modules():
         if isinstance(module, TokenChoiceTopKRouter) and module.selection_bias is not None:
             module.selection_bias.zero_()
-        if isinstance(module, ExpandedRMSNorm):
-            module.weight.zero_()
