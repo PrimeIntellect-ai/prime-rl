@@ -7,6 +7,12 @@ contributes two kinds of case:
   checkpoint and resumes in a fresh process.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
 
+Base cases on the CP2 layouts (non-trivial EP and CP, default `fullgraph=False`) also launch with
+`TORCH_LOGS=graph_breaks,dynamo`. A second test, `test_no_graph_breaks`, reads the same launch's rank logs and fails on
+any graph break, so graph breaks and training failures are reported as separate tests. It also fails if any rank's
+logs lack dynamo's tracing messages, since then an empty graph-break log would prove nothing. Recompile-limit hits,
+which also fall back to eager, are not graph breaks and are not checked.
+
 `Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1). `Arch.skip`
 removes a layout (along with the feature cases pinned to it) or a single feature, and the reason shows in the
 pytest report. `Arch.overrides` holds arch-wide config, such as an explicit renderer. Case ids read
@@ -24,6 +30,7 @@ or every case on one layout, including the feature cases pinned to it:
 
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from itertools import permutations
 from pathlib import Path
@@ -106,6 +113,10 @@ class Case:
     @property
     def resume(self) -> bool:
         return self.feature is None and self.arch.resume
+
+    @property
+    def check_graph_breaks(self) -> bool:
+        return self.feature is None and self.layout in (CP2_EP4, CP2_EP1)
 
     def overrides(self) -> Overrides:
         return self.arch.overrides | self.layout.overrides() | (self.feature.overrides if self.feature else {})
@@ -206,3 +217,56 @@ def assert_training_rows(rows: list[dict], expected_steps: range) -> None:
     for row in train_rows:
         assert row["loss/nan_count"] == 0, row
         assert math.isfinite(row.get("loss/mean", math.nan)), row
+
+
+GRAPH_BREAK_TAG = "[__graph_breaks]"
+GRAPH_BREAK_STARTS = ("Graph break", "WON'T CONVERT")
+GRAPH_BREAK_LOCATION = re.compile(r"in user code at (\S+:\d+)")
+DYNAMO_TRACE_MARKER = "torchdynamo start tracing"
+
+
+def ranks_without_dynamo_logs(run_dir: Path) -> list[str]:
+    """Launch ranks whose logs show no dynamo tracing, which would make a clean graph-break log meaningless."""
+    missing = []
+    for launch in sorted(run_dir.glob("logs/attempt_*")):
+        rank_dirs = {path.name: path for path in launch.glob("trainer/torchrun/*/attempt_0/*") if path.is_dir()}
+        for rank in map(str, range(NUM_GPUS)):
+            logs = rank_dirs[rank].glob("*.log") if rank in rank_dirs else []
+            if not any(DYNAMO_TRACE_MARKER in log.read_text(errors="replace") for log in logs):
+                missing.append(f"{launch.name}/rank{rank}")
+    return missing
+
+
+def graph_break_reports(run_dir: Path) -> list[str]:
+    """Distinct graph breaks that dynamo logged on any rank, as `location: detail`.
+
+    The `graph_breaks` log artifact tags every line of every graph-break record, so a record is found by its first line.
+    """
+    details: dict[str, str] = {}
+    for log in run_dir.glob("logs/attempt_*/trainer/torchrun/**/*.log"):
+        messages = [
+            line.split(GRAPH_BREAK_TAG, 1)[1].strip()
+            for line in log.read_text(errors="replace").splitlines()
+            if GRAPH_BREAK_TAG in line
+        ]
+        for i, message in enumerate(messages):
+            if not message.startswith(GRAPH_BREAK_STARTS):
+                continue
+            location = GRAPH_BREAK_LOCATION.search(message)
+            key = location.group(1) if location else message
+            details.setdefault(key, "")
+            following = messages[i + 1 : i + 6]
+            reason_at = next((j for j, m in enumerate(following) if m.startswith("Graph Break Reason:")), None)
+            if reason_at is None:
+                details[key] = details[key] or next((m for m in following if "fall back to eager" in m), "")
+                continue
+            title = next((m for m in following[reason_at + 1 :] if m), None)
+            if title is not None:
+                details[key] = title
+            elif not details[key]:
+                details[key] = following[reason_at].removeprefix("Graph Break Reason:").strip()
+    return sorted(f"{key}: {detail}" for key, detail in details.items())
+
+
+def completed_step(rows: list[dict], step: int) -> bool:
+    return any(row.get("step") == step and "loss/nan_count" in row for row in rows)
