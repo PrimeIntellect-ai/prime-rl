@@ -11,7 +11,12 @@ def test_token_policy_ages_counts_labelled_tokens_only():
         WeightVersionSpan(version="7", start=4, end=10),
         WeightVersionSpan(version="9", start=10, end=12),
     ]
-    trace = SimpleNamespace(nodes=[SimpleNamespace(weight_versions=None), SimpleNamespace(weight_versions=spans)])
+    trace = SimpleNamespace(
+        nodes=[
+            SimpleNamespace(mask=[False, True], weight_versions=None),
+            SimpleNamespace(mask=[False] + [True] * 12, weight_versions=spans),
+        ]
+    )
 
     # Batch 11 trains on v10: 6 tokens of age 3 and 2 tokens of age 1.
     assert token_policy_ages(trace, 11) == (20, 8, 3)

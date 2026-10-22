@@ -2,6 +2,7 @@ import asyncio
 import ctypes
 import logging
 import math
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -44,6 +45,22 @@ def min_fresh_version(step: int, max_off_policy_steps: int) -> int:
     return (step - 1) - max_off_policy_steps
 
 
+def node_policy_versions(node: vf.MessageNode, fallback: int) -> Iterator[tuple[int, int, int]]:
+    """``(start, end, version)`` runs over a node's sampled tokens, indexed into
+    ``node.token_ids``: the policy step whose weights sampled them, from the
+    engine's ``weight_versions`` labels. Tokens without a step label (engines
+    whose updates bypass ``/update_weights``, e.g. Dynamo) get ``fallback``."""
+    sampled = sum(node.mask)
+    offset = len(node.mask) - sampled
+    if not node.weight_versions:
+        if sampled:
+            yield offset, offset + sampled, fallback
+        return
+    for span in node.weight_versions:
+        version = int(span.version) if span.version.isdigit() else fallback
+        yield offset + span.start, offset + span.end, version
+
+
 def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) -> tuple[int, int, int]:
     """``(total, in_flight, in_queue)`` staleness of one train episode when
     consumed by batch ``training_step``: the version the batch trains on
@@ -68,12 +85,12 @@ def token_policy_ages(trace: vf.Trace, training_step: int) -> tuple[int, int, in
     engines, which update weights outside ``/update_weights``) are not counted."""
     total = count = oldest = 0
     for node in trace.nodes:
-        for span in node.weight_versions or ():
-            if not span.version.isdigit():
+        for start, end, version in node_policy_versions(node, fallback=-1):
+            if version < 0:
                 continue
-            age = max(0, (training_step - 1) - int(span.version))
-            total += age * (span.end - span.start)
-            count += span.end - span.start
+            age = max(0, (training_step - 1) - version)
+            total += age * (end - start)
+            count += end - start
             oldest = max(oldest, age)
     return total, count, oldest
 
