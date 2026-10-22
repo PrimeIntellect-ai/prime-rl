@@ -76,3 +76,35 @@ def test_final_support_capture_on_gpu():
     assert sorted(ids.tolist()) == [0, 1, 2, 3]
     logprobs = processed.log_softmax(-1)[0, ids]
     torch.testing.assert_close(logprobs.exp().sum(), torch.tensor(1.0, device="cuda"))
+
+
+@pytest.mark.gpu
+def test_mixed_batch_captures_only_opted_in_supports():
+    import numpy as np
+    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
+
+    from prime_rl.inference.vllm.request_replay import _capture, capture_selected_supports
+
+    logits = torch.randn(4, 257, device="cuda")
+    # Bounded training, unbounded nucleus eval, greedy eval, top-k eval.
+    processed = apply_top_p_then_top_k(
+        logits.clone(),
+        torch.tensor([4, 257, 257, 8], device="cuda"),
+        torch.tensor([0.95, 0.95, 1.0, 1.0], device="cuda"),
+    )
+    cu = torch.arange(5, dtype=torch.int32, device="cuda")
+    sampled = torch.ones(4, dtype=torch.int32, device="cuda")
+    original = SamplingMaskTensors.from_logits
+    token = _capture.set((np.array([True, False, False, False]), np.array([4, 257, 257, 8])))
+    try:
+        masks = capture_selected_supports(original, processed, cu, sampled, 257)
+        assert masks.token_ids.shape == (4, 4)
+        assert masks.counts.tolist() == [4, 0, 0, 0]
+        assert set(masks.token_ids[0].tolist()) == set(torch.isfinite(processed[0]).nonzero().flatten().tolist())
+        # Capture does not alter sampling or committed-token counts.
+        assert sampled.tolist() == [1, 1, 1, 1]
+        assert torch.isfinite(processed[1]).sum() > 4
+        _capture.set((np.zeros(4, dtype=bool), np.full(4, 257)))
+        assert capture_selected_supports(original, processed, cu, sampled, 257) is None
+    finally:
+        _capture.reset(token)

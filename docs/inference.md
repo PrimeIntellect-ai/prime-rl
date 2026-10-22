@@ -342,9 +342,11 @@ top_k = 128   # optional, defaults to 128 under truncation (bounds each sampling
 
 That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
 
-Capture runs on vLLM's V2 model runner (forced automatically) and is engine-wide. It can run together with router replay, including under disaggregated P/D. While sampling capture is on, vLLM rejects any request with `temperature <= 0` or without an effective `top_k > 0` — eval sampling against the training server must set `top_k` (the model's generation config often supplies one) and a non-zero temperature.
+Capture runs on vLLM's V2 model runner (selected automatically). Truncated policy-training requests opt in with `sampling_params.extra_args.prl_replay = true`. Only opted-in requests must use positive temperature and bounded top-k. Eval requests on the same server can use top-p alone, top-k alone, both, or greedy sampling. They do not inherit the training top-k cap. Mixed batches skip mask capture for eval rows; only training rows determine the capture width. All-eval batches skip mask capture entirely.
 
-When launching the inference server standalone, set `inference.enable_return_sampling_mask = true` yourself; clients must sample with `0 < top_k <= 512`.
+Online eval uses the chat-completions client with logprobs disabled. The chat endpoint already strips returned router data. An omitted eval top-k is explicitly disabled (`-1`) rather than inherited from the model generation config. Token-renderer training clients retain their required sampled logprobs. Router instrumentation itself remains engine-wide; this does not remove its model-side overhead. Request-scoped mask capture currently rejects speculative decoding rather than silently capturing eval supports through the rejection sampler.
+
+When launching the inference server standalone, set `inference.enable_return_sampling_mask = true`; training clients must also opt in per request and use `0 < top_k <= 512`.
 
 ### Top-p before the top-k cap
 
