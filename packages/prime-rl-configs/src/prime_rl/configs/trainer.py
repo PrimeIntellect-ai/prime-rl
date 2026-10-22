@@ -103,8 +103,8 @@ class DebugModelConfig(BaseConfig):
     num_layers: int | None = None
     """Override the number of transformer layers (truncates the model)."""
 
-    init: bool = False
-    """Initialize the weights (N(0, 0.02), norms 1, biases 0) instead of loading them."""
+    random_init: bool = False
+    """Randomly initialize the model instead of loading weights."""
 
     force_balanced_routing: bool = False
     """Replace MoE token-choice routing with a round-robin assignment so every expert sees an equal share. Intended for fake-data smoke tests where untrained routing would otherwise OOM under severe imbalance. Gating scores are still gathered from the override indices so the forward pass stays consistent."""

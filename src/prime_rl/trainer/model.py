@@ -79,7 +79,7 @@ from prime_rl.utils.weights import (
 def pre_download_model(model_name: str, *, skip_weights: bool = False) -> None:
     """Pre-download model from HuggingFace Hub so all nodes have cached weights before training.
 
-    With ``skip_weights`` (``model.debug.init`` runs), only config and tokenizer files are fetched.
+    With ``skip_weights`` (random-init debug runs), only config and tokenizer files are fetched.
     """
     if Path(model_name).exists():
         get_logger().info(f"Model {model_name} found at local path, skipping download")
@@ -650,8 +650,8 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
     model.init_buffers_post_meta()
 
     logger = get_logger()
-    if config.debug.init:
-        logger.warning("Initializing the model weights. Skipping loading weights from HF.")
+    if config.debug.random_init:
+        logger.warning("Randomly initializing model. Skipping loading weights from HF.")
         init_weights(model, InitConfig())
         return
 
