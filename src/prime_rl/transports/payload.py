@@ -26,7 +26,7 @@ import msgspec
 import numpy as np
 import verifiers.v1 as vf
 
-from prime_rl.orchestrator.trajectories import _encode_routed_experts, _encode_sampling_mask, _encode_top_logprobs
+from prime_rl.orchestrator.trajectories import _encode_routed_experts, _encode_sampler_evidence
 from prime_rl.transports.batch.types import (
     BranchArrays,
     MicroBatch,
@@ -100,10 +100,14 @@ class PayloadHook:
                 if not branch.trainable:
                     continue
                 num_tokens = len(branch.token_ids)
+                # The same encoding as an inline sample: a masked token's sampler logprobs ride on its mask
+                sampling_mask, top_logprobs = _encode_sampler_evidence(
+                    branch.sampling_mask, branch.top_logprobs, num_tokens
+                )
                 arrays = BranchArrays(
                     routed_experts=_encode_routed_experts(branch.routed_experts, num_tokens),
-                    sampling_mask=_encode_sampling_mask(branch.sampling_mask, num_tokens),
-                    top_logprobs=_encode_top_logprobs(branch.top_logprobs, num_tokens),
+                    sampling_mask=sampling_mask,
+                    top_logprobs=top_logprobs,
                 )
                 present = {name for name in BranchArrays.__struct_fields__ if getattr(arrays, name) is not None}
                 if not present:
@@ -204,6 +208,17 @@ def _assemble(mb: MicroBatch, parts: list[BranchArrays | None]) -> None:
     for name, flat in (("sampling_mask", ("ids",)), ("top_logprobs", ("ids", "logprobs"))):
         if name not in fields:
             continue
+        if name == "sampling_mask":
+            # Masks carry their tokens' sampler logprobs under truncated score centering (all or none)
+            with_logprobs = [
+                part.sampling_mask.logprobs is not None
+                for part in parts
+                if part is not None and part.sampling_mask is not None
+            ]
+            if any(with_logprobs):
+                if not all(with_logprobs):
+                    raise ValueError("Some sampling masks of a micro batch carry sampler logprobs and some do not")
+                flat = ("ids", "logprobs")
         columns: dict[str, list[bytes]] = {key: [] for key in (*flat, "counts")}
         for part, n in zip(parts, lengths, strict=True):
             head = getattr(part, name) if part is not None else None

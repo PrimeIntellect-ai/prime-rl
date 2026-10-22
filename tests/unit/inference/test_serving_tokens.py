@@ -120,13 +120,16 @@ def test_generate_response_post_process_preserves_prompt_metadata():
 
 @pytest.mark.parametrize("flat", [False, True])
 @pytest.mark.parametrize("selection", [slice(None), slice(1, 3), slice(None, None, 2), slice(0, 0)])
-def test_compact_logprobs_roundtrip_ragged_slices(flat, selection):
+@pytest.mark.parametrize("drop_filtered", [False, True])
+def test_compact_logprobs_roundtrip_ragged_slices(flat, selection, drop_filtered):
     rows = [{7: Logprob(-0.5)}, {8: Logprob(-1.5), 9: Logprob(float("-inf"))}, {10: Logprob(-2.5)}]
     logprobs = FlatLogprobs() if flat else []
     logprobs.extend(rows)
-    encoded = serialize_compact_logprobs(logprobs[selection], 2)
+    encoded = serialize_compact_logprobs(logprobs[selection], 2, drop_filtered)
     raw = pybase64.b64decode(encoded["data"])
-    selected = rows[selection]
+    selected = [
+        {i: v for i, v in row.items() if not drop_filtered or v.logprob > float("-inf")} for row in rows[selection]
+    ]
     count = sum(map(len, selected))
     assert encoded["format"] == "u32-f32-le-v1"
     assert encoded["num_top_logprobs"] == 2

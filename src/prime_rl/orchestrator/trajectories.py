@@ -80,37 +80,67 @@ def _encode_routed_experts(arr: np.ndarray | None, num_tokens: int) -> RoutedExp
     return RoutedExperts(data=arr.tobytes(), shape=list(arr.shape), dtype=str(arr.dtype))
 
 
-def _encode_sampling_mask(mask: vf.SamplingMask | None, num_tokens: int) -> SamplingMask | None:
-    """Encode a branch sampling mask for a fixed token count.
+def _int32_bytes(values) -> bytes:
+    return np.ascontiguousarray(values, dtype=np.int32).tobytes()
+
+
+def _float32_bytes(values) -> bytes:
+    return np.ascontiguousarray(values, dtype=np.float32).tobytes()
+
+
+def _encode_sampler_evidence(
+    mask: vf.SamplingMask | None, head: vf.TopLogprobs | None, num_tokens: int
+) -> tuple[SamplingMask | None, TopLogprobs | None]:
+    """Encode a branch's sampling mask and sampler top logprobs for a fixed token count.
 
     The mask stores row sizes in `counts` and concatenates every row in `ids`.
     For example, `counts=[2, 1]` and `ids=[4, 7, 9]` become `counts=[2]` and
     `ids=[4, 7]` for one token. For three tokens, they become
     `counts=[2, 1, 0]` with unchanged ids. Zero-count rows disable replay.
+
+    A masked token's top logprobs cover exactly its mask, so they move onto the
+    mask; the remaining top-logprob rows are heads of untruncated distributions.
     """
-    if mask is None:
-        return None
-    ids, counts = mask.ids, mask.counts
-    if len(counts) > num_tokens:
-        counts = counts[:num_tokens]
-        ids = ids[: int(counts.sum())]
-    elif len(counts) < num_tokens:
-        counts = np.concatenate([counts, np.zeros(num_tokens - len(counts), dtype=np.int32)])
-    return SamplingMask(
-        ids=np.ascontiguousarray(ids, dtype=np.int32).tobytes(),
-        counts=np.ascontiguousarray(counts, dtype=np.int32).tobytes(),
-    )
-
-
-def _encode_top_logprobs(head: vf.TopLogprobs | None, num_tokens: int) -> TopLogprobs | None:
-    if head is None:
-        return None
-    if len(head.counts) != num_tokens or int(head.counts.sum()) != len(head.ids) or len(head.ids) != len(head.logprobs):
+    if head is not None and (
+        len(head.counts) != num_tokens or int(head.counts.sum()) != len(head.ids) or len(head.ids) != len(head.logprobs)
+    ):
         raise ValueError("Top logprobs are not aligned to branch tokens")
-    return TopLogprobs(
-        ids=np.ascontiguousarray(head.ids, dtype=np.int32).tobytes(),
-        logprobs=np.ascontiguousarray(head.logprobs, dtype=np.float32).tobytes(),
-        counts=np.ascontiguousarray(head.counts, dtype=np.int32).tobytes(),
+    if mask is None:
+        if head is None:
+            return None, None
+        return None, TopLogprobs(
+            ids=_int32_bytes(head.ids), logprobs=_float32_bytes(head.logprobs), counts=_int32_bytes(head.counts)
+        )
+
+    mask_ids, mask_counts = np.asarray(mask.ids), np.asarray(mask.counts)
+    if len(mask_counts) > num_tokens:
+        mask_counts = mask_counts[:num_tokens]
+        mask_ids = mask_ids[: int(mask_counts.sum())]
+    elif len(mask_counts) < num_tokens:
+        mask_counts = np.concatenate([mask_counts, np.zeros(num_tokens - len(mask_counts), dtype=np.int32)])
+    if head is None:
+        return SamplingMask(ids=_int32_bytes(mask_ids), counts=_int32_bytes(mask_counts)), None
+
+    head_ids, head_logprobs, head_counts = np.asarray(head.ids), np.asarray(head.logprobs), np.asarray(head.counts)
+    rows = np.arange(num_tokens, dtype=np.int64)
+    head_rows = np.repeat(rows, head_counts)
+    masked = mask_counts > 0
+    on_mask = masked[head_rows]
+    mask_keys = np.repeat(rows, mask_counts) << 32 | mask_ids.astype(np.int64)
+    head_keys = head_rows[on_mask] << 32 | head_ids[on_mask].astype(np.int64)
+    if not np.array_equal(np.sort(mask_keys), np.sort(head_keys)):
+        raise ValueError("Top logprobs must cover exactly the recorded sampling support")
+    sampling_mask = SamplingMask(
+        ids=_int32_bytes(head_ids[on_mask]),
+        counts=_int32_bytes(mask_counts),
+        logprobs=_float32_bytes(head_logprobs[on_mask]),
+    )
+    if on_mask.all():
+        return sampling_mask, None
+    return sampling_mask, TopLogprobs(
+        ids=_int32_bytes(head_ids[~on_mask]),
+        logprobs=_float32_bytes(head_logprobs[~on_mask]),
+        counts=_int32_bytes(np.where(masked, 0, head_counts)),
     )
 
 
@@ -183,6 +213,9 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
             if mm_token_type_ids is None:
                 raise ValueError("Inline images have no expanded multimodal prompt tokens")
             mm_refs = _build_mm_refs(image_urls, mm_token_type_ids)
+        sampling_mask, top_logprobs = _encode_sampler_evidence(
+            branch.sampling_mask, branch.top_logprobs, len(token_ids)
+        )
         samples.append(
             TrainingSample(
                 token_ids=token_ids,
@@ -198,8 +231,8 @@ def trace_to_samples(trace: vf.Trace, *, env_name: str = "") -> list[TrainingSam
                 ce_weights=_loss_weights(branch, "ce", trained_loss_nodes["ce"]),
                 ref_kl_weights=_loss_weights(branch, "ref_kl", trained_loss_nodes["ref_kl"]),
                 advantages=branch.advantages,
-                sampling_mask=_encode_sampling_mask(branch.sampling_mask, len(token_ids)),
-                top_logprobs=_encode_top_logprobs(branch.top_logprobs, len(token_ids)),
+                sampling_mask=sampling_mask,
+                top_logprobs=top_logprobs,
                 trace_id=trace.id,
                 branch_index=branch.index,
                 payload=PayloadSlice(

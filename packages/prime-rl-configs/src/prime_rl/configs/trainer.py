@@ -528,7 +528,8 @@ class IcePopLossConfig(BaseConfig):
 
     score_centering_topk: int = Field(128, ge=1)
     """Captured head size for an untruncated sampler with a proportional tail.
-    Probabilities retain full-vocabulary normalization; sampling is not truncated."""
+    Probabilities retain full-vocabulary normalization. With sampling replay, the
+    complete recorded support is captured instead."""
 
     @model_validator(mode="after")
     def validate_ratio_bounds(self):

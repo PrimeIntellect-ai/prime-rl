@@ -107,7 +107,9 @@ class _PackedOutputs:
                 if self._compact:
                     assert output.logprobs is not None, "Did not output logprobs"
                     assert len(output.logprobs) == len(output.token_ids), "Logprob count does not match token count"
-                    fields["compact_logprobs"] = serialize_compact_logprobs(output.logprobs, self._num_logprobs)
+                    fields["compact_logprobs"] = serialize_compact_logprobs(
+                        output.logprobs, self._num_logprobs, drop_filtered=output.sampling_mask is not None
+                    )
                     output.logprobs = None
                     self._request.sampling_params.logprobs = None
                 elif isinstance(output.logprobs, FlatLogprobs) and (self._num_logprobs or 0) <= 1:

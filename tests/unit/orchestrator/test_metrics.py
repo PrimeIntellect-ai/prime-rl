@@ -2,6 +2,7 @@ import math
 from itertools import count
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import verifiers.v1 as vf
 
@@ -62,7 +63,8 @@ def mk(
         stop_condition=stop_condition,
         metrics=metrics or {},
         agent=SimpleNamespace(trainable=trainable, name=agent_name),
-        nodes=[SimpleNamespace(advantages=[1.0] if is_trainable else [0.0])],
+        nodes=[SimpleNamespace(advantages=[1.0] if is_trainable else [0.0], sampling_mask=None)],
+        calls=[],
         timing=SimpleNamespace(
             setup=SimpleNamespace(duration=setup),
             agent=SimpleNamespace(
@@ -338,3 +340,24 @@ def test_compute_pass_metrics_matches_closed_form():
     assert out["pass@2"] == 1.0 - math.comb(2, 2) / math.comb(4, 2)
     assert out["pass^2"] == math.comb(2, 2) / math.comb(4, 2)
     assert set(out) == {"pass@1", "pass@2", "pass@4", "pass^1", "pass^2", "pass^4"}
+
+
+def test_sampling_support_is_token_weighted_and_mergeable():
+    episodes = [mk(group_id=str(i)) for i in range(3)]
+    for episode, counts, top_k in zip(episodes, ([0, 1, 2, 4], [4], [1, 1]), (4, 4, -1)):
+        trace = episode.traces[0]
+        trace.nodes[0].sampling_mask = SimpleNamespace(counts=np.array(counts, dtype=np.int32))
+        trace.calls = [SimpleNamespace(node=0, sampling=SimpleNamespace(top_k=top_k))]
+    window = MetricWindow()
+    for episode in episodes:
+        window.extend(train_episodes([episode]).metrics.snapshot(prefix="train/agg", subset="all"))
+    out = window.to_dict()
+    assert out == pytest.approx(train_wandb(episodes))
+    prefix = "train/agg/all/agent/sampling_support"
+    assert out[f"{prefix}/num_tokens"] == 6
+    assert out[f"{prefix}/size/mean"] == pytest.approx(13 / 6)
+    assert out[f"{prefix}/size/median"] == 1.5
+    assert out[f"{prefix}/size/p90"] == 4
+    assert out[f"{prefix}/singleton_fraction"] == 0.5
+    assert out[f"{prefix}/top_k_fraction"] == 0.5  # only bounded calls in denominator
+    assert not any("sampling_support" in key for key in train_wandb([mk()]))
