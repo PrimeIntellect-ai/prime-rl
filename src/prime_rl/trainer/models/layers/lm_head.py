@@ -20,6 +20,8 @@ class PrimeLmOutput(TypedDict, total=False):
     logits: Tensor | None
     logprobs: Tensor | None
     entropy: Tensor | None
+    entropy_support: Tensor | None
+    logprobs_full: Tensor | None
     topk_logprobs: Tensor | None
     loss: Tensor | None
 
@@ -34,6 +36,8 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
         logits=_float_and_contiguous(output.get("logits")),
         logprobs=_float_and_contiguous(output.get("logprobs")),
         entropy=_float_and_contiguous(output.get("entropy")),
+        entropy_support=_float_and_contiguous(output.get("entropy_support")),
+        logprobs_full=_float_and_contiguous(output.get("logprobs_full")),
         topk_logprobs=_float_and_contiguous(output.get("topk_logprobs")),
         loss=output.get("loss"),
     )
@@ -78,14 +82,20 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if topk_ids is not None:
             topk_ids = topk_ids.reshape(b * s, topk_ids.shape[-1]).long().contiguous()
-        logprobs, entropy, topk_logprobs = _SequenceChunkedLogProbEntropyFn.apply(
+        logprobs, entropy, topk_logprobs, entropy_support, logprobs_full = _SequenceChunkedLogProbEntropyFn.apply(
             hidden_states, self.weight, labels, inv_t, self.chunk_size, sampling_mask, topk_ids, self.softcap
         )
 
         logprobs = logprobs.reshape(b, s)
         entropy = entropy.reshape(b, s)
         topk_logprobs = topk_logprobs.reshape(b, s, -1) if topk_logprobs is not None else None
-        return PrimeLmOutput(logprobs=logprobs, entropy=entropy, topk_logprobs=topk_logprobs)
+        return PrimeLmOutput(
+            logprobs=logprobs,
+            entropy=entropy,
+            topk_logprobs=topk_logprobs,
+            entropy_support=entropy_support.reshape(b, s),
+            logprobs_full=logprobs_full.reshape(b, s),
+        )
 
 
 class VanillaOutputLinear(torch.nn.Linear):
@@ -140,6 +150,16 @@ def sampling_replay_mask(sampling_mask: torch.Tensor, labels: torch.Tensor) -> t
     return (sampling_mask >= 0).any(dim=-1) & (sampling_mask == labels.unsqueeze(-1)).any(dim=-1)
 
 
+@torch.no_grad()
+def sampling_support_entropy(mask_logits: Tensor, replay: Tensor, full_entropy: Tensor) -> Tensor:
+    """Trainer entropy on the replay support; full-vocab on non-replayed rows."""
+    safe_logits = torch.where(replay.unsqueeze(-1), mask_logits, 0.0)
+    logp = safe_logits.log_softmax(-1)
+    # Padding has p=0, so its entropy contribution is zero, not 0 * -inf.
+    terms = logp.exp() * logp.masked_fill(~torch.isfinite(logp), 0.0)
+    return torch.where(replay, -terms.sum(-1), full_entropy)
+
+
 def _sampling_mask_local_indices(
     mask_chunk: torch.Tensor, vocab_start: int, vocab_end: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -162,7 +182,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         sampling_mask: torch.Tensor | None = None,  # [N, K] int32, -1-padded
         topk_ids: torch.Tensor | None = None,  # [N, K], -1-padded
         softcap: float | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
         """
         Returns per-token logprobs and entropy by chunking over flattened sequence tokens.
 
@@ -190,6 +210,8 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         vocab_chunk_size = min(vocab, 8192)
         logprobs = torch.empty((n,), device=device, dtype=torch.float32)
         entropy = torch.empty((n,), device=device, dtype=torch.float32)
+        entropy_support = torch.empty_like(entropy)
+        logprobs_full = torch.empty_like(logprobs)
         logz = torch.empty((n,), device=device, dtype=torch.float32)
         replay = torch.zeros((n,), device=device, dtype=torch.bool) if sampling_mask is not None else None
         topk_logprobs = torch.empty_like(topk_ids, dtype=torch.float32) if topk_ids is not None else None
@@ -249,6 +271,12 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
             logz[start:end] = logz_chunk
             logprobs[start:end] = target_logits - logz_chunk
             entropy[start:end] = logz_full - (t / s)
+            logprobs_full[start:end] = target_logits - logz_full
+            entropy_support[start:end] = (
+                sampling_support_entropy(mask_logits, replay_chunk, entropy[start:end])
+                if mask_chunk is not None
+                else entropy[start:end]
+            )
             if topk_chunk is not None:
                 topk_logprobs[start:end] = (topk_logits - logz_chunk.unsqueeze(-1)).masked_fill(topk_chunk < 0, 0.0)
 
@@ -259,11 +287,17 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         ctx.chunk_size = chunk_size
         ctx.softcap = softcap
 
-        return logprobs, entropy, topk_logprobs
+        ctx.mark_non_differentiable(entropy_support, logprobs_full)
+        return logprobs, entropy, topk_logprobs, entropy_support, logprobs_full
 
     @staticmethod
     def backward(
-        ctx, grad_logprobs: torch.Tensor | None, grad_entropy: torch.Tensor | None, grad_topk: torch.Tensor | None
+        ctx,
+        grad_logprobs: torch.Tensor | None,
+        grad_entropy: torch.Tensor | None,
+        grad_topk: torch.Tensor | None,
+        grad_entropy_support: torch.Tensor | None,
+        grad_logprobs_full: torch.Tensor | None,
     ):
         # Grads are not materialized (see forward above) so an unused entropy output arrives becomes None, and as we don't compare values we don't have any sync
         assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"

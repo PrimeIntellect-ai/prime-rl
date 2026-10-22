@@ -14,7 +14,15 @@ from typing import Any
 
 UPDATE_VERSION = 1
 
-STREAM_FIELDS = ("advantages", "trainer_logprobs", "entropies")
+STREAM_FIELDS = (
+    "advantages",
+    "trainer_logprobs",
+    "entropies",
+    "trainer_logprobs_full",
+    "trainer_logprobs_support",
+    "entropies_full",
+    "entropies_support",
+)
 """Per-token streams an update may carry, compacted onto node fields of the same name."""
 
 
