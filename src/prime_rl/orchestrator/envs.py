@@ -156,12 +156,13 @@ class TrainEnv(Env):
         self.algorithm = algorithm
         self.uses_live_policy = config.algo.sampling.source == "policy"
         self.sampling = vf.SamplingConfig(
-            **config.sampling.model_dump(exclude_none=True),
+            **config.sampling.model_dump(exclude_none=True, exclude={"logprobs"}),
             # Only policy rollouts need sampling logprobs for importance ratios.
-            logprobs=True if self.uses_live_policy else None,
+            logprobs=(config.sampling.logprobs or True) if self.uses_live_policy else None,
         )
         # Truncated policy sampling must ship the sampling masks the trainer replays.
         self.requires_sampling_masks = config.sampling.truncates_distribution() and self.uses_live_policy
+        self.requires_top_logprobs = config.sampling.logprobs is not None and self.uses_live_policy
 
     async def setup(self) -> None:
         async def connect_source() -> None:
