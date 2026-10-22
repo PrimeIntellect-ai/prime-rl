@@ -24,7 +24,9 @@ from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtyp
 def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
     """Assemble one fragment on trainer rank 0, using only its replica's row owners.
 
-    Requires trainer rank 0 at the origin of `value`'s device mesh, as laid out by `init_device_mesh`.
+    Requires trainer rank 0 at the origin of `value`'s device mesh, as laid out by `init_device_mesh`, and
+    eagerly created mesh communicators (`init_process_group(device_id=...)`), because the batched P2P call
+    may involve only part of a group.
     """
     rank = dist.get_rank()
     if not isinstance(value, DTensor):
@@ -44,8 +46,6 @@ def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: tor
     if rank not in owners:
         return None
     group = mesh.get_group(mesh_dim)
-    # A group's first collective must include all its ranks; the P2P batch below may involve only a subset.
-    dist.all_reduce(torch.zeros((), device=value.device), group=group)
     rows_per_rank = (value.shape[0] + len(owners) - 1) // len(owners)
     local = value.to_local()
     offset = min(rows_per_rank * owners.index(rank), value.shape[0])
