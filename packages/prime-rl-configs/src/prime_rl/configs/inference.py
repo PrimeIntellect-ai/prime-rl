@@ -463,6 +463,9 @@ class InferenceConfig(BaseConfig):
     enable_return_sampling_mask: bool = False
     """Return per-token sampling masks (``sampling_mask``) on ``/inference/v1/generate`` responses via vLLM's native ``--return-sampling-mask`` (>= 0.28). The ``rl`` entrypoint enables this field for truncated policy sampling. Standalone inference must set it explicitly because no orchestrator sampling config is available. The field persists into per-node configs and selects the V2 model runner before vLLM starts. Capture is engine-wide: vLLM rejects requests with ``temperature <= 0`` or without ``top_k > 0`` while it is on."""
 
+    top_p_before_top_k: bool = False
+    """Apply top-p to the full temperature-scaled distribution before the top-k cap. Requires sampling-mask capture (V2 runner), applies engine-wide, and uses a sorting-based reference sampler. The final support can contain less than top_p of the original mass when the cap binds."""
+
     enable_fp32_lm_head: bool = True
     """Run the lm_head projection in fp32 via a native bf16×bf16 → fp32 GEMM (``torch.mm`` with ``out_dtype=torch.float32``). Stabilizes logprob precision under FP8/bf16 inference, matching SGLang's ``--enable-fp32-lm-head``. Implemented natively by vLLM's LogitsProcessor, which reads ``head_dtype`` off the HF config, so this flag injects ``hf_overrides = {"head_dtype": "float32"}``."""
 
