@@ -347,12 +347,13 @@ interval = 1000
 
 **Gradient sync.** `model.defer_grad_sync = true` reduce-scatters the gradients once per optimizer step instead of after every micro-batch. It saves communication with gradient accumulation (most with experts across nodes), but keeps the unsharded parameters and gradients in memory across the micro-batches, so a config that fits without it can run out of memory.
 
-**Validation sets.** `[val]` also scores log-likelihood sets on the training model (`val.sets`), with or without `val.data`. A set is the name of a pretrain-evals set (`ppl`, `ctxcont` or `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`) or a held-out folder of token shards, scored like a `ppl` set: every document on its own, every token after its first. Every set is scored at each of `seq_lens` (default `data.seq_len`). Requests start with BOS only if the training documents do. As for `val.data`, step N scores the weights before step N's update. Requires `model.cp = 1`.
+**Validation sets.** `[val]` also scores log-likelihood sets on the training model (`val.sets`), with or without `val.data`. A set is the name of a pretrain-evals set (`ppl`, `ctxcont` or `pairs`, in `<data_dir>/<set>/{test.parquet,meta.json}`) or a held-out folder of token shards, scored like a `ppl` set: every document on its own, every token after its first. Every set is scored at each of `seq_lens` (default `data.seq_len`). Requests start with BOS only if the training documents do. As for `val.data`, step N scores the weights before step N's update; `eval_on_end` also scores the final weights, after the final checkpoint, logged at the last step. Requires `model.cp = 1`.
 
 ```toml
 [val]
 interval = 1000
 eval_on_start = true
+eval_on_end = true
 data_dir = "/shared/evals-data"
 sets = ["lambada", { name = "heldout", path = "data/heldout" }]
 seq_lens = [2048, 8192]

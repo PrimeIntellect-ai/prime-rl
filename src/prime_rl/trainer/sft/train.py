@@ -662,6 +662,10 @@ def train(config: SFTConfig):
         else:
             ckpt_manager.maybe_clean()
 
+    # After the final checkpoint, so a failure here cannot lose it.
+    if config.val is not None and config.val.eval_on_end and not paused:
+        run_validation(progress.step)
+
     # Broadcast the final weights so the evals process can run its forced final epoch. A paused
     # run has no final epoch.
     if weight_sender is not None and not paused:

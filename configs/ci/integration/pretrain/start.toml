@@ -22,6 +22,8 @@ lr = 3e-3
 
 [val]
 interval = 10
+eval_on_start = true
+eval_on_end = true
 sets = [{ name = "heldout", path = "set-by-the-test" }]
 
 [ckpt]
