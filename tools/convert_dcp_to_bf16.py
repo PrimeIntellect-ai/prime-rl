@@ -65,6 +65,7 @@ class Checkpoint:
     model_config: ModelConfig
     tokenizer_config: TokenizerConfig
 
+
 class MetadataReader(FileSystemReader):
     """Reuse the checkpoint metadata for every layer."""
 
@@ -128,10 +129,7 @@ def write_weights(
     """Write layer shards in parallel and the index after all workers finish."""
     output_dir.mkdir(parents=True, exist_ok=True)
     layers = get_layers(checkpoint.model)
-    names = [
-        f"model-{index:05d}-of-{len(layers):05d}.safetensors"
-        for index in range(1, len(layers) + 1)
-    ]
+    names = [f"model-{index:05d}-of-{len(layers):05d}.safetensors" for index in range(1, len(layers) + 1)]
 
     def write_layer(name: str, keys: list[str]) -> dict[str, int]:
         shard = transform(load_layer(checkpoint, keys))
