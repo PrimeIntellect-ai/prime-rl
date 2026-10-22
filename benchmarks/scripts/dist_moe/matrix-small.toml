@@ -1,0 +1,9 @@
+# Correctness matrix overlay: Qwen3-30B-A3B truncated to 4 layers, 8192 tokens per rank, 10 steps.
+max_steps = 10
+
+[model.debug]
+num_layers = 4
+
+[data]
+batch_size = 8
+seq_len = 8192

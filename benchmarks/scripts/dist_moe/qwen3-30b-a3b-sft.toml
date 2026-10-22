@@ -1,0 +1,37 @@
+# One-node SFT A/B base: Qwen3-30B-A3B, fake data, balanced routing, ep 8, bf16, no offloading.
+max_steps = 20
+clean = true
+dashboard = false
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+
+[model]
+name = "Qwen/Qwen3-30B-A3B-Thinking-2507"
+ep = 8
+offload = "none"
+ac_offloading = "None"
+
+[model.ac]
+mode = "full"
+freq = 1
+
+[model.debug]
+force_balanced_routing = true
+
+[data]
+type = "fake"
+length = "fixed"
+batch_size = 16
+micro_batch_size = 1
+seq_len = 32768
+pad_to_seq_len = true
+
+[optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.01
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8

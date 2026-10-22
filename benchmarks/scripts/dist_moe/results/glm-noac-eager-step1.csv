@@ -1,0 +1,4 @@
+group,variant,run_dir,loss,loss_min,loss_max,gnorm,gnorm_min,gnorm_max
+glm-noac-eager,torch,/home/garrett/tmp/dist-moe-sft/ab-glm-noac-eager-torch,11.236733436584473,11.236733436584473,11.236733436584473,123.95929718017578,123.95929718017578,123.95929718017578
+glm-noac-eager,deepep,/home/garrett/tmp/dist-moe-sft/ab-glm-noac-eager-deepep,11.237204551696777,11.237204551696777,11.237204551696777,,,
+glm-noac-eager,dist_moe,/home/garrett/tmp/dist-moe-sft/ab-glm-noac-eager-distmoe,11.237373352050781,11.237373352050781,11.237373352050781,123.95291900634766,123.95291900634766,123.95291900634766
