@@ -38,7 +38,6 @@ The `rl` entrypoint reads `examples/basic/reverse-text/rl.toml`, splits it into 
 
 - **[Configuration](configuration.md)** — TOML composition, CLI overrides, dry-run.
 - **[Training](training.md)** — Launch and observe RL and SFT runs.
-- **[Pretraining](pretraining.md)** — Train a model from scratch on token shards.
 - **[Inference](inference.md)** — vLLM-backed server (or fleet) holding the current policy.
 - **[Scaling](scaling.md)** — Single-GPU through multi-node clusters via FSDP / EP / CP and SLURM.
 - **[Algorithms](algorithms.md)** — Async semantics, loss / advantage / filter plugins, trajectory merging.

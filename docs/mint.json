@@ -7,7 +7,6 @@
                 "overview",
                 "configuration",
                 "training",
-                "pretraining",
                 "eval",
                 "inference",
                 "scaling",
