@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 REPLAY_KEY = "prl_replay"
+_paired: ContextVar[np.ndarray | None] = ContextVar("prl_paired", default=None)
 _capture: ContextVar[tuple[np.ndarray, np.ndarray] | None] = ContextVar("prl_capture", default=None)
 
 
@@ -26,7 +27,13 @@ def capture_selected_supports(original, logits, cu_num_logits, num_sampled_token
     # reading any logits. Only replay requests contribute to the support bound.
     keep = torch.as_tensor(enabled, device=num_sampled_tokens.device)
     committed = torch.where(keep, num_sampled_tokens, 0)
-    return original(logits, cu_num_logits, committed, int(top_k[enabled].max()), rows_per_request)
+    tensors = original(logits, cu_num_logits, committed, int(top_k[enabled].max()), rows_per_request)
+    paired = _paired.get()
+    if paired is not None and paired.any():
+        from prime_rl.inference.vllm.paired_capture import pack_support_logprobs
+
+        tensors = pack_support_logprobs(tensors, logits, cu_num_logits, paired & enabled)
+    return tensors
 
 
 def patch_request_replay():
@@ -63,7 +70,9 @@ def patch_request_replay():
     def add(self, req_idx, sampling_params):
         if not hasattr(self, "_prime_capture"):
             self._prime_capture = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
+            self._prime_paired = np.zeros(self.sampling_states.max_num_reqs, dtype=bool)
         self._prime_capture[req_idx] = wants_replay(sampling_params)
+        self._prime_paired[req_idx] = (sampling_params.extra_args or {}).get("prl_paired_capture", False)
         return add_request(self, req_idx, sampling_params)
 
     call = Sampler.__call__
@@ -73,10 +82,13 @@ def patch_request_replay():
         indices = input_batch.idx_mapping_np
         enabled = getattr(self, "_prime_capture", np.zeros(self.sampling_states.max_num_reqs, dtype=bool))
         token = _capture.set((enabled[indices], self.sampling_states.top_k.np[indices]))
+        paired = getattr(self, "_prime_paired", None)
+        paired_token = _paired.set(paired[indices] if paired is not None else None)
         try:
             return call(self, logits, input_batch)
         finally:
             _capture.reset(token)
+            _paired.reset(paired_token)
 
     from_logits = SamplingMaskTensors.from_logits
 

@@ -86,6 +86,8 @@ def test_mixed_batch_captures_only_opted_in_supports():
     from prime_rl.inference.vllm.request_replay import _capture, capture_selected_supports
 
     logits = torch.randn(4, 257, device="cuda")
+    # Normalization can round distinct logits to equal logprobs.
+    logits[0] *= 1e-7
     # Bounded training, unbounded nucleus eval, greedy eval, top-k eval.
     processed = apply_top_p_then_top_k(
         logits.clone(),
@@ -108,3 +110,61 @@ def test_mixed_batch_captures_only_opted_in_supports():
         assert capture_selected_supports(original, processed, cu, sampled, 257) is None
     finally:
         _capture.reset(token)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+def test_bounded_sampler_matches_full_sort(device):
+    from prime_rl.inference.vllm.sampling_order import reference_top_p_then_top_k
+
+    gen = torch.Generator().manual_seed(4210)
+    for scale in (0.1, 1.0, 10.0):
+        logits = torch.randn(64, 2048, generator=gen).to(device) * scale
+        k = torch.tensor([1, 8, 32, 128] * 16, device=device)
+        p = torch.tensor([0.01, 0.5, 0.95, 1.0] * 16, device=device)
+        expected = reference_top_p_then_top_k(logits.clone(), k, p)
+        actual = apply_top_p_then_top_k(logits.clone(), k, p)
+        torch.testing.assert_close(actual, expected)
+    # Boundary ties must retain the same token IDs as the stable reference.
+    logits = torch.zeros(4, 256, device=device)
+    logits[:, :8] = 1
+    k = torch.tensor([4, 8, 16, 128], device=device)
+    p = torch.tensor([0.001, 0.05, 0.95, 1.0], device=device)
+    torch.testing.assert_close(
+        apply_top_p_then_top_k(logits.clone(), k, p), reference_top_p_then_top_k(logits.clone(), k, p)
+    )
+
+
+@pytest.mark.gpu
+def test_paired_support_matches_processed_logprobs():
+    import numpy as np
+    from vllm.v1.worker.gpu.sample.output import SamplingMaskTensors
+
+    from prime_rl.inference.vllm.paired_capture import pack_support_logprobs, serialize_paired_support
+
+    logits = torch.randn(4, 257, device="cuda")
+    processed = apply_top_p_then_top_k(
+        logits, torch.tensor([4, 8, 16, 32], device="cuda"), torch.tensor([0.95] * 4, device="cuda")
+    )
+    cu = torch.arange(5, device="cuda", dtype=torch.int32)
+    masks = SamplingMaskTensors.from_logits(processed, cu, torch.ones(4, device="cuda", dtype=torch.int32), 32)
+    packed = pack_support_logprobs(masks, processed, cu, np.ones(4, dtype=bool))
+    counts = masks.counts.cpu().numpy()
+    rows = packed.token_ids.cpu().numpy()
+    flat = np.concatenate([row[:n] for row, n in zip(rows, counts)])
+    ids, wire = serialize_paired_support(flat, counts)
+    import base64
+
+    raw = base64.b64decode(wire["data"])
+    values = np.frombuffer(raw, dtype="<f4", offset=len(ids) * 4)
+    offsets = wire["offsets"]
+    reference = processed.log_softmax(-1).cpu().numpy()
+    for i, (start, end) in enumerate(zip(offsets, offsets[1:])):
+        np.testing.assert_allclose(values[start:end], reference[i, ids[start:end]], atol=2e-6, rtol=1e-6)
+        np.testing.assert_allclose(np.exp(values[start:end]).sum(), 1, atol=1e-6)
+        assert np.all(np.diff(values[start:end]) <= 0)
+        ties = np.diff(values[start:end]) == 0
+        assert np.all(np.diff(ids[start:end])[ties] > 0)
+    mixed = pack_support_logprobs(masks, processed, cu, np.array([True, False, True, False]))
+    torch.testing.assert_close(mixed.token_ids[1, : counts[1]], masks.token_ids[1, : counts[1]].long())
+    with pytest.raises(ValueError, match="Incomplete"):
+        serialize_paired_support(ids.astype(np.int64), counts)
