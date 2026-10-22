@@ -178,9 +178,11 @@ def get_chunked_conversion_ops(model: nn.Module, state_dict: dict[str, Tensor]) 
 def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> dict[str, Tensor]:
     """Gather distributed weights cooperatively, each rank keeping a slice on CPU.
 
-    Distributed tensors use per-tensor all-gathers, with each rank retaining its
-    assigned weights on CPU. The copies are plain blocking transfers; no
-    stream-ordering assumptions.
+    Every rank participates in the per-tensor all-gathers (a ``full_tensor`` call is
+    collective and materializes the full tensor on all ranks anyway), but instead of
+    only the master keeping everything, each rank copies its owned slice to CPU —
+    so the D2H traffic and the shard writes are split across ranks. The copies are
+    plain blocking transfers; no stream-ordering assumptions.
 
     Parameters the model reports via ``keep_in_fp32_for_weight_transfer`` skip the
     downcast. Those lists exist because the inference engine's kernels require fp32
@@ -189,16 +191,15 @@ def gather_weights_parallel(model: nn.Module, dtype: torch.dtype = torch.bfloat1
     back up rather than failing, so a downcast here shows up as lost mantissa in a
     Sinkhorn normalization rather than as an error.
     """
-    state_dict = model.state_dict()
     keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
     world = get_world()
-    owners = partition_weights(state_dict, world.world_size, dtype)
+    owners = partition_weights(model.state_dict(), world.world_size, dtype)
     partial: dict[str, Tensor] = {}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning, module="torch.distributed")
         warnings.filterwarnings("ignore", category=UserWarning, module="torch.distributed.*")
 
-        for key, value in state_dict.items():
+        for key, value in model.state_dict().items():
             if isinstance(value, DTensor):
                 # only gather after the downcast to dtype as it will be faster
                 target_dtype = resolve_wire_dtype(keep_in_fp32, key, dtype)
