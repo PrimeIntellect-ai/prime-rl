@@ -1,6 +1,0 @@
-[model.moe.compute]
-type = "mxfp8"
-
-[model.moe.dispatch]
-type = "torch"
-transport = "mxfp8"
