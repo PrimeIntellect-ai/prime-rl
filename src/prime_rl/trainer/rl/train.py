@@ -478,10 +478,12 @@ def train(config: TrainerConfig):
                     out["logprobs"] = selective_log_softmax_with_sampling_mask(scaled_logits, labels, sampling_mask)
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
-                out["entropy"] = compute_entropy(scaled_logits)
-                out["entropy_support"] = compute_support_entropy(scaled_logits, labels, sampling_mask, out["entropy"])
+                out["entropy_full_vocab"] = compute_entropy(scaled_logits)
+                out["entropy"] = compute_support_entropy(
+                    scaled_logits, labels, sampling_mask, out["entropy_full_vocab"]
+                )
                 with torch.no_grad():
-                    out["logprobs_full"] = (
+                    out["logprobs_full_vocab"] = (
                         selective_log_softmax(scaled_logits, labels)
                         if sampling_mask is not None
                         else out["logprobs"].detach()
@@ -492,7 +494,7 @@ def train(config: TrainerConfig):
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
-                for key in ("entropy", "entropy_support", "logprobs_full"):
+                for key in ("entropy_full_vocab", "entropy", "logprobs_full_vocab"):
                     out[key] = gather_for_cp_wo_grad(out[key], cp_size, cp_group)
                 if out.get("topk_logprobs") is not None:
                     out["topk_logprobs"] = gather_for_cp(out["topk_logprobs"], cp_group)
@@ -502,12 +504,12 @@ def train(config: TrainerConfig):
             out["logprobs"] = shift_tensor_right(
                 out["logprobs"], pad_value=torch.log(torch.tensor(1.0 / vocab_size)).item()
             )
-            out["entropy"] = shift_tensor_right(
-                out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
+            out["entropy_full_vocab"] = shift_tensor_right(
+                out["entropy_full_vocab"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
 
-            out["entropy_support"] = shift_tensor_right(out["entropy_support"], pad_value=0.0)
-            out["logprobs_full"] = shift_tensor_right(out["logprobs_full"], pad_value=0.0)
+            out["entropy"] = shift_tensor_right(out["entropy"], pad_value=0.0)
+            out["logprobs_full_vocab"] = shift_tensor_right(out["logprobs_full_vocab"], pad_value=0.0)
 
             trainer_topk = out.get("topk_logprobs")
             if trainer_topk is not None:
@@ -549,10 +551,10 @@ def train(config: TrainerConfig):
             mm_kwargs = None
 
             # Add relevant tensors to tensor dict for logging purposes
+            entropy_full_vocab = out["entropy_full_vocab"][loss_mask].detach().to("cpu")
+            tensors["entropy_full_vocab/all"].append(entropy_full_vocab)
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
-            entropy_support = out["entropy_support"][loss_mask].detach().to("cpu")
-            tensors["entropy_support/all"].append(entropy_support)
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
             tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
@@ -570,7 +572,7 @@ def train(config: TrainerConfig):
                 selected = masked_env_index == index
                 if selected.any():
                     tensors[f"entropy/{env_name}"].append(entropy[selected])
-                    tensors[f"entropy_support/{env_name}"].append(entropy_support[selected])
+                    tensors[f"entropy_full_vocab/{env_name}"].append(entropy_full_vocab[selected])
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
             # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
@@ -591,8 +593,8 @@ def train(config: TrainerConfig):
                 mismatch_kl = mismatch_kl.detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
                 # Match both the normalization and token population of mismatch KL.
-                tensors["mismatch_entropy_support"].append(out["entropy_support"][mismatch_mask].detach().cpu())
-                tensors["mismatch_entropy_full"].append(out["entropy"][mismatch_mask].detach().cpu())
+                tensors["mismatch_entropy"].append(out["entropy"][mismatch_mask].detach().cpu())
+                tensors["mismatch_entropy_full_vocab"].append(out["entropy_full_vocab"][mismatch_mask].detach().cpu())
                 mismatch_env_index = env_index[mismatch_mask.flatten().cpu()]
                 for index, env_name in enumerate(env_names):
                     selected = mismatch_env_index == index
@@ -742,13 +744,13 @@ def train(config: TrainerConfig):
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics
-        entropy_mean = tensor_stats.get("mismatch_entropy_support/mean", 0.0)
+        entropy_mean = tensor_stats.get("mismatch_entropy/mean", 0.0)
         mismatch_kl_mean = tensor_stats.get("mismatch_kl/all/mean")
         if mismatch_kl_mean is not None and entropy_mean > 0:
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
-        full_entropy_mean = tensor_stats.get("mismatch_entropy_full/mean", 0.0)
+        full_entropy_mean = tensor_stats.get("mismatch_entropy_full_vocab/mean", 0.0)
         if mismatch_kl_mean is not None and full_entropy_mean > 0:
-            tensor_stats["kl_ent_ratio_full/mean"] = mismatch_kl_mean / full_entropy_mean
+            tensor_stats["kl_ent_ratio_full_vocab/mean"] = mismatch_kl_mean / full_entropy_mean
 
         tensor_stats["step"] = progress.step
         asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))

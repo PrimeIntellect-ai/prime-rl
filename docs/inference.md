@@ -373,22 +373,20 @@ reordered or mixed evidence still uses support matching and validation.
 
 ### Entropy and mismatch metrics
 
-`entropy/*` measures the trainer's full-vocabulary entropy at the configured
-sampling temperature. `entropy_support/*` measures the trainer renormalized on
-the recorded rollout support. On tokens without a usable replay mask, both use
-the full vocabulary. These are trainer diagnostics, not rollout-model entropy.
+`entropy/*` measures trainer entropy under the distribution used for training:
+renormalized on the recorded rollout support when replay applies, otherwise over
+the full vocabulary. `entropy_full_vocab/*` always measures full-vocabulary
+trainer entropy. Both use the configured sampling temperature and describe the
+trainer, not the rollout model.
 
-`mismatch_kl/*` compares the sampled-token logprobs with replay normalization.
-`kl_ent_ratio/mean` divides its mean by mean support entropy over the same
-policy-sampled tokens; `kl_ent_ratio_full/mean` uses full-vocabulary entropy on
-that same token population. The denominators are logged as
-`mismatch_entropy_support/mean` and `mismatch_entropy_full/mean`. A ratio is
-omitted when its denominator is zero. These ratios are diagnostics, not
-entropy- or staleness-adjusted KL estimates.
+`mismatch_kl/*` compares sampled-token logprobs with replay normalization.
+`kl_ent_ratio/mean` divides its mean by mean `entropy` over the same policy-sampled
+tokens. `kl_ent_ratio_full_vocab/mean` uses full-vocabulary entropy on that same
+token population. The denominators are logged as `mismatch_entropy/mean` and
+`mismatch_entropy_full_vocab/mean`. A ratio is omitted when its denominator is
+zero. These ratios are diagnostics, not entropy- or staleness-adjusted KL estimates.
 
-Trainer trace annotations include `trainer_logprobs_full`,
-`trainer_logprobs_support`, `entropies_full`, and `entropies_support`.
-`trainer_logprobs` aliases support-normalized logprobs and `entropies` aliases
-full-vocabulary entropy. Support fields use full-vocabulary normalization on
-non-replayed tokens. All fields are null outside trained positions and at
-sequence boundaries.
+Trainer trace annotations use `trainer_logprobs` and `entropies` for the training
+distribution, and `trainer_logprobs_full_vocab` and `entropies_full_vocab` for the
+full vocabulary. Without replay the two normalizations agree. All fields are null
+outside trained positions and at sequence boundaries.

@@ -46,16 +46,16 @@ def test_fused_head_top_logprobs_gradient(dtype, replay, head_only):
             if len(ids):
                 support_logp = logits[0, i, ids].log_softmax(-1)
                 expected_support_entropy[0, i] = -(support_logp.exp() * support_logp).sum()
-    torch.testing.assert_close(out["entropy"], full_entropy, atol=2e-5, rtol=1e-5)
-    torch.testing.assert_close(out["entropy_support"], expected_support_entropy, atol=2e-5, rtol=1e-5)
+    torch.testing.assert_close(out["entropy_full_vocab"], full_entropy, atol=2e-5, rtol=1e-5)
+    torch.testing.assert_close(out["entropy"], expected_support_entropy, atol=2e-5, rtol=1e-5)
     torch.testing.assert_close(
         compute_support_entropy(logits, labels, sampling_mask, full_entropy), expected_support_entropy
     )
     torch.testing.assert_close(
-        out["logprobs_full"], full_logp.gather(-1, labels.unsqueeze(-1)).squeeze(-1), atol=3e-6, rtol=1e-6
+        out["logprobs_full_vocab"], full_logp.gather(-1, labels.unsqueeze(-1)).squeeze(-1), atol=3e-6, rtol=1e-6
     )
-    assert not out["entropy_support"].requires_grad
-    assert not out["logprobs_full"].requires_grad
+    assert not out["entropy"].requires_grad
+    assert not out["logprobs_full_vocab"].requires_grad
     head = selective_topk_log_softmax(logits, head_ids, sampling_mask, labels)
     reference = (head * coefficient).sum()
     if not head_only:
