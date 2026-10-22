@@ -25,7 +25,8 @@ def count_active_params(model: nn.Module, params: Iterable[nn.Parameter] | None 
     count only when tied to the lm_head.
     """
     params = {id(param): param for param in (model.parameters() if params is None else params)}
-    lm_head_params = {id(param) for param in model.lm_head.parameters()}
+    # A pipeline stage other than the last holds no lm_head.
+    lm_head_params = {id(param) for param in model.lm_head.parameters()} if model.lm_head is not None else set()
     inactive = 0
     for module in model.modules():
         if isinstance(module, nn.Embedding):
