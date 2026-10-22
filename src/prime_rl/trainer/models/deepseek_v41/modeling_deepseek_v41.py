@@ -13,6 +13,7 @@ data-dependent split sizes.
 
 from __future__ import annotations
 
+import torch.nn.functional as F
 from torch import Tensor, nn
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import MoeModelOutputWithPast
@@ -326,6 +327,9 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
         # its inputs, so the executor may free them once sent. The shared attention state is read by later
         # layers' backward and is kept.
         self.pipeline_releasable_outputs = () if last else (0,)
+        # The layer whose output this stage receives (a half layer when a boundary cuts it); its KV and
+        # index sources say how many entries the shared attention state it hands over holds.
+        self.pipeline_entry_layer = (units.start - 1) // 2 if units.start > 0 else None
         layer_ids = sorted({unit // 2 for unit in units})
         model.layers = StageLayers({idx: model.layers[idx] for idx in layer_ids})
         for idx, layer in zip(layer_ids, model.layers):
@@ -363,6 +367,8 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
         else:
             mhc_states, pre_mix, *shared, input_ids, position_ids, labels = inputs
             shared = [None if tensor.numel() == 0 else tensor for tensor in shared]
+            shared[0] = self._unpad_entries(shared[0], seq_lens, model.config.kv_source_layer_ids, dim=2)
+            shared[1] = self._unpad_entries(shared[1], seq_lens, model.config.index_source_layer_ids, dim=0)
         # Positions were checked against `seq_lens` on the host when the micro-batches were stacked.
         packed = PackedContext.build(config=model.config, seq_lens=seq_lens, device=input_ids.device)
         hash_ids = model.engram_hasher(input_ids, packed.tok_doc_start) if model.engram_hasher is not None else None
@@ -375,8 +381,26 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             hidden_states = model.norm(collapse_streams(mhc_states, pre_mix)).to(mhc_states.dtype)
             # One element per micro-batch: the schedule concatenates the last stage's outputs.
             return self.lm_head(hidden_states, labels)["loss"].reshape(1)
+        # Stages exchange fixed shapes, but the entry count of the shared attention state follows the
+        # row's document lengths. Pad it to the row length (no ratio gives more entries than tokens).
+        row_len = input_ids.shape[1]
+        if shared[0] is not None:
+            shared[0] = F.pad(shared[0], (0, 0, 0, row_len - shared[0].shape[2]))
+        if shared[1] is not None:
+            shared[1] = F.pad(shared[1], (0, 0, 0, row_len - shared[1].shape[0]))
         shared = [mhc_states.new_empty(0) if tensor is None else tensor for tensor in shared]
         return (mhc_states, pre_mix, *shared, input_ids, position_ids, labels)
+
+    def _unpad_entries(
+        self, entries: Tensor | None, seq_lens: Tensor, source_ids: list[int], dim: int
+    ) -> Tensor | None:
+        """Cut received shared entries back to the row's entry count, computed on the host from `seq_lens`
+        and the compress ratio of the latest source layer up to the entry layer, which produced them."""
+        if entries is None:
+            return None
+        source = max(source for source in source_ids if source <= self.pipeline_entry_layer)
+        num_entries = int((seq_lens // self.model.config.compress_ratios[source]).sum())
+        return entries.narrow(dim, 0, num_entries)
 
     def init_buffers_post_meta(self) -> None:
         # Rebuilt here are the buffers no checkpoint carries: the shared rotary tables, the engram

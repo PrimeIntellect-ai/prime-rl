@@ -508,6 +508,7 @@ def train(config: SFTConfig):
                     warmup_step=config.model.pp_warmup_step,
                     transport=config.model.pp_transport,
                     transport_ctas=config.model.pp_transport_ctas,
+                    timeout=timedelta(seconds=config.dist_timeout_seconds),
                 )
             queue_seq_lens(model_parts, micro_batches)
             losses = [] if pp_last else None

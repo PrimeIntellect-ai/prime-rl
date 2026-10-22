@@ -10,6 +10,7 @@ stage over its own ranks.
 
 import copy
 from collections.abc import Callable
+from datetime import timedelta
 from functools import partial
 
 import torch
@@ -307,6 +308,7 @@ def pipeline_edge_groups(
     copy_engine: bool = False,
     ctas: int | None = None,
     device: torch.device | str = "cuda",
+    timeout: timedelta | None = None,
 ) -> dict[tuple[int, int], dist.ProcessGroup]:
     """`kinds` two-rank NCCL groups per pair of neighbouring pipeline ranks, keyed `(lower rank, kind)`.
 
@@ -329,12 +331,15 @@ def pipeline_edge_groups(
             low = pp_rank if pp_rank % 2 == parity else pp_rank - 1
             if 0 <= low and low + 1 < len(pp_ranks):
                 group = dist.new_group(
-                    [pp_ranks[low], pp_ranks[low + 1]], use_local_synchronization=True, pg_options=options
+                    [pp_ranks[low], pp_ranks[low + 1]],
+                    timeout=timeout,
+                    use_local_synchronization=True,
+                    pg_options=options,
                 )
                 groups[(low, kind)] = group
                 mine.append((group, pp_ranks[low + 1] if low == pp_rank else pp_ranks[low]))
             else:
-                dist.new_group([pp_ranks[pp_rank]], use_local_synchronization=True)
+                dist.new_group([pp_ranks[pp_rank]], timeout=timeout, use_local_synchronization=True)
     for group, peer in mine:
         send, recv = torch.zeros(1, device=device), torch.empty(1, device=device)
         ops = [dist.P2POp(dist.isend, send, peer, group), dist.P2POp(dist.irecv, recv, peer, group)]
@@ -669,8 +674,10 @@ def build_pipeline_schedule(
     warmup_step: int | list[int] = 1,
     transport: str = "nccl",
     transport_ctas: int | None = None,
+    timeout: timedelta | None = None,
 ) -> PipelineScheduleSingle | PipelineScheduleMulti:
-    """`first_inputs` is stage 0's first micro-batch (`None` on ranks without stage 0)."""
+    """`first_inputs` is stage 0's first micro-batch (`None` on ranks without stage 0). `timeout` applies to
+    the stage-transfer groups; the first step's transfers wait for every later stage to compile its backward."""
     if "ZeroBubble" in schedule:
         # Zero-bubble schedules split each backward into an input-gradient and a weight-gradient
         # pass over a retained graph, which compiled blocks with donated buffers refuse.
@@ -730,6 +737,7 @@ def build_pipeline_schedule(
             kinds=2 * stages_per_rank,
             copy_engine=transport == "copy_engine",
             ctas=transport_ctas,
+            timeout=timeout,
         )
         copy_engine_edges = None
         if transport == "copy_engine":
