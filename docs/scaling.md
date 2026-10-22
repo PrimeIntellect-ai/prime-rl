@@ -197,13 +197,12 @@ The trainer defaults are tuned for memory, not speed: optimizer CPU offload, AC 
 [model]
 offload = "none"            # optimizer states stay on GPU
 ac_offloading = "None"      # activations stay on GPU
-moe_router_dtype = "bfloat16"  # fullgraph needs the router inside the block's FSDP unit; an fp32 router is not
 
 [model.compile]
 fullgraph = true            # compile each block as a single graph
 ```
 
-Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. The SFT default router dtype is already `bfloat16`. RL defaults to an fp32 router, so check that bf16 routing is acceptable for your model before using `fullgraph` in RL.
+Then add nodes instead of CP (`cp = 1`) and run one full-length sequence per GPU (`micro_batch_size = 1`). Keep full AC unless selective AC fits. Router gates share the block's FSDP unit and use BF16 operands with FP32 logits.
 
 Examples:
 

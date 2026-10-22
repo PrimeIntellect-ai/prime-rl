@@ -19,6 +19,7 @@ from prime_rl.trainer.models.layers.expert_compute import (
     ExpertCompute,
     FusedDispatchExpertCompute,
 )
+from prime_rl.trainer.models.layers.fp32_linear import FP32Linear
 from prime_rl.trainer.models.layers.mlp import ExpertType, FeedForward
 
 ScoreFuncType = Literal["softmax", "sigmoid", "topk_softmax", "sqrtsoftplus"]
@@ -162,7 +163,7 @@ class TokenChoiceTopKRouter(nn.Module):
         topk_sorted: bool = True,
     ):
         super().__init__()
-        self.gate = nn.Linear(dim, num_experts, bias=gate_bias)
+        self.gate = FP32Linear(dim, num_experts, bias=gate_bias)
         self.register_buffer(
             "selection_bias",
             torch.zeros(num_experts, dtype=torch.float32) if selection_bias else None,
@@ -174,9 +175,6 @@ class TokenChoiceTopKRouter(nn.Module):
         self.route_scale = route_scale
         self.topk_sorted = topk_sorted
         self.force_balanced = False
-        # Set via model.moe_router_dtype='float32': the gate weight is kept in fp32
-        # (exempt from FSDP bf16 casting) and the gate GEMM runs in fp32.
-        self.fp32_gate = False
 
     def forward(
         self,
@@ -203,21 +201,16 @@ class TokenChoiceTopKRouter(nn.Module):
         assert routed_experts is None or routed_experts.shape[-1] == self.top_k, (
             f"routed_experts shape: {routed_experts.shape}, top_k: {self.top_k}"
         )
-        if self.fp32_gate:
-            gate_bias = self.gate.bias.float() if self.gate.bias is not None else None
-            logits = F.linear(x.float(), self.gate.weight.float(), gate_bias)
-        else:
-            logits = self.gate(x)
+        logits = self.gate(x)
 
-        # By default, sigmoid or softmax is performed in float32 to avoid loss explosion
         if self.score_func == "sigmoid":
-            scores = torch.sigmoid(logits.float())
+            scores = torch.sigmoid(logits)
         elif self.score_func == "softmax":
-            scores = F.softmax(logits.float(), dim=1)
+            scores = F.softmax(logits, dim=1)
         elif self.score_func == "topk_softmax":
             scores = logits
         elif self.score_func == "sqrtsoftplus":
-            scores = F.softplus(logits.float()).sqrt()
+            scores = F.softplus(logits).sqrt()
         else:
             raise NotImplementedError(f"Unknown score function {self.score_func}")
 

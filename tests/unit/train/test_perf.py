@@ -51,6 +51,7 @@ MODELS = {
             index_topk=32,
             indexer_types=["full", "shared"],
             use_index_cache=True,
+            dsa_backend="tilelang",
         ),
         2 * 6 * 4 * (24 + 16) * N * 32 + 2 * 2 * 8 * N * N,
     ),
