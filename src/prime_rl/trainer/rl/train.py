@@ -13,6 +13,7 @@ from prime_rl.transports.weights import prune_broadcasts_beyond, setup_weight_se
 from prime_rl.utils.act_offloading import maybe_activation_offloading
 import torch
 import torch.distributed as dist
+from torch import Tensor
 from torch.profiler import profile, ProfilerActivity, record_function
 from prime_rl.trainer.ckpt import Progress, setup_ckpt_manager
 from prime_rl.trainer.optim import setup_optimizer
@@ -48,6 +49,7 @@ from prime_rl.trainer.model import (
     is_tt_moe_model,
     setup_model,
     setup_processor,
+    take_moe_routing_stats,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
 from prime_rl.trainer.perf import get_perf_counter
@@ -76,6 +78,23 @@ from prime_rl.utils.process import set_proc_title
 from prime_rl.utils.worker_pool import WorkerPool
 from prime_rl.utils.pathing import resolve_latest_ckpt_step, write_resolved_config
 from prime_rl.utils.utils import clean_exit
+
+
+def add_masked_token_stats(tensors: Tensors, name: str, parts: list[tuple[Tensor, Tensor, list[str]]]) -> None:
+    """Add a step's per-token `name` values at the masked tokens, overall and per env.
+
+    Each part is one micro batch's flat values (GPU), token mask (CPU) and per-token env names.
+    """
+    values, masks, env_names = zip(*parts)
+    mask = torch.cat(masks)
+    masked_values = torch.cat(values)[mask.to(values[0].device)]
+    tensors[f"{name}/all"].append(masked_values)
+    env_to_indices: dict[str, list[int]] = {}
+    masked_env_names = (env for micro_env_names in env_names for env in micro_env_names)
+    for idx, env_name in enumerate(env for env, keep in zip(masked_env_names, mask.tolist()) if keep):
+        env_to_indices.setdefault(env_name, []).append(idx)
+    for env_name, indices in env_to_indices.items():
+        tensors[f"{name}/{env_name}"].append(masked_values[indices])
 
 
 @clean_exit
@@ -346,7 +365,11 @@ def train(config: TrainerConfig):
         cp_group = parallel_dims.world_mesh["cp"].get_group() if cp_enabled else None
         cp_size = parallel_dims.cp
 
-        step_tokens_per_expert = 0
+        routing_stats = []
+        # Per micro step: full-length entropy and mismatch KL on the GPU, with their CPU token masks and env names.
+        # Masking and per-env grouping run once per step, so the micro steps queue GPU work without host syncs.
+        entropy_parts = []
+        mismatch_kl_parts = []
         step_local_num_tokens = 0
         step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
@@ -531,66 +554,38 @@ def train(config: TrainerConfig):
 
             mm_kwargs = None
 
-            # Add relevant tensors to tensor dict for logging purposes
-            entropy = out["entropy"][loss_mask].detach().to("cpu")
-            tensors["entropy/all"].append(entropy)
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
-            tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
+            tensors["loss"].append((loss.detach() * cp_size).unsqueeze(0))
+            for key, loss_tensor in loss_tensors.items():
+                tensors[key].append(loss_tensor.detach())
 
             env_names = micro_batch["env_names"]
-            masked_env_names = [env_name for env_name, keep in zip(env_names, loss_mask.flatten().tolist()) if keep]
-            env_to_indices: dict[str, list[int]] = {}
-            for idx, env_name in enumerate(masked_env_names):
-                env_to_indices.setdefault(env_name, []).append(idx)
-
-            for env_name, indices in env_to_indices.items():
-                tensors[f"entropy/{env_name}"].append(entropy[indices])
+            cpu_loss_mask = micro_batch["loss_mask"].flatten()
+            entropy_parts.append((out["entropy"].detach().flatten(), cpu_loss_mask, env_names))
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
             # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
             # whose action component is ce (frozen-model tokens).
-            if rl_weights is None and ref_kl_weights is None:
-                mismatch_mask = loss_mask
+            cpu_rl_weights, cpu_ref_kl_weights = micro_batch["rl_weights"], micro_batch["ref_kl_weights"]
+            if cpu_rl_weights is None and cpu_ref_kl_weights is None:
+                mismatch_mask = cpu_loss_mask
                 has_mismatch_tokens = True
             else:
-                sampled_mask = (rl_weights != 0) if rl_weights is not None else loss_mask
-                if ref_kl_weights is not None:
-                    sampled_mask = sampled_mask | (ref_kl_weights != 0)
-                mismatch_mask = loss_mask & sampled_mask
+                sampled_mask = (cpu_rl_weights != 0) if cpu_rl_weights is not None else micro_batch["loss_mask"]
+                if cpu_ref_kl_weights is not None:
+                    sampled_mask = sampled_mask | (cpu_ref_kl_weights != 0)
+                mismatch_mask = (micro_batch["loss_mask"] & sampled_mask).flatten()
                 has_mismatch_tokens = bool(mismatch_mask.any())
             if has_mismatch_tokens:
                 with torch.no_grad():
-                    log_ratio = out["logprobs"][mismatch_mask] - inference_logprobs[mismatch_mask]
-                    mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
-                mismatch_kl = mismatch_kl.detach().to("cpu")
-                tensors["mismatch_kl/all"].append(mismatch_kl)
-                mismatch_env_names = [
-                    env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
-                ]
-                mismatch_env_to_indices: dict[str, list[int]] = {}
-                for idx, env_name in enumerate(mismatch_env_names):
-                    mismatch_env_to_indices.setdefault(env_name, []).append(idx)
-                for env_name, indices in mismatch_env_to_indices.items():
-                    tensors[f"mismatch_kl/{env_name}"].append(mismatch_kl[indices])
+                    mismatch_kl = _mismatch_kl_from_log_ratio(out["logprobs"].detach() - inference_logprobs)
+                mismatch_kl_parts.append((mismatch_kl.flatten(), mismatch_mask, env_names))
 
             annotation_writer.export(micro_batch, out)
 
             if is_moe_model:
-                moe_stats, tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
-                for name, value in moe_stats.items():
-                    tensors[name].append(value.reshape(1))
-                step_tokens_per_expert += tokens_per_expert
-
-            # Add loss tensors to tensor dict for logging purposes
-            for key, loss_tensor in loss_tensors.items():
-                tensors[key].append(loss_tensor.detach().to("cpu"))
-
-            # Debug log with *local, micro step* stats
-            micro_step_message = f"Micro Step {micro_step + 1}/{len(micro_batches)} | Loss {tensors['loss'][-1].mean().item():.4f} | Entropy {tensors['entropy/all'][-1].mean().item():.4f}"
-            if has_mismatch_tokens:
-                micro_step_message += f" | Mismatch KL {tensors['mismatch_kl/all'][-1].mean().item():.4f}"
-            logger.debug(micro_step_message)
+                routing_stats.append(take_moe_routing_stats(model))
 
         annotation_writer.flush()
 
@@ -651,6 +646,14 @@ def train(config: TrainerConfig):
         # Optionally, dump memory snapshot
         if memory_profiler is not None:
             memory_profiler.step()
+
+        for name, parts in (("entropy", entropy_parts), ("mismatch_kl", mismatch_kl_parts)):
+            if parts:
+                add_masked_token_stats(tensors, name, parts)
+        if is_moe_model:
+            moe_stats, step_tokens_per_expert = get_global_moe_stats(model, routing_stats, ep_group, dp_cp_group)
+            for name, values in moe_stats.items():
+                tensors[name].append(values)
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
