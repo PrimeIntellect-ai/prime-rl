@@ -51,7 +51,6 @@ def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: tor
     offset = min(rows_per_rank * owners.index(rank), value.shape[0])
     chunk = torch.empty((stop - start, *value.shape[1:]), dtype=dtype, device=value.device) if rank == 0 else None
     ops = []
-    send_buffers = []
     for owner_index, owner in enumerate(owners):
         owner_start = min(rows_per_rank * owner_index, value.shape[0])
         owner_stop = min(owner_start + rows_per_rank, value.shape[0])
@@ -61,9 +60,8 @@ def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: tor
         if owner == rank == 0:
             chunk[left - start : right - start].copy_(local[left - offset : right - offset])
         elif owner == rank:
-            # Retain dtype-conversion buffers until the asynchronous sends complete.
-            send_buffers.append(local[left - offset : right - offset].to(dtype).contiguous())
-            ops.append(dist.P2POp(dist.isend, send_buffers[-1], peer=0, group=group))
+            rows = local[left - offset : right - offset].to(dtype).contiguous()
+            ops.append(dist.P2POp(dist.isend, rows, peer=0, group=group))
         elif rank == 0:
             ops.append(dist.P2POp(dist.irecv, chunk[left - start : right - start], peer=owner, group=group))
     if ops:
