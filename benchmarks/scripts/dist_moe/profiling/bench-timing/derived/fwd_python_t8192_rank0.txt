@@ -1,0 +1,81 @@
+     0.000 ms     4.887 ms fwd
+     0.005 ms     4.857 ms   bench_dist_moe.py(144): fn
+     0.023 ms     4.838 ms     prime_rl/trainer/distributed/token_dispatcher.py(37): run
+     0.025 ms     4.835 ms       nn.Module: GroupedExperts_0
+     0.027 ms     4.832 ms         torch/nn/modules/module.py(1787): _call_impl
+     0.031 ms     4.828 ms           prime_rl/trainer/models/layers/moe.py(114): forward
+     0.034 ms     4.825 ms             prime_rl/trainer/models/layers/dist_moe_experts.py(305): __call__
+     0.073 ms     4.775 ms               torch/_ops.py(1338): __call__
+     0.074 ms     4.774 ms                 <built-in method dist_moe_forward of pybind11_builtins.pybind11_detail_function_record_v1_system_libstdcpp_gxx_abi_1xxx_
+     0.080 ms     4.765 ms                   prime_rl::dist_moe_forward
+     0.090 ms     4.753 ms                     torch/_library/autograd.py(132): autograd_impl
+     0.096 ms     4.747 ms                       torch/_library/autograd.py(239): new_apply
+     0.130 ms     4.712 ms                         <built-in method apply of FunctionMeta object at 0x38eb7f10>
+     0.152 ms     4.662 ms                           GeneratedBackwardFor_prime_rl_dist_moe_forward_default
+     0.156 ms     4.636 ms                             torch/_library/autograd.py(170): new_forward
+     0.178 ms     4.568 ms                               torch/_library/autograd.py(46): forward
+     0.212 ms     4.497 ms                                 torch/_ops.py(920): redispatch
+     0.214 ms     4.495 ms                                   <built-in method redispatch_boxed of pybind11_builtins.pybind11_detail_function_record_v1_system_libstdcpp_gxx_abi_1xxx_
+     0.220 ms     4.485 ms                                     torch/_library/custom_ops.py(441): backend_impl
+     0.221 ms     4.479 ms                                       torch/_compile.py(42): inner
+     0.223 ms     4.476 ms                                         torch/_dynamo/eval_frame.py(1523): _fn
+     0.229 ms     4.470 ms                                           torch/_library/custom_ops.py(498): wrapped_fn
+     0.230 ms     4.468 ms                                             prime_rl/trainer/models/layers/dist_moe_experts.py(51): dist_moe_forward_op
+     0.282 ms     4.416 ms                                               torch/_ops.py(910): __call__
+     0.283 ms     4.415 ms                                                 <built-in method  of pybind11_builtins.pybind11_detail_function_record_v1_system_libstdcpp_gxx_abi_1xxx_use_cxx11_abi_1 
+     0.295 ms     4.398 ms                                                   dist_moe::bf16_forward
+     0.300 ms     4.384 ms                                                     torch/_library/custom_ops.py(441): backend_impl
+     0.301 ms     4.369 ms                                                       torch/_compile.py(42): inner
+     0.302 ms     4.368 ms                                                         torch/_dynamo/eval_frame.py(1523): _fn
+     0.304 ms     4.364 ms                                                           torch/_library/custom_ops.py(498): wrapped_fn
+     0.305 ms     4.363 ms                                                             dist_moe/api.py(2898): _bf16_forward_op
+     0.306 ms     4.356 ms                                                               dist_moe/api.py(2791): _run_registered_bf16_forward
+     0.354 ms     4.281 ms                                                                 dist_moe/api.py(1844): forward
+     0.469 ms     0.267 ms                                                                         dist_moe_preprocess
+     0.480 ms     0.177 ms                                                                           dist_moe/kernels/triton/conditional_copy.py(158): copy_routing_and_dispatch
+     0.521 ms     0.135 ms                                                                             triton/runtime/jit.py(374): <lambda>
+     0.525 ms     0.129 ms                                                                               triton/runtime/jit.py(726): run
+     0.598 ms     0.056 ms                                                                                 triton/backends/nvidia/driver.py(297): __call__
+     0.659 ms     0.061 ms                                                                           dist_moe/api.py(1814): _ep_barrier
+     0.664 ms     0.056 ms                                                                             dist_moe/_triton_ops.py(63): symmetric_memory_barrier
+     0.668 ms     0.051 ms                                                                               dist_moe/kernels/triton/barrier.py(180): triton_symm_mem_barrier_multimem_ptrs
+     0.676 ms     0.042 ms                                                                                 triton/runtime/jit.py(374): <lambda>
+     0.749 ms     0.466 ms                                                                         dist_moe_routing
+     0.757 ms     0.438 ms                                                                           dist_moe/_routing_metadata.py(718): dist_dispatch_routing
+     0.850 ms     0.050 ms                                                                             triton/runtime/jit.py(374): <lambda>
+     0.853 ms     0.045 ms                                                                               triton/runtime/jit.py(726): run
+     0.965 ms     0.054 ms                                                                             triton/runtime/jit.py(374): <lambda>
+     0.968 ms     0.049 ms                                                                               triton/runtime/jit.py(726): run
+     1.108 ms     0.044 ms                                                                             triton/runtime/jit.py(374): <lambda>
+     1.110 ms     0.041 ms                                                                               triton/runtime/jit.py(726): run
+     1.227 ms     0.045 ms                                                                   <built-in method clone of Tensor object at 0x7e19a8560ff0>
+     1.229 ms     0.042 ms                                                                     aten::clone
+     1.336 ms     0.131 ms                                                                   dist_moe/_activation_buffer.py(2318): get_forward_plan
+     1.357 ms     0.063 ms                                                                     triton/runtime/jit.py(374): <lambda>
+     1.360 ms     0.058 ms                                                                       triton/runtime/jit.py(726): run
+     1.489 ms     0.103 ms                                                                   dist_moe/kernels/triton/conditional_copy.py(238): copy_dispatch_to_activation
+     1.540 ms     0.052 ms                                                                     triton/runtime/jit.py(374): <lambda>
+     1.542 ms     0.049 ms                                                                       triton/runtime/jit.py(726): run
+     1.607 ms     2.732 ms                                                                         dist_moe_forward
+     1.627 ms     1.401 ms                                                                           dist_moe/kernels/dist_grouped_gemm.py(1148): dist_grouped_gemm_fprop_dispatch
+     1.632 ms     1.378 ms                                                                             dist_moe/kernels/dist_grouped_gemm.py(374): _fused_dist_grouped_gemm_impl
+     1.751 ms     0.063 ms                                                                               dist_moe/kernels/dist_grouped_gemm.py(341): _allocate_counter_workspace
+     2.499 ms     0.510 ms                                                                               cutlass/cutlass_dsl/cuda_jit_executor.py(154): __call__
+     2.503 ms     0.504 ms                                                                                 jit_executor.py(1611): __call__
+     3.035 ms     1.255 ms                                                                           dist_moe/kernels/dist_grouped_gemm.py(1498): dist_grouped_gemm_fprop_combine
+     3.041 ms     1.222 ms                                                                             dist_moe/kernels/dist_grouped_gemm.py(374): _fused_dist_grouped_gemm_impl
+     3.140 ms     0.076 ms                                                                               dist_moe/kernels/dist_grouped_gemm.py(341): _allocate_counter_workspace
+     3.793 ms     0.469 ms                                                                               cutlass/cutlass_dsl/cuda_jit_executor.py(154): __call__
+     3.796 ms     0.464 ms                                                                                 jit_executor.py(1611): __call__
+     4.348 ms     0.081 ms                                                                   dist_moe/api.py(1814): _ep_barrier
+     4.353 ms     0.075 ms                                                                     dist_moe/_triton_ops.py(63): symmetric_memory_barrier
+     4.358 ms     0.071 ms                                                                       dist_moe/kernels/triton/barrier.py(180): triton_symm_mem_barrier_multimem_ptrs
+     4.366 ms     0.061 ms                                                                         triton/runtime/jit.py(374): <lambda>
+     4.369 ms     0.057 ms                                                                           triton/runtime/jit.py(726): run
+     4.433 ms     0.171 ms                                                                   dist_moe/_postprocess.py(840): forward
+     4.438 ms     0.165 ms                                                                     dist_moe/_postprocess.py(502): _scale_and_sum
+     4.443 ms     0.160 ms                                                                       dist_moe/kernels/triton/broadcast_n_reduction.py(70): scale_and_sum
+     4.523 ms     0.079 ms                                                                         triton/runtime/jit.py(374): <lambda>
+     4.525 ms     0.075 ms                                                                           triton/runtime/jit.py(726): run
+     4.748 ms     0.043 ms                               torch/utils/_pytree.py(1469): tree_flatten
+     4.750 ms     0.041 ms                                 torch/utils/_pytree.py(1477): helper

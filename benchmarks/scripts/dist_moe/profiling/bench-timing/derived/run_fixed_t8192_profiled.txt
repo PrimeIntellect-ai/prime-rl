@@ -1,0 +1,205 @@
+
+    ____       _                ____      __       ____          __
+   / __ \_____(_)___ ___  ___  /  _/___  / /____  / / /__  _____/ /_
+  / /_/ / ___/ / __ `__ \/ _ \ / // __ \/ __/ _ \/ / / _ \/ ___/ __/
+ / ____/ /  / / / / / / /  __// // / / / /_/  __/ / /  __/ /__/ /_
+/_/   /_/  /_/_/ /_/ /_/\___/___/_/ /_/\__/\___/_/_/\___/\___/\__/
+
+W1022 00:00:51.736000 760034 torch/distributed/run.py:982] 
+W1022 00:00:51.736000 760034 torch/distributed/run.py:982] *****************************************
+W1022 00:00:51.736000 760034 torch/distributed/run.py:982] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1022 00:00:51.736000 760034 torch/distributed/run.py:982] *****************************************
+W1022 00:01:32.115000 760110 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.115000 760106 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.132000 760105 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.188000 760107 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.191000 760110 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.191000 760106 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.204000 760103 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.207000 760105 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.226000 760104 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.290000 760103 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.294000 760107 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.294000 760109 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.304000 760108 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.306000 760104 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.363000 760109 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1022 00:01:32.366000 760108 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+NCCL version 2.30.7+cuda13.3
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+[2m00:01:54[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 65536/131072/131072
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.031 GiB (33,554,432 bytes) = 0.031 GiB (33,554,432 bytes) (minimum all-recompute)
+  device scratch: 1.938 GiB (2,080,374,784 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 1.969 GiB (2,113,929,216 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.031 GiB (33,554,432 bytes) / 0.688 GiB (738,197,504 bytes) / 1.125 GiB (1,207,959,552 bytes)
+  virtual address range: 1.969 GiB (2,113,929,216 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.023 GiB (24 B x 128 experts x 8192 tokens x 1 MoE layers)[0m[0m
+Adjusting activation buffer alignment: raw_ptr=0x751016000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+Adjusting activation buffer alignment: raw_ptr=0x75b536000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+Adjusting activation buffer alignment: raw_ptr=0x709fda000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+Adjusting activation buffer alignment: raw_ptr=0x74b172000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+Adjusting activation buffer alignment: raw_ptr=0x78a1a2000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+Adjusting activation buffer alignment: raw_ptr=0x7ba7ae000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+Adjusting activation buffer alignment: raw_ptr=0x791766000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+Adjusting activation buffer alignment: raw_ptr=0x754dde000000 raw_numel=2113929344 start_pad=0 aligned_numel=2113929216
+world_size=8 num_experts=128 (per rank=16) top_k=8 hidden=2048 intermediate=768 tokens_per_rank=8192 scratch_capacity_factor=2.0
+USDT:2026-10-22 00:02:14 760108:760108 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:14 760106:760106 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:14 760110:760110 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:14 760109:760109 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:14 760103:760103 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:14 760104:760104 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:14 760107:760107 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:14 760105:760105 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760108:760108 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760103:760103 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760104:760104 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760105:760105 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760106:760106 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760109:760109 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760110:760110 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760107:760107 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760103:760103 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760106:760106 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760104:760104 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760105:760105 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760108:760108 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760107:760107 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760110:760110 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760109:760109 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:15 760106:760106 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760107:760107 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760105:760105 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760109:760109 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760104:760104 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760103:760103 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760108:760108 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:15 760110:760110 SyncActivityProfilerHandler.cpp:46] profiler_stop
+
+routing=balanced
+GPU time (fwd, bwd, fwd+bwd) and back-to-back loop time per fwd+bwd: median, then fwd+bwd min/max, over 3 iterations of the max over ranks
+                                                        fwd        bwd    fwd+bwd        min        max       loop
+bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)    5.429ms    5.498ms   11.028ms   10.914ms   13.650ms   10.901ms
+dist_moe (fused bf16 fwd + fused bf16 bwd)          1.080ms    2.618ms    3.697ms    3.697ms    3.709ms    8.828ms
+speedup (bf16 EP time / dist_moe time)                5.03x      2.10x      2.98x                            1.23x
+relative diff vs bf16 EP path: y=0.0042, dx=0.0053, dtop_scores=0.0036, dw13=0.0036, dw2=0.0036
+USDT:2026-10-22 00:02:16 760109:760109 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760103:760103 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760108:760108 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760104:760104 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760106:760106 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760110:760110 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760107:760107 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760105:760105 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760107:760107 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760110:760110 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760103:760103 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760108:760108 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760109:760109 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760106:760106 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760104:760104 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760105:760105 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760103:760103 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760108:760108 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760110:760110 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760104:760104 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760106:760106 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760107:760107 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760105:760105 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760109:760109 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-22 00:02:16 760107:760107 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760106:760106 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760105:760105 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760109:760109 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760110:760110 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760103:760103 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760104:760104 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-22 00:02:16 760108:760108 SyncActivityProfilerHandler.cpp:46] profiler_stop
+
+routing=random
+GPU time (fwd, bwd, fwd+bwd) and back-to-back loop time per fwd+bwd: median, then fwd+bwd min/max, over 3 iterations of the max over ranks
+                                                        fwd        bwd    fwd+bwd        min        max       loop
+bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)    5.691ms    6.229ms   11.931ms   11.894ms   12.345ms   11.953ms
+dist_moe (fused bf16 fwd + fused bf16 bwd)          1.089ms    2.639ms    3.726ms    3.715ms    3.740ms    8.568ms
+speedup (bf16 EP time / dist_moe time)                5.23x      2.36x      3.20x                            1.40x
+relative diff vs bf16 EP path: y=0.0043, dx=0.0054, dtop_scores=0.0036, dw13=0.0036, dw2=0.0036

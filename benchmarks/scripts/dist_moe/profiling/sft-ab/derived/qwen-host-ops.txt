@@ -1,0 +1,25 @@
+host step window ms: torch 8756.3, dist_moe 5107.9
+
+| thread | metric | torch | dist_moe | delta |
+|---|---|---:|---:|---:|
+| main thread (most launches) | launch calls / step | 25475.0 | 9635.0 | -15840.0 |
+| main thread (most launches) | ms in launch calls | 4203.7 | 1944.9 | -2258.9 |
+| main thread (most launches) | busy ms | 5522.1 | 2808.5 | -2713.6 |
+| thread #2 by launches | launch calls / step | 14440.0 | 7436.0 | -7004.0 |
+| thread #2 by launches | ms in launch calls | 2014.6 | 1053.2 | -961.4 |
+| thread #2 by launches | busy ms | 8728.1 | 5083.9 | -3644.2 |
+
+| op group | metric | torch | dist_moe | delta |
+|---|---|---:|---:|---:|
+| dist_moe forward op | calls / step | 0.0 | 96.0 | +96.0 |
+| dist_moe forward op | inclusive host ms | 0.0 | 236.3 | +236.3 |
+| dist_moe forward op | launch calls inside | 0.0 | 1440.0 | +1440.0 |
+| dist_moe backward op | calls / step | 0.0 | 96.0 | +96.0 |
+| dist_moe backward op | inclusive host ms | 0.0 | 1297.5 | +1297.5 |
+| dist_moe backward op | launch calls inside | 0.0 | 2208.0 | +2208.0 |
+| torch all-to-all | calls / step | 768.0 | 0.0 | -768.0 |
+| torch all-to-all | inclusive host ms | 275.9 | 0.0 | -275.9 |
+| torch all-to-all | launch calls inside | 768.0 | 0.0 | -768.0 |
+| grouped mm | calls / step | 768.0 | 0.0 | -768.0 |
+| grouped mm | inclusive host ms | 461.6 | 0.0 | -461.6 |
+| grouped mm | launch calls inside | 1536.0 | 0.0 | -1536.0 |

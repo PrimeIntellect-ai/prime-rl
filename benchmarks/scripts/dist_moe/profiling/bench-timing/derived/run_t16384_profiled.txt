@@ -1,0 +1,235 @@
+
+    ____       _                ____      __       ____          __
+   / __ \_____(_)___ ___  ___  /  _/___  / /____  / / /__  _____/ /_
+  / /_/ / ___/ / __ `__ \/ _ \ / // __ \/ __/ _ \/ / / _ \/ ___/ __/
+ / ____/ /  / / / / / / /  __// // / / / /_/  __/ / /  __/ /__/ /_
+/_/   /_/  /_/_/ /_/ /_/\___/___/_/ /_/\__/\___/_/_/\___/\___/\__/
+
+W1021 23:49:32.614000 758072 torch/distributed/run.py:982] 
+W1021 23:49:32.614000 758072 torch/distributed/run.py:982] *****************************************
+W1021 23:49:32.614000 758072 torch/distributed/run.py:982] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1021 23:49:32.614000 758072 torch/distributed/run.py:982] *****************************************
+W1021 23:50:13.603000 758144 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.603000 758143 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.620000 758146 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.634000 758141 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.665000 758145 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.674000 758144 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.674000 758143 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.680000 758146 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.693000 758141 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.720000 758145 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.812000 758148 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.816000 758142 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.884000 758142 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.884000 758148 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.895000 758147 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:50:13.957000 758147 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+NCCL version 2.30.7+cuda13.3
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:50:34[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+Adjusting activation buffer alignment: raw_ptr=0x7b5b14000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x720fa4000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x76cd4c000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x7ad0c0000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x7bfa3c000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x748df0000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x73449c000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x766714000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+world_size=8 num_experts=128 (per rank=16) top_k=8 hidden=2048 intermediate=768 tokens_per_rank=16384 scratch_capacity_factor=2.0
+EVENTS balanced_bf16_ep rank=5 fwd mean=8.887 med=8.807 min=8.770 max=11.129 | bwd mean=10.174 med=10.174 min=10.156 max=10.209 | tot mean=19.061 med=18.981 min=18.931 max=21.311 | first5 fwd=[11.129, 8.948, 8.84, 8.797, 8.812]EVENTS balanced_bf16_ep rank=7 fwd mean=8.898 med=8.822 min=8.772 max=11.075 | bwd mean=10.163 med=10.161 min=10.141 max=10.198 | tot mean=19.060 med=18.982 min=18.925 max=21.255 | first5 fwd=[11.075, 8.973, 8.851, 8.813, 8.803]EVENTS balanced_bf16_ep rank=4 fwd mean=8.890 med=8.811 min=8.766 max=11.098 | bwd mean=10.171 med=10.169 min=10.142 max=10.213 | tot mean=19.061 med=18.985 min=18.934 max=21.274 | first5 fwd=[11.098, 8.952, 8.844, 8.796, 8.782]
+
+
+EVENTS balanced_bf16_ep rank=0 fwd mean=8.889 med=8.815 min=8.766 max=11.124 | bwd mean=10.172 med=10.171 min=10.151 max=10.201 | tot mean=19.061 med=18.982 min=18.930 max=21.311 | first5 fwd=[11.124, 8.966, 8.832, 8.785, 8.803]
+EVENTS balanced_bf16_ep rank=6 fwd mean=8.892 med=8.814 min=8.772 max=11.113 | bwd mean=10.169 med=10.168 min=10.141 max=10.209 | tot mean=19.061 med=18.978 min=18.931 max=21.304 | first5 fwd=[11.113, 8.945, 8.834, 8.802, 8.804]EVENTS balanced_bf16_ep rank=3 fwd mean=8.891 med=8.818 min=8.766 max=11.106 | bwd mean=10.169 med=10.167 min=10.142 max=10.208 | tot mean=19.060 med=18.978 min=18.936 max=21.288 | first5 fwd=[11.106, 8.957, 8.848, 8.81, 8.8]
+
+EVENTS balanced_bf16_ep rank=2 fwd mean=8.889 med=8.812 min=8.760 max=11.112 | bwd mean=10.171 med=10.169 min=10.130 max=10.212 | tot mean=19.060 med=18.980 min=18.931 max=21.284 | first5 fwd=[11.112, 8.948, 8.843, 8.801, 8.784]
+EVENTS balanced_bf16_ep rank=1 fwd mean=8.889 med=8.815 min=8.769 max=11.034 | bwd mean=10.170 med=10.168 min=10.151 max=10.218 | tot mean=19.059 med=18.984 min=18.940 max=21.220 | first5 fwd=[11.034, 8.943, 8.839, 8.813, 8.807]
+USDT:2026-10-21 23:50:56 758141:758141 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758142:758142 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758144:758144 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758147:758147 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758148:758148 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758143:758143 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758145:758145 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758146:758146 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:56 758145:758145 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:56 758144:758144 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:56 758141:758141 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:56 758147:758147 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:56 758148:758148 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:56 758143:758143 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:56 758146:758146 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:56 758142:758142 SyncActivityProfilerHandler.cpp:46] profiler_stop
+EVENTS balanced_dist_moe rank=5 fwd mean=1.940 med=1.906 min=1.894 max=3.465 | bwd mean=5.556 med=5.537 min=4.880 max=8.784 | tot mean=7.496 med=7.435 min=6.783 max=10.678 | first5 fwd=[3.465, 1.909, 1.903, 1.907, 1.917]
+EVENTS balanced_dist_moe rank=7 fwd mean=1.939 med=1.906 min=1.894 max=3.435 | bwd mean=5.556 med=5.537 min=4.880 max=8.784 | tot mean=7.495 med=7.439 min=6.781 max=10.678 | first5 fwd=[3.435, 1.907, 1.905, 1.906, 1.917]
+EVENTS balanced_dist_moe rank=4 fwd mean=1.940 med=1.905 min=1.894 max=3.457 | bwd mean=5.556 med=5.535 min=4.880 max=8.783 | tot mean=7.496 med=7.437 min=6.785 max=10.676 | first5 fwd=[3.457, 1.905, 1.905, 1.907, 1.919]
+EVENTS balanced_dist_moe rank=0 fwd mean=1.939 med=1.906 min=1.894 max=3.480 | bwd mean=5.556 med=5.536 min=4.880 max=8.784 | tot mean=7.495 med=7.438 min=6.782 max=10.677 | first5 fwd=[3.48, 1.907, 1.902, 1.908, 1.917]
+EVENTS balanced_dist_moe rank=1 fwd mean=1.938 med=1.906 min=1.894 max=3.437 | bwd mean=5.557 med=5.537 min=4.882 max=8.782 | tot mean=7.495 med=7.441 min=6.781 max=10.676 | first5 fwd=[3.437, 1.909, 1.903, 1.909, 1.915]EVENTS balanced_dist_moe rank=6 fwd mean=1.940 med=1.906 min=1.894 max=3.480 | bwd mean=5.556 med=5.536 min=4.880 max=8.786 | tot mean=7.496 med=7.441 min=6.778 max=10.682 | first5 fwd=[3.48, 1.906, 1.902, 1.907, 1.919]
+
+EVENTS balanced_dist_moe rank=2 fwd mean=1.939 med=1.905 min=1.892 max=3.474 | bwd mean=5.556 med=5.534 min=4.880 max=8.784 | tot mean=7.495 med=7.437 min=6.782 max=10.675 | first5 fwd=[3.474, 1.908, 1.906, 1.906, 1.916]
+EVENTS balanced_dist_moe rank=3 fwd mean=1.938 med=1.903 min=1.892 max=3.477 | bwd mean=5.557 med=5.535 min=4.882 max=8.784 | tot mean=7.495 med=7.436 min=6.784 max=10.676 | first5 fwd=[3.477, 1.904, 1.902, 1.906, 1.918]
+USDT:2026-10-21 23:50:57 758141:758141 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758148:758148 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758142:758142 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758145:758145 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758143:758143 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758146:758146 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758147:758147 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758144:758144 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:57 758144:758144 SyncActivityProfilerHandler.cpp:46] profiler_stopUSDT:2026-10-21 23:50:57 758143:758143 SyncActivityProfilerHandler.cpp:46] profiler_stop
+
+USDT:2026-10-21 23:50:57 758147:758147 SyncActivityProfilerHandler.cpp:46] profiler_stopUSDT:2026-10-21 23:50:57 758148:758148 SyncActivityProfilerHandler.cpp:46] profiler_stop
+
+USDT:2026-10-21 23:50:57 758141:758141 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:57 758146:758146 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:57 758145:758145 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:57 758142:758142 SyncActivityProfilerHandler.cpp:46] profiler_stop
+
+routing=balanced
+                                                        fwd        bwd    fwd+bwd
+bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)     8.889ms    10.172ms    19.061ms
+dist_moe (fused bf16 fwd + fused bf16 bwd)           1.939ms     5.556ms     7.495ms
+speedup (bf16 EP time / dist_moe time)                4.58x      1.83x      2.54x
+relative diff vs bf16 EP path: y=0.0042, dx=0.0053, dtop_scores=0.0036, dw13=0.0036, dw2=0.0036
+EVENTS random_bf16_ep rank=3 fwd mean=10.221 med=10.228 min=10.087 max=10.354 | bwd mean=11.348 med=11.343 min=11.281 max=11.431 | tot mean=21.570 med=21.570 min=21.452 max=21.687 | first5 fwd=[10.228, 10.19, 10.227, 10.235, 10.354]
+EVENTS random_bf16_ep rank=5 fwd mean=10.142 med=10.141 min=10.051 max=10.272 | bwd mean=11.432 med=11.437 min=11.330 max=11.485 | tot mean=21.573 med=21.566 min=21.470 max=21.724 | first5 fwd=[10.252, 10.124, 10.136, 10.118, 10.095]
+EVENTS random_bf16_ep rank=1 fwd mean=10.203 med=10.204 min=10.092 max=10.401 | bwd mean=11.370 med=11.364 min=11.314 max=11.447 | tot mean=21.573 med=21.568 min=21.436 max=21.780 | first5 fwd=[10.401, 10.131, 10.176, 10.165, 10.316]
+EVENTS random_bf16_ep rank=4 fwd mean=10.207 med=10.212 min=10.051 max=10.405 | bwd mean=11.367 med=11.362 min=11.308 max=11.504 | tot mean=21.573 med=21.580 min=21.417 max=21.793 | first5 fwd=[10.405, 10.153, 10.192, 10.2, 10.232]
+EVENTS random_bf16_ep rank=6 fwd mean=10.134 med=10.123 min=10.054 max=10.392 | bwd mean=11.441 med=11.442 min=11.359 max=11.513 | tot mean=21.575 med=21.577 min=21.467 max=21.819 | first5 fwd=[10.392, 10.113, 10.1, 10.096, 10.226]
+EVENTS random_bf16_ep rank=0 fwd mean=10.134 med=10.122 min=10.080 max=10.408 | bwd mean=11.441 med=11.447 min=11.351 max=11.503 | tot mean=21.575 med=21.569 min=21.485 max=21.828 | first5 fwd=[10.408, 10.08, 10.137, 10.081, 10.214]
+EVENTS random_bf16_ep rank=7 fwd mean=10.092 med=10.081 min=10.024 max=10.438 | bwd mean=11.486 med=11.490 min=11.431 max=11.514 | tot mean=21.577 med=21.569 min=21.473 max=21.911 | first5 fwd=[10.438, 10.073, 10.076, 10.08, 10.079]
+EVENTS random_bf16_ep rank=2 fwd mean=10.085 med=10.072 min=10.015 max=10.465 | bwd mean=11.492 med=11.493 min=11.454 max=11.525 | tot mean=21.577 med=21.567 min=21.471 max=21.940 | first5 fwd=[10.465, 10.068, 10.066, 10.08, 10.071]
+USDT:2026-10-21 23:50:58 758141:758141 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:58 758144:758144 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:58 758148:758148 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:58 758146:758146 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:58 758142:758142 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:58 758147:758147 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:58 758145:758145 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:58 758143:758143 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758144:758144 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758146:758146 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758147:758147 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758141:758141 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758142:758142 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758145:758145 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758148:758148 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758143:758143 SyncActivityProfilerHandler.cpp:46] profiler_stop
+EVENTS random_dist_moe rank=7 fwd mean=1.973 med=1.926 min=1.914 max=3.479 | bwd mean=5.272 med=4.982 min=4.904 max=11.330 | tot mean=7.245 med=6.913 min=6.818 max=13.257 | first5 fwd=[3.479, 1.923, 1.925, 1.926, 1.927]EVENTS random_dist_moe rank=5 fwd mean=1.976 med=1.928 min=1.915 max=3.504 | bwd mean=5.271 med=4.982 min=4.907 max=11.328 | tot mean=7.246 med=6.913 min=6.824 max=13.256 | first5 fwd=[3.504, 1.931, 1.929, 1.925, 1.928]
+
+EVENTS random_dist_moe rank=4 fwd mean=1.975 med=1.929 min=1.913 max=3.442 | bwd mean=5.270 med=4.979 min=4.903 max=11.334 | tot mean=7.245 med=6.912 min=6.816 max=13.264 | first5 fwd=[3.442, 1.931, 1.93, 1.926, 1.926]
+EVENTS random_dist_moe rank=1 fwd mean=1.975 med=1.928 min=1.917 max=3.480 | bwd mean=5.270 med=4.979 min=4.905 max=11.332 | tot mean=7.245 med=6.913 min=6.822 max=13.261 | first5 fwd=[3.48, 1.931, 1.927, 1.925, 1.927]
+EVENTS random_dist_moe rank=0 fwd mean=1.975 med=1.927 min=1.917 max=3.502 | bwd mean=5.270 med=4.980 min=4.901 max=11.330 | tot mean=7.245 med=6.912 min=6.817 max=13.260 | first5 fwd=[3.502, 1.929, 1.927, 1.924, 1.925]
+EVENTS random_dist_moe rank=6 fwd mean=1.975 med=1.927 min=1.913 max=3.500 | bwd mean=5.271 med=4.981 min=4.903 max=11.328 | tot mean=7.246 med=6.912 min=6.816 max=13.258 | first5 fwd=[3.5, 1.925, 1.929, 1.927, 1.925]
+EVENTS random_dist_moe rank=2 fwd mean=1.973 med=1.926 min=1.912 max=3.485 | bwd mean=5.271 med=4.983 min=4.902 max=11.332 | tot mean=7.245 med=6.910 min=6.815 max=13.264 | first5 fwd=[3.485, 1.928, 1.928, 1.921, 1.925]
+EVENTS random_dist_moe rank=3 fwd mean=1.974 med=1.928 min=1.912 max=3.476 | bwd mean=5.271 med=4.982 min=4.901 max=11.331 | tot mean=7.245 med=6.912 min=6.812 max=13.259 | first5 fwd=[3.476, 1.928, 1.928, 1.925, 1.924]
+USDT:2026-10-21 23:50:59 758141:758141 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758148:758148 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758144:758144 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758145:758145 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758142:758142 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758146:758146 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758143:758143 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758147:758147 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-21 23:50:59 758143:758143 SyncActivityProfilerHandler.cpp:46] profiler_stopUSDT:2026-10-21 23:50:59 758147:758147 SyncActivityProfilerHandler.cpp:46] profiler_stop
+
+USDT:2026-10-21 23:50:59 758141:758141 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758148:758148 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758142:758142 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758146:758146 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758145:758145 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-10-21 23:50:59 758144:758144 SyncActivityProfilerHandler.cpp:46] profiler_stop
+
+routing=random
+                                                        fwd        bwd    fwd+bwd
+bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)    10.134ms    11.441ms    21.575ms
+dist_moe (fused bf16 fwd + fused bf16 bwd)           1.975ms     5.270ms     7.245ms
+speedup (bf16 EP time / dist_moe time)                5.13x      2.17x      2.98x
+relative diff vs bf16 EP path: y=0.0043, dx=0.0054, dtop_scores=0.0037, dw13=0.0036, dw2=0.0036

@@ -1,0 +1,109 @@
+# Top GPU kernels: `/home/garrett/tmp/profiling/dist-moe-sft-ab/traces/tr-qwen-torch/trace_0.json.gz`
+
+- window: 8753.7 ms (`forward` [-2] to last GPU event), stream filter: none, grouped by name
+- GPU busy (union over selected streams): 8577.8 ms (98.0% of window); non-NCCL busy 7374.1 ms (84.2%)
+- GPU idle: 175.9 ms (2.0%); exposed NCCL (no non-NCCL kernel running): 1203.7 ms (13.8%)
+- summed durations: non-NCCL 7403.0 ms, NCCL 1304.3 ms; 40008 GPU events
+- kernel ms per stream (all streams, in window): 7: 8546.1, 32: 97.0, 28: 50.4, 24: 10.2, 23: 3.7
+
+## Non-NCCL, by total time (top 25)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1329.6 |   15.5 |  15.2 |    96 |  13.850 |  13.857 | kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBa... |
+|  2 |    885.4 |   10.3 |  10.1 |   192 |   4.612 |   4.584 | kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionFo... |
+|  3 |    498.2 |    5.8 |   5.7 |   192 |   2.595 |   2.534 | index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_... |
+|  4 |    429.6 |    5.0 |   4.9 |   224 |   1.918 |   1.995 | elementwise_kernel<128, 4, BinaryFunctor<float, MulFunctor<float>>>    |
+|  5 |    374.1 |    4.4 |   4.3 |   768 |   0.487 |   0.411 | CatArrayBatchedCopy<OpaqueType<2u>, unsigned int, 4, 64, 64>           |
+|  6 |    365.4 |    4.3 |   4.2 |  1444 |   0.253 |   0.315 | elementwise_kernel<128, 4, BinaryFunctor<BFloat16, MulFunctor<float>>> |
+|  7 |    296.9 |    3.5 |   3.4 |   674 |   0.441 |   0.406 | vectorized_gather_kernel<16, long>                                     |
+|  8 |    286.5 |    3.3 |   3.3 |   384 |   0.746 |   0.745 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+|  9 |    255.0 |    3.0 |   2.9 |   288 |   0.886 |   0.007 | index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_... |
+| 10 |    170.4 |    2.0 |   1.9 |    96 |   1.775 |   1.765 | unrolled_elementwise_kernel<BinaryFunctor<float, MulFunctor<float>>... |
+| 11 |    170.2 |    2.0 |   1.9 |  1152 |   0.148 |   0.110 | elementwise_kernel<128, 4, direct_copy_kernel_cuda::lambda(BFloat16)>  |
+| 12 |    165.6 |    1.9 |   1.9 |    96 |   1.725 |   1.719 | indexing_backward_kernel<BFloat16, 4>                                  |
+| 13 |    148.3 |    1.7 |   1.7 |   392 |   0.378 |   0.346 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_TNT                         |
+| 14 |    146.8 |    1.7 |   1.7 |   192 |   0.765 |   0.769 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 15 |    146.7 |    1.7 |   1.7 |   192 |   0.764 |   0.765 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 16 |    146.2 |    1.7 |   1.7 |    96 |   1.523 |   1.523 | elementwise_kernel<128, 2, BinaryFunctor<float, MulFunctor<float>>>    |
+| 17 |    138.7 |    1.6 |   1.6 |    96 |   1.444 |   1.434 | elementwise_kernel<128, 2, direct_copy_kernel_cuda::lambda(float)>     |
+| 18 |    119.1 |    1.4 |   1.4 |   576 |   0.207 |   0.205 | elementwise_kernel<128, 4, CUDAFunctor_add<BFloat16>>                  |
+| 19 |     97.9 |    1.1 |   1.1 |   192 |   0.510 |   0.497 | elementwise_kernel<128, 4, silu_kernel::lambda(BFloat16)>              |
+| 20 |     96.4 |    1.1 |   1.1 |   288 |   0.335 |   0.334 | CatArrayBatchedCopy_vectorized<OpaqueType<2u>, unsigned int, 1, 128... |
+| 21 |     78.0 |    0.9 |   0.9 |  1194 |   0.065 |   0.025 | vectorized_elementwise_kernel<8, bfloat16_copy_kernel_cuda::lambda(... |
+| 22 |     67.3 |    0.8 |   0.8 |   707 |   0.095 |   0.004 | unrolled_elementwise_kernel<direct_copy_kernel_cuda::lambda(float), 4> |
+| 23 |     66.2 |    0.8 |   0.8 |   192 |   0.345 |   0.346 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_NNT                         |
+| 24 |     65.0 |    0.8 |   0.7 |  1348 |   0.048 |   0.010 | vectorized_elementwise_kernel<8, FillFunctor<BFloat16>, false>         |
+| 25 |     60.1 |    0.7 |   0.7 |   960 |   0.063 |   0.060 | vectorized_elementwise_kernel<8, CUDAFunctor_add<BFloat16>, false>     |
+
+- 1: `kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBackwardSm100_object_at__tensor000o111012_tensor000_o_101112_tensor000o111012_tensor000_o_10...`
+- 2: `kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o811121013_tensor000o111012_tensor000o101112_tensorptrbf16...`
+- 3: `index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_impl<OpaqueType<2>>::lambda(char*, char const*, long)>>`
+- 8: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #3`
+- 9: `index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_impl<OpaqueType<4>>::lambda(char*, char const*, long)>>`
+- 10: `unrolled_elementwise_kernel<BinaryFunctor<float, MulFunctor<float>>, 4>`
+- 14: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #2`
+- 15: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS`
+- 20: `CatArrayBatchedCopy_vectorized<OpaqueType<2u>, unsigned int, 1, 128, 1, 16, 8>`
+- 21: `vectorized_elementwise_kernel<8, bfloat16_copy_kernel_cuda::lambda(float), false>`
+
+## Non-NCCL, by time per call (top 25, calls >= 1)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1329.6 |   15.5 |  15.2 |    96 |  13.850 |  13.857 | kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBa... |
+|  2 |    885.4 |   10.3 |  10.1 |   192 |   4.612 |   4.584 | kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionFo... |
+|  3 |     22.2 |    0.3 |   0.3 |     8 |   2.778 |   2.765 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_badd_NTT                       |
+|  4 |     21.6 |    0.3 |   0.2 |     8 |   2.695 |   2.687 | nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_NNT                         |
+|  5 |    498.2 |    5.8 |   5.7 |   192 |   2.595 |   2.534 | index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_... |
+|  6 |    429.6 |    5.0 |   4.9 |   224 |   1.918 |   1.995 | elementwise_kernel<128, 4, BinaryFunctor<float, MulFunctor<float>>>    |
+|  7 |    170.4 |    2.0 |   1.9 |    96 |   1.775 |   1.765 | unrolled_elementwise_kernel<BinaryFunctor<float, MulFunctor<float>>... |
+|  8 |    165.6 |    1.9 |   1.9 |    96 |   1.725 |   1.719 | indexing_backward_kernel<BFloat16, 4>                                  |
+|  9 |    146.2 |    1.7 |   1.7 |    96 |   1.523 |   1.523 | elementwise_kernel<128, 2, BinaryFunctor<float, MulFunctor<float>>>    |
+| 10 |    138.7 |    1.6 |   1.6 |    96 |   1.444 |   1.434 | elementwise_kernel<128, 2, direct_copy_kernel_cuda::lambda(float)>     |
+| 11 |    255.0 |    3.0 |   2.9 |   288 |   0.886 |   0.007 | index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_... |
+| 12 |    146.8 |    1.7 |   1.7 |   192 |   0.765 |   0.769 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 13 |    146.7 |    1.7 |   1.7 |   192 |   0.764 |   0.765 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 14 |    286.5 |    3.3 |   3.3 |   384 |   0.746 |   0.745 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 15 |     16.5 |    0.2 |   0.2 |    27 |   0.612 |   0.631 | multi_tensor_apply_kernel<FusedOptimizerTensorListMetadata<4>, Fuse... |
+| 16 |     57.3 |    0.7 |   0.7 |    96 |   0.597 |   0.596 | elementwise_kernel<128, 4, silu_backward_kernel::lambda(BFloat16, B... |
+| 17 |     97.9 |    1.1 |   1.1 |   192 |   0.510 |   0.497 | elementwise_kernel<128, 4, silu_kernel::lambda(BFloat16)>              |
+| 18 |    374.1 |    4.4 |   4.3 |   768 |   0.487 |   0.411 | CatArrayBatchedCopy<OpaqueType<2u>, unsigned int, 4, 64, 64>           |
+| 19 |     43.4 |    0.5 |   0.5 |    96 |   0.452 |   0.448 | nvjet_sm103_tst_256x192_64x4_2x4_2cta_h_bz_NTT                         |
+| 20 |    296.9 |    3.5 |   3.4 |   674 |   0.441 |   0.406 | vectorized_gather_kernel<16, long>                                     |
+| 21 |    148.3 |    1.7 |   1.7 |   392 |   0.378 |   0.346 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_TNT                         |
+| 22 |     23.1 |    0.3 |   0.3 |    64 |   0.361 |   0.361 | vectorized_elementwise_kernel<4, exp_kernel_cuda::lambda(float), fa... |
+| 23 |     66.2 |    0.8 |   0.8 |   192 |   0.345 |   0.346 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_NNT                         |
+| 24 |     96.4 |    1.1 |   1.1 |   288 |   0.335 |   0.334 | CatArrayBatchedCopy_vectorized<OpaqueType<2u>, unsigned int, 1, 128... |
+| 25 |     53.3 |    0.6 |   0.6 |   160 |   0.333 |   0.003 | elementwise_kernel<128, 2, CUDAFunctor_add<float>>                     |
+
+- 1: `kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBackwardSm100_object_at__tensor000o111012_tensor000_o_101112_tensor000o111012_tensor000_o_10...`
+- 2: `kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o811121013_tensor000o111012_tensor000o101112_tensorptrbf16...`
+- 5: `index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_impl<OpaqueType<2>>::lambda(char*, char const*, long)>>`
+- 7: `unrolled_elementwise_kernel<BinaryFunctor<float, MulFunctor<float>>, 4>`
+- 11: `index_elementwise_kernel<128, 4, gpu_index_kernel<index_put_kernel_impl<OpaqueType<4>>::lambda(char*, char const*, long)>>`
+- 12: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #2`
+- 13: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS`
+- 14: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #3`
+- 15: `multi_tensor_apply_kernel<FusedOptimizerTensorListMetadata<4>, FusedAdamMathFunctor<float, 4, (ADAM_MODE)1, false>, float const*, double, double, double, dou...`
+- 16: `elementwise_kernel<128, 4, silu_backward_kernel::lambda(BFloat16, BFloat16)>`
+- 22: `vectorized_elementwise_kernel<4, exp_kernel_cuda::lambda(float), false>`
+- 24: `CatArrayBatchedCopy_vectorized<OpaqueType<2u>, unsigned int, 1, 128, 1, 16, 8>`
+
+## NCCL (durations include waiting for peers)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1170.4 |   13.6 |  13.4 |   768 |   1.524 |   1.678 | ncclDevKernel_SendRecv                                                 |
+|  2 |     70.7 |    0.8 |   0.8 |   100 |   0.707 |   0.642 | ncclDevKernel_ReduceScatter_Sum_f32_RING_LL                            |
+|  3 |     50.4 |    0.6 |   0.6 |   198 |   0.254 |   0.181 | ncclDevKernel_AllGather_RING_LL                                        |
+|  4 |      7.6 |    0.1 |   0.1 |    10 |   0.762 |   0.242 | ncclDevKernel_AllReduce_Sum_f32_RING_LL                                |
+|  5 |      4.9 |    0.1 |   0.1 |     1 |   4.868 |   4.868 | ncclDevKernel_AllReduce_Sum_f64_RING_LL                                |
+|  6 |      0.3 |    0.0 |   0.0 |     2 |   0.174 |   0.174 | ncclDevKernel_AllReduce_Sum_u64_RING_LL                                |
+
+Legend: total = summed durations in the window; % busy = total / GPU busy time and % win = total / window (shares
+can sum past 100 when streams overlap); calls = launches; mean/med = per launch. Names drop namespaces, lambdas,
+and argument lists (mangled names list their first identifiers); `#n` separates distinct kernels that shorten
+alike; truncated labels are listed under each table by rank; raw names are in the CSV. Site = `[<nearest non-aten
+enclosing op> >] <innermost cpu_op> <first 3 Input Dims>`; a site can launch several kernels, so its mean/median
+mix them.

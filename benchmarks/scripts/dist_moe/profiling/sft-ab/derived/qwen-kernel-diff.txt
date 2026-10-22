@@ -1,0 +1,23 @@
+# Kernel time diff (compute): torch -> dist_moe
+
+- summed kernel time: 7403.0 ms -> 5028.5 ms (-2374.5 ms)
+- before: `/home/garrett/tmp/profiling/dist-moe-sft-ab/derived/qwen-torch-top.csv`
+- after: `/home/garrett/tmp/profiling/dist-moe-sft-ab/derived/qwen-distmoe-top.csv`
+
+| # | torch ms | dist_moe ms | delta ms | calls before | calls after | kernel |
+|---|---|---|---|---|---|---|
+| 1 | 498.2 | 0.0 | -498.2 | 192 | 0 | `void at::native::index_elementwise_kernel<128, 4, at::nat...` |
+| 2 | 429.6 | 39.9 | -389.6 | 224 | 32 | `void at::native::elementwise_kernel<128, 4, at::native::g...` |
+| 3 | 374.1 | 0.0 | -374.1 | 768 | 0 | `void at::native::(anonymous namespace)::CatArrayBatchedCo...` |
+| 4 | 365.4 | 1.8 | -363.6 | 1444 | 4 | `void at::native::elementwise_kernel<128, 4, at::native::g...` |
+| 5 | 296.9 | 0.1 | -296.8 | 674 | 2 | `void at::native::vectorized_gather_kernel<16, long>(char*...` |
+| 6 | 286.5 | 0.0 | -286.5 | 384 | 0 | `_ZN7cutlass13device_kernelIN2at4cuda6detail25enable_3x_ke...` |
+| 7 | 0.0 | 268.9 | +268.9 | 0 | 192 | `_cute_dist_grouped_gemm_combine_fprop_kernel_cutlass_comb...` |
+| 8 | 255.0 | 0.0 | -255.0 | 288 | 0 | `void at::native::index_elementwise_kernel<128, 4, at::nat...` |
+| 9 | 0.0 | 253.5 | +253.5 | 0 | 96 | `_cute_dist_grouped_gemm_combine_dgrad_swiglu_bwd_kernel_c...` |
+| 10 | 0.0 | 217.5 | +217.5 | 0 | 576 | `_triton_symm_mem_barrier_multimem` |
+| 11 | 0.0 | 198.6 | +198.6 | 0 | 96 | `_cute_dist_grouped_gemm_dispatch_fprop_emit_swiglu_fwd_ke...` |
+| 12 | 1329.6 | 1500.7 | +171.1 | 96 | 96 | `kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashA...` |
+| 13 | 170.4 | 0.0 | -170.4 | 96 | 0 | `void at::native::unrolled_elementwise_kernel<at::native::...` |
+| 14 | 170.2 | 0.0 | -170.2 | 1152 | 0 | `void at::native::elementwise_kernel<128, 4, at::native::g...` |
+| 15 | 165.6 | 0.0 | -165.6 | 96 | 0 | `void (anonymous namespace)::indexing_backward_kernel<c10:...` |

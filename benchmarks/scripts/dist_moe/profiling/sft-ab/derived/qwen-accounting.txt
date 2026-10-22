@@ -1,0 +1,53 @@
+torch rank 0: 2 of 3 steps, window 8756.4 ms = compute 7371.9 + exposed comm 1206.0 + idle 178.5
+torch rank 1: 2 of 3 steps, window 8755.9 ms = compute 7412.5 + exposed comm 1171.6 + idle 171.8
+torch rank 2: 2 of 3 steps, window 8756.4 ms = compute 7373.4 + exposed comm 1200.3 + idle 182.7
+torch rank 3: 2 of 3 steps, window 8756.0 ms = compute 7372.4 + exposed comm 1216.9 + idle 166.7
+torch rank 4: 2 of 3 steps, window 8756.4 ms = compute 7406.6 + exposed comm 1175.1 + idle 174.7
+torch rank 5: 2 of 3 steps, window 8755.6 ms = compute 7459.3 + exposed comm 1128.3 + idle 168.0
+torch rank 6: 2 of 3 steps, window 8756.3 ms = compute 7387.2 + exposed comm 1195.6 + idle 173.5
+torch rank 7: 2 of 3 steps, window 8756.0 ms = compute 7357.3 + exposed comm 1189.3 + idle 209.4
+torch: 8 ranks, mean window 8756.1 ms, 40011 GPU activities per step
+dist_moe rank 0: 2 of 3 steps, window 5107.9 ms = compute 4995.6 + exposed comm 25.9 + idle 86.4
+dist_moe rank 1: 2 of 3 steps, window 5107.5 ms = compute 5004.5 + exposed comm 29.3 + idle 73.7
+dist_moe rank 2: 2 of 3 steps, window 5107.8 ms = compute 4996.7 + exposed comm 36.4 + idle 74.7
+dist_moe rank 3: 2 of 3 steps, window 5109.3 ms = compute 4982.7 + exposed comm 23.4 + idle 103.3
+dist_moe rank 4: 2 of 3 steps, window 5107.7 ms = compute 4999.5 + exposed comm 36.6 + idle 71.6
+dist_moe rank 5: 2 of 3 steps, window 5107.9 ms = compute 4999.1 + exposed comm 31.7 + idle 77.2
+dist_moe rank 6: 2 of 3 steps, window 5107.3 ms = compute 4997.5 + exposed comm 34.3 + idle 75.4
+dist_moe rank 7: 2 of 3 steps, window 5107.6 ms = compute 4993.6 + exposed comm 37.2 + idle 76.8
+dist_moe: 8 ranks, mean window 5107.9 ms, 17167 GPU activities per step
+
+| row | torch ms | dist_moe ms | delta ms (dist_moe - torch) |
+|---|---:|---:|---:|
+| compute: elementwise/copy | 2155.78 | 224.24 | -1931.54 |
+| compute: token permute/gather/scatter | 1794.99 | 44.97 | -1750.01 |
+| compute: dist_moe fused dispatch+GEMM+combine | 0.00 | 1032.19 | 1032.19 |
+| compute: torch grouped GEMM | 582.63 | 0.00 | -582.63 |
+| compute: attention | 2256.66 | 2612.64 | 355.98 |
+| compute: dist_moe wgrad GEMM | 0.00 | 160.52 | 160.52 |
+| compute: dist_moe symm-mem barrier | 0.00 | 157.79 | 157.79 |
+| compute: dist_moe triton glue | 0.00 | 142.19 | 142.19 |
+| compute: dense GEMM | 415.12 | 463.11 | 47.98 |
+| compute: other compute | 158.11 | 127.72 | -30.39 |
+| compute: optimizer | 29.27 | 30.78 | 1.52 |
+| exposed comm: SendRecv/AllToAll | 1152.76 | 0.00 | -1152.76 |
+| exposed comm: AllReduce | 12.80 | 7.61 | -5.19 |
+| exposed comm: ReduceScatter | 10.66 | 12.89 | 2.23 |
+| exposed comm: AllGather | 9.17 | 11.35 | 2.18 |
+| idle, host late: aten::copy_ | 33.65 | 2.81 | -30.84 |
+| idle, host late: no cpu_op | 22.42 | 12.00 | -10.42 |
+| idle, host late: aten::_foreach_add_ in Optimizer.step#AdamW.step | 0.00 | 6.22 | 6.22 |
+| idle, host late: other sites | 14.16 | 9.22 | -4.94 |
+| idle, host late: aten::copy_ in forward | 3.34 | 0.00 | -3.34 |
+| idle, host late: aten::div | 6.04 | 3.63 | -2.41 |
+| idle, host late: PythonSubclass in Optimizer.step#AdamW.step | 1.93 | 0.00 | -1.93 |
+| idle, host late: blocked in cudaStreamSynchronize: aten::copy_ | 0.00 | 1.13 | 1.13 |
+| idle, host late: no cpu_op in forward | 3.99 | 3.34 | -0.65 |
+| idle, host late: blocked in cudaStreamSynchronize: aten::_local_scalar_dense | 7.07 | 6.85 | -0.21 |
+| idle, host late: PythonSubclass | 3.27 | 3.20 | -0.07 |
+| idle, queued (stream wait) | 82.03 | 31.23 | -50.80 |
+| idle, unknown | 0.27 | 0.28 | 0.01 |
+| **traced step window** | **8756.12** | **5107.89** | **-3648.23** |
+| tracing overhead / residual (untraced minus traced window) | -148.12 | -44.89 | 103.23 |
+| **untraced median step** | **8608.00** | **5063.00** | **-3545.00** |
+wrote /home/garrett/tmp/profiling/dist-moe-sft-ab/derived/qwen-accounting.csv

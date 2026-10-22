@@ -1,0 +1,141 @@
+
+    ____       _                ____      __       ____          __
+   / __ \_____(_)___ ___  ___  /  _/___  / /____  / / /__  _____/ /_
+  / /_/ / ___/ / __ `__ \/ _ \ / // __ \/ __/ _ \/ / / _ \/ ___/ __/
+ / ____/ /  / / / / / / /  __// // / / / /_/  __/ / /  __/ /__/ /_
+/_/   /_/  /_/_/ /_/ /_/\___/___/_/ /_/\__/\___/_/_/\___/\___/\__/
+
+W1021 23:58:48.808000 759646 torch/distributed/run.py:982] 
+W1021 23:58:48.808000 759646 torch/distributed/run.py:982] *****************************************
+W1021 23:58:48.808000 759646 torch/distributed/run.py:982] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1021 23:58:48.808000 759646 torch/distributed/run.py:982] *****************************************
+W1021 23:59:23.747000 759716 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:23.821000 759716 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:25.648000 759719 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:25.714000 759719 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:26.784000 759717 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:26.784000 759715 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:26.847000 759715 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:26.853000 759717 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:26.924000 759720 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:26.965000 759718 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:27.028000 759720 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:27.032000 759722 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:27.033000 759718 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:27.096000 759722 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:27.165000 759721 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1021 23:59:27.234000 759721 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+NCCL version 2.30.7+cuda13.3
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+[2m23:59:45[0m [1m   INFO[0m [1m[22mDistributed MoE memory plan:
+  balanced/device/total rows: 131072/262144/262144
+  device/total scratch capacity factors: 2/2
+  activation slots: 1 x 0.062 GiB (67,108,864 bytes) = 0.062 GiB (67,108,864 bytes) (minimum all-recompute)
+  device scratch: 3.875 GiB (4,160,749,568 bytes)
+  host overflow scratch: 0.000 GiB (0 bytes)
+  total device buffer: 3.938 GiB (4,227,858,432 bytes)
+  activation slot minimum/balanced full-save/maximum useful: 0.062 GiB (67,108,864 bytes) / 1.375 GiB (1,476,395,008 bytes) / 2.250 GiB (2,415,919,104 bytes)
+  virtual address range: 3.938 GiB (4,227,858,432 bytes); all layers recompute at the minimum budget
+  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit
+  routing state saved for backward, outside the plan: 0.047 GiB (24 B x 128 experts x 16384 tokens x 1 MoE layers)[0m[0m
+Adjusting activation buffer alignment: raw_ptr=0x7a19e8000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x7d5d68000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x7da334000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x7cbf00000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x7a3f58000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x72e74c000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x71df54000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+Adjusting activation buffer alignment: raw_ptr=0x76a970000000 raw_numel=4227858560 start_pad=0 aligned_numel=4227858432
+world_size=8 num_experts=128 (per rank=16) top_k=8 hidden=2048 intermediate=768 tokens_per_rank=16384 scratch_capacity_factor=2.0
+
+routing=balanced
+GPU time (fwd, bwd, fwd+bwd) and back-to-back loop time per fwd+bwd: median, then fwd+bwd min/max, over 50 iterations of the max over ranks
+                                                        fwd        bwd    fwd+bwd        min        max       loop
+bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)    8.818ms   10.184ms   18.980ms   18.950ms   20.181ms   18.994ms
+dist_moe (fused bf16 fwd + fused bf16 bwd)          1.940ms    4.891ms    6.827ms    6.804ms    7.115ms    8.184ms
+speedup (bf16 EP time / dist_moe time)                4.54x      2.08x      2.78x                            2.32x
+relative diff vs bf16 EP path: y=0.0042, dx=0.0053, dtop_scores=0.0036, dw13=0.0036, dw2=0.0036
+
+routing=random
+GPU time (fwd, bwd, fwd+bwd) and back-to-back loop time per fwd+bwd: median, then fwd+bwd min/max, over 50 iterations of the max over ranks
+                                                        fwd        bwd    fwd+bwd        min        max       loop
+bf16 EP (TorchTokenDispatcher+BF16ExpertCompute)   10.065ms   11.470ms   21.532ms   21.450ms   21.923ms   21.555ms
+dist_moe (fused bf16 fwd + fused bf16 bwd)          1.965ms    4.938ms    6.901ms    6.870ms    6.944ms    7.385ms
+speedup (bf16 EP time / dist_moe time)                5.12x      2.32x      3.12x                            2.92x
+relative diff vs bf16 EP path: y=0.0043, dx=0.0054, dtop_scores=0.0037, dw13=0.0036, dw2=0.0036
