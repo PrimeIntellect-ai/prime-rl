@@ -268,38 +268,55 @@ class ParallelDims:
         return get_logger()
 
 
-def _is_moe_model(config: ModelConfig) -> bool:
-    """Return True if the model has MoE layers, by loading its HuggingFace config."""
+def _num_experts(config: ModelConfig) -> int | None:
+    """Return the routed expert count from the HuggingFace config, or None for non-MoE models."""
     from transformers import AutoConfig
 
     model_config = AutoConfig.from_pretrained(config.name, trust_remote_code=config.trust_remote_code)
     model_config = getattr(model_config, "text_config", model_config)
-    return hasattr(model_config, "num_experts") or hasattr(model_config, "n_routed_experts")
+    for attr in ("num_experts", "n_routed_experts", "num_local_experts"):
+        if num_experts := getattr(model_config, attr, None):
+            return num_experts
+    return None
+
+
+def auto_ep(fsdp_island_size: int, num_experts: int, cp: int) -> int:
+    """Largest EP degree up to 8 that divides the FSDP island and the expert count and is a multiple of cp."""
+    return max(
+        ep
+        for ep in range(1, min(fsdp_island_size, 8) + 1)
+        if fsdp_island_size % ep == 0 and num_experts % ep == 0 and (ep == 1 or ep % cp == 0)
+    )
 
 
 def resolve_ep(config: ModelConfig) -> None:
-    """Resolve ``ep="auto"`` in-place to a concrete integer.
-
-    For MoE models, resolves to ``min(fsdp_island_size, 8)`` where
-    ``fsdp_island_size = world_size // dp_replicate``. For non-MoE
-    models, resolves to 1 (no-op).
-    """
+    """Resolve ``ep="auto"`` in-place to a concrete integer: ``auto_ep`` for MoE models, 1 otherwise."""
     if config.ep != "auto":
         return
 
     world_size = dist.get_world_size()
+    num_experts = _num_experts(config)
 
-    if not _is_moe_model(config):
+    if num_experts is None:
         config.ep = 1
         get_logger().info("EP auto: model is not MoE, resolving ep=1")
         return
 
     dp_replicate = config.dp_replicate
     fsdp_island_size = world_size // dp_replicate  # pp is always 1
-    resolved_ep = min(fsdp_island_size, 8)
+    resolved_ep = auto_ep(fsdp_island_size, num_experts, config.cp)
 
     config.ep = resolved_ep
-    get_logger().info(f"EP auto: world_size={world_size}, dp_replicate={dp_replicate} -> resolved ep={resolved_ep}")
+    if resolved_ep == 1:
+        get_logger().info(
+            f"EP auto: no ep>1 divides fsdp_island_size={fsdp_island_size} and num_experts={num_experts} "
+            f"and is a multiple of cp={config.cp}, resolving ep=1"
+        )
+    else:
+        get_logger().info(
+            f"EP auto: world_size={world_size}, dp_replicate={dp_replicate}, num_experts={num_experts}, "
+            f"cp={config.cp} -> resolved ep={resolved_ep}"
+        )
 
 
 def get_parallel_dims(config: ModelConfig) -> ParallelDims:

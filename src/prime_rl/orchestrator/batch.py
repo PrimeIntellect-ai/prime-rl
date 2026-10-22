@@ -2,149 +2,29 @@ import copy
 import heapq
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
-from transformers import AutoConfig
+import torch
 
 from prime_rl.configs.orchestrator import OrchestratorConfig
-from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, SamplingMask, TrainingSample
-from prime_rl.utils.logger import get_logger
+from prime_rl.configs.trainer import ModelConfig
+from prime_rl.trainer.model import get_model
+from prime_rl.trainer.perf import FlopCounter
+from prime_rl.transports.batch.types import (
+    MicroBatch,
+    MMImageRef,
+    MMRefs,
+    RoutedExperts,
+    SamplingMask,
+    TopLogprobs,
+    TrainingSample,
+)
+from prime_rl.utils.sequence import repeat_to_length
 
 # Backfill value per component weight stream when a packed sample doesn't
 # carry it: absent rl means weight 1.0 on the loss mask, absent ce/ref_kl
 # means no component (weight 0.0).
 STREAM_FILL = {"rl_weights": 1.0, "ce_weights": 0.0, "ref_kl_weights": 0.0}
-
-
-def _text_config(model_config: Any) -> Any:
-    """Unwrap a multimodal model's text config, else return the config unchanged."""
-    return getattr(model_config, "text_config", model_config)
-
-
-def _is_mla(config: Any) -> bool:
-    return bool(getattr(config, "multi_latent_attention", False) or hasattr(config, "q_lora_rank"))
-
-
-def _kv_channels(config: Any) -> int:
-    return getattr(config, "kv_channels", getattr(config, "head_dim", config.hidden_size // config.num_attention_heads))
-
-
-def _qkv_projection_flops_per_token(config: Any) -> int:
-    """Linear-in-seqlen FLOPs of the Q/K/V projections (per token)."""
-    hidden_size = config.hidden_size
-    num_attention_heads = config.num_attention_heads
-    kv_channels = _kv_channels(config)
-    is_mla = _is_mla(config)
-    qk_head_dim = getattr(config, "qk_head_dim", 0)
-    qk_pos_emb_head_dim = getattr(config, "qk_pos_emb_head_dim", 0)
-
-    if is_mla and getattr(config, "q_lora_rank", None) is not None:
-        q_flops = 2 * config.q_lora_rank * (hidden_size + num_attention_heads * (qk_head_dim + qk_pos_emb_head_dim))
-    else:
-        q_head_dim = (qk_head_dim + qk_pos_emb_head_dim) if is_mla else kv_channels
-        q_flops = 2 * hidden_size * num_attention_heads * q_head_dim
-
-    if is_mla and getattr(config, "kv_lora_rank", None) is not None:
-        v_head_dim = getattr(config, "v_head_dim", 0)
-        kv_flops = 2 * (
-            config.kv_lora_rank * (hidden_size + num_attention_heads * (qk_head_dim + v_head_dim))
-            + hidden_size * qk_pos_emb_head_dim
-        )
-    else:
-        num_query_groups = getattr(
-            config, "num_query_groups", getattr(config, "num_key_value_heads", num_attention_heads)
-        )
-        kv_flops = 4 * hidden_size * num_query_groups * kv_channels
-    return q_flops + kv_flops
-
-
-def _attention_flops_per_token_squared(config: Any) -> int:
-    """Quadratic-in-seqlen FLOPs of the attention scores and values (per token^2)."""
-    num_attention_heads = config.num_attention_heads
-    kv_channels = _kv_channels(config)
-    if _is_mla(config):
-        qk_head_dim = getattr(config, "qk_head_dim", 0)
-        qk_pos_emb_head_dim = getattr(config, "qk_pos_emb_head_dim", 0)
-        v_head_dim = getattr(config, "v_head_dim", kv_channels)
-        return num_attention_heads * (qk_head_dim + qk_pos_emb_head_dim) + num_attention_heads * v_head_dim
-    return 2 * num_attention_heads * kv_channels
-
-
-def _ffn_flops_per_token(hidden_size: int, ffn_hidden_size: int) -> int:
-    return 6 * hidden_size * ffn_hidden_size
-
-
-def _dense_ffn_hidden_size(config: Any) -> int:
-    return getattr(
-        config, "ffn_hidden_size", getattr(config, "intermediate_size", getattr(config, "moe_intermediate_size", 0))
-    )
-
-
-def _moe_ffn_hidden_size(config: Any) -> int:
-    """Effective FFN width of an MoE layer: routed experts (topk) plus shared experts."""
-    dense_ffn = _dense_ffn_hidden_size(config)
-    routed_topk = getattr(config, "moe_router_topk", getattr(config, "num_experts_per_tok", 1))
-    moe_ffn = getattr(config, "moe_ffn_hidden_size", getattr(config, "moe_intermediate_size", dense_ffn))
-    return moe_ffn * routed_topk + (getattr(config, "moe_shared_expert_intermediate_size", None) or 0)
-
-
-def _count_dense_and_moe_layers(config: Any) -> tuple[int, int]:
-    """Split the model's layers into (dense, moe) counts."""
-    num_experts = getattr(config, "num_experts", getattr(config, "n_routed_experts", None))
-    if num_experts is None:
-        return config.num_hidden_layers, 0
-
-    moe_layer_freq = getattr(config, "moe_layer_freq", None)
-    if isinstance(moe_layer_freq, list):
-        num_dense = sum(1 for freq in moe_layer_freq if freq == 0)
-        num_moe = sum(1 for freq in moe_layer_freq if freq > 0)
-    elif isinstance(moe_layer_freq, int):
-        num_dense = sum(1 for i in range(config.num_hidden_layers) if i % moe_layer_freq != 0)
-        num_moe = config.num_hidden_layers - num_dense
-    elif getattr(config, "first_k_dense_replace", None) is not None:
-        num_dense = config.first_k_dense_replace
-        num_moe = config.num_hidden_layers - num_dense
-    else:
-        num_dense = 0
-        num_moe = config.num_hidden_layers
-    return num_dense, num_moe
-
-
-def _packing_cost_coeffs(config: Any) -> tuple[int, int]:
-    """Return the (linear, quadratic) coefficients of the per-sequence forward FLOPs."""
-    hidden_size = config.hidden_size
-    num_dense_layers, num_moe_layers = _count_dense_and_moe_layers(config)
-    qkv_per_token = _qkv_projection_flops_per_token(config)
-    attn_per_token_squared = _attention_flops_per_token_squared(config)
-
-    def layer_linear(ffn_hidden_size: int) -> int:
-        return qkv_per_token + 2 * hidden_size * hidden_size + _ffn_flops_per_token(hidden_size, ffn_hidden_size)
-
-    linear = (
-        num_dense_layers * layer_linear(_dense_ffn_hidden_size(config))
-        + num_moe_layers * layer_linear(_moe_ffn_hidden_size(config))
-        + 2 * hidden_size * config.vocab_size
-    )
-    quadratic = (num_dense_layers + num_moe_layers) * attn_per_token_squared
-    return linear, quadratic
-
-
-def build_bin_cost(model_config: Any | None) -> Callable[[Sequence[int]], int]:
-    """Build a closure scoring a packed bin by estimated forward compute.
-
-    With ``model_config=None`` the linear/quadratic coefficients are ``(1, 0)``, so
-    the cost reduces to the token count and balancing falls back to sequence length.
-    """
-    if model_config is None:
-        linear, quadratic = 1, 0
-    else:
-        linear, quadratic = _packing_cost_coeffs(_text_config(model_config))
-
-    def bin_cost(seqlens: Sequence[int]) -> int:
-        return linear * sum(seqlens) + quadratic * sum(n * n for n in seqlens)
-
-    return bin_cost
 
 
 @dataclass
@@ -277,7 +157,7 @@ def _pad_routed_experts(micro_batch: MicroBatch, padding_size: int) -> None:
     routed_experts = micro_batch.routed_experts
     assert routed_experts is not None
     row_size = _routed_experts_row_size(routed_experts)
-    routed_experts.data += b"\0" * (padding_size * row_size)
+    routed_experts.data += repeat_to_length(routed_experts.data, padding_size * row_size)
     routed_experts.shape[0] += padding_size
 
 
@@ -294,6 +174,23 @@ def _slice_sampling_mask(sampling_mask: SamplingMask, seq_len: int) -> SamplingM
         ids=sampling_mask.ids[: int(counts.sum()) * _SAMPLING_MASK_ITEMSIZE],
         counts=counts.tobytes(),
     )
+
+
+def _slice_top_logprobs(head: TopLogprobs, seq_len: int) -> TopLogprobs:
+    counts = np.frombuffer(head.counts, dtype=np.int32)[:seq_len]
+    size = int(counts.sum()) * 4
+    return TopLogprobs(ids=head.ids[:size], logprobs=head.logprobs[:size], counts=counts.tobytes())
+
+
+def _validate_top_logprobs(head: TopLogprobs, num_tokens: int) -> None:
+    counts = np.frombuffer(head.counts, dtype=np.int32)
+    if (
+        len(counts) != num_tokens
+        or (counts < 0).any()
+        or len(head.ids) != len(head.logprobs)
+        or len(head.ids) != int(counts.sum()) * 4
+    ):
+        raise ValueError("Top logprobs ids, values and counts must align with packed tokens")
 
 
 def _pad_sampling_mask(micro_batch: MicroBatch, padding_size: int) -> None:
@@ -381,6 +278,9 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     # No copy needed: SamplingMask holds immutable bytes, and _pad_sampling_mask only
     # ever mutates _materialize_bin's own accumulator.
     sampling_mask = training_example.sampling_mask
+    top_logprobs = training_example.top_logprobs
+    if top_logprobs is not None:
+        _validate_top_logprobs(top_logprobs, len(input_ids))
 
     if len(input_ids) > seq_len:
         cut = seq_len
@@ -404,6 +304,8 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
             routed_experts = _slice_routed_experts(routed_experts, cut)
         if sampling_mask is not None:
             sampling_mask = _slice_sampling_mask(sampling_mask, cut)
+        if top_logprobs is not None:
+            top_logprobs = _slice_top_logprobs(top_logprobs, cut)
         if mm_token_type_ids is not None:
             mm_token_type_ids = mm_token_type_ids[:cut]
         env_names = env_names[:cut]
@@ -454,6 +356,7 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        top_logprobs=top_logprobs,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_refs=mm_refs,
@@ -531,6 +434,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     # Sampling masks are per-token optional (unlike routed_experts): samples
     # without them get zero-count backfill instead of constraining packing.
     has_sampling_mask = any(sample.sampling_mask is not None for sample in bin_content.samples)
+    has_top_logprobs = any(sample.top_logprobs is not None for sample in bin_content.samples)
 
     input_ids: list[int] = []
     loss_mask: list[bool] = []
@@ -546,6 +450,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
     seq_lens: list[int] = []
     routed_experts: RoutedExperts | None = None
     sampling_mask: SamplingMask | None = SamplingMask(ids=b"", counts=b"") if has_sampling_mask else None
+    top_logprobs = TopLogprobs(ids=b"", logprobs=b"", counts=b"") if has_top_logprobs else None
     trace_ids: list[str] = []
     branch_indices: list[int] = []
 
@@ -593,6 +498,14 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
             sample_mask = sample.sampling_mask if sample.sampling_mask is not None else _empty_sampling_mask(sample_len)
             sampling_mask.ids += sample_mask.ids
             sampling_mask.counts += sample_mask.counts
+        if top_logprobs is not None:
+            head = sample.top_logprobs
+            if head is None:
+                top_logprobs.counts += b"\0" * (sample_len * 4)
+            else:
+                top_logprobs.ids += head.ids
+                top_logprobs.logprobs += head.logprobs
+                top_logprobs.counts += head.counts
         trace_ids.extend(sample.trace_ids or [""] * len(sample.sequence_lengths))
         branch_indices.extend(sample.branch_indices or [-1] * len(sample.sequence_lengths))
 
@@ -611,6 +524,7 @@ def _materialize_bin(bin_content: _MicroBatchBin) -> MicroBatch:
         temperatures=temperatures,
         routed_experts=routed_experts,
         sampling_mask=sampling_mask,
+        top_logprobs=top_logprobs,
         mm_token_type_ids=mm_token_type_ids,
         env_names=env_names,
         mm_refs=mm_refs,
@@ -715,7 +629,12 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
     if not (pad_to_multiple_of > 1 and padding_size > 0):
         return micro_batch
 
-    micro_batch.input_ids.extend([1] * padding_size)
+    # Identical pad tokens route to the same MoE experts and can overload one EP rank, so text rows pad with their
+    # own tokens. Multimodal rows keep a constant id: a repeated image placeholder would have no feature to receive.
+    if micro_batch.mm_refs is None:
+        micro_batch.input_ids.extend(repeat_to_length(micro_batch.input_ids, padding_size))
+    else:
+        micro_batch.input_ids.extend([1] * padding_size)
     micro_batch.advantages.extend([0.0] * padding_size)
     micro_batch.loss_mask.extend([False] * padding_size)
     micro_batch.position_ids.extend(list(range(padding_size)))
@@ -740,6 +659,8 @@ def pad_micro_batch(micro_batch: MicroBatch, pad_to_multiple_of: int) -> MicroBa
         _pad_routed_experts(micro_batch, padding_size)
     if micro_batch.sampling_mask is not None:
         _pad_sampling_mask(micro_batch, padding_size)
+    if micro_batch.top_logprobs is not None:
+        micro_batch.top_logprobs.counts += b"\0" * (padding_size * 4)
     micro_batch.env_names.extend([""] * padding_size)
 
     return micro_batch
@@ -792,6 +713,9 @@ def _assert_token_arrays_aligned(micro_batch: MicroBatch) -> None:
             f"{len(micro_batch.sampling_mask.ids)} bytes != {int(mask_counts.sum())} ids"
         )
 
+    if micro_batch.top_logprobs is not None:
+        _validate_top_logprobs(micro_batch.top_logprobs, num_tokens)
+
 
 def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     """Create a zero-loss dummy batch from an existing batch, preserving its modality."""
@@ -805,6 +729,7 @@ def _make_dummy_batch(source: MicroBatch) -> MicroBatch:
     dummy.ref_kl_weights = None
     # Fully loss-masked, so replaying sampling masks would be pure wasted work.
     dummy.sampling_mask = None
+    dummy.top_logprobs = None
     # The copied identity would double-annotate the source's traces.
     dummy.trace_ids = None
     dummy.branch_indices = None
@@ -868,18 +793,13 @@ class BatchPacker:
     def __init__(self, config: OrchestratorConfig):
         self.seq_len = config.seq_len
         self.num_train_workers = config.num_train_workers
-        self.pad_to_multiple_of = config.pad_to_multiple_of
-        try:
-            model_config = AutoConfig.from_pretrained(
-                config.model.name, trust_remote_code=config.tokenizer.trust_remote_code
-            )
-        except Exception as e:
-            get_logger().warning(
-                f"Could not load model config for {config.model.name} ({e}) - "
-                "packing balances by token count instead of estimated FLOPs"
-            )
-            model_config = None
-        self.bin_cost = build_bin_cost(model_config)
+        # Rows hold at most `seq_len` tokens, so padding to a multiple of it pads every row to exactly `seq_len`
+        self.pad_to_multiple_of = config.seq_len if config.pad_to_seq_len else config.pad_to_multiple_of
+        # Built as the trainer builds it. The flash-attention version selects kernels, not modules.
+        model_config = ModelConfig(
+            name=config.model.name, attn="flash_attention_3", trust_remote_code=config.tokenizer.trust_remote_code
+        )
+        self.bin_cost = FlopCounter(get_model(model_config, device=torch.device("meta")))
 
     def pack(self, samples: list[TrainingSample]) -> list[list[MicroBatch]]:
         return prepare_batch(

@@ -6,13 +6,14 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from prime_rl.configs.orchestrator import EnvConfig
 from prime_rl.configs.shared import LogConfig
-from prime_rl.utils.config import dump_resolved_config
+from prime_rl.utils.config import BaseConfig, dump_resolved_config
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.sandboxes import ENV_LABEL_PREFIX
 
@@ -400,6 +401,29 @@ def validate_run_dir(
             f"To delete the existing directory and start fresh, set clean=true or --clean via CLI. "
             f"Otherwise use a unique run name (run.name or --run.name via CLI) or output_dir for this run."
         )
+
+
+def prepare_run(config: BaseConfig, ckpt_output_dir: Path | None = None) -> None:
+    """Set the run identity and prepare the run directory of a launcher's ``config`` (``run``, ``run_dir``,
+    ``output_dir``, ``clean``, ``resume``): validate it (with ``clean``, unless ``$NEVER_CLEAN`` is set, delete it
+    first) and create it and ``ckpt_output_dir``.
+
+    The run identity is runtime-only, never sub-config: ``$PRL_RUN_ID`` / ``$PRL_RUN_NAME`` carry it between
+    processes, and every spawned process inherits them. Components launched standalone have no run identity."""
+    os.environ.setdefault("PRL_RUN_ID", uuid.uuid4().hex)
+    assert config.run.name is not None  # resolved at construction
+    os.environ["PRL_RUN_NAME"] = config.run.name
+    clean = config.clean and not os.environ.get("NEVER_CLEAN")
+    validate_run_dir(
+        config.run_dir,
+        output_dir=config.output_dir,
+        resuming=config.resume is not None,
+        clean=clean,
+        ckpt_output_dir=ckpt_output_dir,
+    )
+    config.run_dir.mkdir(parents=True, exist_ok=True)
+    if ckpt_output_dir is not None:
+        ckpt_output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def clean_future_steps(output_dir: Path, resume_step: int) -> None:
