@@ -188,7 +188,9 @@ def resolve_payloads(micro_batches: list[MicroBatch], pool: ThreadPoolExecutor) 
 
 def _assemble(mb: MicroBatch, parts: list[BranchArrays | None]) -> None:
     lengths = [s.num_tokens for s in mb.payloads]
-    tail = len(mb.input_ids) - sum(lengths)
+    # Streams arrive as raw bytes: count tokens from the sequence lengths
+    num_tokens = sum(mb.sequence_lengths)
+    tail = num_tokens - sum(lengths)
     fields = {name for s in mb.payloads for name in s.fields}
     if "routed_experts" in fields:
         rows, shape, dtype = [], None, "uint8"
@@ -204,7 +206,7 @@ def _assemble(mb: MicroBatch, parts: list[BranchArrays | None]) -> None:
         data = b"".join(r.tobytes() for r in rows)
         row_size = int(np.prod(shape)) * np.dtype(dtype).itemsize
         data += repeat_to_length(data, tail * row_size) if tail else b""
-        mb.routed_experts = RoutedExperts(data=data, shape=[len(mb.input_ids), *shape], dtype=dtype)
+        mb.routed_experts = RoutedExperts(data=data, shape=[num_tokens, *shape], dtype=dtype)
     for name, flat in (("sampling_mask", ("ids",)), ("top_logprobs", ("ids", "logprobs"))):
         if name not in fields:
             continue

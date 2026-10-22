@@ -119,32 +119,70 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     payload: PayloadSlice | None = None  # the arrays above, kept by an env server
 
 
+# Per-token streams of a MicroBatch and the dtype each travels as. The orchestrator holds them as
+# numpy arrays and the batch encoder ships each as its raw bytes (`encode_array`); the trainer
+# decodes them as memoryviews into the received frame and reads them with `micro_batch_stream`.
+MICRO_BATCH_DTYPES: dict[str, type[np.generic]] = {
+    "input_ids": np.int32,
+    "loss_mask": np.bool_,
+    "advantages": np.float32,
+    "inference_logprobs": np.float32,
+    "position_ids": np.int32,
+    "temperatures": np.float32,
+    "ref_logprobs": np.float32,
+    "mm_token_type_ids": np.int32,
+    "rl_weights": np.float32,
+    "ce_weights": np.float32,
+    "ref_kl_weights": np.float32,
+}
+
+
+def encode_array(value: object) -> memoryview:
+    """msgspec ``enc_hook``: a numpy array as its raw bytes."""
+    if isinstance(value, np.ndarray):
+        return np.ascontiguousarray(value).data
+    raise NotImplementedError(f"cannot encode {type(value).__name__}")
+
+
+def micro_batch_stream(micro_batch: "MicroBatch", name: str) -> np.ndarray | None:
+    """One per-token stream of a micro batch as a numpy array, whether it holds the array (the
+    orchestrator) or its received bytes (the trainer). Views a received frame read-only."""
+    value = getattr(micro_batch, name)
+    if value is None:
+        return None
+    dtype = MICRO_BATCH_DTYPES[name]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return np.frombuffer(value, dtype=dtype)
+    return np.asarray(value, dtype=dtype)
+
+
 # Orchestrator -> Trainer
 class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
-    """A micro batch of data for training."""
+    """A micro batch of data for training. Per-token streams are numpy arrays in the orchestrator
+    and raw buffers on the wire (``MICRO_BATCH_DTYPES``)."""
 
-    input_ids: list[int]
-    loss_mask: list[bool]
-    advantages: list[float]
-    inference_logprobs: list[float]
-    position_ids: list[int]
+    input_ids: memoryview
+    loss_mask: memoryview
+    advantages: memoryview
+    inference_logprobs: memoryview
+    position_ids: memoryview
     sequence_lengths: list[int]
-    temperatures: list[float]  # Per-token temperatures used during generation
-    env_names: list[str]
+    temperatures: memoryview  # Per-token temperatures used during generation
+    env_names: list[str]  # One per sequence, parallel to ``sequence_lengths``
     seq_lens: list[int]
-    ref_logprobs: list[float] | None = None
+    ref_logprobs: memoryview | None = None
     routed_experts: RoutedExperts | None = None
 
     mm_refs: MMRefs | None = None
-    # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
-    mm_token_type_ids: list[int] | None = None
+    # mm_token_type_ids: token type ids per token [batch seq] (0=text, 1=image, 2=video)
+    mm_token_type_ids: memoryview | None = None
 
     # Per-token component weight streams (see TrainingSample). ``None`` means
     # absent: no ce/ref_kl component, rl weight 1.0 everywhere — packing
     # materializes a stream as soon as one packed sample carries it.
-    rl_weights: list[float] | None = None
-    ce_weights: list[float] | None = None
-    ref_kl_weights: list[float] | None = None
+    rl_weights: memoryview | None = None
+    ce_weights: memoryview | None = None
+    ref_kl_weights: memoryview | None = None
 
     # See TrainingSample.sampling_mask; appended for wire-layout stability.
     sampling_mask: SamplingMask | None = None
@@ -158,3 +196,5 @@ class MicroBatch(msgspec.Struct, array_like=True, gc=False, omit_defaults=True):
     # The samples' arrays kept by env servers, in packing order; the trainer fetches them
     # into the fields above.
     payloads: list[PayloadSlice] | None = None
+    # Trailing padding tokens, folded into the last sequence's length by ``pad_micro_batch``.
+    padding: int = 0

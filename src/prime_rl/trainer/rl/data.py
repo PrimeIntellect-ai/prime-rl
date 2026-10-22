@@ -19,6 +19,7 @@ from prime_rl.transports.batch import (
     TransportConfig,
     setup_batch_receiver,
 )
+from prime_rl.transports.batch.types import micro_batch_stream
 from prime_rl.transports.payload import delete_payloads, resolve_payloads
 from prime_rl.utils.logger import format_time, get_logger
 
@@ -34,8 +35,9 @@ class TensorMicroBatch(TypedDict):
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
-    env_names: list[str]
+    env_names: list[str]  # One per sequence, parallel to sequence_lengths
     sequence_lengths: list[int]
+    padding: int  # Trailing padding tokens, folded into the last sequence's length
 
     # Per-sequence branch identity, parallel to sequence_lengths; None on
     # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
@@ -134,8 +136,9 @@ class FakeDataLoader:
             "inference_logprobs": inference_logprobs.unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(input_ids.shape[0]).unsqueeze(0),
-            "env_names": ["fake"] * input_ids.shape[0],
+            "env_names": ["fake"] * len(sequence_lengths),
             "sequence_lengths": sequence_lengths,
+            "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": loss_mask.unsqueeze(0),
@@ -167,8 +170,9 @@ class FakeDataLoader:
             "inference_logprobs": torch.randn(self.seq_len, generator=generator).unsqueeze(0),
             "ref_logprobs": None,
             "temperatures": torch.ones(self.seq_len).unsqueeze(0),
-            "env_names": ["fake"] * self.seq_len,
+            "env_names": ["fake"],
             "sequence_lengths": [self.seq_len],
+            "padding": 0,
             "trace_ids": None,
             "branch_indices": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
@@ -269,7 +273,7 @@ class DataLoader:
         self.payload_urls = []
 
     def _micro_batch_to_tensor(self, micro_batch: MicroBatch) -> TensorMicroBatch:
-        """Convert a MicroBatch (msgspec struct with lists) to a TensorMicroBatch (dict with tensors)."""
+        """Convert a MicroBatch (msgspec struct of raw buffers) to a TensorMicroBatch (dict with tensors)."""
         routed_experts = None
         packed_routed_experts = micro_batch.routed_experts
         if packed_routed_experts is not None:
@@ -325,38 +329,36 @@ class DataLoader:
                 values[valid] = flat_values
             top_ids = torch.from_numpy(ids).unsqueeze(0)
             top_values = torch.from_numpy(values).unsqueeze(0)
+
+        def stream(name: str, dtype: type[np.generic]) -> Tensor | None:
+            """A per-token stream as a [1, seq] tensor: one numpy copy out of the received frame
+            (which stays read-only) that also widens it to the trainer's dtype."""
+            values = micro_batch_stream(micro_batch, name)
+            return None if values is None else torch.from_numpy(values.astype(dtype)).unsqueeze(0)
+
         return TensorMicroBatch(
-            input_ids=torch.tensor(micro_batch.input_ids, dtype=torch.long).unsqueeze(0),
-            position_ids=torch.tensor(micro_batch.position_ids, dtype=torch.long).unsqueeze(0),
-            advantages=torch.tensor(micro_batch.advantages, dtype=torch.float).unsqueeze(0),
-            inference_logprobs=torch.tensor(micro_batch.inference_logprobs, dtype=torch.float).unsqueeze(0),
-            ref_logprobs=torch.tensor(micro_batch.ref_logprobs, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_logprobs is not None
-            else None,
-            loss_mask=torch.tensor(micro_batch.loss_mask, dtype=torch.bool).unsqueeze(0),
-            temperatures=torch.tensor(micro_batch.temperatures, dtype=torch.float).unsqueeze(0),
+            input_ids=stream("input_ids", np.int64),
+            position_ids=stream("position_ids", np.int64),
+            advantages=stream("advantages", np.float32),
+            inference_logprobs=stream("inference_logprobs", np.float32),
+            ref_logprobs=stream("ref_logprobs", np.float32),
+            loss_mask=stream("loss_mask", np.bool_),
+            temperatures=stream("temperatures", np.float32),
             env_names=micro_batch.env_names,
             sequence_lengths=micro_batch.sequence_lengths,
+            padding=micro_batch.padding,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
-            mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
-            if micro_batch.mm_token_type_ids is not None
-            else None,
+            mm_token_type_ids=stream("mm_token_type_ids", np.int64),
             routed_experts=routed_experts,
             sampling_mask=sampling_mask,
             top_logprobs_ids=top_ids,
             top_logprobs_values=top_values,
-            rl_weights=torch.tensor(micro_batch.rl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.rl_weights is not None
-            else None,
-            ce_weights=torch.tensor(micro_batch.ce_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ce_weights is not None
-            else None,
-            ref_kl_weights=torch.tensor(micro_batch.ref_kl_weights, dtype=torch.float).unsqueeze(0)
-            if micro_batch.ref_kl_weights is not None
-            else None,
+            rl_weights=stream("rl_weights", np.float32),
+            ce_weights=stream("ce_weights", np.float32),
+            ref_kl_weights=stream("ref_kl_weights", np.float32),
         )
 
 

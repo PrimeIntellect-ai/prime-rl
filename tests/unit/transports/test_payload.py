@@ -86,7 +86,7 @@ def test_fetched_batches_equal_inline_batches():
                 failed, urls = resolve_payloads(got_rank, pool)
                 assert failed == [] and urls
                 for want, got in zip(want_rank, got_rank, strict=True):
-                    assert got.input_ids == want.input_ids
+                    assert np.array_equal(got.input_ids, want.input_ids)
                     assert got.routed_experts == want.routed_experts
                     assert got.top_logprobs == want.top_logprobs
                     assert got.payloads is None
