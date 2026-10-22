@@ -31,7 +31,6 @@ from prime_rl.trainer.model import (
     get_load_balance_stats,
     is_tt_moe_model,
     reshard_module,
-    setup_processor,
     setup_tokenizer,
     setup_model,
 )
@@ -57,6 +56,7 @@ from prime_rl.trainer.utils import (
     setup_full_cpu_optimizer_offload,
     setup_torch_distributed,
 )
+from prime_rl.trainer.vlm import setup_processor
 from prime_rl.trainer.world import get_world
 from prime_rl.control.controller import Controller, broadcast_pause
 from prime_rl.control.server import ControlServer
@@ -255,7 +255,8 @@ def train(config: SFTConfig):
         if cp_enabled:
             # CP requires the sequence length to be divisible by cp_size. CatDataset
             # pads every pack to a multiple of it; shard_for_cp raises on violations.
-            defer_vlm_cp_to_model = mm_kwargs is not None and "image_grid_thw" in mm_kwargs
+            # The VLM shards image inputs itself, after building their positions.
+            defer_vlm_cp_to_model = mm_kwargs is not None
             if not defer_vlm_cp_to_model:
                 input_ids, position_ids = setup_cp_params(
                     input_ids,

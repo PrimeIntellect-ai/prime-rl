@@ -15,6 +15,7 @@ from prime_rl.configs.shared import (
     ResumeConfig,
     TrainerLogConfig,
     TransportConfig,
+    VLMConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -262,6 +263,9 @@ class MoERuntimeConfig(BaseConfig):
 
 
 class ModelConfig(BaseModelConfig):
+    vlm: VLMConfig | None = None
+    """VLM configuration. Setting this enables vision-language model support."""
+
     conversion_dir: Path | None = None
     """Directory for the auto-converted weights (written to a `prime`/`hf` subdirectory). If not set, we write into the model snapshot directory."""
 
@@ -329,6 +333,16 @@ class ModelConfig(BaseModelConfig):
 
     fused_lm_head_token_chunk_size: int | Literal["disabled"] = 8192
     """Flattened token chunk size for the fused LM head. ``int >= 1`` sets the tokens per LM-head chunk explicitly; ``disabled`` uses the vanilla LM head. In SFT the fused head computes the summed cross-entropy and its gradients chunk by chunk, holding one chunk's full-vocab logits at a time."""
+
+    @model_validator(mode="after")
+    def validate_vlm(self):
+        if self.vlm is None:
+            return self
+        if self.optimization_dtype != "bfloat16" or self.reduce_dtype != "bfloat16":
+            raise ValueError(
+                "VLM models must use optimization_dtype='bfloat16' and reduce_dtype='bfloat16' to match vLLM inference."
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_cp(self):

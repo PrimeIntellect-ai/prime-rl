@@ -30,6 +30,9 @@ class CPContext:
 
 
 def setup_context_parallel(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDims) -> None:
+    # The trainer leaves multimodal inputs unsharded; the VLM shards them after building their positions.
+    if config.vlm is not None and not hasattr(model.model, "cp_context"):
+        raise ValueError(f"{type(model).__name__} does not shard multimodal inputs for context parallelism; set cp=1")
     cp_group = parallel_dims.world_mesh["cp"].get_group()
     cp_rank = parallel_dims.world_mesh["cp"].get_local_rank()
 
