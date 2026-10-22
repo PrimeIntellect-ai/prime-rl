@@ -538,7 +538,9 @@ class IcePopLossConfig(BaseConfig):
 
 
 class SFCKLLossConfig(BaseConfig):
-    """Score function centering without importance sampling, plus a KL(sampler || trainer) penalty."""
+    """Score function centering without importance sampling, plus a KL(sampler || trainer) penalty, both exact
+    over the sampler's kept set. Requires truncated sampling (top_k <= ``score_centering_topk``) with sampling
+    replay."""
 
     type: Literal["sfc_kl"] = "sfc_kl"
 
@@ -547,21 +549,17 @@ class SFCKLLossConfig(BaseConfig):
 
     kl_coeff: float = Field(0.01, ge=0, allow_inf_nan=False)
     """KL coefficient beta_0. The default matches Tinker's StableReinforce; the SFC+KL blog uses 0.3 with
-    ``kl_staleness = "inv_sqrt"`` and ``kl_estimator = "topk"``."""
+    ``kl_staleness = "inv_sqrt"``."""
 
     kl_staleness: Literal["none", "inv_sqrt"] = "none"
     """KL coefficient schedule over sample age (trainer step minus the sample's dispatch policy version):
     ``none`` uses beta_0 for every token, ``inv_sqrt`` uses 0 at age 0 and beta_0 / sqrt(age) otherwise."""
 
-    kl_estimator: Literal["k1", "topk"] = "k1"
-    """``k1``: log q(a) - log p(a) on the sampled token. ``topk``: KL over the captured sampler head with a
-    proportional tail; its logit gradient is p - q."""
-
     score_centering: Literal[True] = True
     """Always on: the policy term is centered under the sampler."""
 
     score_centering_topk: int = Field(128, ge=1)
-    """Captured head size for an untruncated sampler with a proportional tail."""
+    """Captured sampler head size. Must be at least every policy env's ``top_k`` so the head covers the kept set."""
 
 
 class PPOLossConfig(BaseConfig):

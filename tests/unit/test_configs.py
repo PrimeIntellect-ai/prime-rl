@@ -274,7 +274,7 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 def test_sfc_kl_loss_requires_score_centering():
     config = TrainerConfig.model_validate({"loss": {"type": "sfc_kl"}})
     assert config.loss.score_centering
-    assert (config.loss.kl_coeff, config.loss.kl_staleness, config.loss.kl_estimator) == (0.01, "none", "k1")
+    assert (config.loss.kl_coeff, config.loss.kl_staleness) == (0.01, "none")
     for unsupported in (
         {"type": "sfc_kl", "score_centering": False},
         {"type": "sfc_kl", "kl_coeff": -0.1},

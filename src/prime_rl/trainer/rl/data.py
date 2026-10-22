@@ -18,6 +18,9 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 
+# Float32 rounding headroom on the captured sampler mass.
+SFC_KL_MAX_TAIL_MASS = 1e-3
+
 
 class TensorMicroBatch(TypedDict):
     """A micro batch of data for training."""
@@ -302,8 +305,9 @@ class DataLoader:
         )
 
 
-def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
-    """Validate sampler evidence on the CPU before the LM head consumes it."""
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, truncated: bool = False) -> None:
+    """Validate sampler evidence on the CPU before the LM head consumes it. ``truncated``: the head must
+    cover the replayed sampling mask, i.e. hold all of the sampler's mass."""
     mask = batch["loss_mask"]
     if batch["rl_weights"] is not None:
         mask = mask & (batch["rl_weights"] != 0)
@@ -324,8 +328,19 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -
     q = values.exp().masked_fill(~valid, 0.0)
     if (q.sum(-1) > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
-        raise ValueError("Top-k score centering requires untruncated sampling")
+    sampling_mask = batch["sampling_mask"]
+    if not truncated:
+        if sampling_mask is not None and (sampling_mask[mask] >= 0).any():
+            raise ValueError("Top-k score centering requires untruncated sampling")
+        return
+    if sampling_mask is None or not (sampling_mask[mask] >= 0).any(-1).all():
+        raise ValueError("sfc_kl requires a sampling mask on every RL token")
+    tail_mass = 1.0 - q.sum(-1)
+    if (tail_mass > SFC_KL_MAX_TAIL_MASS).any():
+        raise ValueError(
+            f"sfc_kl: the captured sampler head misses {tail_mass.max().item():.2e} of the sampling mass; "
+            "set score_centering_topk >= every policy env's top_k"
+        )
 
 
 def _torch_dtype(name: str) -> torch.dtype:

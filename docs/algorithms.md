@@ -278,25 +278,33 @@ baseline's logit-gradient L1 norm before advantage scaling).
 ### SFC+KL Loss
 
 `sfc_kl` is score function centering without importance sampling, plus a KL penalty from the sampler to the trainer
-([SFC](https://huggingface.co/blog/NormalUhr/sfc), [SFC+KL](https://huggingface.co/blog/NormalUhr/sfc-kl)). Per loss
-token, with $q$ the sampler and $p$ the trainer distribution:
+([SFC](https://huggingface.co/blog/NormalUhr/sfc), [SFC+KL](https://huggingface.co/blog/NormalUhr/sfc-kl)). It needs
+truncated sampling with [sampling replay](inference.md#sampling-replay): the sampler's kept set $S$ is known, $p_S$ and $q_S$ are the
+trainer and sampler distributions renormalized over $S$ (temperature included), and both terms are exact sums over
+$S$. Per loss token:
 
 $$
-\ell_t = -\tau_A \hat{A}_t\Big(\log p(y_t) - \sum_v \mathrm{sg}[q_v]\log p_v\Big) + \beta_t\big(\log q(y_t) - \log p(y_t)\big).
+\ell_t = -\tau_A \hat{A}_t\Big(\log p_S(y_t) - \sum_{v \in S} \mathrm{sg}[q_v]\log p_S(v)\Big)
++ \beta_t \sum_{v \in S} q_v\big(\log q_v - \log p_S(v)\big).
 $$
 
-The centered score has zero mean under $q$, so a constant advantage gives no gradient. There is no importance ratio and
-no masking. The second term is the k1 estimate of $\mathrm{KL}(q\,\|\,p)$; its gradient is
-$-\beta_t \nabla \log p(y_t)$ (Tinker's StableReinforce KL term). The centering uses the same captured sampler head and
-proportional tail as [IcePop with score centering](#icepop-with-score-centering), with every weight $w_v = 1$, so the
-same sampling and server requirements apply.
+The logit gradient is $-\tau_A \hat{A}_t(e_{y_t} - q) + \beta_t(p_S - q)$ on $S$. The centered score has zero mean under
+$q$, so a constant advantage gives no gradient. The KL gradient is deterministic: it has no estimator noise. There is
+no importance ratio and no masking.
+
+Every policy env must set `top_k <= score_centering_topk`. The sampler's top `score_centering_topk` processed logprobs
+then hold all of $S$ (entries outside $S$ are $-\infty$), so $q$ comes from the same capture as
+[IcePop with score centering](#icepop-with-score-centering). The trainer raises an error if the captured head misses
+more than `1e-3` of the sampler's mass.
 
 ```toml
 [trainer.loss]
 type = "sfc_kl"
 kl_coeff = 0.01
 kl_staleness = "none"
-kl_estimator = "k1"
+
+[orchestrator.train.sampling]
+top_k = 64
 ```
 
 | Knob | Default | What it does |
@@ -304,16 +312,15 @@ kl_estimator = "k1"
 | `adv_tau` | 1.0 | Temperature on the advantage term. |
 | `kl_coeff` | 0.01 | $\beta_0$. |
 | `kl_staleness` | `none` | `none`: $\beta_t = \beta_0$. `inv_sqrt`: $\beta_t = 0$ at age 0 and $\beta_0/\sqrt{\text{age}}$ otherwise. |
-| `kl_estimator` | `k1` | `k1`: sampled-token estimate. `topk`: KL over the captured head with the proportional tail; its logit gradient is $p - q$. |
-| `score_centering_topk` | 128 | Captured head size. |
+| `score_centering_topk` | 128 | Captured head size; at least every policy env's `top_k`. |
 
-The defaults match Tinker's StableReinforce. The SFC+KL blog uses `kl_coeff = 0.3`, `kl_staleness = "inv_sqrt"` and the
-`topk` estimator. A sample's age is the trainer step's policy version minus the version at which its group was
-dispatched (`PolicySpan.start`), the same age as `off_policy/*`. It is per sample, so tokens sampled after a mid-rollout
-weight update count as older than they are.
+The default $\beta_0$ matches Tinker's StableReinforce. The SFC+KL blog uses `kl_coeff = 0.3` with
+`kl_staleness = "inv_sqrt"`. A sample's age is the trainer step's policy version minus the version at which its group
+was dispatched (`PolicySpan.start`), the same age as `off_policy/*`. It is per sample, so tokens sampled after a
+mid-rollout weight update count as older than they are.
 
-Metrics: `sfc_kl/k1` (k1 KL), `sfc_kl/topk_kl` (`topk` only), `sfc_kl/beta`, `sfc_kl/age0` (fraction of tokens at age 0),
-the `score_centering/*` metrics above, and the trainer's `mismatch_kl/*`.
+Metrics: `sfc_kl/kl` (KL over $S$), `sfc_kl/beta`, `sfc_kl/tail_mass` (sampler mass outside the captured head),
+`sfc_kl/age0` (fraction of tokens at age 0), and the trainer's `mismatch_kl/*`.
 
 ### Custom Loss
 

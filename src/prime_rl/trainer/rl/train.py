@@ -355,7 +355,9 @@ def train(config: TrainerConfig):
             score_centering = config.loss.type in ("icepop", "sfc_kl") and config.loss.score_centering
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-                validate_score_centering_data(micro_batch, vocab_size=vocab_size)
+                validate_score_centering_data(
+                    micro_batch, vocab_size=vocab_size, truncated=config.loss.type == "sfc_kl"
+                )
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
