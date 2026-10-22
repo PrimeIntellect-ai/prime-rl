@@ -22,6 +22,13 @@
 {%- endif %}
 #SBATCH --output={{ launcher_log_dir }}/job_%j.log
 #SBATCH --error={{ launcher_log_dir }}/job_%j.log
+{%- if max_requeues %}
+#SBATCH --requeue
+#SBATCH --open-mode=append
+{%- if time %}
+#SBATCH --signal=B:TERM@{{ requeue_signal_grace }}
+{%- endif %}
+{%- endif %}
 
 # Exit immediately if any setup command or the launcher fails so the SLURM job
 # releases its allocation instead of holding nodes after a crash.
@@ -29,7 +36,7 @@ set -e
 
 export PROJECT_DIR={{ project_dir }}
 export PRL_ATTEMPT_CONFIG_DIR={{ config_dir }}
-export PRL_ATTEMPT_LOG_DIR={{ log_dir }}
+{% include '_requeue.sh.j2' %}
 
 # Setup environment
 cd $PROJECT_DIR
@@ -41,4 +48,4 @@ uv sync --all-extras --all-packages
 # Pre-run command
 {{ pre_run_command }}
 {% endif %}
-uv run sft @ {{ config_path }}
+launch uv run sft @ {{ config_path }} $RESUME_ARGS
