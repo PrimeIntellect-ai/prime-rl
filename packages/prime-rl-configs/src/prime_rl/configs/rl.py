@@ -538,9 +538,9 @@ class RLConfig(BaseConfig):
         loss = self.trainer.loss
         if loss.type != "icepop" or not loss.score_centering:
             return self
-        samplings = [
-            env.sampling for env in self.orchestrator.train.source if env.algo.sampling.source == "policy"
-        ] or ([self.orchestrator.train.sampling] if not self.orchestrator.train.source else [])
+        samplings = [env.sampling for env in self.orchestrator.train.source if env.algo.rollout_model == "policy"] or (
+            [self.orchestrator.train.sampling] if not self.orchestrator.train.source else []
+        )
         if not samplings:
             raise ValueError("Score centering requires a policy-sampled training source")
         requested = []
