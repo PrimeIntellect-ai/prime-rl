@@ -234,6 +234,13 @@ def multimodal_sample_error(sample: TrainingSample) -> str | None:
     return None
 
 
+def _to_list(values):
+    """A sample stream (numpy array or list) as a list of Python scalars, which the wire encodes."""
+    if values is None:
+        return None
+    return values.tolist() if isinstance(values, np.ndarray) else list(values)
+
+
 def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch:
     """
     Prepare a problem for sequence packing training.
@@ -241,11 +248,11 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
     """
     if error := multimodal_sample_error(training_example):
         raise ValueError(error)
-    input_ids = training_example.token_ids
-    loss_mask = training_example.mask
-    inference_logprobs = training_example.logprobs
+    input_ids = _to_list(training_example.token_ids)
+    loss_mask = _to_list(training_example.mask)
+    inference_logprobs = _to_list(training_example.logprobs)
     if training_example.advantages is not None:
-        advantages = list(training_example.advantages)
+        advantages = _to_list(training_example.advantages)
     else:
         rl_w = training_example.rl_weights
         has_rl_members = any(loss_mask) if rl_w is None else any(m and w != 0 for m, w in zip(loss_mask, rl_w))
@@ -257,21 +264,21 @@ def prepare_sample(training_example: TrainingSample, seq_len: int) -> MicroBatch
         advantages = [0.0] * len(input_ids)
     # Component weight streams: keep absent streams None (rl weight 1.0 on the
     # loss mask, no ce/ref_kl component) so the packed batch stays as small as before.
-    rl_weights = list(training_example.rl_weights) if training_example.rl_weights is not None else None
-    ce_weights = list(training_example.ce_weights) if training_example.ce_weights is not None else None
-    ref_kl_weights = list(training_example.ref_kl_weights) if training_example.ref_kl_weights is not None else None
+    rl_weights = _to_list(training_example.rl_weights)
+    ce_weights = _to_list(training_example.ce_weights)
+    ref_kl_weights = _to_list(training_example.ref_kl_weights)
     position_ids = list(range(len(input_ids)))
-    mm_token_type_ids = training_example.mm_token_type_ids
+    mm_token_type_ids = _to_list(training_example.mm_token_type_ids)
     mm_refs = training_example.mm_refs
     assert training_example.env_name != "all", "env_name='all' is reserved for aggregate metric keys"
     env_names = [training_example.env_name] * len(input_ids)
 
     # Per-token sampling temperatures (context tokens are masked out, so theirs are don't-care).
-    temperatures = training_example.temperatures
+    temperatures = _to_list(training_example.temperatures)
 
     # Ref logprobs already cover the full sequence (prompt + completion),
     # computed via prefill in the orchestrator when the algorithm scores against a reference
-    ref_logprobs = training_example.ref_logprobs
+    ref_logprobs = _to_list(training_example.ref_logprobs)
     routed_experts = (
         _copy_routed_experts(training_example.routed_experts) if training_example.routed_experts is not None else None
     )

@@ -1,4 +1,5 @@
 import msgspec
+import numpy as np
 
 
 class MMImageRef(msgspec.Struct, array_like=True, gc=False):
@@ -42,21 +43,25 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     There is no prompt/completion split: an agentic, multi-turn branch interleaves context and
     model-sampled spans, so ``mask`` marks which tokens are trainable (model-sampled) and
     ``logprobs`` / ``temperatures`` are aligned per token. All four arrays share the length of
-    ``token_ids``."""
+    ``token_ids``.
 
-    token_ids: list[int]
-    mask: list[bool]
-    logprobs: list[float]
-    temperatures: list[float]
+    Per-token streams are numpy arrays (int32 ids, bool mask, float32 values): a sample lives
+    only in the orchestrator, and per-token Python lists would make its garbage collector walk
+    every token. ``prepare_sample`` turns them into the ``MicroBatch`` wire format."""
+
+    token_ids: np.ndarray
+    mask: np.ndarray
+    logprobs: np.ndarray
+    temperatures: np.ndarray
     env_name: str
-    ref_logprobs: list[float] | None = None  # reference-model logprobs (ref_kl component)
+    ref_logprobs: np.ndarray | None = None  # reference-model logprobs (ref_kl component)
 
     mm_refs: MMRefs | None = None
 
     routed_experts: RoutedExperts | None = None
 
-    # mm_token_type_ids: token type ids per token [batch seq], int64 (0=text, 1=image, 2=video)
-    mm_token_type_ids: list[int] | None = None
+    # mm_token_type_ids: token type ids per token [batch seq] (0=text, 1=image, 2=video)
+    mm_token_type_ids: np.ndarray | None = None
 
     # Per-token component weight streams (full prompt+completion length),
     # stamped by the orchestrator from the env's algorithm. The training loss
@@ -67,15 +72,15 @@ class TrainingSample(msgspec.Struct, array_like=True, gc=False, omit_defaults=Tr
     # (mask and denominator). ``None`` means absent: no ce/ref_kl component,
     # and an rl weight of 1.0 on every trainable token — so the plain GRPO
     # wire stays as small as before.
-    rl_weights: list[float] | None = None
-    ce_weights: list[float] | None = None
-    ref_kl_weights: list[float] | None = None
+    rl_weights: np.ndarray | None = None
+    ce_weights: np.ndarray | None = None
+    ref_kl_weights: np.ndarray | None = None
 
     # Per-token advantages (full prompt+completion length), the fourth stream:
     # the orchestrator broadcasts the rollout's scalar over the completion for
     # scalar algorithms. ``None`` means no rl credit assigned — legal only for
     # samples without live rl member tokens (the trainer raises otherwise).
-    advantages: list[float] | None = None
+    advantages: np.ndarray | None = None
 
     # Appended fields only: array_like structs encode positionally, so appending
     # keeps the wire layout of earlier fields stable across versions.

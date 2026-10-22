@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import verifiers.v1 as vf
 
 from prime_rl.configs.algorithm import AlgoConfig, FrozenModelConfig
@@ -14,7 +15,7 @@ def iter_trainable_traces(episodes: list[vf.Episode]):
         for trace in episode.traces:
             if not episode.ok or trace.has_error or not trace.agent.trainable or trace.num_turns == 0:
                 continue
-            if any(any(node.mask) for node in trace.nodes):
+            if any(np.any(node.mask) for node in trace.nodes):
                 yield episode, trace
 
 

@@ -123,16 +123,16 @@ def test_stamp_loss_routing_ref_kl_action():
     sample = _make_sample()
     stamp_loss_routing(sample, "ref_kl")
     # Action tokens (mask True) feed the ref_kl component; rl is off
-    assert sample.rl_weights == [0.0] * 6
-    assert sample.ref_kl_weights == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    assert sample.rl_weights == pytest.approx([0.0] * 6)
+    assert sample.ref_kl_weights == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
     assert sample.ce_weights is None
 
 
 def test_stamp_loss_routing_ce_action():
     sample = _make_sample()
     stamp_loss_routing(sample, "ce")
-    assert sample.rl_weights == [0.0] * 6
-    assert sample.ce_weights == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    assert sample.rl_weights == pytest.approx([0.0] * 6)
+    assert sample.ce_weights == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
     assert sample.ref_kl_weights is None
 
 
@@ -143,7 +143,7 @@ def test_stamp_loss_routing_keeps_algorithm_written_ce_stream():
     sample = _make_sample(ce_weights=[0.0, 0.0, 0.0, 0.0, 0.1, 0.0])
     stamp_loss_routing(sample, "rl")
     assert sample.rl_weights is None
-    assert sample.ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.0]
+    assert sample.ce_weights == pytest.approx([0.0, 0.0, 0.0, 0.0, 0.1, 0.0])
     assert sample.ref_kl_weights is None
 
 
@@ -152,8 +152,8 @@ def test_stamp_loss_routing_merges_action_weights_into_ce_stream():
     # tokens merge into the existing stream instead of replacing it.
     sample = _make_sample(ce_weights=[0.0, 0.0, 0.0, 0.0, 0.1, 0.0])
     stamp_loss_routing(sample, "ce")
-    assert sample.rl_weights == [0.0] * 6
-    assert sample.ce_weights == [0.0, 0.0, 1.0, 1.0, 0.1, 1.0]
+    assert sample.rl_weights == pytest.approx([0.0] * 6)
+    assert sample.ce_weights == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.1, 1.0])
     assert sample.ref_kl_weights is None
 
 
@@ -234,7 +234,7 @@ def test_assign_advantages_full_length_stream():
     # positions, the rl credit on trainable (mask True) tokens.
     trace = _make_episode().traces[0]
     assign_advantages(trace, [0.5, -0.5, 1.0])
-    assert trace_to_samples(trace)[0].advantages == [0.0, 0.0, 0.5, -0.5, 0.0, 1.0]
+    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 0.5, -0.5, 0.0, 1.0])
 
 
 def test_compaction_retries_train_only_causally_used_generations():
@@ -309,10 +309,10 @@ def test_compaction_retries_train_only_causally_used_generations():
     assert branches["answer"].trainable is True
 
     assign_advantages(trace, 1.0)
-    assert trace.nodes[1].advantages == [1.0]
+    assert trace.nodes[1].advantages == pytest.approx([1.0])
     assert trace.nodes[3].advantages is None
-    assert trace.nodes[4].advantages == [1.0]
-    assert trace.nodes[6].advantages == [1.0]
+    assert trace.nodes[4].advantages == pytest.approx([1.0])
+    assert trace.nodes[6].advantages == pytest.approx([1.0])
 
     trainable_ids = [
         token_id
@@ -327,8 +327,8 @@ def test_compaction_retries_train_only_causally_used_generations():
 def test_assign_advantages_slices_across_nodes():
     trace = _make_episode().traces[0]
     assign_advantages(trace, [1.0, 2.0, 3.0])
-    assert trace.nodes[1].advantages == [1.0, 2.0]
-    assert trace.nodes[3].advantages == [3.0]
+    assert trace.nodes[1].advantages == pytest.approx([1.0, 2.0])
+    assert trace.nodes[3].advantages == pytest.approx([3.0])
 
 
 def test_unassigned_advantages_ship_none():
@@ -345,7 +345,7 @@ def test_assign_advantages_rejects_misaligned():
 def test_assign_advantages_scalar_broadcasts_over_mask():
     trace = _make_episode().traces[0]
     assign_advantages(trace, 1.0)
-    assert trace_to_samples(trace)[0].advantages == [0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    assert trace_to_samples(trace)[0].advantages == pytest.approx([0.0, 0.0, 1.0, 1.0, 0.0, 1.0])
 
 
 def test_assign_advantages_list_rejects_misaligned():
@@ -424,17 +424,17 @@ def test_echo_weights_observations_by_role():
     algo = _echo_algorithm()  # the default table: tool bodies at 0.1
     asyncio.run(algo.score_episode(episode))
     sample = trace_to_samples(trace)[0]
-    assert sample.token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
-    assert sample.mask == [False, False, True, True, False, False, True, True]
+    assert list(sample.token_ids) == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert list(sample.mask) == [False, False, True, True, False, False, True, True]
     # [3,4] step-1 action, [5,6] observation (weighted), [7,8] step-2 action
-    assert sample.ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.0, 0.0]
+    assert sample.ce_weights == pytest.approx([0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.0, 0.0])
 
     # A user-feedback observation under a role table that weights users.
     episode = _two_turn_episode(observation_role="user")
     trace = episode.traces[0]
     algo = _echo_algorithm(roles={"tool": {"alpha": 0.1}, "user": {"alpha": 0.05}})
     asyncio.run(algo.score_episode(episode))
-    assert trace_to_samples(trace)[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0]
+    assert trace_to_samples(trace)[0].ce_weights == pytest.approx([0.0, 0.0, 0.0, 0.0, 0.05, 0.05, 0.0, 0.0])
 
     # A role not in the table leaves the observation unweighted: no ce stream.
     episode = _two_turn_episode(observation_role="user")
@@ -476,7 +476,7 @@ def test_echo_weights_only_content_tokens_when_is_content_present():
     algo = _echo_algorithm()  # tool bodies at 0.1
     asyncio.run(algo.score_episode(episode))
     # Only position 5 (the body token) is weighted; the scaffold token at position 4 is not.
-    assert trace_to_samples(episode.traces[0])[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0]
+    assert trace_to_samples(episode.traces[0])[0].ce_weights == pytest.approx([0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0])
 
 
 def test_echo_filter_narrows_selection():
@@ -490,7 +490,7 @@ def test_echo_filter_narrows_selection():
     trace = episode.traces[0]
     algo = _echo_algorithm(filter_fn=keep_drop_one)
     asyncio.run(algo.score_episode(episode))
-    assert trace_to_samples(trace)[0].ce_weights == [0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0]
+    assert trace_to_samples(trace)[0].ce_weights == pytest.approx([0.0, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0])
 
     # Shape violations fail loudly: wrong branch count, wrong per-branch length.
     episode = _two_turn_episode()
