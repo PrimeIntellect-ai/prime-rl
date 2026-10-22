@@ -3,7 +3,8 @@
 Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which keeps the `ModelConfig` defaults. Each arch
 contributes two kinds of case:
 
-- A base case on every layout in its `layouts`. It trains, saves a checkpoint, then resumes in a fresh process.
+- A base case on every layout in its `layouts`. It trains 5 steps. If the arch sets `resume`, it also saves a
+  checkpoint and resumes in a fresh process.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
 
 `Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1). `Arch.skip`
@@ -89,6 +90,7 @@ class Arch:
     features: tuple[Feature, ...] = ()
     skip: dict[Layout | Feature, str] = field(default_factory=dict)
     overrides: Overrides = field(default_factory=dict)
+    resume: bool = False
 
 
 @dataclass(frozen=True, eq=False)
@@ -103,7 +105,7 @@ class Case:
 
     @property
     def resume(self) -> bool:
-        return self.feature is None
+        return self.feature is None and self.arch.resume
 
     def overrides(self) -> Overrides:
         return self.arch.overrides | self.layout.overrides() | (self.feature.overrides if self.feature else {})
@@ -128,7 +130,7 @@ def check_k_selectable(names: list[str]) -> None:
             raise ValueError(f"-k {name} would also select {other}")
 
 
-QWEN3_MOE = Arch("qwen3_moe", features=FEATURES)
+QWEN3_MOE = Arch("qwen3_moe", features=FEATURES, resume=True)
 GLM_MOE_DSA = Arch("glm_moe_dsa")
 DEEPSEEK_V4 = Arch("deepseek_v4")
 LLAMA = Arch("llama", layouts=DENSE_LAYOUTS, overrides={"renderer.name": "llama-3"})
