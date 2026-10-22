@@ -199,6 +199,7 @@ def write_slurm_script(
                 "backend_port": config.inference.backend_port,
                 "data_parallel_rpc_port": config.inference.vllm.data_parallel_rpc_port,
                 "dp_per_node": config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
+                "vllm_seed": config.inference.vllm.seed or 0,
                 "enable_expert_parallel": config.inference.vllm.enable_expert_parallel,
                 "inference_env_vars": inference_env_vars,
                 "online_eval_env_vars": {

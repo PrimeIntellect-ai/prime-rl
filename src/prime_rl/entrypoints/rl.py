@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -440,6 +441,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             prefill_vllm_extra_json=vllm_overrides_fragment(infer_deploy.prefill_vllm_overrides),
             decode_vllm_extra_json=vllm_overrides_fragment(infer_deploy.decode_vllm_overrides),
             dp_per_node=config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size,
+            vllm_seed=config.inference.vllm.seed,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
@@ -479,6 +481,7 @@ def write_slurm_script(config: RLConfig, config_dir: Path, log_dir: Path, script
             dp_per_node=(config.deployment.gpus_per_node // config.inference.vllm.tensor_parallel_size)
             if config.inference
             else 1,
+            vllm_seed=config.inference.vllm.seed if config.inference else 0,
             **mooncake_vars,
             use_nccl_broadcast=config.weight_broadcast is not None and config.weight_broadcast.type == "nccl",
             use_zmq_transport=config.rollout_transport is not None and config.rollout_transport.type == "zmq",
@@ -585,6 +588,10 @@ def rl(config: RLConfig):
     else:
         get_logger().info("Training from scratch, cleaning any stale rollouts and broadcasts")
         clean_future_steps(config.run_dir, -1)
+
+    if config.inference is not None and config.inference.vllm.seed is None:
+        # Drawn per launch, so a relaunch (e.g. to resume) does not replay the previous launch's sampling noise.
+        config.inference.vllm.seed = secrets.randbelow(2**31)
 
     if not config.dry_run:
         from prime_rl.trainer.model import pre_download_model

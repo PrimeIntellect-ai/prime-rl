@@ -102,6 +102,7 @@ def write_slurm_script(config: InferenceConfig, config_path: Path, log_dir: Path
         launcher_log_dir=get_launcher_log_dir(config.output_dir),
         gpus_per_node=config.deployment.gpus_per_node,
         dp_per_node=dp_per_node,
+        vllm_seed=config.vllm.seed or 0,
         num_nodes=getattr(config.deployment, "num_nodes", 1),
         port=config.server.port,
         router=config.router,

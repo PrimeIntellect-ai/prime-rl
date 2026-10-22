@@ -179,9 +179,9 @@ if [ "$SLURM_PROCID" -lt "$NUM_INFER_NODES" ]; then
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
         if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
             RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG" "$d"
         else
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG" "$d"
         fi
     done
 

@@ -315,7 +315,7 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         GLOBAL_RANK=$((ROLE_RANK * DP_PER_NODE + k))
         RANK_GPUS=$(seq -s, $((k * TP)) $((k * TP + TP - 1)))
         RANK_EXTRA="{\"data_parallel_address\": \"$DP_ADDR\", \"data_parallel_rank\": $GLOBAL_RANK, $ROLE_EXTRA}"
-        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")"
+        launch_inference_rank "$((PORT + k))" "$RANK_GPUS" "$DP" "$RPC_PORT" "$RANK_EXTRA" "$((5600 + k))" "$(rank_log "$INFER_NODE_RANK" "$k")" "$k"
     done
 {%- elif num_nodes > 1 %}
     echo "INFER_NODE_RANK=${INFER_NODE_RANK}, LOCAL_IP=${LOCAL_IP}" \
@@ -338,13 +338,13 @@ srun --kill-on-bad-exit=1 bash -s <<'LAUNCH_SH'
         RANK_LOG=$(rank_log "$INFER_NODE_RANK" "$d")
         if [ "$EP" -eq 1 ] && [ "$DP_PER_NODE" -gt 1 ]; then
             RANK_EXTRA="{\"data_parallel_rank\": $d, \"data_parallel_address\": \"$LOCAL_IP\"}"
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" "$DP_PER_NODE" "$RPC_PORT" "$RANK_EXTRA" "" "$RANK_LOG" "$d"
         else
             # Dense or single-DP-rank EP (dp=1, e.g. EP within one tp=8 group):
             # independent single-engine servers. vLLM rejects the external-LB DP
             # args when data_parallel_size == 1; enable_expert_parallel in the
             # inference config alone shards experts across the TP group.
-            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG"
+            launch_inference_rank "$((BACKEND_PORT + d))" "$RANK_GPUS" 1 "" "" "" "$RANK_LOG" "$d"
         fi
     done
 {%- else %}

@@ -113,6 +113,9 @@ class VllmConfig(BaseConfig):
     enable_return_routed_experts: bool = False
     """Return routed experts in responses."""
 
+    seed: int | None = None
+    """Base seed for the engines' sampler, which draws the noise of every request that sets no seed of its own. Multi-node deployments give each engine ``seed + its index in the deployment``, so no two engines share a noise stream. If None, the ``rl`` launcher draws a fresh seed per launch, so a relaunch (e.g. to resume) does not replay the previous launch's noise; other launchers start from vLLM's default (0)."""
+
     @model_validator(mode="before")
     @classmethod
     def parse_extra_values(cls, data: dict) -> dict:
@@ -671,7 +674,15 @@ class InferenceConfig(BaseConfig):
     # Fields vLLM rejects as None — omitted from the namespace so vLLM applies its
     # own default (e.g. quantization is inferred from the checkpoint).
     _OMIT_IF_NONE = frozenset(
-        {"chat_template", "tool_call_parser", "reasoning_parser", "lora_target_modules", "quantization", "rope_scaling"}
+        {
+            "chat_template",
+            "tool_call_parser",
+            "reasoning_parser",
+            "lora_target_modules",
+            "quantization",
+            "rope_scaling",
+            "seed",
+        }
     )
 
     def to_namespace(self, text_config: bool = False) -> Namespace:
