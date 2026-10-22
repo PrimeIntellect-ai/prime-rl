@@ -34,6 +34,10 @@ on:
                 description: "eval: independent runs of each config. Use 5 to produce a new baseline."
                 required: false
                 default: "1"
+            eval_max_parallel:
+                description: "eval: most eval jobs to run at once (empty: no limit). Use it to spread a baseline's runs over time."
+                required: false
+                default: ""
             eval_model:
                 description: "eval: model id on Prime Inference (empty: the config's model)"
                 required: false
@@ -338,6 +342,7 @@ jobs:
         timeout-minutes: 360
         strategy:
             fail-fast: false
+            max-parallel: ${{ fromJSON(inputs.eval_max_parallel || '256') }}
             matrix:
                 include: ${{ fromJSON(needs.eval-plan.outputs.matrix) }}
         steps:
