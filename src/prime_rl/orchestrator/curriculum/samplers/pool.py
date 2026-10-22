@@ -37,6 +37,8 @@ class DifficultyPoolSampler(TaskSampler):
         duplicates = {key for key, count in Counter(keys).items() if count > 1}
         if duplicates:
             raise ValueError(f"Task keys must be unique within a taskset: {sorted(duplicates)}")
+        # Task.key re-hashes the task data on every access, so draws use these keys instead.
+        self.keys = tuple(keys)
         self.tasks_by_key = dict(zip(keys, self.tasks))
         self.rng = random.Random(config.seed)
         self.pools = config.pools
@@ -56,8 +58,8 @@ class DifficultyPoolSampler(TaskSampler):
 
     def __next__(self) -> vf.Task:
         weights = []
-        for task in self.tasks:
-            pool = self.task_pool(task.key)
+        for key in self.keys:
+            pool = self.task_pool(key)
             weights.append(1.0 if pool is None else self.pools[pool].weight)
         if not any(weights):
             raise RuntimeError("DifficultyPoolSampler has no tasks in a pool with positive weight")

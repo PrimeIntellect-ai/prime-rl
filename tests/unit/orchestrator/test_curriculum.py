@@ -194,3 +194,27 @@ def test_advantage_range_gate_generalizes_zero_advantage_rejection() -> None:
 
     positive_gate = AdvRangeGate(AdvRangeGateConfig(reject_min=0.5, reject_max=0.5))
     assert positive_gate.admit(make_rollout(task, advantages=[0.5])) is False
+
+
+def test_difficulty_pool_draws_do_not_rehash_tasks() -> None:
+    """Task.key hashes the whole task record on every access; drawing must use the keys hashed once at init."""
+
+    class CountingTask(vf.Task):
+        accesses = 0
+
+        @property
+        def key(self) -> str:
+            type(self).accesses += 1
+            return super().key
+
+    tasks = [CountingTask(vf.TaskData(idx=i, prompt=f"task {i}")) for i in range(50)]
+    pools = {
+        "hard": DifficultyPoolConfig(threshold=0.25, weight=0.2),
+        "normal": DifficultyPoolConfig(threshold=0.75, weight=1.0),
+        "easy": DifficultyPoolConfig(threshold=1.0, weight=0.2),
+    }
+    curriculum = Curriculum(CurriculumConfig(sampler=DifficultyPoolSamplerConfig(pools=pools, seed=3)), tasks)
+    CountingTask.accesses = 0
+    drawn = [next(curriculum.sampler) for _ in range(100)]
+    assert CountingTask.accesses == 0
+    assert all(task in tasks for task in drawn)
