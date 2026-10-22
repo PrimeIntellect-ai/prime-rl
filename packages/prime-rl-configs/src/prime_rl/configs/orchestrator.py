@@ -740,6 +740,15 @@ class OrchestratorConfig(BaseConfig):
                 extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
                 extra_args["prl_replay"] = env.sampling.truncates_distribution()
                 env.sampling.extra_body["extra_args"] = extra_args
+                # The source's sampling merges under every seat. A seat pinned to its own model (e.g.
+                # a judge on Prime inference) drops the replay opt-in, which only the policy's vLLM
+                # accepts: a None in a seat's sampling drops the key from its requests.
+                for agent in agent_config_fields(env.env).values():
+                    if agent.model is None:
+                        continue
+                    overrides = agent.sampling.model_dump(exclude_unset=True) if agent.sampling is not None else {}
+                    overrides.setdefault("extra_args", None)
+                    agent.sampling = vf.SamplingConfig(**overrides)
         if self.eval is not None:
             for env in self.eval.source:
                 if getattr(env.sampling, "top_k", None) is None:
