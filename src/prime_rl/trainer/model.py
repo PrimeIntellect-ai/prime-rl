@@ -767,13 +767,20 @@ def mark_dynamic_int_args() -> None:
     torch.compiler.config.dynamic_sources = ",".join(sources)
 
 
-def apply_compile(model: nn.Module, compile_config: CompileConfig):
+def apply_compile(model: nn.Module, compile_config: CompileConfig, ac_config: ActivationCheckpointConfig | None):
     torch._dynamo.config.capture_scalar_outputs = True
     mark_dynamic_int_args()
     language_model = get_language_model(model)
     for layer_id in range(len(language_model.layers)):
+        layer = language_model.layers[layer_id]
+        # A compiled full checkpoint is traced as one region that cannot hold a graph break, so a single break
+        # (EP all-to-all, FSDP hooks) runs the whole block eagerly. Compiling the block inside the eager
+        # checkpoint only splits the graph. Selective checkpointing stays outside: its policy must see each
+        # matmul, which Inductor fuses into its own kernels.
+        if ac_config is not None and ac_config.mode == "full":
+            layer = getattr(layer, "_checkpoint_wrapped_module", layer)
         # Doing it in-place avoids mangled fqn which can break checkpoint loading
-        language_model.layers[layer_id].compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
+        layer.compile(fullgraph=compile_config.fullgraph, mode=compile_config.mode)
     get_logger().info(
         f"Compiled {len(language_model.layers)} layers (fullgraph={compile_config.fullgraph}, mode={compile_config.mode})"
     )
@@ -932,7 +939,7 @@ def setup_model(
     if config.ac is not None:
         apply_ac(model, config.ac)
     if config.compile is not None:
-        apply_compile(model, config.compile)
+        apply_compile(model, config.compile, config.ac)
 
     setup_fsdp(model, config, parallel_dims)
 
