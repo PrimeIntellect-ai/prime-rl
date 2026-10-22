@@ -1182,7 +1182,7 @@ def test_explicit_inference_parser_wins_over_auto():
 
 
 @pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
-@pytest.mark.parametrize("top_p_first", [False, True])
+@pytest.mark.parametrize("top_p_first", [None, False, True])
 def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
     from prime_rl.inference.server import setup_vllm_env
 
@@ -1192,7 +1192,7 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
         deployment=deployment,
         slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
-        top_p_before_top_k=top_p_first,
+        **({"top_p_before_top_k": top_p_first} if top_p_first is not None else {}),
         vllm={"enable_return_routed_experts": True},
     )
 
@@ -1202,14 +1202,15 @@ def test_combined_replay_uses_v2_runner(monkeypatch, deployment, top_p_first):
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
 
-    assert os.environ["PRIME_TOP_P_BEFORE_TOP_K"] == ("1" if top_p_first else "0")
-    if top_p_first:
+    assert config.top_p_before_top_k is (top_p_first is not False)
+    assert os.environ["PRIME_TOP_P_BEFORE_TOP_K"] == ("0" if top_p_first is False else "1")
+    if top_p_first is not False:
         monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "0")
         with pytest.raises(ValueError, match="requires VLLM_USE_V2_MODEL_RUNNER"):
             setup_vllm_env(config)
         config.enable_return_sampling_mask = False
-        with pytest.raises(ValueError, match="requires enable_return_sampling_mask"):
-            setup_vllm_env(config)
+        setup_vllm_env(config)
+        assert os.environ["PRIME_TOP_P_BEFORE_TOP_K"] == "0"
 
 
 def test_pd_role_connectors():
