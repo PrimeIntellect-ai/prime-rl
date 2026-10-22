@@ -229,7 +229,8 @@ class TrainSink:
             )
             return
 
-        survivors = [trace for _, trace in iter_trainable_traces(group)]
+        trainable = list(iter_trainable_traces(group))
+        survivors = [trace for _, trace in trainable]
         if survivors:
             await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False
@@ -245,10 +246,12 @@ class TrainSink:
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.config.sampling.temperature
-        for trace in survivors:
+        for episode, trace in trainable:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            policy = train_work(episode).policy
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
+                sample.policy_version = policy.start if policy is not None else None
                 if env.requires_sampling_masks and sample.sampling_mask is None:
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.

@@ -7,6 +7,7 @@ from prime_rl.configs.trainer import (
     IcePopLossConfig,
     IPOLossConfig,
     PPOLossConfig,
+    SFCKLLossConfig,
 )
 from prime_rl.trainer.rl.loss import (
     IcePopLoss,
@@ -82,6 +83,61 @@ def test_icepop_score_centering_excludes_non_rl_tokens():
     assert torch.isfinite(loss)
     assert torch.isfinite(gradient).all()
     torch.testing.assert_close(gradient[1], torch.zeros(2))
+
+
+@pytest.mark.parametrize("kl_estimator", ["k1", "topk"])
+@pytest.mark.parametrize("constant_advantage", [False, True])
+def test_sfc_kl_matches_dense_gradient(kl_estimator, constant_advantage):
+    torch.manual_seed(0)
+    head_size = 3
+    logits = torch.randn(6, requires_grad=True)
+    logp = logits.log_softmax(-1)
+    p = logp.detach().exp()
+    q_head = torch.rand(head_size) * 0.25
+    q = torch.cat((q_head, (1 - q_head.sum()) * p[head_size:] / p[head_size:].sum()))
+    advantage = torch.full((6,), 0.7) if constant_advantage else torch.randn(6)
+    kl_coeff = 0.0 if constant_advantage else 0.3
+    # Enumerate all sampled actions under one prefix, weighted by q.
+    inputs = LossInputs(
+        logp,
+        q.log(),
+        None,
+        advantage,
+        torch.ones(6, dtype=torch.bool),
+        q,
+        logp[:head_size].expand(6, -1),
+        q[:head_size].log().expand(6, -1),
+        torch.ones((6, head_size), dtype=torch.bool),
+    )
+    config = SFCKLLossConfig(kl_coeff=kl_coeff, kl_estimator=kl_estimator, score_centering_topk=head_size)
+    actual = setup_rl_loss_fn(config).loss(inputs).loss
+    reference = -(q * advantage * (logp - (q * logp).sum())).sum() - kl_coeff * (q * logp).sum()
+    actual_gradient = torch.autograd.grad(actual, logits, retain_graph=True)[0]
+    reference_gradient = torch.autograd.grad(reference, logits)[0]
+    torch.testing.assert_close(actual_gradient, reference_gradient, atol=1e-6, rtol=1e-5)
+    if constant_advantage:
+        torch.testing.assert_close(actual_gradient, torch.zeros_like(logits), atol=1e-6, rtol=0)
+
+
+def test_sfc_kl_k1_gradient_with_inv_sqrt_staleness():
+    trainer_logprobs = torch.tensor([-0.5, -1.2, -2.0], requires_grad=True)
+    inputs = LossInputs(
+        trainer_logprobs,
+        torch.tensor([-0.4, -1.0, -2.5]),
+        None,
+        torch.zeros(3),
+        torch.ones(3, dtype=torch.bool),
+        None,
+        torch.zeros(3, 1),
+        torch.zeros(3, 1),
+        torch.ones(3, 1, dtype=torch.bool),
+        policy_ages=torch.tensor([0, 1, 4]),
+    )
+    config = SFCKLLossConfig(kl_coeff=0.3, kl_staleness="inv_sqrt")
+    output = setup_rl_loss_fn(config).loss(inputs)
+    gradient = torch.autograd.grad(output.loss, trainer_logprobs)[0]
+    torch.testing.assert_close(gradient, torch.tensor([0.0, -0.3, -0.15]))
+    torch.testing.assert_close(output.metrics["sfc_kl/age0"], torch.tensor([1.0, 0.0, 0.0]))
 
 
 def test_grpo_loss():

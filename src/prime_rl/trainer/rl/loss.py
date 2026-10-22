@@ -13,6 +13,7 @@ from prime_rl.configs.trainer import (
     IPOLossConfig,
     LossConfig,
     PPOLossConfig,
+    SFCKLLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
@@ -37,6 +38,7 @@ class LossInputs:
     trainer_topk_logprobs: Float[Tensor, "seq head"] | None = None
     sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
     topk_valid: Bool[Tensor, "seq head"] | None = None
+    policy_ages: Int[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -176,6 +178,29 @@ def _centering_head(inputs: LossInputs) -> tuple[Tensor, Tensor, Tensor]:
     return trainer, sampler, valid
 
 
+@torch.no_grad()
+def _head_probs(head: Tensor, sampler: Tensor, valid: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    """Head probabilities p and q, and rho = q_tail / p_tail of the proportional tail q_v = rho * p_v."""
+    p = head.exp().masked_fill(~valid, 0.0)
+    q = sampler.exp().masked_fill(~valid, 0.0)
+    rho = (1.0 - q.sum(-1)).clamp_min(1e-6) / (1.0 - p.sum(-1)).clamp_min(1e-6)
+    return p, q, rho
+
+
+def _centering(head: Tensor, p: Tensor, q: Tensor, head_mass: Tensor, tail_scale: Tensor) -> tuple[Tensor, dict]:
+    """sum_v m_v log p_v for the centering mass m: ``head_mass`` on the head and ``tail_scale * p`` on the
+    tail, written over the head because sum_v p_v grad log p_v = 0."""
+    with torch.no_grad():
+        mass = head_mass - tail_scale.unsqueeze(-1) * p
+        metrics = {
+            "score_centering/tail_scale": tail_scale,
+            "score_centering/head_mass": q.sum(-1),
+            "score_centering/logit_correction_l1": (mass - p * mass.sum(-1, keepdim=True)).abs().sum(-1)
+            + (1.0 - p.sum(-1)).clamp_min(0.0) * mass.sum(-1).abs(),
+        }
+    return (mass * head).sum(-1), metrics
+
+
 class IPOLoss:
     """IPO loss type: a symmetric trust region (mask tokens whose probability
     moved more than ``eps`` in absolute terms), policy gradient via
@@ -247,26 +272,16 @@ class IcePopLoss:
         centering_metrics = {}
         if loss_config.score_centering and log_importance_ratio.numel():
             head, sampler, valid = _centering_head(inputs)
+            p, q, rho = _head_probs(head, sampler, valid)
             with torch.no_grad():
-                p = head.exp().masked_fill(~valid, 0.0)
-                q = sampler.exp().masked_fill(~valid, 0.0)
                 head_log_ratio = head - sampler
                 accepted = valid & (head_log_ratio >= log_ratio_low) & (head_log_ratio <= log_ratio_high)
-                # q * (p/q) * mask = p * mask, without unstable exponentiation.
-                mass = p.masked_fill(~accepted, 0.0)
-                p_tail = (1.0 - p.sum(-1)).clamp_min(1e-6)
-                q_tail = (1.0 - q.sum(-1)).clamp_min(1e-6)
-                rho = q_tail / p_tail
                 tail_log_ratio = -rho.log()
                 # The proportional tail has one ratio; MIS accepts all or none.
                 alpha = ((tail_log_ratio >= log_ratio_low) & (tail_log_ratio <= log_ratio_high)).to(p.dtype)
-                mass = mass - alpha.unsqueeze(-1) * p
-                centering_metrics["score_centering/tail_scale"] = alpha
-                centering_metrics["score_centering/head_mass"] = q.sum(-1)
-                centering_metrics["score_centering/logit_correction_l1"] = (
-                    mass - p * mass.sum(-1, keepdim=True)
-                ).abs().sum(-1) + (1.0 - p.sum(-1)).clamp_min(0.0) * mass.sum(-1).abs()
-            correction = loss_config.adv_tau * advantages.detach() * (mass * head).sum(-1)
+            # q * (p/q) * mask = p * mask, without unstable exponentiation.
+            centering, centering_metrics = _centering(head, p, q, p.masked_fill(~accepted, 0.0), alpha)
+            correction = loss_config.adv_tau * advantages.detach() * centering
             if weights is not None:
                 correction = correction * weights
             # Rejected sampled actions still contribute the centering correction.
@@ -281,6 +296,53 @@ class IcePopLoss:
             **centering_metrics,
         }
         return LossOutputs(loss=loss, metrics=metrics)
+
+
+class SFCKLLoss:
+    """SFC+KL loss type: policy gradient centered under the sampler with no importance ratio, plus a
+    beta_t-weighted KL(sampler || trainer) penalty."""
+
+    def __init__(self, config: SFCKLLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        config = self.config
+        mask = inputs.loss_mask
+        logprobs = inputs.trainer_logprobs[mask]
+        inference_logprobs = inputs.inference_logprobs[mask]
+        advantages = inputs.advantages[mask]
+        ages = inputs.policy_ages[mask] if inputs.policy_ages is not None else None
+
+        head, sampler, valid = _centering_head(inputs)
+        p, q, rho = _head_probs(head, sampler, valid)
+        centering, metrics = _centering(head, p, q, q, rho)
+
+        if config.kl_staleness == "inv_sqrt":
+            if ages is None or bool((ages < 0).any()):
+                raise ValueError("kl_staleness = 'inv_sqrt' requires the sampler policy version of every RL sample")
+            beta = torch.where(ages >= 1, config.kl_coeff * ages.clamp_min(1).float().rsqrt(), 0.0)
+        else:
+            beta = torch.full_like(logprobs, config.kl_coeff).detach()
+
+        k1 = inference_logprobs - logprobs
+        if config.kl_estimator == "k1":
+            kl = k1
+        else:
+            # The centering surrogate has logit gradient q - p; its negation is the KL gradient.
+            kl = -centering
+            with torch.no_grad():
+                head_kl = torch.where(valid, q * (sampler - head), 0.0).sum(-1)
+                metrics["sfc_kl/topk_kl"] = head_kl + (1.0 - q.sum(-1)).clamp_min(0.0) * rho.log()
+
+        per_token_loss = -config.adv_tau * advantages * (logprobs - centering) + beta * kl
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights[mask]
+
+        metrics["sfc_kl/k1"] = k1.detach()
+        metrics["sfc_kl/beta"] = beta
+        if ages is not None:
+            metrics["sfc_kl/age0"] = (ages == 0).float()
+        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
 
 
 class PPOLoss:
@@ -425,6 +487,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
+        case SFCKLLossConfig():
+            return SFCKLLoss(loss_config)
         case PPOLossConfig():
             return PPOLoss(loss_config)
         case CISPOLossConfig():
@@ -449,6 +513,7 @@ def compute_loss(
     trainer_topk_logprobs: list[Tensor] | None = None,
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
+    policy_ages: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -500,6 +565,7 @@ def compute_loss(
     trainer_topk_logprobs = trainer_topk_logprobs if trainer_topk_logprobs is not None else [None] * n
     sampler_topk_logprobs = sampler_topk_logprobs if sampler_topk_logprobs is not None else [None] * n
     topk_valid = topk_valid if topk_valid is not None else [None] * n
+    policy_ages = policy_ages if policy_ages is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -514,7 +580,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, ages in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -526,6 +592,7 @@ def compute_loss(
         trainer_topk_logprobs,
         sampler_topk_logprobs,
         topk_valid,
+        policy_ages,
         strict=True,
     ):
 
@@ -540,6 +607,7 @@ def compute_loss(
                 trainer_topk_logprobs=t_head,
                 sampler_topk_logprobs=q_head,
                 topk_valid=valid,
+                policy_ages=ages,
             )
 
         if rl_w is None:

@@ -37,6 +37,7 @@ class TensorMicroBatch(TypedDict):
     # synthetic data. "" / -1 mark an unknown sequence (e.g. a dummy batch).
     trace_ids: list[str] | None
     branch_indices: list[int] | None
+    policy_versions: list[int] | None
 
     # Batch level
     seq_lens: Int[Tensor, "segments"]
@@ -134,6 +135,7 @@ class FakeDataLoader:
             "sequence_lengths": sequence_lengths,
             "trace_ids": None,
             "branch_indices": None,
+            "policy_versions": None,
             "loss_mask": loss_mask.unsqueeze(0),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
@@ -167,6 +169,7 @@ class FakeDataLoader:
             "sequence_lengths": [self.seq_len],
             "trace_ids": None,
             "branch_indices": None,
+            "policy_versions": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
@@ -277,6 +280,7 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
+            policy_versions=micro_batch.policy_versions,
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)

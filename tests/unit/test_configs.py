@@ -271,6 +271,19 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
         TrainerConfig.model_validate({"loss": {"type": "ppo", "max_importance_ratio": 1.0, "ratio_high": 1.2}})
 
 
+def test_sfc_kl_loss_requires_score_centering():
+    config = TrainerConfig.model_validate({"loss": {"type": "sfc_kl"}})
+    assert config.loss.score_centering
+    assert (config.loss.kl_coeff, config.loss.kl_staleness, config.loss.kl_estimator) == (0.01, "none", "k1")
+    for unsupported in (
+        {"type": "sfc_kl", "score_centering": False},
+        {"type": "sfc_kl", "kl_coeff": -0.1},
+        {"type": "sfc_kl", "kl_staleness": "linear"},
+    ):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": unsupported})
+
+
 def test_moe_runtime_defaults_are_independent_from_dense_quantization():
     config = TrainerModelConfig.model_validate({"quantization": {"type": "mxfp8"}})
 
