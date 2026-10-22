@@ -85,12 +85,12 @@ def token_policy_ages(trace: vf.Trace, training_step: int) -> tuple[int, int, in
     engines, which update weights outside ``/update_weights``) are not counted."""
     total = count = oldest = 0
     for node in trace.nodes:
-        for span in node.weight_versions or ():
-            if not span.version.isdigit():
+        for start, end, version in node_policy_versions(node, fallback=-1):
+            if version < 0:
                 continue
-            age = max(0, (training_step - 1) - int(span.version))
-            total += age * (span.end - span.start)
-            count += span.end - span.start
+            age = max(0, (training_step - 1) - version)
+            total += age * (end - start)
+            count += end - start
             oldest = max(oldest, age)
     return total, count, oldest
 
