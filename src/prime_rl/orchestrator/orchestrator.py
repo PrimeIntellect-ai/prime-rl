@@ -49,6 +49,7 @@ from prime_rl.orchestrator.dispatcher import Dispatcher, DispatcherMode
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_sink import EvalSink
 from prime_rl.orchestrator.eval_source import EvalSource
+from prime_rl.orchestrator.garbage_collection import GarbageCollector
 from prime_rl.orchestrator.inference_metrics import InferenceMetricsCollector
 from prime_rl.orchestrator.metrics import TrainEpisodes, dispatch_failure_metrics
 from prime_rl.orchestrator.periodic_logger import PeriodicLogger
@@ -118,6 +119,7 @@ class Orchestrator:
     concurrency: ConcurrencyController
     watcher: WeightWatcher
     lag_monitor: EventLoopLagMonitor
+    garbage_collector: GarbageCollector
     periodic_logger: PeriodicLogger
 
     # Set by ``setup()`` only when relevant config is present
@@ -129,6 +131,7 @@ class Orchestrator:
     receiver: WeightReceiver
     resume_step: int | None
     lag_task: asyncio.Task | None
+    gc_task: asyncio.Task | None
 
     def __init__(self, config: OrchestratorConfig) -> None:
         self.config = config
@@ -146,6 +149,7 @@ class Orchestrator:
         # The state as of shipping the last step, which a pause at that step saves.
         self.shipped_state = None
         self.policy = Policy(version=0, model_name="")
+        self.garbage_collector = GarbageCollector(config.gc)
         self.stopped = asyncio.Event()
         # True after the final train step ships — pipeline winds down without
         # scheduling new train rollouts
@@ -175,6 +179,7 @@ class Orchestrator:
         self.eval_source = None
         self.resume_step = None
         self.lag_task = None
+        self.gc_task = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -403,6 +408,8 @@ class Orchestrator:
         # ``PeriodicLogger`` polls dispatcher / watcher / sinks / lag
         # monitor each ``log.interval`` seconds for the pipeline-view log
         self.lag_task = asyncio.create_task(self.lag_monitor.run(), name="event_loop_lag")
+        self.garbage_collector.start()
+        self.gc_task = asyncio.create_task(self.garbage_collector.run(), name="garbage_collection")
         await self.periodic_logger.start()
         self.component_tasks = [
             asyncio.create_task(self.dispatcher.start(), name="dispatcher"),
@@ -858,7 +865,13 @@ class Orchestrator:
 
         body = train_batch_part + eval_batch_part + "; " + inflight_part
 
-        payload: dict[str, float] = {**disp_gauges, **disp_drain, **watcher_gauges, **self.concurrency.gauges()}
+        payload: dict[str, float] = {
+            **disp_gauges,
+            **disp_drain,
+            **watcher_gauges,
+            **self.concurrency.gauges(),
+            **self.garbage_collector.gauges(),
+        }
         if lag_stats.n > 0:
             payload["event_loop_lag/min"] = lag_stats.min
             payload["event_loop_lag/mean"] = lag_stats.mean
@@ -1037,6 +1050,9 @@ class Orchestrator:
             if self.lag_task is not None:
                 await safe_cancel(self.lag_task)
                 self.lag_task = None
+            if self.gc_task is not None:
+                await safe_cancel(self.gc_task)
+                self.gc_task = None
             for task in self.component_tasks:
                 await safe_cancel(task)
             self.component_tasks.clear()

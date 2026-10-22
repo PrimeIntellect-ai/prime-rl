@@ -455,6 +455,24 @@ class ConcurrencyConfig(BaseConfig):
         return self
 
 
+class GarbageCollectionConfig(BaseConfig):
+    """Python garbage collection in the orchestrator. In-flight and buffered episodes keep one list
+    entry per token, so a full (generation-2) collection walks billions of references and holds
+    the GIL, freezing the event loop for minutes at 10k+ episodes in flight. By default the
+    orchestrator freezes its startup heap, never runs a full collection on its own, and runs one
+    every ``full_interval`` seconds instead, only to free reference cycles."""
+
+    automatic_full: bool = False
+    """Keep CPython's automatic full collections (each one runs once the long-lived heap grows by 25%)."""
+
+    full_interval: int | None = Field(4 * 3600, ge=60)
+    """Seconds between scheduled full collections. None never runs one, so reference cycles that
+    survive into the oldest generation are never freed."""
+
+    warn_seconds: float = Field(1.0, gt=0)
+    """Log a warning for every collection that holds the GIL at least this long."""
+
+
 # Top-k injected on truncated policy sampling that has none, and the hard upper
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
@@ -529,6 +547,9 @@ class OrchestratorConfig(BaseConfig):
 
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     """Adaptive in-flight concurrency control (``[orchestrator.concurrency]``)."""
+
+    gc: GarbageCollectionConfig = GarbageCollectionConfig()
+    """Python garbage collection (``[orchestrator.gc]``)."""
 
     seq_len: int = 2048
     """Training sequence length. Shorter samples are padded; longer samples are truncated."""
