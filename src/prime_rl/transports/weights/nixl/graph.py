@@ -250,6 +250,22 @@ class LazyWeight(torch.Tensor):
         # live kernel storage or attempt a meta-to-device copy.
         return destination
 
+    def _record_setitem(self, destination: torch.Tensor, index: Any) -> None:
+        """Record ``destination[index] = self``.
+
+        Sharded loaders assign into a slice of the destination instead of
+        calling ``copy_`` (vLLM's ``mamba_v2_sharded_weight_loader``, used for
+        hybrid-attention ``conv1d``, is the common case). Resolving the indexed
+        view keeps the recorded destination offset, shape, and stride exact.
+        """
+        if isinstance(destination, LazyWeight):
+            raise UnsupportedOpError("__setitem__ between lazy graph tensors is not supported")
+        with torch._C.DisableTorchFunctionSubclass():
+            view = destination[index]
+        if not is_view_of(view, destination):
+            raise UnsupportedOpError(f"__setitem__ must index a view of the destination for {self._source_name!r}")
+        self._record_copy(view)
+
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
@@ -258,6 +274,19 @@ class LazyWeight(torch.Tensor):
             source = args[1] if len(args) > 1 else kwargs.get("src")
             if isinstance(source, cls):
                 return source._record_copy(destination)
+
+        if func is torch.Tensor.__setitem__:
+            source = args[2] if len(args) > 2 else kwargs.get("value")
+            if isinstance(source, cls):
+                return source._record_setitem(args[0], args[1])
+
+        if func is torch.Tensor.view_as:
+            source = args[0]
+            other = args[1] if len(args) > 1 else kwargs.get("other")
+            if isinstance(source, cls) and isinstance(other, torch.Tensor):
+                # Normalize to ``view`` with a concrete shape: recording the tensor argument
+                # would leave a live tensor in the replay chain.
+                return cls._intercept(source, torch.Tensor.view, "view", (tuple(other.shape),), {})
 
         op_name = SUPPORTED_OPS.get(func)
         if op_name is not None and args and isinstance(args[0], cls):
