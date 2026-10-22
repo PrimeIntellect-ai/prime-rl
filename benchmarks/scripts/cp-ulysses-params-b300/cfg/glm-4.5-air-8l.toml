@@ -1,0 +1,41 @@
+# CP check: GLM-4.5-Air truncated to 8 layers, real variable-length data, ep 8, full AC, default compile, no offloading.
+max_steps = 20
+clean = true
+dashboard = false
+
+[env_vars]
+HF_HOME = "/home/huggingface"
+
+[model]
+name = "zai-org/GLM-4.5-Air"
+ep = 8
+offload = "none"
+ac_offloading = "None"
+
+[model.ac]
+mode = "full"
+freq = 1
+
+[model.debug]
+num_layers = 8
+
+[renderer]
+name = "glm-4.5"
+
+[data]
+type = "sft"
+name = "PrimeIntellect/INTELLECT-3-SFT-10K"
+splits = ["math"]
+batch_size = 16
+micro_batch_size = 1
+seq_len = 16384
+pad_to_seq_len = true
+
+[optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.01
+
+[deployment]
+type = "single_node"
+num_train_gpus = 8
