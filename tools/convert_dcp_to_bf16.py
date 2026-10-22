@@ -31,6 +31,7 @@ import torch.distributed as dist
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.state_dict_loader import load as dcp_load
 
+from prime_rl.configs.sft import SFTModelConfig
 from prime_rl.configs.trainer import ModelConfig, MoERuntimeConfig, TokenizerConfig
 from prime_rl.trainer.ckpt import AppState
 from prime_rl.trainer.model import setup_model, setup_processor, setup_tokenizer
@@ -57,7 +58,7 @@ CONVERSION_OVERRIDES = {
     "attn": "flash_attention_2",
 }
 
-RUN_CONFIG_NAMES = ("trainer.json", "sft.json")
+RUN_MODEL_CONFIGS = {"trainer.json": ModelConfig, "sft.json": SFTModelConfig}
 
 
 def resolve_dcp_dir(ckpt_dir: Path) -> Path:
@@ -73,7 +74,7 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
     """Model/tokenizer configs from the run's resolved config."""
     logger = get_logger()
     config_dir = get_config_dir(step_dir.parent.parent)
-    for name in RUN_CONFIG_NAMES:
+    for name in RUN_MODEL_CONFIGS:
         path = config_dir / name
         if path.exists():
             logger.info(f"Reading model config from {path}")
@@ -81,11 +82,11 @@ def resolve_run_configs(step_dir: Path) -> tuple[ModelConfig, TokenizerConfig]:
             break
     else:
         raise FileNotFoundError(
-            f"No resolved run config ({' or '.join(RUN_CONFIG_NAMES)}) found under {config_dir} "
+            f"No resolved run config ({' or '.join(RUN_MODEL_CONFIGS)}) found under {config_dir} "
             "- the checkpoint must live in its run directory"
         )
 
-    model = ModelConfig(**run_config["model"])
+    model = RUN_MODEL_CONFIGS[name](**run_config["model"])
     tokenizer = TokenizerConfig(**run_config["tokenizer"])
     return model.model_copy(update=CONVERSION_OVERRIDES), tokenizer
 

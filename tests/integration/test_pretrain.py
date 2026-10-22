@@ -49,7 +49,7 @@ def pretrain_command(configs: list[str], token_dir: Path, wandb_project: str, wa
         "sft",
         *[arg for config in configs for arg in ("@", f"configs/ci/integration/pretrain/{config}")],
         "--data.paths",
-        token_dir.as_posix(),
+        f'["{token_dir.as_posix()}"]',
         "--deployment.num-train-gpus",
         "2",
         "--monitors.wandb.project",
