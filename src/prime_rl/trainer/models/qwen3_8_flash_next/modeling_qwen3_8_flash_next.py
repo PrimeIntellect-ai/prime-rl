@@ -189,7 +189,7 @@ class Qwen3_8FlashNextTextModel(Qwen3_8FlashNextPreTrainedModel):
             seq_lens.to(inputs_embeds.device),
             total_tokens=None if seq_lens_are_pre_shard else inputs_embeds.shape[1],
         )
-        torch._dynamo.mark_dynamic(cu_seqlens, 0)
+        torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         hidden_states = inputs_embeds.repeat(1, 1, self.config.hc_count)
