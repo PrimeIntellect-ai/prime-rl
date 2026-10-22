@@ -1,5 +1,7 @@
 import os
+from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -16,35 +18,276 @@ def apply_shared_vllm_patches():
     patch_qwen38_weight_loading()
     _patch_lora_key_prefix()
     _patch_qwen35_moe_lora_format()
-    monkey_patch_nano_v3_reasoning_parser()
     monkey_patch_minimax_m2_think_end_passthrough()
+    monkey_patch_routed_experts_with_pd_connectors()
+    monkey_patch_clamp_kv_offload_loads_for_routed_experts()
+    monkey_patch_routed_experts_cut_loaded_prefix_hits()
     monkey_patch_kv_xfer_finished_tolerate_freed()
     monkey_patch_online_fp8_parameter_cast()
-    monkey_patch_deepseek_v4_allowed_layer_types()
-    monkey_patch_tokenize_params_validation()
+    monkey_patch_online_mxfp8_moe_keep_kernel_on_reload()
     monkey_patch_strip_routed_experts_from_chat()
+    monkey_patch_skip_prompt_routing_for_chat()
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
+    monkey_patch_packed_sampling_masks()
+    monkey_patch_engine_gc()
+    monkey_patch_packed_aux_outputs()
+    monkey_patch_aux_output_store()
     # Set by `server()` when the LoRA target modules include no expert layers.
     if os.environ.get("PRIME_NO_MOE_LORA") == "1":
         monkey_patch_no_moe_lora()
+    monkey_patch_deepseek_v4_c128_boundary()
+    monkey_patch_deepseek_v4_attn_sink_loading()
 
 
-def monkey_patch_deepseek_v4_allowed_layer_types():
-    """Let vLLM's `DeepseekV4Config` construct under a transformers pin below 5.15.
+@dataclass
+class PackedSamplingMask:
+    """A finished request's sampling masks in CSR form: ``ids[sum(counts[:i]):][:counts[i]]``
+    are the kept token ids of completion token ``i``."""
 
-    `vllm/transformers_utils/configs/deepseek_v4.py` leaves `layer_types` to
-    `PretrainedConfig`, whose validator checks it against a vocabulary that only gained V4's
-    compressed attention names in transformers 5.15, so `AutoConfig.from_pretrained` on any
-    DeepSeek V4 checkpoint raises. vLLM declares `transformers>=5.5.3`, so this is a gap in
-    upstream's own version floor rather than something prime-rl introduced.
+    ids: np.ndarray
+    counts: np.ndarray
 
-    `EngineArgs.__post_init__` loads general plugins before `create_model_config`, which is why
-    patching here is early enough. The trainer applies the same shim on its own import path.
+
+def monkey_patch_packed_sampling_masks():
+    """Keep sampling masks as numpy arrays in the API server's output processor.
+
+    vLLM keeps one ``SamplingMaskLists`` tuple per generated token while a request
+    runs and turns a finished request's masks into ``list[list[int]]``: GC-tracked
+    objects per token that every gen-2 pass walks. Store only the (untracked) id
+    arrays and hand ``PrimeRlServingTokens`` a ``PackedSamplingMask`` instead. Each
+    appended chunk is one position (``SamplingMaskLists.slice_request`` asserts it).
+    Only non-streaming (``FINAL_ONLY``) outputs are packed, the form
+    ``PrimeRlServingTokens.serve_tokens_full_generator`` reads; others keep vLLM's form.
     """
-    from prime_rl.utils.transformers_compat import allow_deepseek_v4_layer_types
+    from vllm.sampling_params import RequestOutputKind
+    from vllm.v1.engine.output_processor import RequestState
 
-    allow_deepseek_v4_layer_types()
+    original_init = RequestState.__init__
+    original_new_completion_output = RequestState._new_completion_output
+
+    class _MaskIds(list):
+        def append(self, chunk):
+            super().append(chunk.token_ids)
+
+    def _init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.output_kind == RequestOutputKind.FINAL_ONLY:
+            self.sampling_mask_chunks = _MaskIds()
+
+    def _new_completion_output(self, token_ids, finish_reason, stop_reason):
+        chunks = self.sampling_mask_chunks
+        if not isinstance(chunks, _MaskIds) or finish_reason is None or not chunks:
+            return original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        self.sampling_mask_chunks = _MaskIds()
+        output = original_new_completion_output(self, token_ids, finish_reason, stop_reason)
+        output.sampling_mask = PackedSamplingMask(
+            ids=np.concatenate(chunks),
+            counts=np.fromiter(map(len, chunks), dtype=np.int32, count=len(chunks)),
+        )
+        return output
+
+    RequestState.__init__ = _init
+    RequestState._new_completion_output = _new_completion_output
+
+
+ENGINE_GC_THRESHOLDS = (50_000, 20, 100)
+
+
+def monkey_patch_engine_gc():
+    """Freeze the startup heap and raise GC thresholds in EngineCore (vLLM only freezes) and the GPU workers."""
+    import gc
+
+    from vllm.v1.engine import core
+    from vllm.v1.worker.gpu_worker import Worker
+
+    original_freeze_gc_heap = core.freeze_gc_heap
+    original_compile_or_warm_up_model = Worker.compile_or_warm_up_model
+
+    def freeze_gc_heap():
+        original_freeze_gc_heap()
+        gc.set_threshold(*ENGINE_GC_THRESHOLDS)
+
+    def compile_or_warm_up_model(self, *args, **kwargs):
+        result = original_compile_or_warm_up_model(self, *args, **kwargs)
+        gc.collect()
+        gc.freeze()
+        gc.set_threshold(*ENGINE_GC_THRESHOLDS)
+        return result
+
+    core.freeze_gc_heap = freeze_gc_heap
+    Worker.compile_or_warm_up_model = compile_or_warm_up_model
+
+
+def monkey_patch_packed_aux_outputs():
+    """Send each step's routed experts from the output worker to EngineCore as one ``PackedAuxOutputs``."""
+    from vllm.distributed.aux_output_connector.worker import AuxOutputWorkerConnector
+
+    from prime_rl.inference.vllm.routed_experts import PackedAuxOutputs
+
+    original_process_output = AuxOutputWorkerConnector.process_output
+
+    def process_output(self, pending):
+        outputs = original_process_output(self, pending)
+        return PackedAuxOutputs.pack(outputs) if outputs else outputs
+
+    AuxOutputWorkerConnector.process_output = process_output
+
+
+AUX_OUTPUT_STORE_HEADROOM = 2
+
+
+def monkey_patch_aux_output_store():
+    """Keep routed-experts store eviction from rescanning referenced keys, and size the store above the KV cache.
+
+    Eviction skips keys referenced by running requests, and they pile up at the front of the LRU, so every ``put``
+    on a full store rescans them. Their position never affects which keys are evicted, so move them to the end.
+    At full KV the referenced keys alone can exceed a store of exactly KV size and ``put`` raises, so the worker
+    builds it at ``AUX_OUTPUT_STORE_HEADROOM`` times vLLM's size (anonymous mmap: unused slots cost no memory).
+    """
+    from itertools import takewhile
+
+    from vllm.distributed.aux_output_connector import worker as aux_worker
+    from vllm.distributed.aux_output_connector.store import BlockObjectStore
+
+    original_evict_to_fit = BlockObjectStore._evict_to_fit
+
+    def _evict_to_fit(self, protected: set[str]) -> None:
+        if len(self._lru) > self.num_slots:
+            for key in list(takewhile(self._references.__contains__, self._lru)):
+                self._lru.move_to_end(key)
+        original_evict_to_fit(self, protected)
+
+    class _RoomyBlockObjectStore(BlockObjectStore):
+        def __init__(self, *, max_bytes: int, object_nbytes: int):
+            super().__init__(max_bytes=AUX_OUTPUT_STORE_HEADROOM * max_bytes, object_nbytes=object_nbytes)
+
+    BlockObjectStore._evict_to_fit = _evict_to_fit
+    aux_worker.BlockObjectStore = _RoomyBlockObjectStore
+
+
+def monkey_patch_deepseek_v4_c128_boundary():
+    """Fix DeepSeek V4 long-context KV corruption under piecewise CUDA graphs.
+
+    On vLLM 0.30+, including the pinned 0.32.0, the piecewise CUDA graphs are captured on a step
+    that skips writing C128 compressed KV, so every replay skips it too. Mixed batches of up to
+    512 tokens never store their C128 entries, later queries attend over stale compressed KV, and
+    long-context rollouts drift from the trainer, inflating mismatch KL.
+
+    The skip is an optimization: ``DeepseekCompressor.forward`` returns early when
+    ``_get_c128_boundary`` reports that no request completes a 128-token block this step.
+    vllm-project/vllm#55353 made that helper return a bool under Model Runner V2, so capture on
+    dummy batches records the early return. Returning None instead disables the skip, which is
+    the path vLLM already takes under async speculative decoding and the one 0.29 always took.
+
+    The upstream fix, vllm-project/vllm#59709, keeps the skip on eager steps and only stops it
+    from being captured. That change sits inline in ``forward``, so matching it here would mean
+    copying the whole method. Patching the helper costs one extra compress kernel launch on eager
+    steps that complete no block, and the kernel already skips those tokens on the GPU.
+
+    Remove this patch once vllm-project/vllm#59709 lands in the pinned vLLM version.
+    """
+    from vllm.logger import init_logger
+    from vllm.models.deepseek_v4 import compressor
+
+    if getattr(compressor._get_c128_boundary, "_prime_rl_always_compresses", False):
+        return
+
+    def _get_c128_boundary(metadata):
+        return None
+
+    _get_c128_boundary._prime_rl_always_compresses = True
+    compressor._get_c128_boundary = _get_c128_boundary
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 C128 compressor store runs on every step.")
+
+
+def monkey_patch_deepseek_v4_attn_sink_loading():
+    """Fix DeepSeek V4 weight updates silently keeping the boot-time attention sinks.
+
+    ``DeepseekV4Model.load_weights`` writes the sinks with a bare slice copy instead of
+    ``param.weight_loader``. Layerwise reload moves parameters to meta and only buffers writes
+    that go through a loader, so the copy is silently dropped. This pads this rank's heads back
+    to the full parameter with ``-inf`` (no sink) and loads that through ``param.weight_loader``.
+
+    Remove this patch once vllm-project/vllm#57797 lands in the pinned vLLM version. Only
+    ``nvidia/model.py`` is covered, not the MTP, DSpark or non-NVIDIA variants.
+    """
+    from vllm.logger import init_logger
+    from vllm.model_executor.model_loader.weight_utils import default_weight_loader
+    from vllm.models.deepseek_v4.nvidia import model as dsv4_model
+
+    original_load_weights = dsv4_model.DeepseekV4Model.load_weights
+    if getattr(original_load_weights, "_prime_rl_uses_weight_loaders", False):
+        return
+
+    def load_weights(self, weights):
+        params = dict(self.named_parameters())
+        tp_size = dsv4_model.get_tensor_model_parallel_world_size()
+        heads_per_rank = self.config.num_attention_heads // tp_size
+        head_start = heads_per_rank * dsv4_model.get_tensor_model_parallel_rank()
+        loaded_params: set[str] = set()
+
+        def remaining_weights():
+            for name, weight in weights:
+                if "attn_sink" not in name or dsv4_model.is_pp_missing_parameter(name, self):
+                    yield name, weight
+                    continue
+                param = params[name]
+                sink = weight.new_full(tuple(param.shape), -float("inf"))
+                sink[:heads_per_rank] = weight[head_start : head_start + heads_per_rank]
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                weight_loader(param, sink)
+                loaded_params.add(name)
+
+        loaded_params.update(original_load_weights(self, remaining_weights()))
+        return loaded_params
+
+    load_weights._prime_rl_uses_weight_loaders = True
+    dsv4_model.DeepseekV4Model.load_weights = load_weights
+    init_logger("vllm.prime_rl.deepseek_v4").info("DeepSeek V4 attn_sink loads through param.weight_loader.")
+
+
+def monkey_patch_online_mxfp8_moe_keep_kernel_on_reload():
+    """Keep the boot-time online-MXFP8 MoE kernel across weight reloads.
+
+    ``Mxfp8OnlineMoEMethod._setup_kernel`` rebuilds ``moe_quant_config`` and ``moe_kernel`` on every
+    reload. Decode replays CUDA graphs captured against the boot-time kernel, so once the old
+    kernel is dropped the graphs read freed memory for tensors only it referenced, and decode
+    samples sporadic garbage tokens that eager prefill (and the trainer) do not reproduce. The
+    boot-time kernel references the layer's original parameters, which layerwise reload refills
+    in place, so on reload we only install the new weights and keep the kernel.
+
+    Upstream fix: https://github.com/vllm-project/vllm/pull/62406; remove this patch when our
+    minimum vLLM version includes it.
+    """
+    from vllm.model_executor.layers.fused_moe.oracle.fp8 import convert_to_fp8_moe_kernel_format
+    from vllm.model_executor.layers.quantization.online.mxfp8 import Mxfp8OnlineMoEMethod
+    from vllm.model_executor.utils import replace_parameter
+
+    original_setup_kernel = Mxfp8OnlineMoEMethod._setup_kernel
+    if getattr(original_setup_kernel, "_prime_rl_keeps_kernel", False):
+        return
+
+    def _setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale):
+        if getattr(self, "moe_kernel", None) is None:
+            return original_setup_kernel(self, layer, w13, w2, w13_scale, w2_scale, w13_input_scale, w2_input_scale)
+        w13, w2, w13_scale, w2_scale = convert_to_fp8_moe_kernel_format(
+            fp8_backend=self.fp8_backend,
+            layer=layer,
+            w13=w13,
+            w2=w2,
+            w13_scale=w13_scale,
+            w2_scale=w2_scale,
+            w13_input_scale=w13_input_scale,
+            w2_input_scale=w2_input_scale,
+        )
+        replace_parameter(layer, "w13_weight", w13)
+        replace_parameter(layer, "w2_weight", w2)
+        replace_parameter(layer, f"w13_{self.weight_scale_name}", w13_scale)
+        replace_parameter(layer, f"w2_{self.weight_scale_name}", w2_scale)
+
+    _setup_kernel._prime_rl_keeps_kernel = True
+    Mxfp8OnlineMoEMethod._setup_kernel = _setup_kernel
 
 
 def monkey_patch_online_fp8_parameter_cast():
@@ -96,6 +339,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     """
     from vllm.logger import init_logger
     from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.metrics.stats import KV_FETCH_COMPLETED_WAITING
     from vllm.v1.request import RequestStatus
 
     logger = init_logger("vllm.v1.core.sched.scheduler")
@@ -116,6 +360,7 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
             req = self.requests[req_id]
             if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
                 self.finished_recving_kv_req_ids.add(req_id)
+                self._set_kv_fetch_stage(req, KV_FETCH_COMPLETED_WAITING)
             else:
                 assert RequestStatus.is_finished(req.status)
                 self._free_blocks(self.requests[req_id])
@@ -130,23 +375,6 @@ def monkey_patch_kv_xfer_finished_tolerate_freed():
     _update_from_kv_xfer_finished._prime_rl_tolerates_freed = True
     Scheduler._update_from_kv_xfer_finished = _update_from_kv_xfer_finished
     logger.warning("Patched Scheduler._update_from_kv_xfer_finished to tolerate freed (aborted) KV-transfer reqs.")
-
-
-def monkey_patch_nano_v3_reasoning_parser():
-    from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
-    from vllm.reasoning.deepseek_r1_reasoning_parser import DeepSeekR1ReasoningParser
-
-    class NanoV3ReasoningParser(DeepSeekR1ReasoningParser):
-        def extract_reasoning(self, model_output, request):
-            reasoning_content, final_content = super().extract_reasoning(model_output, request)
-            chat_template_kwargs = getattr(request, "chat_template_kwargs", None)
-
-            if chat_template_kwargs and chat_template_kwargs.get("enable_thinking") is False and final_content is None:
-                reasoning_content, final_content = final_content, reasoning_content
-
-            return reasoning_content, final_content
-
-    ReasoningParserManager.register_module("nano_v3", module=NanoV3ReasoningParser)
 
 
 def monkey_patch_minimax_m2_think_end_passthrough():
@@ -181,6 +409,259 @@ def monkey_patch_minimax_m2_think_end_passthrough():
         )
 
     minimax_m2.minimax_m2_config = _patched_config
+
+
+def monkey_patch_routed_experts_with_pd_connectors():
+    """Let vLLM's routed-experts capture (AuxOutput connector) run on NIXL P/D instances.
+
+    vLLM (0.32 included) rejects routed-experts capture with P/D connectors, because a decode instance never
+    computes a remotely prefilled prompt, so it has no rows for it. This carries our upstream fix
+    (AuxOutput patch 02): a request on a decode instance emits rows only from its first forward on
+    this instance, and the worker does not buffer the
+    partially known first block. The router takes the prompt rows from the prefill instance. Delete
+    once vLLM supports routed experts with P/D connectors.
+    """
+    from vllm.config.vllm import VllmConfig
+    from vllm.distributed.aux_output_connector.connector import AuxOutputSchedulerConnector
+    from vllm.distributed.aux_output_connector.worker import AuxOutputWorkerConnector
+
+    original_verify = VllmConfig._verify_aux_output_compatibility
+    if getattr(original_verify, "_prime_rl_allows_pd", False):
+        return
+
+    def _verify_aux_output_compatibility(config):
+        kv_transfer_config = config.kv_transfer_config
+        if kv_transfer_config is None or not kv_transfer_config.has_connector("NixlConnector"):
+            return original_verify(config)
+        # The P/D connector check is the last one; every other check still runs.
+        config.kv_transfer_config = None
+        try:
+            return original_verify(config)
+        finally:
+            config.kv_transfer_config = kv_transfer_config
+
+    original_build_connector_meta = AuxOutputSchedulerConnector.build_connector_meta
+
+    def build_connector_meta(self, scheduler_output, requests):
+        metadata = original_build_connector_meta(self, scheduler_output, requests)
+        floors = _emit_floors(self)
+        for request_id, emit_start in metadata.requests.items():
+            request = requests[request_id]
+            if not _is_pd_decode_request(request):
+                continue
+            # Fixed at the first forward (built before the step advances num_computed_tokens).
+            # Normally prompt_len - 1; lower after a failed KV load, where this instance
+            # recomputes those rows itself.
+            floor = floors.setdefault(request_id, request.num_computed_tokens)
+            metadata.requests[request_id] = max(emit_start, floor)
+        return metadata
+
+    original_request_finished = AuxOutputSchedulerConnector.request_finished
+
+    def request_finished(self, request):
+        # Preemption keeps the floor: a resumed request may hit prompt blocks loaded from the prefill
+        # instance, which have no rows here.
+        if request.is_finished():
+            _emit_floors(self).pop(request.request_id, None)
+        return original_request_finished(self, request)
+
+    original_worker_init = AuxOutputWorkerConnector.__init__
+
+    def worker_init(self, *args, **kwargs):
+        original_worker_init(self, *args, **kwargs)
+        if self._buffer is not None:
+            skip_remote_prefill_partial_block(self)
+
+    _verify_aux_output_compatibility._prime_rl_allows_pd = True
+    VllmConfig._verify_aux_output_compatibility = _verify_aux_output_compatibility
+    AuxOutputSchedulerConnector.build_connector_meta = build_connector_meta
+    AuxOutputSchedulerConnector.request_finished = request_finished
+    AuxOutputWorkerConnector.__init__ = worker_init
+
+
+def skip_remote_prefill_partial_block(worker) -> None:
+    """Make an AuxOutput worker skip the mid-block start of a remotely prefilled request's first forward."""
+    from vllm.utils.math_utils import cdiv
+
+    buffer = worker._buffer
+    capture = buffer.capture
+    block_size = buffer.block_size
+
+    def _capture(request_id, token_start, rows):
+        state = worker._requests[request_id]
+        if state.capture_cursor is None and token_start % block_size and state.emit_cursor >= token_start:
+            # The rows before this token exist only on the prefill instance, so this block is never
+            # published. Buffer from the next block; this step's rows are still emitted directly.
+            state.prime_rl_buffer_start = cdiv(token_start, block_size) * block_size
+        skip = min(max(getattr(state, "prime_rl_buffer_start", 0) - token_start, 0), len(rows))
+        return capture(request_id, token_start + skip, rows[skip:])
+
+    buffer.capture = _capture
+
+
+def _emit_floors(connector) -> dict[str, int]:
+    """First output token of each remotely prefilled request on this instance."""
+    return connector.__dict__.setdefault("_prime_rl_emit_floors", {})
+
+
+def _is_pd_decode_request(request) -> bool:
+    """A request on a P/D decode instance (NIXL clears ``do_remote_prefill`` once scheduled, not ``remote_engine_id``)."""
+    params = request.kv_transfer_params or {}
+    return bool(params.get("remote_engine_id")) and not params.get("do_remote_decode")
+
+
+def _routed_experts_load_limit(request, num_computed_tokens: int, block_size: int) -> int | None:
+    """How many tokens past ``num_computed_tokens`` an external KV load may cover under routed-expert capture.
+
+    vLLM keeps routing rows in a local store keyed by block hash, and no connector moves them with
+    the KV. A loaded block whose rows are not in that store fails the engine step
+    (``BlockObjectStoreError``) once a request needs its rows. vLLM returns rows only from
+    ``routed_experts_prompt_start`` on (the client already holds the rows before it), so loads
+    that stop at that block boundary are always safe. Requests resumed after preemption and
+    decode-side P/D requests are not bounded: they emit rows only from their first forward.
+    """
+    if request.num_output_tokens or _is_pd_decode_request(request):
+        return None
+    prompt_start = request.sampling_params.routed_experts_prompt_start
+    return max(0, prompt_start // block_size * block_size - num_computed_tokens)
+
+
+def monkey_patch_clamp_kv_offload_loads_for_routed_experts():
+    """Clamp native (``OffloadingConnector``) and Mooncake KV offload loads with `_routed_experts_load_limit`.
+
+    Multi-turn reloads stay below the next turn's ``routed_experts_prompt_start`` and keep their
+    hits; offloaded prefixes past it (first turns, shared prompts) are recomputed.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.v1.mooncake.store.connector import MooncakeStoreConnector
+    from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import OffloadingConnector
+
+    if getattr(OffloadingConnector._max_loadable_tokens, "_prime_rl_routed_experts_clamp", False):
+        return
+
+    original_max_loadable_tokens = OffloadingConnector._max_loadable_tokens
+    original_get_num_new_matched_tokens = MooncakeStoreConnector.get_num_new_matched_tokens
+
+    def _max_loadable_tokens(self, request, num_computed_tokens):
+        bound = original_max_loadable_tokens(self, request, num_computed_tokens)
+        if not self._vllm_config.aux_output_config.enable_return_routed_experts:
+            return bound
+        limit = _routed_experts_load_limit(request, num_computed_tokens, self._vllm_config.cache_config.block_size)
+        if limit is None:
+            return bound
+        return limit if bound is None else min(bound, limit)
+
+    def _get_num_new_matched_tokens(self, request, num_computed_tokens):
+        num_tokens, load_async = original_get_num_new_matched_tokens(self, request, num_computed_tokens)
+        if not num_tokens or not self._vllm_config.aux_output_config.enable_return_routed_experts:
+            return num_tokens, load_async
+        scheduler = self.connector_scheduler
+        limit = _routed_experts_load_limit(request, num_computed_tokens, scheduler._block_size)
+        if limit is None or num_tokens <= limit:
+            return num_tokens, load_async
+        if limit == 0:
+            del scheduler.load_specs[request.request_id]
+            return 0, False
+        # The new end is a full block inside the hit, stored under its own hash, so the tail-key
+        # overrides for the old (possibly partial) end no longer apply.
+        load_spec = scheduler.load_specs[request.request_id]
+        load_spec.kvpool_cached_tokens = num_computed_tokens + limit
+        load_spec.tail_key_boundaries = ()
+        return limit, load_async
+
+    _max_loadable_tokens._prime_rl_routed_experts_clamp = True
+    OffloadingConnector._max_loadable_tokens = _max_loadable_tokens
+    MooncakeStoreConnector.get_num_new_matched_tokens = _get_num_new_matched_tokens
+
+
+def _track_externally_loaded_blocks(kv_cache_manager, gid: int, block_size: int) -> set[int]:
+    """Live set of block ids (in KV cache group ``gid``) filled by an external KV load since their last allocation.
+
+    Such blocks enter the GPU prefix cache, but no forward pass on this instance stored their routing rows.
+    """
+    from vllm.utils.math_utils import cdiv
+
+    loaded: set[int] = set()
+    block_pool = kv_cache_manager.block_pool
+    get_new_blocks = block_pool.get_new_blocks
+    allocate_slots = kv_cache_manager.allocate_slots
+
+    def _get_new_blocks(num_blocks):
+        blocks = get_new_blocks(num_blocks)
+        loaded.difference_update(block.block_id for block in blocks)
+        return blocks
+
+    def _allocate_slots(request, num_new_tokens, *args, **kwargs):
+        blocks = allocate_slots(request, num_new_tokens, *args, **kwargs)
+        num_external = kwargs.get("num_external_computed_tokens", 0)
+        if blocks is not None and num_external:
+            start = request.num_computed_tokens + kwargs.get("num_new_computed_tokens", 0)
+            block_ids = kv_cache_manager.get_block_ids(request.request_id)[gid]
+            loaded.update(block_ids[start // block_size : cdiv(start + num_external, block_size)])
+        return blocks
+
+    block_pool.get_new_blocks = _get_new_blocks
+    kv_cache_manager.allocate_slots = _allocate_slots
+    return loaded
+
+
+def _first_loaded_block(block_ids: list[int], loaded: set[int], prompt_start: int, block_size: int) -> int | None:
+    """Index of the first block in ``block_ids`` holding rows from ``prompt_start`` on that was filled by a load."""
+    return next((i for i in range(prompt_start // block_size, len(block_ids)) if block_ids[i] in loaded), None)
+
+
+def monkey_patch_routed_experts_cut_loaded_prefix_hits():
+    """Cut local prefix-cache hits at externally loaded blocks that a request needs routing rows from.
+
+    The load clamp keeps the loading request safe, but the loaded blocks then serve local prefix
+    hits. A later request with a lower ``routed_experts_prompt_start`` would need their rows, which
+    this instance never stored, and the engine step would fail with ``BlockObjectStoreError``. Such
+    hits are cut at the first loaded block, so the rest is recomputed. Requests with output (resumed
+    after preemption) and decode-side P/D requests need no prompt rows from the store.
+    """
+    from vllm.v1.core.sched.scheduler import Scheduler
+    from vllm.v1.kv_cache_interface import is_full_attention_spec
+
+    if getattr(Scheduler._get_local_prefix_cache_hit, "_prime_rl_routed_experts_cut", False):
+        return
+
+    original_init = Scheduler.__init__
+    original_get_local_prefix_cache_hit = Scheduler._get_local_prefix_cache_hit
+
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._prime_rl_loaded_blocks = None
+        if self.aux_output_connector is None or self.connector is None:
+            return
+        groups = self.kv_cache_config.kv_cache_groups
+        gid = next(i for i, g in enumerate(groups) if not g.host_resident and is_full_attention_spec(g.kv_cache_spec))
+        block_size = groups[gid].kv_cache_spec.block_size
+        self._prime_rl_loaded_blocks = (
+            gid,
+            block_size,
+            _track_externally_loaded_blocks(self.kv_cache_manager, gid, block_size),
+        )
+
+    def _get_local_prefix_cache_hit(self, request):
+        hit = original_get_local_prefix_cache_hit(self, request)
+        if self._prime_rl_loaded_blocks is None or request.num_output_tokens or _is_pd_decode_request(request):
+            return hit
+        gid, block_size, loaded = self._prime_rl_loaded_blocks
+        start = request.sampling_params.routed_experts_prompt_start
+        cut = _first_loaded_block(hit[0].get_block_ids()[gid], loaded, start, block_size) if loaded else None
+        if cut is None:
+            return hit
+        # Redo the lookup capped at the cut, so every KV cache group (e.g. Mamba) agrees on the hit.
+        kv_cache_manager = self.kv_cache_manager
+        keep = cut * block_size // self.block_size * self.block_size
+        blocks, num_local, num_uncached = kv_cache_manager.coordinator.find_longest_cache_hit(
+            request.block_hashes, keep
+        )
+        boundary = num_local + num_uncached if num_uncached else 0
+        return kv_cache_manager.create_kv_cache_blocks(blocks), num_local, boundary, False
+
+    _get_local_prefix_cache_hit._prime_rl_routed_experts_cut = True
+    Scheduler.__init__ = __init__
+    Scheduler._get_local_prefix_cache_hit = _get_local_prefix_cache_hit
 
 
 def monkey_patch_strip_routed_experts_from_chat():
@@ -221,6 +702,36 @@ def monkey_patch_strip_routed_experts_from_chat():
     )
 
 
+def monkey_patch_skip_prompt_routing_for_chat():
+    """Start chat requests' routed experts at the end of the prompt.
+
+    Chat responses drop routed_experts (``monkey_patch_strip_routed_experts_from_chat``), but with
+    ``enable_return_routed_experts`` the engine still materializes every prompt's routing rows and
+    ships them to the API server each turn: about 258 B per token, so tens of MB for a long eval
+    prompt that is thrown away. Setting ``routed_experts_prompt_start`` to the prompt length keeps
+    only the completion's rows. A request that sets its own start keeps it.
+    """
+    from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
+    from vllm.logger import init_logger
+    from vllm.sampling_params import SamplingParams
+
+    if getattr(OpenAIServingChat._log_inputs, "_prime_rl_skips_prompt_routing", False):
+        return
+    original_log_inputs = OpenAIServingChat._log_inputs
+
+    # The chat route calls _log_inputs right after it builds each prompt's SamplingParams, with the rendered prompt.
+    def _log_inputs(self, request_id, inputs, params, lora_request):
+        if isinstance(params, SamplingParams) and params.routed_experts_prompt_start == 0:
+            prompt_ids = self._extract_prompt_components(inputs).token_ids
+            if prompt_ids is not None:
+                params.routed_experts_prompt_start = len(prompt_ids)
+        return original_log_inputs(self, request_id, inputs, params, lora_request)
+
+    _log_inputs._prime_rl_skips_prompt_routing = True
+    OpenAIServingChat._log_inputs = _log_inputs
+    init_logger("vllm.prime_rl.routed_experts").info("Chat requests return routed experts only for their completions.")
+
+
 def _patch_qwen35_moe_lora_format():
     """Force Qwen3.5-MoE onto vLLM's 2D per-expert LoRA format.
 
@@ -229,7 +740,7 @@ def _patch_qwen35_moe_lora_format():
     (``base_layer.lora_{A,B}.weight`` / ``lora_{A,B}.weight``, experts folded into the
     rank dim; see ``_stack_moe_lora_weights``). Our trainer instead emits the 2D
     per-expert layout (``{expert_id}.gate_proj.lora_A.weight`` ...) from
-    ``MultiLoRAGroupedExperts.state_dict_for_adapter`` -- vLLM only consults that layout
+    ``LoRAGroupedExperts.adapter_state_dict`` -- vLLM only consults that layout
     when ``is_3d_moe_weight`` is False (or ``enable_mixed_moe_lora_format=True``).
     Without this override the adapters fail to load with key/shape mismatches.
 
@@ -247,7 +758,7 @@ def _patch_qwen35_moe_lora_format():
 def _patch_lora_key_prefix():
     """Accept both bare-suffix and fully-qualified expert module names in LoRA adapters.
 
-    Copy of vLLM 0.24.0's ``LoRAModel.from_local_checkpoint`` with one change: the
+    Copy of vLLM 0.32.0's ``LoRAModel.from_local_checkpoint`` with one change: the
     ``.experts`` branch of ``check_unexpected_modules`` accepts either the bare suffix
     (``down_proj``) or the qualified per-expert name (``experts.N.down_proj``), where
     upstream only accepts the qualified form. Our trainer's 2D per-expert adapters
@@ -259,7 +770,6 @@ def _patch_lora_key_prefix():
         LoRAModel,
         MoEEPLoadSpec,
         PEFTHelper,
-        TensorizerConfig,
         WeightsMapper,
         _is_remote_expert_key,
         get_lora_id,
@@ -280,7 +790,6 @@ def _patch_lora_key_prefix():
         dtype: torch.dtype | None = None,
         model_vocab_size: int | None = None,
         weights_mapper: WeightsMapper | None = None,
-        tensorizer_config_dict: dict | None = None,
         skip_prefixes: list[str] | None = None,
         moe_ep_spec: MoEEPLoadSpec | None = None,
     ) -> "LoRAModel":
@@ -347,24 +856,7 @@ def _patch_lora_key_prefix():
                     f" Please verify that the loaded LoRA module is correct"
                 )
 
-        if tensorizer_config_dict:
-            from tensorizer import TensorDeserializer
-
-            tensorizer_config = TensorizerConfig(**tensorizer_config_dict)
-            tensorizer_dir = tensorizer_config.tensorizer_dir
-            if tensorizer_dir is None:
-                raise ValueError("tensorizer_dir must be set in tensorizer config.")
-            lora_tensor_path = os.path.join(tensorizer_dir, "adapter_model.tensors")
-            tensorizer_args = tensorizer_config._construct_tensorizer_args()
-            tensors = TensorDeserializer(
-                lora_tensor_path,
-                dtype=tensorizer_config.dtype,
-                device=device,
-                **tensorizer_args.deserialization_kwargs,
-            )
-            check_unexpected_modules(tensors)
-
-        elif os.path.isfile(lora_tensor_path):
+        if os.path.isfile(lora_tensor_path):
             # Find unexpected modules.
             # Use safetensor key as a source of truth to find expected modules.
             # in peft if you have target_modules A, B, C and C does not exist
@@ -403,76 +895,6 @@ def _patch_lora_key_prefix():
         )
 
     LoRAModel.from_local_checkpoint = classmethod(_patched_from_local_checkpoint)
-
-
-# Monkeypatch TokenizeParams to fix overly conservative validation
-def monkey_patch_tokenize_params_validation():
-    """
-    Patch TokenizeParams validation to only reject requests where the prompt
-    itself exceeds max_model_len, not where prompt + max_tokens > max_model_len.
-
-    Original behavior:
-        - Rejects if prompt_len > (max_model_len - max_tokens)
-
-    Patched behavior:
-        - Only rejects if prompt_len > max_model_len
-        - Lets the engine naturally cap generation at max_model_len
-    """
-    from vllm.exceptions import VLLMValidationError
-    from vllm.renderers.params import TokenizeParams
-
-    def _patched_token_len_check(self, tokenizer, tokens):
-        """Only validate that prompt fits in max_model_len, not prompt+max_tokens"""
-        if self.max_total_tokens is not None and len(tokens) > self.max_total_tokens:
-            raise VLLMValidationError(
-                f"The prompt is {len(tokens)} tokens, which exceeds the "
-                f"model's maximum context length of {self.max_total_tokens} tokens. "
-                f"Please reduce the length of the input prompt.",
-                parameter="input_tokens",
-                value=len(tokens),
-            )
-        return tokens
-
-    def _patched_text_len_check(self, tokenizer, text):
-        """Only validate text length against max_model_len, not max_input_tokens"""
-        if self.max_total_tokens is None or tokenizer is None:
-            return text
-
-        if self.truncate_prompt_tokens is None:
-            max_chars = self.max_total_tokens * tokenizer.max_chars_per_token
-            if len(text) > max_chars:
-                raise VLLMValidationError(
-                    f"You passed {len(text)} input characters. "
-                    f"However, the model's context length is only "
-                    f"{self.max_total_tokens} tokens "
-                    f"(at most {max_chars} characters). "
-                    f"Please reduce the length of the input prompt.",
-                    parameter="input_text",
-                    value=len(text),
-                )
-        return text
-
-    def _patched_get_encode_kwargs(self):
-        """Use max_total_tokens (max_model_len) instead of max_input_tokens for HF tokenizer truncation.
-
-        The original uses max_input_tokens (= max_model_len - max_tokens) + 1, which causes HuggingFace's
-        tokenizer.encode() to left-truncate prompts before _token_len_check even runs.
-        """
-        max_length = self.truncate_prompt_tokens
-        if max_length is not None and max_length < 0:
-            max_length = self.max_total_tokens
-        elif max_length is None and self.max_total_tokens is not None:
-            max_length = self.max_total_tokens + 1
-
-        return dict(
-            truncation=max_length is not None,
-            max_length=max_length,
-            add_special_tokens=self.add_special_tokens,
-        )
-
-    TokenizeParams._token_len_check = _patched_token_len_check
-    TokenizeParams._text_len_check = _patched_text_len_check
-    TokenizeParams.get_encode_kwargs = _patched_get_encode_kwargs
 
 
 def monkey_patch_minimax_m2_for_lora():

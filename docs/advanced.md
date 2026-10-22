@@ -5,6 +5,7 @@ This page covers the specialized features layered on top of the core training st
 ## Table of Contents
 
 - [Custom Modeling](#custom-modeling)
+  - [Router Precision](#router-precision)
   - [Expert Parallelism Backends](#expert-parallelism-backends)
   - [Runtime Fusions](#runtime-fusions)
 - [Multimodal Training](#multimodal-training)
@@ -39,13 +40,15 @@ and a BF16 checkpoint such as `unsloth/gpt-oss-20b-BF16`; the original MXFP4 che
 
 Dense linear precision and routed-expert precision are configured independently. `[trainer.model.quantization]` applies only to dense `Linear` modules:
 
-- `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90+).
+- `type = "fp8"` — DeepGEMM FP8 blockwise linears (requires SM90 or SM100).
 - `type = "mxfp8"` — torchao MXFP8 linears (requires SM100). `recipe` is `mxfp8_rceil` or `mxfp8_rceil_wgrad_with_hp`.
+
+Both skip `lm_head`, the router and a few gate/projection modules by default (`ignore_patterns`). Add model-specific modules with `extra_ignore_patterns`, which keeps the defaults; setting `ignore_patterns` replaces them.
 
 `[trainer.model.moe.compute]` selects routed-expert compute independently:
 
 - `type = "bf16"` (default), with `backend = "torch"` (default) or `"sonicmoe"`.
-- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90+)
+- `type = "deepgemm_fp8"` (requires DeepGEMM and SM90 or SM100)
 - `type = "mxfp8"` (requires `prime-kernels`, torchao, and SM100)
 
 SonicMoE uses the upstream `sonic-moe` package (`uv sync --extra sonic-moe`) for fused BF16 expert computation. The supported model is Qwen3 MoE with the `gate_up` model fusion enabled. Backend selection requires fused gate/up weights, standard SwiGLU, and bias-free experts; incompatible expert structures raise an error during setup. It uses the same router and local, torch EP, or DeepEP dispatch as other compute backends:
@@ -100,7 +103,17 @@ Backend shape checks and token alignment apply only to the selected compute path
 
 In RL runs, configure the same precision selection for rollouts. Inference module names can differ from the trainer's names, and inference precision is configured explicitly, not inferred from `apply_to`. Check the selected modules on both sides before comparing trainer and rollout logprobs.
 
-GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed. To override the schedule manually, set `[trainer.model.index_cache]` (`topk_freq` or `topk_pattern`).
+GLM-5.2 adds IndexShare: the DSA sparse-attention indexer runs only on a subset of layers and the remaining layers reuse the cached top-k indices. The trainer reads this schedule from the model's `indexer_types` config field and enables the index cache automatically, so no extra config is needed.
+
+### Router precision
+
+Router gates use BF16 operands and share the transformer block's FSDP unit. Logits are produced in FP32 directly from the gate GEMM;
+score functions, normalization and routing weights remain FP32.
+
+For models that weight expert outputs after expert computation, local and Torch EP dispatch multiply
+by FP32 routing weights and sum the contributions in FP32, then cast once to the expert output dtype.
+This also covers MXFP8 expert compute with Torch dispatch. DeepEP and MegaMoE use their own combine
+kernels and do not share this accumulation guarantee.
 
 ### Expert Parallelism Backends
 

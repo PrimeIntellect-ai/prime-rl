@@ -15,13 +15,14 @@ from prime_rl.configs.algorithm import (
 from prime_rl.configs.monitors import TrainMonitorsConfig
 from prime_rl.configs.shared import (
     BaseModelConfig,
+    ControlConfig,
     EnvVars,
     FileSystemWeightBroadcastConfig,
     HeartbeatConfig,
     LogConfig,
+    PolicyClientConfig,
     ResumeConfig,
     TransportConfig,
-    VLLMClientConfig,
     WeightBroadcastConfig,
     ZMQTransportConfig,
 )
@@ -29,19 +30,8 @@ from prime_rl.configs.trainer import TokenizerConfig
 from prime_rl.utils.config import BaseConfig, default_output_dir
 
 
-class LoRAConfig(BaseConfig):
-    rank: int | None = Field(None, ge=1)
-    """LoRA rank for this run. Must be ≤ trainer's max rank. If None, uses the trainer's rank."""
-
-    alpha: float | None = Field(None, ge=0)
-    """LoRA alpha for this run. If None, uses the trainer's alpha."""
-
-
 class ModelConfig(BaseModelConfig):
-    lora: LoRAConfig | None = None
-    """Per-run LoRA configuration. If None, LoRA is disabled."""
-
-    client: VLLMClientConfig = Field(default_factory=VLLMClientConfig)
+    client: PolicyClientConfig = Field(default_factory=PolicyClientConfig)
     """Client of the live deployment (``[orchestrator.model.client]``)."""
 
 
@@ -61,6 +51,9 @@ class TrainSamplingConfig(BaseConfig):
 
     max_completion_tokens: int | None = None
     """Maximum output tokens per turn. If None, generates until max context length or EOS."""
+
+    logprobs: int | None = Field(None, ge=1)
+    """Record this many top sampler probabilities per token, in addition to its sampled logprob."""
 
     # Strictly speaking, extra_body is not a sampling parameter, but it is the
     # easiest way to pass arbitrary extra parameters to the server via verifiers
@@ -437,15 +430,6 @@ class CheckpointConfig(BaseConfig):
     interval: int | None = Field(None, ge=1)
     """Step interval at which to save the orchestrator checkpoint."""
 
-    wait_for_weights_timeout: int | None = Field(None, ge=1)
-    """Wait up to this many seconds for the startup weight directory to appear (the trainer broadcasts the incoming policy — v0 from scratch, the resumed step's version on resume — before the first step). If None, fall back to a default timeout. Raise this for large models on slow shared filesystems."""
-
-    keep_last: int | None = Field(None, ge=1)
-    """Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency."""
-
-    keep_interval: int | None = Field(None, ge=1)
-    """Keep checkpoints at every N steps permanently (e.g. ``keep_interval=100`` keeps step 100, 200, ...). If None, no interval-based keeping."""
-
 
 class ConcurrencyConfig(BaseConfig):
     """Adaptive in-flight concurrency control. The orchestrator sizes the
@@ -480,6 +464,11 @@ class ConcurrencyConfig(BaseConfig):
 TRAIN_TOP_K_BOUND = 512
 
 
+class OrchestratorControlConfig(ControlConfig):
+    port: int = Field(8041, ge=1, le=65535)
+    """Port the control API listens on, next to the trainer's 8040 on a single node."""
+
+
 class OrchestratorConfig(BaseConfig):
     model: ModelConfig = ModelConfig()
     """The model being trained: its model fields plus the client of the live
@@ -512,13 +501,13 @@ class OrchestratorConfig(BaseConfig):
     """Mirror inference-server metrics to W&B (requires wandb). The ``/metrics`` poll itself always runs — it feeds the concurrency controller."""
 
     inference_metrics_roles: list[Literal["prefill", "decode"]] | None = None
-    """Role for each policy admin client when collecting P/D inference metrics."""
+    """P/D role of each policy admin client: labels inference metrics, and prefill engines pause before decode engines on weight updates."""
 
     ckpt: CheckpointConfig | None = None
+    """Checkpoint configuration."""
 
     resume: ResumeConfig | None = None
     """Resume the orchestrator from a checkpoint. None starts from scratch; an empty block resumes from the latest checkpoint, ``resume.step`` from that step, ``resume.dir`` from an external checkpoint step directory. Without ``ckpt`` the run loads but saves no new checkpoints."""
-    """Checkpoint configuration."""
 
     weight_broadcast: WeightBroadcastConfig = FileSystemWeightBroadcastConfig()
     """Transport used to receive updated weights from the trainer."""
@@ -529,8 +518,8 @@ class OrchestratorConfig(BaseConfig):
     output_dir: Path = Field(default_factory=default_output_dir)
     """Directory to write outputs to — checkpoints, weights, rollouts, and logs are written as subdirectories. Shared with the trainer; should be a persistent directory with enough disk space and unique per experiment running on a single node. Defaults to ``$PRL_OUTPUT_DIR`` if set, else ``outputs``."""
 
-    tasks_per_minute: int | None = Field(None, ge=1)
-    """Global rate limit on task dispatch, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. None disables rate limiting."""
+    dispatch_per_minute: int | None = Field(None, ge=1)
+    """Rate limit on episode dispatch, shared by train and eval: at most this many episodes start per minute. Each episode counts once, so a group of ``group_size`` episodes counts ``group_size`` times. Recommended for sandbox-backed environments to pace provisioning during autoscaling. None disables it."""
 
     batch_size: int = Field(128, ge=1)
     """Samples to train on per step."""
@@ -550,6 +539,9 @@ class OrchestratorConfig(BaseConfig):
     pad_to_multiple_of: int = Field(1, ge=1)
     """Pad each packed micro batch to a multiple of this value (the trainer's cp degree). Auto-filled by the ``rl`` entrypoint; set explicitly for standalone orchestrator runs with cp > 1."""
 
+    pad_to_seq_len: bool = False
+    """Pad every packed micro batch to ``seq_len`` instead of to a multiple of ``pad_to_multiple_of``. Rows then have one static shape, which avoids recompilation on dynamic sequence lengths (torch.compile, DeepGEMM JIT kernels, ...) at the cost of extra padding."""
+
     max_steps: int | None = None
     """Maximum training steps. If None, runs indefinitely."""
 
@@ -558,6 +550,10 @@ class OrchestratorConfig(BaseConfig):
 
     heartbeat: HeartbeatConfig | None = None
     """BetterStack heartbeat configuration for monitoring training progress."""
+
+    control: OrchestratorControlConfig | None = None
+    """Serve the orchestrator's control API (pause at a step the trainer accepted). If None, it
+    takes no control requests."""
 
     @model_validator(mode="after")
     def auto_setup_tokenizer(self):

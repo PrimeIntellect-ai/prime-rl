@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 from pydantic_config import ConfigFileError
 from renderers import custom_renderer_config
 
+from prime_rl.configs.algorithm import GRPOAlgoConfig, LinearLengthPenaltyConfig, LinearSubagentLengthPenaltyConfig
 from prime_rl.configs.env_server import EnvServerConfig
 from prime_rl.configs.eval import EvalConfig, SFTOnlineEvalConfig
 from prime_rl.configs.inference import InferenceConfig
@@ -42,11 +43,9 @@ CONFIG_CLASSES = [
 
 
 def get_config_files() -> list[Path]:
-    """Any TOML file inside `configs/` or `examples/`."""
-    config_files = list(Path("configs").rglob("*.toml"))
-    example_files = list(Path("examples").rglob("*.toml"))
-
-    return config_files + example_files
+    """Any TOML file inside `configs/`, `examples/` or `tests/regression/configs/`."""
+    roots = [Path("configs"), Path("examples"), Path("tests/regression/configs")]
+    return [path for root in roots for path in root.rglob("*.toml")]
 
 
 def can_parse(config_cls: type, args: list[str]) -> bool:
@@ -124,6 +123,34 @@ def test_defaults():
     assert config.variant.alpha == 0.1
 
 
+def test_rl_launcher_config_roundtrip(tmp_path):
+    from prime_rl.entrypoints.rl import write_config
+
+    config = cli(
+        RLConfig,
+        args=[
+            "@",
+            "examples/basic/reverse-text/rl.toml",
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--run.name",
+            "roundtrip",
+            "--trainer.loss.type",
+            "icepop",
+            "--trainer.loss.score-centering",
+            "--trainer.loss.score-centering-topk",
+            "4",
+        ],
+    )
+    write_config(config, tmp_path, exclude={"slurm", "dry_run", "clean"})
+    reloaded = cli(RLConfig, args=["@", str(tmp_path / "rl.json")])
+    assert reloaded.run_dir == config.run_dir
+    assert reloaded.trainer.weight_broadcast == config.trainer.weight_broadcast
+    assert reloaded.orchestrator.train.source[0].sampling.logprobs == 4
+    assert reloaded.inference.vllm.max_logprobs >= 6
+    assert reloaded.orchestrator.train.source[0].sampling.top_k is None
+
+
 def test_toml_partial_nested_override(tmp_path):
     """Partially overriding a nested model preserves unset field defaults."""
     write_toml(tmp_path / "cfg.toml", {"nested": {"lr": 3e-4}})
@@ -148,6 +175,31 @@ def test_toml_discriminated_union_switch_variant(tmp_path):
     config = cli(DummyConfig, args=["@", str(tmp_path / "cfg.toml")])
     assert config.variant.type == "b"
     assert config.variant.beta == 0.2
+
+
+@pytest.mark.parametrize(
+    "penalty,expected_type",
+    [
+        ({}, LinearLengthPenaltyConfig),
+        ({"num_output_tokens_weight": 0.5}, LinearLengthPenaltyConfig),
+        ({"type": "linear"}, LinearLengthPenaltyConfig),
+        ({"type": "linear-subagent"}, LinearSubagentLengthPenaltyConfig),
+        ({"type": "linear-subagent", "subagent_token_weight": 0.2}, LinearSubagentLengthPenaltyConfig),
+    ],
+)
+def test_length_penalty_variants_are_opt_in(tmp_path, penalty, expected_type):
+    assert GRPOAlgoConfig().length_penalty is None
+    direct = GRPOAlgoConfig.model_validate({"length_penalty": penalty})
+    write_toml(tmp_path / "penalty.toml", {"length_penalty": penalty})
+    from_toml = cli(GRPOAlgoConfig, args=["@", str(tmp_path / "penalty.toml")])
+    assert type(direct.length_penalty) is expected_type
+    assert from_toml.length_penalty == direct.length_penalty
+    if expected_type is LinearSubagentLengthPenaltyConfig:
+        assert direct.length_penalty.subagent_token_weight == penalty.get("subagent_token_weight", 0.0)
+    else:
+        assert "subagent_token_weight" not in direct.length_penalty.model_dump()
+    with pytest.raises(ValidationError):
+        GRPOAlgoConfig.model_validate({"length_penalty": {"type": "linear", "subagent_token_weight": 0.0}})
 
 
 def test_toml_discriminated_union_override_switch_variant(tmp_path):
@@ -196,6 +248,16 @@ def test_icepop_is_an_optional_loss_with_validated_ratio_bounds():
 
     config = TrainerConfig.model_validate({"loss": {"type": "icepop", "ratio_low": 0.2, "ratio_high": 5.0}})
     assert config.loss.type == "icepop"
+    assert config.loss.score_centering_topk == 128
+    assert not config.loss.score_centering
+    for unsupported in (
+        {"type": "ipo_tis"},
+        {"type": "score_centering"},
+        {"type": "ipo", "score_centering": True},
+        {"type": "icepop", "score_centering_topk": None},
+    ):
+        with pytest.raises(ValidationError):
+            TrainerConfig.model_validate({"loss": unsupported})
     assert config.loss.ratio_low == 0.2
     assert config.loss.ratio_high == 5.0
 
@@ -331,18 +393,7 @@ def test_removed_moe_runtime_fields_are_rejected(removed):
 def test_optimizer_state_offload_keeps_legacy_default(config_cls):
     config = config_cls.model_validate({})
 
-    assert config.model.optim_cpu_offload is True
-    assert config.model.full_offload is None
-
-
-def test_moe_router_dtype_auto_resolves_per_trainer():
-    """``moe_router_dtype='auto'`` (the default) resolves to fp32 for RL and bf16 for SFT; explicit values are kept."""
-    assert TrainerConfig.model_validate({}).model.moe_router_dtype == "float32"
-    assert SFTConfig.model_validate({}).model.moe_router_dtype == "bfloat16"
-
-    for config_cls in (TrainerConfig, SFTConfig):
-        for dtype in ("bfloat16", "float32"):
-            assert config_cls.model_validate({"model": {"moe_router_dtype": dtype}}).model.moe_router_dtype == dtype
+    assert config.model.offload == "optimizer"
 
 
 def test_freeze_moe_router_auto_resolves_per_trainer():
@@ -360,7 +411,7 @@ def test_full_optimizer_offload_disables_gradient_clipping(config_cls):
     with pytest.warns(UserWarning, match="Gradient clipping prevents optimizer-in-backward"):
         config = config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"max_norm": 1.0},
             }
         )
@@ -373,7 +424,7 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
     with pytest.raises(ValidationError, match="Full optimizer offload only supports AdamW and SignSGD"):
         config_cls.model_validate(
             {
-                "model": {"optim_cpu_offload": False, "full_offload": True},
+                "model": {"offload": "full"},
                 "optim": {"type": "muon", "max_norm": None},
             }
         )
@@ -383,11 +434,11 @@ def test_full_optimizer_offload_requires_supported_optimizer(config_cls):
 def test_full_optimizer_offload_accepts_sign_sgd(config_cls):
     config = config_cls.model_validate(
         {
-            "model": {"optim_cpu_offload": False, "full_offload": True},
+            "model": {"offload": "full"},
             "optim": {"type": "sign_sgd", "max_norm": None},
         }
     )
-    assert config.model.full_offload is not None
+    assert config.model.offload == "full"
     assert config.optim.type == "sign_sgd"
 
 
@@ -748,6 +799,24 @@ def test_multi_node_auto_inference_parallelism():
     assert config.inference.vllm.data_parallel_size == 2
 
 
+def test_disaggregated_inference_inherits_deployment_gpus_per_node():
+    config = {
+        "trainer": {},
+        "orchestrator": {},
+        "inference": {"vllm": {"tensor_parallel_size": 2}, "deployment": {"type": "disaggregated"}},
+        "deployment": {"type": "multi_node", "gpus_per_node": 4, "num_train_nodes": 1},
+        "slurm": {},
+    }
+    resolved = RLConfig.model_validate(config)
+    assert resolved.inference.deployment.gpus_per_node == 4
+    assert resolved.inference.vllm.data_parallel_size_local == 2
+
+    config["deployment"].pop("gpus_per_node")
+    config["inference"]["deployment"]["gpus_per_node"] = 4
+    with pytest.raises(ValidationError, match="gpus_per_node must match"):
+        RLConfig.model_validate(config)
+
+
 def test_orchestrator_vlm_requires_renderer():
     with pytest.raises(ValidationError, match="renderer"):
         OrchestratorConfig.model_validate(
@@ -778,21 +847,10 @@ def test_orchestrator_vlm_requires_renderer():
     assert config.renderer is not None
 
 
-def test_trainer_rejects_vlm_cp_with_ring():
-    config = {
-        "model": {
-            "cp": 2,
-            "optimization_dtype": "bfloat16",
-            "reduce_dtype": "bfloat16",
-            "vlm": {
-                "vision_encoder_attr": "model.visual",
-                "language_model_attr": "model.language_model",
-            },
-        },
-    }
-
-    with pytest.raises(ValidationError, match="cp_style='ulysses'"):
-        TrainerConfig.model_validate(config)
+def test_ac_none_disables_ac_offloading():
+    config = TrainerModelConfig.model_validate({"ac": None})
+    assert config.ac is None
+    assert config.ac_offloading is None
 
 
 def test_shared_model_name_propagates_to_subconfigs():
@@ -1173,11 +1231,14 @@ def test_explicit_inference_parser_wins_over_auto():
     assert config.inference.vllm.tool_call_parser == "hermes"
 
 
-def test_combined_replay_uses_v2_runner(monkeypatch):
+@pytest.mark.parametrize("deployment", [{"type": "single_node"}, {"type": "disaggregated"}])
+def test_combined_replay_uses_v2_runner(monkeypatch, deployment):
     from prime_rl.inference.server import setup_vllm_env
 
     monkeypatch.delenv("VLLM_USE_V2_MODEL_RUNNER", raising=False)
     config = InferenceConfig(
+        deployment=deployment,
+        slurm={} if deployment["type"] == "disaggregated" else None,
         enable_return_sampling_mask=True,
         vllm={"enable_return_routed_experts": True},
     )
@@ -1187,6 +1248,32 @@ def test_combined_replay_uses_v2_runner(monkeypatch):
     assert config.enable_return_sampling_mask is True
     assert config.vllm.enable_return_routed_experts is True
     assert os.environ["VLLM_USE_V2_MODEL_RUNNER"] == "1"
+
+
+def test_pd_role_connectors():
+    mooncake = {"type": "mooncake", "cpu": {"num_bytes": 1000}}
+    deployment = {"type": "disaggregated", "decode_kv_cache_offload": {**mooncake, "cpu": {"num_bytes": 0}}}
+    config = InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake)
+    prefill = config.for_pd_role("prefill").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    assert [c["kv_connector"] for c in prefill] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert [c["kv_connector"] for c in decode] == ["NixlConnector", "MooncakeStoreConnector"]
+    assert decode[1]["kv_connector_extra_config"]["save_decode_cache"]
+
+    with pytest.raises(ValidationError, match="decode_kv_cache_offload"):
+        InferenceConfig(deployment=deployment, slurm={}, kv_cache_offload=mooncake, hisparse={"host_pool_gib": 160})
+    deployment["decode_kv_cache_offload"] = None
+    config = InferenceConfig(
+        deployment=deployment, slurm={}, kv_cache_offload=mooncake, hisparse={"host_pool_gib": 160}
+    )
+    decode = config.for_pd_role("decode").build_kv_transfer_config()["kv_connector_extra_config"]["connectors"]
+    assert [c["kv_connector"] for c in decode] == ["NixlConnector", "HiSparseConnector"]
+    assert config.for_pd_role("prefill").hisparse is None
+
+    with pytest.raises(ValidationError, match="native KV cache offload"):
+        InferenceConfig(
+            kv_cache_offload={"type": "native", "cpu": {"num_bytes": 1000}}, hisparse={"host_pool_gib": 160}
+        )
 
 
 CUSTOM_RENDERER_SOURCE = """
