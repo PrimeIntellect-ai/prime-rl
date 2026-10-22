@@ -25,6 +25,7 @@ from prime_rl.utils.cp import (
     setup_context_parallel,
     setup_cp_params,
     shard_for_cp,
+    validate_cp_seq_lens,
 )
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
@@ -413,13 +414,12 @@ def train(config: TrainerConfig):
             seq_lens_are_pre_shard = False
 
             if cp_enabled:
+                validate_cp_seq_lens(micro_batch["seq_lens"], input_ids.shape[-1])
                 defer_vlm_cp_to_model = bool(
                     mm_forward_policy is not None and mm_forward_policy.defer_context_parallelism
                 )
                 if not defer_vlm_cp_to_model:
-                    input_ids, position_ids = setup_cp_params(
-                        input_ids, position_ids, cp_rank, cp_size, seq_lens=micro_batch["seq_lens"]
-                    )
+                    input_ids, position_ids = setup_cp_params(input_ids, position_ids, cp_rank, cp_size)
                 seq_lens_are_pre_shard = True
                 labels = shard_for_cp(labels, cp_rank=cp_rank, cp_world_size=cp_size)
                 if topk_ids is not None:
