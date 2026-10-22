@@ -37,13 +37,11 @@ def _gather_row_chunk_to_master(
     if not active_dims:
         return value.to_local()[start:stop].to(dtype) if rank == 0 else None
     mesh_dim = active_dims[0]
-    destination_coordinates = (mesh.mesh == 0).nonzero().tolist()
-    if len(destination_coordinates) != 1:
-        raise ValueError("Trainer rank 0 must belong to the embedding mesh")
-    coordinate = destination_coordinates[0]
-    row_group_index = list(coordinate)
-    row_group_index[mesh_dim] = slice(None)
-    owners = mesh.mesh[tuple(row_group_index)].tolist()
+    index = [0] * mesh.ndim
+    index[mesh_dim] = slice(None)
+    owners = mesh.mesh[tuple(index)].tolist()
+    if owners[0] != 0:
+        raise ValueError("Trainer rank 0 must be at the origin of the embedding mesh")
     if rank not in owners:
         return None
     group = mesh.get_group(mesh_dim)
