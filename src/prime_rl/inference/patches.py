@@ -30,6 +30,10 @@ def apply_shared_vllm_patches():
     monkey_patch_dp_coordinator_startup_timeout()
     monkey_patch_minimax_m2_for_lora()
     monkey_patch_packed_sampling_masks()
+    if os.environ.get("PRIME_TOP_P_BEFORE_TOP_K") == "1":
+        from prime_rl.inference.vllm.sampling_order import patch_top_p_then_top_k
+
+        patch_top_p_then_top_k()
     monkey_patch_engine_gc()
     monkey_patch_packed_aux_outputs()
     monkey_patch_aux_output_store()

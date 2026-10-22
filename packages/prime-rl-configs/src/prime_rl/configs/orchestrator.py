@@ -460,8 +460,8 @@ class ConcurrencyConfig(BaseConfig):
 # bound for explicit top-k. vLLM's native sampling-mask capture requires a
 # per-request top_k > 0 to bound mask sizes, and the trainer pads each micro
 # batch's masks to the largest sampling mask, so the bound also caps trainer
-# mask tensors. Large enough that a 0.95-0.99 nucleus rarely reaches it (the
-# sampling policy is essentially unchanged).
+# mask tensors.
+TRAIN_TOP_K_DEFAULT = 128
 TRAIN_TOP_K_BOUND = 512
 
 
@@ -631,12 +631,12 @@ class OrchestratorConfig(BaseConfig):
         unbounded = [sampling for sampling in truncating if sampling.top_k is None]
         if unbounded:
             warnings.warn(
-                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_BOUND} so every sampling mask is "
+                f"Truncated train sampling: defaulting top_k = {TRAIN_TOP_K_DEFAULT} so every sampling mask is "
                 "bounded and sampling replay stays exact. Set top_k explicitly to override.",
                 stacklevel=2,
             )
             for sampling in unbounded:
-                sampling.top_k = TRAIN_TOP_K_BOUND
+                sampling.top_k = TRAIN_TOP_K_DEFAULT
 
         algos = [env.algo for env in self.train.source] or [self.train.algo]
         if any(algo.type in ("opd", "opsd") for algo in algos):

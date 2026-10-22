@@ -338,7 +338,7 @@ Truncated sampling (`top_p < 1`, `top_k`) renormalizes the sampling distribution
 ```toml
 [orchestrator.train.sampling]
 top_p = 0.95
-top_k = 512   # optional, defaults to 512 under truncation (bounds each sampling mask)
+top_k = 128   # optional, defaults to 128 under truncation (bounds each sampling mask)
 ```
 
 That's all — there are no replay flags. Truncated train sampling makes the inference server return sampling masks (`inference.enable_return_sampling_mask`, auto-enabled), and the trainer replays them. Train-sampling `top_k` above 512 is rejected: the trainer pads each micro batch to its largest sampling mask, so the bound caps trainer memory. Configs that would break under renormalized logprobs are rejected: `opd`/`opsd` and truncation knobs smuggled via `extra_body`. Frozen-source envs are exempt.
@@ -357,3 +357,20 @@ Router replay, score centering and sampling replay give every token a training a
 - Every kept array is deleted exactly once, by whoever holds it last: the trainer, once every rank fetched a step's arrays; the orchestrator, when it drops a sample or trace without shipping it (filtered, pruned, stale, or discarded at shutdown); the env server, when an episode it kept never reached the orchestrator. A micro batch whose arrays cannot be fetched is dropped from the loss on every rank that trains it (`payload/dropped_micro_batches`), never trained on zeros.
 
 On multi-node SLURM runs every inference node runs a replica of every launcher-managed env server, and the orchestrator sends each run to the replica with the fewest runs in flight, so env-server memory and CPU spread over all inference nodes. Without inference nodes, the env servers run next to the orchestrator. Eval rollouts and rollouts from env servers you run yourself (`serve.address`) keep their arrays inline.
+
+### Top-p before the top-k cap
+
+Sampling-mask capture defaults to `inference.top_p_before_top_k = true`: select the nucleus using the full
+probability distribution, then keep at most `top_k` candidates and renormalize.
+For example, with `top_p = 0.99` and `top_k = 128`, a nucleus smaller than 128 is
+unchanged; a larger nucleus is capped at 128 and may retain less than 99% of the
+original mass. Ties at the cap are broken by token ID (higher IDs retained).
+
+This applies engine-wide, including evaluation requests, when sampling-mask
+capture is enabled on the V2 model runner. Without capture, the flag has no effect.
+The recorded mask and processed logprobs
+reflect the final support, so trainer replay and score centering use that same
+distribution. Set `inference.top_p_before_top_k = false` to use vLLM's
+top-k-then-top-p order instead. The default implementation uses a
+full-vocabulary sorting implementation; benchmark inference throughput before
+assuming the same performance as vLLM's optimized sampler.
