@@ -57,6 +57,20 @@ class DeepseekV41DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(RMSNormConfig(hidden_size=config.hidden_size, eps=config.rms_norm_eps))
         self.attn_hc = DeepseekV41HyperConnection(config)
         self.ffn_hc = DeepseekV41HyperConnection(config)
+        # "attention" or "moe" when a pipeline stage boundary cuts this layer and the stage keeps one block.
+        self.pipeline_part: str | None = None
+
+    def keep_pipeline_part(self, part: str) -> None:
+        """Keep only the attention block (and its mHC gates) or only the MoE block of this layer. Between
+        the two the residual streams and the attention block's `pre` gate are what a layer boundary
+        carries, so a stage boundary can sit there."""
+        if part == "attention":
+            self.mlp = self.post_attention_layernorm = self.ffn_hc = None
+        elif part == "moe":
+            self.self_attn = self.input_layernorm = self.attn_hc = None
+        else:
+            raise ValueError(f"unknown pipeline part {part!r}")
+        self.pipeline_part = part
 
     def forward(
         self,
@@ -71,11 +85,15 @@ class DeepseekV41DecoderLayer(nn.Module):
         packed: PackedContext,
     ) -> tuple[Tensor | None, ...]:
         state = SharedAttnState(compressed_kv, index_k, top_k_indices, candidates)
-
-        attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
         dtype = mhc_states.dtype
-        attn_out, state = self.self_attn(self.input_layernorm(attn_in).to(dtype), packed=packed, state=state)
-        mhc_states = self.attn_hc.update_states(post, comb, attn_out, streams)
+
+        attn_pre = pre_mix
+        if self.pipeline_part != "moe":
+            attn_pre, post, comb, attn_in, streams = self.attn_hc.gates_and_collapse(mhc_states, pre_mix)
+            attn_out, state = self.self_attn(self.input_layernorm(attn_in).to(dtype), packed=packed, state=state)
+            mhc_states = self.attn_hc.update_states(post, comb, attn_out, streams)
+            if self.pipeline_part == "attention":
+                return (mhc_states, attn_pre, *state.as_tuple())
 
         ffn_pre, post, comb, ffn_in, streams = self.ffn_hc.gates_and_collapse(mhc_states, attn_pre)
         mlp_out = self.mlp(self.post_attention_layernorm(ffn_in).to(dtype), routed_experts=routed_experts)
@@ -295,6 +313,70 @@ class DeepseekV41ForCausalLM(DeepseekV41PreTrainedModel, GenerationMixin):
             labels[:, slice_indices] if labels is not None else None,
             temperature=temperature,
         )
+
+    def prune_to_pipeline_stage(self, units: range, *, first: bool, last: bool) -> None:
+        """Keep only this pipeline stage's decoder layers (and engrams), the embedding on the first
+        stage and the final norm and head on the last. `units` are half layers: unit 2i is layer i's
+        attention block, 2i + 1 its MoE block; a layer cut by a stage boundary keeps its stage's block,
+        and its engram goes with the attention block."""
+        from prime_rl.trainer.pipeline import StageLayers
+
+        model = self.model
+        # The residual streams a non-last stage sends come out of an mHC update, whose backward reads only
+        # its inputs, so the executor may free them once sent. The shared attention state is read by later
+        # layers' backward and is kept.
+        self.pipeline_releasable_outputs = () if last else (0,)
+        layer_ids = sorted({unit // 2 for unit in units})
+        model.layers = StageLayers({idx: model.layers[idx] for idx in layer_ids})
+        for idx, layer in zip(layer_ids, model.layers):
+            if 2 * idx not in units:
+                layer.keep_pipeline_part("moe")
+            elif 2 * idx + 1 not in units:
+                layer.keep_pipeline_part("attention")
+        model.engrams = nn.ModuleDict({key: engram for key, engram in model.engrams.items() if 2 * int(key) in units})
+        if len(model.engrams) == 0:
+            model.engram_hasher = None
+        if not first:
+            model.embed_tokens = None
+        if not last:
+            model.norm = None
+            self.lm_head = None
+
+    def pipeline_stage_forward(self, *inputs: Tensor) -> Tensor | tuple[Tensor, ...]:
+        """One pipeline stage. The first stage takes `(input_ids, position_ids, labels)`; later
+        stages take the residual streams, the `pre` gate and the shared attention state (an empty
+        tensor where it is still unset) followed by those three. The last stage returns the summed
+        cross-entropy, the others what the next stage takes.
+
+        Each call reads its micro-batch's document lengths from `pipeline_seq_lens`, host tensors
+        queued in micro-batch order (a stage runs its forwards in that order), so building the
+        packing context never waits on the GPU."""
+        model = self.model
+        seq_lens = self.pipeline_seq_lens.pop(0)
+        if model.embed_tokens is not None:
+            input_ids, position_ids, labels = inputs
+            mhc_states = (
+                model.embed_tokens(input_ids).unsqueeze(2).expand(-1, -1, model.config.hc_mult, -1).contiguous()
+            )
+            pre_mix = identity_pre_mix(mhc_states)
+            shared: list[Tensor | None] = list(SharedAttnState().as_tuple())
+        else:
+            mhc_states, pre_mix, *shared, input_ids, position_ids, labels = inputs
+            shared = [None if tensor.numel() == 0 else tensor for tensor in shared]
+        # Positions were checked against `seq_lens` on the host when the micro-batches were stacked.
+        packed = PackedContext.build(config=model.config, seq_lens=seq_lens, device=input_ids.device)
+        hash_ids = model.engram_hasher(input_ids, packed.tok_doc_start) if model.engram_hasher is not None else None
+        for name, decoder_layer in model.layers.named_children():
+            if name in model.engrams:
+                engram = model.engrams[name]
+                mhc_states = engram(mhc_states, hash_ids[:, engram.engram_idx])
+            mhc_states, pre_mix, *shared = decoder_layer(mhc_states, pre_mix, *shared, None, packed=packed)
+        if self.lm_head is not None:
+            hidden_states = model.norm(collapse_streams(mhc_states, pre_mix)).to(mhc_states.dtype)
+            # One element per micro-batch: the schedule concatenates the last stage's outputs.
+            return self.lm_head(hidden_states, labels)["loss"].reshape(1)
+        shared = [mhc_states.new_empty(0) if tensor is None else tensor for tensor in shared]
+        return (mhc_states, pre_mix, *shared, input_ids, position_ids, labels)
 
     def init_buffers_post_meta(self) -> None:
         # Rebuilt here are the buffers no checkpoint carries: the shared rotary tables, the engram

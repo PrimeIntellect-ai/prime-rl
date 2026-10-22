@@ -36,7 +36,8 @@ from prime_rl.trainer.model import (
     setup_model,
 )
 from prime_rl.trainer.parallel_dims import get_parallel_dims, resolve_ep
-from prime_rl.trainer.perf import get_perf_counter
+from prime_rl.trainer.perf import FlopCounter, get_perf_counter
+from prime_rl.trainer.pipeline import build_pipeline_schedule, local_stage_ids, queue_seq_lens, stack_micro_batches
 from prime_rl.trainer.sft.data import (
     get_dataset_progress,
     get_dataset_state,
@@ -117,7 +118,8 @@ def train(config: SFTConfig):
     parallel_dims = get_parallel_dims(config.model)
 
     total_micro_batches = config.data.batch_size * config.model.cp
-    micro_batches_per_step = world.world_size * config.data.micro_batch_size
+    # Every stage of a pipeline runs the same micro-batches.
+    micro_batches_per_step = world.world_size // config.model.pp * config.data.micro_batch_size
     assert total_micro_batches % micro_batches_per_step == 0, (
         f"batch_size * cp ({total_micro_batches}) must be divisible by "
         f"world_size * micro_batch_size ({micro_batches_per_step})"
@@ -143,7 +145,15 @@ def train(config: SFTConfig):
     # Initialize the model and tokenizer
     logger.info(f"Initializing model ({config.model})")
     loading_from_ckpt_later = checkpoint_step is not None
-    model = setup_model(config.model, parallel_dims, loading_from_ckpt_later)
+    stage_ids = [None]
+    if parallel_dims.pp_enabled:
+        pp_rank = parallel_dims.world_mesh["pp"].get_local_rank()
+        stage_ids = local_stage_ids(
+            pp_rank, parallel_dims.pp, config.model.pp_schedule, config.model.pp_stages_per_rank
+        )
+    model_parts = [setup_model(config.model, parallel_dims, loading_from_ckpt_later, stage) for stage in stage_ids]
+    # Single-model code paths (MoE stats, checkpoints, weight broadcast) see the first part.
+    model = model_parts[0]
 
     if parallel_dims.cp_enabled:
         setup_context_parallel(model, config.model, parallel_dims)
@@ -161,7 +171,7 @@ def train(config: SFTConfig):
     logger.info(f"Initializing optimizer ({config.optim})")
     optimizer, gradient_manager = setup_optimizer(
         config.optim,
-        list(model.named_parameters()),
+        [named for part in model_parts for named in part.named_parameters()],
         parallel_dims,
         offload=config.model.offload,
         model=model,
@@ -186,6 +196,7 @@ def train(config: SFTConfig):
         tokenizer,
         config.data,
         config.model.cp,
+        pp_size=config.model.pp,
         renderer_config=config.renderer,
         processor=processor,
         multimodal=multimodal,
@@ -235,6 +246,27 @@ def train(config: SFTConfig):
     dp_cp_group = parallel_dims.get_mesh("dp_cp").get_group()
     ep_group = parallel_dims.get_mesh("ep").get_group() if parallel_dims.ep_enabled else None
     cp_size = parallel_dims.cp
+
+    pp_enabled = parallel_dims.pp_enabled
+    pp_schedule = None  # built at the first step, from its first micro-batch
+    if pp_enabled:
+        pp_group = parallel_dims.world_mesh["pp"].get_group()
+        num_stages = parallel_dims.pp * config.model.pp_stages_per_rank
+        pp_first, pp_last = 0 in stage_ids, num_stages - 1 in stage_ids
+        # The pipeline rank holding the last stage (rank 0 in V schedules), which computes the loss.
+        pp_loss_rank = next(
+            owner
+            for owner in range(parallel_dims.pp)
+            if num_stages - 1
+            in local_stage_ids(owner, parallel_dims.pp, config.model.pp_schedule, config.model.pp_stages_per_rank)
+        )
+        # Each rank counts the FLOPs of the stages it holds; the step sums them over the pipeline.
+        stage_flop_counters = [FlopCounter(part) for part in model_parts]
+        flops_per_token_6dn = torch.tensor(
+            float(sum(counter.flops_per_token_6dn for counter in stage_flop_counters)), device="cuda"
+        )
+        dist.all_reduce(flops_per_token_6dn, group=pp_group)
+        flops_per_token_6dn = flops_per_token_6dn.item()
 
     def compute_loss(micro_batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass returning (loss_sum, token_count) over unmasked tokens."""
@@ -451,6 +483,48 @@ def train(config: SFTConfig):
         perf_counter = get_perf_counter(model)
         step_local_num_tokens = 0
         step_local_flops = 0
+        if pp_enabled:
+            micro_batches = list(micro_batches)
+            for micro_batch in micro_batches:
+                step_local_num_tokens += micro_batch["input_ids"].shape[1]
+                seq_lens = micro_batch["seq_lens"].tolist()
+                step_local_flops += sum(counter(seq_lens) for counter in stage_flop_counters)
+            # Every stage of a pipeline reads the same micro-batches, so each counts the same tokens.
+            if gradient_manager is None:
+                step_local_token_count += sum(micro_batch["loss_mask"].sum() for micro_batch in micro_batches).to(
+                    "cuda"
+                )
+            stage_inputs = stack_micro_batches(micro_batches) if pp_first else ()
+            if pp_schedule is None:
+                queue_seq_lens(model_parts, micro_batches[:1])
+                pp_schedule = build_pipeline_schedule(
+                    model_parts,
+                    parallel_dims,
+                    config.model.pp_schedule,
+                    config.model.pp_stages_per_rank,
+                    grad_accum_steps,
+                    loss_fn=lambda loss_sum, _target: loss_sum.sum() / grad_accum_steps,
+                    first_inputs=tuple(t[:1] for t in stage_inputs) if pp_first else None,
+                    warmup_step=config.model.pp_warmup_step,
+                    transport=config.model.pp_transport,
+                    transport_ctas=config.model.pp_transport_ctas,
+                )
+            queue_seq_lens(model_parts, micro_batches)
+            losses = [] if pp_last else None
+            # The last stage computes the loss itself; the schedule still splits a target per micro-batch.
+            target = torch.zeros(grad_accum_steps, 1, device="cuda") if pp_last else None
+            with maybe_record_function("pipeline"):
+                pp_schedule.step(*stage_inputs, target=target, losses=losses)
+            if pp_last:
+                step_loss_sum += torch.stack(losses).sum().detach() * grad_accum_steps
+            dist.broadcast(step_loss_sum, group_src=pp_loss_rank, group=pp_group)
+            if is_moe_model:
+                moe_stats_step, step_tokens_per_expert = get_global_moe_stats(model, ep_group, dp_cp_group)
+                for name, value in moe_stats_step.items():
+                    moe_stats[f"{name}/mean"] += value
+                    if name == "max_vio":
+                        moe_stats["max_vio/max"] = value
+            micro_batches = []
         for micro_step, micro_batch in enumerate(micro_batches):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
@@ -497,7 +571,8 @@ def train(config: SFTConfig):
             global_token_count_val = global_step_token_count.item()
             if global_token_count_val > 0:
                 grad_scale = parallel_dims.fsdp_gradient_divide_factor * grad_accum_steps / global_token_count_val
-                scale_gradients_(None, model, grad_scale)
+                for part in model_parts:
+                    scale_gradients_(None, part, grad_scale)
 
         # Run validation after forward-backward (so torch.compile sees training graph first) but before
         # optimizer step (so eval_on_start evaluates untrained weights)
@@ -520,7 +595,13 @@ def train(config: SFTConfig):
         grad_norm: torch.Tensor | None = None
         if config.optim.max_norm is not None:
             logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-            grad_norm = clip_grad_norm_(gradient_manager, model, config.optim.max_norm)
+            # A pipeline rank can hold several stages (model parts).
+            grad_norm = clip_grad_norm_(
+                gradient_manager,
+                torch.nn.ModuleList(model_parts) if pp_enabled else model,
+                config.optim.max_norm,
+                pp_group if pp_enabled else None,
+            )
         logger.debug("Optimizer step")
         optimizer.step()
         optimizer.zero_grad()
@@ -556,6 +637,11 @@ def train(config: SFTConfig):
         # The dp mesh excludes cp, whose ranks hold the same rows.
         global_counts = torch.tensor([step_local_num_tokens, step_local_flops], dtype=torch.float64, device="cuda")
         dist.all_reduce(global_counts, op=dist.ReduceOp.SUM, group=parallel_dims.get_mesh("dp").get_group())
+        if pp_enabled:
+            # Each stage counted its own layers' FLOPs over the same tokens.
+            stage_flops = global_counts[1:].clone()
+            dist.all_reduce(stage_flops, group=pp_group)
+            global_counts[1:] = stage_flops
         num_tokens, num_flops = int(global_counts[0].item()), global_counts[1].item()
         progress.total_tokens += num_tokens
         dataset_progress = get_dataset_progress(dataloader)
@@ -566,7 +652,9 @@ def train(config: SFTConfig):
         perf_counter.count_tokens(num_tokens)
         throughput = perf_counter.get_step_tokens_per_second(num_tokens, step_time)
         mfu = perf_counter.get_step_mfu(num_flops, step_time)
-        mfu_6dn = perf_counter.get_step_mfu(perf_counter.flop_counter.flops_per_token_6dn * num_tokens, step_time)
+        if not pp_enabled:
+            flops_per_token_6dn = perf_counter.flop_counter.flops_per_token_6dn
+        mfu_6dn = perf_counter.get_step_mfu(flops_per_token_6dn * num_tokens, step_time)
         peak_memory = torch.cuda.max_memory_reserved() / 1024**3  # GiB
         max_peak_memory = max(max_peak_memory, peak_memory)
 

@@ -66,6 +66,7 @@ from prime_rl.trainer.models.qwen3_8_flash_next.indexer import SparseAttentionIn
 from prime_rl.trainer.models.qwen3_8_flash_next.ngram_embedding import NGramEmbedding
 from prime_rl.trainer.moe_runtime import configure_moe_runtime
 from prime_rl.trainer.parallel_dims import ParallelDims
+from prime_rl.trainer.pipeline import prune_to_pipeline_stage
 from prime_rl.trainer.utils import get_dcp_group
 from prime_rl.trainer.world import get_world, wait_for_master
 from prime_rl.utils.logger import get_logger
@@ -595,21 +596,24 @@ def setup_fsdp(model: nn.Module, config: ModelConfig, parallel_dims: ParallelDim
     )
 
     if shard_norm_and_lm_head:
-        # This optimization breaks weight tying
+        # This optimization breaks weight tying. A pipeline stage holds the embedding only if it is the
+        # first stage, and the head only if it is the last.
         embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
-        fully_shard(
-            embed_module,
-            mesh=hsdp_mesh,
-            **fsdp_config,
-        )
-        fully_shard(
-            [model.lm_head, final_module],
-            mesh=hsdp_mesh,
-            mp_policy=mp_policy,
-            offload_policy=offload_policy,
-            reshard_after_forward=False,
-            shard_placement_fn=shard_placement_fn,
-        )
+        if embed_module is not None:
+            fully_shard(
+                embed_module,
+                mesh=hsdp_mesh,
+                **fsdp_config,
+            )
+        if model.lm_head is not None:
+            fully_shard(
+                [model.lm_head, final_module],
+                mesh=hsdp_mesh,
+                mp_policy=mp_policy,
+                offload_policy=offload_policy,
+                reshard_after_forward=False,
+                shard_placement_fn=shard_placement_fn,
+            )
     else:
         get_logger().warning("Model uses tied word embeddings, so skipping the last-layer no-reshard optimization.")
 
@@ -817,13 +821,20 @@ DYNAMIC_INT_ARGS = (
     "max_seqlen",
 )
 
+# Int attributes of objects passed into compiled layers, with the same problem as DYNAMIC_INT_ARGS.
+DYNAMIC_INT_ATTRS = (
+    # DeepSeek-V4/V4.1 CompressionLayout: the most compressed entries any one document of the packed row has.
+    "max_entries_per_doc",
+)
+
 
 def mark_dynamic_int_args() -> None:
-    """Add DYNAMIC_INT_ARGS to torch.compiler.config.dynamic_sources, keeping entries already set."""
+    """Add DYNAMIC_INT_ARGS and DYNAMIC_INT_ATTRS to torch.compiler.config.dynamic_sources, keeping entries already set."""
     sources = [source for source in torch.compiler.config.dynamic_sources.split(",") if source]
-    for arg in DYNAMIC_INT_ARGS:
-        # Matches the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs (L['kwargs']['max_seqlen']).
-        pattern = rf".*\['{arg}'\]"
+    # Arg patterns match the arg passed directly (L['max_seqlen']) or through a wrapper's kwargs
+    # (L['kwargs']['max_seqlen']); attr patterns match it on any object (L['packed'].layouts[2].max_entries_per_doc).
+    patterns = [rf".*\['{arg}'\]" for arg in DYNAMIC_INT_ARGS] + [rf".*\.{attr}$" for attr in DYNAMIC_INT_ATTRS]
+    for pattern in patterns:
         if pattern not in sources:
             sources.append(pattern)
     torch.compiler.config.dynamic_sources = ",".join(sources)
@@ -934,6 +945,7 @@ def setup_model(
     config: ModelConfig,
     parallel_dims: ParallelDims,
     loading_from_checkpoint_later: bool = False,
+    pp_stage: int | None = None,
 ) -> nn.Module:
     resolve_auto_attn(config)
 
@@ -962,6 +974,12 @@ def setup_model(
 
     inject_prime_lm_head(model, chunk_size=lm_head_chunk_size)
 
+    # After the LM head injection, which patches the model's forward.
+    if parallel_dims.pp_enabled:
+        prune_to_pipeline_stage(
+            model, pp_stage, parallel_dims.pp * config.pp_stages_per_rank, config.pp_layers_per_stage
+        )
+
     apply_quantization(model, config)
 
     frozen_vision_encoder = configure_trainable_parameters(model, config)
@@ -977,10 +995,13 @@ def setup_model(
     # No-op for models without a sparse indexer.
     freeze_sparse_indexer(model)
 
-    if config.debug.force_balanced_routing:
+    # A pipeline stage can hold no MoE: no decoder layers (the head alone) or only an attention block.
+    has_moe = any(isinstance(module, MoE) for module in model.modules())
+    if config.debug.force_balanced_routing and has_moe:
         apply_force_balanced_routing(model)
 
-    configure_moe_runtime(model, config, parallel_dims)
+    if has_moe:
+        configure_moe_runtime(model, config, parallel_dims)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.

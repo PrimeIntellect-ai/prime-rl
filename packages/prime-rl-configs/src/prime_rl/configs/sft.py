@@ -493,6 +493,21 @@ class SFTConfig(BaseTrainerConfig):
         return self
 
     @model_validator(mode="after")
+    def validate_pp(self):
+        if self.model.pp == 1:
+            return self
+        if self.val is not None or self.eval is not None:
+            raise ValueError("Pipeline parallelism supports neither validation nor online evals yet")
+        # Stages exchange fixed shapes, probed once on the first micro-batch.
+        if self.data.type == "fake" and self.data.length != "fixed":
+            raise ValueError("Pipeline parallelism needs fixed-length rows: set data.length = 'fixed'")
+        if self.data.type != "fake" and not self.data.pad_to_seq_len:
+            raise ValueError("Pipeline parallelism needs fixed-length rows: set data.pad_to_seq_len = true")
+        if self.ckpt is not None and self.model.pp_stages_per_rank > 1:
+            raise ValueError("Checkpoints support one pipeline stage per rank only")
+        return self
+
+    @model_validator(mode="after")
     def validate_cp_micro_batch_size(self):
         if self.model.cp > 1:
             if self.data.micro_batch_size != 1:
