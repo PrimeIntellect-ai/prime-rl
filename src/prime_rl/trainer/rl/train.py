@@ -29,6 +29,7 @@ from prime_rl.utils.cp import (
 from prime_rl.utils.logger import format_time, setup_logger
 from prime_rl.trainer.rl.loss import (
     compute_entropy,
+    compute_support_entropy,
     compute_loss,
     _mismatch_kl_from_log_ratio,
     selective_log_softmax,
@@ -479,13 +480,21 @@ def train(config: TrainerConfig):
                 else:
                     out["logprobs"] = selective_log_softmax(scaled_logits, labels)
                 out["entropy"] = compute_entropy(scaled_logits)
+                out["entropy_support"] = compute_support_entropy(scaled_logits, labels, sampling_mask, out["entropy"])
+                with torch.no_grad():
+                    out["logprobs_full"] = (
+                        selective_log_softmax(scaled_logits, labels)
+                        if sampling_mask is not None
+                        else out["logprobs"].detach()
+                    )
                 if topk_ids is not None:
                     out["topk_logprobs"] = selective_topk_log_softmax(scaled_logits, topk_ids, sampling_mask, labels)
             # else: FusedOutputLinear was used - logprobs already computed with per-token temperatures
 
             if cp_enabled:
                 out["logprobs"] = gather_for_cp(out["logprobs"], cp_group)
-                out["entropy"] = gather_for_cp_wo_grad(out["entropy"], cp_size, cp_group)
+                for key in ("entropy", "entropy_support", "logprobs_full"):
+                    out[key] = gather_for_cp_wo_grad(out[key], cp_size, cp_group)
                 if out.get("topk_logprobs") is not None:
                     out["topk_logprobs"] = gather_for_cp(out["topk_logprobs"], cp_group)
 
@@ -497,6 +506,9 @@ def train(config: TrainerConfig):
             out["entropy"] = shift_tensor_right(
                 out["entropy"], pad_value=torch.log(torch.tensor(float(vocab_size))).item()
             )
+
+            out["entropy_support"] = shift_tensor_right(out["entropy_support"], pad_value=0.0)
+            out["logprobs_full"] = shift_tensor_right(out["logprobs_full"], pad_value=0.0)
 
             trainer_topk = out.get("topk_logprobs")
             if trainer_topk is not None:
@@ -540,6 +552,8 @@ def train(config: TrainerConfig):
             # Add relevant tensors to tensor dict for logging purposes
             entropy = out["entropy"][loss_mask].detach().to("cpu")
             tensors["entropy/all"].append(entropy)
+            entropy_support = out["entropy_support"][loss_mask].detach().to("cpu")
+            tensors["entropy_support/all"].append(entropy_support)
             # Every CP rank computes the whole sequence's loss, and the global normalizers count each
             # sequence once per CP rank (gradients still sum correctly), so undo that for the logged value.
             tensors["loss"].append((loss.detach() * cp_size).to("cpu").unsqueeze(0))
@@ -552,6 +566,7 @@ def train(config: TrainerConfig):
 
             for env_name, indices in env_to_indices.items():
                 tensors[f"entropy/{env_name}"].append(entropy[indices])
+                tensors[f"entropy_support/{env_name}"].append(entropy_support[indices])
 
             # Mismatch KL is only meaningful where sampling logprobs exist —
             # keep rl/ref_kl member tokens (policy-sampled), exclude tokens
@@ -571,6 +586,9 @@ def train(config: TrainerConfig):
                     mismatch_kl = _mismatch_kl_from_log_ratio(log_ratio)
                 mismatch_kl = mismatch_kl.detach().to("cpu")
                 tensors["mismatch_kl/all"].append(mismatch_kl)
+                # Match both the normalization and token population of mismatch KL.
+                tensors["mismatch_entropy_support"].append(out["entropy_support"][mismatch_mask].detach().cpu())
+                tensors["mismatch_entropy_full"].append(out["entropy"][mismatch_mask].detach().cpu())
                 mismatch_env_names = [
                     env_name for env_name, keep in zip(env_names, mismatch_mask.flatten().tolist()) if keep
                 ]
@@ -719,10 +737,13 @@ def train(config: TrainerConfig):
         asyncio.run(monitors.log(optim_metrics, step=progress.step))
 
         # Compute derived metrics
-        entropy_mean = tensor_stats.get("entropy/all/mean", 0.0)
+        entropy_mean = tensor_stats.get("mismatch_entropy_support/mean", 0.0)
         mismatch_kl_mean = tensor_stats.get("mismatch_kl/all/mean")
         if mismatch_kl_mean is not None and entropy_mean > 0:
             tensor_stats["kl_ent_ratio/mean"] = mismatch_kl_mean / entropy_mean
+        full_entropy_mean = tensor_stats.get("mismatch_entropy_full/mean", 0.0)
+        if mismatch_kl_mean is not None and full_entropy_mean > 0:
+            tensor_stats["kl_ent_ratio_full/mean"] = mismatch_kl_mean / full_entropy_mean
 
         tensor_stats["step"] = progress.step
         asyncio.run(monitors.log(filter_rl_trainer_tensor_stats_for_wandb(tensor_stats), step=progress.step))
