@@ -19,9 +19,9 @@ class PrimeLmOutput(TypedDict, total=False):
 
     logits: Tensor | None
     logprobs: Tensor | None
+    entropy_full_vocab: Tensor | None
     entropy: Tensor | None
-    entropy_support: Tensor | None
-    logprobs_full: Tensor | None
+    logprobs_full_vocab: Tensor | None
     topk_logprobs: Tensor | None
     loss: Tensor | None
 
@@ -35,9 +35,9 @@ def cast_float_and_contiguous(output: PrimeLmOutput) -> PrimeLmOutput:
     return PrimeLmOutput(
         logits=_float_and_contiguous(output.get("logits")),
         logprobs=_float_and_contiguous(output.get("logprobs")),
+        entropy_full_vocab=_float_and_contiguous(output.get("entropy_full_vocab")),
         entropy=_float_and_contiguous(output.get("entropy")),
-        entropy_support=_float_and_contiguous(output.get("entropy_support")),
-        logprobs_full=_float_and_contiguous(output.get("logprobs_full")),
+        logprobs_full_vocab=_float_and_contiguous(output.get("logprobs_full_vocab")),
         topk_logprobs=_float_and_contiguous(output.get("topk_logprobs")),
         loss=output.get("loss"),
     )
@@ -48,7 +48,7 @@ class FusedOutputLinear(torch.nn.Linear):
 
     With ``labels`` and no ``temperature`` it returns the summed cross-entropy over labels != IGNORE_INDEX
     as ``loss``, computing the gradients chunk by chunk in the forward pass (see ``_ChunkedCrossEntropySumFn``).
-    With ``temperature`` it returns per-token ``logprobs`` and ``entropy``.
+    With ``temperature`` it returns per-token logprobs and entropy under both training and full-vocabulary normalization.
     """
 
     def __init__(self, in_features: int, out_features: int, chunk_size: int):
@@ -80,19 +80,21 @@ class FusedOutputLinear(torch.nn.Linear):
 
         if topk_ids is not None:
             topk_ids = topk_ids.reshape(b * s, topk_ids.shape[-1]).long().contiguous()
-        logprobs, entropy, topk_logprobs, entropy_support, logprobs_full = _SequenceChunkedLogProbEntropyFn.apply(
-            hidden_states, self.weight, labels, inv_t, self.chunk_size, sampling_mask, topk_ids
+        logprobs, entropy_full_vocab, topk_logprobs, entropy, logprobs_full_vocab = (
+            _SequenceChunkedLogProbEntropyFn.apply(
+                hidden_states, self.weight, labels, inv_t, self.chunk_size, sampling_mask, topk_ids
+            )
         )
 
         logprobs = logprobs.reshape(b, s)
-        entropy = entropy.reshape(b, s)
+        entropy_full_vocab = entropy_full_vocab.reshape(b, s)
         topk_logprobs = topk_logprobs.reshape(b, s, -1) if topk_logprobs is not None else None
         return PrimeLmOutput(
             logprobs=logprobs,
-            entropy=entropy,
+            entropy_full_vocab=entropy_full_vocab,
             topk_logprobs=topk_logprobs,
-            entropy_support=entropy_support.reshape(b, s),
-            logprobs_full=logprobs_full.reshape(b, s),
+            entropy=entropy.reshape(b, s),
+            logprobs_full_vocab=logprobs_full_vocab.reshape(b, s),
         )
 
 
@@ -182,7 +184,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
         Positions with a usable ``sampling_mask`` (see ``sampling_replay_mask``) are
         renormalized over that mask: ``logprob = scaled_logits[label] -
-        logsumexp(scaled_logits[mask])``. Other positions — and entropy, a
+        logsumexp(scaled_logits[mask])``. Other positions — and entropy_full_vocab, a
         full-distribution diagnostic — keep full-vocab normalization.
         """
         assert hidden.dim() == 2, f"expected hidden [N,H], got {tuple(hidden.shape)}"
@@ -203,9 +205,9 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         vocab = weight.shape[0]
         vocab_chunk_size = min(vocab, 8192)
         logprobs = torch.empty((n,), device=device, dtype=torch.float32)
-        entropy = torch.empty((n,), device=device, dtype=torch.float32)
-        entropy_support = torch.empty_like(entropy)
-        logprobs_full = torch.empty_like(logprobs)
+        entropy_full_vocab = torch.empty((n,), device=device, dtype=torch.float32)
+        entropy = torch.empty_like(entropy_full_vocab)
+        logprobs_full_vocab = torch.empty_like(logprobs)
         logz = torch.empty((n,), device=device, dtype=torch.float32)
         replay = torch.zeros((n,), device=device, dtype=torch.bool) if sampling_mask is not None else None
         topk_logprobs = torch.empty_like(topk_ids, dtype=torch.float32) if topk_ids is not None else None
@@ -261,12 +263,12 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
                 logz_chunk = logz_full
             logz[start:end] = logz_chunk
             logprobs[start:end] = target_logits - logz_chunk
-            entropy[start:end] = logz_full - (t / s)
-            logprobs_full[start:end] = target_logits - logz_full
-            entropy_support[start:end] = (
-                sampling_support_entropy(mask_logits, replay_chunk, entropy[start:end])
+            entropy_full_vocab[start:end] = logz_full - (t / s)
+            logprobs_full_vocab[start:end] = target_logits - logz_full
+            entropy[start:end] = (
+                sampling_support_entropy(mask_logits, replay_chunk, entropy_full_vocab[start:end])
                 if mask_chunk is not None
-                else entropy[start:end]
+                else entropy_full_vocab[start:end]
             )
             if topk_chunk is not None:
                 topk_logprobs[start:end] = (topk_logits - logz_chunk.unsqueeze(-1)).masked_fill(topk_chunk < 0, 0.0)
@@ -277,20 +279,22 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
         ctx.save_for_backward(hidden, weight, labels, inv_temperature, logz, sampling_mask, replay, topk_ids)
         ctx.chunk_size = chunk_size
 
-        ctx.mark_non_differentiable(entropy_support, logprobs_full)
-        return logprobs, entropy, topk_logprobs, entropy_support, logprobs_full
+        ctx.mark_non_differentiable(entropy, logprobs_full_vocab)
+        return logprobs, entropy_full_vocab, topk_logprobs, entropy, logprobs_full_vocab
 
     @staticmethod
     def backward(
         ctx,
         grad_logprobs: torch.Tensor | None,
-        grad_entropy: torch.Tensor | None,
+        grad_entropy_full_vocab: torch.Tensor | None,
         grad_topk: torch.Tensor | None,
-        grad_entropy_support: torch.Tensor | None,
-        grad_logprobs_full: torch.Tensor | None,
+        grad_entropy: torch.Tensor | None,
+        grad_logprobs_full_vocab: torch.Tensor | None,
     ):
-        # Grads are not materialized (see forward above) so an unused entropy output arrives becomes None, and as we don't compare values we don't have any sync
-        assert grad_entropy is None, "Backward through entropy is not implemented in FusedOutputLinear"
+        # Grads are not materialized (see forward above) so an unused entropy_full_vocab output arrives becomes None, and as we don't compare values we don't have any sync
+        assert grad_entropy_full_vocab is None, (
+            "Backward through entropy_full_vocab is not implemented in FusedOutputLinear"
+        )
         assert grad_logprobs is not None or grad_topk is not None, "FusedOutputLinear requires a logprob gradient"
 
         hidden, weight, labels, inv_temperature, logz, sampling_mask, replay, topk_ids = ctx.saved_tensors
@@ -355,7 +359,7 @@ class _SequenceChunkedLogProbEntropyFn(torch.autograd.Function):
 
 
 class _ChunkedCrossEntropySumFn(torch.autograd.Function):
-    """Summed cross-entropy over labels != IGNORE_INDEX, with the gradients computed during forward.
+    """Summed cross-entropy_full_vocab over labels != IGNORE_INDEX, with the gradients computed during forward.
 
     Per chunk of ``chunk_size`` tokens: one full-vocab logits GEMM, the loss, and the gradient
     (softmax minus one-hot) folded straight into ``grad_hidden`` and ``grad_weight``. Only one chunk's
@@ -432,7 +436,7 @@ def inject_prime_lm_head(
     Args:
         model: The model to wrap.
         chunk_size: When set to an int, uses FusedOutputLinear with sequence-token chunked
-            loss/logprob/entropy computation.
+            loss/logprob/entropy_full_vocab computation.
     """
     # Guards so we have nicer error messages when a non-standard model is used
     assert hasattr(model, "model"), f"model doesnt have backbone in model.model:\n{model}"

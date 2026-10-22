@@ -42,11 +42,9 @@ class AnnotationWriter:
         streams = {
             "trainer_logprobs": _tensor_to_floats(model_output["logprobs"], self.float_decimals),
             "entropies": _tensor_to_floats(model_output["entropy"], self.float_decimals),
-            "trainer_logprobs_full": _tensor_to_floats(model_output["logprobs_full"], self.float_decimals),
-            "entropies_support": _tensor_to_floats(model_output["entropy_support"], self.float_decimals),
+            "trainer_logprobs_full_vocab": _tensor_to_floats(model_output["logprobs_full_vocab"], self.float_decimals),
+            "entropies_full_vocab": _tensor_to_floats(model_output["entropy_full_vocab"], self.float_decimals),
         }
-        streams["trainer_logprobs_support"] = streams["trainer_logprobs"]
-        streams["entropies_full"] = streams["entropies"]
 
         start = 0
         for trace_id, branch_index, length in zip(trace_ids, branch_indices, sequence_lengths):
