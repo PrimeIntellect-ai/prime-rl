@@ -261,7 +261,12 @@ class PrimeMoeModel(PrimeMoePreTrainedModel):
 
         def byte_stream() -> ByteWindowEmbedding:
             return ByteWindowEmbedding(
-                dim=config.hidden_size, window=config.hc_byte_window, table_path=config.hc_byte_table
+                dim=config.hidden_size,
+                window=config.hc_byte_window,
+                table_path=config.hc_byte_table,
+                units=config.hc_byte_units,
+                first_k=config.hc_byte_first_k,
+                script_table_path=config.hc_script_table,
             )
 
         self.ngram_embed_tokens = ngram_stream(0) if "ngram" in kinds else None

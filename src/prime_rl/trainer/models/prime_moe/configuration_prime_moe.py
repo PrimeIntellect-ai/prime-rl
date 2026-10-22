@@ -74,8 +74,12 @@ class PrimeMoeConfig(PretrainedConfig):
             input of every token-table stream (`tables`), every n-gram stream (`ngrams`) or both (`all`); None for no
             addition.
         hc_ngram_vocab_size (`int`, *optional*): Rows per hash head of the n-gram stream.
-        hc_byte_window (`int`, *optional*): Bytes per token of the byte stream.
+        hc_byte_window (`int`, *optional*): Unit slots per token of the byte stream (bytes, or `hc_byte_units`).
         hc_byte_table (`str`, *optional*): Path of the tokenizer's token-to-bytes table for the byte stream.
+        hc_byte_units (`str`): Units of the byte embeddings: `bytes` (UTF-8 bytes), `chars` (characters, four byte
+            slots each) or `script` (characters as SCRIPT block and index units; `hc_script_table`).
+        hc_byte_first_k (`bool`): Tokens longer than the byte window see their own first units instead of the last.
+        hc_script_table (`str`, *optional*): Path of the code point -> SCRIPT block / index table.
         n_null_experts (`int`): Zero-output experts the router can select next to the routed experts (AdaMoE); a
             token that selects them uses fewer routed experts.
         attn_output_gate (`bool`): Elementwise sigmoid gate on the attention output, computed from the block input
@@ -141,6 +145,9 @@ class PrimeMoeConfig(PretrainedConfig):
         hc_ngram_vocab_size=None,
         hc_byte_window=None,
         hc_byte_table=None,
+        hc_byte_units="bytes",
+        hc_byte_first_k=False,
+        hc_script_table=None,
         n_null_experts=0,
         attn_output_gate=False,
         exclusive_attention=False,
@@ -200,6 +207,9 @@ class PrimeMoeConfig(PretrainedConfig):
         self.hc_ngram_vocab_size = hc_ngram_vocab_size
         self.hc_byte_window = hc_byte_window
         self.hc_byte_table = hc_byte_table
+        self.hc_byte_units = hc_byte_units
+        self.hc_byte_first_k = hc_byte_first_k
+        self.hc_script_table = hc_script_table
         self.n_null_experts = n_null_experts
         self.attn_output_gate = attn_output_gate
         self.exclusive_attention = exclusive_attention
