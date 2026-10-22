@@ -367,9 +367,8 @@ def train(config: TrainerConfig):
             ref_kl_weights = (
                 micro_batch["ref_kl_weights"].to("cuda") if micro_batch["ref_kl_weights"] is not None else None
             )
-            routed_experts = (
-                micro_batch["routed_experts"].to("cuda") if micro_batch["routed_experts"] is not None else None
-            )
+            # Stays on the host in its wire dtype (uint8/uint16) until after the CP shard below
+            routed_experts = micro_batch["routed_experts"]
 
             if routed_experts is None and config.enable_router_replay:
                 raise ValueError(
@@ -434,6 +433,9 @@ def train(config: TrainerConfig):
                     # The LM head consumes masks after any deferred VLM sharding, so
                     # they must follow the label shard rather than the input shard.
                     sampling_mask = shard_for_cp(sampling_mask, cp_rank=cp_rank, cp_world_size=cp_size)
+
+            if routed_experts is not None:
+                routed_experts = routed_experts.to("cuda").int()
 
             temperatures = micro_batch["temperatures"].to("cuda")
 
@@ -593,6 +595,8 @@ def train(config: TrainerConfig):
             logger.debug(micro_step_message)
 
         annotation_writer.flush()
+        # Free this batch before the next one is received and converted
+        del micro_batches, micro_batch
 
         # compute_loss already divided by the global token count. Undo FSDP's per-rank averaging
         # across dp_cp so the final gradient is the true per-token mean over the global batch.
