@@ -21,7 +21,24 @@ All runs used one 8x B300 node (SM103, NV18), torch 2.14.0+cu130, dist_moe `caf4
 | GLM-4.5-Air, 8 layers | dist_moe | 1.130 (1.109-1.165) | 28990 | 44.4% | 63.71 |
 | GLM-4.5-Air, 8 layers | dist_moe, repeat | 1.129 | 29030 | 44.4% | 63.71 |
 
-dist_moe is 1.70x faster on Qwen3-30B-A3B and 1.67x on GLM-4.5-Air, and same-code repeats agree within 0.5%. The extra peak memory matches dist_moe's startup log: on Qwen, +18.3 GiB against a 13.75 GiB device buffer plus 4.5 GiB of routing state; on GLM, +8.1 GiB against 8.31 plus 0.33 GiB.
+With the default `fullgraph = false`, dist_moe is 1.70x faster on Qwen3-30B-A3B and 1.67x on GLM-4.5-Air, and same-code repeats agree within 0.5%. The extra peak memory matches dist_moe's startup log: on Qwen, +18.3 GiB against a 13.75 GiB device buffer plus 4.5 GiB of routing state; on GLM, +8.1 GiB against 8.31 plus 0.33 GiB.
+
+### With `fullgraph = true`
+
+The same workloads with `compile-fullgraph.toml` added to both arms (runs `fg-*`, summaries `results/fg-*.csv`):
+
+| Workload | Arm | Step (s) | Tok/s/GPU | MFU | Peak (GiB) |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3-30B-A3B | torch | 5.960 (5.941-6.002) | 10996 | 46.7% | 79.83 |
+| Qwen3-30B-A3B | torch, repeat | 5.955 | 11005 | 46.7% | 79.83 |
+| Qwen3-30B-A3B | dist_moe | 5.057 (5.034-5.069) | 12959 | 55.0% | 98.11 |
+| Qwen3-30B-A3B | dist_moe, repeat | 5.044 | 12994 | 55.2% | 98.11 |
+| GLM-4.5-Air, 8 layers | torch | 1.458 (1.414-1.522) | 22481 | 34.9% | 55.10 |
+| GLM-4.5-Air, 8 layers | torch, repeat | 1.450 | 22596 | 34.6% | 55.10 |
+| GLM-4.5-Air, 8 layers | dist_moe | 1.124 (1.108-1.158) | 29145 | 44.8% | 63.71 |
+| GLM-4.5-Air, 8 layers | dist_moe, repeat | 1.125 | 29122 | 44.6% | 63.71 |
+
+Fullgraph speeds up `torch` dispatch 1.44x on Qwen and 1.30x on GLM and leaves dist_moe unchanged, so dist_moe's lead shrinks to 1.18x on Qwen and 1.30x on GLM. In the Qwen traces (`profiling/sft-ab/derived/fg-qwen-accounting.txt`), fullgraph cuts `torch` dispatch's elementwise/copy time from 2156 to 415 ms per step and its permute/gather/scatter time from 1795 to 537 ms, while its exposed all-to-all stays at about 1.2 s. dist_moe removes that all-to-all. Recompiles match the fullgraph-off runs: none on Qwen, one per rank in step 1 on GLM. Fullgraph moves `torch` dispatch's Qwen step-1 loss from 1.45349 to 1.45491, reproducibly.
 
 The `deepep` arm fails at this config on torch 2.14. With AC full, step 1 raises `RuntimeError: Autograd not support dtype: Byte` in `combine` (`src/prime_rl/trainer/distributed/deepep.py:389`) during the AC recompute, with or without compile. With AC none and compile on, Dynamo traces the DeepEP `Buffer` constructor and fails on `ProcessGroup._device_types`. With AC none and compile off on GLM, the step times are torch 1.483 s, deepep 1.676 s and dist_moe 1.084 s, with peaks of 97.5, 107.2 and 79.4 GiB. deepep turns off grad clipping when ep > 1, so its loss curve differs by design.
 

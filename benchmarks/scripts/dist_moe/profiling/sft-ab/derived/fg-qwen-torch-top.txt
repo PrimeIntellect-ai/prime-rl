@@ -1,0 +1,100 @@
+# Top GPU kernels: `/home/garrett/tmp/profiling/dist-moe-sft-ab/traces/tr-fg-qwen-torch/trace_0.json.gz`
+
+- window: 5989.7 ms (`forward` [-2] to last GPU event), stream filter: none, grouped by name
+- GPU busy (union over selected streams): 5896.1 ms (98.4% of window); non-NCCL busy 4687.1 ms (78.3%)
+- GPU idle: 93.6 ms (1.6%); exposed NCCL (no non-NCCL kernel running): 1209.0 ms (20.2%)
+- summed durations: non-NCCL 4715.0 ms, NCCL 1341.1 ms; 23880 GPU events
+- kernel ms per stream (all streams, in window): 7: 5861.2, 32: 122.2, 28: 59.4, 24: 10.1, 23: 3.2
+
+## Non-NCCL, by total time (top 25)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1450.8 |   24.6 |  24.2 |    96 |  15.112 |  15.101 | kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBa... |
+|  2 |    973.4 |   16.5 |  16.3 |   192 |   5.070 |   5.009 | kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionFo... |
+|  3 |    292.2 |    5.0 |   4.9 |   384 |   0.761 |   0.761 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+|  4 |    163.1 |    2.8 |   2.7 |   392 |   0.416 |   0.367 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_TNT                         |
+|  5 |    151.4 |    2.6 |   2.5 |   192 |   0.789 |   0.785 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+|  6 |    148.3 |    2.5 |   2.5 |   192 |   0.773 |   0.764 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+|  7 |     80.4 |    1.4 |   1.3 |    96 |   0.837 |   0.834 | triton_per_fused__to_copy__unsafe_view_add_sum_view_24                 |
+|  8 |     79.9 |    1.4 |   1.3 |    96 |   0.832 |   0.841 | triton_poi_fused_cat_mul_silu_silu_backward_split_23                   |
+|  9 |     70.1 |    1.2 |   1.2 |   192 |   0.365 |   0.361 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_NNT                         |
+| 10 |     69.8 |    1.2 |   1.2 |    96 |   0.727 |   0.731 | triton_red_fused__softmax__to_copy__unsafe_view_add_all_to_all_sing... |
+| 11 |     57.5 |    1.0 |   1.0 |    96 |   0.599 |   0.597 | triton_poi_fused_add_index_index_put_mul_view_23                       |
+| 12 |     55.5 |    0.9 |   0.9 |    64 |   0.867 |   0.863 | elementwise_kernel<128, 2, CUDAFunctor_add<float>>                     |
+| 13 |     49.1 |    0.8 |   0.8 |   196 |   0.251 |   0.246 | chunk_cat_cuda_kernel<float, BFloat16>                                 |
+| 14 |     47.9 |    0.8 |   0.8 |    96 |   0.499 |   0.497 | nvjet_sm103_tst_256x192_64x4_2x4_2cta_h_bz_NTT                         |
+| 15 |     45.7 |    0.8 |   0.8 |    96 |   0.476 |   0.479 | triton_poi_fused_index_slice_backward_22                               |
+| 16 |     42.5 |    0.7 |   0.7 |    96 |   0.443 |   0.445 | triton_poi_fused_floor_divide_index_put_new_zeros_27                   |
+| 17 |     42.0 |    0.7 |   0.7 |    96 |   0.437 |   0.438 | triton_poi_fused_all_to_all_single_cat_index_select_slice_25           |
+| 18 |     40.7 |    0.7 |   0.7 |    96 |   0.424 |   0.425 | triton_poi_fused_index_15                                              |
+| 19 |     40.6 |    0.7 |   0.7 |    96 |   0.422 |   0.423 | triton_poi_fused_index_put_17                                          |
+| 20 |     39.6 |    0.7 |   0.7 |    96 |   0.412 |   0.412 | triton_poi_fused__grouped_mm_cat_index_new_zeros_transpose_20          |
+| 21 |     39.1 |    0.7 |   0.7 |    96 |   0.407 |   0.407 | triton_poi_fused_index_put_22                                          |
+| 22 |     37.9 |    0.6 |   0.6 |    96 |   0.394 |   0.396 | triton_poi_fused_cat_new_zeros_13                                      |
+| 23 |     35.9 |    0.6 |   0.6 |    32 |   1.120 |   1.111 | elementwise_kernel<128, 4, BinaryFunctor<float, MulFunctor<float>>>    |
+| 24 |     34.7 |    0.6 |   0.6 |    96 |   0.361 |   0.363 | nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_NTT                         |
+| 25 |     31.8 |    0.5 |   0.5 |    96 |   0.331 |   0.330 | triton_poi_fused_all_to_all_single_floor_divide_index_select_8         |
+
+- 1: `kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBackwardSm100_object_at__tensor000o111012_tensor000_o_101112_tensor000o111012_tensor000_o_10...`
+- 2: `kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o811121013_tensor000o111012_tensor000o101112_tensorptrbf16...`
+- 3: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #3`
+- 5: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS`
+- 6: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #2`
+- 10: `triton_red_fused__softmax__to_copy__unsafe_view_add_all_to_all_single_arange_clone_expand_gather_index_index_put_mul_new_zeros_remainder_select_sum_unsqueeze...`
+
+## Non-NCCL, by time per call (top 25, calls >= 1)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1450.8 |   24.6 |  24.2 |    96 |  15.112 |  15.101 | kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBa... |
+|  2 |    973.4 |   16.5 |  16.3 |   192 |   5.070 |   5.009 | kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionFo... |
+|  3 |     22.3 |    0.4 |   0.4 |     8 |   2.788 |   2.785 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_badd_NTT                       |
+|  4 |     21.7 |    0.4 |   0.4 |     8 |   2.715 |   2.707 | nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_NNT                         |
+|  5 |     35.9 |    0.6 |   0.6 |    32 |   1.120 |   1.111 | elementwise_kernel<128, 4, BinaryFunctor<float, MulFunctor<float>>>    |
+|  6 |     55.5 |    0.9 |   0.9 |    64 |   0.867 |   0.863 | elementwise_kernel<128, 2, CUDAFunctor_add<float>>                     |
+|  7 |     80.4 |    1.4 |   1.3 |    96 |   0.837 |   0.834 | triton_per_fused__to_copy__unsafe_view_add_sum_view_24                 |
+|  8 |     79.9 |    1.4 |   1.3 |    96 |   0.832 |   0.841 | triton_poi_fused_cat_mul_silu_silu_backward_split_23                   |
+|  9 |    151.4 |    2.6 |   2.5 |   192 |   0.789 |   0.785 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 10 |     27.5 |    0.5 |   0.5 |    35 |   0.786 |   0.849 | unrolled_elementwise_kernel<direct_copy_kernel_cuda::lambda(float), 4> |
+| 11 |    148.3 |    2.5 |   2.5 |   192 |   0.773 |   0.764 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 12 |    292.2 |    5.0 |   4.9 |   384 |   0.761 |   0.761 | cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWa... |
+| 13 |     69.8 |    1.2 |   1.2 |    96 |   0.727 |   0.731 | triton_red_fused__softmax__to_copy__unsafe_view_add_all_to_all_sing... |
+| 14 |     16.5 |    0.3 |   0.3 |    27 |   0.612 |   0.631 | multi_tensor_apply_kernel<FusedOptimizerTensorListMetadata<4>, Fuse... |
+| 15 |     57.5 |    1.0 |   1.0 |    96 |   0.599 |   0.597 | triton_poi_fused_add_index_index_put_mul_view_23                       |
+| 16 |     47.9 |    0.8 |   0.8 |    96 |   0.499 |   0.497 | nvjet_sm103_tst_256x192_64x4_2x4_2cta_h_bz_NTT                         |
+| 17 |     45.7 |    0.8 |   0.8 |    96 |   0.476 |   0.479 | triton_poi_fused_index_slice_backward_22                               |
+| 18 |      1.9 |    0.0 |   0.0 |     4 |   0.466 |   0.433 | elementwise_kernel<128, 4, BinaryFunctor<BFloat16, MulFunctor<float>>> |
+| 19 |     42.5 |    0.7 |   0.7 |    96 |   0.443 |   0.445 | triton_poi_fused_floor_divide_index_put_new_zeros_27                   |
+| 20 |     42.0 |    0.7 |   0.7 |    96 |   0.437 |   0.438 | triton_poi_fused_all_to_all_single_cat_index_select_slice_25           |
+| 21 |     40.7 |    0.7 |   0.7 |    96 |   0.424 |   0.425 | triton_poi_fused_index_15                                              |
+| 22 |     40.6 |    0.7 |   0.7 |    96 |   0.422 |   0.423 | triton_poi_fused_index_put_17                                          |
+| 23 |    163.1 |    2.8 |   2.7 |   392 |   0.416 |   0.367 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_TNT                         |
+| 24 |     39.6 |    0.7 |   0.7 |    96 |   0.412 |   0.412 | triton_poi_fused__grouped_mm_cat_index_new_zeros_transpose_20          |
+| 25 |     39.1 |    0.7 |   0.7 |    96 |   0.407 |   0.407 | triton_poi_fused_index_put_22                                          |
+
+- 1: `kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBackwardSm100_object_at__tensor000o111012_tensor000_o_101112_tensor000o111012_tensor000_o_10...`
+- 2: `kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o811121013_tensor000o111012_tensor000o101112_tensorptrbf16...`
+- 9: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS`
+- 11: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #2`
+- 12: `cutlass GemmUniversal GroupProblemShape MainloopSm100ArrayTmaUmmaWarpSpecialized arch Sm100 bfloat16_t SM100_MMA_F16BF16_2x1SM_SS #3`
+- 13: `triton_red_fused__softmax__to_copy__unsafe_view_add_all_to_all_single_arange_clone_expand_gather_index_index_put_mul_new_zeros_remainder_select_sum_unsqueeze...`
+- 14: `multi_tensor_apply_kernel<FusedOptimizerTensorListMetadata<4>, FusedAdamMathFunctor<float, 4, (ADAM_MODE)1, false>, float const*, double, double, double, dou...`
+
+## NCCL (durations include waiting for peers)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1175.7 |   19.9 |  19.6 |   768 |   1.531 |   1.799 | ncclDevKernel_SendRecv                                                 |
+|  2 |     94.8 |    1.6 |   1.6 |   100 |   0.948 |   0.766 | ncclDevKernel_ReduceScatter_Sum_f32_RING_LL                            |
+|  3 |     59.4 |    1.0 |   1.0 |   198 |   0.300 |   0.209 | ncclDevKernel_AllGather_RING_LL                                        |
+|  4 |      8.4 |    0.1 |   0.1 |    10 |   0.838 |   0.207 | ncclDevKernel_AllReduce_Sum_f32_RING_LL                                |
+|  5 |      2.1 |    0.0 |   0.0 |     1 |   2.118 |   2.118 | ncclDevKernel_AllReduce_Sum_f64_RING_LL                                |
+|  6 |      0.7 |    0.0 |   0.0 |     2 |   0.365 |   0.365 | ncclDevKernel_AllReduce_Sum_u64_RING_LL                                |
+
+Legend: total = summed durations in the window; % busy = total / GPU busy time and % win = total / window (shares
+can sum past 100 when streams overlap); calls = launches; mean/med = per launch. Names drop namespaces, lambdas,
+and argument lists (mangled names list their first identifiers); `#n` separates distinct kernels that shorten
+alike; truncated labels are listed under each table by rank; raw names are in the CSV. Site = `[<nearest non-aten
+enclosing op> >] <innermost cpu_op> <first 3 Input Dims>`; a site can launch several kernels, so its mean/median
+mix them.

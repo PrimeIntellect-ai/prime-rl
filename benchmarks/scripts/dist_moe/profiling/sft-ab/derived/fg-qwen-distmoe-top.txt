@@ -1,0 +1,107 @@
+# Top GPU kernels: `/home/garrett/tmp/profiling/dist-moe-sft-ab/traces/tr-fg-qwen-distmoe/trace_0.json.gz`
+
+- window: 5067.4 ms (`forward` [-2] to last GPU event), stream filter: none, grouped by name
+- GPU busy (union over selected streams): 4992.1 ms (98.5% of window); non-NCCL busy 4973.3 ms (98.1%)
+- GPU idle: 75.3 ms (1.5%); exposed NCCL (no non-NCCL kernel running): 18.8 ms (0.4%)
+- summed durations: non-NCCL 5005.9 ms, NCCL 140.4 ms; 17164 GPU events
+- kernel ms per stream (all streams, in window): 7: 4967.4, 32: 99.4, 28: 65.6, 24: 13.1, 23: 0.8
+
+## Non-NCCL, by total time (top 25)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1557.6 |   31.2 |  30.7 |    96 |  16.225 |  16.279 | kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBa... |
+|  2 |   1022.2 |   20.5 |  20.2 |   192 |   5.324 |   5.336 | kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionFo... |
+|  3 |    268.7 |    5.4 |   5.3 |   192 |   1.399 |   1.399 | _cute_dist_grouped_gemm_combine_fprop_kernel_cutlass_combine_kernel... |
+|  4 |    260.4 |    5.2 |   5.1 |    96 |   2.713 |   2.727 | _cute_dist_grouped_gemm_combine_dgrad_swiglu_bwd_kernel_cutlass_com... |
+|  5 |    200.0 |    4.0 |   3.9 |    96 |   2.083 |   2.088 | _cute_dist_grouped_gemm_dispatch_fprop_emit_swiglu_fwd_kernel_cutla... |
+|  6 |    172.8 |    3.5 |   3.4 |   392 |   0.441 |   0.383 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_TNT                         |
+|  7 |    162.4 |    3.3 |   3.2 |   192 |   0.846 |   0.789 | _cute_grouped_gemm_wgrad_kernel_cutlass_kernel_dist_moekernelsgroup... |
+|  8 |    158.9 |    3.2 |   3.1 |    96 |   1.656 |   1.653 | _cute_dist_grouped_gemm_dispatch_fprop_kernel_cutlass_dispatch_kern... |
+|  9 |    147.8 |    3.0 |   2.9 |    96 |   1.539 |   1.539 | _cute_dist_grouped_gemm_dispatch_dgrad_kernel_cutlass_dispatch_kern... |
+| 10 |     86.3 |    1.7 |   1.7 |   576 |   0.150 |   0.049 | _triton_symm_mem_barrier_multimem                                      |
+| 11 |     71.4 |    1.4 |   1.4 |   192 |   0.372 |   0.363 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_NNT                         |
+| 12 |     58.4 |    1.2 |   1.2 |    64 |   0.913 |   0.897 | elementwise_kernel<128, 2, CUDAFunctor_add<float>>                     |
+| 13 |     52.0 |    1.0 |   1.0 |    96 |   0.542 |   0.545 | nvjet_sm103_tst_256x192_64x4_2x4_2cta_h_bz_NTT                         |
+| 14 |     50.4 |    1.0 |   1.0 |   196 |   0.257 |   0.255 | chunk_cat_cuda_kernel<float, BFloat16>                                 |
+| 15 |     42.6 |    0.9 |   0.8 |    96 |   0.444 |   0.445 | _triton_broadcast_and_scale_dy_bf16_dx_bf16                            |
+| 16 |     42.4 |    0.9 |   0.8 |    96 |   0.442 |   0.445 | _triton_swiglu_fwd_x_bf16_z_bf16                                       |
+| 17 |     40.2 |    0.8 |   0.8 |    32 |   1.258 |   1.225 | elementwise_kernel<128, 4, BinaryFunctor<float, MulFunctor<float>>>    |
+| 18 |     36.7 |    0.7 |   0.7 |   192 |   0.191 |   0.190 | _triton_scale_and_sum_x_bf16_y_bf16                                    |
+| 19 |     35.2 |    0.7 |   0.7 |    96 |   0.367 |   0.369 | nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_NTT                         |
+| 20 |     29.1 |    0.6 |   0.6 |    35 |   0.831 |   0.881 | unrolled_elementwise_kernel<direct_copy_kernel_cuda::lambda(float), 4> |
+| 21 |     24.8 |    0.5 |   0.5 |   384 |   0.065 |   0.060 | kernel_cutlass_kernel_quackrmsnormRMSNorm_object_at__tensorptrbf16g... |
+| 22 |     23.2 |    0.5 |   0.5 |    64 |   0.362 |   0.363 | vectorized_elementwise_kernel<4, exp_kernel_cuda::lambda(float), fa... |
+| 23 |     23.0 |    0.5 |   0.5 |   426 |   0.054 |   0.045 | vectorized_elementwise_kernel<8, bfloat16_copy_kernel_cuda::lambda(... |
+| 24 |     22.9 |    0.5 |   0.5 |     8 |   2.863 |   2.799 | nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_NNT                         |
+| 25 |     22.4 |    0.4 |   0.4 |     8 |   2.802 |   2.790 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_badd_NTT                       |
+
+- 1: `kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBackwardSm100_object_at__tensor000o111012_tensor000_o_101112_tensor000o111012_tensor000_o_10...`
+- 2: `kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o811121013_tensor000o111012_tensor000o101112_tensorptrbf16...`
+- 3: `_cute_dist_grouped_gemm_combine_fprop_kernel_cutlass_combine_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 4: `_cute_dist_grouped_gemm_combine_dgrad_swiglu_bwd_kernel_cutlass_combine_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 5: `_cute_dist_grouped_gemm_dispatch_fprop_emit_swiglu_fwd_kernel_cutlass_dispatch_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 7: `_cute_grouped_gemm_wgrad_kernel_cutlass_kernel_dist_moekernelsgrouped_gemm_kernelGroupedGemmKernel_object_at__0`
+- 8: `_cute_dist_grouped_gemm_dispatch_fprop_kernel_cutlass_dispatch_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 9: `_cute_dist_grouped_gemm_dispatch_dgrad_kernel_cutlass_dispatch_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 21: `kernel_cutlass_kernel_quackrmsnormRMSNorm_object_at__tensorptrbf16gmemalign16o128i64div81_tensorptrbf16_gmem_align16_o_812801_None_None_tensorptrbf16gmemalig...`
+- 22: `vectorized_elementwise_kernel<4, exp_kernel_cuda::lambda(float), false>`
+- 23: `vectorized_elementwise_kernel<8, bfloat16_copy_kernel_cuda::lambda(float), false>`
+
+## Non-NCCL, by time per call (top 25, calls >= 1)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |   1557.6 |   31.2 |  30.7 |    96 |  16.225 |  16.279 | kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBa... |
+|  2 |   1022.2 |   20.5 |  20.2 |   192 |   5.324 |   5.336 | kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionFo... |
+|  3 |     22.9 |    0.5 |   0.5 |     8 |   2.863 |   2.799 | nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_NNT                         |
+|  4 |     22.4 |    0.4 |   0.4 |     8 |   2.802 |   2.790 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_badd_NTT                       |
+|  5 |    260.4 |    5.2 |   5.1 |    96 |   2.713 |   2.727 | _cute_dist_grouped_gemm_combine_dgrad_swiglu_bwd_kernel_cutlass_com... |
+|  6 |    200.0 |    4.0 |   3.9 |    96 |   2.083 |   2.088 | _cute_dist_grouped_gemm_dispatch_fprop_emit_swiglu_fwd_kernel_cutla... |
+|  7 |    158.9 |    3.2 |   3.1 |    96 |   1.656 |   1.653 | _cute_dist_grouped_gemm_dispatch_fprop_kernel_cutlass_dispatch_kern... |
+|  8 |    147.8 |    3.0 |   2.9 |    96 |   1.539 |   1.539 | _cute_dist_grouped_gemm_dispatch_dgrad_kernel_cutlass_dispatch_kern... |
+|  9 |    268.7 |    5.4 |   5.3 |   192 |   1.399 |   1.399 | _cute_dist_grouped_gemm_combine_fprop_kernel_cutlass_combine_kernel... |
+| 10 |     40.2 |    0.8 |   0.8 |    32 |   1.258 |   1.225 | elementwise_kernel<128, 4, BinaryFunctor<float, MulFunctor<float>>>    |
+| 11 |     58.4 |    1.2 |   1.2 |    64 |   0.913 |   0.897 | elementwise_kernel<128, 2, CUDAFunctor_add<float>>                     |
+| 12 |    162.4 |    3.3 |   3.2 |   192 |   0.846 |   0.789 | _cute_grouped_gemm_wgrad_kernel_cutlass_kernel_dist_moekernelsgroup... |
+| 13 |     29.1 |    0.6 |   0.6 |    35 |   0.831 |   0.881 | unrolled_elementwise_kernel<direct_copy_kernel_cuda::lambda(float), 4> |
+| 14 |     16.6 |    0.3 |   0.3 |    27 |   0.615 |   0.634 | multi_tensor_apply_kernel<FusedOptimizerTensorListMetadata<4>, Fuse... |
+| 15 |     52.0 |    1.0 |   1.0 |    96 |   0.542 |   0.545 | nvjet_sm103_tst_256x192_64x4_2x4_2cta_h_bz_NTT                         |
+| 16 |      2.1 |    0.0 |   0.0 |     4 |   0.515 |   0.496 | elementwise_kernel<128, 4, BinaryFunctor<BFloat16, MulFunctor<float>>> |
+| 17 |     42.6 |    0.9 |   0.8 |    96 |   0.444 |   0.445 | _triton_broadcast_and_scale_dy_bf16_dx_bf16                            |
+| 18 |     42.4 |    0.9 |   0.8 |    96 |   0.442 |   0.445 | _triton_swiglu_fwd_x_bf16_z_bf16                                       |
+| 19 |    172.8 |    3.5 |   3.4 |   392 |   0.441 |   0.383 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_TNT                         |
+| 20 |     71.4 |    1.4 |   1.4 |   192 |   0.372 |   0.363 | nvjet_sm103_tst_128x256_64x6_2x1_2cta_v_bz_NNT                         |
+| 21 |     35.2 |    0.7 |   0.7 |    96 |   0.367 |   0.369 | nvjet_sm103_tst_256x256_64x4_2x2_2cta_h_bz_NTT                         |
+| 22 |     23.2 |    0.5 |   0.5 |    64 |   0.362 |   0.363 | vectorized_elementwise_kernel<4, exp_kernel_cuda::lambda(float), fa... |
+| 23 |      0.7 |    0.0 |   0.0 |     2 |   0.337 |   0.337 | compute_grad_weight<BFloat16, long>                                    |
+| 24 |      0.5 |    0.0 |   0.0 |     2 |   0.273 |   0.273 | sum_and_scatter<BFloat16, long>                                        |
+| 25 |     50.4 |    1.0 |   1.0 |   196 |   0.257 |   0.255 | chunk_cat_cuda_kernel<float, BFloat16>                                 |
+
+- 1: `kernel_cutlass_kernel_flash_attncuteflash_bwd_sm100FlashAttentionBackwardSm100_object_at__tensor000o111012_tensor000_o_101112_tensor000o111012_tensor000_o_10...`
+- 2: `kernel_cutlass_kernel_flash_attncuteflash_fwd_sm100FlashAttentionForwardSm100_object_at__tensor0000o811121013_tensor000o111012_tensor000o101112_tensorptrbf16...`
+- 5: `_cute_dist_grouped_gemm_combine_dgrad_swiglu_bwd_kernel_cutlass_combine_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 6: `_cute_dist_grouped_gemm_dispatch_fprop_emit_swiglu_fwd_kernel_cutlass_dispatch_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 7: `_cute_dist_grouped_gemm_dispatch_fprop_kernel_cutlass_dispatch_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 8: `_cute_dist_grouped_gemm_dispatch_dgrad_kernel_cutlass_dispatch_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 9: `_cute_dist_grouped_gemm_combine_fprop_kernel_cutlass_combine_kernel_dist_moekernelsdist_grouped_gemm_kernelDistGroupedGemmKernel_object_at__0`
+- 12: `_cute_grouped_gemm_wgrad_kernel_cutlass_kernel_dist_moekernelsgrouped_gemm_kernelGroupedGemmKernel_object_at__0`
+- 14: `multi_tensor_apply_kernel<FusedOptimizerTensorListMetadata<4>, FusedAdamMathFunctor<float, 4, (ADAM_MODE)1, false>, float const*, double, double, double, dou...`
+- 22: `vectorized_elementwise_kernel<4, exp_kernel_cuda::lambda(float), false>`
+
+## NCCL (durations include waiting for peers)
+
+|  # | total ms | % busy | % win | calls | mean ms |  med ms | name                                                                   |
+|----|----------|--------|-------|-------|---------|---------|------------------------------------------------------------------------|
+|  1 |     71.6 |    1.4 |   1.4 |   100 |   0.716 |   0.604 | ncclDevKernel_ReduceScatter_Sum_f32_RING_LL                            |
+|  2 |     65.6 |    1.3 |   1.3 |   198 |   0.331 |   0.186 | ncclDevKernel_AllGather_RING_LL                                        |
+|  3 |      2.0 |    0.0 |   0.0 |    10 |   0.196 |   0.183 | ncclDevKernel_AllReduce_Sum_f32_RING_LL                                |
+|  4 |      1.0 |    0.0 |   0.0 |     2 |   0.476 |   0.476 | ncclDevKernel_AllReduce_Sum_f64_RING_LL                                |
+|  5 |      0.2 |    0.0 |   0.0 |     2 |   0.119 |   0.119 | ncclDevKernel_AllReduce_Sum_u64_RING_LL                                |
+
+Legend: total = summed durations in the window; % busy = total / GPU busy time and % win = total / window (shares
+can sum past 100 when streams overlap); calls = launches; mean/med = per launch. Names drop namespaces, lambdas,
+and argument lists (mangled names list their first identifiers); `#n` separates distinct kernels that shorten
+alike; truncated labels are listed under each table by rank; raw names are in the CSV. Site = `[<nearest non-aten
+enclosing op> >] <innermost cpu_op> <first 3 Input Dims>`; a site can launch several kernels, so its mean/median
+mix them.
