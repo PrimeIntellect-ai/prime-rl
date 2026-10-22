@@ -537,6 +537,31 @@ class IcePopLossConfig(BaseConfig):
         return self
 
 
+class SFCKLLossConfig(BaseConfig):
+    """Score function centering without importance sampling, plus a KL(sampler || trainer) penalty, both exact
+    over the sampler's kept set. Requires truncated sampling (top_k <= ``score_centering_topk``) with sampling
+    replay."""
+
+    type: Literal["sfc_kl"] = "sfc_kl"
+
+    adv_tau: float = Field(1.0, ge=0)
+    """Temperature for the advantage term."""
+
+    kl_coeff: float = Field(0.01, ge=0, allow_inf_nan=False)
+    """KL coefficient beta_0. The default matches Tinker's StableReinforce; the SFC+KL blog uses 0.3 with
+    ``kl_staleness = "inv_sqrt"``."""
+
+    kl_staleness: Literal["none", "inv_sqrt"] = "none"
+    """KL coefficient schedule over token age (trainer step minus the policy step that sampled the token):
+    ``none`` uses beta_0 for every token, ``inv_sqrt`` uses 0 at age 0 and beta_0 / sqrt(age) otherwise."""
+
+    score_centering: Literal[True] = True
+    """Always on: the policy term is centered under the sampler."""
+
+    score_centering_topk: int = Field(128, ge=1)
+    """Captured sampler head size. Must be at least every policy env's ``top_k`` so the head covers the kept set."""
+
+
 class PPOLossConfig(BaseConfig):
     type: Literal["ppo"] = "ppo"
 
@@ -583,7 +608,7 @@ class CustomLossConfig(BaseConfig):
 
 
 LossConfig: TypeAlias = Annotated[
-    IPOLossConfig | IcePopLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
+    IPOLossConfig | IcePopLossConfig | SFCKLLossConfig | PPOLossConfig | CISPOLossConfig | CustomLossConfig,
     Field(discriminator="type"),
 ]
 

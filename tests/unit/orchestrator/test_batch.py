@@ -74,6 +74,31 @@ def test_top_logprobs_validate_only_rl_tokens_and_reject_truncation(corruption):
         validate_score_centering_data(batch, vocab_size=9)
 
 
+@pytest.mark.parametrize("corruption", [None, "tail", "no_mask"])
+def test_truncated_top_logprobs_must_cover_the_sampling_mass(corruption):
+    import torch
+
+    from prime_rl.trainer.rl.data import validate_score_centering_data
+
+    batch = {
+        "loss_mask": torch.tensor([[False, True]]),
+        "rl_weights": None,
+        "top_logprobs_ids": torch.tensor([[[-1, -1, -1], [3, 7, 5]]]),
+        "top_logprobs_values": torch.tensor([[[0.0, 0.0, 0.0], [0.75, 0.25, 0.0]]]).log().clamp_min(-9999.0),
+        "sampling_mask": torch.tensor([[[-1, -1], [3, 7]]]),
+    }
+    match corruption:
+        case "tail":
+            batch["top_logprobs_values"][0, 1, 1] = torch.tensor(0.2).log()
+        case "no_mask":
+            batch["sampling_mask"] = None
+    if corruption is None:
+        validate_score_centering_data(batch, vocab_size=9, truncated=True)
+        return
+    with pytest.raises(ValueError):
+        validate_score_centering_data(batch, vocab_size=9, truncated=True)
+
+
 def _routed_experts(data, dtype=np.uint8):
     routed_experts = np.asarray(data, dtype=dtype)
     return RoutedExperts(

@@ -18,6 +18,9 @@ from prime_rl.transports.batch import (
     setup_batch_receiver,
 )
 
+# Float32 rounding headroom on the captured sampler mass.
+SFC_KL_MAX_TAIL_MASS = 1e-3
+
 
 class TensorMicroBatch(TypedDict):
     """A micro batch of data for training."""
@@ -30,6 +33,7 @@ class TensorMicroBatch(TypedDict):
     ref_logprobs: Float[Tensor, "batch seq"] | None
     loss_mask: Bool[Tensor, "batch seq"]
     temperatures: Float[Tensor, "batch seq"]  # Per-token temperatures
+    policy_versions: Int[Tensor, "batch seq"] | None  # Per-token sampling policy version, -1 if unknown
     env_names: list[str]
     sequence_lengths: list[int]
 
@@ -134,6 +138,7 @@ class FakeDataLoader:
             "sequence_lengths": sequence_lengths,
             "trace_ids": None,
             "branch_indices": None,
+            "policy_versions": None,
             "loss_mask": loss_mask.unsqueeze(0),
             "seq_lens": torch.tensor(sequence_lengths, dtype=torch.long),
             "routed_experts": None,
@@ -167,6 +172,7 @@ class FakeDataLoader:
             "sequence_lengths": [self.seq_len],
             "trace_ids": None,
             "branch_indices": None,
+            "policy_versions": None,
             "loss_mask": torch.ones(self.seq_len, dtype=torch.bool).unsqueeze(0),
             "seq_lens": torch.tensor([self.seq_len], dtype=torch.long),
             "routed_experts": None,
@@ -277,6 +283,9 @@ class DataLoader:
             sequence_lengths=micro_batch.sequence_lengths,
             trace_ids=micro_batch.trace_ids,
             branch_indices=micro_batch.branch_indices,
+            policy_versions=torch.tensor(micro_batch.policy_versions, dtype=torch.long).unsqueeze(0)
+            if micro_batch.policy_versions is not None
+            else None,
             seq_lens=torch.tensor(micro_batch.seq_lens, dtype=torch.long),
             mm_refs=micro_batch.mm_refs,
             mm_token_type_ids=torch.tensor(micro_batch.mm_token_type_ids, dtype=torch.long).unsqueeze(0)
@@ -298,8 +307,9 @@ class DataLoader:
         )
 
 
-def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -> None:
-    """Validate sampler evidence on the CPU before the LM head consumes it."""
+def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int, truncated: bool = False) -> None:
+    """Validate sampler evidence on the CPU before the LM head consumes it. ``truncated``: the head must
+    cover the replayed sampling mask, i.e. hold all of the sampler's mass."""
     mask = batch["loss_mask"]
     if batch["rl_weights"] is not None:
         mask = mask & (batch["rl_weights"] != 0)
@@ -320,8 +330,19 @@ def validate_score_centering_data(batch: TensorMicroBatch, *, vocab_size: int) -
     q = values.exp().masked_fill(~valid, 0.0)
     if (q.sum(-1) > 1.0001).any():
         raise ValueError("Sampler head mass exceeds one")
-    if batch["sampling_mask"] is not None and (batch["sampling_mask"][mask] >= 0).any():
-        raise ValueError("Top-k score centering requires untruncated sampling")
+    sampling_mask = batch["sampling_mask"]
+    if not truncated:
+        if sampling_mask is not None and (sampling_mask[mask] >= 0).any():
+            raise ValueError("Top-k score centering requires untruncated sampling")
+        return
+    if sampling_mask is None or not (sampling_mask[mask] >= 0).any(-1).all():
+        raise ValueError("sfc_kl requires a sampling mask on every RL token")
+    tail_mass = 1.0 - q.sum(-1)
+    if (tail_mass > SFC_KL_MAX_TAIL_MASS).any():
+        raise ValueError(
+            f"sfc_kl: the captured sampler head misses {tail_mass.max().item():.2e} of the sampling mass; "
+            "set score_centering_topk >= every policy env's top_k"
+        )
 
 
 def _torch_dtype(name: str) -> torch.dtype:

@@ -13,6 +13,7 @@ from prime_rl.configs.trainer import (
     IPOLossConfig,
     LossConfig,
     PPOLossConfig,
+    SFCKLLossConfig,
 )
 from prime_rl.trainer.models.layers.lm_head import sampling_replay_mask
 from prime_rl.utils.utils import import_object
@@ -37,6 +38,7 @@ class LossInputs:
     trainer_topk_logprobs: Float[Tensor, "seq head"] | None = None
     sampler_topk_logprobs: Float[Tensor, "seq head"] | None = None
     topk_valid: Bool[Tensor, "seq head"] | None = None
+    policy_ages: Int[Tensor, " seq"] | None = None
 
 
 @dataclass
@@ -283,6 +285,44 @@ class IcePopLoss:
         return LossOutputs(loss=loss, metrics=metrics)
 
 
+class SFCKLLoss:
+    """SFC+KL loss type: policy gradient centered under the sampler with no importance ratio, plus a
+    beta_t-weighted KL(sampler || trainer) penalty. Both are exact over the sampler's kept set S: sampling
+    replay renormalizes the trainer over S and the captured sampler head covers S."""
+
+    def __init__(self, config: SFCKLLossConfig):
+        self.config = config
+
+    def loss(self, inputs: LossInputs) -> LossOutputs:
+        config = self.config
+        mask = inputs.loss_mask
+        logprobs = inputs.trainer_logprobs[mask]
+        advantages = inputs.advantages[mask]
+        ages = inputs.policy_ages[mask] if inputs.policy_ages is not None else None
+
+        head, sampler, valid = _centering_head(inputs)
+        # Head entries outside S have q = 0.
+        q = sampler.exp().masked_fill(~valid, 0.0)
+        centering = (q * head).sum(-1)
+        kl = (q * (sampler - head)).sum(-1)
+
+        if config.kl_staleness == "inv_sqrt":
+            if ages is None or bool((ages < 0).any()):
+                raise ValueError("kl_staleness = 'inv_sqrt' requires the sampler policy version of every RL sample")
+            beta = torch.where(ages >= 1, config.kl_coeff * ages.clamp_min(1).float().rsqrt(), 0.0)
+        else:
+            beta = torch.full_like(logprobs, config.kl_coeff)
+
+        per_token_loss = -config.adv_tau * advantages * (logprobs - centering) + beta * kl
+        if inputs.loss_weights is not None:
+            per_token_loss = per_token_loss * inputs.loss_weights[mask]
+
+        metrics = {"sfc_kl/kl": kl.detach(), "sfc_kl/beta": beta, "sfc_kl/tail_mass": 1.0 - q.sum(-1)}
+        if ages is not None:
+            metrics["sfc_kl/age0"] = (ages == 0).float()
+        return LossOutputs(loss=per_token_loss.sum(), metrics=metrics)
+
+
 class PPOLoss:
     """Token-level PPO clipped surrogate with bounded importance weights."""
 
@@ -425,6 +465,8 @@ def setup_rl_loss_fn(loss_config: LossConfig) -> Loss:
             return IPOLoss(loss_config)
         case IcePopLossConfig():
             return IcePopLoss(loss_config)
+        case SFCKLLossConfig():
+            return SFCKLLoss(loss_config)
         case PPOLossConfig():
             return PPOLoss(loss_config)
         case CISPOLossConfig():
@@ -449,6 +491,7 @@ def compute_loss(
     trainer_topk_logprobs: list[Tensor] | None = None,
     sampler_topk_logprobs: list[Tensor] | None = None,
     topk_valid: list[Tensor] | None = None,
+    policy_ages: list[Tensor] | None = None,
 ) -> tuple[Float[Tensor, ""], dict[str, Any]]:
     """
     Compute loss for packed sequences (batch size = 1, multiple sequences packed along sequence dimension).
@@ -500,6 +543,7 @@ def compute_loss(
     trainer_topk_logprobs = trainer_topk_logprobs if trainer_topk_logprobs is not None else [None] * n
     sampler_topk_logprobs = sampler_topk_logprobs if sampler_topk_logprobs is not None else [None] * n
     topk_valid = topk_valid if topk_valid is not None else [None] * n
+    policy_ages = policy_ages if policy_ages is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
@@ -514,7 +558,7 @@ def compute_loss(
     rl_loss = trainer_logprobs[0].sum() * 0.0
     ce_loss = 0.0
     ref_kl_loss = 0.0
-    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid in zip(
+    for t_logp, i_logp, ref_logp, adv, mask, rl_w, ce_w, ref_kl_w, t_head, q_head, valid, ages in zip(
         trainer_logprobs,
         inference_logprobs,
         ref_logprobs,
@@ -526,6 +570,7 @@ def compute_loss(
         trainer_topk_logprobs,
         sampler_topk_logprobs,
         topk_valid,
+        policy_ages,
         strict=True,
     ):
 
@@ -540,6 +585,7 @@ def compute_loss(
                 trainer_topk_logprobs=t_head,
                 sampler_topk_logprobs=q_head,
                 topk_valid=valid,
+                policy_ages=ages,
             )
 
         if rl_w is None:

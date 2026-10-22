@@ -275,6 +275,53 @@ Metrics report captured sampler `score_centering/head_mass`, modeled
 `score_centering/tail_scale`, and `score_centering/logit_correction_l1` (the
 baseline's logit-gradient L1 norm before advantage scaling).
 
+### SFC+KL Loss
+
+`sfc_kl` is score function centering without importance sampling, plus a KL penalty from the sampler to the trainer
+([SFC](https://huggingface.co/blog/NormalUhr/sfc), [SFC+KL](https://huggingface.co/blog/NormalUhr/sfc-kl)). It needs
+truncated sampling with [sampling replay](inference.md#sampling-replay): the sampler's kept set $S$ is known, $p_S$ and $q_S$ are the
+trainer and sampler distributions renormalized over $S$ (temperature included), and both terms are exact sums over
+$S$. Per loss token:
+
+$$
+\ell_t = -\tau_A \hat{A}_t\Big(\log p_S(y_t) - \sum_{v \in S} \mathrm{sg}[q_v]\log p_S(v)\Big)
++ \beta_t \sum_{v \in S} q_v\big(\log q_v - \log p_S(v)\big).
+$$
+
+The logit gradient is $-\tau_A \hat{A}_t(e_{y_t} - q) + \beta_t(p_S - q)$ on $S$. The centered score has zero mean under
+$q$, so a constant advantage gives no gradient. The KL gradient is deterministic: it has no estimator noise. There is
+no importance ratio and no masking.
+
+Every policy env must set `top_k <= score_centering_topk`. The sampler's top `score_centering_topk` processed logprobs
+then hold all of $S$ (entries outside $S$ are $-\infty$), so $q$ comes from the same capture as
+[IcePop with score centering](#icepop-with-score-centering). The trainer raises an error if the captured head misses
+more than `1e-3` of the sampler's mass.
+
+```toml
+[trainer.loss]
+type = "sfc_kl"
+kl_coeff = 0.01
+kl_staleness = "none"
+
+[orchestrator.train.sampling]
+top_k = 64
+```
+
+| Knob | Default | What it does |
+|---|---|---|
+| `adv_tau` | 1.0 | Temperature on the advantage term. |
+| `kl_coeff` | 0.01 | $\beta_0$. |
+| `kl_staleness` | `none` | `none`: $\beta_t = \beta_0$. `inv_sqrt`: $\beta_t = 0$ at age 0 and $\beta_0/\sqrt{\text{age}}$ otherwise. |
+| `score_centering_topk` | 128 | Captured head size; at least every policy env's `top_k`. |
+
+The default $\beta_0$ matches Tinker's StableReinforce. The SFC+KL blog uses `kl_coeff = 0.3` with
+`kl_staleness = "inv_sqrt"`. A token's age is the trainer step's policy version minus the policy step whose weights
+sampled it, from the engines' `weight_versions` labels (the same age as `off_policy/token/*`). A rollout that spans
+a weight update therefore has older and younger tokens. Tokens without a label take their group's dispatch version.
+
+Metrics: `sfc_kl/kl` (KL over $S$), `sfc_kl/beta`, `sfc_kl/tail_mass` (sampler mass outside the captured head),
+`sfc_kl/age0` (fraction of tokens at age 0), and the trainer's `mismatch_kl/*`.
+
 ### Custom Loss
 
 `[trainer.loss] type = "custom"` replaces the `rl` component. The loss is computed **per sequence**: you write a function that takes one sequence's tensors and returns a scalar loss. The trainer iterates and aggregates. `inputs.loss_mask` selects exactly the rl member tokens (for a plain GRPO run, all trainable tokens).

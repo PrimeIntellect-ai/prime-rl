@@ -23,7 +23,13 @@ from prime_rl.orchestrator.envs import TrainEnvs
 from prime_rl.orchestrator.metrics import RolloutWindow, TrainEpisodes
 from prime_rl.orchestrator.trajectories import trace_to_samples
 from prime_rl.orchestrator.types import DispatchFailure, GroupCancellation, Progress, TrainBatch
-from prime_rl.orchestrator.utils import episode_env_name, episode_group_id, min_fresh_version, train_work
+from prime_rl.orchestrator.utils import (
+    episode_env_name,
+    episode_group_id,
+    min_fresh_version,
+    node_policy_versions,
+    train_work,
+)
 from prime_rl.transports.batch import TrainingSample
 from prime_rl.utils.logger import get_logger
 
@@ -54,6 +60,18 @@ def _prune_zero_advantages(sample: TrainingSample) -> bool:
     has_ce = sample.ce_weights is not None and any(weight != 0.0 for weight in sample.ce_weights)
     has_ref_kl = sample.ref_kl_weights is not None and any(weight != 0.0 for weight in sample.ref_kl_weights)
     return has_rl or has_ce or has_ref_kl
+
+
+def token_policy_versions(branch: vf.Branch, fallback: int) -> list[int]:
+    """Per-token policy versions over the branch's tokens (see ``node_policy_versions``); ``-1`` on
+    context tokens."""
+    versions: list[int] = []
+    for node in branch.nodes:
+        row = [-1] * len(node.token_ids)
+        for start, end, version in node_policy_versions(node, fallback):
+            row[start:end] = [version] * (end - start)
+        versions += row
+    return versions
 
 
 class TrainSink:
@@ -229,7 +247,8 @@ class TrainSink:
             )
             return
 
-        survivors = [trace for _, trace in iter_trainable_traces(group)]
+        trainable = list(iter_trainable_traces(group))
+        survivors = [trace for _, trace in trainable]
         if survivors:
             await env.algorithm.score_group(group)
         admitted = self._admit(group) if group else False
@@ -245,10 +264,13 @@ class TrainSink:
 
         samples_by_trace: dict[str, list[TrainingSample]] = {}
         temperature = env.config.sampling.temperature
-        for trace in survivors:
+        for episode, trace in trainable:
             samples = await asyncio.to_thread(trace_to_samples, trace, env_name=env_name)
+            policy = train_work(episode).policy
             for sample in samples:
                 sample.temperatures = [temperature] * len(sample.token_ids)
+                if policy is not None:
+                    sample.policy_versions = token_policy_versions(trace.branches[sample.branch_index], policy.start)
                 if env.requires_sampling_masks and sample.sampling_mask is None:
                     # Rollout logprobs are mask-renormalized; training without the masks
                     # silently biases every importance ratio.

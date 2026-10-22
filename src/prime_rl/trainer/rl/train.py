@@ -352,10 +352,12 @@ def train(config: TrainerConfig):
         step_local_flops = 0
         for micro_step, micro_batch in enumerate(micro_batch_workers(prepare, micro_batches)):
             step_local_num_tokens += micro_batch["input_ids"].shape[1]
-            score_centering = config.loss.type == "icepop" and config.loss.score_centering
+            score_centering = config.loss.type in ("icepop", "sfc_kl") and config.loss.score_centering
             if score_centering:
                 vocab_size = getattr(model.config, "vocab_size", None) or model.config.text_config.vocab_size
-                validate_score_centering_data(micro_batch, vocab_size=vocab_size)
+                validate_score_centering_data(
+                    micro_batch, vocab_size=vocab_size, truncated=config.loss.type == "sfc_kl"
+                )
             step_local_flops += perf_counter.flop_counter(micro_batch["seq_lens"].tolist())
             input_ids = micro_batch["input_ids"].to("cuda")
             position_ids = micro_batch["position_ids"].to("cuda")
@@ -499,6 +501,11 @@ def train(config: TrainerConfig):
 
             # Compute loss
             sequence_lengths = micro_batch["sequence_lengths"]
+            policy_ages = None
+            if config.loss.type == "sfc_kl" and micro_batch["policy_versions"] is not None:
+                # Batch ``progress.step`` trains policy v{progress.step - 1}.
+                versions = micro_batch["policy_versions"].squeeze(0).to("cuda")
+                policy_ages = torch.where(versions >= 0, progress.step - 1 - versions, -1).split(sequence_lengths)
             loss, loss_tensors = compute_loss(
                 trainer_logprobs=out["logprobs"].squeeze().split(sequence_lengths),
                 inference_logprobs=inference_logprobs.squeeze().split(sequence_lengths),
@@ -519,6 +526,7 @@ def train(config: TrainerConfig):
                 if sampler_topk is not None
                 else None,
                 topk_valid=topk_valid.squeeze(0).split(sequence_lengths) if topk_valid is not None else None,
+                policy_ages=policy_ages,
             )
 
             # Backward pass
