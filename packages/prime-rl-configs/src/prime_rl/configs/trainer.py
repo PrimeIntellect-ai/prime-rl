@@ -324,6 +324,9 @@ class ModelConfig(BaseModelConfig):
     freeze_ngram_embedding: bool | Literal["auto"] = "auto"
     """Freeze the n-gram embedding tables of Qwen3.8-Flash-Next (no-op for other models). ``auto`` (default): ``True`` for RL, ``False`` for SFT. A frozen table gets no gradients or optimizer state, is not sent to the inference engines (they keep the copy they loaded from ``name``) and is not saved in checkpoints (a resume loads it from ``name``)."""
 
+    freeze_layers: int = Field(0, ge=0)
+    """Freeze the input embeddings and the first ``freeze_layers`` decoder layers. Frozen parameters get no gradients or optimizer state and the backward pass stops at the first trainable layer. Like a frozen n-gram table, they are not sent to the inference engines and not saved in checkpoints. Not supported with tied word embeddings."""
+
     lora: LoRAConfig | None = None
     """LoRA configuration. If None, LoRA is disabled."""
 

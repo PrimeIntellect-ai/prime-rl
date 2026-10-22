@@ -154,14 +154,20 @@ class NCCLBroadcaster:
         state_dict = {key: value for key, value in model.state_dict().items() if key not in frozen}
         layer_prefix = get_layer_prefix(model.config)
         num_layers = get_max_layer_num(state_dict, layer_prefix)
-        num_state_dict_to_send = num_layers + 1  # we send all layer plus the remaining weights
+        # The remaining weights plus every layer that still has weights to send.
+        layer_state_dicts = [
+            (layer_id, layer_state_dict)
+            for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix)
+            if layer_state_dict
+        ]
+        num_state_dict_to_send = len(layer_state_dicts)
 
         if self.world.is_master:
             broadcast_integer(num_state_dict_to_send, self.communicator)
 
         self.logger.debug(f"Broadcasting {num_state_dict_to_send} layer state dicts")
         keep_in_fp32 = getattr(model, "keep_in_fp32_for_weight_transfer", None)
-        for layer_id, layer_state_dict in filter_state_dict_by_layers(state_dict, num_layers, layer_prefix):
+        for layer_id, layer_state_dict in layer_state_dicts:
             layer_state_dict = resolve_dtensors(layer_state_dict, keep_in_fp32, self.dtype)
             layer_state_dict = preprocess_layer_checkpoint(model, layer_state_dict, layer_id)
             if self.world.is_master:

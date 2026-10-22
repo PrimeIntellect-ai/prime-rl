@@ -193,6 +193,19 @@ def freeze_sparse_indexer(model: nn.Module) -> None:
         logger.info(f"Froze {num_frozen} sparse indexer parameters")
 
 
+def freeze_layers(model: nn.Module, num_layers: int, language_model_attr: str | None = None) -> None:
+    """Freeze the input embeddings and the first ``num_layers`` decoder layers."""
+    if model.config.tie_word_embeddings:
+        raise ValueError("freeze_layers freezes the input embeddings, which are tied to the LM head in this model")
+    language_model = get_language_model(model, override=language_model_attr)
+    if num_layers > len(language_model.layers):
+        raise ValueError(f"freeze_layers={num_layers} exceeds the model's {len(language_model.layers)} layers")
+    embed_module = getattr(language_model, "embed_tokens", None) or getattr(language_model, "embeddings", None)
+    for module in [embed_module, *language_model.layers[:num_layers]]:
+        module.requires_grad_(False)
+    get_logger().info(f"Froze the input embeddings and the first {num_layers} decoder layers")
+
+
 def apply_force_balanced_routing(model: nn.Module) -> None:
     """Force MoE token-choice routers into round-robin assignment for fake-data smoke tests."""
     logger = get_logger()
@@ -935,6 +948,8 @@ def setup_model(
         apply_force_balanced_routing(model)
 
     configure_moe_runtime(model, config, parallel_dims)
+    if config.freeze_layers > 0:
+        freeze_layers(model, config.freeze_layers, config.vlm.language_model_attr if config.vlm is not None else None)
     if parallel_dims.ep_enabled:
         # EP replaces params with DTensors that default to requires_grad=True,
         # re-freeze base params that LoRA froze earlier.
