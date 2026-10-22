@@ -7,7 +7,7 @@ from prime_rl.orchestrator.batch import (
     prepare_batch,
     prepare_sample,
 )
-from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample
+from prime_rl.transports.batch.types import MicroBatch, MMImageRef, MMRefs, RoutedExperts, TrainingSample, encode_array
 
 
 def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training_example):
@@ -27,12 +27,12 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     np.testing.assert_array_equal(np.frombuffer(truncated.top_logprobs.ids, np.int32), [3, 7])
     plain = make_training_example(rl_weights=[0.0] * 4)
     batches = prepare_batch([sample, plain], seq_len=12, num_train_workers=2, bin_cost=sum)
-    packed = next(b for worker in batches for b in worker if any(b.loss_mask) and b.top_logprobs is not None)
-    packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed), type=MicroBatch)
+    packed = next(b for worker in batches for b in worker if b.loss_mask.any() and b.top_logprobs is not None)
+    packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
     tensor = DataLoader._micro_batch_to_tensor(None, packed)
     ids, values = tensor["top_logprobs_ids"], tensor["top_logprobs_values"]
     assert ids.shape == values.shape
-    assert ids.shape[1] == len(packed.input_ids)
+    assert ids.shape[1] == sum(packed.sequence_lengths)
     assert (ids >= 0).sum() == 3
     np.testing.assert_allclose(values[ids >= 0].numpy(), [-0.3, -1.8, -0.2])
     # The source evidence is immutable under truncation and packing.
@@ -250,11 +250,11 @@ def test_randomized_packing_invariants():
             assert len(batch.input_ids) <= seq_len
             assert sum(batch.sequence_lengths) == len(batch.input_ids)
             assert batch.seq_lens == batch.sequence_lengths
-            assert len(batch.env_names) == len(batch.input_ids)
+            assert len(batch.env_names) == len(batch.sequence_lengths)
 
         for batch in dummy_batches:
-            assert not any(batch.loss_mask)
-            assert not any(batch.advantages)
+            assert not batch.loss_mask.any()
+            assert not batch.advantages.any()
 
 
 def test_pad_micro_batch_preserves_explicit_sequence_lengths():
@@ -266,7 +266,7 @@ def test_pad_micro_batch_preserves_explicit_sequence_lengths():
     assert padded.sequence_lengths == [6]
     assert padded.seq_lens == [6]
     assert sum(padded.sequence_lengths) == len(padded.input_ids)
-    assert padded.loss_mask[-2:] == [False, False]
+    assert padded.loss_mask[-2:].tolist() == [False, False]
 
 
 def test_split_to_align_avoids_dummy_micro_batches():
@@ -346,10 +346,10 @@ def test_prepare_batch_packs_different_temperatures(make_training_example):
     # Each sample has 4 tokens, so 8 total tokens
     assert len(flat_batches[0].temperatures) == 8
     # First sample (4 tokens): all get temp 0.7
-    assert flat_batches[0].temperatures[:4] == [0.7, 0.7, 0.7, 0.7]
+    assert flat_batches[0].temperatures[:4] == pytest.approx([0.7, 0.7, 0.7, 0.7])
     # Second sample (4 tokens): all get temp 1.1
-    assert flat_batches[0].temperatures[4:8] == [1.1, 1.1, 1.1, 1.1]
-    assert flat_batches[0].env_names == ["env-a"] * 4 + ["env-b"] * 4
+    assert flat_batches[0].temperatures[4:8] == pytest.approx([1.1, 1.1, 1.1, 1.1])
+    assert flat_batches[0].env_names == ["env-a", "env-b"]
     assert flat_batches[0].seq_lens == [4, 4]
 
 
@@ -358,8 +358,8 @@ def test_prepare_sample_propagates_weight_streams(make_training_example):
 
     micro_batch = prepare_sample(example, seq_len=16)
 
-    assert micro_batch.ce_weights == [0.0, 0.0, 1.0, 1.0]
-    assert micro_batch.rl_weights == [0.0, 0.0, 0.0, 0.0]
+    assert micro_batch.ce_weights == pytest.approx([0.0, 0.0, 1.0, 1.0])
+    assert micro_batch.rl_weights == pytest.approx([0.0, 0.0, 0.0, 0.0])
 
 
 def test_prepare_sample_uniform_rl_keeps_streams_none(make_training_example):
@@ -405,11 +405,11 @@ def test_prepare_batch_packs_mixed_components(make_training_example, streams_on_
     # FFD places the longer sample first; every stream value must sit at its
     # sample's offset, with the stream-less side backfilled.
     if streams_on_longer:
-        assert batch.rl_weights == [0.0] * 6 + [1.0] * 4
-        assert batch.ce_weights == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0] + [0.0] * 4
+        assert batch.rl_weights == pytest.approx([0.0] * 6 + [1.0] * 4)
+        assert batch.ce_weights == pytest.approx([0.0, 0.0, 0.0, 1.0, 1.0, 1.0] + [0.0] * 4)
     else:
-        assert batch.rl_weights == [1.0] * 6 + [0.0] * 4
-        assert batch.ce_weights == [0.0] * 6 + [0.0, 0.0, 1.0, 1.0]
+        assert batch.rl_weights == pytest.approx([1.0] * 6 + [0.0] * 4)
+        assert batch.ce_weights == pytest.approx([0.0] * 6 + [0.0, 0.0, 1.0, 1.0])
 
 
 @pytest.mark.parametrize("refs_on_longer", [True, False])
@@ -443,9 +443,9 @@ def test_prepare_batch_aligns_ref_logprobs_in_mixed_bins(make_training_example, 
     assert len(bin_content.ref_logprobs) == len(bin_content.input_ids)
     # FFD places the longer sample first; refs must sit at their sample's offset
     if refs_on_longer:
-        assert bin_content.ref_logprobs == [-1.5] * 6 + [0.0] * 4
+        assert bin_content.ref_logprobs == pytest.approx([-1.5] * 6 + [0.0] * 4)
     else:
-        assert bin_content.ref_logprobs == [0.0] * 6 + [-1.5] * 4
+        assert bin_content.ref_logprobs == pytest.approx([0.0] * 6 + [-1.5] * 4)
 
 
 def test_prepare_sample_with_routed_experts():
@@ -486,7 +486,7 @@ def test_prepare_sample_truncates_routed_experts():
     micro_batch = prepare_sample(sample, seq_len=3)
     assert micro_batch.routed_experts is not None
     assert micro_batch.routed_experts == expected_payload
-    assert micro_batch.env_names == ["test-env"] * 3
+    assert micro_batch.env_names == ["test-env"]
 
 
 def test_prepare_sample_truncates_mm_at_image_boundary():
@@ -550,11 +550,11 @@ def test_prepare_batch_packs_multimodal_with_text():
     batch = real_batches[0]
     assert batch.seq_lens == [3, 2]
     assert batch.sequence_lengths == [3, 2]
-    assert batch.position_ids == [0, 1, 2, 0, 1]
-    assert batch.mm_token_type_ids == [0, 1, 0, 0, 0]
+    assert batch.position_ids.tolist() == [0, 1, 2, 0, 1]
+    assert batch.mm_token_type_ids.tolist() == [0, 1, 0, 0, 0]
     assert batch.mm_refs is not None
     assert [(ref.offset, ref.length) for ref in batch.mm_refs.images] == [(1, 1)]
-    assert batch.env_names == ["mm-env"] * 3 + ["text-env"] * 2
+    assert batch.env_names == ["mm-env", "text-env"]
 
 
 def test_split_to_align_splits_multimodal_bins():
