@@ -259,6 +259,8 @@ class TrainSourceConfig(EnvConfig):
             | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
         )
         sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
+        if getattr(sampling, "extra_args", None) == {"prl_replay": self.sampling.truncates_distribution()}:
+            supported.add("extra_args")
         if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
             raise ValueError(
                 f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
@@ -714,6 +716,14 @@ class OrchestratorConfig(BaseConfig):
                 env.sampling.extra_body.setdefault("top_k", -1)
                 env.sampling.extra_body.setdefault("min_p", 0.0)
                 env.sampling.extra_body.setdefault("return_token_ids", True)
+                extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
+                extra_args["prl_replay"] = env.sampling.truncates_distribution()
+                env.sampling.extra_body["extra_args"] = extra_args
+        if self.eval is not None:
+            for env in self.eval.source:
+                if getattr(env.sampling, "top_k", None) is None:
+                    env.sampling.top_k = -1
+                env.sampling.logprobs = None
         return self
 
     @model_validator(mode="after")

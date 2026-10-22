@@ -644,6 +644,19 @@ def test_policy_sources_accept_different_top_p_values():
         )
 
     assert [source.sampling.top_k for source in config.train.source] == [128, 128]
+    assert all(source.sampling.extra_body["extra_args"]["prl_replay"] for source in config.train.source)
+    data = config.model_dump(mode="json")
+    data["eval"] = {
+        "source": [
+            {"name": "nucleus", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"top_p": 0.95}},
+            {"name": "greedy", "env": {"taskset": {"id": "reverse-text"}}, "sampling": {"temperature": 0}},
+        ]
+    }
+    mixed = OrchestratorConfig.model_validate(data)
+    for source in mixed.eval.source:
+        assert source.sampling.top_k == -1
+        assert source.sampling.logprobs is None
+    assert OrchestratorConfig.model_validate_json(mixed.model_dump_json()) == mixed
 
 
 @pytest.mark.parametrize("frozen", [False, True])
