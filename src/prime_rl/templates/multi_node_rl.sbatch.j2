@@ -78,6 +78,9 @@ export ORCHESTRATOR_DONE=$LAUNCHER_DIR/.orchestrator.done
 mkdir -p "$LAUNCHER_DIR"
 rm -f "$TRAINER_DONE"{% if num_infer_nodes > 0 %} "$ORCHESTRATOR_DONE"{% endif %}
 
+# Components attach only after this job's orchestrator publishes its platform run.
+rm -f "$OUTPUT_DIR/monitors/prime/run.json"
+
 export PRL_RUN_ID=${PRL_RUN_ID:-$(python3 -c "import uuid; print(uuid.uuid4().hex)")}
 export PRL_RUN_NAME={{ run_name }}
 export WANDB_RUN_ID=$PRL_RUN_ID

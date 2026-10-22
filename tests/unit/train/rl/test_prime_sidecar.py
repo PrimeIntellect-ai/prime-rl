@@ -1,14 +1,18 @@
 """The RL trainer's platform wiring: a sidecar on a run it does not own."""
 
 import asyncio
+import os
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from prime_rl.configs.monitors import PrimeTrainMonitorConfig
 from prime_rl.configs.orchestrator import OrchestratorConfig
+from prime_rl.configs.rl import RLConfig
 from prime_rl.configs.sft import SFTConfig
 from prime_rl.configs.trainer import TrainerConfig
+from prime_rl.entrypoints.rl import write_slurm_script
 from prime_rl.monitors.prime import PrimeTrainMonitor, write_platform_record
 from prime_rl.utils.pathing import get_platform_run_path
 
@@ -104,6 +108,40 @@ def test_selfhost_defers_until_record_appears(prime, monkeypatch, tmp_path):
         "optim/lr": 3.0,
         "_timestamp": 100.0,
     }
+
+
+def test_slurm_resume_waits_for_current_platform_record(prime, monkeypatch, tmp_path):
+    monkeypatch.setenv("PRL_RUN_ID", "requeued-run")
+    config = RLConfig.model_validate(
+        {
+            "output_dir": str(tmp_path),
+            "run": {"name": "resume"},
+            "deployment": {"type": "multi_node", "num_train_nodes": 1, "num_infer_nodes": 1},
+            "trainer": {},
+            "inference": {},
+            "orchestrator": {"renderer": {"name": "default"}},
+            "slurm": {},
+            "dry_run": True,
+        }
+    )
+    script = tmp_path / "rl.sbatch"
+    write_slurm_script(config, tmp_path / "configs", tmp_path / "logs", script)
+    startup = script.read_text().split("# Networking", 1)[0]
+
+    for _ in range(2):
+        write_platform_record(config.run_dir, {"kind": "train", "id": "previous-run"})
+        subprocess.run(["bash"], input=startup, text=True, env=os.environ.copy(), check=True)
+        trainer = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+        _init(trainer, config.run_dir)
+        assert trainer.run is None
+        asyncio.run(trainer.log_metrics({"optim/lr": 1.0}, step=1))
+
+        owner = PrimeTrainMonitor(PrimeTrainMonitorConfig())
+        asyncio.run(owner.init(output_dir=config.run_dir))
+        asyncio.run(trainer.log_metrics({"optim/lr": 2.0}, step=2))
+        assert prime.calls[-1]["id"] == owner.run.id
+        assert [step for _, step in trainer.run.metrics] == [1, 2]
+    assert all(call.get("id") != "previous-run" for call in prime.calls)
 
 
 @pytest.mark.parametrize(
