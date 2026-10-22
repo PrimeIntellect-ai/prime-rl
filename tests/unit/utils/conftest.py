@@ -54,7 +54,12 @@ def tiny_run(tmp_path, local_assets, monkeypatch):
     configs = run / "configs" / "latest" / "resolved"
     configs.mkdir(parents=True)
     (configs / "trainer.json").write_text(
-        json.dumps({"model": {"name": str(source)}, "tokenizer": {"chat_template": "{{ messages[0]['content'] }}"}})
+        json.dumps(
+            {
+                "model": {"name": str(source), "attn": "flash_attention_2"},
+                "tokenizer": {"name": str(source), "chat_template": "{{ messages[0]['content'] }}"},
+            }
+        )
     )
     state = {
         "model.embed_tokens.weight": torch.arange(6, dtype=torch.float32).reshape(3, 2),
