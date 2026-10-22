@@ -304,6 +304,29 @@ class ModelConfig(BaseModelConfig):
     cp: int = 1
     """Context parallelism degree. 1 disables CP."""
 
+    pp: int = Field(1, ge=1)
+    """Pipeline parallelism degree. 1 disables PP. The decoder layers are split into ``pp * pp_stages_per_rank`` stages of consecutive layers; each stage is FSDP-sharded (and expert-parallel) over its pipeline rank's devices. SFT only, and only for models that implement pipeline stages (DeepSeek-V4.1)."""
+
+    pp_schedule: Literal[
+        "1F1B", "Async1F1B", "DualPipeV", "GPipe", "Interleaved1F1B", "InterleavedZeroBubble", "ZBVZeroBubble"
+    ] = "1F1B"
+    """Pipeline schedule. The step's micro-batches are the pipeline's micro-batches. ``1F1B`` and ``GPipe`` run one stage per rank; the interleaved schedules loop ``pp_stages_per_rank`` stages over the ranks; ``ZBVZeroBubble`` places two stages per rank in a V. ``Async1F1B`` (one stage per rank) and ``DualPipeV`` (two stages per rank in a V, DeepSeek's order with full backwards, at least ``2 * pp`` micro-batches) run on an executor that never waits on a stage transfer before it is needed; DualPipeV also hides the transfer time that 1F1B adds to every cycle, at the same worst-rank activation memory."""
+
+    pp_warmup_step: list[Annotated[int, Field(ge=1)]] = [1]
+    """``Async1F1B`` only: how many more warmup forwards each stage runs than the next one, one entry per neighbour pair (``pp - 1``, first pair first) or a single entry for all. 1 is classic 1F1B, which waits for one activation and one gradient transfer every cycle; 2 hides both transfers at one more micro-batch in flight on every earlier stage (all 2: stage s keeps ``2 * (pp - s) - 1``)."""
+
+    pp_transport: Literal["nccl", "copy_engine"] = "nccl"
+    """``Async1F1B`` / ``DualPipeV`` stage transfers. ``nccl`` uses send/recv, whose kernels hold SMs while a transfer is in flight. ``copy_engine`` sends each micro-batch as an in-place two-rank all-gather of an NCCL symmetric-window buffer with the zero-CTA policy, which NCCL >= 2.32 runs on copy engines only (older NCCL falls back to SM kernels); it costs one buffer of a micro-batch's activations per transfer edge and sends as many bytes back as forward."""
+
+    pp_transport_ctas: int | None = Field(None, ge=1)
+    """``nccl`` transport only: CTAs (SMs) each stage send/recv kernel takes. ``None`` leaves NCCL's default."""
+
+    pp_stages_per_rank: int = Field(1, ge=1)
+    """Pipeline stages each pipeline rank holds."""
+
+    pp_layers_per_stage: list[float] | None = None
+    """Decoder layers of each stage, in stage order (``pp * pp_stages_per_rank`` entries; DualPipeV numbers its stages along the V, so rank 0 holds the first and the last). Multiples of 0.5 cut a layer between its attention and its MoE block (DeepSeek-V4.1); 0 gives a stage with only the embedding or the head. Defaults to an even split of whole layers, earlier stages taking the remainder."""
+
     optimization_dtype: Literal["bfloat16", "float32"] = "float32"
     """dtype for model optimization."""
 
@@ -340,6 +363,25 @@ class ModelConfig(BaseModelConfig):
     def validate_cp(self):
         if self.cp > 1 and self.attn not in ["flash_attention_2", "flash_attention_3", "flash_attention_4", "auto"]:
             raise ValueError("CP is only supported with flash attention 2, 3, or 4")
+        return self
+
+    @model_validator(mode="after")
+    def validate_pp(self):
+        if self.pp == 1:
+            return self
+        if self.cp > 1:
+            raise ValueError("Pipeline parallelism does not support context parallelism yet")
+        if self.offload == "full":
+            raise ValueError("Pipeline parallelism does not support model.offload = 'full'")
+        if self.lora is not None:
+            raise ValueError("Pipeline parallelism does not support LoRA yet")
+        if self.pp_layers_per_stage is not None and len(self.pp_layers_per_stage) != self.pp * self.pp_stages_per_rank:
+            raise ValueError(
+                f"pp_layers_per_stage has {len(self.pp_layers_per_stage)} entries for "
+                f"{self.pp * self.pp_stages_per_rank} pipeline stages"
+            )
+        # The pipeline runs its own forward and backward, outside the activation offloading context.
+        self.ac_offloading = None
         return self
 
     @model_validator(mode="after")
@@ -754,6 +796,12 @@ class TrainerConfig(BaseTrainerConfig):
 
     enable_router_replay: bool = False
     """Return routed experts in the batch so the trainer can replay routing. Requires ``enable_return_routed_experts=true`` on the vLLM server (or ``--enable-return-routed-experts``) and is only supported for custom models."""
+
+    @model_validator(mode="after")
+    def rl_does_not_support_pp(self):
+        if self.model.pp > 1:
+            raise ValueError("Pipeline parallelism (model.pp > 1) is supported for SFT only")
+        return self
 
     @model_validator(mode="after")
     def validate_lora_broadcast(self):
