@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -679,7 +680,11 @@ def load_dcp_from_hf(model: nn.Module, config: ModelConfig):
             "Found HF weight format in snapshot state dict and PrimeRL weight format in model state dict. Trying to auto-convert..."
         )
         snapshot_path = convert_dir / "prime"
-        if not snapshot_path.exists() and get_world().is_master:
+        if not (snapshot_path / ".prime-v1").is_file() and get_world().is_master:
+            # The marker is written last, so a cache without it is left over from an interrupted conversion
+            if snapshot_path.exists():
+                logger.warning(f"Removing incomplete PrimeRL conversion cache {snapshot_path} and converting again")
+                shutil.rmtree(snapshot_path)
             logger.debug(
                 f"Converting snapshot state dict to PrimeRL format and saving to {snapshot_path} on master rank. This is a one-time operation."
             )
