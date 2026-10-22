@@ -1,7 +1,7 @@
 """The SFT functionality matrix, rendered as `uv run sft` arguments.
 
-Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which is the `ModelConfig` defaults plus an fp32
-MoE router. Each arch contributes two kinds of case:
+Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which keeps the `ModelConfig` defaults. Each arch
+contributes two kinds of case:
 
 - A base case on every layout in its `layouts`. It trains, saves a checkpoint, then resumes in a fresh process.
 - One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
@@ -78,8 +78,8 @@ OPTIM_OFFLOAD_OFF = Feature("optim_offload_off", {"model.offload": "none"})
 FULL_OFFLOAD = Feature("full_offload", {"model.offload": "full"})
 EAGER = Feature("eager", {"model.compile": None})
 UNFUSED = Feature("unfused", {"model.fusions.enabled": []})
-BF16_ROUTER = Feature("bf16_router", {"model.moe_router_dtype": "bfloat16"}, layout=CP2_EP4)
-FEATURES = (AC_OFF, AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLOAD, EAGER, UNFUSED, BF16_ROUTER)
+FULLGRAPH = Feature("fullgraph", {"model.compile.fullgraph": True}, layout=CP2_EP4)
+FEATURES = (AC_OFF, AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLOAD, EAGER, UNFUSED, FULLGRAPH)
 
 
 @dataclass(frozen=True, eq=False)
