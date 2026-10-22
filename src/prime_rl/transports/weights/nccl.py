@@ -22,11 +22,10 @@ from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtyp
 
 
 def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: torch.dtype) -> Tensor | None:
-    """Assemble one fragment on trainer rank 0, using only its replica's row owners.
+    """Assemble one fragment on trainer rank 0 by reducing over its replica's row owners.
 
-    Requires trainer rank 0 at the origin of `value`'s device mesh, as laid out by `init_device_mesh`, and
-    eagerly created mesh communicators (`init_process_group(device_id=...)`), because the batched P2P call
-    may involve only part of a group.
+    Each owner contributes its rows in an otherwise zero buffer, so the sum on rank 0 is the fragment.
+    Requires trainer rank 0 at the origin of `value`'s device mesh, as laid out by `init_device_mesh`.
     """
     rank = dist.get_rank()
     if not isinstance(value, DTensor):
@@ -45,29 +44,15 @@ def _gather_row_chunk_to_master(value: Tensor, start: int, stop: int, dtype: tor
     owners = mesh.mesh[tuple(index)].tolist()
     if rank not in owners:
         return None
-    group = mesh.get_group(mesh_dim)
     rows_per_rank = (value.shape[0] + len(owners) - 1) // len(owners)
     local = value.to_local()
     offset = min(rows_per_rank * owners.index(rank), value.shape[0])
-    chunk = torch.empty((stop - start, *value.shape[1:]), dtype=dtype, device=value.device) if rank == 0 else None
-    ops = []
-    for owner_index, owner in enumerate(owners):
-        owner_start = min(rows_per_rank * owner_index, value.shape[0])
-        owner_stop = min(owner_start + rows_per_rank, value.shape[0])
-        left, right = max(start, owner_start), min(stop, owner_stop)
-        if left >= right:
-            continue
-        if owner == rank == 0:
-            chunk[left - start : right - start].copy_(local[left - offset : right - offset])
-        elif owner == rank:
-            rows = local[left - offset : right - offset].to(dtype).contiguous()
-            ops.append(dist.P2POp(dist.isend, rows, peer=0, group=group))
-        elif rank == 0:
-            ops.append(dist.P2POp(dist.irecv, chunk[left - start : right - start], peer=owner, group=group))
-    if ops:
-        for request in dist.batch_isend_irecv(ops):
-            request.wait()
-    return chunk
+    left, right = max(start, offset), min(stop, offset + local.shape[0])
+    chunk = torch.zeros((stop - start, *value.shape[1:]), dtype=dtype, device=value.device)
+    if left < right:
+        chunk[left - start : right - start].copy_(local[left - offset : right - offset])
+    dist.reduce(chunk, dst=0, group=mesh.get_group(mesh_dim))
+    return chunk if rank == 0 else None
 
 
 def get_max_layer_num(state_dict: dict[str, Tensor], layer_prefix: str = "model.layers.") -> int:
