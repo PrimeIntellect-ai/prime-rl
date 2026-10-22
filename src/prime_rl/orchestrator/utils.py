@@ -60,6 +60,24 @@ def episode_staleness(episode: vf.Episode[Any, Any, Any], training_step: int) ->
     return total, in_flight, in_queue
 
 
+def token_policy_ages(trace: vf.Trace, training_step: int) -> tuple[int, int, int]:
+    """``(sum, count, max)`` of per-token policy age over the trace's sampled
+    tokens: the version batch ``training_step`` trains on (v{step-1}) minus the
+    policy step whose weights sampled the token, from the engines'
+    ``weight_versions`` labels. Unlabelled tokens (``"default"``: Dynamo
+    engines, which update weights outside ``/update_weights``) are not counted."""
+    total = count = oldest = 0
+    for node in trace.nodes:
+        for span in node.weight_versions or ():
+            if not span.version.isdigit():
+                continue
+            age = max(0, (training_step - 1) - int(span.version))
+            total += age * (span.end - span.start)
+            count += span.end - span.start
+            oldest = max(oldest, age)
+    return total, count, oldest
+
+
 def intercept_vf_logging(logger: str = "verifiers", level: str = "DEBUG", prefix: str | None = None):
     """Intercepts verifiers logging and routes through prime-rl logger with optional prefix."""
     vf_logger = logging.getLogger(logger)
