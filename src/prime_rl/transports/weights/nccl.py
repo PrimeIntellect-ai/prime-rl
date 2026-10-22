@@ -24,7 +24,10 @@ from prime_rl.utils.weights import get_chunked_conversion_ops, resolve_wire_dtyp
 def _gather_row_chunk_to_master(
     value: Tensor, start: int, stop: int, dtype: torch.dtype, initialized_groups: set[dist.ProcessGroup]
 ) -> Tensor | None:
-    """Assemble one fragment on trainer rank 0, using only its replica's row owners."""
+    """Assemble one fragment on trainer rank 0, using only its replica's row owners.
+
+    Requires trainer rank 0 at the origin of `value`'s device mesh, as laid out by `init_device_mesh`.
+    """
     rank = dist.get_rank()
     if not isinstance(value, DTensor):
         return value[start:stop].to(dtype) if rank == 0 else None
@@ -40,8 +43,6 @@ def _gather_row_chunk_to_master(
     index = [0] * mesh.ndim
     index[mesh_dim] = slice(None)
     owners = mesh.mesh[tuple(index)].tolist()
-    if owners[0] != 0:
-        raise ValueError("Trainer rank 0 must be at the origin of the embedding mesh")
     if rank not in owners:
         return None
     group = mesh.get_group(mesh_dim)
