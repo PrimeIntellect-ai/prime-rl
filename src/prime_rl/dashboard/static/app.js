@@ -4579,7 +4579,7 @@ function metaRow(key, value, asId = false) {
   );
 }
 
-const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "compaction_failed"]);
+const TRUNCATING_STOPS = new Set(["max_turns", "max_input_tokens", "max_output_tokens", "max_total_tokens", "max_turn_tokens", "compaction_failed"]);
 
 /* mirrors verifiers Trace.is_truncated (not serialized): framework limits or a
    length-finished final response */
