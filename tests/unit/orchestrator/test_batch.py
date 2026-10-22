@@ -61,8 +61,10 @@ def test_top_logprobs_survive_truncation_mixed_packing_and_padding(make_training
     plain.sampling_mask = SamplingMask(
         ids=np.array([9], np.int32).tobytes(), counts=np.array([0, 0, 0, 1], np.int32).tobytes()
     )
-    batches = prepare_batch([sample, replayed, plain], seq_len=16, num_train_workers=2, bin_cost=sum)
-    packed = next(b for worker in batches for b in worker if b.loss_mask.any() and b.top_logprobs is not None)
+    batches = prepare_batch(
+        [sample, replayed, plain], seq_len=16, num_train_workers=1, bin_cost=sum, pad_to_multiple_of=16
+    )
+    [[packed]] = batches
     packed = msgspec.msgpack.decode(msgspec.msgpack.encode(packed, enc_hook=encode_array), type=MicroBatch)
     assert len(packed.top_logprobs.ids) == 3 * 4
     tensor = DataLoader._micro_batch_to_tensor(None, packed)

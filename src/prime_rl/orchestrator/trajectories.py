@@ -122,6 +122,10 @@ def _encode_sampler_evidence(
         return SamplingMask(ids=_int32_bytes(mask_ids), counts=_int32_bytes(mask_counts)), None
 
     head_ids, head_logprobs, head_counts = np.asarray(head.ids), np.asarray(head.logprobs), np.asarray(head.counts)
+    if np.array_equal(mask_counts, head_counts) and np.array_equal(mask_ids, head_ids):
+        return SamplingMask(
+            ids=_int32_bytes(head_ids), counts=_int32_bytes(mask_counts), logprobs=_float32_bytes(head_logprobs)
+        ), None
     rows = np.arange(num_tokens, dtype=np.int64)
     head_rows = np.repeat(rows, head_counts)
     masked = mask_counts > 0

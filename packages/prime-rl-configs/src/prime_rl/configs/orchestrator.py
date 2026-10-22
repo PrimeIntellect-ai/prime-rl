@@ -259,6 +259,8 @@ class TrainSourceConfig(EnvConfig):
             | {"min_p", "logprobs", "return_token_ids", "cache_salt"}
         )
         sampling = vf.SamplingConfig(**self.sampling.model_dump(exclude_none=True))
+        if getattr(sampling, "extra_args", None) == {"prl_replay": self.sampling.truncates_distribution()}:
+            supported.add("extra_args")
         if unsupported := sampling.model_dump(exclude_none=True).keys() - supported:
             raise ValueError(
                 f"Policy source '{self.resolved_name}' has unsupported sampling parameters: {sorted(unsupported)}"
@@ -697,6 +699,23 @@ class OrchestratorConfig(BaseConfig):
                     f"concurrency.{field} must be at least the largest train group_size ({max(group_sizes)})"
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def resolve_sampling_replay(self):
+        """Opt policy train sources into replay and keep eval sampling independent."""
+        for env in self.train.source:
+            # Policy-sourced rollouts hit our vLLM server; frozen-sourced
+            # rollouts may hit external OAI endpoints that reject these knobs.
+            if env.algo.sampling.source == "policy":
+                extra_args = dict(env.sampling.extra_body.get("extra_args") or {})
+                extra_args["prl_replay"] = env.sampling.truncates_distribution()
+                env.sampling.extra_body["extra_args"] = extra_args
+        if self.eval is not None:
+            for env in self.eval.source:
+                if getattr(env.sampling, "top_k", None) is None:
+                    env.sampling.top_k = -1
+                env.sampling.logprobs = None
         return self
 
     @model_validator(mode="after")
