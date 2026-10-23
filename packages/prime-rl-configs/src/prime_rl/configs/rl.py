@@ -27,7 +27,7 @@ from prime_rl.configs.trainer import (
     TrainerConfig,
 )
 from prime_rl.utils.config import BaseConfig, default_output_dir, find_package_resource
-from prime_rl.utils.validation import propagate_shared_fields
+from prime_rl.utils.validation import propagate_shared_fields, set_derived
 
 
 class SharedLogConfig(BaseConfig):
@@ -287,16 +287,6 @@ class RLConfig(BaseConfig):
                 )
         return self
 
-    @model_validator(mode="after")
-    def validate_enough_devices_for_nccl(self):
-        if self.deployment.type == "single_node":
-            if self.trainer.weight_broadcast.type == "nccl":
-                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
-                    raise ValueError(
-                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
-                    )
-        return self
-
     ### Auto-setup shared configs (before sub-config construction)
 
     @model_validator(mode="before")
@@ -442,10 +432,29 @@ class RLConfig(BaseConfig):
                 "PEFT-shaped directory on disk (LoRAModel.from_local_checkpoint) - in-memory transports "
                 "have no disk artifact to load from."
             )
-        self.trainer.weight_broadcast = self.weight_broadcast.model_copy()
-        self.orchestrator.weight_broadcast = self.weight_broadcast.model_copy()
+        # host and inference_world_size are filled in per deployment after this copy.
+        launcher_set = {"host", "inference_world_size"}
+        for name, sub in (("trainer", self.trainer), ("orchestrator", self.orchestrator)):
+            if "weight_broadcast" in sub.model_fields_set and sub.weight_broadcast.model_dump(
+                exclude=launcher_set
+            ) != self.weight_broadcast.model_dump(exclude=launcher_set):
+                raise ValueError(
+                    f"{name}.weight_broadcast conflicts with the shared weight_broadcast. Under the rl "
+                    "entrypoint it is copied from [weight_broadcast]; set that instead."
+                )
+            sub.weight_broadcast = self.weight_broadcast.model_copy()
         if self.inference is not None:
             self.inference.weight_broadcast = InferenceWeightBroadcastConfig(type=self.weight_broadcast.type)
+        return self
+
+    @model_validator(mode="after")
+    def validate_enough_devices_for_nccl(self):
+        if self.deployment.type == "single_node":
+            if self.weight_broadcast.type == "nccl":
+                if self.deployment.num_train_gpus + self.deployment.num_infer_gpus < 2:
+                    raise ValueError(
+                        "NCCL weight broadcast requires at least 2 GPUs to build the broadcast process group."
+                    )
         return self
 
     @model_validator(mode="after")
@@ -614,17 +623,21 @@ class RLConfig(BaseConfig):
 
     @model_validator(mode="after")
     def auto_setup_deployment(self):
-        self.orchestrator.pad_to_multiple_of = self.trainer.model.cp
+        pad_to_multiple_of = self.trainer.model.cp
         if isinstance(self.trainer.model.quantization, MXFP8Config):
             # MXFP8 linears quantize grad_output in 32-token blocks, per CP rank.
-            self.orchestrator.pad_to_multiple_of = math.lcm(
-                self.orchestrator.pad_to_multiple_of, self.trainer.model.cp * 32
-            )
+            pad_to_multiple_of = math.lcm(pad_to_multiple_of, self.trainer.model.cp * 32)
+        set_derived(self.orchestrator, "pad_to_multiple_of", pad_to_multiple_of, "orchestrator.pad_to_multiple_of")
         if self.deployment.type == "single_node":  # single-node
             # set num_train_workers to the number of data replicas
             non_data_parallel_size = self.trainer.model.cp
             if self.deployment.num_train_gpus > 1:
-                self.orchestrator.num_train_workers = self.deployment.num_train_gpus // non_data_parallel_size
+                set_derived(
+                    self.orchestrator,
+                    "num_train_workers",
+                    self.deployment.num_train_gpus // non_data_parallel_size,
+                    "orchestrator.num_train_workers",
+                )
 
             # fill up inference capacity with dp ranks
             if self.inference is not None:
@@ -647,8 +660,11 @@ class RLConfig(BaseConfig):
                     self.orchestrator.weight_broadcast.inference_world_size = world_size
 
         elif self.deployment.type == "multi_node":  # multi-node
-            self.orchestrator.num_train_workers = (
-                self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp
+            set_derived(
+                self.orchestrator,
+                "num_train_workers",
+                self.deployment.num_train_nodes * self.deployment.gpus_per_node // self.trainer.model.cp,
+                "orchestrator.num_train_workers",
             )
 
             if self.deployment.nodes_per_fsdp_group is not None:
