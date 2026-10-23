@@ -39,7 +39,9 @@ import verifiers.v1 as vf
 from aiolimiter import AsyncLimiter
 
 from prime_rl import monitors
+from prime_rl.configs.orchestrator import CircuitBreakerConfig
 from prime_rl.orchestrator import live
+from prime_rl.orchestrator.breaker import CircuitBreaker
 from prime_rl.orchestrator.clients import InferenceClient
 from prime_rl.orchestrator.envs import EvalEnvs, TrainEnvs
 from prime_rl.orchestrator.eval_source import EvalSource
@@ -62,6 +64,18 @@ from prime_rl.utils.logger import get_logger
 LIVE_INTERVAL_S = 0.5
 LIVE_EVENT_CAP = 20_000
 """Buffered live events (deltas and bookkeeping) before the oldest deltas are dropped."""
+ENV_HEALTH_INTERVAL_S = 10.0
+ENV_HEALTH_TIMEOUT_S = 10.0
+ENV_HEALTH_FAILURES = 3
+"""Consecutive missed health checks after which an env server's in-flight episodes are failed."""
+
+
+class EnvServerUnresponsive(RuntimeError):
+    """An episode failed because its env server stopped answering health checks."""
+
+
+INFRA_ERRORS = frozenset({"SandboxError", "InterceptionError", "TunnelError", "ToolsetError"})
+"""Recorded episode error types that count against an env's circuit breaker."""
 
 
 class DispatcherMode(Enum):
@@ -145,6 +159,7 @@ class Dispatcher:
         run_name: str | None,
         policy_weights_change: bool = True,
         on_episode_complete: Callable[[int], None] | None = None,
+        circuit_breaker: CircuitBreakerConfig | None = None,
     ) -> None:
         self.policy = policy
         self.policy_weights_change = policy_weights_change
@@ -214,6 +229,14 @@ class Dispatcher:
 
         self.stopped = asyncio.Event()
         self.task: asyncio.Task | None = None
+
+        self.breakers: dict[str, CircuitBreaker] = (
+            {env.name: CircuitBreaker(circuit_breaker) for env in train_envs or ()} if circuit_breaker else {}
+        )
+        # In-flight tasks cancelled because their env server stopped answering,
+        # mapped to the failure they report
+        self.aborted: dict[asyncio.Task, str] = {}
+        self.health_task: asyncio.Task | None = None
 
     def _train_generation_for(self, env_name: str) -> tuple[InferenceClient, str, bool]:
         """``(clients, model_name, is_live)`` for *train* rollouts of this env —
@@ -330,6 +353,7 @@ class Dispatcher:
         """Single dispatch loop: schedule, wait, collect, repeat."""
         self.task = asyncio.current_task()
         self.live_task = asyncio.create_task(self.publish_live())
+        self.health_task = asyncio.create_task(self.monitor_env_health())
         try:
             while not self.stopped.is_set():
                 await self.fill_inflight()
@@ -355,6 +379,9 @@ class Dispatcher:
     async def stop(self) -> None:
         self.stopped.set()
         await self.cancel_inflight_episodes()
+        if self.health_task is not None:
+            await safe_cancel(self.health_task)
+            self.health_task = None
         if self.live_task is not None:
             await safe_cancel(self.live_task)
             self.live_task = None
@@ -501,6 +528,8 @@ class Dispatcher:
         for gid, group in list(self.groups.items()):
             if group.kind != kind or group.episodes_to_schedule <= 0:
                 continue
+            if kind == "train" and not self.env_allowed(group.env_name):
+                continue
             return await self.schedule_group_episode(gid, group)
 
         fresh = self.next_fresh_group(kind, envs)
@@ -517,7 +546,8 @@ class Dispatcher:
             assert self.train_source is not None
             if self.progress is None:
                 raise RuntimeError("Train dispatch requires progress state")
-            request = self.train_source.next_task(step=self.progress.step)
+            blocked = {name for name in self.breakers if not self.env_allowed(name)}
+            request = self.train_source.next_task(step=self.progress.step, exclude=blocked)
         else:
             assert self.eval_source is not None
             request = self.eval_source.next_task()
@@ -570,6 +600,8 @@ class Dispatcher:
         group.episodes_to_schedule -= 1
         await self.acquire()
         self.admissions_in_window += 1
+        if group.kind == "train" and group.env_name in self.breakers:
+            self.breakers[group.env_name].on_dispatch()
         meta = InflightEpisode(
             kind=group.kind,
             env_name=group.env_name,
@@ -635,6 +667,7 @@ class Dispatcher:
     async def handle_completed_request(self, task: asyncio.Task) -> None:
         """Emit the terminal result of one dispatched environment request."""
         meta = self.inflight.pop(task, None)
+        aborted = self.aborted.pop(task, None)
         if meta is None:
             return  # already handled by drop_group / cancel_inflight_episodes
         self.retire(meta)
@@ -643,11 +676,15 @@ class Dispatcher:
 
         try:
             episode: vf.WireEpisode = task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
+        except (asyncio.CancelledError, Exception) as error:
+            exc = error
+            if isinstance(error, asyncio.CancelledError):
+                if aborted is None:
+                    return
+                exc = EnvServerUnresponsive(aborted)
             get_logger().warning(f"Environment request failed in group {meta.group_id} ({meta.env_name}): {exc!r}")
             self.metrics.record_error(kind=meta.kind, env_name=meta.env_name)
+            self.record_outcome(meta, ok=False, reason=f"{type(exc).__name__}: {exc}")
             policy_version = self.complete_group_member(meta, group)
             await self.out_q.put(
                 DispatchFailure(
@@ -692,9 +729,92 @@ class Dispatcher:
                 f"Episode failed in group {meta.group_id} ({meta.env_name})"
                 + (f" — {error.type}: {error.message}" if error is not None else "")
             )
+        # Only infrastructure failures trip the breaker. Harness, task and env errors and stage
+        # timeouts can come from the policy's own output; they neither trip nor reset it. A
+        # ProviderError counts only from a frozen or external provider: the live policy's
+        # inference health is not the env's.
+        infra = INFRA_ERRORS
+        if meta.kind == "train" and not self.train_envs.get(meta.env_name).uses_live_policy:
+            infra = INFRA_ERRORS | {"ProviderError"}
+        errors = [*episode.errors, *(error for trace in episode.traces for error in trace.errors)]
+        failure = next((error for error in reversed(errors) if error.type in infra), None)
+        if failure is not None:
+            self.record_outcome(meta, ok=False, reason=f"{failure.type}: {failure.message}")
+        elif episode.ok:
+            self.record_outcome(meta, ok=True)
+        elif meta.kind == "train" and meta.env_name in self.breakers:
+            self.breakers[meta.env_name].inconclusive(time.monotonic(), meta.started_at)
         if self.on_episode_complete is not None and meta.started_at > 0:
             self.on_episode_complete(episode.num_total_tokens)
         await self.emit_episode(meta, group, episode)
+
+    def record_outcome(self, meta: InflightEpisode, *, ok: bool, reason: str | None = None) -> None:
+        breaker = self.breakers.get(meta.env_name) if meta.kind == "train" else None
+        if breaker is None:
+            return
+        state = breaker.record(ok, reason[:300] if reason else None, time.monotonic(), meta.group_id, meta.started_at)
+        if state == "open":
+            get_logger().warning(
+                f"Pausing train env {meta.env_name} after {len(breaker.failed_groups)} consecutive failed groups "
+                f"(last: {breaker.reason}); probing again in {breaker.cooldown:.0f}s"
+            )
+        elif state == "closed":
+            get_logger().info(f"Resuming train env {meta.env_name}: probe episode succeeded")
+
+    def env_allowed(self, env_name: str) -> bool:
+        """Whether the env's circuit breaker lets one more train episode start."""
+        breaker = self.breakers.get(env_name)
+        if breaker is None:
+            return True
+        if breaker.probing and not any(
+            meta.kind == "train" and meta.env_name == env_name for meta in self.inflight.values()
+        ):
+            breaker.probing = False  # the probe was cancelled before it reported
+        return breaker.allows(time.monotonic())
+
+    def abort_env_episodes(self, kind: WorkKind, env_name: str, reason: str) -> int:
+        """Fail the env's in-flight episodes whose replies will never come."""
+        aborted = 0
+        for task, meta in self.inflight.items():
+            if meta.kind == kind and meta.env_name == env_name and task not in self.aborted:
+                self.aborted[task] = reason
+                task.cancel()
+                aborted += 1
+        return aborted
+
+    async def monitor_env_health(self) -> None:
+        """Probe every env server. One that misses ``ENV_HEALTH_FAILURES`` checks in a
+        row gets its in-flight episodes failed and its train env paused until it
+        answers again."""
+        envs: list[tuple[WorkKind, Any]] = [("train", env) for env in self.train_envs or ()]
+        envs += [("eval", env) for env in self.eval_envs or ()]
+        misses: dict[tuple[WorkKind, str], int] = defaultdict(int)
+        while True:
+            await asyncio.sleep(ENV_HEALTH_INTERVAL_S)
+            healthy = await asyncio.gather(
+                *(env.env_client.health(timeout=ENV_HEALTH_TIMEOUT_S) for _, env in envs), return_exceptions=True
+            )
+            for (kind, env), result in zip(envs, healthy):
+                key = (kind, env.name)
+                breaker = self.breakers.get(env.name) if kind == "train" else None
+                if result is True:
+                    if misses[key] >= ENV_HEALTH_FAILURES:
+                        get_logger().info(f"Env server of {kind} env {env.name} answers health checks again")
+                    misses[key] = 0
+                    if breaker is not None:
+                        breaker.server_down = False
+                    continue
+                misses[key] += 1
+                if misses[key] < ENV_HEALTH_FAILURES:
+                    continue
+                reason = f"env server at {env.address} missed {misses[key]} health checks"
+                aborted = self.abort_env_episodes(kind, env.name, reason)
+                if misses[key] == ENV_HEALTH_FAILURES or aborted:
+                    get_logger().warning(f"{kind} env {env.name}: {reason}; failing {aborted} in-flight episodes")
+                if breaker is not None:
+                    breaker.server_down = True
+                    if breaker.state != "open":
+                        breaker.trip(reason, time.monotonic())
 
     def complete_group_member(self, meta: InflightEpisode, group: GroupState | None) -> int:
         """Advance group accounting and return the attempt's pinned policy version."""
@@ -892,4 +1012,7 @@ class Dispatcher:
             "dispatcher/mode": float(self.mode == DispatcherMode.PREFER_EVAL),
             "dispatcher/off_policy/max": float(max(staleness, default=0)),
             "dispatcher/off_policy/mean": sum(staleness) / len(staleness) if staleness else 0.0,
+        } | {
+            f"dispatcher/breaker_open/{name}": float(breaker.state != "closed")
+            for name, breaker in self.breakers.items()
         }

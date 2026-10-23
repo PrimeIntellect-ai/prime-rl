@@ -88,6 +88,7 @@ A condensed view of the knobs you'll most often tune. For trainer-side paralleli
 | `--clean` | Wipe the run directory before starting. Useful when re-running a named run during iteration. |
 | `--max-steps N` | Stop after `N` trainer steps. Overrides the config value. |
 | `--dry-run` | Resolve + validate the full config, write per-process configs to `<run_dir>/configs/latest/resolved/`, and exit without launching. The fastest way to debug a misbehaving config. |
+| `[orchestrator.circuit_breaker]` | Pause a train env after `failures` consecutive failed groups (default 8), so a sandbox, tool-server or env-server outage does not block the other envs. Only infrastructure errors count (`SandboxError`, `InterceptionError`, `ToolsetError`, a `ProviderError` from a frozen or external model, an unresponsive env server). One probe episode retests the env after `cooldown` seconds, doubling up to `max_cooldown`. Watch `dispatcher/breaker_open/<env>`. An env server that misses three 10 s health checks in a row has its in-flight episodes failed. |
 
 ### Algorithms
 
