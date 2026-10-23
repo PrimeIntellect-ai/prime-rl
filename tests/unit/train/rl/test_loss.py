@@ -104,7 +104,9 @@ def test_kl_matches_dense_kl(replay, kl_staleness):
     inputs.loss_weights = None
     result = setup_rl_loss_fn(config).loss(inputs)
 
-    beta = torch.full((n,), 0.5) if kl_staleness == "none" else torch.where(ages > 0, 0.5 / ages.clamp_min(1).sqrt(), 0.0)
+    beta = (
+        torch.full((n,), 0.5) if kl_staleness == "none" else torch.where(ages > 0, 0.5 / ages.clamp_min(1).sqrt(), 0.0)
+    )
     reference = (beta * (q * (q.log() - logp)).sum()).sum()
     torch.testing.assert_close(result.loss, reference)
     torch.testing.assert_close(

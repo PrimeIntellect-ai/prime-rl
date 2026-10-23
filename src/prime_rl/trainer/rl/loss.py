@@ -423,11 +423,11 @@ def compute_loss(
     if ref_kl_weights is None:
         ref_kl_weights = [None] * n
 
-    trainer_support_logprobs = trainer_support_logprobs or [None] * n
-    sampler_support_logprobs = sampler_support_logprobs or [None] * n
-    support_valid = support_valid or [None] * n
-    sampler_tail_mass = sampler_tail_mass or [None] * n
-    policy_ages = policy_ages or [None] * n
+    trainer_support_logprobs = trainer_support_logprobs if trainer_support_logprobs is not None else [None] * n
+    sampler_support_logprobs = sampler_support_logprobs if sampler_support_logprobs is not None else [None] * n
+    support_valid = support_valid if support_valid is not None else [None] * n
+    sampler_tail_mass = sampler_tail_mass if sampler_tail_mass is not None else [None] * n
+    policy_ages = policy_ages if policy_ages is not None else [None] * n
 
     def run_loss_fn(loss_fn: LossFn, inputs: LossInputs) -> Tensor:
         result = loss_fn(inputs)
