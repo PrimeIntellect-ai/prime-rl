@@ -332,7 +332,7 @@ jobs:
               run: |
                   start=$(date +%s)
                   uv run eval @ "tests/regression/configs/eval/$EVAL_NAME.toml" ${MODEL:+-m "$MODEL"} \
-                      --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
+                      --no-monitors.prime --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
                   python3 tests/regression/scripts/eval.py collect "outputs/repeat-${{ matrix.repeat }}" \
                       --repeat ${{ matrix.repeat }} --wall-s "$(( $(date +%s) - start ))" --out result.json
             - name: Upload result
