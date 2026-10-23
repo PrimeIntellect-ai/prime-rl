@@ -1,0 +1,119 @@
+# GLM-5.3 Flash SWE RL on SWE-rebench-V2 (20-turn cap) at 128K context:
+# 2 trainer nodes + 6 vLLM replicas (TP 8, one node each), H200.
+#
+#   uv run rl @ examples/advanced/glm-5.3-flash/swe.toml
+
+max_steps = 200
+seq_len = 131072
+output_dir = "/shared/outputs" # FILL IN: point at your shared filesystem
+clean = true
+
+[run]
+name = "glm53-flash-swe"
+
+[ckpt]
+interval = 10
+keep_last = 1
+
+[log]
+level = "debug"
+
+[model]
+name = "zai-org/GLM-5.3-Flash-BF16"
+
+[monitors.wandb]
+project = "glm53-flash"
+name = "swe"
+
+[weight_broadcast]
+type = "nccl"
+timeout = 12000
+
+[deployment]
+type = "multi_node"
+num_train_nodes = 2
+num_infer_nodes = 1
+num_infer_replicas = 6
+# Trainer nodes peak near 3 TB host RAM with AdamW offloaded; the orchestrator's 128K rollout buffer tips them over.
+orchestrator_on_inference = true
+
+[slurm]
+job_name = "glm53-flash-swe"
+partition = "all" # FILL IN: set to your cluster's partition
+
+[inference.vllm]
+tensor_parallel_size = 8
+max_model_len = 131072
+tool_call_parser = "glm47"
+reasoning_parser = "glm45"
+# vLLM sizes this hybrid model's pages at 640 tokens; DeepGEMM's k-pool indexer on SM90 needs a multiple of 256.
+block_size = 768
+# Higher values OOM on the first weight update while receiving an MoE layer.
+gpu_memory_utilization = 0.75
+# vLLM's KDA decode kernel puts num_seqs * 64 on a grid axis capped at 65535.
+max_num_seqs = 512
+safetensors_load_strategy = "prefetch"
+
+[trainer]
+dist_timeout_seconds = 1800
+
+[trainer.ckpt]
+# Weights only: AdamW state would make each checkpoint ~4.5 TB instead of ~0.65 TB.
+skip_optimizer = true
+
+[trainer.model]
+ep = 8
+# Keeps 16K tokens per GPU at 128K context.
+cp = 8
+offload = "full"
+# Host RAM sits at ~99% with AdamW state offloaded; activation offloading tipped a trainer node into a stall.
+ac_offloading = "None"
+
+[trainer.model.ac]
+mode = "full"
+
+[trainer.model.compile]
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-6
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 256
+max_off_policy_steps = 8
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.concurrency]
+initial_inflight = 256
+max_inflight = 512
+
+[orchestrator.renderer]
+# GLM-5.3 Flash's text template is GLM-5.3's.
+name = "glm-5.3"
+clear_thinking = false
+
+[orchestrator.train.sampling]
+temperature = 1.0
+
+[orchestrator.train.sampling.extra_body.chat_template_kwargs]
+clear_thinking = false
+
+[[orchestrator.train.source]]
+name = "swerebench"
+env.taskset.id = "swerebench-v2"
+env.taskset.dataset_name = "PrimeIntellect/SWE-rebench-V2-Filtered-Verified"
+env.agent.harness.id = "rlm"
+env.agent.max_turns = 20
+# Fail rollouts stuck on a dead sandbox stream instead of letting them hold in-flight slots forever.
+env.timeout.episode = 7200
+env.agent.runtime.labels = ["glm53-flash", "swe"]
+
+# Sample all-solved tasks rarely once seen; all-failed ones at half weight.
+[orchestrator.train.source.curriculum.sampler]
+type = "difficulty_pool"
+pools.unsolved = { threshold = 0.0, weight = 0.5 }
+pools.signal = { threshold = 0.999, weight = 1.0 }
+pools.solved = { threshold = 1.0, weight = 0.05 }
