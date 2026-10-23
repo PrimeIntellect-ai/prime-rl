@@ -682,6 +682,8 @@ def train(config: TrainerConfig):
 
         # Synchronize the tensor metrics across all steps and ranks
         tensor_stats = tensors.compute_stats()
+        # The gathered per-token values hold every rank's tokens; free them before the next batch loads
+        del tensors
         if is_moe_model:
             tensor_stats.update(get_expert_load_stats(step_tokens_per_expert, dp_cp_group))
 
