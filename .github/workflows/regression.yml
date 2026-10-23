@@ -26,10 +26,18 @@ on:
                 description: "rl: prime-rl image tag to pin (e.g. v0.7.1.dev58). Leave empty to auto-resolve the newest v*.dev* with a published manifest."
                 required: false
                 default: ""
+            eval_config:
+                description: "eval: config to run, by name (e.g. gsm8k). Leave empty to run all."
+                required: false
+                default: ""
             eval_repeats:
-                description: "eval: independent runs. Use 5 to produce a new baseline."
+                description: "eval: independent runs of each config. Use 5 to produce a new baseline."
                 required: false
                 default: "1"
+            eval_max_parallel:
+                description: "eval: most eval jobs to run at once (empty: no limit). Use it to spread a baseline's runs over time."
+                required: false
+                default: ""
             eval_model:
                 description: "eval: model id on Prime Inference (empty: the config's model)"
                 required: false
@@ -56,7 +64,6 @@ concurrency:
 
 env:
     EVAL_REPEATS: ${{ inputs.eval_repeats || '1' }}
-    EVAL_NAME: gsm8k
 
 jobs:
     rl-plan:
@@ -292,20 +299,52 @@ jobs:
         if: ${{ !inputs.suite || inputs.suite == 'all' || inputs.suite == 'eval' }}
         runs-on: ubuntu-latest
         outputs:
-            repeats: ${{ steps.plan.outputs.repeats }}
+            configs: ${{ steps.plan.outputs.configs }}
+            names: ${{ steps.plan.outputs.names }}
+            matrix: ${{ steps.plan.outputs.matrix }}
         steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+              with:
+                  submodules: false
             - id: plan
-              run: echo "repeats=$(jq -nc "[range(1; $EVAL_REPEATS + 1)]")" >> "$GITHUB_OUTPUT"
+              env:
+                  CONFIG: ${{ inputs.eval_config }}
+                  # Display name of each config in job names and the summary. A config not listed shows its file name.
+                  NAMES: '{"gsm8k": "GSM8K", "pi-terminalbench2-1": "Terminal-Bench-2.1"}'
+              run: |
+                  configs=$(ls tests/regression/configs/eval/*.toml | xargs -n1 basename | sed 's/\.toml$//')
+                  if [ -n "$CONFIG" ]; then
+                      configs=$(echo "$configs" | grep -Fx "$CONFIG" || true)
+                      if [ -z "$configs" ]; then
+                          echo "Error: eval config '$CONFIG' not found" >&2
+                          exit 1
+                      fi
+                  fi
+                  configs=$(printf '%s\n' "$configs" | jq -R . | jq -sc .)
+                  # One job per config and repeat. The repeat shows in the job name only when there are several.
+                  names=$(jq -nc --argjson configs "$configs" --argjson names "$NAMES" '
+                      [$configs[] as $c | {($c): ($names[$c] // $c)}] | add')
+                  matrix=$(jq -nc --argjson configs "$configs" --argjson names "$names" --argjson n "$EVAL_REPEATS" '[
+                      $configs[] as $c | range(1; $n + 1) as $r
+                      | {config: $c, repeat: $r, name: (if $n > 1 then "\($names[$c]) (\($r))" else $names[$c] end)}
+                  ]')
+                  echo "configs=$configs" >> "$GITHUB_OUTPUT"
+                  echo "names=$names" >> "$GITHUB_OUTPUT"
+                  echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
     eval:
-        name: ${{ strategy.job-total > 1 && format('Eval / Run ({0})', matrix.repeat) || 'Eval / Run' }}
+        name: Eval / ${{ matrix.name }}
         needs: eval-plan
         runs-on: ubuntu-latest
-        timeout-minutes: 60
+        # The GitHub-hosted maximum. Agent evals have no rollout timeout, so a slow endpoint
+        # stretches the run instead of failing tasks.
+        timeout-minutes: 360
         strategy:
             fail-fast: false
+            max-parallel: ${{ fromJSON(inputs.eval_max_parallel || '256') }}
             matrix:
-                repeat: ${{ fromJSON(needs.eval-plan.outputs.repeats) }}
+                include: ${{ fromJSON(needs.eval-plan.outputs.matrix) }}
         steps:
             - name: Checkout repository
               uses: actions/checkout@v7
@@ -323,34 +362,47 @@ jobs:
                         cache-dependency-glob: "uv.lock"
             - name: Install dependencies
               run: uv sync --all-packages --locked
+            # Harbor tasksets download their task files into ~/.cache/harbor. The prime-envs
+            # commit pins every taskset's data, so it keys the cache.
+            - name: Key the Harbor cache
+              id: harbor
+              run: echo "key=harbor-${{ matrix.config }}-$(git rev-parse HEAD:deps/prime-envs)" >> "$GITHUB_OUTPUT"
+            - name: Cache Harbor tasks
+              uses: actions/cache@v4
+              with:
+                  path: ~/.cache/harbor
+                  key: ${{ steps.harbor.outputs.key }}
             - name: Run eval
               env:
                   HF_TOKEN: ${{ secrets.HF_TOKEN }}
                   PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
                   PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
                   MODEL: ${{ inputs.eval_model }}
+                  CONFIG: ${{ matrix.config }}
+                  REPEAT: ${{ matrix.repeat }}
               run: |
                   start=$(date +%s)
-                  uv run eval @ "tests/regression/configs/eval/$EVAL_NAME.toml" ${MODEL:+-m "$MODEL"} \
-                      --run.name "repeat-${{ matrix.repeat }}" --output-dir outputs
-                  python3 tests/regression/scripts/eval.py collect "outputs/repeat-${{ matrix.repeat }}" \
-                      --repeat ${{ matrix.repeat }} --wall-s "$(( $(date +%s) - start ))" --out result.json
+                  uv run eval @ "tests/regression/configs/eval/$CONFIG.toml" ${MODEL:+-m "$MODEL"} \
+                      --run.name "$CONFIG-$REPEAT" --output-dir outputs
+                  mkdir -p "results/$CONFIG"
+                  python3 tests/regression/scripts/eval.py collect "outputs/$CONFIG-$REPEAT" \
+                      --repeat "$REPEAT" --wall-s "$(( $(date +%s) - start ))" --out "results/$CONFIG/$REPEAT.json"
             - name: Upload result
               if: always()
               uses: actions/upload-artifact@v7
               with:
-                  name: eval-result-${{ matrix.repeat }}
+                  name: eval-result-${{ matrix.config }}-${{ matrix.repeat }}
                   path: |
-                      result.json
-                      outputs/repeat-${{ matrix.repeat }}/logs
-                      outputs/repeat-${{ matrix.repeat }}/monitors/file/metrics.jsonl
-                      outputs/repeat-${{ matrix.repeat }}/monitors/file/traces/stream.index.jsonl
+                      results
+                      outputs/${{ matrix.config }}-${{ matrix.repeat }}/logs
+                      outputs/${{ matrix.config }}-${{ matrix.repeat }}/monitors/file/metrics.jsonl
+                      outputs/${{ matrix.config }}-${{ matrix.repeat }}/monitors/file/traces/stream.index.jsonl
                   if-no-files-found: ignore
                   retention-days: 30
 
     eval-summary:
         name: Eval / Summary
-        needs: eval
+        needs: [eval-plan, eval]
         if: ${{ !cancelled() && needs.eval.result != 'skipped' }}
         runs-on: ubuntu-latest
         permissions:
@@ -366,36 +418,48 @@ jobs:
               with:
                   path: artifacts
                   pattern: eval-result-*
-            - name: Compare against baseline
+            - name: Compare against baselines
+              env:
+                  CONFIGS: ${{ needs.eval-plan.outputs.configs }}
+                  NAMES: ${{ needs.eval-plan.outputs.names }}
               run: |
                   # A single downloaded artifact lands in artifacts/ itself, several land in subdirectories.
                   status=0
-                  python3 tests/regression/scripts/eval.py summarize $(find artifacts -name result.json) \
-                      --expected "$EVAL_REPEATS" --baseline "tests/regression/baselines/eval/$EVAL_NAME.json" \
-                      > summary.md || status=$?
+                  : > summary.md
+                  for config in $(echo "$CONFIGS" | jq -r '.[]'); do
+                      name=$(echo "$NAMES" | jq -r --arg c "$config" '.[$c]')
+                      python3 tests/regression/scripts/eval.py summarize --name "$name" \
+                          $(find artifacts -path "*/results/$config/*.json") \
+                          --expected "$EVAL_REPEATS" --baseline "tests/regression/baselines/eval/$config.json" \
+                          >> summary.md || status=1
+                  done
                   tee -a "$GITHUB_STEP_SUMMARY" < summary.md
                   exit $status
             - name: Open baseline PR
               if: ${{ !cancelled() && inputs.eval_set_baseline && needs.eval.result == 'success' }}
               env:
                   GH_TOKEN: ${{ github.token }}
+                  CONFIGS: ${{ needs.eval-plan.outputs.configs }}
               run: |
+                  configs=$(echo "$CONFIGS" | jq -r 'join(", ")')
                   branch="regression/eval-baseline-${{ github.run_id }}"
-                  python3 tests/regression/scripts/eval.py baseline $(find artifacts -name result.json) \
-                      --out "tests/regression/baselines/eval/$EVAL_NAME.json" \
-                      --report "tests/regression/reports/eval/$EVAL_NAME.md"
+                  for config in $(echo "$CONFIGS" | jq -r '.[]'); do
+                      python3 tests/regression/scripts/eval.py baseline $(find artifacts -path "*/results/$config/*.json") \
+                          --out "tests/regression/baselines/eval/$config.json" \
+                          --report "tests/regression/reports/eval/$config.md"
+                  done
                   git config user.name "github-actions[bot]"
                   git config user.email "github-actions[bot]@users.noreply.github.com"
                   git checkout -b "$branch"
                   git add tests/regression/baselines/eval tests/regression/reports/eval
-                  git commit -m "Refresh $EVAL_NAME eval regression baseline"
+                  git commit -m "Refresh eval regression baselines: $configs"
                   git push origin "$branch"
                   {
                       echo "## Summary"
                       echo
-                      echo "- Refresh the \`$EVAL_NAME\` eval regression baseline from [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+                      echo "- Refresh the eval regression baselines of $configs from [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
                       echo
                       cat summary.md
                   } > body.md
                   gh pr create --base main --head "$branch" --body-file body.md \
-                      --title "chore: refresh $EVAL_NAME eval regression baseline"
+                      --title "chore: refresh eval regression baselines"
