@@ -173,6 +173,7 @@ def train(config: TrainerConfig):
         offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
+        accumulate_grads_on_gpu=config.model.offload_grad_accumulation == "gpu",
     )
     logger.debug(f"Initialized optimizer in {format_time(time.perf_counter() - t0)}")
 

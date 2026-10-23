@@ -166,6 +166,7 @@ def train(config: SFTConfig):
         offload=config.model.offload,
         model=model,
         full_offload_dtype_policy=(get_full_offload_dtype_policy(model) if config.model.offload == "full" else None),
+        accumulate_grads_on_gpu=config.model.offload_grad_accumulation == "gpu",
     )
 
     # Set up the learning rate scheduler
