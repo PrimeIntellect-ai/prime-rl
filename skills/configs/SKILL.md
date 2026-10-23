@@ -5,7 +5,7 @@ description: How the prime-rl config system works — TOML files, CLI overrides,
 
 # Configs
 
-prime-rl uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) — a Pydantic-based TOML + CLI config system (no tyro). Every entrypoint accepts TOML files via `@` and CLI overrides.
+prime-rl uses [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config) — a Pydantic-based TOML + CLI config system (no tyro). Its local entrypoints accept TOML files via `@` and CLI overrides. Model Factory / Prime Hosted Training dispatch uses `prime train run CONFIG.toml` with training settings in the TOML; see [hosted-training](../hosted-training/SKILL.md).
 
 ## Loading and composition
 
