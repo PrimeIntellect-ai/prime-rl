@@ -1,0 +1,272 @@
+"""The SFT functionality matrix, rendered as `uv run sft` arguments.
+
+Every case runs on `NUM_GPUS` GPUs of one node from `base.toml`, which keeps the `ModelConfig` defaults. Each arch
+contributes two kinds of case:
+
+- A base case on every layout in its `layouts`. It trains 5 steps. If the arch sets `resume`, it also saves a
+  checkpoint and resumes in a fresh process.
+- One case per entry in its `features`. Each feature changes one setting and runs on its single pinned layout.
+
+Base cases on the CP2 layouts (non-trivial EP and CP, default `fullgraph=False`) also launch with
+`TORCH_LOGS=graph_breaks,dynamo`. A second test, `test_no_graph_breaks`, reads the same launch's rank logs and fails on
+any graph break, so graph breaks and training failures are reported as separate tests. It also fails if any rank's
+logs lack dynamo's tracing messages, since then an empty graph-break log would prove nothing. Recompile-limit hits,
+which also fall back to eager, are not graph breaks and are not checked.
+
+`Arch.layouts` picks the layout family: `MOE_LAYOUTS` (expert parallel) or `DENSE_LAYOUTS` (ep=1). `Arch.skip`
+removes a layout (along with the feature cases pinned to it) or a single feature, and the reason shows in the
+pytest report. `Arch.overrides` holds arch-wide config, such as an explicit renderer. Case ids read
+`{arch}-{layout}-{feature or base}`. No name is a substring of another, so `-k` selects cases by arch, layout or
+feature name. For example, one case:
+
+    uv run pytest tests/regression/distributed -k "qwen3_moe and cp2_ep4 and base"
+
+or every case on one layout, including the feature cases pinned to it:
+
+    uv run pytest tests/regression/distributed -k cp2_ep4
+
+`scripts/ci/run_distributed_nightly.sh` runs the same pytest command and passes extra args through to it.
+"""
+
+import json
+import math
+import re
+from dataclasses import dataclass, field
+from itertools import permutations
+from pathlib import Path
+
+import pytest
+
+from tests.regression.distributed.tiny_models import TOKENIZERS
+
+CONFIG_DIR = Path("tests/regression/configs/distributed/sft")
+NUM_GPUS = 4
+Overrides = dict[str, object]
+
+
+@dataclass(frozen=True, eq=False)
+class Layout:
+    name: str
+    dp_replicate: int
+    cp: int
+    ep: int
+
+    def overrides(self) -> Overrides:
+        return {
+            "model.dp_replicate": self.dp_replicate,
+            "model.cp": self.cp,
+            "model.ep": self.ep,
+        }
+
+
+FSDP4_EP4 = Layout("fsdp4_ep4", dp_replicate=1, cp=1, ep=4)
+HSDP2X2_EP2 = Layout("hsdp2x2_ep2", dp_replicate=2, cp=1, ep=2)
+CP2_EP4 = Layout("cp2_ep4", dp_replicate=1, cp=2, ep=4)
+CP4_EP4 = Layout("cp4_ep4", dp_replicate=1, cp=4, ep=4)
+MOE_LAYOUTS = (FSDP4_EP4, HSDP2X2_EP2, CP2_EP4, CP4_EP4)
+
+FSDP4_EP1 = Layout("fsdp4_ep1", dp_replicate=1, cp=1, ep=1)
+HSDP2X2_EP1 = Layout("hsdp2x2_ep1", dp_replicate=2, cp=1, ep=1)
+CP2_EP1 = Layout("cp2_ep1", dp_replicate=1, cp=2, ep=1)
+CP4_EP1 = Layout("cp4_ep1", dp_replicate=1, cp=4, ep=1)
+DENSE_LAYOUTS = (FSDP4_EP1, HSDP2X2_EP1, CP2_EP1, CP4_EP1)
+
+
+@dataclass(frozen=True, eq=False)
+class Feature:
+    name: str
+    overrides: Overrides
+    layout: Layout = FSDP4_EP4
+
+
+AC_OFF = Feature("ac_off", {"model.ac": None})
+AC_SELECTIVE = Feature("ac_selective", {"model.ac.mode": "selective"})
+ACT_OFFLOAD_OFF = Feature("act_offload_off", {"model.ac_offloading": None})
+OPTIM_OFFLOAD_OFF = Feature("optim_offload_off", {"model.offload": "none"})
+FULL_OFFLOAD = Feature("full_offload", {"model.offload": "full"})
+EAGER = Feature("eager", {"model.compile": None})
+UNFUSED = Feature("unfused", {"model.fusions.enabled": []})
+FULLGRAPH = Feature("fullgraph", {"model.compile.fullgraph": True}, layout=CP2_EP4)
+FEATURES = (AC_OFF, AC_SELECTIVE, ACT_OFFLOAD_OFF, OPTIM_OFFLOAD_OFF, FULL_OFFLOAD, EAGER, UNFUSED, FULLGRAPH)
+
+
+@dataclass(frozen=True, eq=False)
+class Arch:
+    name: str
+    layouts: tuple[Layout, ...] = MOE_LAYOUTS
+    features: tuple[Feature, ...] = ()
+    skip: dict[Layout | Feature, str] = field(default_factory=dict)
+    overrides: Overrides = field(default_factory=dict)
+    resume: bool = False
+
+
+@dataclass(frozen=True, eq=False)
+class Case:
+    arch: Arch
+    layout: Layout
+    feature: Feature | None = None
+
+    @property
+    def id(self) -> str:
+        return f"{self.arch.name}-{self.layout.name}-{self.feature.name if self.feature else 'base'}"
+
+    @property
+    def resume(self) -> bool:
+        return self.feature is None and self.arch.resume
+
+    @property
+    def check_graph_breaks(self) -> bool:
+        return self.feature is None and self.layout in (CP2_EP4, CP2_EP1)
+
+    def overrides(self) -> Overrides:
+        return self.arch.overrides | self.layout.overrides() | (self.feature.overrides if self.feature else {})
+
+    def param(self):
+        reason = self.arch.skip.get(self.layout) or self.arch.skip.get(self.feature)
+        return pytest.param(self, id=self.id, marks=[pytest.mark.skip(reason=reason)] if reason else [])
+
+
+def cases_for(arch: Arch) -> list[Case]:
+    for feature in arch.features:
+        if feature.layout not in arch.layouts:
+            raise ValueError(f"{arch.name}: feature {feature.name} runs on {feature.layout.name}, outside its layouts")
+    return [Case(arch, layout) for layout in arch.layouts] + [
+        Case(arch, feature.layout, feature) for feature in arch.features
+    ]
+
+
+def check_k_selectable(names: list[str]) -> None:
+    for name, other in permutations(names, 2):
+        if name in other:
+            raise ValueError(f"-k {name} would also select {other}")
+
+
+QWEN3_MOE = Arch("qwen3_moe", features=FEATURES, resume=True)
+GLM_MOE_DSA = Arch("glm_moe_dsa")
+DEEPSEEK_V4 = Arch("deepseek_v4")
+LLAMA = Arch("llama", layouts=DENSE_LAYOUTS, overrides={"renderer.name": "llama-3"})
+QWEN3_DENSE = Arch("qwen3_dense", layouts=DENSE_LAYOUTS)
+QWEN3_5_DENSE = Arch("qwen3_5_dense", layouts=DENSE_LAYOUTS)
+GLM4_MOE = Arch("glm4_moe")
+GPT_OSS = Arch("gpt_oss")
+LAGUNA = Arch("laguna")
+MINIMAX_M2 = Arch("minimax_m2")
+NEMOTRON_H = Arch("nemotron_h")
+QWEN3_5_MOE = Arch("qwen3_5_moe")
+QWEN4_EXP = Arch("qwen4_exp")
+AFMOE = Arch(
+    "afmoe", skip={layout: "SFT needs a typed renderer and none is registered for afmoe" for layout in MOE_LAYOUTS}
+)
+ARCHS = (
+    QWEN3_MOE,
+    GLM_MOE_DSA,
+    DEEPSEEK_V4,
+    LLAMA,
+    QWEN3_DENSE,
+    QWEN3_5_DENSE,
+    GLM4_MOE,
+    GPT_OSS,
+    LAGUNA,
+    MINIMAX_M2,
+    NEMOTRON_H,
+    QWEN3_5_MOE,
+    QWEN4_EXP,
+    AFMOE,
+)
+CASES = [case for arch in ARCHS for case in cases_for(arch)]
+check_k_selectable(
+    [
+        "base",
+        *(a.name for a in ARCHS),
+        *(l.name for l in (*MOE_LAYOUTS, *DENSE_LAYOUTS)),
+        *(f.name for f in FEATURES),
+    ]
+)
+
+
+def sft_args(case: Case, model_name: str) -> list[str]:
+    return [
+        "@",
+        (CONFIG_DIR / "base.toml").as_posix(),
+        "--model.name",
+        model_name,
+        "--tokenizer.name",
+        TOKENIZERS[case.arch.name],
+        "--deployment.num-train-gpus",
+        str(NUM_GPUS),
+        *to_cli(case.overrides()),
+    ]
+
+
+def to_cli(overrides: Overrides) -> list[str]:
+    args = []
+    for key, value in overrides.items():
+        rendered = "None" if value is None else json.dumps(value) if isinstance(value, list | dict) else str(value)
+        args += ["--" + key.replace("_", "-"), rendered]
+    return args
+
+
+def load_metrics(run_dir: Path) -> list[dict]:
+    with open(run_dir / "monitors" / "file" / "metrics.jsonl") as f:
+        return [json.loads(line) for line in f]
+
+
+def assert_training_rows(rows: list[dict], expected_steps: range) -> None:
+    train_rows = [row for row in rows if "loss/nan_count" in row]
+    assert [row["step"] for row in train_rows] == list(expected_steps)
+    for row in train_rows:
+        assert row["loss/nan_count"] == 0, row
+        assert math.isfinite(row.get("loss/mean", math.nan)), row
+
+
+GRAPH_BREAK_TAG = "[__graph_breaks]"
+GRAPH_BREAK_STARTS = ("Graph break", "WON'T CONVERT")
+GRAPH_BREAK_LOCATION = re.compile(r"in user code at (\S+:\d+)")
+DYNAMO_TRACE_MARKER = "torchdynamo start tracing"
+
+
+def ranks_without_dynamo_logs(run_dir: Path) -> list[str]:
+    """Launch ranks whose logs show no dynamo tracing, which would make a clean graph-break log meaningless."""
+    missing = []
+    for launch in sorted(run_dir.glob("logs/attempt_*")):
+        rank_dirs = {path.name: path for path in launch.glob("trainer/torchrun/*/attempt_0/*") if path.is_dir()}
+        for rank in map(str, range(NUM_GPUS)):
+            logs = rank_dirs[rank].glob("*.log") if rank in rank_dirs else []
+            if not any(DYNAMO_TRACE_MARKER in log.read_text(errors="replace") for log in logs):
+                missing.append(f"{launch.name}/rank{rank}")
+    return missing
+
+
+def graph_break_reports(run_dir: Path) -> list[str]:
+    """Distinct graph breaks that dynamo logged on any rank, as `location: detail`.
+
+    The `graph_breaks` log artifact tags every line of every graph-break record, so a record is found by its first line.
+    """
+    details: dict[str, str] = {}
+    for log in run_dir.glob("logs/attempt_*/trainer/torchrun/**/*.log"):
+        messages = [
+            line.split(GRAPH_BREAK_TAG, 1)[1].strip()
+            for line in log.read_text(errors="replace").splitlines()
+            if GRAPH_BREAK_TAG in line
+        ]
+        for i, message in enumerate(messages):
+            if not message.startswith(GRAPH_BREAK_STARTS):
+                continue
+            location = GRAPH_BREAK_LOCATION.search(message)
+            key = location.group(1) if location else message
+            details.setdefault(key, "")
+            following = messages[i + 1 : i + 6]
+            reason_at = next((j for j, m in enumerate(following) if m.startswith("Graph Break Reason:")), None)
+            if reason_at is None:
+                details[key] = details[key] or next((m for m in following if "fall back to eager" in m), "")
+                continue
+            title = next((m for m in following[reason_at + 1 :] if m), None)
+            if title is not None:
+                details[key] = title
+            elif not details[key]:
+                details[key] = following[reason_at].removeprefix("Graph Break Reason:").strip()
+    return sorted(f"{key}: {detail}" for key, detail in details.items())
+
+
+def completed_step(rows: list[dict], step: int) -> bool:
+    return any(row.get("step") == step and "loss/nan_count" in row for row in rows)
