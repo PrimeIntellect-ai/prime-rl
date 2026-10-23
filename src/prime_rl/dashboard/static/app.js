@@ -296,7 +296,7 @@ function renderPlatformLink(meta) {
     button.hidden = true;
     link.classList.add("disabled");
     link.removeAttribute("href");
-    link.title = "enable the prime monitor (--monitors.prime) to sync this run to the platform";
+    link.title = "the prime monitor was off for this run (--no-monitors.prime)";
     return;
   }
   const targets =

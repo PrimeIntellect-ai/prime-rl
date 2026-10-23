@@ -35,7 +35,7 @@ FINISH_TIMEOUT = 60.0
 
 def write_platform_record(output_dir: Path, record: dict[str, Any]) -> None:
     """Leave the run's platform identity in the run directory for the dashboard's
-    "view on platform" link."""
+    "View on Prime" link."""
     write_record(get_platform_run_path(output_dir), record)
 
 

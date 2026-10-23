@@ -110,13 +110,13 @@ The dashboard's overview tab reads the trace stream directly. It shows one env a
 
 ### Prime
 
-Each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the evaluation opens. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the eval fails at launch and says so. Turn it off with `--no-monitors.prime`:
+Each source's epoch streams as an evaluation on the Prime platform. The launcher prints each evaluation's link next to the local dashboard link (and the W&B run's, with `--monitors.wandb`) once the evaluation opens. It needs `PRIME_API_KEY` (`prime login` or the env var); without one, the eval fails at launch and says so:
 
 ```bash
-uv run eval gsm8k -n 32 -r 4 -c 8 --no-monitors.prime
+uv run eval gsm8k -n 32 -r 4 -c 8
 ```
 
-The monitor opens one platform evaluation per env when its epoch starts, streams every episode to it as it lands, and closes it with the epoch's aggregates. The run leaves its platform identity in `monitors/prime/run.json` (the training run's id and URL, or one entry per eval epoch), and the dashboard's top bar shows a `view on platform` link from the moment the evaluation opens: a direct link for a training run or a single evaluation, a menu when a run has several.
+The monitor opens one platform evaluation per env when its epoch starts, streams every episode to it as it lands, and closes it with the epoch's aggregates. The run leaves its platform identity in `monitors/prime/run.json` (the training run's id and URL, or one entry per eval epoch), and the dashboard's top bar shows a `View on Prime` link from the moment the evaluation opens: a direct link for a training run or a single evaluation, a menu when a run has several.
 
 ## Metrics
 
